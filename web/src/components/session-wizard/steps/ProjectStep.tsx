@@ -2,9 +2,11 @@ import { useEffect, useMemo, useState } from "react";
 import { fetchSessions, cloneRepo } from "../../../lib/api";
 import type { SessionResponse } from "../../../lib/types";
 import { DirectoryBrowser } from "../../DirectoryBrowser";
+import { ExtraReposPicker } from "./ExtraReposPicker";
 
 interface WizardData {
   path: string;
+  extraRepoPaths: string[];
   [key: string]: unknown;
 }
 
@@ -316,6 +318,17 @@ export function ProjectStep({ data, onChange, initialTab }: Props) {
         <div className="mt-4 px-3 py-2 bg-surface-900 border border-brand-600/30 rounded-md">
           <p className="text-[10px] font-mono uppercase tracking-wider text-text-dim mb-1">Selected project</p>
           <p className="text-sm font-mono text-text-primary truncate">{data.path}</p>
+        </div>
+      )}
+
+      {/* Extra repos picker (multi-repo workspace) */}
+      {data.path && activeTab !== "browse" && (
+        <div className="mt-5 pt-4 border-t border-surface-700/30">
+          <ExtraReposPicker
+            primaryPath={data.path}
+            selectedPaths={data.extraRepoPaths}
+            onChange={(paths) => onChange("extraRepoPaths", paths)}
+          />
         </div>
       )}
     </div>

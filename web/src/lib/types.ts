@@ -198,6 +198,13 @@ export interface GroupInfo {
   session_count: number;
 }
 
+/** Project info returned by /api/projects */
+export interface ProjectInfo {
+  name: string;
+  path: string;
+  scope: "global" | "profile";
+}
+
 /** Docker status returned by /api/docker/status */
 export interface DockerStatusResponse {
   available: boolean;

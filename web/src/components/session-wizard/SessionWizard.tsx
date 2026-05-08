@@ -22,6 +22,9 @@ export interface WizardData {
   sandboxEnabled: boolean;
   sandboxImage: string;
   extraEnv: string[];
+  /** Additional repo paths to include in the multi-repo workspace.
+   *  Free-text paths and registered project paths flow into the same list. */
+  extraRepoPaths: string[];
   advancedEnabled: boolean;
   customInstruction: string;
   extraArgs: string;
@@ -59,6 +62,7 @@ const initialData: WizardData = {
   useWorktree: true,
   group: "", tool: "claude", profile: "",
   yoloMode: false, sandboxEnabled: false, sandboxImage: "", extraEnv: [],
+  extraRepoPaths: [],
   advancedEnabled: false, profileDirty: false,
   customInstruction: "", extraArgs: "", commandOverride: "",
 };
@@ -210,6 +214,7 @@ export function SessionWizard({ onClose, onCreated, prefill }: Props) {
       sandbox: d.sandboxEnabled,
       sandbox_image: d.sandboxEnabled ? d.sandboxImage : undefined,
       extra_env: d.sandboxEnabled && d.extraEnv.length > 0 ? d.extraEnv.filter(Boolean) : undefined,
+      extra_repo_paths: d.extraRepoPaths.length > 0 ? d.extraRepoPaths : undefined,
       extra_args: d.extraArgs || undefined,
       command_override: d.commandOverride || undefined,
       custom_instruction: d.customInstruction || undefined,
