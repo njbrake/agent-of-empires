@@ -11,6 +11,7 @@ mod groups;
 mod instance;
 pub mod poller;
 pub mod profile_config;
+pub mod projects;
 pub mod repo_config;
 pub(crate) mod serde_helpers;
 mod storage;
@@ -36,6 +37,7 @@ pub use profile_config::{
     SandboxConfigOverride, SessionConfigOverride, ThemeConfigOverride, TmuxConfigOverride,
     UpdatesConfigOverride, WorktreeConfigOverride,
 };
+pub use projects::{Project, ProjectScope};
 pub use repo_config::{
     check_hook_trust, execute_hooks, execute_hooks_in_container, load_repo_config,
     merge_repo_config, profile_to_repo_config, repo_config_to_profile, resolve_config_with_repo,
