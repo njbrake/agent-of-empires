@@ -2,6 +2,7 @@ interface WizardData {
   title: string;
   worktreeBranch: string;
   useWorktree: boolean;
+  group: string;
   tool: string;
   [key: string]: unknown;
 }
@@ -67,7 +68,7 @@ export function SessionStep({ data, onChange }: Props) {
       </label>
 
       {data.useWorktree && (
-        <div>
+        <div className="mb-5">
           <label className="block text-sm text-text-dim mb-1.5">Branch / worktree name</label>
           <input
             type="text"
@@ -79,6 +80,17 @@ export function SessionStep({ data, onChange }: Props) {
           <p className="text-xs text-text-dim mt-1">The branch name is also the worktree directory name. Leave blank to use the session title.</p>
         </div>
       )}
+
+      <div>
+        <label className="block text-sm text-text-dim mb-1.5">Group</label>
+        <input
+          type="text"
+          value={data.group}
+          onChange={(e) => onChange("group", e.target.value)}
+          placeholder="Optional, for organizing related sessions"
+          className="w-full bg-surface-900 border border-surface-700 rounded-lg px-3 py-2.5 text-sm font-mono text-text-primary placeholder:text-text-dim focus:border-brand-600 focus:outline-none"
+        />
+      </div>
     </div>
   );
 }

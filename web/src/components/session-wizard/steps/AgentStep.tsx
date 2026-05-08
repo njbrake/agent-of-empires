@@ -17,7 +17,6 @@ interface WizardData {
   customInstruction: string;
   extraArgs: string;
   commandOverride: string;
-  group: string;
   [key: string]: unknown;
 }
 
@@ -285,18 +284,6 @@ export function AgentStep({ data, onChange, agents, profiles, dockerAvailable, o
               value={data.commandOverride}
               onChange={(e) => onChange("commandOverride", e.target.value)}
               placeholder="Override the agent launch command"
-              className="w-full bg-surface-900 border border-surface-700 rounded-lg px-3 py-2.5 text-sm font-mono text-text-primary placeholder:text-text-dim focus:border-brand-600 focus:outline-none"
-            />
-          </div>
-
-          {/* Group */}
-          <div>
-            <label className="block text-sm text-text-dim mb-1.5">Group</label>
-            <input
-              type="text"
-              value={data.group}
-              onChange={(e) => onChange("group", e.target.value)}
-              placeholder="Optional session group"
               className="w-full bg-surface-900 border border-surface-700 rounded-lg px-3 py-2.5 text-sm font-mono text-text-primary placeholder:text-text-dim focus:border-brand-600 focus:outline-none"
             />
           </div>
