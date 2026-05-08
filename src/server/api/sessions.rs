@@ -428,6 +428,12 @@ pub async fn delete_session(
                 );
             }
         }
+        // Drop the per-session replay buffer too: keeping it would
+        // leak a few MB per deleted session and serve no purpose since
+        // the session is gone.
+        if let Ok(mut guard) = state.cockpit_replay.lock() {
+            guard.remove(&id);
+        }
     }
 
     // Run deletion on a blocking thread (may do git/docker/tmux operations)
@@ -544,7 +550,11 @@ pub struct CreateSessionBody {
 
 #[cfg(feature = "serve")]
 fn default_cockpit_for_web() -> bool {
-    true
+    // Gated behind `AOE_EXPERIMENTAL_COCKPIT=1` while cockpit
+    // stabilises: when unset, browser-created sessions default to
+    // tmux. Existing cockpit sessions still load and run; the gate
+    // is for *new* sessions only.
+    crate::cockpit::experimental_enabled() && !crate::cockpit::force_disabled()
 }
 
 pub async fn create_session(
@@ -687,13 +697,16 @@ pub async fn create_session(
             }
         }
 
-        // Apply cockpit fields from the request body. The web UI
-        // defaults `cockpit_mode = true` (see default_cockpit_for_web)
-        // so browser-created sessions land in the cockpit; CLI/TUI
-        // callers control this explicitly.
+        // Apply cockpit fields from the request body. While cockpit
+        // is gated behind `AOE_EXPERIMENTAL_COCKPIT`, requests asking
+        // for cockpit_mode=true on a non-experimental server are
+        // silently downgraded to tmux. `AOE_NO_COCKPIT=1` is the
+        // hard kill switch and overrides the flag in either direction.
         #[cfg(feature = "serve")]
         {
-            instance.cockpit_mode = body.cockpit_mode;
+            let allow_cockpit =
+                !crate::cockpit::force_disabled() && crate::cockpit::experimental_enabled();
+            instance.cockpit_mode = body.cockpit_mode && allow_cockpit;
             instance.cockpit_agent = body.cockpit_agent;
             instance.cockpit_model = body.cockpit_model;
         }

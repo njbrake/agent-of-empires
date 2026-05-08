@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useReducer } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useState } from "react";
 import type { AgentInfo, GroupInfo, ProfileInfo, CreateSessionRequest, SessionResponse } from "../../lib/types";
-import { fetchAgents, fetchGroups, fetchDockerStatus, fetchProfiles, getSettings, createSession } from "../../lib/api";
+import { fetchAgents, fetchGroups, fetchDockerStatus, fetchProfiles, fetchAbout, getSettings, createSession } from "../../lib/api";
 import { StepIndicator } from "./StepIndicator";
 import type { StepDef, StepId } from "./StepIndicator";
 import { ProjectStep } from "./steps/ProjectStep";
@@ -57,11 +57,11 @@ const initialData: WizardData = {
   yoloMode: false, sandboxEnabled: false, sandboxImage: "", extraEnv: [],
   advancedEnabled: false, profileDirty: false,
   customInstruction: "", extraArgs: "", commandOverride: "",
-  // Cockpit (Beta) is the default substrate for browser-created
-  // sessions because structured rendering is the whole point of the
-  // web dashboard. The wizard exposes this as an explicit toggle so
-  // users can fall back to tmux if cockpit gives them grief.
-  cockpitMode: true,
+  // Cockpit is gated behind AOE_EXPERIMENTAL_COCKPIT on the server.
+  // Default false here; if the wizard learns the server has the flag
+  // set (via /api/about), it'll flip this on and render the
+  // substrate picker so the user can still pick tmux.
+  cockpitMode: false,
 };
 
 function reducer(state: WizardState, action: Action): WizardState {
@@ -154,6 +154,13 @@ export function SessionWizard({ onClose, onCreated, prefill }: Props) {
     agents: [], groups: [], profiles: [], dockerAvailable: false,
   });
 
+  // Server gate state. Cockpit is hidden from the wizard when the
+  // server doesn't have AOE_EXPERIMENTAL_COCKPIT=1. We default to
+  // `false` so the picker stays out of the way until /api/about
+  // confirms the flag is on, which avoids a brief flash of the
+  // picker on the very first render.
+  const [experimentalCockpit, setExperimentalCockpit] = useState(false);
+
   const steps = useMemo(() => computeSteps(state.data),
     [state.data.sandboxEnabled, state.data.advancedEnabled]);
 
@@ -167,6 +174,11 @@ export function SessionWizard({ onClose, onCreated, prefill }: Props) {
     fetchGroups().then((g) => dispatch({ type: "SET_GROUPS", groups: g }));
     fetchProfiles().then((p) => dispatch({ type: "SET_PROFILES", profiles: p }));
     fetchDockerStatus().then((d) => dispatch({ type: "SET_DOCKER", available: d.available }));
+    fetchAbout().then((about) => {
+      if (about?.experimental_cockpit && !about.cockpit_force_disabled) {
+        setExperimentalCockpit(true);
+      }
+    });
     getSettings().then((s) => {
       if (s) {
         const sandbox = s.sandbox as Record<string, unknown> | undefined;
@@ -228,6 +240,7 @@ export function SessionWizard({ onClose, onCreated, prefill }: Props) {
             profiles={state.profiles}
             dockerAvailable={state.dockerAvailable}
             onApplyProfileDefaults={handleApplyProfileDefaults}
+            experimentalCockpit={experimentalCockpit}
           />
         );
       case "review":

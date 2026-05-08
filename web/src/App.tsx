@@ -471,7 +471,13 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
                 {activeSession?.cockpit_mode ? (
                   <CockpitView key={activeSessionId} sessionId={activeSessionId!} />
                 ) : (
-                  <TerminalView key={activeSessionId} session={activeSession} />
+                  <TerminalView
+                    key={activeSessionId}
+                    session={activeSession}
+                    experimentalCockpit={
+                      !!serverAbout?.experimental_cockpit && !serverAbout.cockpit_force_disabled
+                    }
+                  />
                 )}
               </div>
 

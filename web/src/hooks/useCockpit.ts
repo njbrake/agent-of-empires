@@ -1,11 +1,11 @@
 // Cockpit subscription hook.
 //
 // Connects to /sessions/{id}/cockpit/ws, receives CockpitBroadcastFrame
-// JSON, and reduces them into a CockpitState. Exposes a
-// resolveApproval helper that POSTs the user's decision back to the
-// server. The REST endpoint that resolveApproval targets is wired up
-// when the worker supervisor lands; today the call is made
-// optimistically so the UI can be developed against the WS surface.
+// JSON, and reduces them into a CockpitState. On `lagged` notices the
+// hook hits the snapshot endpoint to recover any missed frames before
+// resuming live broadcast. Errors from sendPrompt / resolveApproval /
+// cancelPrompt are surfaced via state.lastError so the user gets a
+// dismissible banner instead of a silently-lost action.
 
 import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import {
@@ -14,29 +14,39 @@ import {
   type ApprovalDecision,
   type CockpitFrame,
   type CockpitState,
-  type LaggedFrame,
 } from "../lib/cockpitTypes";
 import { getToken } from "../lib/token";
 
 type Action =
   | { kind: "frame"; frame: CockpitFrame }
+  | { kind: "frames"; frames: CockpitFrame[] }
   | { kind: "lagged"; skipped: number }
   | { kind: "user_prompt"; text: string }
+  | { kind: "error"; message: string }
+  | { kind: "clear_error" }
+  | { kind: "lagged_resolved" }
   | { kind: "reset" };
 
 function reducer(state: CockpitState, action: Action): CockpitState {
   if (action.kind === "frame") {
     return applyEvent(state, action.frame);
   }
+  if (action.kind === "frames") {
+    return action.frames.reduce(applyEvent, state);
+  }
   if (action.kind === "lagged") {
     return { ...state, lagged: true };
   }
+  if (action.kind === "lagged_resolved") {
+    return { ...state, lagged: false };
+  }
+  if (action.kind === "error") {
+    return { ...state, lastError: action.message };
+  }
+  if (action.kind === "clear_error") {
+    return { ...state, lastError: null };
+  }
   if (action.kind === "user_prompt") {
-    // Echo the user's prompt into the activity feed so the conversation
-    // UI renders user/agent turns as a single ordered timeline. The
-    // assistant message bubble accumulates as the worker streams agent_
-    // message_chunk events back; the user's outgoing message lives only
-    // here.
     return {
       ...state,
       activity: state.activity.concat({
@@ -45,13 +55,11 @@ function reducer(state: CockpitState, action: Action): CockpitState {
         text: action.text,
         at: new Date().toISOString(),
       }),
-      // A new user turn implicitly starts a fresh assistant buffer for
-      // the next agent_message_chunk burst.
       assistantMessage: "",
-      // Clear any previous startup-error banner: the user is retrying.
+      // A fresh prompt clears stale errors: the user has indicated
+      // they're trying again, so don't keep nagging them.
       startupError: null,
-      // Light up the global "working" spinner; reset by the Stopped
-      // event when the agent finishes (or by AgentStartupError).
+      lastError: null,
       turnActive: true,
     };
   }
@@ -68,6 +76,50 @@ export function useCockpit(sessionId: string | null) {
   const [state, dispatch] = useReducer(reducer, emptyCockpitState());
   const [status, setStatus] = useState<ConnectionStatus>("connecting");
   const wsRef = useRef<WebSocket | null>(null);
+  // Track lastSeq in a ref so the snapshot fetcher always sees the
+  // latest value without re-running the effect when it changes.
+  // The ref is updated inside an effect (not during render) to keep
+  // the react-hooks linter happy — fetchReplay only ever runs from
+  // an event handler or another effect, so the one-tick lag is fine.
+  const lastSeqRef = useRef(0);
+  useEffect(() => {
+    lastSeqRef.current = state.lastSeq;
+  }, [state.lastSeq]);
+
+  const fetchReplay = useCallback(
+    async (sid: string) => {
+      try {
+        const since = lastSeqRef.current;
+        const res = await fetch(
+          `/api/sessions/${encodeURIComponent(sid)}/cockpit/replay?since=${since}`,
+          { credentials: "same-origin" },
+        );
+        if (!res.ok) return;
+        const data = (await res.json()) as {
+          frames: CockpitFrame[];
+          lost: boolean;
+          highest_seq: number;
+        };
+        if (data.lost) {
+          // The buffer doesn't go back far enough; surface this via
+          // the existing `lagged` flag (the UI shows a "history
+          // truncated" notice) and let the user reload if they want
+          // the full transcript back.
+          dispatch({ kind: "lagged", skipped: data.highest_seq });
+          return;
+        }
+        if (data.frames.length > 0) {
+          dispatch({ kind: "frames", frames: data.frames });
+        }
+        dispatch({ kind: "lagged_resolved" });
+      } catch {
+        // Network failure: leave the lagged flag set so the user
+        // sees something is wrong rather than silently dropping
+        // frames.
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     if (!sessionId) {
@@ -76,14 +128,13 @@ export function useCockpit(sessionId: string | null) {
     }
     dispatch({ kind: "reset" });
     setStatus("connecting");
+    // On reconnect, replay anything we may have missed.
+    fetchReplay(sessionId);
 
     const token = getToken();
     const protocol = window.location.protocol === "https:" ? "wss" : "ws";
     const url = `${protocol}://${window.location.host}/sessions/${encodeURIComponent(sessionId)}/cockpit/ws`;
 
-    // The auth middleware accepts the token via the
-    // sec-websocket-protocol subprotocol header so the WS handshake
-    // can be authenticated without a custom Sec-* extension.
     const ws = new WebSocket(url, token ? ["aoe-auth", token] : ["aoe-auth"]);
     wsRef.current = ws;
 
@@ -92,7 +143,9 @@ export function useCockpit(sessionId: string | null) {
     ws.onclose = () => setStatus("closed");
     ws.onmessage = (ev) => {
       try {
-        const data = JSON.parse(ev.data) as CockpitFrame | LaggedFrame;
+        const data = JSON.parse(ev.data) as
+          | CockpitFrame
+          | { kind: "lagged"; skipped?: number };
         if (
           typeof data === "object" &&
           data !== null &&
@@ -102,6 +155,8 @@ export function useCockpit(sessionId: string | null) {
           const skipped =
             ((data as unknown) as { skipped?: number }).skipped ?? 0;
           dispatch({ kind: "lagged", skipped });
+          // Try to recover via the snapshot endpoint.
+          fetchReplay(sessionId);
           return;
         }
         if (
@@ -125,16 +180,13 @@ export function useCockpit(sessionId: string | null) {
       }
       wsRef.current = null;
     };
-  }, [sessionId]);
+  }, [sessionId, fetchReplay]);
 
   const resolveApproval = useCallback(
     async (nonce: string, decision: ApprovalDecision) => {
       if (!sessionId) return;
-      // POST the resolution. The endpoint will be wired up alongside
-      // the worker supervisor; today we issue the request so the UI
-      // can be developed against the wire.
       try {
-        await fetch(
+        const res = await fetch(
           `/api/sessions/${encodeURIComponent(sessionId)}/cockpit/approvals/${encodeURIComponent(nonce)}`,
           {
             method: "POST",
@@ -142,10 +194,20 @@ export function useCockpit(sessionId: string | null) {
             body: JSON.stringify({ decision }),
           },
         );
-      } catch {
-        // Network errors are surfaced via the connection status; the
-        // UI stays optimistic until the server confirms by removing
-        // the approval from `pendingApprovals` via a broadcast frame.
+        if (!res.ok) {
+          const detail = await safeText(res);
+          dispatch({
+            kind: "error",
+            message: `Could not resolve approval (${res.status}). ${detail}`.trim(),
+          });
+        } else {
+          dispatch({ kind: "clear_error" });
+        }
+      } catch (e) {
+        dispatch({
+          kind: "error",
+          message: `Network error resolving approval: ${describeError(e)}`,
+        });
       }
     },
     [sessionId],
@@ -154,18 +216,33 @@ export function useCockpit(sessionId: string | null) {
   const sendPrompt = useCallback(
     async (text: string) => {
       if (!sessionId) return;
-      // Optimistically echo the user's message into the conversation
-      // timeline; the actual agent reply streams back as session/update
-      // events on the WebSocket.
+      // Optimistically echo the user's message; the agent reply
+      // streams back as session/update events on the WS. If the POST
+      // fails we'll surface a banner and the user can retry — the
+      // optimistic row stays so they see what they tried to send.
       dispatch({ kind: "user_prompt", text });
-      await fetch(
-        `/api/sessions/${encodeURIComponent(sessionId)}/cockpit/prompt`,
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text }),
-        },
-      );
+      try {
+        const res = await fetch(
+          `/api/sessions/${encodeURIComponent(sessionId)}/cockpit/prompt`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ text }),
+          },
+        );
+        if (!res.ok) {
+          const detail = await safeText(res);
+          dispatch({
+            kind: "error",
+            message: `Could not send prompt (${res.status}). ${detail}`.trim(),
+          });
+        }
+      } catch (e) {
+        dispatch({
+          kind: "error",
+          message: `Network error sending prompt: ${describeError(e)}`,
+        });
+      }
     },
     [sessionId],
   );
@@ -173,15 +250,48 @@ export function useCockpit(sessionId: string | null) {
   const cancelPrompt = useCallback(async () => {
     if (!sessionId) return;
     try {
-      await fetch(
+      const res = await fetch(
         `/api/sessions/${encodeURIComponent(sessionId)}/cockpit/cancel`,
         { method: "POST" },
       );
-    } catch {
-      // Cancel is best-effort; the agent will eventually emit a
-      // Stopped event whether or not the cancel arrives in time.
+      if (!res.ok) {
+        const detail = await safeText(res);
+        dispatch({
+          kind: "error",
+          message: `Could not cancel (${res.status}). ${detail}`.trim(),
+        });
+      }
+    } catch (e) {
+      dispatch({
+        kind: "error",
+        message: `Network error cancelling: ${describeError(e)}`,
+      });
     }
   }, [sessionId]);
 
-  return { state, status, resolveApproval, sendPrompt, cancelPrompt };
+  const dismissError = useCallback(() => {
+    dispatch({ kind: "clear_error" });
+  }, []);
+
+  return {
+    state,
+    status,
+    resolveApproval,
+    sendPrompt,
+    cancelPrompt,
+    dismissError,
+  };
+}
+
+async function safeText(res: Response): Promise<string> {
+  try {
+    return (await res.text()).slice(0, 200);
+  } catch {
+    return "";
+  }
+}
+
+function describeError(e: unknown): string {
+  if (e instanceof Error) return e.message;
+  return String(e);
 }

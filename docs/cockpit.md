@@ -1,10 +1,20 @@
 # Cockpit (Native Agent Rendering, Beta)
 
-> **Beta**: Cockpit is opt-in per session. Tmux passthrough remains
-> the default — pass `--cockpit` on the CLI, or pick **Cockpit** in the
-> web wizard, to use the structured-rendering path. The data model
-> (`cockpit_mode: bool` per session) is stable; the UI is still
-> evolving.
+> **Beta, opt-in.** Cockpit ships disabled by default. Set
+> `AOE_EXPERIMENTAL_COCKPIT=1` in the env that runs `aoe serve` (and
+> the TUI/CLI) to enable it. While the flag is unset:
+>
+> - the web wizard hides the substrate picker, and every new browser
+>   session is tmux,
+> - `aoe add --cockpit` refuses with an actionable error,
+> - existing cockpit sessions still load and run (the gate is for
+>   *new* sessions only).
+>
+> `AOE_NO_COCKPIT=1` is the hard kill switch: cockpit refuses to
+> spawn workers regardless of any other config.
+>
+> The data model (`cockpit_mode: bool` per session) is stable; the
+> UI and reliability story are still evolving — see "What's deferred".
 
 Cockpit is aoe's native rendering surface for AI coding agents. Instead
 of viewing the agent through a terminal pane (PTY bytes piped through
@@ -161,10 +171,38 @@ exists if you came from 1.4.x.
 
 - `--no-cockpit` per session.
 - `cockpit.enabled = false` in `config.toml` (global).
-- `AOE_NO_COCKPIT=1` env var, applied at process start.
+- `AOE_NO_COCKPIT=1` env var, applied at process start. Skips the
+  startup auto-spawn loop and refuses every cockpit REST endpoint
+  (spawn, enable, prompt, etc.) with `503 Service Unavailable`.
+  The CLI also refuses `--cockpit`.
 - `AOE_COCKPIT_NODE=/path/to/node` overrides Node discovery for one
   process (useful when the host's PATH-side Node is the wrong version
   and you can't change PATH).
+
+## TUI vs web dashboard
+
+Cockpit is a **web-dashboard surface**. The TUI does not render the
+structured cockpit view today.
+
+- **Sessions started in cockpit mode** appear in the TUI session list
+  with a `[web]` badge. Pressing Enter opens an info dialog telling
+  the user to switch to the dashboard; it does *not* attach to a tmux
+  pane (cockpit sessions don't have one).
+- **Sessions started in tmux mode** work in both surfaces as before.
+  The TUI attaches to the pane; the dashboard renders the pane via
+  xterm.js.
+- **Switching substrates** (web wizard or the per-session "Switch to
+  cockpit" / "Switch to tmux" action) destroys the in-memory
+  conversation history for that session. The git worktree, files on
+  disk, and any commits remain. The next prompt starts a fresh
+  conversation under the new substrate.
+- **TUI status indicators**: a cockpit session that's healthy shows
+  as Idle/Active in the TUI session list, since cockpit health is
+  observed via the ACP event stream rather than tmux pane probing.
+
+A future release will either render a read-only cockpit transcript
+inside the TUI, or grow a richer "open this in the dashboard"
+affordance. Both are tracked as deferred work below.
 
 ## Tool compatibility
 
@@ -253,8 +291,14 @@ Then run `claude login` if you haven't already.
   to see worker stderr.
 - Check the dashboard's connection chrome at the top of the cockpit
   view; it shows reconnect status if the WebSocket is degraded.
-- If you see a `lagged` notice, refresh the page to request a fresh
-  snapshot.
+- The supervisor watchdog respawns the agent up to 3 times in 60s
+  after a crash; if all three burn, the cockpit shows a red
+  "session parked" banner. Refresh the page to retry from scratch.
+- On reconnect the client calls
+  `GET /api/sessions/{id}/cockpit/replay?since={lastSeq}` to recover
+  any frames it missed during a brief network blip. If the buffer no
+  longer holds events that far back, you'll see a `History
+  truncated` notice and reloading is the cleanest way to resync.
 
 ### Approval card vanished without resolving
 
@@ -285,8 +329,11 @@ These are tracked for follow-up releases:
   cockpit's typed schema covers the common path).
 - Cross-agent handoff and unified search across cockpit sessions.
 - Voice input/output on mobile.
-- Auto-download of bundled Node runtime at first use (today aoe
-  expects Node on PATH; the resolution path supports a bundled
-  runtime once the auto-download lands).
+- A read-only cockpit transcript view inside the TUI (today the TUI
+  shows a `[web]` badge and an "open in dashboard" hint).
+- Promotion out of `AOE_EXPERIMENTAL_COCKPIT`: once the
+  default-cockpit-on-web flow has burned in for one release,
+  `default_cockpit_for_web()` flips back to `true` for browser
+  clients and the wizard shows the substrate picker by default.
 - Docker sandbox unix-socket transport for cockpit sessions running
   inside containers.

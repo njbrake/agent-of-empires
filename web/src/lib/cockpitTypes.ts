@@ -97,13 +97,6 @@ export interface CockpitFrame {
   event: CockpitEvent;
 }
 
-// Special control frame the server emits when the broadcast lagged.
-// Surfaced separately so the UI can request a snapshot.
-export interface LaggedFrame {
-  kind: "lagged";
-  skipped: number;
-}
-
 export interface CockpitState {
   agent: string | null;
   model: string | null;
@@ -120,13 +113,23 @@ export interface CockpitState {
   /** Activity rows (tool starts + completions + agent messages),
    *  oldest first. Bounded for memory. */
   activity: ActivityRow[];
-  /** Last seen seq, for reconnect requests. */
+  /** Last seen seq, for reconnect requests. Frames whose `seq` is
+   *  not strictly greater than this are dropped by the reducer so
+   *  reconnect-replay can deliver the same frames again without
+   *  double-applying them to state. */
   lastSeq: number;
-  /** True if the most recent broadcast told us we lagged. */
+  /** True if the most recent broadcast told us we lagged. Cleared
+   *  the next time the client successfully resyncs via the snapshot
+   *  endpoint. */
   lagged: boolean;
   /** Latest agent startup failure message, if any. Cleared when a new
    *  prompt is sent or the worker successfully connects. */
   startupError: string | null;
+  /** Latest interaction error (failed sendPrompt / resolveApproval /
+   *  cancel POST). Surfaces as a dismissible banner so users don't
+   *  silently lose actions to a network blip. Cleared on the next
+   *  successful interaction. */
+  lastError: string | null;
   /** True between sending a user prompt and receiving the
    *  `Stopped { reason: "prompt_complete" }` event. Drives the global
    *  "working" spinner so the UI feels alive even when the agent
@@ -176,18 +179,26 @@ export function emptyCockpitState(): CockpitState {
     lastSeq: 0,
     lagged: false,
     startupError: null,
+    lastError: null,
     turnActive: false,
     availableModes: [],
     currentModeId: null,
   };
 }
 
-/** Pure reducer. Returns a new state; never mutates the input. */
+/** Pure reducer. Returns a new state; never mutates the input.
+ *  Drops frames whose seq is not strictly greater than `state.lastSeq`
+ *  so reconnect/replay can re-deliver buffered frames without
+ *  double-applying them (duplicate tool cards, doubled message
+ *  chunks, etc.). */
 export function applyEvent(
   state: CockpitState,
   frame: CockpitFrame,
 ): CockpitState {
-  const next = { ...state, lastSeq: Math.max(state.lastSeq, frame.seq) };
+  if (frame.seq <= state.lastSeq) {
+    return state;
+  }
+  const next = { ...state, lastSeq: frame.seq };
   const event = frame.event;
   if (typeof event === "string") {
     if (event === "ThinkingStarted") {

@@ -18,7 +18,7 @@ mod system;
 
 #[cfg(feature = "serve")]
 pub use cockpit::{
-    cockpit_cancel, cockpit_disable, cockpit_enable, cockpit_files, cockpit_prompt,
+    cockpit_cancel, cockpit_disable, cockpit_enable, cockpit_files, cockpit_prompt, cockpit_replay,
     cockpit_set_mode, resolve_approval, shutdown_cockpit, spawn_cockpit,
 };
 

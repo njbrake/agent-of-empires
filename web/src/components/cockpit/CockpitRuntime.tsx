@@ -54,6 +54,7 @@ export interface CockpitContext {
     decision: ApprovalDecision,
   ) => Promise<void>;
   sendPrompt: (text: string) => Promise<void>;
+  dismissError: () => void;
 }
 
 /**
@@ -97,6 +98,7 @@ export function CockpitRuntime({ sessionId, children }: Props) {
         status: cockpit.status,
         resolveApproval: cockpit.resolveApproval,
         sendPrompt: cockpit.sendPrompt,
+        dismissError: cockpit.dismissError,
       })}
     </AssistantRuntimeProvider>
   );

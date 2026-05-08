@@ -233,6 +233,25 @@ pub struct AppState {
     /// connected; senders never need to check before emitting.
     #[cfg(feature = "serve")]
     pub cockpit_events_tx: broadcast::Sender<CockpitBroadcastFrame>,
+    /// Per-session replay buffer of cockpit frames. Populated on every
+    /// `ChannelSink::publish`; consulted by
+    /// `GET /api/sessions/{id}/cockpit/replay?since={seq}` so a
+    /// reconnecting WebSocket client can recover any frames it missed
+    /// during a brief network blip without dropping the conversation.
+    /// Sync mutex (not async) so the publish path stays sync-only and
+    /// preserves seq ordering; both pushers and the snapshot reader
+    /// hold the lock for very brief operations.
+    #[cfg(feature = "serve")]
+    pub cockpit_replay: Arc<
+        std::sync::Mutex<
+            std::collections::HashMap<String, crate::cockpit::replay_buffer::ReplayBuffer>,
+        >,
+    >,
+    /// Per-session replay-buffer sizing pulled from `[cockpit]` config
+    /// at startup. Lazy-initialised entries in `cockpit_replay` use
+    /// these caps.
+    #[cfg(feature = "serve")]
+    pub cockpit_replay_caps: (usize, usize),
     /// Owns the per-session ACP agent subprocesses.
     #[cfg(feature = "serve")]
     pub cockpit_supervisor:
@@ -395,6 +414,17 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
     #[cfg(feature = "serve")]
     let cockpit_events_tx = broadcast::channel(COCKPIT_CHANNEL_CAPACITY).0;
     #[cfg(feature = "serve")]
+    let cockpit_replay: Arc<
+        std::sync::Mutex<
+            std::collections::HashMap<String, crate::cockpit::replay_buffer::ReplayBuffer>,
+        >,
+    > = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
+    #[cfg(feature = "serve")]
+    let cockpit_replay_caps = (
+        config.cockpit.replay_events as usize,
+        config.cockpit.replay_bytes as usize,
+    );
+    #[cfg(feature = "serve")]
     let cockpit_supervisor = {
         let push_for_sink = push_state.clone();
         let push_enabled_for_sink = push_enabled;
@@ -426,6 +456,8 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
         let sink = std::sync::Arc::new(crate::cockpit::supervisor::ChannelSink {
             tx: cockpit_events_tx.clone(),
             on_approval,
+            replay: cockpit_replay.clone(),
+            replay_caps: cockpit_replay_caps,
         });
         std::sync::Arc::new(crate::cockpit::supervisor::Supervisor::new(sink))
     };
@@ -453,6 +485,10 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
         #[cfg(feature = "serve")]
         cockpit_events_tx: cockpit_events_tx.clone(),
         #[cfg(feature = "serve")]
+        cockpit_replay: cockpit_replay.clone(),
+        #[cfg(feature = "serve")]
+        cockpit_replay_caps,
+        #[cfg(feature = "serve")]
         cockpit_supervisor: cockpit_supervisor.clone(),
         push: push_state,
         push_enabled,
@@ -466,7 +502,8 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
     // reconciler in `status_poll_loop`. The poll interval's first tick
     // fires immediately, so on cold startup this is equivalent to the
     // old in-place loop here, while also covering sessions added via
-    // `aoe add --cockpit` while serve is already running.
+    // `aoe add --cockpit` while serve is already running. The
+    // reconciler short-circuits when `AOE_NO_COCKPIT=1` is set.
 
     let addr = format!("{}:{}", host, port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;
@@ -886,6 +923,10 @@ fn build_router(state: Arc<AppState>) -> Router {
         )
         .route("/api/sessions/{id}/cockpit/files", get(api::cockpit_files))
         .route(
+            "/api/sessions/{id}/cockpit/replay",
+            get(api::cockpit_replay),
+        )
+        .route(
             "/api/sessions/{id}/cockpit/mode",
             post(api::cockpit_set_mode),
         )
@@ -1184,6 +1225,15 @@ async fn reconcile_cockpit_workers(
     state: &Arc<AppState>,
     attempted: &mut std::collections::HashSet<String>,
 ) {
+    // Honor the `AOE_NO_COCKPIT=1` kill switch: park persisted cockpit
+    // sessions instead of auto-spawning their ACP workers. Existing
+    // sessions stay in the list (their cockpit_mode flag is on disk),
+    // but the dashboard will surface them as not-yet-running. Removing
+    // the env var on next `aoe serve` resumes auto-spawn for them.
+    if crate::cockpit::force_disabled() {
+        return;
+    }
+
     let targets: Vec<_> = {
         let instances = state.instances.read().await;
         instances

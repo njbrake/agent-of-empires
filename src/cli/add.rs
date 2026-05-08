@@ -336,16 +336,37 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
     // Cockpit mode: explicit --cockpit overrides config; --no-cockpit
     // forces terminal mode; otherwise honor the config default for
     // claude on supported platforms.
+    //
+    // While cockpit is gated behind `AOE_EXPERIMENTAL_COCKPIT`, an
+    // unset flag refuses `--cockpit` on the CLI with a clear error.
+    // `AOE_NO_COCKPIT=1` also short-circuits regardless.
     #[cfg(feature = "serve")]
     {
         let user_picked_cockpit = args.cockpit || args.agent.is_some();
         let user_forced_terminal = args.no_cockpit;
+        if user_picked_cockpit {
+            if crate::cockpit::force_disabled() {
+                bail!(
+                    "Cockpit is disabled (AOE_NO_COCKPIT=1). Unset the env var to use --cockpit."
+                );
+            }
+            if !crate::cockpit::experimental_enabled() {
+                bail!(
+                    "Cockpit is experimental. Set AOE_EXPERIMENTAL_COCKPIT=1 to opt in, or omit --cockpit / --agent for a tmux session."
+                );
+            }
+        }
+        let allow_default_cockpit =
+            !crate::cockpit::force_disabled() && crate::cockpit::experimental_enabled();
         instance.cockpit_mode = if user_forced_terminal {
             false
         } else if user_picked_cockpit {
             true
         } else {
-            config.cockpit.enabled && config.cockpit.default_for_claude && instance.tool == "claude"
+            allow_default_cockpit
+                && config.cockpit.enabled
+                && config.cockpit.default_for_claude
+                && instance.tool == "claude"
         };
         instance.cockpit_agent = args.agent.clone();
         instance.cockpit_model = args.model.clone();

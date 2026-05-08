@@ -812,6 +812,17 @@ impl App {
             None => return Ok(()),
         };
 
+        // Cockpit-mode sessions are not backed by tmux. The Enter
+        // handler in `home::input` already short-circuits with a
+        // transient toast pointing the user at the web dashboard;
+        // this function still gets called from `apply_creation_results`
+        // after `aoe add --launch`, so guard here too. Falling through
+        // would attempt a tmux attach against a non-existent pane.
+        if instance.is_cockpit_mode() {
+            let _ = terminal;
+            return Ok(());
+        }
+
         let tmux_session = instance.tmux_session()?;
 
         // Decide whether to restart: if hook status is available or the instance

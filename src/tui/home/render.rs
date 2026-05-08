@@ -631,16 +631,25 @@ impl HomeView {
                 // how long it's actually been since the agent stopped.
                 // Color tracks the fresh/decayed binary used by the icon so
                 // the readout fades in step.
-                let badge_text: Option<&'static str> = if inst.is_cockpit_mode() {
-                    Some(" [cockpit]")
-                } else if self.view_mode == ViewMode::Terminal && inst.is_sandboxed() {
-                    Some(match self.get_terminal_mode(id) {
-                        TerminalMode::Container => " [container]",
-                        TerminalMode::Host => " [host]",
-                    })
-                } else {
-                    None
-                };
+                // Cockpit-mode sessions are web-only (the TUI has no
+                // structured rendering surface). Surface this with a
+                // [web] badge so the user knows pressing Enter will
+                // open an info dialog instead of attaching to a tmux
+                // pane that doesn't exist. Takes precedence over the
+                // existing container/host badge in Agent view; the
+                // Terminal view keeps its existing badging because
+                // the host terminal still works against the worktree.
+                let badge_text: Option<&'static str> =
+                    if inst.is_cockpit_mode() && self.view_mode != ViewMode::Terminal {
+                        Some(" [web]")
+                    } else if self.view_mode == ViewMode::Terminal && inst.is_sandboxed() {
+                        Some(match self.get_terminal_mode(id) {
+                            TerminalMode::Container => " [container]",
+                            TerminalMode::Host => " [host]",
+                        })
+                    } else {
+                        None
+                    };
                 let badge_width = badge_text.map_or(0, |s| s.len());
 
                 let used_width: usize = line_spans.iter().map(|s| s.width()).sum();

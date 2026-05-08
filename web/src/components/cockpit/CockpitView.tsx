@@ -70,6 +70,7 @@ function CockpitChrome({
   status,
   resolveApproval,
   sendPrompt,
+  dismissError,
 }: CockpitContext & { sessionId: string }) {
   return (
     <div className="flex h-full flex-col bg-surface-900 text-text-primary">
@@ -84,6 +85,12 @@ function CockpitChrome({
       )}
 
       {state.startupError && <StartupErrorBanner message={state.startupError} />}
+      {state.lastError && (
+        <InteractionErrorBanner
+          message={state.lastError}
+          onDismiss={dismissError}
+        />
+      )}
 
       <ThreadPrimitive.Root className="flex flex-1 flex-col min-h-0">
         <ThreadPrimitive.Viewport
@@ -533,6 +540,30 @@ function SystemNotices({
           {m.text}
         </div>
       ))}
+    </div>
+  );
+}
+
+function InteractionErrorBanner({
+  message,
+  onDismiss,
+}: {
+  message: string;
+  onDismiss: () => void;
+}) {
+  return (
+    <div className="flex items-start justify-between gap-3 border-b border-amber-900/60 bg-amber-950/40 px-4 py-2 text-amber-200">
+      <div className="flex-1 min-w-0">
+        <div className="text-xs font-medium">Action did not complete</div>
+        <div className="mt-0.5 text-xs text-amber-100/90 break-words">{message}</div>
+      </div>
+      <button
+        type="button"
+        onClick={onDismiss}
+        className="shrink-0 rounded-md border border-amber-800/60 bg-amber-900/40 px-2 py-1 text-[10px] font-mono uppercase tracking-wide text-amber-100 hover:bg-amber-900/60"
+      >
+        Dismiss
+      </button>
     </div>
   );
 }

@@ -2,10 +2,15 @@
 //!
 //! Owns a per-aoe-process map of session_id -> AcpClient handles. Spawns
 //! the ACP agent subprocess on demand, bridges its events into the
-//! per-AppState `cockpit_events_tx` broadcast channel, restarts on
-//! crash with exponential backoff (capped at 3 restarts in 60s before
-//! the session transitions to Status::Error), and fires push
+//! per-AppState `cockpit_events_tx` broadcast channel, and fires push
 //! notifications for ApprovalRequested events.
+//!
+//! Watchdog: when an agent's ACP connection task ends (subprocess exit,
+//! transport break) the drain task respawns it. Up to
+//! `MAX_RESTARTS_IN_WINDOW` respawns are allowed inside `RESTART_WINDOW`;
+//! beyond that the session is parked and an `AgentStartupError` event
+//! is published so the UI can surface "session crashed" instead of
+//! going silent.
 //!
 //! Producer side: `Supervisor::spawn(session_id, config)` creates an
 //! AcpClient and a background task that drains its events.
@@ -27,12 +32,17 @@ use tracing::{debug, info, warn};
 use super::acp_client::{AcpClient, AcpError, SpawnConfig};
 use super::agent_registry::{AgentRegistry, AgentSpec};
 use super::approvals::{ApprovalDecision, Nonce};
+use super::replay_buffer::ReplayBuffer;
 use super::state::{CockpitSessionId, Event};
 
 /// Maximum number of unconditional restarts within `RESTART_WINDOW`.
-/// After this many crashes the session is parked in Status::Error.
+/// After this many crashes the session is parked and an
+/// `AgentStartupError` event is published.
 const MAX_RESTARTS_IN_WINDOW: u32 = 3;
 const RESTART_WINDOW: Duration = Duration::from_secs(60);
+/// Brief backoff before respawning an exited worker so we don't
+/// hot-loop when the agent process crashes immediately on startup.
+const RESPAWN_BACKOFF: Duration = Duration::from_millis(500);
 
 #[derive(Debug, Error)]
 pub enum SupervisorError {
@@ -61,8 +71,18 @@ struct WorkerHandle {
     /// Background task draining events from the client. Aborted on
     /// shutdown.
     drain_task: JoinHandle<()>,
-    /// Restart bookkeeping: timestamps of recent (re)spawns.
+    /// Restart bookkeeping: timestamps of recent (re)spawns. Used by
+    /// the watchdog to enforce `MAX_RESTARTS_IN_WINDOW`.
     restart_history: Vec<Instant>,
+    /// Stored so the watchdog can respawn the worker when its ACP
+    /// connection task exits (subprocess crash, transport break).
+    /// Populated for real workers; left as `None` for fake workers
+    /// inserted by tests.
+    spawn_config: Option<SpawnConfig>,
+    /// Last `seq` published by the drain task. Persisted across
+    /// respawns so the broadcast stream stays monotonically
+    /// increasing even after the agent process is replaced.
+    last_seq: u64,
 }
 
 pub struct Supervisor<S: BroadcastSink> {
@@ -183,7 +203,7 @@ impl<S: BroadcastSink> Supervisor<S> {
         };
 
         let cockpit_session_id = CockpitSessionId(session_id.clone());
-        let mut client = AcpClient::spawn(config, cockpit_session_id.clone()).await?;
+        let mut client = AcpClient::spawn(config.clone(), cockpit_session_id.clone()).await?;
 
         info!(target: "cockpit.supervisor", session = %session_id, "cockpit worker spawned");
 
@@ -195,42 +215,128 @@ impl<S: BroadcastSink> Supervisor<S> {
             .take_inbound()
             .expect("freshly spawned AcpClient always has inbound receiver");
         let client = Arc::new(Mutex::new(client));
-        let drain_task = self.start_drain_task(session_id.clone(), inbound).await;
 
         let mut workers = self.workers.lock().await;
+        let drain_task = self.start_drain_task(session_id.clone(), inbound);
         workers.insert(
             session_id,
             WorkerHandle {
                 client,
                 drain_task,
                 restart_history: vec![Instant::now()],
+                spawn_config: Some(config),
+                last_seq: 0,
             },
         );
         Ok(())
     }
 
-    async fn start_drain_task(
+    /// Drain events from a worker into the broadcast sink. When the
+    /// inbound channel closes (subprocess exit / transport break) the
+    /// drain task asks the supervisor to respawn the worker, falling
+    /// back to a parked-error state if the restart budget is burned.
+    fn start_drain_task(
         &self,
         session_id: String,
-        mut inbound: mpsc::Receiver<Event>,
+        initial_inbound: mpsc::Receiver<Event>,
     ) -> JoinHandle<()> {
         let sink = Arc::clone(&self.sink);
+        let workers = Arc::clone(&self.workers);
         tokio::spawn(async move {
-            let mut seq: u64 = 0;
+            let mut inbound = initial_inbound;
             loop {
-                let Some(event) = inbound.recv().await else {
-                    debug!(target: "cockpit.supervisor", session = %session_id, "drain channel closed");
-                    break;
-                };
-                seq = seq.saturating_add(1);
-                sink.publish(&session_id, seq, &event);
-                if let Event::ApprovalRequested { approval } = &event {
-                    sink.approval_requested(
-                        &session_id,
-                        &approval.tool_call.name,
-                        approval.destructive,
-                    );
+                while let Some(event) = inbound.recv().await {
+                    let seq = bump_seq(&workers, &session_id).await;
+                    sink.publish(&session_id, seq, &event);
+                    if let Event::ApprovalRequested { approval } = &event {
+                        sink.approval_requested(
+                            &session_id,
+                            &approval.tool_call.name,
+                            approval.destructive,
+                        );
+                    }
                 }
+
+                // Channel closed: the agent's connection task ended.
+                // Either the subprocess exited or the transport broke.
+                // Try to respawn within the restart budget; otherwise
+                // park the session with a synthetic error event.
+                debug!(
+                    target: "cockpit.supervisor",
+                    session = %session_id,
+                    "drain channel closed; checking restart budget"
+                );
+                let respawn_config = match restart_decision(&workers, &session_id).await {
+                    RestartDecision::Respawn(cfg) => cfg,
+                    RestartDecision::BudgetBurned => {
+                        warn!(
+                            target: "cockpit.supervisor",
+                            session = %session_id,
+                            "restart budget burned; parking session"
+                        );
+                        let seq = bump_seq(&workers, &session_id).await;
+                        sink.publish(
+                            &session_id,
+                            seq,
+                            &Event::AgentStartupError {
+                                message: format!(
+                                    "ACP agent crashed more than {} times in {}s; \
+                                     not respawning. Use the web dashboard to retry.",
+                                    MAX_RESTARTS_IN_WINDOW,
+                                    RESTART_WINDOW.as_secs()
+                                ),
+                            },
+                        );
+                        return;
+                    }
+                    RestartDecision::Gone => {
+                        // The worker entry was removed (shutdown / delete).
+                        // Exit quietly.
+                        return;
+                    }
+                };
+
+                tokio::time::sleep(RESPAWN_BACKOFF).await;
+
+                let cockpit_session_id = CockpitSessionId(session_id.clone());
+                let mut new_client =
+                    match AcpClient::spawn(respawn_config.clone(), cockpit_session_id).await {
+                        Ok(c) => c,
+                        Err(e) => {
+                            warn!(
+                                target: "cockpit.supervisor",
+                                session = %session_id,
+                                "respawn failed: {e}"
+                            );
+                            let seq = bump_seq(&workers, &session_id).await;
+                            sink.publish(
+                                &session_id,
+                                seq,
+                                &Event::AgentStartupError {
+                                    message: format!("ACP agent respawn failed: {e}"),
+                                },
+                            );
+                            return;
+                        }
+                    };
+                let new_inbound = new_client
+                    .take_inbound()
+                    .expect("freshly spawned AcpClient always has inbound receiver");
+
+                {
+                    let mut guard = workers.lock().await;
+                    let Some(handle) = guard.get_mut(&session_id) else {
+                        return;
+                    };
+                    handle.client = Arc::new(Mutex::new(new_client));
+                }
+
+                info!(
+                    target: "cockpit.supervisor",
+                    session = %session_id,
+                    "cockpit worker respawned"
+                );
+                inbound = new_inbound;
             }
         })
     }
@@ -321,31 +427,46 @@ impl<S: BroadcastSink> Supervisor<S> {
     pub async fn count(&self) -> usize {
         self.workers.lock().await.len()
     }
+}
 
-    /// Restart bookkeeping: returns false if the session has already
-    /// burned through MAX_RESTARTS_IN_WINDOW restarts in
-    /// RESTART_WINDOW. Callers should park the session in
-    /// Status::Error in that case.
-    pub async fn record_restart(&self, session_id: &str) -> bool {
-        let mut workers = self.workers.lock().await;
-        let Some(handle) = workers.get_mut(session_id) else {
-            return false;
-        };
-        let now = Instant::now();
-        let window_start = now - RESTART_WINDOW;
-        handle.restart_history.retain(|t| *t >= window_start);
-        handle.restart_history.push(now);
-        if handle.restart_history.len() as u32 > MAX_RESTARTS_IN_WINDOW {
-            warn!(
-                target: "cockpit.supervisor",
-                session = %session_id,
-                count = handle.restart_history.len(),
-                "session exceeded restart budget"
-            );
-            return false;
-        }
-        true
+enum RestartDecision {
+    Respawn(SpawnConfig),
+    BudgetBurned,
+    /// The worker entry was removed (e.g. shutdown).
+    Gone,
+}
+
+async fn restart_decision(
+    workers: &Arc<Mutex<HashMap<String, WorkerHandle>>>,
+    session_id: &str,
+) -> RestartDecision {
+    let mut guard = workers.lock().await;
+    let Some(handle) = guard.get_mut(session_id) else {
+        return RestartDecision::Gone;
+    };
+    let now = Instant::now();
+    let window_start = now - RESTART_WINDOW;
+    handle.restart_history.retain(|t| *t >= window_start);
+    handle.restart_history.push(now);
+    if handle.restart_history.len() as u32 > MAX_RESTARTS_IN_WINDOW {
+        return RestartDecision::BudgetBurned;
     }
+    match handle.spawn_config.clone() {
+        Some(cfg) => RestartDecision::Respawn(cfg),
+        // Test handles inserted via fake_for_test: the entry exists but
+        // we have no real spawn config. Treat as budget-burned so the
+        // drain task exits cleanly.
+        None => RestartDecision::BudgetBurned,
+    }
+}
+
+async fn bump_seq(workers: &Arc<Mutex<HashMap<String, WorkerHandle>>>, session_id: &str) -> u64 {
+    let mut guard = workers.lock().await;
+    let Some(handle) = guard.get_mut(session_id) else {
+        return 0;
+    };
+    handle.last_seq = handle.last_seq.saturating_add(1);
+    handle.last_seq
 }
 
 /// Callback fired when the supervisor observes an ApprovalRequested
@@ -355,10 +476,25 @@ pub type ApprovalHook = Arc<dyn Fn(&str, &str, bool) + Send + Sync>;
 
 /// A `BroadcastSink` impl backed by a tokio broadcast channel. The
 /// AppState in the server module wires this so cockpit events flow
-/// straight into the existing WebSocket fanout.
+/// straight into the existing WebSocket fanout, and snapshots them
+/// into the per-session replay buffer used by the snapshot endpoint.
+///
+/// The replay buffer uses a `std::sync::Mutex` so the publish path
+/// stays synchronous: ordering matters (the buffer must observe seqs
+/// in publish order) and `tokio::spawn` does not preserve task
+/// ordering. The lock is held only long enough to push a single
+/// event, which is bounded; the REST snapshot handler also takes
+/// this lock briefly.
 pub struct ChannelSink {
     pub tx: broadcast::Sender<crate::server::CockpitBroadcastFrame>,
     pub on_approval: ApprovalHook,
+    /// Per-session replay buffer. Frames are appended on each publish
+    /// so a reconnecting client can resync via
+    /// `GET /api/sessions/{id}/cockpit/replay?since={seq}`.
+    pub replay: Arc<std::sync::Mutex<HashMap<String, ReplayBuffer>>>,
+    /// Per-session caps `(max_events, max_bytes)`. Pulled from
+    /// `[cockpit]` config at startup; applied on lazy buffer init.
+    pub replay_caps: (usize, usize),
 }
 
 impl BroadcastSink for ChannelSink {
@@ -370,6 +506,14 @@ impl BroadcastSink for ChannelSink {
             event: payload,
         };
         let _ = self.tx.send(frame);
+
+        if let Ok(mut guard) = self.replay.lock() {
+            let (max_events, max_bytes) = self.replay_caps;
+            let buf = guard
+                .entry(session_id.to_string())
+                .or_insert_with(|| ReplayBuffer::new(max_events, max_bytes));
+            buf.push(seq, event.clone());
+        }
     }
 
     fn approval_requested(&self, session_id: &str, approval_title: &str, destructive: bool) {
@@ -443,6 +587,8 @@ mod tests {
                 client: Arc::new(Mutex::new(client)),
                 drain_task: drain,
                 restart_history: vec![Instant::now()],
+                spawn_config: None,
+                last_seq: 0,
             },
         );
         drop(workers);
@@ -468,11 +614,28 @@ mod tests {
         assert!(!sup.is_running("anything").await);
     }
 
+    /// Watchdog: after MAX_RESTARTS_IN_WINDOW respawn attempts inside
+    /// RESTART_WINDOW, `restart_decision` returns `BudgetBurned` so the
+    /// drain task parks the session instead of hot-looping.
     #[tokio::test]
-    async fn restart_budget_burns_after_three_in_window() {
+    async fn restart_budget_burns_after_threshold() {
         let sink = VecSink::new();
         let sup = Supervisor::new(sink);
-        // Inject a worker handle
+        // Build a worker handle with a real-looking spawn_config so the
+        // budget path returns Respawn until we exhaust the window.
+        let dummy_spec = AgentSpec {
+            command: "/bin/true".into(),
+            args: vec![],
+            description: "test fixture".into(),
+            env_allowlist: None,
+        };
+        let dummy_config = SpawnConfig {
+            spec: dummy_spec,
+            cwd: std::env::temp_dir(),
+            additional_dirs: vec![],
+            provider_env: vec![],
+            socket_path: None,
+        };
         {
             let mut workers = sup.workers.lock().await;
             let (client, _tx) = AcpClient::fake_for_test(CockpitSessionId("s-1".into()));
@@ -483,20 +646,62 @@ mod tests {
                     client: Arc::new(Mutex::new(client)),
                     drain_task: drain,
                     restart_history: vec![],
+                    spawn_config: Some(dummy_config),
+                    last_seq: 0,
                 },
             );
         }
 
         for i in 0..MAX_RESTARTS_IN_WINDOW {
+            let decision = restart_decision(&sup.workers, "s-1").await;
             assert!(
-                sup.record_restart("s-1").await,
-                "restart #{i} should succeed"
+                matches!(decision, RestartDecision::Respawn(_)),
+                "decision #{i} should be Respawn",
             );
         }
-        // Fourth restart in the window: budget burned.
-        assert!(
-            !sup.record_restart("s-1").await,
-            "fourth restart should be denied"
-        );
+        // One more push past the threshold should burn the budget.
+        let decision = restart_decision(&sup.workers, "s-1").await;
+        assert!(matches!(decision, RestartDecision::BudgetBurned));
+    }
+
+    /// `bump_seq` returns 0 for an unknown session (used when the
+    /// drain task races a shutdown) and monotonically increments
+    /// otherwise.
+    #[tokio::test]
+    async fn bump_seq_monotonic() {
+        let sink = VecSink::new();
+        let sup = Supervisor::new(sink);
+        assert_eq!(bump_seq(&sup.workers, "missing").await, 0);
+        let dummy_spec = AgentSpec {
+            command: "/bin/true".into(),
+            args: vec![],
+            description: "test fixture".into(),
+            env_allowlist: None,
+        };
+        let dummy_config = SpawnConfig {
+            spec: dummy_spec,
+            cwd: std::env::temp_dir(),
+            additional_dirs: vec![],
+            provider_env: vec![],
+            socket_path: None,
+        };
+        {
+            let mut workers = sup.workers.lock().await;
+            let (client, _tx) = AcpClient::fake_for_test(CockpitSessionId("s-1".into()));
+            let drain = tokio::spawn(async {});
+            workers.insert(
+                "s-1".into(),
+                WorkerHandle {
+                    client: Arc::new(Mutex::new(client)),
+                    drain_task: drain,
+                    restart_history: vec![],
+                    spawn_config: Some(dummy_config),
+                    last_seq: 0,
+                },
+            );
+        }
+        assert_eq!(bump_seq(&sup.workers, "s-1").await, 1);
+        assert_eq!(bump_seq(&sup.workers, "s-1").await, 2);
+        assert_eq!(bump_seq(&sup.workers, "s-1").await, 3);
     }
 }

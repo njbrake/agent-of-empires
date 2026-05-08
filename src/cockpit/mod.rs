@@ -26,3 +26,28 @@ pub mod terminal_handler;
 pub use agent_registry::{AgentRegistry, AgentSpec};
 pub use approvals::{Approval, ApprovalDecision, Nonce};
 pub use state::{CockpitState, Event};
+
+/// Returns true when the operator has set `AOE_NO_COCKPIT=1`. The
+/// flag is the documented kill switch: every cockpit codepath checks
+/// this before spawning a worker, accepting `--cockpit` from the CLI,
+/// or honoring `cockpit_mode=true` on a session-create request. A
+/// session that's already cockpit-mode keeps appearing in the list
+/// but its worker is not auto-spawned.
+pub fn force_disabled() -> bool {
+    matches!(
+        std::env::var("AOE_NO_COCKPIT").as_deref(),
+        Ok("1") | Ok("true")
+    )
+}
+
+/// Returns true when the operator has opted in to cockpit via
+/// `AOE_EXPERIMENTAL_COCKPIT=1`. Cockpit is gated behind this flag
+/// while it stabilises: when unset, the web dashboard defaults to
+/// tmux, the wizard hides the substrate picker, and existing cockpit
+/// sessions still load (the gate is for *new* sessions).
+pub fn experimental_enabled() -> bool {
+    matches!(
+        std::env::var("AOE_EXPERIMENTAL_COCKPIT").as_deref(),
+        Ok("1") | Ok("true")
+    )
+}

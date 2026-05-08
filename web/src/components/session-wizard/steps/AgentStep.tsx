@@ -40,6 +40,11 @@ interface Props {
   profiles: ProfileInfo[];
   dockerAvailable: boolean;
   onApplyProfileDefaults: (defaults: { yoloMode: boolean; sandboxEnabled: boolean; tool: string; extraEnv: string[] }) => void;
+  /** Server-side AOE_EXPERIMENTAL_COCKPIT flag. When false, the
+   *  substrate picker is hidden entirely and every new session is
+   *  tmux-only — matching the server's enforcement in
+   *  default_cockpit_for_web. */
+  experimentalCockpit: boolean;
 }
 
 function SubstratePicker({
@@ -130,7 +135,7 @@ function Toggle({ checked, onChange, disabled }: { checked: boolean; onChange: (
   );
 }
 
-export function AgentStep({ data, onChange, agents, profiles, dockerAvailable, onApplyProfileDefaults }: Props) {
+export function AgentStep({ data, onChange, agents, profiles, dockerAvailable, onApplyProfileDefaults, experimentalCockpit }: Props) {
   const installedAgents = agents.filter((a) => a.installed);
   const selectedAgent = agents.find((a) => a.name === data.tool);
   const isHostOnly = selectedAgent?.host_only ?? false;
@@ -212,14 +217,17 @@ export function AgentStep({ data, onChange, agents, profiles, dockerAvailable, o
         ))}
       </div>
 
-      {/* Substrate (cockpit vs terminal) — surfaces the choice that
-          used to be a hidden default. Greyed for tools without an
-          ACP adapter. */}
-      <SubstratePicker
-        tool={data.tool}
-        cockpitMode={data.cockpitMode}
-        onChange={(v) => onChange("cockpitMode", v)}
-      />
+      {/* Substrate (cockpit vs terminal). Hidden entirely when the
+          server hasn't opted into AOE_EXPERIMENTAL_COCKPIT; in that
+          mode every session is tmux. Greyed within the picker for
+          tools without an ACP adapter. */}
+      {experimentalCockpit && (
+        <SubstratePicker
+          tool={data.tool}
+          cockpitMode={data.cockpitMode}
+          onChange={(v) => onChange("cockpitMode", v)}
+        />
+      )}
 
       {/* Profile selector */}
       {showProfilePicker && (

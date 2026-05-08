@@ -52,6 +52,13 @@ pub async fn spawn_cockpit(
     Path(id): Path<String>,
     Json(req): Json<SpawnCockpitRequest>,
 ) -> impl IntoResponse {
+    if crate::cockpit::force_disabled() {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "cockpit is disabled (AOE_NO_COCKPIT=1); unset to use",
+        )
+            .into_response();
+    }
     let instances = state.instances.read().await;
     let Some(instance) = instances.iter().find(|i| i.id == id).cloned() else {
         return (StatusCode::NOT_FOUND, "session not found").into_response();
@@ -278,6 +285,20 @@ pub async fn cockpit_enable(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    if crate::cockpit::force_disabled() {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "cockpit is disabled (AOE_NO_COCKPIT=1); unset to use",
+        )
+            .into_response();
+    }
+    if !crate::cockpit::experimental_enabled() {
+        return (
+            StatusCode::FORBIDDEN,
+            "cockpit is experimental; set AOE_EXPERIMENTAL_COCKPIT=1 to enable",
+        )
+            .into_response();
+    }
     let (mut instance, profile) = {
         let instances = state.instances.read().await;
         let Some(inst) = instances.iter().find(|i| i.id == id).cloned() else {
@@ -509,4 +530,83 @@ pub async fn resolve_approval(
         )
             .into_response(),
     }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ReplayQuery {
+    /// Last seq the client has applied. The endpoint returns frames
+    /// strictly newer than this. Defaults to 0 (full replay).
+    #[serde(default)]
+    pub since: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ReplayResponse {
+    /// Frames the client missed, in publish order. Empty when the
+    /// client is already caught up.
+    pub frames: Vec<crate::server::CockpitBroadcastFrame>,
+    /// True when the requested `since` predates what's still in the
+    /// buffer (the client missed events that have since been evicted).
+    /// Clients should treat the conversation log as truncated and
+    /// request a fresh start, e.g. by reloading.
+    pub lost: bool,
+    /// Highest seq the buffer has seen, even if it's been evicted.
+    /// Lets the client decide whether reloading is worth it.
+    pub highest_seq: u64,
+}
+
+/// Reconnect/snapshot endpoint. Mobile clients drop their WebSocket
+/// briefly any time a screen lock fires; this lets them resync without
+/// a full page reload by replaying the buffered frames they missed.
+pub async fn cockpit_replay(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    axum::extract::Query(q): axum::extract::Query<ReplayQuery>,
+) -> impl IntoResponse {
+    use crate::cockpit::replay_buffer::BufferedEvent;
+
+    let guard = match state.cockpit_replay.lock() {
+        Ok(g) => g,
+        Err(poisoned) => poisoned.into_inner(),
+    };
+    let Some(buf) = guard.get(&id) else {
+        return Json(ReplayResponse {
+            frames: vec![],
+            lost: false,
+            highest_seq: 0,
+        })
+        .into_response();
+    };
+    let highest_seq = buf.highest_seq();
+    let entries = match buf.replay_from(q.since) {
+        Some(items) => items,
+        None => {
+            return Json(ReplayResponse {
+                frames: vec![],
+                lost: true,
+                highest_seq,
+            })
+            .into_response();
+        }
+    };
+    let frames: Vec<crate::server::CockpitBroadcastFrame> = entries
+        .into_iter()
+        .filter_map(|item| match item {
+            BufferedEvent::Event { seq, event } => Some(crate::server::CockpitBroadcastFrame {
+                session_id: id.clone(),
+                seq,
+                event: serde_json::to_value(&event).unwrap_or(serde_json::Value::Null),
+            }),
+            // Gap markers are surfaced via the `lost` flag if they
+            // block the replay; otherwise (gap older than `since`)
+            // they're not interesting to the client.
+            BufferedEvent::Gap { .. } => None,
+        })
+        .collect();
+    Json(ReplayResponse {
+        frames,
+        lost: false,
+        highest_seq,
+    })
+    .into_response()
 }
