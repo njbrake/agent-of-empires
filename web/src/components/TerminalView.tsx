@@ -13,19 +13,8 @@ import { KeyboardFab } from "./KeyboardFab";
 import { SwitchSubstrateAction } from "./cockpit/SwitchSubstrateAction";
 import { ViewportFullscreenFab } from "./ViewportFullscreenFab";
 import { ensureSession } from "../lib/api";
+import { ACP_CAPABLE_TOOLS } from "../lib/acpCapableTools";
 import type { SessionResponse } from "../lib/types";
-
-/** Tools known to have a published ACP adapter, kept in sync with
- *  ACP_CAPABLE_TOOLS in the wizard. Determines whether the
- *  switch-to-cockpit button on this view is enabled. */
-const ACP_CAPABLE_TOOLS = new Set([
-  "claude",
-  "opencode",
-  "gemini",
-  "codex",
-  "vibe",
-  "pi",
-]);
 import {
   FOCUS_TERMINAL_EVENT,
   consumePendingTerminalFocus,

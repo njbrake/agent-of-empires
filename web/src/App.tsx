@@ -592,6 +592,9 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
             setWizardPrefill(undefined);
           }}
           prefill={wizardPrefill}
+          experimentalCockpit={
+            !!serverAbout?.experimental_cockpit && !serverAbout.cockpit_force_disabled
+          }
         />
       )}
 

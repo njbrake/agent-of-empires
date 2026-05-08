@@ -535,13 +535,16 @@ pub struct CreateSessionBody {
     #[serde(default)]
     pub custom_instruction: Option<String>,
     pub profile: Option<String>,
-    /// Whether the new session should run in cockpit mode. When the
-    /// web dashboard creates a session, the request omits this field
-    /// and the server defaults to true so the browser experience is
-    /// the structured cockpit UI by default. CLI/TUI callers control
-    /// this explicitly.
+    /// Whether the new session should run in cockpit mode. The
+    /// bundled wizard always sends an explicit value (true for ACP-
+    /// capable tools when the server has `AOE_EXPERIMENTAL_COCKPIT`
+    /// set, false otherwise); other API callers may omit the field,
+    /// in which case it defaults to false. Either way the value is
+    /// re-gated by `allow_cockpit` below before being persisted, so
+    /// a tampered request can't escalate cockpit on past the env-
+    /// var, master-switch, or no-cockpit gates.
     #[cfg(feature = "serve")]
-    #[serde(default = "default_cockpit_for_web")]
+    #[serde(default)]
     pub cockpit_mode: bool,
     #[cfg(feature = "serve")]
     #[serde(default)]
@@ -549,15 +552,6 @@ pub struct CreateSessionBody {
     #[cfg(feature = "serve")]
     #[serde(default)]
     pub cockpit_model: Option<String>,
-}
-
-#[cfg(feature = "serve")]
-fn default_cockpit_for_web() -> bool {
-    // Gated behind `AOE_EXPERIMENTAL_COCKPIT=1` while cockpit
-    // stabilises: when unset, browser-created sessions default to
-    // tmux. Existing cockpit sessions still load and run; the gate
-    // is for *new* sessions only.
-    crate::cockpit::experimental_enabled() && !crate::cockpit::force_disabled()
 }
 
 pub async fn create_session(
