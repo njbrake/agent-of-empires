@@ -1107,6 +1107,12 @@ impl HomeView {
                         if matches!(inst.status, Status::Deleting | Status::Creating) {
                             return None;
                         }
+                        if inst.is_cockpit_mode() {
+                            return Some(Action::SetTransientStatus(
+                                "Cockpit session: open the web dashboard (aoe serve) to attach"
+                                    .to_string(),
+                            ));
+                        }
                     }
                     return match self.view_mode {
                         ViewMode::Agent => Some(Action::AttachSession(id.clone())),

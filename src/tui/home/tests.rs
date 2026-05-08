@@ -355,6 +355,45 @@ fn test_enter_on_session_returns_attach_action() {
     assert!(matches!(action, Some(Action::AttachSession(_))));
 }
 
+#[cfg(feature = "serve")]
+#[test]
+#[serial]
+fn test_enter_on_cockpit_session_returns_toast() {
+    use crate::session::config::GroupByMode;
+    let temp = TempDir::new().unwrap();
+    setup_test_home(&temp);
+    let storage = Storage::new("test").unwrap();
+    let mut instances = vec![
+        Instance::new("plain", "/tmp/0"),
+        Instance::new("cockpit", "/tmp/1"),
+        Instance::new("plain2", "/tmp/2"),
+    ];
+    instances[1].cockpit_mode = true;
+    storage.save(&instances).unwrap();
+
+    let tools = AvailableTools::with_tools(&["claude"]);
+    let mut view = HomeView::new(Some("test".to_string()), tools).unwrap();
+    view.group_by = GroupByMode::Manual;
+    view.flat_items = view.build_flat_items();
+    view.cursor = 1;
+    view.update_selected();
+
+    let action = view.handle_key(key(KeyCode::Enter), None);
+    match action {
+        Some(Action::SetTransientStatus(msg)) => {
+            assert!(
+                msg.to_lowercase().contains("cockpit"),
+                "toast should mention cockpit, got: {msg}"
+            );
+            assert!(
+                msg.to_lowercase().contains("dashboard") || msg.contains("aoe serve"),
+                "toast should point at the dashboard, got: {msg}"
+            );
+        }
+        other => panic!("expected SetTransientStatus toast for cockpit session, got {other:?}"),
+    }
+}
+
 #[test]
 #[serial]
 fn test_slash_enters_search_mode() {

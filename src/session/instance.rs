@@ -459,6 +459,21 @@ impl Instance {
         self.yolo_mode
     }
 
+    /// True when this session runs through the ACP cockpit (managed by
+    /// `aoe serve`'s supervisor) rather than a tmux pane. Always false
+    /// when the `serve` feature is disabled, since the field doesn't
+    /// exist and no session can be in cockpit mode.
+    pub fn is_cockpit_mode(&self) -> bool {
+        #[cfg(feature = "serve")]
+        {
+            self.cockpit_mode
+        }
+        #[cfg(not(feature = "serve"))]
+        {
+            false
+        }
+    }
+
     /// Whether this agent uses a session ID poller for live tracking.
     pub fn supports_session_poller(&self) -> bool {
         crate::agents::get_agent(&self.tool).is_some_and(|a| {
