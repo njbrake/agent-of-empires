@@ -128,7 +128,12 @@ async fn list(profile: &str, args: ProjectListArgs) -> Result<()> {
     for p in &entries {
         println!("  • {} [{}]  {}", p.name, p.scope.as_str(), p.path);
     }
-    println!("\nTotal: {} projects", entries.len());
+    let n = entries.len();
+    println!(
+        "\nTotal: {} {}",
+        n,
+        if n == 1 { "project" } else { "projects" }
+    );
     Ok(())
 }
 
@@ -145,7 +150,8 @@ async fn add(profile: &str, args: ProjectAddArgs) -> Result<()> {
     if !GitWorktree::is_git_repo(&canonical) {
         bail!(
             "Path is not a git repository: {}\n\
-             Tip: pass the path to a repo's working tree (or a linked worktree)",
+             Tip: pass the path to a directory that contains a `.git` folder \
+             (i.e. the root of a cloned repository).",
             canonical.display()
         );
     }
