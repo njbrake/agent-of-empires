@@ -36,6 +36,7 @@ import { TerminalView } from "./components/TerminalView";
 import { RightPanel } from "./components/RightPanel";
 import { DiffFileViewer } from "./components/diff/DiffFileViewer";
 import { SettingsView } from "./components/SettingsView";
+import { ProjectsView } from "./components/ProjectsView";
 import { HelpOverlay } from "./components/HelpOverlay";
 import { SessionWizard } from "./components/session-wizard/SessionWizard";
 import type { WizardPrefill } from "./components/session-wizard/SessionWizard";
@@ -137,8 +138,10 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
   const sessionMatch = useMatch("/session/:sessionId");
   const settingsRootMatch = useMatch("/settings");
   const settingsTabMatch = useMatch("/settings/:tab");
+  const projectsMatch = useMatch("/projects");
   const activeSessionId = sessionMatch?.params.sessionId ?? null;
   const showSettings = settingsRootMatch !== null || settingsTabMatch !== null;
+  const showProjects = projectsMatch !== null;
   const settingsTab = settingsTabMatch?.params.tab ?? null;
 
   const { sessions, error, injectSession, setSessionStatus } = useSessions();
@@ -319,6 +322,19 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
     if (window.innerWidth < 768) setSidebarOpen(false);
   }, [navigate]);
 
+  const handleOpenProjects = useCallback(() => {
+    navigate("/projects");
+    if (window.innerWidth < 768) setSidebarOpen(false);
+  }, [navigate]);
+
+  const handleCloseProjects = useCallback(() => {
+    if (activeSessionId) {
+      navigate(`/session/${encodeURIComponent(activeSessionId)}`);
+    } else {
+      navigate("/");
+    }
+  }, [navigate, activeSessionId]);
+
   const handleCloseSettings = useCallback(() => {
     if (activeSessionId) {
       navigate(`/session/${encodeURIComponent(activeSessionId)}`);
@@ -465,6 +481,15 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
       );
     }
 
+    if (showProjects) {
+      return (
+        <ProjectsView
+          onClose={handleCloseProjects}
+          readOnly={serverAbout?.read_only}
+        />
+      );
+    }
+
     if (!activeWorkspace || !activeSession) {
       return (
         <Dashboard
@@ -558,7 +583,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
       <DisconnectBanner />
 
       <div className="flex flex-1 min-h-0">
-        {!showSettings && (
+        {!showSettings && !showProjects && (
           <WorkspaceSidebar
             groups={groups}
             activeId={activeWorkspace?.id ?? null}
@@ -569,6 +594,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
             onNew={() => { setWizardPrefill(undefined); setShowSessionWizard(true); }}
             onCreateSession={handleCreateSession}
             onSettings={handleOpenSettings}
+            onProjects={handleOpenProjects}
             onDeleteSession={handleDeleteSession}
             readOnly={serverAbout?.read_only}
           />

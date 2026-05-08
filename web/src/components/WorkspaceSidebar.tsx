@@ -38,6 +38,7 @@ interface Props {
   onNew: () => void;
   onCreateSession: (repoPath: string) => void;
   onSettings: () => void;
+  onProjects: () => void;
   onDeleteSession?: (workspaceId: string) => void;
   readOnly?: boolean;
 }
@@ -508,6 +509,7 @@ export function WorkspaceSidebar({
   onNew,
   onCreateSession,
   onSettings,
+  onProjects,
   onDeleteSession,
   readOnly,
 }: Props) {
@@ -704,7 +706,26 @@ export function WorkspaceSidebar({
           )}
         </div>
 
-        <div className="border-t border-surface-700/20 p-2">
+        <div className="border-t border-surface-700/20 p-2 flex items-center gap-1">
+          <button
+            onClick={onProjects}
+            className="w-8 h-8 flex items-center justify-center text-text-secondary hover:text-text-primary hover:bg-surface-800/50 cursor-pointer rounded-md transition-colors"
+            title="Projects"
+            aria-label="Projects"
+          >
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+            </svg>
+          </button>
           <button
             onClick={onSettings}
             className="w-8 h-8 flex items-center justify-center text-text-secondary hover:text-text-primary hover:bg-surface-800/50 cursor-pointer rounded-md transition-colors"
