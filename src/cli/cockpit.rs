@@ -188,6 +188,21 @@ async fn doctor(json: bool, fix: bool) -> Result<()> {
     println!("Cockpit doctor  (Beta)");
     println!("======================");
     println!();
+    // Surface the gate state up front so users investigating "why
+    // doesn't cockpit work for me" don't have to read the docs to
+    // notice that they need an env var. Three states: hard-disabled,
+    // not opted in, opted in.
+    if crate::cockpit::force_disabled() {
+        println!("[!! ] AOE_NO_COCKPIT=1 is set: cockpit refuses to run.");
+        println!("    Unset the env var (and re-run `aoe serve`) to use cockpit.");
+        println!();
+    } else if !crate::cockpit::experimental_enabled() {
+        println!("[!! ] AOE_EXPERIMENTAL_COCKPIT is not set.");
+        println!("    Cockpit is gated behind this env var while it stabilises.");
+        println!("    Set AOE_EXPERIMENTAL_COCKPIT=1 in the env that runs `aoe serve`");
+        println!("    (and the CLI for `aoe add --cockpit`) to opt in.");
+        println!();
+    }
     println!("Cockpit is the structured-rendering substrate (ACP-based).");
     println!("Tmux passthrough remains the default for tool sessions; cockpit");
     println!("is opt-in per session via `aoe add --cockpit` or the web wizard.");

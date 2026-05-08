@@ -59,6 +59,14 @@ pub async fn spawn_cockpit(
         )
             .into_response();
     }
+    if !state.cockpit_master_enabled {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "cockpit is disabled (config.toml `cockpit.enabled = false`); \
+             toggle the field and restart `aoe serve` to use",
+        )
+            .into_response();
+    }
     let instances = state.instances.read().await;
     let Some(instance) = instances.iter().find(|i| i.id == id).cloned() else {
         return (StatusCode::NOT_FOUND, "session not found").into_response();
@@ -289,6 +297,14 @@ pub async fn cockpit_enable(
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             "cockpit is disabled (AOE_NO_COCKPIT=1); unset to use",
+        )
+            .into_response();
+    }
+    if !state.cockpit_master_enabled {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "cockpit is disabled (config.toml `cockpit.enabled = false`); \
+             toggle the field and restart `aoe serve` to use",
         )
             .into_response();
     }

@@ -636,6 +636,12 @@ pub async fn create_session(
     let existing_titles: Vec<String> = instances.iter().map(|i| i.title.clone()).collect();
     drop(instances);
 
+    // Snapshot the master-kill flag before moving into spawn_blocking
+    // so the post-spawn write path (which still needs `state`) keeps
+    // its handle.
+    #[cfg(feature = "serve")]
+    let cockpit_master_enabled = state.cockpit_master_enabled;
+
     let result = tokio::task::spawn_blocking(move || {
         use crate::session::builder::{self, InstanceParams};
         use crate::session::Config;
@@ -700,15 +706,17 @@ pub async fn create_session(
             }
         }
 
-        // Apply cockpit fields from the request body. While cockpit
-        // is gated behind `AOE_EXPERIMENTAL_COCKPIT`, requests asking
-        // for cockpit_mode=true on a non-experimental server are
-        // silently downgraded to tmux. `AOE_NO_COCKPIT=1` is the
-        // hard kill switch and overrides the flag in either direction.
+        // Apply cockpit fields from the request body. cockpit_mode is
+        // silently downgraded to tmux when any of the gates says no:
+        // `AOE_NO_COCKPIT=1` (operator hard-disable),
+        // `cockpit.enabled = false` in config.toml (master kill),
+        // or `AOE_EXPERIMENTAL_COCKPIT` not set (new sessions are
+        // tmux unless the operator opted in).
         #[cfg(feature = "serve")]
         {
-            let allow_cockpit =
-                !crate::cockpit::force_disabled() && crate::cockpit::experimental_enabled();
+            let allow_cockpit = !crate::cockpit::force_disabled()
+                && cockpit_master_enabled
+                && crate::cockpit::experimental_enabled();
             instance.cockpit_mode = body.cockpit_mode && allow_cockpit;
             instance.cockpit_agent = body.cockpit_agent;
             instance.cockpit_model = body.cockpit_model;

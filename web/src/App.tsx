@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMatch, useNavigate } from "react-router-dom";
 import { isSessionActive } from "./lib/session";
 import { useSessions } from "./hooks/useSessions";
@@ -22,7 +22,16 @@ import { DeleteSessionDialog } from "./components/DeleteSessionDialog";
 import { TopBar } from "./components/TopBar";
 import { ContentSplit } from "./components/ContentSplit";
 import { TerminalView } from "./components/TerminalView";
-import { CockpitView } from "./components/cockpit/CockpitView";
+// Lazy-load the cockpit surface so non-cockpit users never download
+// the @assistant-ui/react, shiki, and react-diff-viewer dependency
+// tree. Cuts ~hundreds of KB off the cold-start bundle for the
+// (currently default) tmux-only flow. The Suspense fallback below
+// covers the brief load while the chunk arrives.
+const CockpitView = lazy(() =>
+  import("./components/cockpit/CockpitView").then((m) => ({
+    default: m.CockpitView,
+  })),
+);
 import { RightPanel } from "./components/RightPanel";
 import { DiffFileViewer } from "./components/diff/DiffFileViewer";
 import { SettingsView } from "./components/SettingsView";
@@ -469,7 +478,12 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
                 }
               >
                 {activeSession?.cockpit_mode ? (
-                  <CockpitView key={activeSessionId} sessionId={activeSessionId!} />
+                  <Suspense fallback={<CockpitLoadingFallback />}>
+                    <CockpitView
+                      key={activeSessionId}
+                      sessionId={activeSessionId!}
+                    />
+                  </Suspense>
                 ) : (
                   <TerminalView
                     key={activeSessionId}
@@ -610,6 +624,16 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
         className="fixed opacity-0 w-0 h-0 pointer-events-none"
         style={{ top: -9999, left: -9999 }}
       />
+    </div>
+  );
+}
+
+function CockpitLoadingFallback() {
+  return (
+    <div className="flex h-full items-center justify-center bg-surface-900 text-text-dim">
+      <div className="text-xs font-mono uppercase tracking-wide">
+        Loading cockpit…
+      </div>
     </div>
   );
 }

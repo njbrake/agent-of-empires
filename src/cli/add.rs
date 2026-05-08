@@ -337,9 +337,14 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
     // forces terminal mode; otherwise honor the config default for
     // claude on supported platforms.
     //
-    // While cockpit is gated behind `AOE_EXPERIMENTAL_COCKPIT`, an
-    // unset flag refuses `--cockpit` on the CLI with a clear error.
-    // `AOE_NO_COCKPIT=1` also short-circuits regardless.
+    // Three independent gates:
+    //   - `AOE_NO_COCKPIT=1` is the operator hard-disable.
+    //   - `cockpit.enabled = false` in config.toml is the documented
+    //     master kill switch.
+    //   - `AOE_EXPERIMENTAL_COCKPIT=1` is the user opt-in for *new*
+    //     sessions while the feature stabilises.
+    // Each refuses `--cockpit` with its own actionable error so the
+    // user knows which knob to flip.
     #[cfg(feature = "serve")]
     {
         let user_picked_cockpit = args.cockpit || args.agent.is_some();
@@ -348,6 +353,13 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
             if crate::cockpit::force_disabled() {
                 bail!(
                     "Cockpit is disabled (AOE_NO_COCKPIT=1). Unset the env var to use --cockpit."
+                );
+            }
+            if !config.cockpit.enabled {
+                bail!(
+                    "Cockpit is disabled by config (`cockpit.enabled = false` in config.toml). \
+                     Toggle it on (e.g. via the settings TUI) and try again, or omit --cockpit \
+                     for a tmux session."
                 );
             }
             if !crate::cockpit::experimental_enabled() {

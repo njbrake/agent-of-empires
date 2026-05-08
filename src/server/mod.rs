@@ -252,6 +252,14 @@ pub struct AppState {
     /// these caps.
     #[cfg(feature = "serve")]
     pub cockpit_replay_caps: (usize, usize),
+    /// Snapshot of `config.cockpit.enabled` taken at startup. Acts
+    /// as the documented master kill switch: when false, the
+    /// reconciler skips auto-spawn and every cockpit-spawning REST
+    /// path refuses with 503. Toggling the value in `config.toml`
+    /// requires `aoe serve` to restart, mirroring how
+    /// `web.notifications_enabled` works elsewhere.
+    #[cfg(feature = "serve")]
+    pub cockpit_master_enabled: bool,
     /// Owns the per-session ACP agent subprocesses.
     #[cfg(feature = "serve")]
     pub cockpit_supervisor:
@@ -425,6 +433,8 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
         config.cockpit.replay_bytes as usize,
     );
     #[cfg(feature = "serve")]
+    let cockpit_master_enabled = config.cockpit.enabled;
+    #[cfg(feature = "serve")]
     let cockpit_supervisor = {
         let push_for_sink = push_state.clone();
         let push_enabled_for_sink = push_enabled;
@@ -488,6 +498,8 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
         cockpit_replay: cockpit_replay.clone(),
         #[cfg(feature = "serve")]
         cockpit_replay_caps,
+        #[cfg(feature = "serve")]
+        cockpit_master_enabled,
         #[cfg(feature = "serve")]
         cockpit_supervisor: cockpit_supervisor.clone(),
         push: push_state,
@@ -1233,6 +1245,13 @@ async fn reconcile_cockpit_workers(
     if crate::cockpit::force_disabled() {
         return;
     }
+    // Honor `cockpit.enabled = false` from config.toml: documented as
+    // the master kill switch. Snapshotted at startup; toggling the
+    // value requires `aoe serve` to restart, mirroring how
+    // `web.notifications_enabled` works.
+    if !state.cockpit_master_enabled {
+        return;
+    }
 
     let targets: Vec<_> = {
         let instances = state.instances.read().await;
@@ -1268,6 +1287,24 @@ async fn reconcile_cockpit_workers(
         // Mark before spawning so the next 2s tick doesn't double-spawn
         // while AcpClient::spawn is still negotiating with the agent.
         attempted.insert(id.clone());
+        // Persisted cockpit-mode sessions auto-spawn even when
+        // `AOE_EXPERIMENTAL_COCKPIT` is unset (the gate is for *new*
+        // sessions). Log a one-time warning per session so operators
+        // who unset the env var know why their cockpit sessions are
+        // still running. The `attempted` set bounds this to one log
+        // line per session per process lifetime.
+        if !crate::cockpit::experimental_enabled() {
+            tracing::warn!(
+                target: "cockpit.supervisor",
+                session = %id,
+                "auto-spawning persisted cockpit-mode session while \
+                 AOE_EXPERIMENTAL_COCKPIT is not set. To stop cockpit \
+                 from running existing sessions, set AOE_NO_COCKPIT=1 \
+                 or `cockpit.enabled = false` in config.toml. To stop \
+                 just this one, switch its substrate to tmux from the \
+                 dashboard."
+            );
+        }
         let supervisor = state.cockpit_supervisor.clone();
         let agent = supervisor
             .pick_agent_for_tool(&tool, agent_override.as_deref())
