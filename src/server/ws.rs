@@ -219,11 +219,15 @@ async fn handle_terminal_ws(
 
     let master = pair.master;
 
-    // Get reader and writer from the PTY master
+    // Get reader and writer from the PTY master. On failure we must kill
+    // and reap the child we just spawned, otherwise the tmux attach
+    // process and its slave PTY descriptor leak until exit.
     let mut reader = match master.try_clone_reader() {
         Ok(r) => r,
         Err(e) => {
             tracing::error!("Failed to clone PTY reader: {}", e);
+            let _ = child.kill();
+            let _ = child.wait();
             return;
         }
     };
@@ -232,6 +236,8 @@ async fn handle_terminal_ws(
         Ok(w) => w,
         Err(e) => {
             tracing::error!("Failed to take PTY writer: {}", e);
+            let _ = child.kill();
+            let _ = child.wait();
             return;
         }
     };

@@ -73,7 +73,7 @@ tokio-util = { version = "0.7", features = ["codec"] }
 cfg-if = "1.0"
 
 # Process handling
-nix = { version = "0.31", features = ["signal", "process", "net"] }
+nix = { version = "0.31", features = ["signal", "process", "net", "resource"] }
 
 # Unicode width
 unicode-width = "0.2"
