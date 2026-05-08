@@ -2,7 +2,7 @@
 //! multi-repo workspace pickers.
 
 use anyhow::{bail, Result};
-use clap::{Args, Subcommand, ValueEnum};
+use clap::{Args, Subcommand, ValueEnum, ValueHint};
 use serde::Serialize;
 use std::path::PathBuf;
 
@@ -51,6 +51,7 @@ pub enum ScopeArg {
 #[derive(Args)]
 pub struct ProjectAddArgs {
     /// Path to the git repository
+    #[arg(value_hint = ValueHint::DirPath)]
     path: PathBuf,
 
     /// Display name (defaults to the directory's basename)
@@ -74,6 +75,7 @@ pub struct ProjectAddArgs {
 #[derive(Args)]
 pub struct ProjectRemoveArgs {
     /// Project name or path to remove
+    #[arg(value_hint = ValueHint::AnyPath)]
     name_or_path: String,
 
     /// Registry scope to remove from. Default: GLOBAL.
