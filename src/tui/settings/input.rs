@@ -563,6 +563,11 @@ impl SettingsView {
                 }
             }
             // Worktree
+            FieldKey::WorktreeEnabled => {
+                if let Some(ref mut w) = config.worktree {
+                    w.enabled = None;
+                }
+            }
             FieldKey::PathTemplate => {
                 if let Some(ref mut w) = config.worktree {
                     w.path_template = None;

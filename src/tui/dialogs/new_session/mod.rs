@@ -57,7 +57,7 @@ pub(super) const FIELD_HELP: &[FieldHelp] = &[
     FieldHelp {
         name: "Worktree",
         description:
-            "Branch name for git worktree (Ctrl+P to configure branch mode and extra repos)",
+            "Create a git worktree (Ctrl+P to configure name, branch mode, and extra repos)",
     },
     FieldHelp {
         name: "Sandbox",
@@ -84,6 +84,7 @@ pub struct NewSessionData {
     pub path: String,
     pub group: String,
     pub tool: String,
+    pub worktree_enabled: bool,
     pub worktree_branch: Option<String>,
     pub create_new_branch: bool,
     pub extra_repo_paths: Vec<String>,
@@ -110,6 +111,7 @@ pub struct NewSessionDialog {
     pub(super) tool_index: usize,
     pub(super) focused_field: usize,
     pub(super) available_tools: Vec<String>,
+    pub(super) worktree_enabled: bool,
     pub(super) worktree_branch: Input,
     pub(super) create_new_branch: bool,
     pub(super) sandbox_enabled: bool,
@@ -133,7 +135,7 @@ pub struct NewSessionDialog {
     pub(super) workspace_repo_dir_picker_active: bool,
     /// Worktree configuration overlay mode (Ctrl+P on worktree field)
     pub(super) worktree_config_mode: bool,
-    /// Focused field within the worktree config overlay (0=new_branch, 1=extra_repos)
+    /// Focused field within the worktree config overlay (0=name, 1=new_branch, 2=extra_repos)
     pub(super) worktree_config_focused_field: usize,
     /// Extra environment entries (session-specific).
     /// `KEY` = pass through, `KEY=VALUE` = set explicitly.
@@ -332,6 +334,7 @@ impl NewSessionDialog {
             .is_some_and(|a| a.host_only);
         let sandbox_enabled =
             docker_available && config.sandbox.enabled_by_default && !is_default_tool_host_only;
+        let worktree_enabled = config.worktree.enabled && !is_default_tool_host_only;
         let yolo_mode = config.session.yolo_mode_default;
 
         // Load extra args and command override for the default tool
@@ -375,6 +378,7 @@ impl NewSessionDialog {
             group_picker: ListPicker::new("Select Group"),
             branch_picker: ListPicker::new("Select Branch"),
             dir_picker: DirPicker::new(),
+            worktree_enabled,
             worktree_branch: Input::default(),
             create_new_branch: true,
             workspace_repos: Vec::new(),
@@ -549,6 +553,7 @@ impl NewSessionDialog {
         self.sandbox_enabled = self.docker_available
             && config.sandbox.enabled_by_default
             && !self.selected_tool_host_only();
+        self.worktree_enabled = config.worktree.enabled && !self.selected_tool_host_only();
 
         // Reset sandbox image from resolved config (includes profile overrides)
         self.sandbox_image = Input::new(config.sandbox.default_image.clone());
@@ -586,6 +591,8 @@ impl NewSessionDialog {
         self.env_editing_input = None;
         self.sandbox_config_mode = false;
         self.sandbox_focused_field = 0;
+        self.worktree_config_mode = false;
+        self.worktree_config_focused_field = 0;
     }
 
     #[cfg(test)]
@@ -611,6 +618,7 @@ impl NewSessionDialog {
             group_picker: ListPicker::new("Select Group"),
             branch_picker: ListPicker::new("Select Branch"),
             dir_picker: DirPicker::new(),
+            worktree_enabled: config.worktree.enabled,
             worktree_branch: Input::default(),
             create_new_branch: true,
             workspace_repos: Vec::new(),
@@ -670,6 +678,7 @@ impl NewSessionDialog {
             group_picker: ListPicker::new("Select Group"),
             branch_picker: ListPicker::new("Select Branch"),
             dir_picker: DirPicker::new(),
+            worktree_enabled: false,
             worktree_branch: Input::default(),
             create_new_branch: true,
             workspace_repos: Vec::new(),
@@ -851,7 +860,7 @@ impl NewSessionDialog {
                 self.group_picker.activate(self.existing_groups.clone());
                 return DialogResult::Continue;
             }
-            if self.focused_field == worktree_field && !self.worktree_branch.value().is_empty() {
+            if self.focused_field == worktree_field {
                 self.worktree_config_mode = true;
                 self.worktree_config_focused_field = 0;
                 return DialogResult::Continue;
@@ -963,9 +972,19 @@ impl NewSessionDialog {
                 }
                 if self.selected_tool_host_only() {
                     self.sandbox_enabled = false;
+                    self.worktree_enabled = false;
                     self.worktree_branch.reset();
                 }
                 self.reload_tool_config();
+                DialogResult::Continue
+            }
+            KeyCode::Left | KeyCode::Right | KeyCode::Char(' ')
+                if self.focused_field == worktree_field =>
+            {
+                self.worktree_enabled = !self.worktree_enabled;
+                if !self.worktree_enabled {
+                    self.worktree_config_mode = false;
+                }
                 DialogResult::Continue
             }
             KeyCode::Left | KeyCode::Right | KeyCode::Char(' ')
@@ -994,6 +1013,7 @@ impl NewSessionDialog {
             _ => {
                 if self.focused_field != profile_field
                     && self.focused_field != tool_field
+                    && self.focused_field != worktree_field
                     && self.focused_field != sandbox_field
                     && self.focused_field != yolo_mode_field
                 {
@@ -1117,10 +1137,11 @@ impl NewSessionDialog {
 
     /// Handle key events when in worktree configuration mode.
     fn handle_worktree_config_key(&mut self, key: KeyEvent) -> DialogResult<NewSessionData> {
-        // Worktree config fields: 0=new_branch checkbox, 1=extra_repos list
-        const WT_NEW_BRANCH: usize = 0;
-        const WT_EXTRA_REPOS: usize = 1;
-        const WT_MAX: usize = 2;
+        // Worktree config fields: 0=name, 1=new_branch checkbox, 2=extra_repos list
+        const WT_NAME: usize = 0;
+        const WT_NEW_BRANCH: usize = 1;
+        const WT_EXTRA_REPOS: usize = 2;
+        const WT_MAX: usize = 3;
 
         if self.branch_picker.is_active() {
             if let ListPickerResult::Selected(value) = self.branch_picker.handle_key(key) {
@@ -1143,10 +1164,10 @@ impl NewSessionDialog {
                 self.show_help = true;
                 DialogResult::Continue
             }
-            // Ctrl+P on new_branch field opens branch picker
+            // Ctrl+P on name field opens branch picker
             KeyCode::Char('p')
                 if key.modifiers.contains(KeyModifiers::CONTROL)
-                    && self.worktree_config_focused_field == WT_NEW_BRANCH =>
+                    && self.worktree_config_focused_field == WT_NAME =>
             {
                 let path = std::path::Path::new(self.path.value().trim());
                 if let Ok(branches) = crate::git::diff::list_branches(path) {
@@ -1182,6 +1203,11 @@ impl NewSessionDialog {
                 if self.worktree_config_focused_field == WT_NEW_BRANCH =>
             {
                 self.create_new_branch = !self.create_new_branch;
+                DialogResult::Continue
+            }
+            _ if self.worktree_config_focused_field == WT_NAME => {
+                self.worktree_branch
+                    .handle_event(&crossterm::event::Event::Key(key));
                 DialogResult::Continue
             }
             _ => DialogResult::Continue,
@@ -1363,13 +1389,9 @@ impl NewSessionDialog {
         if has_yolo {
             fi += 1;
         }
-        let worktree_field = if !is_host_only {
-            let f = fi;
-            fi += 1;
-            f
-        } else {
-            usize::MAX
-        };
+        if !is_host_only {
+            fi += 1; // worktree checkbox
+        }
         if self.docker_available && !is_host_only {
             fi += 1; // sandbox checkbox
         }
@@ -1380,7 +1402,6 @@ impl NewSessionDialog {
         match self.focused_field {
             n if n == title_field => &mut self.title,
             n if n == path_field => &mut self.path,
-            n if n == worktree_field => &mut self.worktree_branch,
             n if n == group_field => &mut self.group,
             _ => &mut self.title,
         }
@@ -1400,6 +1421,8 @@ impl NewSessionDialog {
             } else {
                 &mut self.extra_args
             }
+        } else if self.worktree_config_mode && self.worktree_config_focused_field == 0 {
+            &mut self.worktree_branch
         } else if self.sandbox_config_mode && self.sandbox_focused_field == 0 {
             &mut self.sandbox_image
         } else {
@@ -1414,8 +1437,7 @@ impl NewSessionDialog {
         let title_value = self.title.value().trim();
         let final_title = title_value.to_string();
         let worktree_value = self.worktree_branch.value().trim();
-        let has_worktree_branch = !worktree_value.is_empty();
-        let worktree_branch = if has_worktree_branch {
+        let worktree_branch = if self.worktree_enabled && !worktree_value.is_empty() {
             Some(worktree_value.to_string())
         } else {
             None
@@ -1426,9 +1448,10 @@ impl NewSessionDialog {
             path: self.path.value().trim().to_string(),
             group: self.group.value().trim().to_string(),
             tool: self.available_tools[self.tool_index].clone(),
+            worktree_enabled: self.worktree_enabled,
             worktree_branch,
             create_new_branch: self.create_new_branch,
-            extra_repo_paths: if has_worktree_branch {
+            extra_repo_paths: if self.worktree_enabled {
                 self.workspace_repos.clone()
             } else {
                 Vec::new()

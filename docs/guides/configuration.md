@@ -109,7 +109,7 @@ delete_branch_on_cleanup = false
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `enabled` | `false` | Enable worktree support for new sessions |
+| `enabled` | `false` | Auto-enable worktree creation for new TUI sessions |
 | `path_template` | `../{repo-name}-worktrees/{branch}` | Path template for worktrees in regular repos |
 | `bare_repo_path_template` | `./{branch}` | Path template for worktrees in bare repos |
 | `auto_cleanup` | `true` | Prompt to remove worktree when deleting a session |

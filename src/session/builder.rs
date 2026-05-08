@@ -22,6 +22,7 @@ pub struct InstanceParams {
     pub path: String,
     pub group: String,
     pub tool: String,
+    pub worktree_enabled: bool,
     pub worktree_branch: Option<String>,
     pub create_new_branch: bool,
     pub sandbox: bool,
@@ -194,7 +195,7 @@ pub fn build_instance(
             params.tool
         );
     }
-    if is_host_only && params.worktree_branch.is_some() {
+    if is_host_only && params.worktree_enabled {
         bail!("{} does not support worktree mode.", params.tool);
     }
 
@@ -224,8 +225,19 @@ pub fn build_instance(
     let mut created_worktree = None;
     let mut workspace_info = None;
     let mut created_workspace_worktrees: Vec<CreatedWorktree> = Vec::new();
+    let final_title = resolve_title(
+        &params.title,
+        params.worktree_branch.as_deref(),
+        params.worktree_enabled,
+        existing_titles,
+    );
+    let effective_worktree_branch = resolve_worktree_branch(
+        params.worktree_enabled,
+        params.worktree_branch.as_deref(),
+        &final_title,
+    );
 
-    if let Some(branch) = &params.worktree_branch {
+    if let Some(branch) = &effective_worktree_branch {
         if !params.extra_repo_paths.is_empty() {
             let primary_path = PathBuf::from(&params.path)
                 .canonicalize()
@@ -332,8 +344,6 @@ pub fn build_instance(
         bail!("Project path is not a directory: {}", final_path);
     }
 
-    let final_title = resolve_title(&params.title, &params.worktree_branch, existing_titles);
-
     let mut instance = Instance::new(&final_title, &final_path);
     instance.group_path = params.group;
     instance.tool = params.tool.clone();
@@ -437,21 +447,78 @@ pub fn cleanup_instance(
     let _ = instance.kill();
 }
 
-/// Resolve the session title: use the provided title, or the worktree branch name,
-/// or fall back to a random civilization name.
+/// Resolve the session title: use the provided title, then an explicit worktree
+/// branch name, then fall back to a random civilization name.
 fn resolve_title(
     title: &str,
-    worktree_branch: &Option<String>,
+    worktree_branch: Option<&str>,
+    worktree_enabled: bool,
     existing_titles: &[&str],
 ) -> String {
     if title.is_empty() {
-        if let Some(ref branch) = worktree_branch {
-            branch.clone()
+        if worktree_enabled {
+            if let Some(branch) = worktree_branch.filter(|b| !b.trim().is_empty()) {
+                branch.trim().to_string()
+            } else {
+                civilizations::generate_random_title(existing_titles)
+            }
         } else {
             civilizations::generate_random_title(existing_titles)
         }
     } else {
         title.to_string()
+    }
+}
+
+fn resolve_worktree_branch(
+    worktree_enabled: bool,
+    worktree_branch: Option<&str>,
+    final_title: &str,
+) -> Option<String> {
+    if !worktree_enabled {
+        return None;
+    }
+    worktree_branch
+        .map(str::trim)
+        .filter(|branch| !branch.is_empty())
+        .map(ToString::to_string)
+        .or_else(|| Some(branch_name_from_title(final_title)))
+}
+
+pub(crate) fn branch_name_from_title(title: &str) -> String {
+    let mut branch = String::new();
+    let mut last_was_dash = false;
+
+    for ch in title.trim().chars() {
+        let next = if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_') {
+            Some(ch.to_ascii_lowercase())
+        } else if ch.is_whitespace() || ch.is_ascii_punctuation() {
+            Some('-')
+        } else {
+            None
+        };
+
+        if let Some(ch) = next {
+            if ch == '-' {
+                if branch.is_empty() || last_was_dash {
+                    continue;
+                }
+                last_was_dash = true;
+            } else {
+                last_was_dash = false;
+            }
+            branch.push(ch);
+        }
+    }
+
+    while branch.ends_with('-') {
+        branch.pop();
+    }
+
+    if branch.is_empty() {
+        "session".to_string()
+    } else {
+        branch
     }
 }
 
@@ -461,13 +528,13 @@ mod tests {
 
     #[test]
     fn test_empty_title_with_worktree_uses_branch_name() {
-        let title = resolve_title("", &Some("feature-auth".to_string()), &[]);
+        let title = resolve_title("", Some("feature-auth"), true, &[]);
         assert_eq!(title, "feature-auth");
     }
 
     #[test]
     fn test_empty_title_without_worktree_uses_civilization() {
-        let title = resolve_title("", &None, &[]);
+        let title = resolve_title("", None, false, &[]);
         assert!(
             civilizations::CIVILIZATIONS.contains(&title.as_str()),
             "Expected a civilization name, got: {}",
@@ -477,13 +544,42 @@ mod tests {
 
     #[test]
     fn test_provided_title_with_worktree_keeps_title() {
-        let title = resolve_title("My Session", &Some("feature-auth".to_string()), &[]);
+        let title = resolve_title("My Session", Some("feature-auth"), true, &[]);
         assert_eq!(title, "My Session");
     }
 
     #[test]
     fn test_provided_title_without_worktree_keeps_title() {
-        let title = resolve_title("Custom Name", &None, &[]);
+        let title = resolve_title("Custom Name", None, false, &[]);
         assert_eq!(title, "Custom Name");
+    }
+
+    #[test]
+    fn test_worktree_branch_derived_from_title_when_name_empty() {
+        let branch = resolve_worktree_branch(true, None, "Fix Login Flow").unwrap();
+        assert_eq!(branch, "fix-login-flow");
+    }
+
+    #[test]
+    fn test_worktree_branch_preserves_explicit_name() {
+        let branch = resolve_worktree_branch(true, Some("feat/auth"), "Fix Login Flow").unwrap();
+        assert_eq!(branch, "feat/auth");
+    }
+
+    #[test]
+    fn test_worktree_branch_disabled_without_worktree() {
+        assert!(resolve_worktree_branch(false, Some("feat/auth"), "Fix Login Flow").is_none());
+    }
+
+    #[test]
+    fn test_branch_name_from_title_sanitizes_git_hostile_chars() {
+        assert_eq!(
+            branch_name_from_title("Fix: login @ mobile #42"),
+            "fix-login-mobile-42"
+        );
+        assert_eq!(
+            branch_name_from_title("feat/auth.refactor"),
+            "feat-auth-refactor"
+        );
     }
 }

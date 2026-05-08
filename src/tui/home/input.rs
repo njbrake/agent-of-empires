@@ -1672,7 +1672,7 @@ impl HomeView {
         let has_hooks = hooks
             .as_ref()
             .is_some_and(|h| !h.on_create.is_empty() || !h.on_launch.is_empty());
-        let has_worktree = data.worktree_branch.as_ref().is_some_and(|b| !b.is_empty());
+        let has_worktree = data.worktree_enabled;
 
         if data.sandbox || has_hooks || has_worktree {
             self.request_creation(data, hooks);

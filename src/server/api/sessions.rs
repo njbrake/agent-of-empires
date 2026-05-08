@@ -619,6 +619,7 @@ pub async fn create_session(
             path: body.path,
             group: body.group,
             tool: body.tool,
+            worktree_enabled: worktree_branch.is_some(),
             worktree_branch,
             create_new_branch: body.create_new_branch,
             sandbox: body.sandbox,

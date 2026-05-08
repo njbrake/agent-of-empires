@@ -73,13 +73,16 @@ You'll see your sessions in Agent View. Keep one session on `main` for general q
 **3. Create a new session**
 
 - Press `n` to open the new session dialog
-- Fill in the worktree field with your branch name (e.g., `feat/auth-refactor`)
+- Enter a session title, for example `Auth Refactor`
+- Enable Worktree if it is not already checked
 - Press `Enter`
 
 This creates:
-- A new branch from your current HEAD
-- A new worktree at `./feat-auth-refactor/`
+- A new branch derived from the title, for example `auth-refactor`
+- A new worktree using that branch name
 - A new session with an agent working in that worktree
+
+To override the generated name, focus Worktree and press `Ctrl+P`, then fill in `Name`.
 
 **4. Work on your feature** (Agent View)
 
