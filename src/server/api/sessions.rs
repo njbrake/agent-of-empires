@@ -51,6 +51,17 @@ pub struct SessionResponse {
     /// `~/.claude/settings.json`). The web client uses this to skip
     /// scrollback-tracking workarounds that target tmux copy-mode.
     pub claude_fullscreen: bool,
+    /// Repos in the multi-repo workspace (empty for single-repo sessions).
+    /// Each entry mirrors `WorkspaceRepo` minus paths the dashboard does
+    /// not need to display.
+    pub workspace_repos: Vec<WorkspaceRepoSummary>,
+}
+
+#[derive(Serialize, Clone)]
+pub struct WorkspaceRepoSummary {
+    pub name: String,
+    pub source_path: String,
+    pub branch: String,
 }
 
 #[derive(Serialize, Clone)]
@@ -102,6 +113,20 @@ impl SessionResponse {
             notify_on_idle: inst.notify_on_idle,
             notify_on_error: inst.notify_on_error,
             claude_fullscreen: claude_fullscreen && inst.tool == "claude",
+            workspace_repos: inst
+                .workspace_info
+                .as_ref()
+                .map(|w| {
+                    w.repos
+                        .iter()
+                        .map(|r| WorkspaceRepoSummary {
+                            name: r.name.clone(),
+                            source_path: r.source_path.clone(),
+                            branch: r.branch.clone(),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
         }
     }
 }
