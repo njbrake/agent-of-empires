@@ -136,7 +136,7 @@ export function DirectoryBrowser({ initialPath, onSelect }: Props) {
       </div>
 
       {/* Directory listing */}
-      <div className="border border-surface-700 rounded-lg overflow-hidden" role="listbox" aria-label="Directories">
+      <div className="border border-surface-700 rounded-lg overflow-y-auto max-h-[50vh]" role="listbox" aria-label="Directories">
         {loading ? (
           // Skeleton loading rows
           <div className="animate-pulse">

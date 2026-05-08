@@ -2,11 +2,13 @@ import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
 import type { Workspace, RepoGroup, SessionStatus } from "../lib/types";
+import { MULTI_REPO_GROUP_ID } from "../hooks/useRepoGroups";
 import {
   STATUS_DOT_CLASS,
   getStatusTextClass,
   isSessionActive,
 } from "../lib/session";
+import { useIdleDecayWindowMs } from "../lib/idleDecay";
 import { renameSession, setSessionNotifications } from "../lib/api";
 import { StatusGlyph } from "./StatusGlyph";
 import { OwnerAvatar } from "./OwnerAvatar";
@@ -37,18 +39,20 @@ interface Props {
   onNew: () => void;
   onCreateSession: (repoPath: string) => void;
   onSettings: () => void;
+  onProjects: () => void;
   onDeleteSession?: (workspaceId: string) => void;
   readOnly?: boolean;
 }
 
 function bestSession(
   ws: Workspace,
+  idleDecayWindowMs: number,
 ): {
   status: SessionStatus;
   createdAt: string | null;
   idleEnteredAt: string | null;
 } {
-  const running = ws.sessions.find((s) => isSessionActive(s));
+  const running = ws.sessions.find((s) => isSessionActive(s, idleDecayWindowMs));
   if (running)
     return {
       status: running.status,
@@ -125,15 +129,31 @@ const SessionRow = memo(function SessionRow({
   readOnly?: boolean;
   indented?: boolean;
 }) {
-  const { status: sessionStatus, createdAt, idleEnteredAt } = bestSession(workspace);
-  const textClass = getStatusTextClass({
-    status: sessionStatus,
-    idle_entered_at: idleEnteredAt,
-  });
-  const label =
-    workspace.branch ?? workspace.sessions[0]?.title ?? "default";
-  const runningSession = workspace.sessions.find((s) => isSessionActive(s));
+  const idleDecayWindowMs = useIdleDecayWindowMs();
+  const { status: sessionStatus, createdAt, idleEnteredAt } = bestSession(
+    workspace,
+    idleDecayWindowMs,
+  );
+  const textClass = getStatusTextClass(
+    {
+      status: sessionStatus,
+      idle_entered_at: idleEnteredAt,
+    },
+    idleDecayWindowMs,
+  );
+  const runningSession = workspace.sessions.find((s) =>
+    isSessionActive(s, idleDecayWindowMs),
+  );
   const firstSession = workspace.sessions[0];
+  const singleSession = workspace.sessions.length === 1;
+  const sessionTitle = firstSession?.title.trim() ?? "";
+  const branchLabel = workspace.branch ?? null;
+  const label = singleSession
+    ? sessionTitle || branchLabel || "default"
+    : branchLabel || sessionTitle || "default";
+  const subtitle = singleSession && sessionTitle && branchLabel && sessionTitle !== branchLabel
+    ? branchLabel
+    : null;
   const sessionId = firstSession?.id;
   const navigationSessionId = runningSession?.id ?? firstSession?.id ?? null;
   const sessionPath = navigationSessionId
@@ -240,14 +260,17 @@ const SessionRow = memo(function SessionRow({
   const startRename = () => {
     if (renaming) return;
     setContextMenu(null);
-    setRenameValue(label);
+    setRenameValue(sessionTitle || label);
     setRenaming(true);
   };
 
   const commitRename = async () => {
     setRenaming(false);
     const trimmed = renameValue.trim();
-    if (!trimmed || trimmed === label || !sessionId) return;
+    // Compare against the current title, not the displayed label: when a
+    // single session has no title yet, label is the branch and accepting
+    // the prefilled value should still set the title.
+    if (!trimmed || trimmed === sessionTitle || !sessionId) return;
     await renameSession(sessionId, trimmed);
   };
 
@@ -312,9 +335,31 @@ const SessionRow = memo(function SessionRow({
               idleEnteredAt={idleEnteredAt}
             />
           </span>
-          <span className={`text-[13px] md:text-[14px] truncate flex-1 ${isSessionActive({ status: sessionStatus, idle_entered_at: idleEnteredAt }) ? textClass : isActive ? "text-text-primary" : "text-text-secondary"}`} title={label}>
-            {label}
-          </span>
+          <div className="min-w-0 flex-1">
+            <span className={`block text-[13px] md:text-[14px] truncate ${isSessionActive({ status: sessionStatus, idle_entered_at: idleEnteredAt }, idleDecayWindowMs) ? textClass : isActive ? "text-text-primary" : "text-text-secondary"}`} title={label}>
+              {label}
+            </span>
+            {subtitle && (
+              <span className="block text-[11px] font-mono text-text-dim truncate" title={subtitle}>
+                {subtitle}
+              </span>
+            )}
+            {firstSession && (firstSession.workspace_repos?.length ?? 0) > 1 && (
+              <span
+                className="mt-0.5 flex flex-wrap gap-1 text-[10px] font-mono text-text-dim"
+                title={firstSession.workspace_repos.map((r) => r.source_path).join("\n")}
+              >
+                {firstSession.workspace_repos.map((r) => (
+                  <span
+                    key={r.source_path}
+                    className="px-1 py-px bg-surface-800/50 border border-surface-700/40 rounded text-text-secondary"
+                  >
+                    {r.name}
+                  </span>
+                ))}
+              </span>
+            )}
+          </div>
         </div>
       </Link>
       {contextMenu && createPortal(
@@ -449,6 +494,7 @@ function workspaceMatchesFilter(ws: Workspace, q: string): boolean {
   return (
     ws.displayName.toLowerCase().includes(q) ||
     ws.projectPath.toLowerCase().includes(q) ||
+    (ws.branch?.toLowerCase().includes(q) ?? false) ||
     ws.agents.some((a) => a.toLowerCase().includes(q)) ||
     ws.sessions.some((s) => s.title.toLowerCase().includes(q))
   );
@@ -464,6 +510,7 @@ export function WorkspaceSidebar({
   onNew,
   onCreateSession,
   onSettings,
+  onProjects,
   onDeleteSession,
   readOnly,
 }: Props) {
@@ -575,11 +622,11 @@ export function WorkspaceSidebar({
               </svg>
             </button>
           </Tooltip>
-          <Tooltip text="Add project">
+          <Tooltip text="New session">
             <button
               onClick={onNew}
               className="w-8 h-8 flex items-center justify-center text-text-muted hover:text-text-secondary hover:bg-surface-800 cursor-pointer rounded-md transition-colors"
-              aria-label="Add project"
+              aria-label="New session"
             >
               <svg
                 width="16"
@@ -633,7 +680,11 @@ export function WorkspaceSidebar({
                   group={{ ...group, collapsed: !showExpanded }}
                   hasActiveChild={!showExpanded && hasActiveChild}
                   onClick={() => !q && onToggleRepo(group.id)}
-                  onNewSession={() => onCreateSession(group.repoPath)}
+                  onNewSession={() =>
+                    group.id === MULTI_REPO_GROUP_ID
+                      ? onNew()
+                      : onCreateSession(group.repoPath)
+                  }
                 />
                 {showExpanded &&
                   group.workspaces.map((ws) => (
@@ -660,7 +711,26 @@ export function WorkspaceSidebar({
           )}
         </div>
 
-        <div className="border-t border-surface-700/20 p-2">
+        <div className="border-t border-surface-700/20 p-2 flex items-center gap-1">
+          <button
+            onClick={onProjects}
+            className="w-8 h-8 flex items-center justify-center text-text-secondary hover:text-text-primary hover:bg-surface-800/50 cursor-pointer rounded-md transition-colors"
+            title="Projects"
+            aria-label="Projects"
+          >
+            <svg
+              width="16"
+              height="16"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth="1.5"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            >
+              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+            </svg>
+          </button>
           <button
             onClick={onSettings}
             className="w-8 h-8 flex items-center justify-center text-text-secondary hover:text-text-primary hover:bg-surface-800/50 cursor-pointer rounded-md transition-colors"

@@ -329,6 +329,43 @@ fn epoch_millis() -> i64 {
 
 // ── Server ──────────────────────────────────────────────────────────────────
 
+/// Raise the soft `RLIMIT_NOFILE` so the server can sustain many WS
+/// terminals at once. macOS's default soft cap of 256 is exhausted
+/// quickly: each WS terminal consumes ~3 file descriptors (PTY master +
+/// cloned reader + writer) plus tokio plumbing, so a handful of mobile
+/// reconnect bursts leaves `openpty` and the child-spawn `dup` calls
+/// failing with EMFILE.
+///
+/// Targets the smaller of 8192 and the hard limit. Setting soft = hard
+/// directly is unreliable on macOS where the hard limit reports as
+/// `RLIM_INFINITY` but the kernel caps allocation at
+/// `kern.maxfilesperproc`; clamping to a known-good value avoids the
+/// `setrlimit` rejection.
+#[cfg(unix)]
+fn raise_fd_limit() {
+    use nix::sys::resource::{getrlimit, setrlimit, Resource};
+    const TARGET: u64 = 8192;
+    match getrlimit(Resource::RLIMIT_NOFILE) {
+        Ok((soft, hard)) => {
+            let target = TARGET.min(hard).max(soft);
+            if target > soft {
+                if let Err(e) = setrlimit(Resource::RLIMIT_NOFILE, target, hard) {
+                    tracing::warn!("Failed to raise RLIMIT_NOFILE to {}: {}", target, e);
+                } else {
+                    info!(
+                        "Raised RLIMIT_NOFILE soft limit from {} to {}",
+                        soft, target
+                    );
+                }
+            }
+        }
+        Err(e) => tracing::warn!("Failed to read RLIMIT_NOFILE: {}", e),
+    }
+}
+
+#[cfg(not(unix))]
+fn raise_fd_limit() {}
+
 pub struct ServerConfig<'a> {
     pub profile: &'a str,
     pub host: &'a str,
@@ -357,6 +394,9 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
         is_daemon,
         passphrase,
     } = config;
+
+    raise_fd_limit();
+
     let instances = load_all_instances()?;
 
     // Load or generate auth token
@@ -890,6 +930,11 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/git/branches", get(api::list_branches))
         .route("/api/git/clone", post(api::clone_repo))
         .route("/api/groups", get(api::list_groups))
+        .route(
+            "/api/projects",
+            get(api::list_projects).post(api::create_project),
+        )
+        .route("/api/projects/{name}", delete(api::delete_project))
         .route("/api/docker/status", get(api::docker_status))
         // Settings + themes
         .route(

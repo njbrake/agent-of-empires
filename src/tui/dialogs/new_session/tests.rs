@@ -89,7 +89,7 @@ fn test_tab_cycles_fields_single_tool() {
     assert_eq!(dialog.focused_field, 2); // yolo mode
 
     dialog.handle_key(key(KeyCode::Tab));
-    assert_eq!(dialog.focused_field, 3); // worktree branch
+    assert_eq!(dialog.focused_field, 3); // worktree
 
     dialog.handle_key(key(KeyCode::Tab));
     assert_eq!(dialog.focused_field, 4); // group
@@ -100,10 +100,10 @@ fn test_tab_cycles_fields_single_tool() {
 
 #[test]
 fn test_tab_cycles_fields_single_tool_with_worktree() {
-    // Even with worktree set, new_branch and extra_repos are in a Ctrl+P overlay,
+    // Even with worktree enabled, name, new_branch, and extra_repos are in a Ctrl+P overlay,
     // so the main form has the same tab stops as without worktree.
     let mut dialog = single_tool_dialog();
-    dialog.worktree_branch = Input::new("feature".to_string());
+    dialog.worktree_enabled = true;
     assert_eq!(dialog.focused_field, 0); // title
 
     dialog.handle_key(key(KeyCode::Tab));
@@ -113,7 +113,7 @@ fn test_tab_cycles_fields_single_tool_with_worktree() {
     assert_eq!(dialog.focused_field, 2); // yolo mode
 
     dialog.handle_key(key(KeyCode::Tab));
-    assert_eq!(dialog.focused_field, 3); // worktree branch
+    assert_eq!(dialog.focused_field, 3); // worktree
 
     dialog.handle_key(key(KeyCode::Tab));
     assert_eq!(dialog.focused_field, 4); // group
@@ -453,6 +453,30 @@ fn test_tool_selection_left_right() {
 }
 
 #[test]
+fn test_tool_selection_left_right_three_tools() {
+    let mut dialog = NewSessionDialog::new_with_tools(
+        vec!["claude", "opencode", "codex"],
+        TEST_PATH.to_string(),
+    );
+    dialog.focused_field = 2; // tool field
+    assert_eq!(dialog.tool_index, 0);
+
+    dialog.handle_key(key(KeyCode::Right));
+    assert_eq!(dialog.tool_index, 1);
+    dialog.handle_key(key(KeyCode::Right));
+    assert_eq!(dialog.tool_index, 2);
+    dialog.handle_key(key(KeyCode::Right));
+    assert_eq!(dialog.tool_index, 0, "right wraps from last to first");
+
+    dialog.handle_key(key(KeyCode::Left));
+    assert_eq!(dialog.tool_index, 2, "left wraps from first to last");
+    dialog.handle_key(key(KeyCode::Left));
+    assert_eq!(dialog.tool_index, 1);
+    dialog.handle_key(key(KeyCode::Left));
+    assert_eq!(dialog.tool_index, 0);
+}
+
+#[test]
 fn test_tool_selection_space() {
     let mut dialog = multi_tool_dialog();
     dialog.focused_field = 2; // tool field
@@ -534,12 +558,13 @@ fn test_new_branch_checkbox_default_true() {
 #[test]
 fn test_new_branch_checkbox_toggle() {
     let mut dialog = single_tool_dialog();
-    dialog.worktree_branch = Input::new("feature-branch".to_string());
     // New branch is now in the worktree config overlay (Ctrl+P on worktree field)
     dialog.focused_field = 3; // worktree field
     dialog.handle_key(ctrl_key(KeyCode::Char('p'))); // Open config overlay
     assert!(dialog.worktree_config_mode);
-    assert_eq!(dialog.worktree_config_focused_field, 0); // new_branch
+    assert_eq!(dialog.worktree_config_focused_field, 0); // name
+    dialog.handle_key(key(KeyCode::Tab));
+    assert_eq!(dialog.worktree_config_focused_field, 1); // new_branch
     assert!(dialog.create_new_branch);
 
     dialog.handle_key(key(KeyCode::Char(' ')));
@@ -552,10 +577,12 @@ fn test_new_branch_checkbox_toggle() {
 #[test]
 fn test_submit_respects_create_new_branch() {
     let mut dialog = single_tool_dialog();
+    dialog.worktree_enabled = true;
     dialog.worktree_branch = Input::new("feature-branch".to_string());
     // Toggle new_branch off via config overlay
     dialog.focused_field = 3; // worktree field
     dialog.handle_key(ctrl_key(KeyCode::Char('p')));
+    dialog.handle_key(key(KeyCode::Tab)); // Focus new_branch
     dialog.handle_key(key(KeyCode::Char(' '))); // Toggle off
     dialog.handle_key(key(KeyCode::Esc)); // Exit overlay
 
@@ -563,6 +590,8 @@ fn test_submit_respects_create_new_branch() {
     match result {
         DialogResult::Submit(data) => {
             assert!(!data.create_new_branch);
+            assert!(data.worktree_enabled);
+            assert_eq!(data.worktree_branch.as_deref(), Some("feature-branch"));
         }
         _ => panic!("Expected Submit"),
     }
@@ -587,6 +616,67 @@ fn test_new_branch_field_hidden_without_worktree() {
 fn test_sandbox_disabled_by_default() {
     let dialog = multi_tool_dialog();
     assert!(!dialog.sandbox_enabled);
+}
+
+#[test]
+fn test_worktree_disabled_by_default() {
+    let dialog = multi_tool_dialog();
+    assert!(!dialog.worktree_enabled);
+}
+
+#[test]
+fn test_worktree_enabled_from_config() {
+    let mut config = Config::default();
+    config.worktree.enabled = true;
+
+    let dialog =
+        NewSessionDialog::new_with_config(vec!["claude"], "/tmp/project".to_string(), config);
+
+    assert!(dialog.worktree_enabled);
+}
+
+#[test]
+fn test_worktree_toggle_submit_without_name() {
+    let mut dialog = single_tool_dialog();
+    dialog.focused_field = 3; // worktree field
+
+    dialog.handle_key(key(KeyCode::Char(' ')));
+    assert!(dialog.worktree_enabled);
+
+    let result = dialog.handle_key(key(KeyCode::Enter));
+    match result {
+        DialogResult::Submit(data) => {
+            assert!(data.worktree_enabled);
+            assert!(data.worktree_branch.is_none());
+            assert!(data.extra_repo_paths.is_empty());
+        }
+        _ => panic!("Expected Submit"),
+    }
+}
+
+#[test]
+fn test_worktree_config_name_field_sets_branch_override() {
+    let mut dialog = single_tool_dialog();
+    dialog.worktree_enabled = true;
+    dialog.focused_field = 3; // worktree field
+
+    dialog.handle_key(ctrl_key(KeyCode::Char('p')));
+    assert!(dialog.worktree_config_mode);
+    assert_eq!(dialog.worktree_config_focused_field, 0); // name
+
+    for ch in "feature-name".chars() {
+        dialog.handle_key(key(KeyCode::Char(ch)));
+    }
+    dialog.handle_key(key(KeyCode::Enter));
+
+    let result = dialog.handle_key(key(KeyCode::Enter));
+    match result {
+        DialogResult::Submit(data) => {
+            assert!(data.worktree_enabled);
+            assert_eq!(data.worktree_branch.as_deref(), Some("feature-name"));
+        }
+        _ => panic!("Expected Submit"),
+    }
 }
 
 #[test]

@@ -47,7 +47,7 @@ aoe remove <session> --delete-worktree
 | `Enter` | Submit and create session |
 | `Esc` | Cancel |
 
-When creating a session with a worktree branch name in the TUI, it automatically creates a new branch and worktree.
+In the TUI, enable the Worktree checkbox to create a new branch and worktree. By default, the worktree name is derived from the session title. Press `Ctrl+P` on the Worktree field to set an explicit `Name`, attach to an existing branch, or configure extra repos.
 
 ## Configuration
 

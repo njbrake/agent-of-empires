@@ -83,14 +83,14 @@ test.describe("Command palette", () => {
     await page.getByPlaceholder("Search actions, sessions, settings…").fill("new session");
     await page.keyboard.press("ArrowDown");
     await page.keyboard.press("Enter");
-    await expect(page.getByRole("heading", { name: "Add project" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "New session" })).toBeVisible();
   });
 
   test("opens from within a focused input", async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 720 });
     await page.goto("/");
-    await page.getByLabel("Add project").first().click();
-    await expect(page.getByRole("heading", { name: "Add project" })).toBeVisible();
+    await page.getByLabel("New session").first().click();
+    await expect(page.getByRole("heading", { name: "New session" })).toBeVisible();
     await page.getByPlaceholder("Type to filter...").click();
     await page.keyboard.press("ControlOrMeta+k");
     await expect(page.getByPlaceholder("Search actions, sessions, settings…")).toBeVisible();

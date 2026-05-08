@@ -56,6 +56,17 @@ pub struct SessionResponse {
     /// `~/.claude/settings.json`). The web client uses this to skip
     /// scrollback-tracking workarounds that target tmux copy-mode.
     pub claude_fullscreen: bool,
+    /// Repos in the multi-repo workspace (empty for single-repo sessions).
+    /// Each entry mirrors `WorkspaceRepo` minus paths the dashboard does
+    /// not need to display.
+    pub workspace_repos: Vec<WorkspaceRepoSummary>,
+}
+
+#[derive(Serialize, Clone)]
+pub struct WorkspaceRepoSummary {
+    pub name: String,
+    pub source_path: String,
+    pub branch: String,
 }
 
 #[derive(Serialize, Clone)]
@@ -109,6 +120,20 @@ impl SessionResponse {
             #[cfg(feature = "serve")]
             cockpit_mode: inst.cockpit_mode,
             claude_fullscreen: claude_fullscreen && inst.tool == "claude",
+            workspace_repos: inst
+                .workspace_info
+                .as_ref()
+                .map(|w| {
+                    w.repos
+                        .iter()
+                        .map(|r| WorkspaceRepoSummary {
+                            name: r.name.clone(),
+                            source_path: r.source_path.clone(),
+                            branch: r.branch.clone(),
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
         }
     }
 }
@@ -214,6 +239,10 @@ pub struct RenameSessionBody {
     pub title: String,
 }
 
+fn apply_session_title_rename(inst: &mut Instance, title: String) {
+    inst.title = title;
+}
+
 pub async fn rename_session(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -241,12 +270,7 @@ pub async fn rename_session(
         );
     };
 
-    inst.title = title.clone();
-    // Also update the worktree branch name in metadata (cosmetic only;
-    // the actual git branch is not renamed on disk).
-    if let Some(ref mut wt) = inst.worktree_info {
-        wt.branch = title;
-    }
+    apply_session_title_rename(inst, title.clone());
 
     let response =
         SessionResponse::from_instance(&*inst, crate::claude_settings::read_tui_fullscreen());
@@ -628,6 +652,10 @@ pub async fn create_session(
     let profile = body.profile.unwrap_or_else(|| state.profile.clone());
     let instances = state.instances.read().await;
     let existing_titles: Vec<String> = instances.iter().map(|i| i.title.clone()).collect();
+    let existing_branches: Vec<String> = instances
+        .iter()
+        .filter_map(|i| i.worktree_info.as_ref().map(|w| w.branch.clone()))
+        .collect();
     drop(instances);
 
     // Snapshot the master-kill flag before moving into spawn_blocking
@@ -650,6 +678,7 @@ pub async fn create_session(
         });
 
         let title_refs: Vec<&str> = existing_titles.iter().map(|s| s.as_str()).collect();
+        let branch_refs: Vec<&str> = existing_branches.iter().map(|s| s.as_str()).collect();
         let extra_repo_paths: Vec<String> = body
             .extra_repo_paths
             .into_iter()
@@ -678,6 +707,7 @@ pub async fn create_session(
             path: body.path,
             group: body.group,
             tool: body.tool,
+            worktree_enabled: worktree_branch.is_some(),
             worktree_branch,
             create_new_branch: body.create_new_branch,
             sandbox: body.sandbox,
@@ -689,7 +719,7 @@ pub async fn create_session(
             extra_repo_paths,
         };
 
-        let build_result = builder::build_instance(params, &title_refs, &profile)?;
+        let build_result = builder::build_instance(params, &title_refs, &branch_refs, &profile)?;
         let mut instance = build_result.instance;
         instance.source_profile = profile.clone();
 
@@ -1559,6 +1589,25 @@ mod tests {
     fn claude_fullscreen_unset_when_setting_disabled() {
         let resp = SessionResponse::from_instance(&make_test_instance(), false);
         assert!(!resp.claude_fullscreen);
+    }
+
+    #[test]
+    fn rename_updates_title_without_changing_worktree_branch() {
+        let mut inst = make_test_instance();
+        inst.worktree_info = Some(crate::session::WorktreeInfo {
+            branch: "feature/test".to_string(),
+            main_repo_path: "/tmp/repo".to_string(),
+            managed_by_aoe: true,
+            created_at: chrono::Utc::now(),
+        });
+
+        apply_session_title_rename(&mut inst, "Renamed Session".to_string());
+
+        assert_eq!(inst.title, "Renamed Session");
+        assert_eq!(
+            inst.worktree_info.as_ref().map(|wt| wt.branch.as_str()),
+            Some("feature/test")
+        );
     }
 
     #[test]

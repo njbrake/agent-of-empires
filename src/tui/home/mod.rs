@@ -27,8 +27,8 @@ use super::dialogs::ServeView;
 use super::dialogs::{
     ChangelogDialog, CommandPaletteDialog, ConfirmDialog, GroupDeleteOptionsDialog,
     HookTrustDialog, HooksInstallDialog, InfoDialog, NewSessionData, NewSessionDialog,
-    NoAgentsDialog, ProfilePickerDialog, RenameDialog, UnifiedDeleteDialog, UpdateConfirmDialog,
-    WelcomeDialog,
+    NoAgentsDialog, ProfilePickerDialog, ProjectsDialog, RenameDialog, UnifiedDeleteDialog,
+    UpdateConfirmDialog, WelcomeDialog,
 };
 use super::diff::DiffView;
 use super::settings::SettingsView;
@@ -173,6 +173,7 @@ pub struct HomeView {
     pub(super) changelog_dialog: Option<ChangelogDialog>,
     pub(super) info_dialog: Option<InfoDialog>,
     pub(super) profile_picker_dialog: Option<ProfilePickerDialog>,
+    pub(super) projects_dialog: Option<ProjectsDialog>,
     pub(super) command_palette: Option<CommandPaletteDialog>,
     #[cfg(feature = "serve")]
     pub(super) serve_view: Option<ServeView>,
@@ -352,6 +353,7 @@ impl HomeView {
             changelog_dialog: None,
             info_dialog: None,
             profile_picker_dialog: None,
+            projects_dialog: None,
             command_palette: None,
             #[cfg(feature = "serve")]
             serve_view: None,
@@ -743,24 +745,28 @@ impl HomeView {
     /// can see progress in the preview pane while continuing to use the TUI.
     pub fn request_creation(
         &mut self,
-        data: NewSessionData,
+        mut data: NewSessionData,
         hooks: Option<crate::session::HooksConfig>,
     ) {
-        // Build a stub instance to show in the list while creation runs
-        let stub_title = if data.title.is_empty() {
-            data.worktree_branch
-                .as_deref()
-                .filter(|b| !b.is_empty())
-                .map(|b| b.to_string())
-                .unwrap_or_else(|| {
-                    std::path::Path::new(&data.path)
-                        .file_name()
-                        .map(|n| n.to_string_lossy().to_string())
-                        .unwrap_or_else(|| "New session".to_string())
-                })
-        } else {
-            data.title.clone()
-        };
+        // Pre-resolve the title using the same logic the builder will run, so the
+        // stub instance, the background creation, and the eventual real instance
+        // all agree on the title (otherwise an empty title would show as the path
+        // basename in the stub but a civilization name in the final instance).
+        if data.title.is_empty() {
+            let existing_titles: Vec<&str> = self
+                .instances()
+                .iter()
+                .filter(|i| i.source_profile == data.profile)
+                .map(|i| i.title.as_str())
+                .collect();
+            data.title = crate::session::builder::resolve_title(
+                &data.title,
+                data.worktree_branch.as_deref(),
+                data.worktree_enabled,
+                &existing_titles,
+            );
+        }
+        let stub_title = data.title.clone();
         let mut stub = Instance::new(&stub_title, &data.path);
         stub.tool = if data.tool.is_empty() {
             "claude".to_string()
@@ -775,15 +781,22 @@ impl HomeView {
         // Set stub worktree_info so project-mode grouping works during creation.
         // The real worktree_info (with resolved main_repo_path) replaces this
         // once build_instance completes.
-        if let Some(ref branch) = data.worktree_branch {
-            if !branch.is_empty() {
-                stub.worktree_info = Some(crate::session::WorktreeInfo {
-                    branch: branch.clone(),
-                    main_repo_path: data.path.clone(),
-                    managed_by_aoe: false,
-                    created_at: chrono::Utc::now(),
-                });
-            }
+        let stub_branch = data
+            .worktree_branch
+            .as_deref()
+            .filter(|b| !b.is_empty())
+            .map(ToString::to_string)
+            .or_else(|| {
+                data.worktree_enabled
+                    .then(|| crate::session::builder::branch_name_from_title(&stub_title))
+            });
+        if let Some(branch) = stub_branch {
+            stub.worktree_info = Some(crate::session::WorktreeInfo {
+                branch,
+                main_repo_path: data.path.clone(),
+                managed_by_aoe: false,
+                created_at: chrono::Utc::now(),
+            });
         }
 
         let stub_id = stub.id.clone();
@@ -1121,6 +1134,7 @@ impl HomeView {
             || self.changelog_dialog.is_some()
             || self.info_dialog.is_some()
             || self.profile_picker_dialog.is_some()
+            || self.projects_dialog.is_some()
             || self.command_palette.is_some()
             || self.send_message_dialog.is_some()
             || self.update_confirm_dialog.is_some()

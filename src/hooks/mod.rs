@@ -507,6 +507,182 @@ fn render_hermes_allowlist(config_dir: &Path) -> Result<(std::path::PathBuf, Str
     Ok((allowlist_path, formatted))
 }
 
+/// Kiro CLI hook events. Kiro uses lowercase camelCase event names and a flat
+/// `[{"command": "..."}]` structure in its agent config JSON.
+const KIRO_HOOKS: &[(&str, &str)] = &[
+    ("preToolUse", "running"),
+    ("userPromptSubmit", "running"),
+    ("stop", "idle"),
+];
+
+/// Default agent config path for Kiro CLI: `~/.kiro/agents/aoe-hooks.json`.
+/// We use a dedicated agent config file rather than modifying the user's
+/// default agent, so AoE hooks are isolated and easy to remove.
+pub const KIRO_HOOKS_AGENT_FILE: &str = ".kiro/agents/aoe-hooks.json";
+
+/// Install AoE status hooks into a Kiro CLI agent config file.
+///
+/// Writes a minimal agent config with hooks that write status to the
+/// AoE sidecar file. This function is pure file IO and is safe to call
+/// from any context (host install, sandbox provisioning, tests). To make
+/// the agent the active default on the host, call
+/// [`set_kiro_default_agent_if_builtin`] after this returns.
+pub fn install_kiro_hooks(agent_config_path: &Path) -> Result<()> {
+    let mut config: serde_json::Map<String, Value> = if agent_config_path.exists() {
+        let content = std::fs::read_to_string(agent_config_path)?;
+        serde_json::from_str(&content).unwrap_or_else(|_| serde_json::Map::new())
+    } else {
+        serde_json::Map::new()
+    };
+
+    // Kiro requires a name field for valid agent configs
+    config
+        .entry("name".to_string())
+        .or_insert_with(|| Value::String("aoe-hooks".to_string()));
+    // Wildcard tools so preToolUse hooks fire for all tool invocations
+    config
+        .entry("tools".to_string())
+        .or_insert_with(|| serde_json::json!(["*"]));
+
+    let mut hooks_obj: serde_json::Map<String, Value> = config
+        .get("hooks")
+        .and_then(|v| v.as_object())
+        .cloned()
+        .unwrap_or_default();
+
+    for (event, status) in KIRO_HOOKS {
+        let entries = hooks_obj
+            .entry((*event).to_string())
+            .or_insert_with(|| Value::Array(Vec::new()));
+        if let Some(arr) = entries.as_array_mut() {
+            arr.retain(|hook| {
+                !hook
+                    .get("command")
+                    .and_then(|c| c.as_str())
+                    .is_some_and(is_aoe_hook_command)
+            });
+            arr.push(serde_json::json!({ "command": hook_command(status) }));
+        }
+    }
+
+    config.insert("hooks".to_string(), Value::Object(hooks_obj));
+
+    if let Some(parent) = agent_config_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let formatted = serde_json::to_string_pretty(&Value::Object(config))?;
+    std::fs::write(agent_config_path, formatted)?;
+
+    tracing::info!("Installed AoE hooks in {}", agent_config_path.display());
+    Ok(())
+}
+
+/// Make `aoe-hooks` the active default Kiro agent if the user is still on
+/// Kiro's built-in default. Skipped when a user has chosen a custom default
+/// so we never silently override their preference. Best-effort: any failure
+/// (kiro-cli missing, unexpected output, command error) is logged and ignored.
+///
+/// Uses `kiro-cli settings chat.defaultAgent --format json` for structured
+/// output: returns `null` when unset, `"kiro_default"` for the built-in, or
+/// `"custom-name"` for a user-chosen agent.
+pub fn set_kiro_default_agent_if_builtin() {
+    let output = std::process::Command::new("kiro-cli")
+        .args(["settings", "chat.defaultAgent", "--format", "json"])
+        .output();
+    let current_default = output
+        .as_ref()
+        .ok()
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout.clone()).ok())
+        .unwrap_or_default();
+    // With --format json, unset returns "null", set returns "\"agent-name\""
+    let trimmed = current_default.trim();
+    let is_builtin_default =
+        trimmed.is_empty() || trimmed == "null" || trimmed == "\"kiro_default\"";
+
+    if is_builtin_default {
+        let set_result = std::process::Command::new("kiro-cli")
+            .args(["agent", "set-default", "aoe-hooks"])
+            .output();
+        match set_result {
+            Ok(o) if o.status.success() => {
+                tracing::info!("Set aoe-hooks as default Kiro agent for status detection");
+            }
+            Ok(o) => {
+                tracing::debug!(
+                    "kiro-cli agent set-default failed (non-fatal): {}",
+                    String::from_utf8_lossy(&o.stderr)
+                );
+            }
+            Err(e) => {
+                tracing::debug!("kiro-cli not available for set-default: {}", e);
+            }
+        }
+    } else {
+        tracing::info!(
+            "Kiro has a custom default agent; skipping set-default. \
+             Run `kiro-cli agent set-default aoe-hooks` to enable status detection."
+        );
+    }
+}
+
+/// Remove AoE hooks from a Kiro CLI agent config file.
+/// Returns true if hooks were removed, false if nothing to do.
+pub fn uninstall_kiro_hooks(agent_config_path: &Path) -> Result<bool> {
+    if !agent_config_path.exists() {
+        return Ok(false);
+    }
+
+    let content = std::fs::read_to_string(agent_config_path)?;
+    let mut config: serde_json::Map<String, Value> =
+        serde_json::from_str(&content).unwrap_or_else(|_| serde_json::Map::new());
+
+    let Some(hooks_value) = config.get_mut("hooks") else {
+        return Ok(false);
+    };
+    let Some(hooks_obj) = hooks_value.as_object_mut() else {
+        return Ok(false);
+    };
+
+    let mut modified = false;
+    let keys: Vec<String> = hooks_obj.keys().cloned().collect();
+    for key in keys {
+        if let Some(arr) = hooks_obj.get_mut(&key).and_then(|v| v.as_array_mut()) {
+            let before = arr.len();
+            arr.retain(|hook| {
+                !hook
+                    .get("command")
+                    .and_then(|c| c.as_str())
+                    .is_some_and(is_aoe_hook_command)
+            });
+            if arr.len() != before {
+                modified = true;
+            }
+        }
+    }
+
+    if !modified {
+        return Ok(false);
+    }
+
+    // Remove empty event arrays
+    hooks_obj.retain(|_, v| !v.as_array().is_some_and(|a| a.is_empty()));
+    if hooks_obj.is_empty() {
+        config.remove("hooks");
+    }
+
+    // If the file is now just `{}`, remove it entirely
+    if config.is_empty() {
+        std::fs::remove_file(agent_config_path)?;
+    } else {
+        let formatted = serde_json::to_string_pretty(&Value::Object(config))?;
+        std::fs::write(agent_config_path, formatted)?;
+    }
+
+    tracing::info!("Removed AoE hooks from {}", agent_config_path.display());
+    Ok(true)
+}
+
 /// Remove all AoE hooks from all known agent settings files and clean up
 /// the hook status base directory. Called during `aoe uninstall`.
 pub fn uninstall_all_hooks() {
@@ -524,6 +700,14 @@ pub fn uninstall_all_hooks() {
             Ok(true) => println!("Removed AoE hooks from {}", hermes_config.display()),
             Ok(false) => {}
             Err(e) => tracing::warn!("Failed to remove hermes hooks: {}", e),
+        }
+
+        // Remove Kiro CLI agent config hooks
+        let kiro_config = home.join(KIRO_HOOKS_AGENT_FILE);
+        match uninstall_kiro_hooks(&kiro_config) {
+            Ok(true) => println!("Removed AoE hooks from {}", kiro_config.display()),
+            Ok(false) => {}
+            Err(e) => tracing::warn!("Failed to remove kiro hooks: {}", e),
         }
 
         for agent in crate::agents::AGENTS {
@@ -1209,5 +1393,119 @@ hooks_auto_accept: false
             vec!["waiting"],
             "pre_approval_request must map to waiting status"
         );
+    }
+
+    #[test]
+    fn test_install_kiro_hooks_creates_new_file() {
+        let tmp = TempDir::new().unwrap();
+        let config_path = tmp
+            .path()
+            .join(".kiro")
+            .join("agents")
+            .join("aoe-hooks.json");
+
+        install_kiro_hooks(&config_path).unwrap();
+
+        let content = std::fs::read_to_string(&config_path).unwrap();
+        let config: Value = serde_json::from_str(&content).unwrap();
+        let hooks = config["hooks"].as_object().unwrap();
+
+        for (event, _) in KIRO_HOOKS {
+            let entries = hooks
+                .get(*event)
+                .unwrap_or_else(|| panic!("event {} missing", event))
+                .as_array()
+                .unwrap();
+            assert_eq!(entries.len(), 1, "event {} should have one entry", event);
+            let cmd = entries[0]["command"].as_str().unwrap();
+            assert!(is_aoe_hook_command(cmd));
+        }
+    }
+
+    #[test]
+    fn test_install_kiro_hooks_preserves_user_hooks() {
+        let tmp = TempDir::new().unwrap();
+        let config_path = tmp.path().join("aoe-hooks.json");
+        std::fs::write(
+            &config_path,
+            r#"{"hooks": {"preToolUse": [{"command": "echo user-hook", "matcher": "shell"}]}}"#,
+        )
+        .unwrap();
+
+        install_kiro_hooks(&config_path).unwrap();
+
+        let content = std::fs::read_to_string(&config_path).unwrap();
+        let config: Value = serde_json::from_str(&content).unwrap();
+        let pre_tool = config["hooks"]["preToolUse"].as_array().unwrap();
+        // 1 user hook + 1 AoE hook = 2
+        assert_eq!(pre_tool.len(), 2);
+        assert_eq!(pre_tool[0]["command"].as_str().unwrap(), "echo user-hook");
+        assert!(is_aoe_hook_command(
+            pre_tool[1]["command"].as_str().unwrap()
+        ));
+    }
+
+    #[test]
+    fn test_install_kiro_hooks_idempotent() {
+        let tmp = TempDir::new().unwrap();
+        let config_path = tmp.path().join("aoe-hooks.json");
+
+        install_kiro_hooks(&config_path).unwrap();
+        install_kiro_hooks(&config_path).unwrap();
+
+        let content = std::fs::read_to_string(&config_path).unwrap();
+        let config: Value = serde_json::from_str(&content).unwrap();
+        for (event, _) in KIRO_HOOKS {
+            let entries = config["hooks"][event].as_array().unwrap();
+            assert_eq!(
+                entries.len(),
+                1,
+                "event {} should still have exactly one AoE entry after double install",
+                event
+            );
+        }
+    }
+
+    #[test]
+    fn test_uninstall_kiro_hooks_removes_aoe_entries() {
+        let tmp = TempDir::new().unwrap();
+        let config_path = tmp.path().join("aoe-hooks.json");
+
+        install_kiro_hooks(&config_path).unwrap();
+        let modified = uninstall_kiro_hooks(&config_path).unwrap();
+        assert!(modified);
+        // File still exists (has name/tools fields) but hooks are gone
+        let content = std::fs::read_to_string(&config_path).unwrap();
+        let config: Value = serde_json::from_str(&content).unwrap();
+        assert!(config.get("hooks").is_none());
+    }
+
+    #[test]
+    fn test_uninstall_kiro_hooks_preserves_user_hooks() {
+        let tmp = TempDir::new().unwrap();
+        let config_path = tmp.path().join("aoe-hooks.json");
+        std::fs::write(
+            &config_path,
+            r#"{"hooks": {"preToolUse": [{"command": "echo user-hook"}]}}"#,
+        )
+        .unwrap();
+
+        install_kiro_hooks(&config_path).unwrap();
+        let modified = uninstall_kiro_hooks(&config_path).unwrap();
+        assert!(modified);
+
+        let content = std::fs::read_to_string(&config_path).unwrap();
+        let config: Value = serde_json::from_str(&content).unwrap();
+        let pre_tool = config["hooks"]["preToolUse"].as_array().unwrap();
+        assert_eq!(pre_tool.len(), 1);
+        assert_eq!(pre_tool[0]["command"].as_str().unwrap(), "echo user-hook");
+    }
+
+    #[test]
+    fn test_uninstall_kiro_hooks_nonexistent_file() {
+        let tmp = TempDir::new().unwrap();
+        let config_path = tmp.path().join("nonexistent.json");
+        let modified = uninstall_kiro_hooks(&config_path).unwrap();
+        assert!(!modified);
     }
 }

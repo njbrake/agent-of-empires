@@ -99,12 +99,18 @@ impl CreationPoller {
             .iter()
             .map(|i| i.title.as_str())
             .collect();
+        let existing_branches: Vec<&str> = request
+            .existing_instances
+            .iter()
+            .filter_map(|i| i.worktree_info.as_ref().map(|w| w.branch.as_str()))
+            .collect();
 
         let params = InstanceParams {
             title: data.title,
             path: data.path.clone(),
             group: data.group,
             tool: data.tool,
+            worktree_enabled: data.worktree_enabled,
             worktree_branch: data.worktree_branch,
             create_new_branch: data.create_new_branch,
             sandbox: data.sandbox,
@@ -116,10 +122,11 @@ impl CreationPoller {
             extra_repo_paths: data.extra_repo_paths,
         };
 
-        let build_result = match builder::build_instance(params, &existing_titles, &profile) {
-            Ok(r) => r,
-            Err(e) => return CreationResult::Error(format!("{:#}", e)),
-        };
+        let build_result =
+            match builder::build_instance(params, &existing_titles, &existing_branches, &profile) {
+                Ok(r) => r,
+                Err(e) => return CreationResult::Error(format!("{:#}", e)),
+            };
 
         let mut instance = build_result.instance;
         // Tag the instance with its profile NOW, before container creation or any

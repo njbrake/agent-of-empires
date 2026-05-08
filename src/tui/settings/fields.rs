@@ -55,6 +55,7 @@ pub enum FieldKey {
     CheckIntervalHours,
     NotifyInCli,
     // Worktree
+    WorktreeEnabled,
     PathTemplate,
     BareRepoPathTemplate,
     WorktreeAutoCleanup,
@@ -594,6 +595,7 @@ fn build_worktree_fields(
 ) -> Vec<SettingField> {
     let wt = profile.worktree.as_ref();
 
+    let (enabled, o0) = resolve_value(scope, global.worktree.enabled, wt.and_then(|w| w.enabled));
     let (path_template, o1) = resolve_value(
         scope,
         global.worktree.path_template.clone(),
@@ -621,6 +623,15 @@ fn build_worktree_fields(
     );
 
     vec![
+        SettingField {
+            key: FieldKey::WorktreeEnabled,
+            label: "Enabled by Default",
+            description: "Enable worktree mode by default for new sessions",
+            value: FieldValue::Bool(enabled),
+            category: SettingsCategory::Worktree,
+            has_override: o0,
+            inherited_display: inherited_if(o0, FieldValue::Bool(global.worktree.enabled)),
+        },
         SettingField {
             key: FieldKey::PathTemplate,
             label: "Path Template",
@@ -764,7 +775,8 @@ fn build_sandbox_fields(
 
     let container_runtime_selected = match container_runtime {
         ContainerRuntimeName::Docker => 0,
-        ContainerRuntimeName::AppleContainer => 1,
+        ContainerRuntimeName::Podman => 1,
+        ContainerRuntimeName::AppleContainer => 2,
     };
 
     let global_terminal_mode_selected = match global.sandbox.default_terminal_mode {
@@ -775,9 +787,11 @@ fn build_sandbox_fields(
 
     let global_container_runtime_selected = match global.sandbox.container_runtime {
         ContainerRuntimeName::Docker => 0,
-        ContainerRuntimeName::AppleContainer => 1,
+        ContainerRuntimeName::Podman => 1,
+        ContainerRuntimeName::AppleContainer => 2,
     };
-    let container_runtime_options = vec!["Docker".into(), "Apple Container".into()];
+    let container_runtime_options =
+        vec!["Docker".into(), "Podman".into(), "Apple Container".into()];
 
     vec![
         SettingField {
@@ -795,7 +809,7 @@ fn build_sandbox_fields(
         SettingField {
             key: FieldKey::DefaultImage,
             label: "Default Image",
-            description: "Docker image to use for sandboxes",
+            description: "Container image to use for sandboxes",
             value: FieldValue::Text(default_image),
             category: SettingsCategory::Sandbox,
             has_override: o3,
@@ -927,7 +941,7 @@ fn build_sandbox_fields(
         SettingField {
             key: FieldKey::ContainerRuntime,
             label: "Container Runtime",
-            description: "Container runtime for sandboxing (Docker or Apple Container on macOS)",
+            description: "Container runtime for sandboxing",
             value: FieldValue::Select {
                 selected: container_runtime_selected,
                 options: container_runtime_options.clone(),
@@ -1578,6 +1592,7 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
         }
         (FieldKey::NotifyInCli, FieldValue::Bool(v)) => config.updates.notify_in_cli = *v,
         // Worktree
+        (FieldKey::WorktreeEnabled, FieldValue::Bool(v)) => config.worktree.enabled = *v,
         (FieldKey::PathTemplate, FieldValue::Text(v)) => config.worktree.path_template = v.clone(),
         (FieldKey::BareRepoPathTemplate, FieldValue::Text(v)) => {
             config.worktree.bare_repo_path_template = v.clone()
@@ -1623,6 +1638,7 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
         (FieldKey::ContainerRuntime, FieldValue::Select { selected, .. }) => {
             config.sandbox.container_runtime = match selected {
                 0 => ContainerRuntimeName::Docker,
+                1 => ContainerRuntimeName::Podman,
                 _ => ContainerRuntimeName::AppleContainer,
             };
         }
@@ -1775,6 +1791,9 @@ fn apply_field_to_profile(field: &SettingField, _global: &Config, config: &mut P
             set_profile_override(*v, &mut config.updates, |s, val| s.notify_in_cli = val);
         }
         // Worktree
+        (FieldKey::WorktreeEnabled, FieldValue::Bool(v)) => {
+            set_profile_override(*v, &mut config.worktree, |s, val| s.enabled = val);
+        }
         (FieldKey::PathTemplate, FieldValue::Text(v)) => {
             set_profile_override(v.clone(), &mut config.worktree, |s, val| {
                 s.path_template = val
@@ -1864,6 +1883,7 @@ fn apply_field_to_profile(field: &SettingField, _global: &Config, config: &mut P
         (FieldKey::ContainerRuntime, FieldValue::Select { selected, .. }) => {
             let runtime = match selected {
                 0 => ContainerRuntimeName::Docker,
+                1 => ContainerRuntimeName::Podman,
                 _ => ContainerRuntimeName::AppleContainer,
             };
             set_profile_override(runtime, &mut config.sandbox, |s, val| {
@@ -2248,5 +2268,52 @@ mod tests {
             Some(original),
             "Override value should match what was set"
         );
+    }
+
+    #[test]
+    fn test_worktree_enabled_field_uses_existing_config_value() {
+        let mut global = Config::default();
+        global.worktree.enabled = true;
+        let profile = ProfileConfig::default();
+
+        let fields = build_fields_for_category(
+            SettingsCategory::Worktree,
+            SettingsScope::Global,
+            &global,
+            &profile,
+        );
+        let field = fields
+            .iter()
+            .find(|f| f.key == FieldKey::WorktreeEnabled)
+            .unwrap();
+
+        assert_eq!(field.label, "Enabled by Default");
+        assert!(matches!(field.value, FieldValue::Bool(true)));
+    }
+
+    #[test]
+    fn test_worktree_enabled_profile_override() {
+        let global = Config::default();
+        let profile = ProfileConfig {
+            worktree: Some(crate::session::WorktreeConfigOverride {
+                enabled: Some(true),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let fields = build_fields_for_category(
+            SettingsCategory::Worktree,
+            SettingsScope::Profile,
+            &global,
+            &profile,
+        );
+        let field = fields
+            .iter()
+            .find(|f| f.key == FieldKey::WorktreeEnabled)
+            .unwrap();
+
+        assert!(field.has_override);
+        assert!(matches!(field.value, FieldValue::Bool(true)));
     }
 }

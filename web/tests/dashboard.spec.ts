@@ -1,5 +1,7 @@
 import { test, expect } from "@playwright/test";
 
+const NEW_SESSION_PANE_NAME = /New session Pick a project, then launch a new session/i;
+
 test.describe("Dashboard layout", () => {
   test("loads and shows header", async ({ page }) => {
     await page.goto("/");
@@ -14,7 +16,7 @@ test.describe("Dashboard layout", () => {
   test("shows branded home screen with action panes", async ({ page }) => {
     await page.goto("/");
     await expect(page.getByText("empires", { exact: false })).toBeVisible();
-    await expect(page.getByText("Open project")).toBeVisible();
+    await expect(page.getByRole("button", { name: NEW_SESSION_PANE_NAME })).toBeVisible();
     await expect(page.getByText("Clone URL")).toBeVisible();
     await expect(page.getByText("Docs")).toBeVisible();
   });
@@ -29,7 +31,7 @@ test.describe("Sidebar", () => {
   test("sidebar visible on desktop by default", async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 720 });
     await page.goto("/");
-    await expect(page.getByLabel("Add project")).toBeVisible();
+    await expect(page.getByLabel("New session")).toBeVisible();
   });
 
   test("sidebar toggle button exists", async ({ page }) => {
@@ -40,7 +42,7 @@ test.describe("Sidebar", () => {
   test("sidebar can be toggled closed and open on desktop", async ({ page }) => {
     await page.setViewportSize({ width: 1280, height: 720 });
     await page.goto("/");
-    const addBtn = page.getByLabel("Add project");
+    const addBtn = page.getByLabel("New session");
     await expect(addBtn).toBeVisible();
 
     await page.getByRole("button", { name: "Toggle sidebar" }).click();
@@ -52,16 +54,16 @@ test.describe("Sidebar", () => {
 });
 
 test.describe("Create session from home screen", () => {
-  test("'Open project' pane opens session wizard", async ({ page }) => {
+  test("'New session' pane opens session wizard", async ({ page }) => {
     await page.goto("/");
-    await page.getByText("Open project").click();
-    await expect(page.getByRole("heading", { name: "Add project" })).toBeVisible();
+    await page.getByRole("button", { name: NEW_SESSION_PANE_NAME }).click();
+    await expect(page.getByRole("heading", { name: "New session" })).toBeVisible();
   });
 
   test("'Clone URL' pane opens wizard on Clone tab", async ({ page }) => {
     await page.goto("/");
     await page.getByText("Clone URL").click();
-    await expect(page.getByRole("heading", { name: "Add project" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "New session" })).toBeVisible();
     // Should be on the Clone tab, showing the URL input
     await expect(page.getByPlaceholder("https://github.com/user/repo.git")).toBeVisible();
   });
@@ -71,32 +73,32 @@ test.describe("Create session from home screen", () => {
     await page.goto("/");
     await page.locator("body").click();
     await page.keyboard.press("n");
-    await expect(page.getByRole("heading", { name: "Add project" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "New session" })).toBeVisible();
   });
 
   test("wizard closes on cancel", async ({ page }) => {
     await page.goto("/");
-    await page.getByText("Open project").click();
-    await expect(page.getByRole("heading", { name: "Add project" })).toBeVisible();
+    await page.getByRole("button", { name: NEW_SESSION_PANE_NAME }).click();
+    await expect(page.getByRole("heading", { name: "New session" })).toBeVisible();
     await page.getByRole("button", { name: "Cancel" }).click();
-    await expect(page.getByRole("heading", { name: "Add project" })).not.toBeVisible();
+    await expect(page.getByRole("heading", { name: "New session" })).not.toBeVisible();
   });
 
   test("wizard closes on escape", async ({ page }) => {
     await page.goto("/");
-    await page.getByText("Open project").click();
-    await expect(page.getByRole("heading", { name: "Add project" })).toBeVisible();
+    await page.getByRole("button", { name: NEW_SESSION_PANE_NAME }).click();
+    await expect(page.getByRole("heading", { name: "New session" })).toBeVisible();
     await page.keyboard.press("Escape");
-    await expect(page.getByRole("heading", { name: "Add project" })).not.toBeVisible();
+    await expect(page.getByRole("heading", { name: "New session" })).not.toBeVisible();
   });
 
   test("wizard closes on backdrop click", async ({ page }) => {
     await page.goto("/");
-    await page.getByText("Open project").click();
-    await expect(page.getByRole("heading", { name: "Add project" })).toBeVisible();
+    await page.getByRole("button", { name: NEW_SESSION_PANE_NAME }).click();
+    await expect(page.getByRole("heading", { name: "New session" })).toBeVisible();
     // Click the backdrop (top-left corner, outside the modal)
     await page.mouse.click(10, 10);
-    await expect(page.getByRole("heading", { name: "Add project" })).not.toBeVisible();
+    await expect(page.getByRole("heading", { name: "New session" })).not.toBeVisible();
   });
 });
 
@@ -159,7 +161,7 @@ test.describe("Mobile responsive", () => {
     await page.goto("/");
     // Sidebar is translated off-screen on mobile (not display:none), so
     // use toBeInViewport rather than toBeVisible.
-    await expect(page.getByLabel("Add project")).not.toBeInViewport();
+    await expect(page.getByLabel("New session")).not.toBeInViewport();
     // Home screen content visible
     await expect(page.getByText("empires", { exact: false })).toBeVisible();
   });
@@ -168,24 +170,24 @@ test.describe("Mobile responsive", () => {
     await page.setViewportSize({ width: 375, height: 812 });
     await page.goto("/");
     await expect(page.getByText("Show sessions")).toBeVisible();
-    await expect(page.getByText("Open project")).toBeVisible();
+    await expect(page.getByRole("button", { name: NEW_SESSION_PANE_NAME })).toBeVisible();
   });
 
   test("hamburger opens sidebar overlay on mobile", async ({ page }) => {
     await page.setViewportSize({ width: 375, height: 812 });
     await page.goto("/");
     await page.getByRole("button", { name: "Toggle sidebar" }).click();
-    await expect(page.getByLabel("Add project")).toBeInViewport();
+    await expect(page.getByLabel("New session")).toBeInViewport();
   });
 
   test("sidebar closes via toggle on mobile", async ({ page }) => {
     await page.setViewportSize({ width: 375, height: 812 });
     await page.goto("/");
     await page.getByRole("button", { name: "Toggle sidebar" }).click();
-    await expect(page.getByLabel("Add project")).toBeInViewport();
+    await expect(page.getByLabel("New session")).toBeInViewport();
     // Toggle the sidebar closed again
     await page.getByRole("button", { name: "Toggle sidebar" }).click();
-    await expect(page.getByLabel("Add project")).not.toBeInViewport();
+    await expect(page.getByLabel("New session")).not.toBeInViewport();
   });
 
   test("settings gear accessible on mobile", async ({ page }) => {
@@ -197,8 +199,8 @@ test.describe("Mobile responsive", () => {
   test("create modal works on mobile", async ({ page }) => {
     await page.setViewportSize({ width: 375, height: 812 });
     await page.goto("/");
-    await page.getByText("Open project").click();
-    await expect(page.getByRole("heading", { name: "Add project" })).toBeVisible();
+    await page.getByRole("button", { name: NEW_SESSION_PANE_NAME }).click();
+    await expect(page.getByRole("heading", { name: "New session" })).toBeVisible();
   });
 });
 

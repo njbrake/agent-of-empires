@@ -1,6 +1,6 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMatch, useNavigate } from "react-router-dom";
-import { isSessionActive } from "./lib/session";
+import { IDLE_DECAY_WINDOW_MS, isSessionActive } from "./lib/session";
 import { useSessions } from "./hooks/useSessions";
 import { useWorkspaces } from "./hooks/useWorkspaces";
 import { useRepoGroups } from "./hooks/useRepoGroups";
@@ -9,8 +9,19 @@ import { useDiffFiles } from "./hooks/useDiffFiles";
 import { useCommandActions } from "./hooks/useCommandActions";
 import { useEdgeSwipe } from "./hooks/useEdgeSwipe";
 import { useMobileKeyboard } from "./hooks/useMobileKeyboard";
-import { loginStatus, logout, deleteSession, fetchAbout } from "./lib/api";
+import {
+  loginStatus,
+  logout,
+  deleteSession,
+  fetchAbout,
+  fetchSettings,
+} from "./lib/api";
 import type { DeleteSessionOptions, ServerAbout } from "./lib/api";
+import {
+  IdleDecayWindowContext,
+  parseIdleDecayWindowMs,
+  useIdleDecayWindowMs,
+} from "./lib/idleDecay";
 import { toastBus } from "./lib/toastBus";
 import { OPEN_SESSION_EVENT } from "./lib/sessionRoute";
 import {
@@ -35,6 +46,7 @@ const CockpitView = lazy(() =>
 import { RightPanel } from "./components/RightPanel";
 import { DiffFileViewer } from "./components/diff/DiffFileViewer";
 import { SettingsView } from "./components/SettingsView";
+import { ProjectsView } from "./components/ProjectsView";
 import { HelpOverlay } from "./components/HelpOverlay";
 import { SessionWizard } from "./components/session-wizard/SessionWizard";
 import type { WizardPrefill } from "./components/session-wizard/SessionWizard";
@@ -55,6 +67,7 @@ export default function App() {
   const [loginRequired, setLoginRequired] = useState<boolean | null>(null);
   const [loginAuthenticated, setLoginAuthenticated] = useState(true);
   const [tokenExpired, setTokenExpired] = useState(false);
+  const [idleDecayWindowMs, setIdleDecayWindowMs] = useState(IDLE_DECAY_WINDOW_MS);
 
   useEffect(() => {
     const onTokenExpired = () => setTokenExpired(true);
@@ -80,6 +93,12 @@ export default function App() {
     loginStatus().then(({ required, authenticated }) => {
       setLoginRequired(required);
       setLoginAuthenticated(authenticated);
+    });
+  }, []);
+
+  useEffect(() => {
+    fetchSettings().then((settings) => {
+      setIdleDecayWindowMs(parseIdleDecayWindowMs(settings));
     });
   }, []);
 
@@ -116,16 +135,23 @@ export default function App() {
     return <div className="h-dvh bg-surface-900 safe-area-inset" />;
   }
 
-  return <AppContent loginRequired={loginRequired} onLogout={handleLogout} />;
+  return (
+    <IdleDecayWindowContext.Provider value={idleDecayWindowMs}>
+      <AppContent loginRequired={loginRequired} onLogout={handleLogout} />
+    </IdleDecayWindowContext.Provider>
+  );
 }
 
 function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLogout: () => void }) {
   const navigate = useNavigate();
+  const idleDecayWindowMs = useIdleDecayWindowMs();
   const sessionMatch = useMatch("/session/:sessionId");
   const settingsRootMatch = useMatch("/settings");
   const settingsTabMatch = useMatch("/settings/:tab");
+  const projectsMatch = useMatch("/projects");
   const activeSessionId = sessionMatch?.params.sessionId ?? null;
   const showSettings = settingsRootMatch !== null || settingsTabMatch !== null;
+  const showProjects = projectsMatch !== null;
   const settingsTab = settingsTabMatch?.params.tab ?? null;
 
   const { sessions, error, injectSession, setSessionStatus } = useSessions();
@@ -136,7 +162,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
   const [diffCollapsed, setDiffCollapsed] = useState(
     () => window.innerWidth < 768,
   );
-  const [showAddProject, setShowAddProject] = useState(false);
+  const [showSessionWizard, setShowSessionWizard] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const [showPalette, setShowPalette] = useState(false);
   const [showAbout, setShowAbout] = useState(false);
@@ -194,7 +220,9 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
   const handleSelectWorkspace = (workspaceId: string) => {
     const ws = workspaces.find((w) => w.id === workspaceId);
     if (ws) {
-      const running = ws.sessions.find((s) => isSessionActive(s));
+      const running = ws.sessions.find((s) =>
+        isSessionActive(s, idleDecayWindowMs),
+      );
       const picked = running?.id ?? ws.sessions[0]?.id ?? null;
       if (picked) {
         navigate(`/session/${encodeURIComponent(picked)}`);
@@ -281,7 +309,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
       group: latest?.group_path || undefined,
       skipToReview: true,
     });
-    setShowAddProject(true);
+    setShowSessionWizard(true);
   }, [sessions]);
 
   const toggleDiff = useCallback(() => setDiffCollapsed((c) => !c), []);
@@ -303,6 +331,19 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
     navigate("/settings");
     if (window.innerWidth < 768) setSidebarOpen(false);
   }, [navigate]);
+
+  const handleOpenProjects = useCallback(() => {
+    navigate("/projects");
+    if (window.innerWidth < 768) setSidebarOpen(false);
+  }, [navigate]);
+
+  const handleCloseProjects = useCallback(() => {
+    if (activeSessionId) {
+      navigate(`/session/${encodeURIComponent(activeSessionId)}`);
+    } else {
+      navigate("/");
+    }
+  }, [navigate, activeSessionId]);
 
   const handleCloseSettings = useCallback(() => {
     if (activeSessionId) {
@@ -340,12 +381,12 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
 
   const handleNewSession = useCallback(() => {
     setWizardPrefill(undefined);
-    setShowAddProject(true);
+    setShowSessionWizard(true);
   }, []);
 
   const handleCloneFromUrl = useCallback(() => {
     setWizardPrefill({ initialTab: "clone" });
-    setShowAddProject(true);
+    setShowSessionWizard(true);
   }, []);
 
   const handleToggleTerminalFocus = useCallback(() => {
@@ -395,7 +436,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
   useKeyboardShortcuts(
     useCallback(
       () => ({
-        onNew: () => setShowAddProject(true),
+        onNew: () => setShowSessionWizard(true),
         onDiff: () => toggleDiff(),
         onEscape: () => {
           if (deletingWorkspaceId) {
@@ -406,7 +447,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
             setShowPalette(false);
             return;
           }
-          setShowAddProject(false);
+          setShowSessionWizard(false);
           setShowHelp(false);
           if (showSettings) handleCloseSettings();
           setShowAbout(false);
@@ -446,6 +487,15 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
           tab={settingsTab}
           onClose={handleCloseSettings}
           onSelectTab={(t) => navigate(`/settings/${t}`)}
+        />
+      );
+    }
+
+    if (showProjects) {
+      return (
+        <ProjectsView
+          onClose={handleCloseProjects}
+          readOnly={serverAbout?.read_only}
         />
       );
     }
@@ -558,7 +608,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
       <DisconnectBanner />
 
       <div className="flex flex-1 min-h-0">
-        {!showSettings && (
+        {!showSettings && !showProjects && (
           <WorkspaceSidebar
             groups={groups}
             activeId={activeWorkspace?.id ?? null}
@@ -566,9 +616,10 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
             onToggle={() => setSidebarOpen(false)}
             onSelect={handleSelectWorkspace}
             onToggleRepo={toggleRepoCollapsed}
-            onNew={() => { setWizardPrefill(undefined); setShowAddProject(true); }}
+            onNew={() => { setWizardPrefill(undefined); setShowSessionWizard(true); }}
             onCreateSession={handleCreateSession}
             onSettings={handleOpenSettings}
+            onProjects={handleOpenProjects}
             onDeleteSession={handleDeleteSession}
             readOnly={serverAbout?.read_only}
           />
@@ -579,16 +630,16 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
         </div>
       </div>
 
-      {showAddProject && (
+      {showSessionWizard && (
         <SessionWizard
-          onClose={() => { setShowAddProject(false); setWizardPrefill(undefined); }}
+          onClose={() => { setShowSessionWizard(false); setWizardPrefill(undefined); }}
           onCreated={(session?: SessionResponse) => {
             if (session) {
               injectSession(session);
               navigate(`/session/${encodeURIComponent(session.id)}`);
               if (window.innerWidth < 768) setSidebarOpen(false);
             }
-            setShowAddProject(false);
+            setShowSessionWizard(false);
             setWizardPrefill(undefined);
           }}
           prefill={wizardPrefill}

@@ -17,6 +17,7 @@ pub fn runtime_binary() -> &'static str {
         match cfg.sandbox.container_runtime {
             ContainerRuntimeName::AppleContainer => "container",
             ContainerRuntimeName::Docker => "docker",
+            ContainerRuntimeName::Podman => "podman",
         }
     } else {
         "docker"
@@ -28,6 +29,7 @@ pub fn get_container_runtime() -> ContainerRuntime {
         match cfg.sandbox.container_runtime {
             ContainerRuntimeName::AppleContainer => ContainerRuntime::apple_container(),
             ContainerRuntimeName::Docker => ContainerRuntime::docker(),
+            ContainerRuntimeName::Podman => ContainerRuntime::podman(),
         }
     } else {
         ContainerRuntime::default()

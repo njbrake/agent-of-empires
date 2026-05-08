@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import type { SessionResponse, Workspace } from "../lib/types";
 import { isSessionActive } from "../lib/session";
+import { useIdleDecayWindowMs } from "../lib/idleDecay";
 
 /** Strip trailing slashes for consistent grouping */
 function normalizePath(p: string): string {
@@ -8,6 +9,8 @@ function normalizePath(p: string): string {
 }
 
 export function useWorkspaces(sessions: SessionResponse[]): Workspace[] {
+  const idleDecayWindowMs = useIdleDecayWindowMs();
+
   return useMemo(() => {
     const groups = new Map<string, SessionResponse[]>();
 
@@ -29,7 +32,9 @@ export function useWorkspaces(sessions: SessionResponse[]): Workspace[] {
     for (const [id, groupSessions] of groups) {
       const first = groupSessions[0]!;
       const agents = [...new Set(groupSessions.map((s) => s.tool))];
-      const status = groupSessions.some((s) => isSessionActive(s))
+      const status = groupSessions.some((s) =>
+        isSessionActive(s, idleDecayWindowMs),
+      )
         ? "active"
         : "idle";
 
@@ -37,8 +42,11 @@ export function useWorkspaces(sessions: SessionResponse[]): Workspace[] {
       const projectPath = normalizePath(
         first.main_repo_path ?? first.project_path,
       );
-      const displayName =
-        branch ?? projectPath.split("/").pop() ?? projectPath;
+      const title = first.title.trim();
+      const projectName = projectPath.split("/").pop() ?? projectPath;
+      const displayName = groupSessions.length === 1
+        ? title || branch || projectName
+        : branch || projectName;
 
       workspaces.push({
         id,
@@ -59,5 +67,5 @@ export function useWorkspaces(sessions: SessionResponse[]): Workspace[] {
     });
 
     return workspaces;
-  }, [sessions]);
+  }, [idleDecayWindowMs, sessions]);
 }

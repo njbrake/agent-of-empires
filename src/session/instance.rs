@@ -76,8 +76,10 @@ fn status_hook_env_prefix(
     tool: &str,
     agent: Option<&crate::agents::AgentDef>,
 ) -> String {
-    let has_hooks =
-        agent.and_then(|a| a.hook_config.as_ref()).is_some() || tool == "settl" || tool == "hermes";
+    let has_hooks = agent.and_then(|a| a.hook_config.as_ref()).is_some()
+        || tool == "settl"
+        || tool == "hermes"
+        || tool == "kiro";
 
     if has_hooks {
         format!("AOE_INSTANCE_ID={} ", instance_id)
@@ -827,7 +829,8 @@ impl Instance {
         let profile = self.effective_profile();
         let on_launch_hooks = self.resolve_on_launch_hooks(skip_on_launch, &profile);
 
-        let agent = crate::agents::get_agent(&self.tool);
+        let agent = crate::agents::get_agent(&self.tool)
+            .or_else(|| crate::agents::get_agent(&self.detect_as));
         self.install_agent_status_hooks(agent);
 
         let cmd = if self.is_sandboxed() {
@@ -966,6 +969,16 @@ impl Instance {
                 let config_path = home.join(".hermes").join("config.yaml");
                 if let Err(e) = crate::hooks::install_hermes_hooks(&config_path) {
                     tracing::warn!("Failed to install hermes hooks: {}", e);
+                }
+            }
+        } else if self.tool == "kiro" && !self.is_sandboxed() {
+            // Kiro uses its own JSON agent config format; sandbox path is
+            // handled by build_container_config.
+            if let Some(home) = dirs::home_dir() {
+                let config_path = home.join(crate::hooks::KIRO_HOOKS_AGENT_FILE);
+                match crate::hooks::install_kiro_hooks(&config_path) {
+                    Ok(()) => crate::hooks::set_kiro_default_agent_if_builtin(),
+                    Err(e) => tracing::warn!("Failed to install kiro hooks: {}", e),
                 }
             }
         } else if let Some(hook_cfg) = agent.and_then(|a| a.hook_config.as_ref()) {
@@ -2554,6 +2567,10 @@ mod tests {
         assert_eq!(
             status_hook_env_prefix("abc123", "opencode", crate::agents::get_agent("opencode")),
             ""
+        );
+        assert_eq!(
+            status_hook_env_prefix("abc123", "kiro", crate::agents::get_agent("kiro")),
+            "AOE_INSTANCE_ID=abc123 "
         );
     }
 

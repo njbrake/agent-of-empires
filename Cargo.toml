@@ -73,9 +73,10 @@ tokio-util = { version = "0.7", features = ["codec", "compat"] }
 cfg-if = "1.0"
 
 # Process handling
-nix = { version = "0.31", features = ["signal", "process", "net", "fs"] }
+nix = { version = "0.31", features = ["signal", "process", "net", "fs", "resource"] }
 
-# Unicode width
+# Unicode width + normalization (NFKD used to fold accents in title-derived branch names)
+unicode-normalization = "0.1"
 unicode-width = "0.2"
 
 # Terminal spinners

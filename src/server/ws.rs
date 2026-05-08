@@ -7,6 +7,7 @@
 
 use std::io::{Read, Write};
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::{
     extract::{
@@ -123,6 +124,21 @@ pub async fn terminal_ws(
 /// Unique client ID counter for primary-client tracking.
 static CLIENT_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+/// Server-originated Ping cadence. Each Ping elicits a Pong from the
+/// browser, which the recv loop's idle timeout treats as proof of life.
+/// Also keeps NAT mappings warm on mobile carriers that otherwise drop
+/// idle TCP flows.
+const PING_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Drop a WebSocket that has been completely silent for this long. With
+/// PING_INTERVAL of 30s the client should respond with a Pong every 30s,
+/// so 90s tolerates two missed round-trips before tearing down. Without
+/// this, an idle tmux session whose client has gone dark (mobile app
+/// backgrounded, WiFi blip, abrupt close without Close frame) holds its
+/// tmux child + PTY pair until tmux next produces output, which can be
+/// hours. That leak is what exhausts RLIMIT_NOFILE under modest load.
+const IDLE_TIMEOUT: Duration = Duration::from_secs(90);
+
 /// Per-tmux-session map tracking which WebSocket client "owns" resizing.
 ///
 /// Only the primary client's resize messages are applied to its PTY. This
@@ -219,11 +235,15 @@ async fn handle_terminal_ws(
 
     let master = pair.master;
 
-    // Get reader and writer from the PTY master
+    // Get reader and writer from the PTY master. On failure we must kill
+    // and reap the child we just spawned, otherwise the tmux attach
+    // process and its slave PTY descriptor leak until exit.
     let mut reader = match master.try_clone_reader() {
         Ok(r) => r,
         Err(e) => {
             tracing::error!("Failed to clone PTY reader: {}", e);
+            let _ = child.kill();
+            let _ = child.wait();
             return;
         }
     };
@@ -232,6 +252,8 @@ async fn handle_terminal_ws(
         Ok(w) => w,
         Err(e) => {
             tracing::error!("Failed to take PTY writer: {}", e);
+            let _ = child.kill();
+            let _ = child.wait();
             return;
         }
     };
@@ -266,6 +288,12 @@ async fn handle_terminal_ws(
 
     // Task 2: PTY output + control messages -> WebSocket sender
     let send_handle = tokio::spawn(async move {
+        let mut ping_interval = tokio::time::interval(PING_INTERVAL);
+        ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        // Tokio fires the first interval tick immediately; consume it so
+        // we don't ping at connection time (the browser hasn't even
+        // attached its onmessage handler yet on first connect).
+        ping_interval.tick().await;
         loop {
             tokio::select! {
                 data = output_rx.recv() => {
@@ -286,6 +314,15 @@ async fn handle_terminal_ws(
                             }
                         }
                         None => break,
+                    }
+                }
+                _ = ping_interval.tick() => {
+                    // Empty payload: we only care that the client echoes a
+                    // Pong, not what's in it. axum's WebSocket forwards
+                    // client Pongs to the recv loop, which resets its
+                    // idle timer.
+                    if ws_sender.send(Message::Ping(Vec::new().into())).await.is_err() {
+                        break;
                     }
                 }
             }
@@ -311,7 +348,19 @@ async fn handle_terminal_ws(
         // when this client becomes primary.
         let mut pending_size: Option<(u16, u16)> = None;
 
-        while let Some(Ok(msg)) = ws_receiver.next().await {
+        loop {
+            // Wrap each receive in IDLE_TIMEOUT so a silent socket
+            // (mobile backgrounded, WiFi vanished without TCP RST) is
+            // detected and the cleanup path below can kill the tmux
+            // child + free its PTY pair. Server-originated Pings in the
+            // send task elicit Pongs that arrive here and reset the
+            // timer, so live-but-idle sessions stay open indefinitely.
+            let msg = match tokio::time::timeout(IDLE_TIMEOUT, ws_receiver.next()).await {
+                Err(_) => break,
+                Ok(None) => break,
+                Ok(Some(Err(_))) => break,
+                Ok(Some(Ok(msg))) => msg,
+            };
             match msg {
                 Message::Binary(data) => {
                     // Raw bytes from xterm.js -> PTY stdin (blocked in read-only mode)

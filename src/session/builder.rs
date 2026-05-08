@@ -22,6 +22,7 @@ pub struct InstanceParams {
     pub path: String,
     pub group: String,
     pub tool: String,
+    pub worktree_enabled: bool,
     pub worktree_branch: Option<String>,
     pub create_new_branch: bool,
     pub sandbox: bool,
@@ -184,6 +185,7 @@ pub fn create_workspace(
 pub fn build_instance(
     params: InstanceParams,
     existing_titles: &[&str],
+    existing_branches: &[&str],
     profile: &str,
 ) -> Result<BuildResult> {
     // Host-only agents (e.g. settl) cannot run in a sandbox or use worktrees.
@@ -194,17 +196,17 @@ pub fn build_instance(
             params.tool
         );
     }
-    if is_host_only && params.worktree_branch.is_some() {
+    if is_host_only && params.worktree_enabled {
         bail!("{} does not support worktree mode.", params.tool);
     }
 
     if params.sandbox {
         let runtime = containers::get_container_runtime();
         if !runtime.is_available() {
-            bail!("Container runtime is not installed. Please install Docker or Apple Container to use sandbox mode.");
+            bail!("Container runtime is not installed. Please install a supported runtime to use sandbox mode.");
         }
         if !runtime.is_daemon_running() {
-            bail!("Container runtime daemon is not running. Please start Docker or Apple Container to use sandbox mode.");
+            bail!("Container runtime daemon is not running. Please start a supported runtime to use sandbox mode.");
         }
     }
 
@@ -224,8 +226,38 @@ pub fn build_instance(
     let mut created_worktree = None;
     let mut workspace_info = None;
     let mut created_workspace_worktrees: Vec<CreatedWorktree> = Vec::new();
+    let final_title = resolve_title(
+        &params.title,
+        params.worktree_branch.as_deref(),
+        params.worktree_enabled,
+        existing_titles,
+    );
+    let branch_source = resolve_worktree_branch(
+        params.worktree_enabled,
+        params.worktree_branch.as_deref(),
+        &final_title,
+    );
 
-    if let Some(branch) = &params.worktree_branch {
+    let effective_worktree_branch: Option<String> = match branch_source {
+        None => None,
+        Some(BranchSource::Explicit(name)) => Some(name),
+        Some(BranchSource::Derived(name)) => {
+            if params.create_new_branch {
+                let mut taken: std::collections::HashSet<String> =
+                    existing_branches.iter().map(|s| (*s).to_string()).collect();
+                if let Ok(local) =
+                    crate::git::diff::list_branches(std::path::Path::new(&params.path))
+                {
+                    taken.extend(local);
+                }
+                Some(dedupe_branch_name(&name, &taken))
+            } else {
+                Some(name)
+            }
+        }
+    };
+
+    if let Some(branch) = &effective_worktree_branch {
         if !params.extra_repo_paths.is_empty() {
             let primary_path = PathBuf::from(&params.path)
                 .canonicalize()
@@ -332,8 +364,6 @@ pub fn build_instance(
         bail!("Project path is not a directory: {}", final_path);
     }
 
-    let final_title = resolve_title(&params.title, &params.worktree_branch, existing_titles);
-
     let mut instance = Instance::new(&final_title, &final_path);
     instance.group_path = params.group;
     instance.tool = params.tool.clone();
@@ -437,21 +467,139 @@ pub fn cleanup_instance(
     let _ = instance.kill();
 }
 
-/// Resolve the session title: use the provided title, or the worktree branch name,
-/// or fall back to a random civilization name.
-fn resolve_title(
+/// Resolve the session title: use the provided title, then an explicit worktree
+/// branch name, then fall back to a random civilization name.
+pub(crate) fn resolve_title(
     title: &str,
-    worktree_branch: &Option<String>,
+    worktree_branch: Option<&str>,
+    worktree_enabled: bool,
     existing_titles: &[&str],
 ) -> String {
     if title.is_empty() {
-        if let Some(ref branch) = worktree_branch {
-            branch.clone()
+        if worktree_enabled {
+            if let Some(branch) = worktree_branch.filter(|b| !b.trim().is_empty()) {
+                branch.trim().to_string()
+            } else {
+                civilizations::generate_random_title(existing_titles)
+            }
         } else {
             civilizations::generate_random_title(existing_titles)
         }
     } else {
         title.to_string()
+    }
+}
+
+/// Origin of an effective worktree branch name. The builder uses this to decide
+/// whether collisions with existing branches should be resolved by suffixing
+/// (Derived) or surfaced as an error (Explicit).
+#[derive(Debug, Clone)]
+pub(crate) enum BranchSource {
+    /// User typed this name explicitly. Treat conflicts as a hard error.
+    Explicit(String),
+    /// Derived from the session title. Suffix on conflict.
+    Derived(String),
+}
+
+fn resolve_worktree_branch(
+    worktree_enabled: bool,
+    worktree_branch: Option<&str>,
+    final_title: &str,
+) -> Option<BranchSource> {
+    if !worktree_enabled {
+        return None;
+    }
+    Some(
+        match worktree_branch.map(str::trim).filter(|b| !b.is_empty()) {
+            Some(b) => BranchSource::Explicit(b.to_string()),
+            None => BranchSource::Derived(branch_name_from_title(final_title)),
+        },
+    )
+}
+
+/// Find the next branch name not present in `taken`.
+/// If `base` is free, returns it unchanged. Otherwise appends `-2`, `-3`, …
+/// until a free name is found.
+fn dedupe_branch_name(base: &str, taken: &std::collections::HashSet<String>) -> String {
+    if !taken.contains(base) {
+        return base.to_string();
+    }
+    let mut n = 2usize;
+    loop {
+        let candidate = format!("{}-{}", base, n);
+        if !taken.contains(&candidate) {
+            return candidate;
+        }
+        n += 1;
+    }
+}
+
+/// Map Latin ligatures and stroked letters to their conventional ASCII expansions.
+/// NFKD decomposition handles accented characters (é → e + combining acute, then
+/// the combining mark is dropped by the ASCII filter), but ligatures and stroked
+/// letters have no canonical decomposition, so we expand them here.
+fn expand_ligature(c: char) -> Option<&'static str> {
+    Some(match c {
+        'ß' => "ss",
+        'æ' => "ae",
+        'Æ' => "AE",
+        'œ' => "oe",
+        'Œ' => "OE",
+        'ø' => "o",
+        'Ø' => "O",
+        'ł' => "l",
+        'Ł' => "L",
+        'đ' => "d",
+        'Đ' => "D",
+        'þ' => "th",
+        'Þ' => "Th",
+        _ => return None,
+    })
+}
+
+pub(crate) fn branch_name_from_title(title: &str) -> String {
+    use unicode_normalization::UnicodeNormalization;
+
+    let mut branch = String::new();
+    let mut last_was_dash = false;
+
+    let mut push_processed = |ch: char| {
+        let next = if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_') {
+            Some(ch.to_ascii_lowercase())
+        } else if ch.is_whitespace() || ch.is_ascii_punctuation() {
+            Some('-')
+        } else {
+            None
+        };
+
+        if let Some(ch) = next {
+            if ch == '-' {
+                if branch.is_empty() || last_was_dash {
+                    return;
+                }
+                last_was_dash = true;
+            } else {
+                last_was_dash = false;
+            }
+            branch.push(ch);
+        }
+    };
+
+    for ch in title.trim().nfkd() {
+        match expand_ligature(ch) {
+            Some(expansion) => expansion.chars().for_each(&mut push_processed),
+            None => push_processed(ch),
+        }
+    }
+
+    while branch.ends_with('-') {
+        branch.pop();
+    }
+
+    if branch.is_empty() {
+        "session".to_string()
+    } else {
+        branch
     }
 }
 
@@ -461,13 +609,13 @@ mod tests {
 
     #[test]
     fn test_empty_title_with_worktree_uses_branch_name() {
-        let title = resolve_title("", &Some("feature-auth".to_string()), &[]);
+        let title = resolve_title("", Some("feature-auth"), true, &[]);
         assert_eq!(title, "feature-auth");
     }
 
     #[test]
     fn test_empty_title_without_worktree_uses_civilization() {
-        let title = resolve_title("", &None, &[]);
+        let title = resolve_title("", None, false, &[]);
         assert!(
             civilizations::CIVILIZATIONS.contains(&title.as_str()),
             "Expected a civilization name, got: {}",
@@ -477,13 +625,78 @@ mod tests {
 
     #[test]
     fn test_provided_title_with_worktree_keeps_title() {
-        let title = resolve_title("My Session", &Some("feature-auth".to_string()), &[]);
+        let title = resolve_title("My Session", Some("feature-auth"), true, &[]);
         assert_eq!(title, "My Session");
     }
 
     #[test]
     fn test_provided_title_without_worktree_keeps_title() {
-        let title = resolve_title("Custom Name", &None, &[]);
+        let title = resolve_title("Custom Name", None, false, &[]);
         assert_eq!(title, "Custom Name");
+    }
+
+    #[test]
+    fn test_worktree_branch_derived_from_title_when_name_empty() {
+        let branch = resolve_worktree_branch(true, None, "Fix Login Flow").unwrap();
+        assert!(matches!(branch, BranchSource::Derived(ref s) if s == "fix-login-flow"));
+    }
+
+    #[test]
+    fn test_worktree_branch_preserves_explicit_name() {
+        let branch = resolve_worktree_branch(true, Some("feat/auth"), "Fix Login Flow").unwrap();
+        assert!(matches!(branch, BranchSource::Explicit(ref s) if s == "feat/auth"));
+    }
+
+    #[test]
+    fn test_worktree_branch_disabled_without_worktree() {
+        assert!(resolve_worktree_branch(false, Some("feat/auth"), "Fix Login Flow").is_none());
+    }
+
+    #[test]
+    fn test_branch_name_from_title_sanitizes_git_hostile_chars() {
+        assert_eq!(
+            branch_name_from_title("Fix: login @ mobile #42"),
+            "fix-login-mobile-42"
+        );
+        assert_eq!(
+            branch_name_from_title("feat/auth.refactor"),
+            "feat-auth-refactor"
+        );
+    }
+
+    #[test]
+    fn test_branch_name_from_title_folds_latin_diacritics() {
+        assert_eq!(branch_name_from_title("café fix"), "cafe-fix");
+        assert_eq!(branch_name_from_title("naïve solution"), "naive-solution");
+        assert_eq!(branch_name_from_title("Straße"), "strasse");
+        assert_eq!(branch_name_from_title("Łódź"), "lodz");
+        assert_eq!(branch_name_from_title("crème brûlée"), "creme-brulee");
+        assert_eq!(branch_name_from_title("œuvre"), "oeuvre");
+    }
+
+    #[test]
+    fn test_branch_name_from_title_drops_unsupported_scripts() {
+        // CJK and emoji are not in the Latin transliteration table, so they're
+        // stripped (current best-effort behavior). The "session" fallback kicks in
+        // when nothing usable remains.
+        assert_eq!(branch_name_from_title("测试"), "session");
+        assert_eq!(branch_name_from_title("🚀 ship"), "ship");
+    }
+
+    #[test]
+    fn test_dedupe_branch_name_returns_base_when_free() {
+        let taken = std::collections::HashSet::new();
+        assert_eq!(dedupe_branch_name("fix-bug", &taken), "fix-bug");
+    }
+
+    #[test]
+    fn test_dedupe_branch_name_appends_suffix_on_collision() {
+        let mut taken = std::collections::HashSet::new();
+        taken.insert("fix-bug".to_string());
+        assert_eq!(dedupe_branch_name("fix-bug", &taken), "fix-bug-2");
+
+        taken.insert("fix-bug-2".to_string());
+        taken.insert("fix-bug-3".to_string());
+        assert_eq!(dedupe_branch_name("fix-bug", &taken), "fix-bug-4");
     }
 }

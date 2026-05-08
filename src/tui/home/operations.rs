@@ -19,12 +19,19 @@ impl HomeView {
             .filter(|i| i.source_profile == target_profile)
             .map(|i| i.title.as_str())
             .collect();
+        let existing_branches: Vec<&str> = self
+            .instances()
+            .iter()
+            .filter(|i| i.source_profile == target_profile)
+            .filter_map(|i| i.worktree_info.as_ref().map(|w| w.branch.as_str()))
+            .collect();
 
         let params = InstanceParams {
             title: data.title,
             path: data.path,
             group: data.group,
             tool: data.tool,
+            worktree_enabled: data.worktree_enabled,
             worktree_branch: data.worktree_branch,
             create_new_branch: data.create_new_branch,
             sandbox: data.sandbox,
@@ -36,7 +43,12 @@ impl HomeView {
             extra_repo_paths: data.extra_repo_paths,
         };
 
-        let build_result = builder::build_instance(params, &existing_titles, &target_profile)?;
+        let build_result = builder::build_instance(
+            params,
+            &existing_titles,
+            &existing_branches,
+            &target_profile,
+        )?;
         let mut instance = build_result.instance;
         instance.source_profile = target_profile.clone();
         let session_id = instance.id.clone();

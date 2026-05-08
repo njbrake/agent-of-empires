@@ -47,11 +47,16 @@ pub struct AddArgs {
     #[arg(long = "repo", short = 'r')]
     extra_repos: Vec<PathBuf>,
 
-    /// Run session in Docker sandbox
+    /// Names of registered projects to include as extra repos (use with --worktree).
+    /// Resolves against the union of global + profile project registries.
+    #[arg(long = "project")]
+    projects: Vec<String>,
+
+    /// Run session in a container sandbox
     #[arg(short = 's', long)]
     sandbox: bool,
 
-    /// Custom Docker image for sandbox (implies --sandbox)
+    /// Custom container image for sandbox (implies --sandbox)
     #[arg(long = "sandbox-image")]
     sandbox_image: Option<String>,
 
@@ -107,9 +112,22 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
         bail!("Path is not a directory: {}", path.display());
     }
 
-    if !args.extra_repos.is_empty() && args.worktree_branch.is_none() {
-        bail!("--repo requires --worktree to specify a branch\nTip: aoe add /path --repo /other -w branch-name");
+    if (!args.extra_repos.is_empty() || !args.projects.is_empty()) && args.worktree_branch.is_none()
+    {
+        bail!("--repo/--project requires --worktree to specify a branch\nTip: aoe add /path --project repoB -w branch-name");
     }
+
+    let resolved_project_paths: Vec<PathBuf> = if args.projects.is_empty() {
+        Vec::new()
+    } else {
+        crate::session::projects::resolve_names(profile, &args.projects)?
+            .into_iter()
+            .map(|p| PathBuf::from(p.path))
+            .collect()
+    };
+    let mut all_extra_repos: Vec<PathBuf> = Vec::new();
+    all_extra_repos.extend(args.extra_repos.iter().cloned());
+    all_extra_repos.extend(resolved_project_paths);
 
     let config = repo_config::resolve_config_with_repo_or_warn(profile, &path);
 
@@ -128,10 +146,10 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
 
         let branch = branch_raw.trim();
 
-        if !args.extra_repos.is_empty() {
+        if !all_extra_repos.is_empty() {
             let ws_result = builder::create_workspace(
                 &path,
-                &args.extra_repos,
+                &all_extra_repos,
                 branch,
                 args.create_branch,
                 &config.worktree.workspace_path_template,
@@ -433,8 +451,7 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
             if use_sandbox {
                 bail!(
                     "Container runtime is not installed or not accessible.\n\
-                     Install Docker: https://docs.docker.com/get-docker/\n\
-                     Or on macOS: Apple Container\n\
+                     Install a supported runtime to use sandbox mode.\n\
                      Tip: Use 'aoe add' without --sandbox to run directly on host"
                 );
             }

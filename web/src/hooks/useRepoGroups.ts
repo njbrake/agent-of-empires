@@ -2,6 +2,7 @@ import { useCallback, useMemo, useState } from "react";
 import type { Workspace, RepoGroup } from "../lib/types";
 
 const COLLAPSED_KEY_PREFIX = "aoe-repo-collapsed-";
+export const MULTI_REPO_GROUP_ID = "__multi_repo__";
 
 function loadCollapsed(id: string): boolean {
   try {
@@ -9,6 +10,10 @@ function loadCollapsed(id: string): boolean {
   } catch {
     return false;
   }
+}
+
+function isMultiRepoWorkspace(ws: Workspace): boolean {
+  return ws.sessions.some((s) => (s.workspace_repos?.length ?? 0) > 1);
 }
 
 export function useRepoGroups(workspaces: Workspace[]): {
@@ -19,8 +24,13 @@ export function useRepoGroups(workspaces: Workspace[]): {
 
   const groups = useMemo(() => {
     const byRepo = new Map<string, Workspace[]>();
+    const multiRepo: Workspace[] = [];
 
     for (const ws of workspaces) {
+      if (isMultiRepoWorkspace(ws)) {
+        multiRepo.push(ws);
+        continue;
+      }
       const existing = byRepo.get(ws.projectPath);
       if (existing) {
         existing.push(ws);
@@ -29,10 +39,8 @@ export function useRepoGroups(workspaces: Workspace[]): {
       }
     }
 
-    const repoGroups: RepoGroup[] = [];
-
-    for (const [repoPath, repoWorkspaces] of byRepo) {
-      const sorted = [...repoWorkspaces].sort((a, b) => {
+    const sortWorkspaces = (list: Workspace[]) =>
+      [...list].sort((a, b) => {
         if (a.status === "active" && b.status !== "active") return -1;
         if (a.status !== "active" && b.status === "active") return 1;
         const aName = a.branch ?? "";
@@ -40,6 +48,10 @@ export function useRepoGroups(workspaces: Workspace[]): {
         return aName.localeCompare(bName) || a.id.localeCompare(b.id);
       });
 
+    const repoGroups: RepoGroup[] = [];
+
+    for (const [repoPath, repoWorkspaces] of byRepo) {
+      const sorted = sortWorkspaces(repoWorkspaces);
       const hasActive = sorted.some((ws) => ws.status === "active");
       const collapsed =
         collapsedMap[repoPath] ?? loadCollapsed(repoPath);
@@ -58,7 +70,25 @@ export function useRepoGroups(workspaces: Workspace[]): {
       });
     }
 
+    if (multiRepo.length > 0) {
+      const sorted = sortWorkspaces(multiRepo);
+      const hasActive = sorted.some((ws) => ws.status === "active");
+      const collapsed =
+        collapsedMap[MULTI_REPO_GROUP_ID] ?? loadCollapsed(MULTI_REPO_GROUP_ID);
+      repoGroups.push({
+        id: MULTI_REPO_GROUP_ID,
+        repoPath: MULTI_REPO_GROUP_ID,
+        displayName: "Multi-repo",
+        remoteOwner: null,
+        workspaces: sorted,
+        status: hasActive ? "active" : "idle",
+        collapsed,
+      });
+    }
+
     repoGroups.sort((a, b) => {
+      if (a.id === MULTI_REPO_GROUP_ID) return 1;
+      if (b.id === MULTI_REPO_GROUP_ID) return -1;
       if (a.status === "active" && b.status !== "active") return -1;
       if (a.status !== "active" && b.status === "active") return 1;
       return a.displayName.localeCompare(b.displayName) || a.repoPath.localeCompare(b.repoPath);

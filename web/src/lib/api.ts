@@ -6,6 +6,7 @@ import type {
   ProfileInfo,
   BrowseResponse,
   GroupInfo,
+  ProjectInfo,
   DockerStatusResponse,
   CreateSessionRequest,
 } from "./types";
@@ -101,9 +102,16 @@ export function getSessionFileDiff(
 
 // --- Settings ---
 
-export function getSettings(profile?: string): Promise<Record<string, unknown> | null> {
+export interface SettingsResponse {
+  theme?: {
+    idle_decay_minutes?: number;
+  };
+  [key: string]: unknown;
+}
+
+export function fetchSettings(profile?: string): Promise<SettingsResponse | null> {
   const params = profile ? `?profile=${encodeURIComponent(profile)}` : "";
-  return fetchJson<Record<string, unknown>>(`/api/settings${params}`);
+  return fetchJson<SettingsResponse>(`/api/settings${params}`);
 }
 
 export async function updateSettings(
@@ -279,6 +287,63 @@ export async function browseFilesystem(
 
 export async function fetchGroups(): Promise<GroupInfo[]> {
   return (await fetchJson<GroupInfo[]>("/api/groups")) ?? [];
+}
+
+export async function fetchProjects(scope?: "global" | "profile"): Promise<ProjectInfo[]> {
+  const url = scope ? `/api/projects?scope=${scope}` : "/api/projects";
+  return (await fetchJson<ProjectInfo[]>(url)) ?? [];
+}
+
+export async function createProject(body: {
+  path: string;
+  name?: string;
+  scope?: "global" | "profile";
+  allow_override?: boolean;
+}): Promise<{ ok: boolean; error?: string; project?: ProjectInfo }> {
+  try {
+    const res = await fetch("/api/projects", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      const text = await res.text();
+      try {
+        const data = JSON.parse(text);
+        return { ok: false, error: data.message || `Server error (${res.status})` };
+      } catch {
+        return { ok: false, error: text || `Server error (${res.status})` };
+      }
+    }
+    const project = (await res.json()) as ProjectInfo;
+    return { ok: true, project };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+export async function deleteProject(
+  name: string,
+  scope: "global" | "profile",
+): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetch(
+      `/api/projects/${encodeURIComponent(name)}?scope=${scope}`,
+      { method: "DELETE" },
+    );
+    if (!res.ok) {
+      const text = await res.text();
+      try {
+        const data = JSON.parse(text);
+        return { ok: false, error: data.message || `Server error (${res.status})` };
+      } catch {
+        return { ok: false, error: text || `Server error (${res.status})` };
+      }
+    }
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: e instanceof Error ? e.message : String(e) };
+  }
 }
 
 export async function fetchDockerStatus(): Promise<DockerStatusResponse> {

@@ -13,6 +13,7 @@ use super::group::GroupCommands;
 use super::init::InitArgs;
 use super::list::ListArgs;
 use super::profile::ProfileCommands;
+use super::project::ProjectCommands;
 use super::remove::RemoveArgs;
 use super::send::SendArgs;
 #[cfg(feature = "serve")]
@@ -49,7 +50,7 @@ pub struct Cli {
 #[derive(Subcommand)]
 pub enum Commands {
     /// Add a new session
-    Add(AddArgs),
+    Add(Box<AddArgs>),
 
     /// List supported agents and their install status
     Agents,
@@ -87,6 +88,12 @@ pub enum Commands {
     Profile {
         #[command(subcommand)]
         command: Option<ProfileCommands>,
+    },
+
+    /// Manage the project registry used by multi-repo session pickers
+    Project {
+        #[command(subcommand)]
+        command: ProjectCommands,
     },
 
     /// Manage git worktrees for parallel development

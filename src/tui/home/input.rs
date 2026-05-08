@@ -15,7 +15,8 @@ use crate::tui::dialogs::{
     builtin_commands, CommandPaletteDialog, ConfirmDialog, DeleteDialogConfig, DialogResult,
     GroupDeleteOptionsDialog, HookTrustAction, HooksInstallDialog, InfoDialog, NewSessionData,
     NewSessionDialog, NoAgentsAction, PaletteAction, PaletteCommand, PaletteGroup,
-    ProfilePickerAction, RenameDialog, RenameMode, SendMessageDialog, UnifiedDeleteDialog,
+    ProfilePickerAction, ProjectsDialog, RenameDialog, RenameMode, SendMessageDialog,
+    UnifiedDeleteDialog,
 };
 use crate::tui::diff::{DiffAction, DiffView};
 use crate::tui::settings::{SettingsAction, SettingsView};
@@ -437,6 +438,16 @@ impl HomeView {
             return None;
         }
 
+        if let Some(dialog) = &mut self.projects_dialog {
+            match dialog.handle_key(key) {
+                DialogResult::Continue => {}
+                DialogResult::Cancel | DialogResult::Submit(()) => {
+                    self.projects_dialog = None;
+                }
+            }
+            return None;
+        }
+
         if let Some(dialog) = &mut self.profile_picker_dialog {
             match dialog.handle_key(key) {
                 DialogResult::Continue => {}
@@ -627,6 +638,10 @@ impl HomeView {
             }
             KeyCode::Char('P') => {
                 self.show_profile_picker();
+            }
+            KeyCode::Char('p') => {
+                let profile = self.active_profile.as_deref().unwrap_or("default");
+                self.projects_dialog = Some(ProjectsDialog::new(profile));
             }
             #[cfg(feature = "serve")]
             KeyCode::Char('R') => {
@@ -1678,7 +1693,7 @@ impl HomeView {
         let has_hooks = hooks
             .as_ref()
             .is_some_and(|h| !h.on_create.is_empty() || !h.on_launch.is_empty());
-        let has_worktree = data.worktree_branch.as_ref().is_some_and(|b| !b.is_empty());
+        let has_worktree = data.worktree_enabled;
 
         if data.sandbox || has_hooks || has_worktree {
             self.request_creation(data, hooks);
@@ -1750,12 +1765,12 @@ impl HomeView {
                 KeyCode::Char(c.to_ascii_lowercase()),
                 KeyModifiers::NONE,
             )),
-            // Block bare lowercase action letters that would fire without a modifier
-            KeyCode::Char('q' | 'n' | 't' | 'c' | 's' | 'd' | 'x' | 'r' | 'm' | 'o' | 'g')
-                if bare =>
-            {
-                None
-            }
+            // Block bare lowercase action letters that would fire without a modifier.
+            // `p` opens the Projects panel in non-strict mode; in strict mode reach it
+            // via the command palette (Ctrl+K → "Manage projects").
+            KeyCode::Char(
+                'q' | 'n' | 't' | 'c' | 's' | 'd' | 'x' | 'r' | 'm' | 'o' | 'g' | 'p',
+            ) if bare => None,
             // Everything else passes through unchanged (navigation, ?, /, Enter, etc.)
             _ => Some(key),
         }

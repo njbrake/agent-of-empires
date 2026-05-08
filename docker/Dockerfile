@@ -1,5 +1,5 @@
 # aoe-sandbox: Docker image for Agent of Empires sandbox sessions
-# This image provides Claude Code, OpenCode, Mistral Vibe, Hermes, Codex CLI, Gemini CLI, Cursor CLI, Copilot CLI, and Pi in an isolated environment
+# This image provides Claude Code, OpenCode, Mistral Vibe, Hermes, Codex CLI, Gemini CLI, Cursor CLI, Copilot CLI, Pi, and Kiro CLI in an isolated environment
 
 FROM ubuntu:24.04
 
@@ -58,6 +58,9 @@ RUN npm install -g @github/copilot
 # Install Pi (pi.dev)
 RUN npm install -g @mariozechner/pi-coding-agent
 
+# Install Kiro CLI (AWS)
+RUN curl -fsSL https://cli.kiro.dev/install | bash
+
 # Create directories for credential mounts
 RUN mkdir -p /root/.claude \
     /root/.config/opencode \
@@ -70,6 +73,7 @@ RUN mkdir -p /root/.claude \
     /root/.copilot \
     /root/.pi \
     /root/.factory \
+    /root/.kiro \
     /root/.ssh
 
 # Allow Claude Code to use --dangerously-skip-permissions as root

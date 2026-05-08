@@ -20,6 +20,7 @@
 - `tests/`: integration tests (`tests/*.rs`).
 - `tests/e2e/`: end-to-end tests exercising the full `aoe` binary (see E2E Tests below).
 - `docs/`: user-facing documentation and guides.
+- `docs/development/adding-agents.md`: guide for adding a new agent to AoE.
 - `scripts/`: installation and utility scripts.
 - `xtask/`: build automation workspace.
 

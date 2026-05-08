@@ -1,16 +1,21 @@
 import { useCallback, useEffect, useMemo, useReducer } from "react";
 import type { AgentInfo, GroupInfo, ProfileInfo, CreateSessionRequest, SessionResponse } from "../../lib/types";
-import { fetchAgents, fetchGroups, fetchDockerStatus, fetchProfiles, getSettings, createSession } from "../../lib/api";
+import { fetchAgents, fetchGroups, fetchDockerStatus, fetchProfiles, fetchSettings, createSession } from "../../lib/api";
 import { ACP_CAPABLE_TOOLS } from "../../lib/acpCapableTools";
 import { StepIndicator } from "./StepIndicator";
 import type { StepDef, StepId } from "./StepIndicator";
 import { ProjectStep } from "./steps/ProjectStep";
+import { SessionStep } from "./steps/SessionStep";
 import { AgentStep } from "./steps/AgentStep";
 import { ReviewStep } from "./steps/ReviewStep";
+import { applyBranchOverride, getSubmittedBranch } from "./sessionNames";
 
 export interface WizardData {
   path: string;
   title: string;
+  worktreeBranch: string;
+  worktreeBranchDirty: boolean;
+  useWorktree: boolean;
   group: string;
   tool: string;
   profile: string;
@@ -18,6 +23,9 @@ export interface WizardData {
   sandboxEnabled: boolean;
   sandboxImage: string;
   extraEnv: string[];
+  /** Additional repo paths to include in the multi-repo workspace.
+   *  Free-text paths and registered project paths flow into the same list. */
+  extraRepoPaths: string[];
   advancedEnabled: boolean;
   customInstruction: string;
   extraArgs: string;
@@ -51,8 +59,11 @@ type Action =
   | { type: "APPLY_PROFILE_DEFAULTS"; yoloMode: boolean; sandboxEnabled: boolean; tool: string; extraEnv: string[] };
 
 const initialData: WizardData = {
-  path: "", title: "", group: "", tool: "claude", profile: "",
+  path: "", title: "", worktreeBranch: "", worktreeBranchDirty: false,
+  useWorktree: true,
+  group: "", tool: "claude", profile: "",
   yoloMode: false, sandboxEnabled: false, sandboxImage: "", extraEnv: [],
+  extraRepoPaths: [],
   advancedEnabled: false, profileDirty: false,
   customInstruction: "", extraArgs: "", commandOverride: "",
 };
@@ -61,6 +72,17 @@ function reducer(state: WizardState, action: Action): WizardState {
   switch (action.type) {
     case "SET_FIELD": {
       const newData = { ...state.data, [action.field]: action.value };
+      if (action.field === "title" && !state.data.worktreeBranchDirty) {
+        newData.worktreeBranch = String(action.value);
+      }
+      if (action.field === "worktreeBranch") {
+        const override = applyBranchOverride(
+          String(newData.title),
+          String(action.value),
+        );
+        newData.worktreeBranch = override.worktreeBranch;
+        newData.worktreeBranchDirty = override.worktreeBranchDirty;
+      }
       // Mark as dirty when user manually edits agent-step fields after a profile was chosen
       if (state.data.profile && ["yoloMode", "sandboxEnabled", "tool", "extraEnv"].includes(action.field)) {
         newData.profileDirty = true;
@@ -100,11 +122,12 @@ function reducer(state: WizardState, action: Action): WizardState {
   }
 }
 
-// Wizard: project path → agent/settings → review
+// Wizard: project path → session (title + worktree) → agent → review
 function computeSteps(_data: WizardData): StepDef[] {
   return [
     { id: "project", label: "Project" },
-    { id: "agent", label: "Settings" },
+    { id: "session", label: "Session" },
+    { id: "agent", label: "Agent" },
     { id: "review", label: "Review" },
   ];
 }
@@ -147,7 +170,7 @@ export function SessionWizard({ onClose, onCreated, prefill, experimentalCockpit
     : initialData;
 
   const [state, dispatch] = useReducer(reducer, {
-    currentStep: prefill?.skipToReview ? 2 : (prefill?.path ? 1 : 0),
+    currentStep: prefill?.skipToReview ? 3 : (prefill?.path ? 1 : 0),
     data: prefillData, isSubmitting: false, error: null,
     agents: [], groups: [], profiles: [], dockerAvailable: false,
   });
@@ -158,14 +181,13 @@ export function SessionWizard({ onClose, onCreated, prefill, experimentalCockpit
   const currentStepDef = steps[state.currentStep];
   const isFirst = state.currentStep === 0;
   const isLast = currentStepDef?.id === "review";
-  const modalTitle = prefill?.skipToReview ? "New session" : "Add project";
 
   useEffect(() => {
     fetchAgents().then((a) => dispatch({ type: "SET_AGENTS", agents: a }));
     fetchGroups().then((g) => dispatch({ type: "SET_GROUPS", groups: g }));
     fetchProfiles().then((p) => dispatch({ type: "SET_PROFILES", profiles: p }));
     fetchDockerStatus().then((d) => dispatch({ type: "SET_DOCKER", available: d.available }));
-    getSettings().then((s) => {
+    fetchSettings().then((s) => {
       if (s) {
         const sandbox = s.sandbox as Record<string, unknown> | undefined;
         const img = (sandbox?.default_image as string) || "";
@@ -193,11 +215,12 @@ export function SessionWizard({ onClose, onCreated, prefill, experimentalCockpit
       path: d.path, tool: d.tool,
       title: d.title || undefined, group: d.group || undefined,
       yolo_mode: d.yoloMode,
-      worktree_branch: d.title || "",
-      create_new_branch: true,
+      worktree_branch: d.useWorktree ? getSubmittedBranch(d.title, d.worktreeBranch) : undefined,
+      create_new_branch: d.useWorktree,
       sandbox: d.sandboxEnabled,
       sandbox_image: d.sandboxEnabled ? d.sandboxImage : undefined,
       extra_env: d.sandboxEnabled && d.extraEnv.length > 0 ? d.extraEnv.filter(Boolean) : undefined,
+      extra_repo_paths: d.extraRepoPaths.length > 0 ? d.extraRepoPaths : undefined,
       extra_args: d.extraArgs || undefined,
       command_override: d.commandOverride || undefined,
       custom_instruction: d.customInstruction || undefined,
@@ -222,6 +245,8 @@ export function SessionWizard({ onClose, onCreated, prefill, experimentalCockpit
     switch (currentStepDef?.id) {
       case "project":
         return <ProjectStep data={state.data} onChange={handleChange} initialTab={prefill?.initialTab} />;
+      case "session":
+        return <SessionStep data={state.data} onChange={handleChange} />;
       case "agent":
         return (
           <AgentStep
@@ -235,7 +260,7 @@ export function SessionWizard({ onClose, onCreated, prefill, experimentalCockpit
           />
         );
       case "review":
-        return <ReviewStep data={state.data} isSubmitting={state.isSubmitting} error={state.error} onSubmit={handleSubmit} onJumpTo={jumpTo} steps={steps} />;
+        return <ReviewStep data={state.data} onChange={handleChange} isSubmitting={state.isSubmitting} error={state.error} onSubmit={handleSubmit} onJumpTo={jumpTo} steps={steps} />;
       default:
         return null;
     }
@@ -248,7 +273,7 @@ export function SessionWizard({ onClose, onCreated, prefill, experimentalCockpit
       <div className="absolute inset-0 bg-black/60" onClick={onClose} />
       <div className="relative w-full max-w-lg bg-surface-800 border border-surface-700/30 rounded-xl flex flex-col max-h-[min(720px,90vh)]">
         <div className="flex items-center justify-between px-5 py-4 border-b border-surface-700/20">
-          <h1 className="text-sm font-medium text-text-secondary">{modalTitle}</h1>
+          <h1 className="text-sm font-medium text-text-secondary">New session</h1>
           <button onClick={onClose} className="w-8 h-8 flex items-center justify-center text-text-dim hover:text-text-secondary cursor-pointer rounded-md hover:bg-surface-700/50 transition-colors" aria-label="Close">&times;</button>
         </div>
         <div className="flex-1 overflow-y-auto px-5 py-5">

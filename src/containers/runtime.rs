@@ -15,6 +15,7 @@ use super::runtime_base::RuntimeBase;
 pub enum RuntimeKind {
     Docker,
     AppleContainer,
+    Podman,
 }
 
 pub struct ContainerRuntime {
@@ -34,6 +35,13 @@ impl ContainerRuntime {
         Self {
             base: RuntimeBase::APPLE_CONTAINER,
             kind: RuntimeKind::AppleContainer,
+        }
+    }
+
+    pub fn podman() -> Self {
+        Self {
+            base: RuntimeBase::PODMAN,
+            kind: RuntimeKind::Podman,
         }
     }
 }
@@ -79,7 +87,7 @@ impl ContainerRuntimeInterface for ContainerRuntime {
 
     fn does_container_exist(&self, name: &str) -> Result<bool> {
         match self.kind {
-            RuntimeKind::Docker => {
+            RuntimeKind::Docker | RuntimeKind::Podman => {
                 let output = self
                     .base
                     .command()
@@ -99,7 +107,7 @@ impl ContainerRuntimeInterface for ContainerRuntime {
 
     fn is_container_running(&self, name: &str) -> Result<bool> {
         match self.kind {
-            RuntimeKind::Docker => {
+            RuntimeKind::Docker | RuntimeKind::Podman => {
                 let output = self
                     .base
                     .command()
@@ -162,9 +170,9 @@ impl ContainerRuntimeInterface for ContainerRuntime {
 
     fn exec_command(&self, name: &str, options: Option<&str>, cmd: &str) -> String {
         match self.kind {
-            RuntimeKind::Docker => {
-                // Docker containers inherit a full PATH, so the command can be
-                // appended directly without wrapping in `sh -c`.
+            RuntimeKind::Docker | RuntimeKind::Podman => {
+                // Docker/Podman containers inherit a full PATH, so the command
+                // can be appended directly without wrapping in `sh -c`.
                 self.base.exec_command(name, options, cmd)
             }
             RuntimeKind::AppleContainer => {
@@ -200,7 +208,7 @@ impl ContainerRuntimeInterface for ContainerRuntime {
 
     fn batch_running_states(&self, prefix: &str) -> HashMap<String, bool> {
         match self.kind {
-            RuntimeKind::Docker => {
+            RuntimeKind::Docker | RuntimeKind::Podman => {
                 let output = self
                     .base
                     .command()
@@ -226,7 +234,7 @@ impl ContainerRuntimeInterface for ContainerRuntime {
                         let mut parts = line.splitn(2, '\t');
                         let name = parts.next()?.trim();
                         let state = parts.next()?.trim();
-                        // Docker's --filter name= does substring matching, so
+                        // Docker/Podman's --filter name= does substring matching, so
                         // post-filter to ensure we only include exact prefix matches.
                         if name.is_empty() || !name.starts_with(prefix) {
                             return None;
@@ -265,11 +273,24 @@ mod tests {
         }
     }
 
+    fn podman_if_available() -> Option<ContainerRuntime> {
+        let rt = ContainerRuntime::podman();
+        if !rt.is_available() || !rt.is_daemon_running() {
+            None
+        } else {
+            Some(rt)
+        }
+    }
+
     #[test]
     fn test_image_exists_locally_with_common_image() {
-        for rt in [docker_if_available(), apple_container_if_available()]
-            .into_iter()
-            .flatten()
+        for rt in [
+            docker_if_available(),
+            apple_container_if_available(),
+            podman_if_available(),
+        ]
+        .into_iter()
+        .flatten()
         {
             rt.pull_image("hello-world").unwrap();
             assert!(rt.image_exists_locally("hello-world"));
@@ -278,9 +299,13 @@ mod tests {
 
     #[test]
     fn test_image_exists_locally_nonexistent() {
-        for rt in [docker_if_available(), apple_container_if_available()]
-            .into_iter()
-            .flatten()
+        for rt in [
+            docker_if_available(),
+            apple_container_if_available(),
+            podman_if_available(),
+        ]
+        .into_iter()
+        .flatten()
         {
             assert!(!rt.image_exists_locally("nonexistent-image-that-does-not-exist:v999"));
         }
@@ -288,9 +313,13 @@ mod tests {
 
     #[test]
     fn test_ensure_image_uses_local_image() {
-        for rt in [docker_if_available(), apple_container_if_available()]
-            .into_iter()
-            .flatten()
+        for rt in [
+            docker_if_available(),
+            apple_container_if_available(),
+            podman_if_available(),
+        ]
+        .into_iter()
+        .flatten()
         {
             rt.pull_image("hello-world").unwrap();
             assert!(rt.ensure_image("hello-world").is_ok());
@@ -299,13 +328,46 @@ mod tests {
 
     #[test]
     fn test_ensure_image_fails_for_nonexistent_remote() {
-        for rt in [docker_if_available(), apple_container_if_available()]
-            .into_iter()
-            .flatten()
+        for rt in [
+            docker_if_available(),
+            apple_container_if_available(),
+            podman_if_available(),
+        ]
+        .into_iter()
+        .flatten()
         {
             assert!(rt
                 .ensure_image("nonexistent-image-that-does-not-exist:v999")
                 .is_err());
         }
+    }
+
+    #[test]
+    fn test_podman_runtime_uses_podman_binary() {
+        let rt = ContainerRuntime::podman();
+        assert_eq!(rt.kind, RuntimeKind::Podman);
+        assert_eq!(rt.base.binary, "podman");
+        assert_eq!(rt.base.name, "Podman");
+    }
+
+    #[test]
+    fn test_podman_supports_docker_compatible_features() {
+        // Podman is a drop-in for Docker, so it must support the same feature
+        // set the shared base relies on. If this regresses, the create-args
+        // builder will silently produce broken output for podman users.
+        let rt = ContainerRuntime::podman();
+        assert!(rt.base.supports_read_only_volumes);
+        assert!(rt.base.supports_remove_volumes);
+        assert_eq!(rt.base.remove_subcommand, "rm");
+        assert_eq!(rt.base.pull_prefix, &["pull"]);
+    }
+
+    #[test]
+    fn test_podman_exec_command_format_matches_docker() {
+        // The CLI surfaces this string to the user via tmux; it must not
+        // wrap the command in `sh -c` the way Apple Container does.
+        let rt = ContainerRuntime::podman();
+        let cmd = rt.exec_command("aoe-sandbox-test1234", None, "claude");
+        assert_eq!(cmd, "podman exec -it aoe-sandbox-test1234 claude");
     }
 }

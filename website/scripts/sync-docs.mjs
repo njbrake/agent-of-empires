@@ -82,6 +82,13 @@ const PAGES = [
     description:
       "Persist and resume Claude Code conversations across reboots, upgrades, and runtime rotations.",
   },
+  {
+    source: "docs/guides/multi-repo-workspaces.md",
+    dest: "guides/multi-repo-workspaces.md",
+    title: "Multi-Repo Workspaces",
+    description:
+      "Drive a single Agent of Empires session across several git repositories with the project registry and multi-select pickers.",
+  },
 
   // --- Docs pages (docs/ → pages/docs/) ---
   {
@@ -110,6 +117,13 @@ const PAGES = [
     dest: "docs/development.md",
     title: "Development",
     description: "Build, run, and test Agent of Empires from source.",
+  },
+  {
+    source: "docs/development/adding-agents.md",
+    dest: "docs/development/adding-agents.md",
+    title: "Adding a New Agent",
+    description:
+      "Step-by-step guide for adding support for a new AI coding agent to AoE.",
   },
   {
     source: "docs/sounds.md",
@@ -156,6 +170,7 @@ const URL_MAP = {
   "docs/quick-start.md": "/docs/quick-start/",
   "docs/sounds.md": "/docs/sounds/",
   "docs/development.md": "/docs/development/",
+  "docs/development/adding-agents.md": "/docs/development/adding-agents/",
   "docs/guides/configuration.md": "/docs/guides/configuration/",
   "docs/cli/reference.md": "/docs/cli/reference/",
   "docs/cockpit.md": "/docs/cockpit/",
@@ -170,6 +185,7 @@ const URL_MAP = {
   "docs/guides/worktrees.md": "/guides/worktrees/",
   "docs/guides/agent-override.md": "/guides/agent-override/",
   "docs/guides/session-resume.md": "/guides/session-resume/",
+  "docs/guides/multi-repo-workspaces.md": "/guides/multi-repo-workspaces/",
 };
 
 const GITHUB_BASE =

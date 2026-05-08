@@ -563,6 +563,12 @@ pub fn detect_hermes_status(_content: &str) -> Status {
     Status::Idle
 }
 
+/// Kiro CLI status is detected via hooks (JSON-based), not tmux pane parsing.
+/// This stub exists so the agent registry has a valid function pointer.
+pub fn detect_kiro_status(_content: &str) -> Status {
+    Status::Idle
+}
+
 /// settl status is detected via hooks (TOML-based), not tmux pane parsing.
 /// This stub exists so the agent registry has a valid function pointer.
 pub fn detect_settl_status(_content: &str) -> Status {
@@ -1049,5 +1055,11 @@ mod tests {
     fn test_detect_settl_status_is_stub() {
         // settl uses hook-based detection; the stub always returns Idle
         assert_eq!(detect_settl_status("anything"), Status::Idle);
+    }
+
+    #[test]
+    fn test_detect_kiro_status_is_stub() {
+        // Kiro CLI uses hook-based detection; the stub always returns Idle
+        assert_eq!(detect_kiro_status("anything"), Status::Idle);
     }
 }

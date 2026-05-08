@@ -232,6 +232,18 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
         preserve_files: &[],
         clean_files: &[],
     },
+    AgentConfigMount {
+        tool_name: "kiro",
+        host_rel: ".kiro",
+        container_suffix: ".kiro",
+        skip_entries: &["sandbox", "sessions", "logs", "cache"],
+        seed_files: &[],
+        copy_dirs: &["agents", "steering", "prompts", "settings"],
+        keychain_credential: None,
+        home_seed_files: &[],
+        preserve_files: &[],
+        clean_files: &[],
+    },
 ];
 
 /// Sync host agent config into the shared sandbox directory. Copies top-level files
@@ -875,6 +887,43 @@ pub(crate) fn build_container_config(
         }
     }
 
+    // Mount GCP credentials into the well-known ADC path for Claude+Vertex sessions.
+    // Gated on `tool == "claude"` because `CLAUDE_CODE_USE_VERTEX` is Claude-specific;
+    // there's no reason to expose GCP creds to other agents (opencode, codex, etc.)
+    // just because the user has the flag exported globally.
+    // `GOOGLE_APPLICATION_CREDENTIALS` is not forwarded as an env var; client libraries
+    // discover the well-known path automatically.
+    if tool == "claude" && super::environment::host_vertex_enabled() {
+        let container_cred_path = format!(
+            "{}/.config/gcloud/application_default_credentials.json",
+            CONTAINER_HOME
+        );
+        if let Ok(cred_path) = std::env::var("GOOGLE_APPLICATION_CREDENTIALS") {
+            let cred_file = std::path::Path::new(&cred_path);
+            if cred_file.exists() {
+                volumes.push(VolumeMount {
+                    host_path: cred_path.clone(),
+                    container_path: container_cred_path,
+                    read_only: true,
+                });
+            } else {
+                tracing::warn!(
+                    "GOOGLE_APPLICATION_CREDENTIALS points to non-existent file: {}",
+                    cred_path
+                );
+            }
+        } else {
+            let adc_path = home.join(".config/gcloud/application_default_credentials.json");
+            if adc_path.exists() {
+                volumes.push(VolumeMount {
+                    host_path: adc_path.to_string_lossy().to_string(),
+                    container_path: container_cred_path,
+                    read_only: true,
+                });
+            }
+        }
+    }
+
     // Sync host agent config into a shared sandbox directory per agent and
     // bind-mount it read-write. Only mount the config for the active tool.
     // Agent definitions are in AGENT_CONFIG_MOUNTS -- add new agents there, not here.
@@ -924,10 +973,11 @@ pub(crate) fn build_container_config(
         .unwrap_or(true);
     if let Some(agent) = crate::agents::get_agent(tool) {
         if hooks_enabled {
-            // Hermes uses a YAML config; the generic hook_config path below
-            // assumes a JSON settings.json schema, so it's special-cased here.
+            // Hermes (YAML) and Kiro (per-agent JSON) use schemas the generic
+            // hook_config path below cannot emit, so they're special-cased here.
             let hermes_hooks = tool == "hermes";
-            if hermes_hooks || agent.hook_config.is_some() {
+            let kiro_hooks = tool == "kiro";
+            if hermes_hooks || kiro_hooks || agent.hook_config.is_some() {
                 let hook_dir = crate::hooks::hook_status_dir(instance_id);
                 if let Err(e) = std::fs::create_dir_all(&hook_dir) {
                     tracing::warn!(
@@ -948,6 +998,12 @@ pub(crate) fn build_container_config(
                 let config_file = sandbox_dir.join("config.yaml");
                 if let Err(e) = crate::hooks::install_hermes_hooks(&config_file) {
                     tracing::warn!("Failed to install hermes hooks in sandbox: {}", e);
+                }
+            } else if kiro_hooks {
+                let sandbox_dir = home.join(".kiro").join(SANDBOX_SUBDIR);
+                let config_file = sandbox_dir.join("agents").join("aoe-hooks.json");
+                if let Err(e) = crate::hooks::install_kiro_hooks(&config_file) {
+                    tracing::warn!("Failed to install kiro hooks in sandbox: {}", e);
                 }
             } else if let Some(hook_cfg) = &agent.hook_config {
                 // Install hooks into sandbox settings.json for the containerized agent.
@@ -2753,5 +2809,191 @@ volume_ignores = ["target"]
 
         // Should not panic or error when files don't exist
         prepare_sandbox_dir(&mount, home.path()).unwrap();
+    }
+
+    // --- GCP credential mount tests ---
+    //
+    // These exercise the Vertex AI cred mount inside `build_container_config`.
+    // They use `serial_test::serial` because they mutate process-wide env vars,
+    // and isolate `HOME`/`XDG_CONFIG_HOME` so global config doesn't bleed in.
+
+    fn build_minimal_sandbox_info() -> super::super::instance::SandboxInfo {
+        super::super::instance::SandboxInfo {
+            enabled: true,
+            container_id: None,
+            image: "test:latest".to_string(),
+            container_name: "test-container".to_string(),
+            extra_env: None,
+            custom_instruction: None,
+        }
+    }
+
+    fn write_adc_at(home: &std::path::Path) -> std::path::PathBuf {
+        let adc_dir = home.join(".config").join("gcloud");
+        fs::create_dir_all(&adc_dir).unwrap();
+        let adc_path = adc_dir.join("application_default_credentials.json");
+        fs::write(&adc_path, r#"{"type":"authorized_user"}"#).unwrap();
+        adc_path
+    }
+
+    fn run_build_for_vertex_test(tool: &str, project_dir: &std::path::Path) -> ContainerConfig {
+        git2::Repository::init(project_dir).unwrap();
+        let info = build_minimal_sandbox_info();
+        build_container_config(
+            project_dir.to_str().unwrap(),
+            &info,
+            tool,
+            false,
+            "test-instance-id",
+            None,
+            "",
+        )
+        .unwrap()
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_vertex_mounts_default_adc_when_flag_set_and_tool_is_claude() {
+        let temp_home = TempDir::new().unwrap();
+        std::env::set_var("HOME", temp_home.path());
+        #[cfg(target_os = "linux")]
+        std::env::set_var("XDG_CONFIG_HOME", temp_home.path().join(".config"));
+        std::env::set_var("CLAUDE_CODE_USE_VERTEX", "1");
+        std::env::remove_var("GOOGLE_APPLICATION_CREDENTIALS");
+        let adc_path = write_adc_at(temp_home.path());
+
+        let project_dir = TempDir::new().unwrap();
+        let config = run_build_for_vertex_test("claude", project_dir.path());
+
+        let target = "/root/.config/gcloud/application_default_credentials.json";
+        let mount = config
+            .volumes
+            .iter()
+            .find(|v| v.container_path == target)
+            .expect("expected ADC mount when Vertex flag is set");
+        assert_eq!(mount.host_path, adc_path.to_string_lossy());
+        assert!(mount.read_only);
+
+        std::env::remove_var("CLAUDE_CODE_USE_VERTEX");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_vertex_mounts_custom_path_from_google_application_credentials() {
+        let temp_home = TempDir::new().unwrap();
+        std::env::set_var("HOME", temp_home.path());
+        #[cfg(target_os = "linux")]
+        std::env::set_var("XDG_CONFIG_HOME", temp_home.path().join(".config"));
+        std::env::set_var("CLAUDE_CODE_USE_VERTEX", "1");
+
+        let cred_dir = TempDir::new().unwrap();
+        let custom_cred = cred_dir.path().join("custom-key.json");
+        fs::write(&custom_cred, r#"{"type":"service_account"}"#).unwrap();
+        std::env::set_var("GOOGLE_APPLICATION_CREDENTIALS", &custom_cred);
+
+        let project_dir = TempDir::new().unwrap();
+        let config = run_build_for_vertex_test("claude", project_dir.path());
+
+        let target = "/root/.config/gcloud/application_default_credentials.json";
+        let mount = config
+            .volumes
+            .iter()
+            .find(|v| v.container_path == target)
+            .expect("expected mount at well-known ADC path");
+        assert_eq!(mount.host_path, custom_cred.to_string_lossy());
+        assert!(mount.read_only);
+
+        std::env::remove_var("CLAUDE_CODE_USE_VERTEX");
+        std::env::remove_var("GOOGLE_APPLICATION_CREDENTIALS");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_vertex_skips_mount_when_flag_unset() {
+        let temp_home = TempDir::new().unwrap();
+        std::env::set_var("HOME", temp_home.path());
+        #[cfg(target_os = "linux")]
+        std::env::set_var("XDG_CONFIG_HOME", temp_home.path().join(".config"));
+        std::env::remove_var("CLAUDE_CODE_USE_VERTEX");
+        std::env::remove_var("GOOGLE_APPLICATION_CREDENTIALS");
+        let _ = write_adc_at(temp_home.path());
+
+        let project_dir = TempDir::new().unwrap();
+        let config = run_build_for_vertex_test("claude", project_dir.path());
+
+        let target = "/root/.config/gcloud/application_default_credentials.json";
+        assert!(
+            !config.volumes.iter().any(|v| v.container_path == target),
+            "ADC must not be mounted when Vertex flag is unset",
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_vertex_skips_mount_when_tool_is_not_claude() {
+        let temp_home = TempDir::new().unwrap();
+        std::env::set_var("HOME", temp_home.path());
+        #[cfg(target_os = "linux")]
+        std::env::set_var("XDG_CONFIG_HOME", temp_home.path().join(".config"));
+        std::env::set_var("CLAUDE_CODE_USE_VERTEX", "1");
+        std::env::remove_var("GOOGLE_APPLICATION_CREDENTIALS");
+        let _ = write_adc_at(temp_home.path());
+
+        let project_dir = TempDir::new().unwrap();
+        let config = run_build_for_vertex_test("opencode", project_dir.path());
+
+        let target = "/root/.config/gcloud/application_default_credentials.json";
+        assert!(
+            !config.volumes.iter().any(|v| v.container_path == target),
+            "ADC must not be mounted for non-claude tools even when Vertex flag is set",
+        );
+
+        std::env::remove_var("CLAUDE_CODE_USE_VERTEX");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_vertex_skips_mount_when_flag_is_empty_string() {
+        let temp_home = TempDir::new().unwrap();
+        std::env::set_var("HOME", temp_home.path());
+        #[cfg(target_os = "linux")]
+        std::env::set_var("XDG_CONFIG_HOME", temp_home.path().join(".config"));
+        std::env::set_var("CLAUDE_CODE_USE_VERTEX", "");
+        std::env::remove_var("GOOGLE_APPLICATION_CREDENTIALS");
+        let _ = write_adc_at(temp_home.path());
+
+        let project_dir = TempDir::new().unwrap();
+        let config = run_build_for_vertex_test("claude", project_dir.path());
+
+        let target = "/root/.config/gcloud/application_default_credentials.json";
+        assert!(
+            !config.volumes.iter().any(|v| v.container_path == target),
+            "Empty CLAUDE_CODE_USE_VERTEX must be treated as unset",
+        );
+
+        std::env::remove_var("CLAUDE_CODE_USE_VERTEX");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_vertex_skips_mount_when_adc_file_missing() {
+        let temp_home = TempDir::new().unwrap();
+        std::env::set_var("HOME", temp_home.path());
+        #[cfg(target_os = "linux")]
+        std::env::set_var("XDG_CONFIG_HOME", temp_home.path().join(".config"));
+        std::env::set_var("CLAUDE_CODE_USE_VERTEX", "1");
+        std::env::remove_var("GOOGLE_APPLICATION_CREDENTIALS");
+        // Note: no ADC file written
+
+        let project_dir = TempDir::new().unwrap();
+        let config = run_build_for_vertex_test("claude", project_dir.path());
+
+        let target = "/root/.config/gcloud/application_default_credentials.json";
+        assert!(
+            !config.volumes.iter().any(|v| v.container_path == target),
+            "ADC must not be mounted when the host file does not exist",
+        );
+
+        std::env::remove_var("CLAUDE_CODE_USE_VERTEX");
     }
 }

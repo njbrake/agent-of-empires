@@ -36,6 +36,14 @@ export interface SessionResponse {
    *  ~/.claude/settings.json). The mobile rendering path uses this to
    *  skip scrollback-tracking workarounds that target tmux copy-mode. */
   claude_fullscreen: boolean;
+  /** Repos in the multi-repo workspace. Empty array for single-repo sessions. */
+  workspace_repos: WorkspaceRepoSummary[];
+}
+
+export interface WorkspaceRepoSummary {
+  name: string;
+  source_path: string;
+  branch: string;
 }
 
 export interface CleanupDefaults {
@@ -191,6 +199,13 @@ export interface BrowseResponse {
 export interface GroupInfo {
   path: string;
   session_count: number;
+}
+
+/** Project info returned by /api/projects */
+export interface ProjectInfo {
+  name: string;
+  path: string;
+  scope: "global" | "profile";
 }
 
 /** Docker status returned by /api/docker/status */

@@ -33,6 +33,10 @@ This document contains the help content for the `aoe` command-line program.
 * [`aoe profile delete`↴](#aoe-profile-delete)
 * [`aoe profile rename`↴](#aoe-profile-rename)
 * [`aoe profile default`↴](#aoe-profile-default)
+* [`aoe project`↴](#aoe-project)
+* [`aoe project list`↴](#aoe-project-list)
+* [`aoe project add`↴](#aoe-project-add)
+* [`aoe project remove`↴](#aoe-project-remove)
 * [`aoe worktree`↴](#aoe-worktree)
 * [`aoe worktree list`↴](#aoe-worktree-list)
 * [`aoe worktree info`↴](#aoe-worktree-info)
@@ -72,6 +76,7 @@ Run without arguments to launch the TUI dashboard.
 * `session` — Manage session lifecycle (start, stop, attach, etc.)
 * `group` — Manage groups for organizing sessions
 * `profile` — Manage profiles (separate workspaces)
+* `project` — Manage the project registry used by multi-repo session pickers
 * `worktree` — Manage git worktrees for parallel development
 * `tmux` — tmux integration utilities
 * `sounds` — Manage sound effects for agent state transitions
@@ -109,8 +114,9 @@ Add a new session
 * `-w`, `--worktree <WORKTREE_BRANCH>` — Create session in a git worktree for the specified branch
 * `-b`, `--new-branch` — Create a new branch (use with --worktree)
 * `-r`, `--repo <EXTRA_REPOS>` — Additional repositories for multi-repo workspace (use with --worktree)
-* `-s`, `--sandbox` — Run session in Docker sandbox
-* `--sandbox-image <SANDBOX_IMAGE>` — Custom Docker image for sandbox (implies --sandbox)
+* `--project <PROJECTS>` — Names of registered projects to include as extra repos (use with --worktree). Resolves against the union of global + profile project registries
+* `-s`, `--sandbox` — Run session in a container sandbox
+* `--sandbox-image <SANDBOX_IMAGE>` — Custom container image for sandbox (implies --sandbox)
 * `-y`, `--yolo` — Enable YOLO mode (skip permission prompts)
 * `--trust-hooks` — Automatically trust repository hooks without prompting
 * `--extra-args <EXTRA_ARGS>` — Extra arguments to append after the agent binary
@@ -495,6 +501,78 @@ Show or set default profile
 ###### **Arguments:**
 
 * `<NAME>` — Profile name (optional, shows current if not provided)
+
+
+
+## `aoe project`
+
+Manage the project registry used by multi-repo session pickers
+
+**Usage:** `aoe project <COMMAND>`
+
+###### **Subcommands:**
+
+* `list` — List registered projects
+* `add` — Add a project to the registry
+* `remove` — Remove a project from the registry
+
+
+
+## `aoe project list`
+
+List registered projects
+
+**Usage:** `aoe project list [OPTIONS]`
+
+###### **Options:**
+
+* `--json` — Output as JSON
+* `--scope <SCOPE>` — Filter by scope (default: all)
+
+  Default value: `all`
+
+  Possible values: `all`, `global`, `profile`
+
+
+
+
+## `aoe project add`
+
+Add a project to the registry
+
+**Usage:** `aoe project add [OPTIONS] <PATH>`
+
+###### **Arguments:**
+
+* `<PATH>` — Path to the git repository
+
+###### **Options:**
+
+* `--name <NAME>` — Display name (defaults to the directory's basename)
+* `--scope <SCOPE>` — Registry scope. When omitted: defaults to GLOBAL, unless `-p <profile>` was passed at the top level, in which case it defaults to PROFILE (scoping the entry to that profile only)
+
+  Possible values: `global`, `profile`
+
+* `--allow-override` — Allow registering this path even if it already exists in the other scope. Without this flag the command errors when the same canonical path is already registered globally (when adding to profile) or in any profile (when adding globally). When override is allowed and both scopes hold the same path, the profile entry shadows the global one
+
+
+
+## `aoe project remove`
+
+Remove a project from the registry
+
+**Usage:** `aoe project remove [OPTIONS] <NAME_OR_PATH>`
+
+###### **Arguments:**
+
+* `<NAME_OR_PATH>` — Project name or path to remove
+
+###### **Options:**
+
+* `--scope <SCOPE>` — Registry scope to remove from. When omitted: defaults to GLOBAL, unless `-p <profile>` was passed at the top level, in which case it defaults to PROFILE
+
+  Possible values: `global`, `profile`
+
 
 
 

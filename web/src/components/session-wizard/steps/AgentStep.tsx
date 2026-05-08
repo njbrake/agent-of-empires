@@ -1,11 +1,13 @@
 import { useCallback, useState } from "react";
 import type { AgentInfo, ProfileInfo } from "../../../lib/types";
-import { getSettings } from "../../../lib/api";
+import { fetchSettings } from "../../../lib/api";
 import { ACP_CAPABLE_TOOLS } from "../../../lib/acpCapableTools";
 
 interface WizardData {
   tool: string;
   title: string;
+  worktreeBranch: string;
+  useWorktree: boolean;
   profile: string;
   profileDirty: boolean;
   sandboxEnabled: boolean;
@@ -16,7 +18,6 @@ interface WizardData {
   customInstruction: string;
   extraArgs: string;
   commandOverride: string;
-  group: string;
   [key: string]: unknown;
 }
 
@@ -101,7 +102,7 @@ export function AgentStep({ data, onChange, agents, profiles, dockerAvailable, o
 
     // Load profile-resolved settings (global + profile overrides merged)
     try {
-      const settings = await getSettings(profileName);
+      const settings = await fetchSettings(profileName);
       if (settings) {
         const session = settings.session as Record<string, unknown> | undefined;
         const sandbox = settings.sandbox as Record<string, unknown> | undefined;
@@ -236,7 +237,10 @@ export function AgentStep({ data, onChange, agents, profiles, dockerAvailable, o
       </div>
 
       {isHostOnly && (
-        <p className="text-xs text-status-warning mt-3 mb-3">{selectedAgent?.name} can only run on the host. Container option is disabled.</p>
+        <p className="text-xs text-status-warning mt-3 mb-3">
+          {selectedAgent?.name} can only run on the host. Container is disabled
+          {data.useWorktree ? "; go back and turn off “Create a worktree” too." : "."}
+        </p>
       )}
 
       {/* Advanced settings (collapsible) */}
@@ -252,19 +256,6 @@ export function AgentStep({ data, onChange, agents, profiles, dockerAvailable, o
 
       {showAdvanced && (
         <div className="mt-2 space-y-4 border-t border-surface-700/30 pt-4">
-          {/* Session name / branch */}
-          <div>
-            <label className="block text-sm text-text-dim mb-1.5">Session name</label>
-            <input
-              type="text"
-              value={data.title}
-              onChange={(e) => onChange("title", e.target.value)}
-              placeholder="Auto-generated if empty"
-              className="w-full bg-surface-900 border border-surface-700 rounded-lg px-3 py-2.5 text-base font-mono text-text-primary placeholder:text-text-dim focus:border-brand-600 focus:outline-none"
-            />
-            <p className="text-xs text-text-dim mt-1">Used as the git branch name. Leave empty for auto-generated name.</p>
-          </div>
-
           {/* Container config (if sandbox enabled) */}
           {data.sandboxEnabled && (
             <>
@@ -339,18 +330,6 @@ export function AgentStep({ data, onChange, agents, profiles, dockerAvailable, o
               value={data.commandOverride}
               onChange={(e) => onChange("commandOverride", e.target.value)}
               placeholder="Override the agent launch command"
-              className="w-full bg-surface-900 border border-surface-700 rounded-lg px-3 py-2.5 text-sm font-mono text-text-primary placeholder:text-text-dim focus:border-brand-600 focus:outline-none"
-            />
-          </div>
-
-          {/* Group */}
-          <div>
-            <label className="block text-sm text-text-dim mb-1.5">Group</label>
-            <input
-              type="text"
-              value={data.group}
-              onChange={(e) => onChange("group", e.target.value)}
-              placeholder="Optional session group"
               className="w-full bg-surface-900 border border-surface-700 rounded-lg px-3 py-2.5 text-sm font-mono text-text-primary placeholder:text-text-dim focus:border-brand-600 focus:outline-none"
             />
           </div>
