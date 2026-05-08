@@ -208,6 +208,14 @@ pub fn builtin_commands(serve_enabled: bool, strict_hotkeys: bool) -> Vec<Palett
             payload: PaletteAction::Key(KeyEvent::new(KeyCode::Char('P'), KeyModifiers::SHIFT)),
         },
         PaletteCommand {
+            id: "projects",
+            title: "Manage projects".to_string(),
+            group: PaletteGroup::Settings,
+            keywords: vec!["registry", "repos", "multi-repo", "workspace"],
+            hotkey: "p",
+            payload: PaletteAction::Key(key('p')),
+        },
+        PaletteCommand {
             id: "help",
             title: "Show keyboard shortcuts".to_string(),
             group: PaletteGroup::Settings,

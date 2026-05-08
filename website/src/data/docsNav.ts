@@ -25,6 +25,7 @@ export const docsNav: NavSection[] = [
       { title: "Remote Phone Access", href: "/guides/remote-phone-access/" },
       { title: "Repo Config & Hooks", href: "/guides/repo-config/" },
       { title: "Git Worktrees", href: "/guides/worktrees/" },
+      { title: "Multi-Repo Workspaces", href: "/guides/multi-repo-workspaces/" },
       { title: "Diff View", href: "/guides/diff-view/" },
       { title: "tmux Status Bar", href: "/guides/tmux-status-bar/" },
       { title: "Agent Command Overrides", href: "/guides/agent-override/" },

@@ -82,6 +82,13 @@ const PAGES = [
     description:
       "Persist and resume Claude Code conversations across reboots, upgrades, and runtime rotations.",
   },
+  {
+    source: "docs/guides/multi-repo-workspaces.md",
+    dest: "guides/multi-repo-workspaces.md",
+    title: "Multi-Repo Workspaces",
+    description:
+      "Drive a single Agent of Empires session across several git repositories with the project registry and multi-select pickers.",
+  },
 
   // --- Docs pages (docs/ → pages/docs/) ---
   {
@@ -170,6 +177,7 @@ const URL_MAP = {
   "docs/guides/worktrees.md": "/guides/worktrees/",
   "docs/guides/agent-override.md": "/guides/agent-override/",
   "docs/guides/session-resume.md": "/guides/session-resume/",
+  "docs/guides/multi-repo-workspaces.md": "/guides/multi-repo-workspaces/",
 };
 
 const GITHUB_BASE =

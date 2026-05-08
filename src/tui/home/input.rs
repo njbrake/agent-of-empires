@@ -1759,12 +1759,12 @@ impl HomeView {
                 KeyCode::Char(c.to_ascii_lowercase()),
                 KeyModifiers::NONE,
             )),
-            // Block bare lowercase action letters that would fire without a modifier
-            KeyCode::Char('q' | 'n' | 't' | 'c' | 's' | 'd' | 'x' | 'r' | 'm' | 'o' | 'g')
-                if bare =>
-            {
-                None
-            }
+            // Block bare lowercase action letters that would fire without a modifier.
+            // `p` opens the Projects panel in non-strict mode; in strict mode reach it
+            // via the command palette (Ctrl+K → "Manage projects").
+            KeyCode::Char(
+                'q' | 'n' | 't' | 'c' | 's' | 'd' | 'x' | 'r' | 'm' | 'o' | 'g' | 'p',
+            ) if bare => None,
             // Everything else passes through unchanged (navigation, ?, /, Enter, etc.)
             _ => Some(key),
         }

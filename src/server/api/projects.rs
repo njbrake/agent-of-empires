@@ -12,7 +12,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 
 use crate::git::GitWorktree;
-use crate::session::projects;
+use crate::session::projects::{self, RegistryError};
 use crate::session::{Project, ProjectScope};
 
 use super::AppState;
@@ -143,8 +143,18 @@ pub async fn create_project(
     let project = Project::new(name, canonical.to_string_lossy(), scope);
     match projects::add(&state.profile, scope, project, body.allow_override) {
         Ok(saved) => (StatusCode::CREATED, Json(ProjectResponse::from(saved))).into_response(),
-        Err(e) => (
+        Err(RegistryError::Conflict(msg)) => (
             StatusCode::CONFLICT,
+            Json(serde_json::json!({"error": "conflict", "message": msg})),
+        )
+            .into_response(),
+        Err(RegistryError::NotFound(msg)) => (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "not_found", "message": msg})),
+        )
+            .into_response(),
+        Err(RegistryError::Other(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({"error": "add_failed", "message": e.to_string()})),
         )
             .into_response(),
@@ -190,9 +200,19 @@ pub async fn delete_project(
 
     match projects::remove(&state.profile, scope, &name) {
         Ok(removed) => (StatusCode::OK, Json(ProjectResponse::from(removed))).into_response(),
-        Err(e) => (
+        Err(RegistryError::NotFound(msg)) => (
             StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error": "not_found", "message": e.to_string()})),
+            Json(serde_json::json!({"error": "not_found", "message": msg})),
+        )
+            .into_response(),
+        Err(RegistryError::Conflict(msg)) => (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({"error": "conflict", "message": msg})),
+        )
+            .into_response(),
+        Err(RegistryError::Other(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({"error": "remove_failed", "message": e.to_string()})),
         )
             .into_response(),
     }

@@ -1157,8 +1157,47 @@ impl NewSessionDialog {
         }
     }
 
+    /// Resolve a label chosen from the project picker back to the underlying
+    /// project entry and append its path to the workspace repos list.
+    fn apply_picked_project(&mut self, value: &str) {
+        if let Some(project) = self
+            .available_projects
+            .iter()
+            .find(|p| project_picker_label(p) == value)
+        {
+            if !self.workspace_repos.contains(&project.path) {
+                self.workspace_repos.push(project.path.clone());
+            }
+            self.workspace_repos_expanded = true;
+            self.workspace_repo_selected_index = self.workspace_repos.len().saturating_sub(1);
+        }
+    }
+
+    /// Build and activate the registered-projects picker (Ctrl+R on the
+    /// extra-repos field). Filters out the primary repo and any paths already
+    /// in the workspace_repos list to avoid the builder's duplicate-name guard.
+    fn open_projects_picker(&mut self) {
+        let primary = self.path.value().trim().to_string();
+        let merged = crate::session::projects::load_merged(&self.profile).unwrap_or_default();
+        self.available_projects = merged
+            .into_iter()
+            .filter(|p| p.path != primary && !self.workspace_repos.contains(&p.path))
+            .collect();
+        if self.available_projects.is_empty() {
+            self.error_message = Some(
+                "No registered projects available. Add one with `aoe project add <path>`.".into(),
+            );
+        } else {
+            let labels: Vec<String> = self
+                .available_projects
+                .iter()
+                .map(project_picker_label)
+                .collect();
+            self.projects_picker.activate(labels);
+        }
+    }
+
     /// Handle key events when in worktree configuration mode.
-    #[allow(clippy::too_many_lines)]
     fn handle_worktree_config_key(&mut self, key: KeyEvent) -> DialogResult<NewSessionData> {
         // Worktree config fields: 0=name, 1=new_branch checkbox, 2=extra_repos list
         const WT_NAME: usize = 0;
@@ -1175,18 +1214,7 @@ impl NewSessionDialog {
 
         if self.projects_picker.is_active() {
             if let ListPickerResult::Selected(value) = self.projects_picker.handle_key(key) {
-                if let Some(project) = self
-                    .available_projects
-                    .iter()
-                    .find(|p| project_picker_label(p) == value)
-                {
-                    if !self.workspace_repos.contains(&project.path) {
-                        self.workspace_repos.push(project.path.clone());
-                    }
-                    self.workspace_repos_expanded = true;
-                    self.workspace_repo_selected_index =
-                        self.workspace_repos.len().saturating_sub(1);
-                }
+                self.apply_picked_project(&value);
             }
             return DialogResult::Continue;
         }
@@ -1224,26 +1252,7 @@ impl NewSessionDialog {
                 if key.modifiers.contains(KeyModifiers::CONTROL)
                     && self.worktree_config_focused_field == WT_EXTRA_REPOS =>
             {
-                let primary = self.path.value().trim().to_string();
-                let merged =
-                    crate::session::projects::load_merged(&self.profile).unwrap_or_default();
-                self.available_projects = merged
-                    .into_iter()
-                    .filter(|p| p.path != primary && !self.workspace_repos.contains(&p.path))
-                    .collect();
-                if self.available_projects.is_empty() {
-                    self.error_message = Some(
-                        "No registered projects available. Add one with `aoe project add <path>`."
-                            .into(),
-                    );
-                } else {
-                    let labels: Vec<String> = self
-                        .available_projects
-                        .iter()
-                        .map(project_picker_label)
-                        .collect();
-                    self.projects_picker.activate(labels);
-                }
+                self.open_projects_picker();
                 DialogResult::Continue
             }
             KeyCode::Enter if self.worktree_config_focused_field == WT_EXTRA_REPOS => {

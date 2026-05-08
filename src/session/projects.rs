@@ -3,13 +3,46 @@
 //! - Global: `<app_dir>/projects.json`, visible from every profile.
 //! - Profile: `<app_dir>/profiles/{profile}/projects.json`, visible only inside that profile.
 
-use anyhow::{bail, Result};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
+use thiserror::Error;
 use tracing::warn;
 
 use super::{get_app_dir, get_profile_dir};
+
+/// Distinct failure modes for registry mutations. The web layer maps these to
+/// HTTP status codes (Conflict → 409, NotFound → 404, Other → 500); CLI/TUI
+/// callers convert via `Into<anyhow::Error>` and surface the message verbatim.
+#[derive(Debug, Error)]
+pub enum RegistryError {
+    /// A project with the same name or canonical path already exists in the
+    /// target scope, or in the other scope when `allow_override` is false.
+    #[error("{0}")]
+    Conflict(String),
+
+    /// `remove` could not find a project matching the given name or path in
+    /// the requested scope.
+    #[error("{0}")]
+    NotFound(String),
+
+    /// Any other failure (I/O, JSON parse, missing app dir).
+    #[error(transparent)]
+    Other(#[from] anyhow::Error),
+}
+
+impl From<std::io::Error> for RegistryError {
+    fn from(e: std::io::Error) -> Self {
+        RegistryError::Other(e.into())
+    }
+}
+
+impl From<serde_json::Error> for RegistryError {
+    fn from(e: serde_json::Error) -> Self {
+        RegistryError::Other(e.into())
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -154,33 +187,33 @@ pub fn add(
     scope: ProjectScope,
     mut project: Project,
     allow_override: bool,
-) -> Result<Project> {
+) -> std::result::Result<Project, RegistryError> {
     project.scope = scope;
     let path_buf = PathBuf::from(&project.path);
     let canonical = path_buf.canonicalize().unwrap_or_else(|_| path_buf.clone());
     project.path = canonical.to_string_lossy().to_string();
 
     let mut existing = match scope {
-        ProjectScope::Global => load_global()?,
-        ProjectScope::Profile => load_profile(profile)?,
+        ProjectScope::Global => load_global().map_err(RegistryError::Other)?,
+        ProjectScope::Profile => load_profile(profile).map_err(RegistryError::Other)?,
     };
 
     for p in &existing {
         if p.name.eq_ignore_ascii_case(&project.name) {
-            bail!(
+            return Err(RegistryError::Conflict(format!(
                 "Project '{}' already registered in {} scope (as '{}')",
                 project.name,
                 scope.as_str(),
                 p.name,
-            );
+            )));
         }
         if canonical_key(&p.path) == canonical_key(&project.path) {
-            bail!(
+            return Err(RegistryError::Conflict(format!(
                 "Path '{}' already registered as '{}' in {} scope",
                 project.path,
                 p.name,
                 scope.as_str()
-            );
+            )));
         }
     }
 
@@ -195,7 +228,7 @@ pub fn add(
         };
         for p in &other {
             if canonical_key(&p.path) == canonical_key(&project.path) {
-                bail!(
+                return Err(RegistryError::Conflict(format!(
                     "Path '{}' is already registered as '{}' in {} scope.\n\
                      Tip: remove it first with `aoe project remove {} --scope {}`,\n\
                      or pass `--allow-override` to keep both entries (the profile entry shadows the global entry in merged views).",
@@ -204,22 +237,26 @@ pub fn add(
                     other_scope.as_str(),
                     p.name,
                     other_scope.as_str(),
-                );
+                )));
             }
         }
     }
 
     existing.push(project.clone());
-    save_scope(profile, scope, &existing)?;
+    save_scope(profile, scope, &existing).map_err(RegistryError::Other)?;
     Ok(project)
 }
 
 /// Remove the entry matching `name_or_path` from the given scope. Returns the
 /// removed project, or errors if no match was found.
-pub fn remove(profile: &str, scope: ProjectScope, name_or_path: &str) -> Result<Project> {
+pub fn remove(
+    profile: &str,
+    scope: ProjectScope,
+    name_or_path: &str,
+) -> std::result::Result<Project, RegistryError> {
     let mut existing = match scope {
-        ProjectScope::Global => load_global()?,
-        ProjectScope::Profile => load_profile(profile)?,
+        ProjectScope::Global => load_global().map_err(RegistryError::Other)?,
+        ProjectScope::Profile => load_profile(profile).map_err(RegistryError::Other)?,
     };
 
     let canonical_target = canonical_key(name_or_path);
@@ -229,10 +266,14 @@ pub fn remove(profile: &str, scope: ProjectScope, name_or_path: &str) -> Result<
             p.name.eq_ignore_ascii_case(name_or_path) || canonical_key(&p.path) == canonical_target
         })
         .ok_or_else(|| {
-            anyhow::anyhow!("No project '{}' in {} scope", name_or_path, scope.as_str())
+            RegistryError::NotFound(format!(
+                "No project '{}' in {} scope",
+                name_or_path,
+                scope.as_str()
+            ))
         })?;
     let removed = existing.remove(idx);
-    save_scope(profile, scope, &existing)?;
+    save_scope(profile, scope, &existing).map_err(RegistryError::Other)?;
     Ok(removed)
 }
 
