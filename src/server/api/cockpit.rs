@@ -418,6 +418,15 @@ pub async fn cockpit_disable(
             tracing::warn!(target: "cockpit.switch", session = %id, "shutdown cockpit failed: {e}");
         }
     }
+    // Drop per-session bookkeeping so a future re-enable starts a
+    // fresh conversation (seq counter from 1, empty replay buffer).
+    // Without this, the next cockpit_enable's first event would
+    // collide on a stale seq with the buffer entry from this
+    // conversation, and the client-side dedupe would silently eat it.
+    state.cockpit_supervisor.forget_session(&id);
+    if let Ok(mut guard) = state.cockpit_replay.lock() {
+        guard.remove(&id);
+    }
     instance.cockpit_mode = false;
 
     // Persist + start tmux. start() now no longer short-circuits for

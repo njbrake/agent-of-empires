@@ -84,7 +84,9 @@ function CockpitChrome({
         />
       )}
 
-      {state.startupError && <StartupErrorBanner message={state.startupError} />}
+      {state.startupError && (
+        <StartupErrorBanner sessionId={sessionId} message={state.startupError} />
+      )}
       {state.lastError && (
         <InteractionErrorBanner
           message={state.lastError}
@@ -568,12 +570,75 @@ function InteractionErrorBanner({
   );
 }
 
-function StartupErrorBanner({ message }: { message: string }) {
+function StartupErrorBanner({
+  sessionId,
+  message,
+}: {
+  sessionId: string;
+  message: string;
+}) {
   const isAuth = /authentic|login|api[_ -]?key/i.test(message);
+  const [retryState, setRetryState] = useState<
+    "idle" | "retrying" | "ok" | "failed"
+  >("idle");
+  const [retryError, setRetryError] = useState<string | null>(null);
+
+  const handleRetry = async () => {
+    setRetryState("retrying");
+    setRetryError(null);
+    try {
+      const res = await fetch(
+        `/api/sessions/${encodeURIComponent(sessionId)}/cockpit/spawn`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        },
+      );
+      if (res.ok) {
+        // The supervisor's drain task will start emitting events
+        // shortly; the banner will disappear when the next user
+        // prompt clears `startupError`.
+        setRetryState("ok");
+      } else {
+        const detail = (await res.text().catch(() => "")).slice(0, 200);
+        setRetryState("failed");
+        setRetryError(`Server returned ${res.status}. ${detail}`.trim());
+      }
+    } catch (e) {
+      setRetryState("failed");
+      setRetryError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
   return (
     <div className="border-b border-rose-900/60 bg-rose-950/40 px-4 py-3 text-rose-200">
-      <div className="text-sm font-medium">Cockpit agent failed to start</div>
-      <pre className="mt-1 whitespace-pre-wrap text-xs text-rose-100/90">{message}</pre>
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex-1 min-w-0">
+          <div className="text-sm font-medium">Cockpit agent failed to start</div>
+          <pre className="mt-1 whitespace-pre-wrap text-xs text-rose-100/90">
+            {message}
+          </pre>
+        </div>
+        <button
+          type="button"
+          onClick={handleRetry}
+          disabled={retryState === "retrying"}
+          className="shrink-0 rounded-md border border-rose-800/60 bg-rose-900/40 px-3 py-1 text-xs font-medium text-rose-100 hover:bg-rose-900/60 disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {retryState === "retrying" ? "Retrying…" : "Retry"}
+        </button>
+      </div>
+      {retryState === "ok" && (
+        <div className="mt-2 text-xs text-emerald-200/90">
+          Spawn requested. New events should start streaming in shortly.
+        </div>
+      )}
+      {retryState === "failed" && retryError && (
+        <div className="mt-2 text-xs text-rose-100/90">
+          Retry failed: {retryError}
+        </div>
+      )}
       <div className="mt-2 text-xs text-rose-200/80">
         {isAuth ? (
           <>

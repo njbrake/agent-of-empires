@@ -100,6 +100,15 @@ export function useCockpit(sessionId: string | null) {
           lost: boolean;
           highest_seq: number;
         };
+        // Detect a server-side seq reset: the supervisor's per-session
+        // counter has been forgotten (cockpit_disable → cockpit_enable,
+        // or session delete+recreate with the same id), so the new
+        // conversation is starting fresh from seq=1. Without this reset
+        // the client-side dedupe would drop the new events because
+        // `frame.seq <= state.lastSeq` is true.
+        if (data.highest_seq < since) {
+          dispatch({ kind: "reset" });
+        }
         if (data.lost) {
           // The buffer doesn't go back far enough; surface this via
           // the existing `lagged` flag (the UI shows a "history

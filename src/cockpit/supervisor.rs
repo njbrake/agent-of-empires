@@ -79,16 +79,22 @@ struct WorkerHandle {
     /// Populated for real workers; left as `None` for fake workers
     /// inserted by tests.
     spawn_config: Option<SpawnConfig>,
-    /// Last `seq` published by the drain task. Persisted across
-    /// respawns so the broadcast stream stays monotonically
-    /// increasing even after the agent process is replaced.
-    last_seq: u64,
 }
+
+/// Per-session monotonically-increasing seq counter. Lives at the
+/// supervisor level (not on `WorkerHandle`) so it survives shutdown
+/// and respawn cycles, and also covers the no-worker
+/// `publish_startup_error` path. Without this, both publishers
+/// would start from seq=1 and collide in the replay buffer, which
+/// the client-side `applyEvent` dedupe then turned into a silent
+/// loss of the agent's first message after a retry.
+type SeqMap = std::sync::Mutex<HashMap<String, u64>>;
 
 pub struct Supervisor<S: BroadcastSink> {
     sink: Arc<S>,
     registry: Arc<Mutex<AgentRegistry>>,
     workers: Arc<Mutex<HashMap<String, WorkerHandle>>>,
+    next_seqs: Arc<SeqMap>,
 }
 
 impl<S: BroadcastSink> Supervisor<S> {
@@ -97,6 +103,7 @@ impl<S: BroadcastSink> Supervisor<S> {
             sink,
             registry: Arc::new(Mutex::new(AgentRegistry::with_defaults())),
             workers: Arc::new(Mutex::new(HashMap::new())),
+            next_seqs: Arc::new(std::sync::Mutex::new(HashMap::new())),
         }
     }
 
@@ -151,8 +158,19 @@ impl<S: BroadcastSink> Supervisor<S> {
     /// silent conversation when `claude-agent-acp` isn't installed (or
     /// `npx -y` is still downloading on first run).
     pub fn publish_startup_error(&self, session_id: &str, message: String) {
+        let seq = next_seq(&self.next_seqs, session_id);
         self.sink
-            .publish(session_id, 1, &Event::AgentStartupError { message });
+            .publish(session_id, seq, &Event::AgentStartupError { message });
+    }
+
+    /// Drop per-session bookkeeping (replay seq counter). Called when
+    /// the session is deleted or its substrate is switched away from
+    /// cockpit, so the next cockpit_enable starts a fresh conversation
+    /// from seq=1 with a clean replay buffer.
+    pub fn forget_session(&self, session_id: &str) {
+        if let Ok(mut guard) = self.next_seqs.lock() {
+            guard.remove(session_id);
+        }
     }
 
     pub async fn upsert_agent(&self, name: String, spec: AgentSpec) {
@@ -225,7 +243,6 @@ impl<S: BroadcastSink> Supervisor<S> {
                 drain_task,
                 restart_history: vec![Instant::now()],
                 spawn_config: Some(config),
-                last_seq: 0,
             },
         );
         Ok(())
@@ -242,11 +259,12 @@ impl<S: BroadcastSink> Supervisor<S> {
     ) -> JoinHandle<()> {
         let sink = Arc::clone(&self.sink);
         let workers = Arc::clone(&self.workers);
+        let next_seqs = Arc::clone(&self.next_seqs);
         tokio::spawn(async move {
             let mut inbound = initial_inbound;
             loop {
                 while let Some(event) = inbound.recv().await {
-                    let seq = bump_seq(&workers, &session_id).await;
+                    let seq = next_seq(&next_seqs, &session_id);
                     sink.publish(&session_id, seq, &event);
                     if let Event::ApprovalRequested { approval } = &event {
                         sink.approval_requested(
@@ -274,7 +292,7 @@ impl<S: BroadcastSink> Supervisor<S> {
                             session = %session_id,
                             "restart budget burned; parking session"
                         );
-                        let seq = bump_seq(&workers, &session_id).await;
+                        let seq = next_seq(&next_seqs, &session_id);
                         sink.publish(
                             &session_id,
                             seq,
@@ -287,6 +305,14 @@ impl<S: BroadcastSink> Supervisor<S> {
                                 ),
                             },
                         );
+                        // Remove the dead WorkerHandle so a retry
+                        // (POST /api/sessions/:id/cockpit/spawn) doesn't
+                        // hit AlreadyRunning. The seq counter and replay
+                        // buffer survive so the retry's events stay
+                        // monotonic and the user keeps the conversation
+                        // log up to the crash point.
+                        let mut guard = workers.lock().await;
+                        guard.remove(&session_id);
                         return;
                     }
                     RestartDecision::Gone => {
@@ -308,7 +334,7 @@ impl<S: BroadcastSink> Supervisor<S> {
                                 session = %session_id,
                                 "respawn failed: {e}"
                             );
-                            let seq = bump_seq(&workers, &session_id).await;
+                            let seq = next_seq(&next_seqs, &session_id);
                             sink.publish(
                                 &session_id,
                                 seq,
@@ -460,13 +486,20 @@ async fn restart_decision(
     }
 }
 
-async fn bump_seq(workers: &Arc<Mutex<HashMap<String, WorkerHandle>>>, session_id: &str) -> u64 {
-    let mut guard = workers.lock().await;
-    let Some(handle) = guard.get_mut(session_id) else {
-        return 0;
+/// Increment and return the per-session seq counter. Lives at the
+/// supervisor level so the no-worker `publish_startup_error` path
+/// and the drain task share a single source of truth — otherwise
+/// both used to start at seq=1 and collide in the replay buffer
+/// after a retry, which the client-side dedupe then rendered as a
+/// silently-lost first message.
+fn next_seq(next_seqs: &SeqMap, session_id: &str) -> u64 {
+    let mut guard = match next_seqs.lock() {
+        Ok(g) => g,
+        Err(poisoned) => poisoned.into_inner(),
     };
-    handle.last_seq = handle.last_seq.saturating_add(1);
-    handle.last_seq
+    let entry = guard.entry(session_id.to_string()).or_insert(0);
+    *entry = entry.saturating_add(1);
+    *entry
 }
 
 /// Callback fired when the supervisor observes an ApprovalRequested
@@ -588,7 +621,6 @@ mod tests {
                 drain_task: drain,
                 restart_history: vec![Instant::now()],
                 spawn_config: None,
-                last_seq: 0,
             },
         );
         drop(workers);
@@ -647,7 +679,6 @@ mod tests {
                     drain_task: drain,
                     restart_history: vec![],
                     spawn_config: Some(dummy_config),
-                    last_seq: 0,
                 },
             );
         }
@@ -664,44 +695,51 @@ mod tests {
         assert!(matches!(decision, RestartDecision::BudgetBurned));
     }
 
-    /// `bump_seq` returns 0 for an unknown session (used when the
-    /// drain task races a shutdown) and monotonically increments
-    /// otherwise.
+    /// `next_seq` increments per-session and is independent of the
+    /// `workers` map (so `publish_startup_error` and the drain task
+    /// share a counter even though the former runs while no
+    /// WorkerHandle exists).
     #[tokio::test]
-    async fn bump_seq_monotonic() {
+    async fn next_seq_is_per_session_and_persistent() {
         let sink = VecSink::new();
         let sup = Supervisor::new(sink);
-        assert_eq!(bump_seq(&sup.workers, "missing").await, 0);
-        let dummy_spec = AgentSpec {
-            command: "/bin/true".into(),
-            args: vec![],
-            description: "test fixture".into(),
-            env_allowlist: None,
-        };
-        let dummy_config = SpawnConfig {
-            spec: dummy_spec,
-            cwd: std::env::temp_dir(),
-            additional_dirs: vec![],
-            provider_env: vec![],
-            socket_path: None,
-        };
-        {
-            let mut workers = sup.workers.lock().await;
-            let (client, _tx) = AcpClient::fake_for_test(CockpitSessionId("s-1".into()));
-            let drain = tokio::spawn(async {});
-            workers.insert(
-                "s-1".into(),
-                WorkerHandle {
-                    client: Arc::new(Mutex::new(client)),
-                    drain_task: drain,
-                    restart_history: vec![],
-                    spawn_config: Some(dummy_config),
-                    last_seq: 0,
-                },
-            );
-        }
-        assert_eq!(bump_seq(&sup.workers, "s-1").await, 1);
-        assert_eq!(bump_seq(&sup.workers, "s-1").await, 2);
-        assert_eq!(bump_seq(&sup.workers, "s-1").await, 3);
+        assert_eq!(next_seq(&sup.next_seqs, "s-1"), 1);
+        assert_eq!(next_seq(&sup.next_seqs, "s-1"), 2);
+        // Different session has its own counter.
+        assert_eq!(next_seq(&sup.next_seqs, "s-2"), 1);
+        // s-1 keeps incrementing.
+        assert_eq!(next_seq(&sup.next_seqs, "s-1"), 3);
+    }
+
+    /// Regression: `publish_startup_error` and a subsequent drain-task
+    /// publish must not collide on seq=1, otherwise the client-side
+    /// dedupe (`frame.seq <= state.lastSeq → drop`) eats the agent's
+    /// first message after a retry.
+    #[tokio::test]
+    async fn startup_error_then_drain_publish_have_distinct_seqs() {
+        let sink = VecSink::new();
+        let sup = Supervisor::new(sink.clone());
+        sup.publish_startup_error("s-1", "boom".into());
+        // Simulate the drain task publishing the agent's first event
+        // after a successful retry.
+        let drained_seq = next_seq(&sup.next_seqs, "s-1");
+        let frames = sink.frames.lock().unwrap();
+        let startup_seq = frames
+            .iter()
+            .find_map(|(sid, seq, _)| if sid == "s-1" { Some(*seq) } else { None });
+        assert_eq!(startup_seq, Some(1));
+        assert_eq!(drained_seq, 2, "drain seq must follow startup-error seq");
+    }
+
+    /// `forget_session` drops the seq counter so the next conversation
+    /// (e.g. cockpit_disable → cockpit_enable) starts fresh from seq=1.
+    #[tokio::test]
+    async fn forget_session_resets_seq_counter() {
+        let sink = VecSink::new();
+        let sup = Supervisor::new(sink);
+        assert_eq!(next_seq(&sup.next_seqs, "s-1"), 1);
+        assert_eq!(next_seq(&sup.next_seqs, "s-1"), 2);
+        sup.forget_session("s-1");
+        assert_eq!(next_seq(&sup.next_seqs, "s-1"), 1);
     }
 }

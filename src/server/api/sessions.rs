@@ -428,9 +428,12 @@ pub async fn delete_session(
                 );
             }
         }
-        // Drop the per-session replay buffer too: keeping it would
-        // leak a few MB per deleted session and serve no purpose since
-        // the session is gone.
+        // Drop the per-session replay buffer + seq counter too:
+        // keeping them would leak a few MB per deleted session and
+        // serve no purpose since the session is gone. Forgetting the
+        // counter also means a recreated session with the same id
+        // (rare, but possible) starts cleanly from seq=1.
+        state.cockpit_supervisor.forget_session(&id);
         if let Ok(mut guard) = state.cockpit_replay.lock() {
             guard.remove(&id);
         }
