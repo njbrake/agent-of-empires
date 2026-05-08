@@ -575,6 +575,10 @@ pub async fn create_session(
     let profile = body.profile.unwrap_or_else(|| state.profile.clone());
     let instances = state.instances.read().await;
     let existing_titles: Vec<String> = instances.iter().map(|i| i.title.clone()).collect();
+    let existing_branches: Vec<String> = instances
+        .iter()
+        .filter_map(|i| i.worktree_info.as_ref().map(|w| w.branch.clone()))
+        .collect();
     drop(instances);
 
     let result = tokio::task::spawn_blocking(move || {
@@ -591,6 +595,7 @@ pub async fn create_session(
         });
 
         let title_refs: Vec<&str> = existing_titles.iter().map(|s| s.as_str()).collect();
+        let branch_refs: Vec<&str> = existing_branches.iter().map(|s| s.as_str()).collect();
         let extra_repo_paths: Vec<String> = body
             .extra_repo_paths
             .into_iter()
@@ -631,7 +636,7 @@ pub async fn create_session(
             extra_repo_paths,
         };
 
-        let build_result = builder::build_instance(params, &title_refs, &profile)?;
+        let build_result = builder::build_instance(params, &title_refs, &branch_refs, &profile)?;
         let mut instance = build_result.instance;
         instance.source_profile = profile.clone();
 

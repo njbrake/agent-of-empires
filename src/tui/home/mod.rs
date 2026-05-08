@@ -743,24 +743,28 @@ impl HomeView {
     /// can see progress in the preview pane while continuing to use the TUI.
     pub fn request_creation(
         &mut self,
-        data: NewSessionData,
+        mut data: NewSessionData,
         hooks: Option<crate::session::HooksConfig>,
     ) {
-        // Build a stub instance to show in the list while creation runs
-        let stub_title = if data.title.is_empty() {
-            data.worktree_branch
-                .as_deref()
-                .filter(|b| !b.is_empty())
-                .map(|b| b.to_string())
-                .unwrap_or_else(|| {
-                    std::path::Path::new(&data.path)
-                        .file_name()
-                        .map(|n| n.to_string_lossy().to_string())
-                        .unwrap_or_else(|| "New session".to_string())
-                })
-        } else {
-            data.title.clone()
-        };
+        // Pre-resolve the title using the same logic the builder will run, so the
+        // stub instance, the background creation, and the eventual real instance
+        // all agree on the title (otherwise an empty title would show as the path
+        // basename in the stub but a civilization name in the final instance).
+        if data.title.is_empty() {
+            let existing_titles: Vec<&str> = self
+                .instances()
+                .iter()
+                .filter(|i| i.source_profile == data.profile)
+                .map(|i| i.title.as_str())
+                .collect();
+            data.title = crate::session::builder::resolve_title(
+                &data.title,
+                data.worktree_branch.as_deref(),
+                data.worktree_enabled,
+                &existing_titles,
+            );
+        }
+        let stub_title = data.title.clone();
         let mut stub = Instance::new(&stub_title, &data.path);
         stub.tool = if data.tool.is_empty() {
             "claude".to_string()

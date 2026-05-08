@@ -185,6 +185,7 @@ pub fn create_workspace(
 pub fn build_instance(
     params: InstanceParams,
     existing_titles: &[&str],
+    existing_branches: &[&str],
     profile: &str,
 ) -> Result<BuildResult> {
     // Host-only agents (e.g. settl) cannot run in a sandbox or use worktrees.
@@ -231,11 +232,30 @@ pub fn build_instance(
         params.worktree_enabled,
         existing_titles,
     );
-    let effective_worktree_branch = resolve_worktree_branch(
+    let branch_source = resolve_worktree_branch(
         params.worktree_enabled,
         params.worktree_branch.as_deref(),
         &final_title,
     );
+
+    let effective_worktree_branch: Option<String> = match branch_source {
+        None => None,
+        Some(BranchSource::Explicit(name)) => Some(name),
+        Some(BranchSource::Derived(name)) => {
+            if params.create_new_branch {
+                let mut taken: std::collections::HashSet<String> =
+                    existing_branches.iter().map(|s| (*s).to_string()).collect();
+                if let Ok(local) =
+                    crate::git::diff::list_branches(std::path::Path::new(&params.path))
+                {
+                    taken.extend(local);
+                }
+                Some(dedupe_branch_name(&name, &taken))
+            } else {
+                Some(name)
+            }
+        }
+    };
 
     if let Some(branch) = &effective_worktree_branch {
         if !params.extra_repo_paths.is_empty() {
@@ -449,7 +469,7 @@ pub fn cleanup_instance(
 
 /// Resolve the session title: use the provided title, then an explicit worktree
 /// branch name, then fall back to a random civilization name.
-fn resolve_title(
+pub(crate) fn resolve_title(
     title: &str,
     worktree_branch: Option<&str>,
     worktree_enabled: bool,
@@ -470,26 +490,104 @@ fn resolve_title(
     }
 }
 
+/// Origin of an effective worktree branch name. The builder uses this to decide
+/// whether collisions with existing branches should be resolved by suffixing
+/// (Derived) or surfaced as an error (Explicit).
+#[derive(Debug, Clone)]
+pub(crate) enum BranchSource {
+    /// User typed this name explicitly. Treat conflicts as a hard error.
+    Explicit(String),
+    /// Derived from the session title. Suffix on conflict.
+    Derived(String),
+}
+
 fn resolve_worktree_branch(
     worktree_enabled: bool,
     worktree_branch: Option<&str>,
     final_title: &str,
-) -> Option<String> {
+) -> Option<BranchSource> {
     if !worktree_enabled {
         return None;
     }
-    worktree_branch
-        .map(str::trim)
-        .filter(|branch| !branch.is_empty())
-        .map(ToString::to_string)
-        .or_else(|| Some(branch_name_from_title(final_title)))
+    Some(
+        match worktree_branch.map(str::trim).filter(|b| !b.is_empty()) {
+            Some(b) => BranchSource::Explicit(b.to_string()),
+            None => BranchSource::Derived(branch_name_from_title(final_title)),
+        },
+    )
+}
+
+/// Find the next branch name not present in `taken`.
+/// If `base` is free, returns it unchanged. Otherwise appends `-2`, `-3`, …
+/// until a free name is found.
+fn dedupe_branch_name(base: &str, taken: &std::collections::HashSet<String>) -> String {
+    if !taken.contains(base) {
+        return base.to_string();
+    }
+    let mut n = 2usize;
+    loop {
+        let candidate = format!("{}-{}", base, n);
+        if !taken.contains(&candidate) {
+            return candidate;
+        }
+        n += 1;
+    }
+}
+
+/// Best-effort transliteration of common Latin diacritics to ASCII so that
+/// title-derived branch names retain meaning instead of silently dropping
+/// characters. Unsupported scripts (CJK, emoji, etc.) still fall through and
+/// are dropped by `branch_name_from_title`; users with such titles should set
+/// an explicit branch name via Ctrl+P.
+fn ascii_fold(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' | 'ā' | 'ă' | 'ą' => out.push('a'),
+            'À' | 'Á' | 'Â' | 'Ã' | 'Ä' | 'Å' | 'Ā' | 'Ă' | 'Ą' => out.push('A'),
+            'è' | 'é' | 'ê' | 'ë' | 'ē' | 'ĕ' | 'ė' | 'ę' | 'ě' => out.push('e'),
+            'È' | 'É' | 'Ê' | 'Ë' | 'Ē' | 'Ĕ' | 'Ė' | 'Ę' | 'Ě' => out.push('E'),
+            'ì' | 'í' | 'î' | 'ï' | 'ī' | 'ĭ' | 'į' => out.push('i'),
+            'Ì' | 'Í' | 'Î' | 'Ï' | 'Ī' | 'Ĭ' | 'Į' => out.push('I'),
+            'ò' | 'ó' | 'ô' | 'õ' | 'ö' | 'ø' | 'ō' | 'ŏ' | 'ő' => out.push('o'),
+            'Ò' | 'Ó' | 'Ô' | 'Õ' | 'Ö' | 'Ø' | 'Ō' | 'Ŏ' | 'Ő' => out.push('O'),
+            'ù' | 'ú' | 'û' | 'ü' | 'ū' | 'ŭ' | 'ů' | 'ű' | 'ų' => out.push('u'),
+            'Ù' | 'Ú' | 'Û' | 'Ü' | 'Ū' | 'Ŭ' | 'Ů' | 'Ű' | 'Ų' => out.push('U'),
+            'ý' | 'ÿ' => out.push('y'),
+            'Ý' | 'Ÿ' => out.push('Y'),
+            'ñ' | 'ń' | 'ň' | 'ņ' => out.push('n'),
+            'Ñ' | 'Ń' | 'Ň' | 'Ņ' => out.push('N'),
+            'ç' | 'ć' | 'č' | 'ĉ' | 'ċ' => out.push('c'),
+            'Ç' | 'Ć' | 'Č' | 'Ĉ' | 'Ċ' => out.push('C'),
+            'š' | 'ś' | 'ş' => out.push('s'),
+            'Š' | 'Ś' | 'Ş' => out.push('S'),
+            'ž' | 'ź' | 'ż' => out.push('z'),
+            'Ž' | 'Ź' | 'Ż' => out.push('Z'),
+            'ł' => out.push('l'),
+            'Ł' => out.push('L'),
+            'đ' | 'ď' => out.push('d'),
+            'Đ' | 'Ď' => out.push('D'),
+            'ř' | 'ŕ' => out.push('r'),
+            'Ř' | 'Ŕ' => out.push('R'),
+            'ť' | 'ţ' => out.push('t'),
+            'Ť' | 'Ţ' => out.push('T'),
+            'ß' => out.push_str("ss"),
+            'æ' => out.push_str("ae"),
+            'Æ' => out.push_str("AE"),
+            'œ' => out.push_str("oe"),
+            'Œ' => out.push_str("OE"),
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 pub(crate) fn branch_name_from_title(title: &str) -> String {
+    let folded = ascii_fold(title.trim());
     let mut branch = String::new();
     let mut last_was_dash = false;
 
-    for ch in title.trim().chars() {
+    for ch in folded.chars() {
         let next = if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_') {
             Some(ch.to_ascii_lowercase())
         } else if ch.is_whitespace() || ch.is_ascii_punctuation() {
@@ -557,13 +655,13 @@ mod tests {
     #[test]
     fn test_worktree_branch_derived_from_title_when_name_empty() {
         let branch = resolve_worktree_branch(true, None, "Fix Login Flow").unwrap();
-        assert_eq!(branch, "fix-login-flow");
+        assert!(matches!(branch, BranchSource::Derived(ref s) if s == "fix-login-flow"));
     }
 
     #[test]
     fn test_worktree_branch_preserves_explicit_name() {
         let branch = resolve_worktree_branch(true, Some("feat/auth"), "Fix Login Flow").unwrap();
-        assert_eq!(branch, "feat/auth");
+        assert!(matches!(branch, BranchSource::Explicit(ref s) if s == "feat/auth"));
     }
 
     #[test]
@@ -581,5 +679,41 @@ mod tests {
             branch_name_from_title("feat/auth.refactor"),
             "feat-auth-refactor"
         );
+    }
+
+    #[test]
+    fn test_branch_name_from_title_folds_latin_diacritics() {
+        assert_eq!(branch_name_from_title("café fix"), "cafe-fix");
+        assert_eq!(branch_name_from_title("naïve solution"), "naive-solution");
+        assert_eq!(branch_name_from_title("Straße"), "strasse");
+        assert_eq!(branch_name_from_title("Łódź"), "lodz");
+        assert_eq!(branch_name_from_title("crème brûlée"), "creme-brulee");
+        assert_eq!(branch_name_from_title("œuvre"), "oeuvre");
+    }
+
+    #[test]
+    fn test_branch_name_from_title_drops_unsupported_scripts() {
+        // CJK and emoji are not in the Latin transliteration table, so they're
+        // stripped (current best-effort behavior). The "session" fallback kicks in
+        // when nothing usable remains.
+        assert_eq!(branch_name_from_title("测试"), "session");
+        assert_eq!(branch_name_from_title("🚀 ship"), "ship");
+    }
+
+    #[test]
+    fn test_dedupe_branch_name_returns_base_when_free() {
+        let taken = std::collections::HashSet::new();
+        assert_eq!(dedupe_branch_name("fix-bug", &taken), "fix-bug");
+    }
+
+    #[test]
+    fn test_dedupe_branch_name_appends_suffix_on_collision() {
+        let mut taken = std::collections::HashSet::new();
+        taken.insert("fix-bug".to_string());
+        assert_eq!(dedupe_branch_name("fix-bug", &taken), "fix-bug-2");
+
+        taken.insert("fix-bug-2".to_string());
+        taken.insert("fix-bug-3".to_string());
+        assert_eq!(dedupe_branch_name("fix-bug", &taken), "fix-bug-4");
     }
 }
