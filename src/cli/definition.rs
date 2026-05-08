@@ -11,6 +11,7 @@ use super::group::GroupCommands;
 use super::init::InitArgs;
 use super::list::ListArgs;
 use super::profile::ProfileCommands;
+use super::project::ProjectCommands;
 use super::remove::RemoveArgs;
 use super::send::SendArgs;
 #[cfg(feature = "serve")]
@@ -85,6 +86,12 @@ pub enum Commands {
     Profile {
         #[command(subcommand)]
         command: Option<ProfileCommands>,
+    },
+
+    /// Manage the project registry used by multi-repo session pickers
+    Project {
+        #[command(subcommand)]
+        command: ProjectCommands,
     },
 
     /// Manage git worktrees for parallel development
