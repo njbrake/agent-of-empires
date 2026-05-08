@@ -12,6 +12,7 @@ mod info;
 mod new_session;
 mod no_agents;
 mod profile_picker;
+mod projects;
 mod rename;
 mod send_message;
 #[cfg(feature = "serve")]
@@ -33,6 +34,7 @@ pub use info::InfoDialog;
 pub use new_session::{NewSessionData, NewSessionDialog};
 pub use no_agents::{NoAgentsAction, NoAgentsDialog};
 pub use profile_picker::{ProfileEntry, ProfilePickerAction, ProfilePickerDialog};
+pub use projects::ProjectsDialog;
 pub use rename::{RenameData, RenameDialog, RenameMode};
 pub use send_message::SendMessageDialog;
 #[cfg(feature = "serve")]

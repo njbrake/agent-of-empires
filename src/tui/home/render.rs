@@ -295,6 +295,7 @@ impl HomeView {
             changelog_dialog,
             info_dialog,
             profile_picker_dialog,
+            projects_dialog,
             command_palette,
             send_message_dialog,
             update_confirm_dialog,

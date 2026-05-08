@@ -27,8 +27,8 @@ use super::dialogs::ServeView;
 use super::dialogs::{
     ChangelogDialog, CommandPaletteDialog, ConfirmDialog, GroupDeleteOptionsDialog,
     HookTrustDialog, HooksInstallDialog, InfoDialog, NewSessionData, NewSessionDialog,
-    NoAgentsDialog, ProfilePickerDialog, RenameDialog, UnifiedDeleteDialog, UpdateConfirmDialog,
-    WelcomeDialog,
+    NoAgentsDialog, ProfilePickerDialog, ProjectsDialog, RenameDialog, UnifiedDeleteDialog,
+    UpdateConfirmDialog, WelcomeDialog,
 };
 use super::diff::DiffView;
 use super::settings::SettingsView;
@@ -173,6 +173,7 @@ pub struct HomeView {
     pub(super) changelog_dialog: Option<ChangelogDialog>,
     pub(super) info_dialog: Option<InfoDialog>,
     pub(super) profile_picker_dialog: Option<ProfilePickerDialog>,
+    pub(super) projects_dialog: Option<ProjectsDialog>,
     pub(super) command_palette: Option<CommandPaletteDialog>,
     #[cfg(feature = "serve")]
     pub(super) serve_view: Option<ServeView>,
@@ -352,6 +353,7 @@ impl HomeView {
             changelog_dialog: None,
             info_dialog: None,
             profile_picker_dialog: None,
+            projects_dialog: None,
             command_palette: None,
             #[cfg(feature = "serve")]
             serve_view: None,
@@ -1132,6 +1134,7 @@ impl HomeView {
             || self.changelog_dialog.is_some()
             || self.info_dialog.is_some()
             || self.profile_picker_dialog.is_some()
+            || self.projects_dialog.is_some()
             || self.command_palette.is_some()
             || self.send_message_dialog.is_some()
             || self.update_confirm_dialog.is_some()

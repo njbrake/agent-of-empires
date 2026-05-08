@@ -15,7 +15,8 @@ use crate::tui::dialogs::{
     builtin_commands, CommandPaletteDialog, ConfirmDialog, DeleteDialogConfig, DialogResult,
     GroupDeleteOptionsDialog, HookTrustAction, HooksInstallDialog, InfoDialog, NewSessionData,
     NewSessionDialog, NoAgentsAction, PaletteAction, PaletteCommand, PaletteGroup,
-    ProfilePickerAction, RenameDialog, RenameMode, SendMessageDialog, UnifiedDeleteDialog,
+    ProfilePickerAction, ProjectsDialog, RenameDialog, RenameMode, SendMessageDialog,
+    UnifiedDeleteDialog,
 };
 use crate::tui::diff::{DiffAction, DiffView};
 use crate::tui::settings::{SettingsAction, SettingsView};
@@ -437,6 +438,16 @@ impl HomeView {
             return None;
         }
 
+        if let Some(dialog) = &mut self.projects_dialog {
+            match dialog.handle_key(key) {
+                DialogResult::Continue => {}
+                DialogResult::Cancel | DialogResult::Submit(()) => {
+                    self.projects_dialog = None;
+                }
+            }
+            return None;
+        }
+
         if let Some(dialog) = &mut self.profile_picker_dialog {
             match dialog.handle_key(key) {
                 DialogResult::Continue => {}
@@ -627,6 +638,10 @@ impl HomeView {
             }
             KeyCode::Char('P') => {
                 self.show_profile_picker();
+            }
+            KeyCode::Char('p') => {
+                let profile = self.active_profile.as_deref().unwrap_or("default");
+                self.projects_dialog = Some(ProjectsDialog::new(profile));
             }
             #[cfg(feature = "serve")]
             KeyCode::Char('R') => {
