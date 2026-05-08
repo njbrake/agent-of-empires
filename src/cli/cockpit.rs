@@ -89,7 +89,7 @@ const NPM_INSTALLABLE_ACP: &[(&str, &str)] = &[
 /// Native CLIs whose ACP server is shipped as part of the agent
 /// itself, not as a separate npm adapter. These get a one-line
 /// install hint in the doctor output instead of an `npm i -g`.
-fn install_hint_for(binary: &str) -> Option<&'static str> {
+pub(crate) fn install_hint_for(binary: &str) -> Option<&'static str> {
     Some(match binary {
         "claude-agent-acp" => "npm install -g @agentclientprotocol/claude-agent-acp",
         "codex-acp" => "npm install -g @zed-industries/codex-acp",
@@ -283,14 +283,17 @@ fn find_in_path(binary: &str) -> Option<String> {
     None
 }
 
-fn command_present(command: &str) -> bool {
-    if command.contains('/') || command.contains('\\') {
-        std::path::Path::new(command).exists()
-    } else if command.contains("${") {
-        // Path placeholders like ${aoe_data_dir}/cockpit-worker/...
-        // resolve at runtime; treat as "configured but not yet
-        // verified."
+pub(crate) fn command_present(command: &str) -> bool {
+    // Placeholders like `${aoe_data_dir}/cockpit-worker/...` resolve at
+    // runtime against the app data dir, so the literal string contains
+    // both `${` and `/`. Check the placeholder branch FIRST — otherwise
+    // the `/`-branch tries to stat a literal path containing `${...}`
+    // and reports "missing" for every placeholder-based agent
+    // (notably `aoe-agent`, our bundled multi-provider fallback).
+    if command.contains("${") {
         true
+    } else if command.contains('/') || command.contains('\\') {
+        std::path::Path::new(command).exists()
     } else {
         find_in_path(command).is_some()
     }
