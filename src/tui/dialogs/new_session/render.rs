@@ -475,6 +475,10 @@ impl NewSessionDialog {
             self.branch_picker.render(frame, area, theme);
         }
 
+        if self.projects_picker.is_active() {
+            self.projects_picker.render(frame, area, theme);
+        }
+
         if self.dir_picker.is_active() {
             self.dir_picker.render(frame, area, theme);
         }
@@ -884,6 +888,8 @@ impl NewSessionDialog {
                 Span::raw(" next  "),
                 Span::styled("Enter", Style::default().fg(theme.hint)),
                 Span::raw(" edit repos  "),
+                Span::styled("C-r", Style::default().fg(theme.hint)),
+                Span::raw(" pick project  "),
                 Span::styled("Esc", Style::default().fg(theme.hint)),
                 Span::raw(" back"),
             ];
@@ -896,6 +902,10 @@ impl NewSessionDialog {
 
         if self.branch_picker.is_active() {
             self.branch_picker.render(frame, area, theme);
+        }
+
+        if self.projects_picker.is_active() {
+            self.projects_picker.render(frame, area, theme);
         }
 
         if self.dir_picker.is_active() {
