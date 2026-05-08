@@ -33,6 +33,32 @@ struct SessionJson {
     command: String,
     profile: String,
     created_at: chrono::DateTime<chrono::Utc>,
+    /// Empty for single-repo sessions; populated with one entry per repo
+    /// (including the primary) for sessions created with `--repo`/`--project`.
+    workspace_repos: Vec<WorkspaceRepoJson>,
+}
+
+#[derive(Serialize)]
+struct WorkspaceRepoJson {
+    name: String,
+    source_path: String,
+    branch: String,
+}
+
+fn workspace_repos_for(inst: &Instance) -> Vec<WorkspaceRepoJson> {
+    inst.workspace_info
+        .as_ref()
+        .map(|w| {
+            w.repos
+                .iter()
+                .map(|r| WorkspaceRepoJson {
+                    name: r.name.clone(),
+                    source_path: r.source_path.clone(),
+                    branch: r.branch.clone(),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 fn print_table_header() {
@@ -93,6 +119,7 @@ pub async fn run(profile: &str, args: ListArgs) -> Result<()> {
                 command: inst.command.clone(),
                 profile: storage.profile().to_string(),
                 created_at: inst.created_at,
+                workspace_repos: workspace_repos_for(inst),
             })
             .collect();
         super::output::print_json(&sessions)?;
@@ -125,6 +152,7 @@ async fn run_all_profiles(json: bool) -> Result<()> {
             if let Ok(storage) = Storage::new(profile_name) {
                 if let Ok((instances, _)) = storage.load_with_groups() {
                     for inst in instances {
+                        let workspace_repos = workspace_repos_for(&inst);
                         all_sessions.push(SessionJson {
                             id: inst.id,
                             title: inst.title,
@@ -134,6 +162,7 @@ async fn run_all_profiles(json: bool) -> Result<()> {
                             command: inst.command,
                             profile: profile_name.clone(),
                             created_at: inst.created_at,
+                            workspace_repos,
                         });
                     }
                 }
