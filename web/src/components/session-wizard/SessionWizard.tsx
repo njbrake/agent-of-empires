@@ -149,10 +149,10 @@ interface Props {
   onClose: () => void;
   onCreated: (session?: SessionResponse) => void;
   prefill?: WizardPrefill;
-  /** Snapshot of the server's AOE_EXPERIMENTAL_COCKPIT gate (already
-   *  resolved against AOE_NO_COCKPIT and the cockpit master switch by
-   *  the parent). When true, ACP-capable tools create cockpit sessions
-   *  automatically; when false, every new session is tmux. */
+  /** Server-resolved cockpit availability (master switch on AND
+   *  AOE_EXPERIMENTAL_COCKPIT set). When true, ACP-capable tools
+   *  create cockpit sessions automatically; when false, every new
+   *  session is tmux. */
   experimentalCockpit: boolean;
 }
 

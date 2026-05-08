@@ -355,12 +355,11 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
     // forces terminal mode; otherwise honor the config default for
     // claude on supported platforms.
     //
-    // Three independent gates:
-    //   - `AOE_NO_COCKPIT=1` is the operator hard-disable.
-    //   - `cockpit.enabled = false` in config.toml is the documented
-    //     master kill switch.
-    //   - `AOE_EXPERIMENTAL_COCKPIT=1` is the user opt-in for *new*
-    //     sessions while the feature stabilises.
+    // Two independent gates:
+    //   - `cockpit.enabled = false` in config.toml is the persistent
+    //     master switch.
+    //   - `AOE_EXPERIMENTAL_COCKPIT=1` is the per-process opt-in for
+    //     *new* sessions while the feature stabilises.
     // Each refuses `--cockpit` with its own actionable error so the
     // user knows which knob to flip.
     #[cfg(feature = "serve")]
@@ -368,11 +367,6 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
         let user_picked_cockpit = args.cockpit || args.agent.is_some();
         let user_forced_terminal = args.no_cockpit;
         if user_picked_cockpit {
-            if crate::cockpit::force_disabled() {
-                bail!(
-                    "Cockpit is disabled (AOE_NO_COCKPIT=1). Unset the env var to use --cockpit."
-                );
-            }
             if !config.cockpit.enabled {
                 bail!(
                     "Cockpit is disabled by config (`cockpit.enabled = false` in config.toml). \
@@ -386,8 +380,7 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
                 );
             }
         }
-        let allow_default_cockpit =
-            !crate::cockpit::force_disabled() && crate::cockpit::experimental_enabled();
+        let allow_default_cockpit = crate::cockpit::experimental_enabled();
         instance.cockpit_mode = if user_forced_terminal {
             false
         } else if user_picked_cockpit {

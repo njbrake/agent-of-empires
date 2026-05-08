@@ -1,17 +1,24 @@
 # Cockpit (Native Agent Rendering, Beta)
 
-> **Beta, opt-in.** Cockpit ships disabled by default. Set
-> `AOE_EXPERIMENTAL_COCKPIT=1` in the env that runs `aoe serve` (and
-> the TUI/CLI) to enable it. While the flag is unset:
+> **Beta, opt-in.** Cockpit ships disabled by default behind two
+> independent gates:
 >
-> - the web wizard hides the substrate picker, and every new browser
->   session is tmux,
-> - `aoe add --cockpit` refuses with an actionable error,
-> - existing cockpit sessions still load and run (the gate is for
->   *new* sessions only).
+> 1. `cockpit.enabled = true` in `config.toml` (persistent master
+>    switch; default `false` from migration v005). Editable via the
+>    settings TUI.
+> 2. `AOE_EXPERIMENTAL_COCKPIT=1` env var on the process running
+>    `aoe serve` (and the CLI for `aoe add --cockpit`). Per-process
+>    opt-in for *new* sessions while the feature stabilises.
 >
-> `AOE_NO_COCKPIT=1` is the hard kill switch: cockpit refuses to
-> spawn workers regardless of any other config.
+> While either gate is off:
+>
+> - the web wizard auto-routes new sessions through tmux,
+> - `aoe add --cockpit` refuses with an actionable error.
+>
+> Existing cockpit sessions still load and run when the env var is
+> unset (the env-var gate is for *new* sessions only); when the
+> master switch is off, the reconciler doesn't auto-spawn workers
+> for any session.
 >
 > The data model (`cockpit_mode: bool` per session) is stable; the
 > UI and reliability story are still evolving — see "What's deferred".
@@ -169,38 +176,39 @@ exists if you came from 1.4.x.
 
 ## Disabling / escape hatches
 
-- `--no-cockpit` per session.
-- `cockpit.enabled = false` in `config.toml` (global).
-- `AOE_NO_COCKPIT=1` env var. Skips the startup auto-spawn loop and
-  refuses every cockpit REST endpoint (spawn, enable, prompt, etc.)
-  with `503 Service Unavailable`. The CLI also refuses `--cockpit`.
-  Setting this on a *running* daemon also tears down any in-flight
-  workers within ~2 seconds, so you don't need to restart `aoe serve`
-  to make it take effect — useful in incident response.
+- `--no-cockpit` per session (CLI).
+- `cockpit.enabled = false` in `config.toml` (persistent master). The
+  reconciler short-circuits, REST endpoints return 503, and the CLI
+  refuses `--cockpit`. Snapshotted at startup, so toggling requires
+  `aoe serve --stop` then a fresh start to take effect.
+- Don't set `AOE_EXPERIMENTAL_COCKPIT` (per-process). With the master
+  switch on but the env var unset, *new* browser sessions still get
+  tmux; existing cockpit sessions keep running with a one-time warn
+  log on startup.
 - `AOE_COCKPIT_NODE=/path/to/node` overrides Node discovery for one
   process (useful when the host's PATH-side Node is the wrong version
   and you can't change PATH).
 
 ### Fully turn cockpit off
 
-To make absolutely sure no cockpit work happens, layer all three:
-
 ```bash
-# 1. Set the runtime kill switch (tears down running workers, blocks new ones).
-export AOE_NO_COCKPIT=1
+# 1. Stop the daemon.
+aoe serve --stop
 
-# 2. Flip the master switch off in config.toml so a future
-#    operator who unsets the env var still gets terminal-only.
-$EDITOR ~/.config/agent-of-empires/config.toml  # cockpit.enabled = false
+# 2. Set the master switch off in config.toml.
+$EDITOR ~/.config/agent-of-empires/config.toml  # [cockpit] enabled = false
 
 # 3. Make sure AOE_EXPERIMENTAL_COCKPIT is NOT in your shell init
 #    (.zshrc/.bashrc), systemd unit, launchd plist, etc.
+
+# 4. Start serve again.
+aoe serve
 ```
 
-`aoe cockpit doctor` reports the gate state up front and tells you
-which knob is on/off. `aoe cockpit doctor --fix` will install missing
-ACP tooling but **will not** flip the master switch on for you;
-toggling `cockpit.enabled` is always an explicit operator action.
+`aoe cockpit doctor` reports the gate state up front. `aoe cockpit
+doctor --fix` will install missing ACP tooling but **will not** flip
+`cockpit.enabled` on for you; toggling that is always an explicit
+operator action.
 
 ## TUI vs web dashboard
 

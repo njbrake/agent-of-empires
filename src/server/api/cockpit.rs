@@ -52,13 +52,6 @@ pub async fn spawn_cockpit(
     Path(id): Path<String>,
     Json(req): Json<SpawnCockpitRequest>,
 ) -> impl IntoResponse {
-    if crate::cockpit::force_disabled() {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            "cockpit is disabled (AOE_NO_COCKPIT=1); unset to use",
-        )
-            .into_response();
-    }
     if !state.cockpit_master_enabled {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -296,13 +289,6 @@ pub async fn cockpit_enable(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    if crate::cockpit::force_disabled() {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            "cockpit is disabled (AOE_NO_COCKPIT=1); unset to use",
-        )
-            .into_response();
-    }
     if !state.cockpit_master_enabled {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
@@ -587,14 +573,11 @@ pub struct ReplayResponse {
 /// briefly any time a screen lock fires; this lets them resync without
 /// a full page reload by replaying the buffered frames they missed.
 ///
-/// Gating note: only the standard auth middleware applies. The cockpit
-/// env-var/master-switch gates are deliberately NOT checked here —
-/// after an operator sets `AOE_NO_COCKPIT=1` we still let clients fetch
-/// already-recorded history, because the buffer has no privileged data
-/// the live channel didn't already broadcast and yanking history mid-
-/// session is more disruptive than the leak risk warrants. The
-/// reconciler's active tear-down (see `reconcile_cockpit_workers`) is
-/// what actually stops new events from flowing.
+/// Gating note: only the standard auth middleware applies — no master-
+/// switch check. History is read-only and contains nothing the live
+/// channel didn't already broadcast, so flipping `cockpit.enabled` off
+/// (which requires a daemon restart and clears the buffers) is the
+/// right way to stop history reads, not gating each request.
 pub async fn cockpit_replay(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,

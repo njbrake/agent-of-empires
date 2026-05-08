@@ -233,12 +233,10 @@ export interface ServerAbout {
   read_only: boolean;
   behind_tunnel: boolean;
   profile: string;
-  /** True when AOE_EXPERIMENTAL_COCKPIT=1 is set on the server.
-   *  When false, the wizard hides the substrate picker and every new
-   *  session is tmux. */
+  /** True when cockpit is available for new sessions (master switch
+   *  is on AND AOE_EXPERIMENTAL_COCKPIT=1 is set). When false, every
+   *  new session is tmux. */
   experimental_cockpit: boolean;
-  /** True when AOE_NO_COCKPIT=1 is set. Cockpit is fully unavailable. */
-  cockpit_force_disabled: boolean;
 }
 
 export function fetchAbout(): Promise<ServerAbout | null> {

@@ -386,25 +386,19 @@ pub struct ServerAbout {
     pub behind_tunnel: bool,
     pub profile: String,
     /// True when `AOE_EXPERIMENTAL_COCKPIT=1` is set on the server
-    /// process. The wizard uses this to decide whether to show the
-    /// substrate picker; when false, the wizard hides cockpit and
-    /// every new session is tmux-only.
+    /// process AND the master switch (`cockpit.enabled`) is on. The
+    /// wizard uses this to decide whether new sessions auto-route
+    /// through cockpit; when false, every new session is tmux.
     pub experimental_cockpit: bool,
-    /// True when `AOE_NO_COCKPIT=1` is set. Cockpit is fully
-    /// unavailable; existing cockpit sessions still appear in the
-    /// list but cannot be revived until the env var is unset.
-    pub cockpit_force_disabled: bool,
 }
 
 pub async fn get_about(State(state): State<Arc<AppState>>) -> Json<ServerAbout> {
     let auth_required = !state.token_manager.is_no_auth().await;
     #[cfg(feature = "serve")]
-    let (experimental_cockpit, cockpit_force_disabled) = (
-        crate::cockpit::experimental_enabled(),
-        crate::cockpit::force_disabled(),
-    );
+    let experimental_cockpit =
+        state.cockpit_master_enabled && crate::cockpit::experimental_enabled();
     #[cfg(not(feature = "serve"))]
-    let (experimental_cockpit, cockpit_force_disabled) = (false, true);
+    let experimental_cockpit = false;
     Json(ServerAbout {
         version: env!("CARGO_PKG_VERSION").to_string(),
         auth_required,
@@ -413,7 +407,6 @@ pub async fn get_about(State(state): State<Arc<AppState>>) -> Json<ServerAbout> 
         behind_tunnel: state.behind_tunnel,
         profile: state.profile.clone(),
         experimental_cockpit,
-        cockpit_force_disabled,
     })
 }
 

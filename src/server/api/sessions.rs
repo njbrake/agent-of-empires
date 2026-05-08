@@ -731,16 +731,13 @@ pub async fn create_session(
         }
 
         // Apply cockpit fields from the request body. cockpit_mode is
-        // silently downgraded to tmux when any of the gates says no:
-        // `AOE_NO_COCKPIT=1` (operator hard-disable),
-        // `cockpit.enabled = false` in config.toml (master kill),
-        // or `AOE_EXPERIMENTAL_COCKPIT` not set (new sessions are
-        // tmux unless the operator opted in).
+        // silently downgraded to tmux when either gate says no:
+        // `cockpit.enabled = false` in config.toml (persistent master),
+        // or `AOE_EXPERIMENTAL_COCKPIT` not set (per-process opt-in for
+        // new sessions).
         #[cfg(feature = "serve")]
         {
-            let allow_cockpit = !crate::cockpit::force_disabled()
-                && cockpit_master_enabled
-                && crate::cockpit::experimental_enabled();
+            let allow_cockpit = cockpit_master_enabled && crate::cockpit::experimental_enabled();
             instance.cockpit_mode = body.cockpit_mode && allow_cockpit;
             instance.cockpit_agent = body.cockpit_agent;
             instance.cockpit_model = body.cockpit_model;

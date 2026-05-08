@@ -539,7 +539,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
                     key={activeSessionId}
                     session={activeSession}
                     experimentalCockpit={
-                      !!serverAbout?.experimental_cockpit && !serverAbout.cockpit_force_disabled
+                      !!serverAbout?.experimental_cockpit
                     }
                   />
                 )}
@@ -644,7 +644,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
           }}
           prefill={wizardPrefill}
           experimentalCockpit={
-            !!serverAbout?.experimental_cockpit && !serverAbout.cockpit_force_disabled
+            !!serverAbout?.experimental_cockpit
           }
         />
       )}

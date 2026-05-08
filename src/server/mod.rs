@@ -558,7 +558,7 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
     // fires immediately, so on cold startup this is equivalent to the
     // old in-place loop here, while also covering sessions added via
     // `aoe add --cockpit` while serve is already running. The
-    // reconciler short-circuits when `AOE_NO_COCKPIT=1` is set.
+    // reconciler short-circuits when `cockpit.enabled = false`.
 
     let addr = format!("{}:{}", host, port);
     let listener = tokio::net::TcpListener::bind(&addr).await?;
@@ -1285,29 +1285,11 @@ async fn reconcile_cockpit_workers(
     state: &Arc<AppState>,
     attempted: &mut std::collections::HashSet<String>,
 ) {
-    // Honor the `AOE_NO_COCKPIT=1` kill switch as an *active* tear-down,
-    // not just a "no new spawns" toggle. If the operator flips the env
-    // var on while the daemon is running (e.g. during incident response),
-    // we shut every running cockpit worker down on the next reconcile
-    // tick (~2s) so the kill switch behaves like users expect rather
-    // than waiting for a daemon restart. Replay buffers + the seq map
-    // survive so unsetting the env var later resumes existing sessions
-    // mid-conversation; only the in-flight ACP subprocesses die.
-    if crate::cockpit::force_disabled() {
-        if state.cockpit_supervisor.count().await > 0 {
-            tracing::warn!(
-                target: "cockpit.supervisor",
-                "AOE_NO_COCKPIT=1 set; tearing down all running cockpit workers"
-            );
-            state.cockpit_supervisor.shutdown_all().await;
-            attempted.clear();
-        }
-        return;
-    }
-    // Honor `cockpit.enabled = false` from config.toml: documented as
-    // the master kill switch. Snapshotted at startup; toggling the
-    // value requires `aoe serve` to restart, mirroring how
-    // `web.notifications_enabled` works.
+    // Honor `cockpit.enabled = false` from config.toml — the persistent
+    // master switch. Snapshotted at startup; flipping it requires
+    // `aoe serve` to restart, mirroring how `web.notifications_enabled`
+    // works. To stop cockpit on a running daemon: `aoe serve --stop`,
+    // toggle the field, then start again.
     if !state.cockpit_master_enabled {
         return;
     }
@@ -1347,24 +1329,22 @@ async fn reconcile_cockpit_workers(
         // while AcpClient::spawn is still negotiating with the agent.
         attempted.insert(id.clone());
         // Persisted cockpit-mode sessions auto-spawn even when
-        // `AOE_EXPERIMENTAL_COCKPIT` is unset (the gate is for *new*
-        // sessions). Log a warning per session so operators who unset
-        // the env var know why their cockpit sessions are still
-        // running. The `attempted` set bounds this to one log line per
-        // session per daemon lifetime; restarting `aoe serve` rebuilds
-        // `attempted` and re-logs once per session, so a 50-session
-        // user who unsets the env var sees 50 warnings on startup —
-        // intentional, since the alternative is silent auto-spawn.
+        // `AOE_EXPERIMENTAL_COCKPIT` is unset (the env-var gate is for
+        // *new* sessions, not pre-existing ones). Log a warning per
+        // session so operators who unset the env var on a daemon with
+        // existing cockpit sessions know why those are still running.
+        // The `attempted` set bounds this to one log line per session
+        // per daemon lifetime.
         if !crate::cockpit::experimental_enabled() {
             tracing::warn!(
                 target: "cockpit.supervisor",
                 session = %id,
                 "auto-spawning persisted cockpit-mode session while \
                  AOE_EXPERIMENTAL_COCKPIT is not set. To stop cockpit \
-                 from running existing sessions, set AOE_NO_COCKPIT=1 \
-                 or `cockpit.enabled = false` in config.toml. To stop \
-                 just this one, switch its substrate to tmux from the \
-                 dashboard."
+                 from running existing sessions, set \
+                 `cockpit.enabled = false` in config.toml and restart \
+                 `aoe serve`. To stop just this one, switch its \
+                 substrate to tmux from the dashboard."
             );
         }
         let supervisor = state.cockpit_supervisor.clone();
