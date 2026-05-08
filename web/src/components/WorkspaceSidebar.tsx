@@ -344,7 +344,7 @@ const SessionRow = memo(function SessionRow({
                 {subtitle}
               </span>
             )}
-            {firstSession && firstSession.workspace_repos.length > 1 && (
+            {firstSession && (firstSession.workspace_repos?.length ?? 0) > 1 && (
               <span
                 className="mt-0.5 flex flex-wrap gap-1 text-[10px] font-mono text-text-dim"
                 title={firstSession.workspace_repos.map((r) => r.source_path).join("\n")}

@@ -34,6 +34,7 @@ export async function mockTerminalApis(page: Page): Promise<MockHandle> {
           is_sandboxed: false,
           has_terminal: true,
           profile: "default",
+          workspace_repos: [],
         },
       ],
     });

@@ -13,7 +13,7 @@ function loadCollapsed(id: string): boolean {
 }
 
 function isMultiRepoWorkspace(ws: Workspace): boolean {
-  return ws.sessions.some((s) => s.workspace_repos.length > 1);
+  return ws.sessions.some((s) => (s.workspace_repos?.length ?? 0) > 1);
 }
 
 export function useRepoGroups(workspaces: Workspace[]): {
