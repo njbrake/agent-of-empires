@@ -453,6 +453,30 @@ fn test_tool_selection_left_right() {
 }
 
 #[test]
+fn test_tool_selection_left_right_three_tools() {
+    let mut dialog = NewSessionDialog::new_with_tools(
+        vec!["claude", "opencode", "codex"],
+        TEST_PATH.to_string(),
+    );
+    dialog.focused_field = 2; // tool field
+    assert_eq!(dialog.tool_index, 0);
+
+    dialog.handle_key(key(KeyCode::Right));
+    assert_eq!(dialog.tool_index, 1);
+    dialog.handle_key(key(KeyCode::Right));
+    assert_eq!(dialog.tool_index, 2);
+    dialog.handle_key(key(KeyCode::Right));
+    assert_eq!(dialog.tool_index, 0, "right wraps from last to first");
+
+    dialog.handle_key(key(KeyCode::Left));
+    assert_eq!(dialog.tool_index, 2, "left wraps from first to last");
+    dialog.handle_key(key(KeyCode::Left));
+    assert_eq!(dialog.tool_index, 1);
+    dialog.handle_key(key(KeyCode::Left));
+    assert_eq!(dialog.tool_index, 0);
+}
+
+#[test]
 fn test_tool_selection_space() {
     let mut dialog = multi_tool_dialog();
     dialog.focused_field = 2; // tool field

@@ -181,13 +181,18 @@ impl NewSessionDialog {
             let dimmed = Style::default().fg(theme.dimmed);
             let accent = Style::default().fg(theme.accent).bold();
 
-            tool_spans.push(Span::styled("← ", dimmed));
+            if is_tool_focused {
+                tool_spans.push(Span::styled("← ", dimmed));
+            }
             tool_spans.push(Span::styled("● ", accent));
             tool_spans.push(Span::styled(selected_name.as_str(), accent));
             tool_spans.push(Span::styled(
-                format!("  [{}/{}]  →", self.tool_index + 1, total),
+                format!("  [{}/{}]", self.tool_index + 1, total),
                 dimmed,
             ));
+            if is_tool_focused {
+                tool_spans.push(Span::styled("  →", dimmed));
+            }
 
             // Show Ctrl+P hint and summary of tool config
             let has_config =
