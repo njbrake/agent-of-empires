@@ -60,10 +60,6 @@ pub struct CockpitConfigOverride {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_agent: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub approval_timeout_secs: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub destructive_require_double_confirm: Option<bool>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_concurrent_workers: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub replay_events: Option<u32>,
@@ -507,12 +503,6 @@ pub fn merge_configs(mut global: Config, profile: &ProfileConfig) -> Config {
         }
         if let Some(ref v) = cockpit_override.default_agent {
             global.cockpit.default_agent = v.clone();
-        }
-        if let Some(v) = cockpit_override.approval_timeout_secs {
-            global.cockpit.approval_timeout_secs = v;
-        }
-        if let Some(v) = cockpit_override.destructive_require_double_confirm {
-            global.cockpit.destructive_require_double_confirm = v;
         }
         if let Some(v) = cockpit_override.max_concurrent_workers {
             global.cockpit.max_concurrent_workers = v;

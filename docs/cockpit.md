@@ -171,13 +171,36 @@ exists if you came from 1.4.x.
 
 - `--no-cockpit` per session.
 - `cockpit.enabled = false` in `config.toml` (global).
-- `AOE_NO_COCKPIT=1` env var, applied at process start. Skips the
-  startup auto-spawn loop and refuses every cockpit REST endpoint
-  (spawn, enable, prompt, etc.) with `503 Service Unavailable`.
-  The CLI also refuses `--cockpit`.
+- `AOE_NO_COCKPIT=1` env var. Skips the startup auto-spawn loop and
+  refuses every cockpit REST endpoint (spawn, enable, prompt, etc.)
+  with `503 Service Unavailable`. The CLI also refuses `--cockpit`.
+  Setting this on a *running* daemon also tears down any in-flight
+  workers within ~2 seconds, so you don't need to restart `aoe serve`
+  to make it take effect — useful in incident response.
 - `AOE_COCKPIT_NODE=/path/to/node` overrides Node discovery for one
   process (useful when the host's PATH-side Node is the wrong version
   and you can't change PATH).
+
+### Fully turn cockpit off
+
+To make absolutely sure no cockpit work happens, layer all three:
+
+```bash
+# 1. Set the runtime kill switch (tears down running workers, blocks new ones).
+export AOE_NO_COCKPIT=1
+
+# 2. Flip the master switch off in config.toml so a future
+#    operator who unsets the env var still gets terminal-only.
+$EDITOR ~/.config/agent-of-empires/config.toml  # cockpit.enabled = false
+
+# 3. Make sure AOE_EXPERIMENTAL_COCKPIT is NOT in your shell init
+#    (.zshrc/.bashrc), systemd unit, launchd plist, etc.
+```
+
+`aoe cockpit doctor` reports the gate state up front and tells you
+which knob is on/off. `aoe cockpit doctor --fix` will install missing
+ACP tooling but **will not** flip the master switch on for you;
+toggling `cockpit.enabled` is always an explicit operator action.
 
 ## TUI vs web dashboard
 

@@ -5,9 +5,15 @@
 //! `session_id` matches the route param. Frames are JSON. The protocol
 //! is one-way today (server -> client); inbound messages are ignored.
 //!
-//! When the worker supervisor lands in a follow-up slice, it is the
-//! producer: each new cockpit Event becomes a `CockpitBroadcastFrame`
-//! published on `cockpit_events_tx`. This module only consumes.
+//! Durability lives in the replay buffer (`AppState::cockpit_replay`),
+//! NOT this channel. The broadcast channel is best-effort: a client
+//! that connects between a `tx.send` and its `subscribe()` misses
+//! frames, and `RecvError::Lagged` drops frames when the channel
+//! overflows. Both cases recover via
+//! `GET /api/sessions/{id}/cockpit/replay?since=<seq>`, which reads
+//! the per-session ring buffer that `ChannelSink::publish` writes
+//! synchronously on every event. The channel is the fast path; the
+//! buffer is the truth.
 
 use std::sync::Arc;
 

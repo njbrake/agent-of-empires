@@ -111,8 +111,6 @@ pub enum FieldKey {
     CockpitEnabled,
     CockpitDefaultForClaude,
     CockpitDefaultAgent,
-    CockpitApprovalTimeoutSecs,
-    CockpitDestructiveDoubleConfirm,
     CockpitMaxConcurrentWorkers,
     CockpitReplayEvents,
     CockpitReplayBytes,
@@ -301,16 +299,6 @@ fn build_cockpit_fields(
         global.cockpit.default_agent.clone(),
         p.and_then(|c| c.default_agent.clone()),
     );
-    let (approval_timeout_secs, ats_override) = resolve_value(
-        scope,
-        global.cockpit.approval_timeout_secs,
-        p.and_then(|c| c.approval_timeout_secs),
-    );
-    let (destructive_double, dd_override) = resolve_value(
-        scope,
-        global.cockpit.destructive_require_double_confirm,
-        p.and_then(|c| c.destructive_require_double_confirm),
-    );
     let (max_workers, mw_override) = resolve_value(
         scope,
         global.cockpit.max_concurrent_workers,
@@ -358,24 +346,6 @@ fn build_cockpit_fields(
             value: FieldValue::Text(default_agent),
             category: SettingsCategory::Cockpit,
             has_override: da_override,
-            inherited_display: None,
-        },
-        SettingField {
-            key: FieldKey::CockpitApprovalTimeoutSecs,
-            label: "Approval timeout (s)",
-            description: "Seconds a pending tool-call approval waits before auto-cancelling.",
-            value: FieldValue::Number(u64::from(approval_timeout_secs)),
-            category: SettingsCategory::Cockpit,
-            has_override: ats_override,
-            inherited_display: None,
-        },
-        SettingField {
-            key: FieldKey::CockpitDestructiveDoubleConfirm,
-            label: "Double-confirm destructive",
-            description: "Require a second confirm step on mobile for destructive tool calls (rm -rf, git push --force, etc.).",
-            value: FieldValue::Bool(destructive_double),
-            category: SettingsCategory::Cockpit,
-            has_override: dd_override,
             inherited_display: None,
         },
         SettingField {
@@ -1748,12 +1718,6 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
         (FieldKey::CockpitDefaultAgent, FieldValue::Text(v)) => {
             config.cockpit.default_agent = v.clone()
         }
-        (FieldKey::CockpitApprovalTimeoutSecs, FieldValue::Number(v)) => {
-            config.cockpit.approval_timeout_secs = (*v) as u32
-        }
-        (FieldKey::CockpitDestructiveDoubleConfirm, FieldValue::Bool(v)) => {
-            config.cockpit.destructive_require_double_confirm = *v
-        }
         (FieldKey::CockpitMaxConcurrentWorkers, FieldValue::Number(v)) => {
             config.cockpit.max_concurrent_workers = (*v).max(1) as u32
         }
@@ -2050,16 +2014,6 @@ fn apply_field_to_profile(field: &SettingField, _global: &Config, config: &mut P
         (FieldKey::CockpitDefaultAgent, FieldValue::Text(v)) => {
             set_profile_override(v.clone(), &mut config.cockpit, |s, val| {
                 s.default_agent = val
-            });
-        }
-        (FieldKey::CockpitApprovalTimeoutSecs, FieldValue::Number(v)) => {
-            set_profile_override((*v) as u32, &mut config.cockpit, |s, val| {
-                s.approval_timeout_secs = val
-            });
-        }
-        (FieldKey::CockpitDestructiveDoubleConfirm, FieldValue::Bool(v)) => {
-            set_profile_override(*v, &mut config.cockpit, |s, val| {
-                s.destructive_require_double_confirm = val
             });
         }
         (FieldKey::CockpitMaxConcurrentWorkers, FieldValue::Number(v)) => {

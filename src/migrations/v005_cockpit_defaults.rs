@@ -11,10 +11,18 @@
 
 use anyhow::Result;
 use std::fs;
+use std::path::Path;
 use tracing::{debug, info};
 
 pub fn run() -> Result<()> {
     let app_dir = crate::session::get_app_dir()?;
+    run_in(&app_dir)
+}
+
+/// Inner body so the test can drive the migration end-to-end against
+/// a temp directory instead of inlining a near-copy of the production
+/// logic that drifts as fields are added/removed.
+pub(crate) fn run_in(app_dir: &Path) -> Result<()> {
     let global_config = app_dir.join("config.toml");
     if !global_config.exists() {
         debug!("global config.toml not present, nothing to seed");
@@ -39,8 +47,6 @@ pub fn run() -> Result<()> {
     cockpit.insert("enabled".into(), false.into());
     cockpit.insert("default_for_claude".into(), true.into());
     cockpit.insert("default_agent".into(), "aoe-agent".into());
-    cockpit.insert("approval_timeout_secs".into(), (300_i64).into());
-    cockpit.insert("destructive_require_double_confirm".into(), true.into());
     cockpit.insert("max_concurrent_workers".into(), (5_i64).into());
     cockpit.insert("replay_events".into(), (500_i64).into());
     cockpit.insert("replay_bytes".into(), (5_242_880_i64).into());
@@ -67,20 +73,19 @@ mod tests {
         let path = temp.path().join("config.toml");
         fs::write(&path, "[other]\nkey = \"value\"\n").unwrap();
 
-        // Run the inner migration logic directly against this file. The
-        // public `run` reads the app_dir, so we simulate by calling the
-        // body inline — this matches the pattern in v003's tests.
-        let content = fs::read_to_string(&path).unwrap();
-        let mut doc: toml::Table = content.parse().unwrap();
-        assert!(!doc.contains_key("cockpit"));
-        let mut cockpit = toml::Table::new();
-        cockpit.insert("enabled".into(), false.into());
-        cockpit.insert("default_for_claude".into(), true.into());
-        doc.insert("cockpit".into(), toml::Value::Table(cockpit));
-        fs::write(&path, toml::to_string_pretty(&doc).unwrap()).unwrap();
+        // First run: seeds [cockpit].
+        run_in(temp.path()).unwrap();
+        let after_first: toml::Table = fs::read_to_string(&path).unwrap().parse().unwrap();
+        assert!(after_first.contains_key("cockpit"));
+        assert!(after_first.contains_key("other"));
 
-        let after: toml::Table = fs::read_to_string(&path).unwrap().parse().unwrap();
-        assert!(after.contains_key("cockpit"));
-        assert!(after.contains_key("other"));
+        // Second run: idempotent (sees existing [cockpit] and bails).
+        run_in(temp.path()).unwrap();
+        let after_second = fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            toml::to_string_pretty(&after_first).unwrap(),
+            after_second,
+            "second run must not mutate config",
+        );
     }
 }

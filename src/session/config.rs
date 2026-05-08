@@ -67,12 +67,6 @@ pub struct CockpitConfig {
     /// The agent name to use when --agent is not specified.
     #[serde(default = "default_agent")]
     pub default_agent: String,
-    /// Approval timeout in seconds before a pending permission auto-cancels.
-    #[serde(default = "default_approval_timeout")]
-    pub approval_timeout_secs: u32,
-    /// Require a second confirm step on mobile for destructive tool calls.
-    #[serde(default = "default_true")]
-    pub destructive_require_double_confirm: bool,
     /// Hard cap on simultaneously running agent worker subprocesses.
     #[serde(default = "default_max_workers")]
     pub max_concurrent_workers: u32,
@@ -94,8 +88,6 @@ impl Default for CockpitConfig {
             enabled: false,
             default_for_claude: true,
             default_agent: default_agent(),
-            approval_timeout_secs: default_approval_timeout(),
-            destructive_require_double_confirm: true,
             max_concurrent_workers: default_max_workers(),
             replay_events: default_replay_events(),
             replay_bytes: default_replay_bytes(),
@@ -106,9 +98,6 @@ impl Default for CockpitConfig {
 
 fn default_agent() -> String {
     "aoe-agent".to_string()
-}
-fn default_approval_timeout() -> u32 {
-    300
 }
 fn default_max_workers() -> u32 {
     5

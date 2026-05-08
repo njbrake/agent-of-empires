@@ -7,7 +7,7 @@
 //!
 //! Watchdog: when an agent's ACP connection task ends (subprocess exit,
 //! transport break) the drain task respawns it. Up to
-//! `MAX_RESTARTS_IN_WINDOW` respawns are allowed inside `RESTART_WINDOW`;
+//! `MAX_RESPAWNS_IN_WINDOW` respawns are allowed inside `RESTART_WINDOW`;
 //! beyond that the session is parked and an `AgentStartupError` event
 //! is published so the UI can surface "session crashed" instead of
 //! going silent.
@@ -35,10 +35,11 @@ use super::approvals::{ApprovalDecision, Nonce};
 use super::replay_buffer::ReplayBuffer;
 use super::state::{CockpitSessionId, Event};
 
-/// Maximum number of unconditional restarts within `RESTART_WINDOW`.
+/// Maximum number of post-startup respawns within `RESTART_WINDOW`.
 /// After this many crashes the session is parked and an
-/// `AgentStartupError` event is published.
-const MAX_RESTARTS_IN_WINDOW: u32 = 3;
+/// `AgentStartupError` event is published. The initial spawn does not
+/// count toward this budget — it's always allowed.
+const MAX_RESPAWNS_IN_WINDOW: u32 = 3;
 const RESTART_WINDOW: Duration = Duration::from_secs(60);
 /// Brief backoff before respawning an exited worker so we don't
 /// hot-loop when the agent process crashes immediately on startup.
@@ -54,6 +55,12 @@ pub enum SupervisorError {
     UnknownAgent(String),
     #[error("session {0:?} already has a running cockpit worker")]
     AlreadyRunning(String),
+    /// Configured `[cockpit] max_concurrent_workers` cap is full. The
+    /// caller should surface this to the operator (REST: 503; CLI: a
+    /// hint to delete an existing cockpit session or raise the cap)
+    /// rather than retrying.
+    #[error("cockpit worker capacity full ({current}/{limit}); raise [cockpit] max_concurrent_workers or delete an existing cockpit session")]
+    CapacityFull { current: usize, limit: u32 },
 }
 
 /// Frame published to the broadcast channel; mirrors
@@ -71,8 +78,10 @@ struct WorkerHandle {
     /// Background task draining events from the client. Aborted on
     /// shutdown.
     drain_task: JoinHandle<()>,
-    /// Restart bookkeeping: timestamps of recent (re)spawns. Used by
-    /// the watchdog to enforce `MAX_RESTARTS_IN_WINDOW`.
+    /// Restart bookkeeping: timestamps of recent respawns (post-
+    /// initial-spawn). Used by the watchdog to enforce
+    /// `MAX_RESPAWNS_IN_WINDOW`. Empty on first spawn so the initial
+    /// boot doesn't consume the budget.
     restart_history: Vec<Instant>,
     /// Stored so the watchdog can respawn the worker when its ACP
     /// connection task exits (subprocess crash, transport break).
@@ -95,15 +104,30 @@ pub struct Supervisor<S: BroadcastSink> {
     registry: Arc<Mutex<AgentRegistry>>,
     workers: Arc<Mutex<HashMap<String, WorkerHandle>>>,
     next_seqs: Arc<SeqMap>,
+    /// Cap on concurrently-running workers, snapshotted from
+    /// `[cockpit] max_concurrent_workers` at startup. Enforced in
+    /// `spawn`; new workers past the cap return `CapacityFull`.
+    /// Tests use `Supervisor::new` (effectively unbounded); production
+    /// uses `Supervisor::with_capacity`.
+    max_concurrent_workers: u32,
 }
 
 impl<S: BroadcastSink> Supervisor<S> {
+    /// Constructor with no concurrency cap. Used in tests; production
+    /// callers should use [`Supervisor::with_capacity`] so the
+    /// configured `[cockpit] max_concurrent_workers` actually limits
+    /// the worker pool.
     pub fn new(sink: Arc<S>) -> Self {
+        Self::with_capacity(sink, u32::MAX)
+    }
+
+    pub fn with_capacity(sink: Arc<S>, max_concurrent_workers: u32) -> Self {
         Self {
             sink,
             registry: Arc::new(Mutex::new(AgentRegistry::with_defaults())),
             workers: Arc::new(Mutex::new(HashMap::new())),
             next_seqs: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            max_concurrent_workers,
         }
     }
 
@@ -178,7 +202,18 @@ impl<S: BroadcastSink> Supervisor<S> {
     }
 
     /// Spawn a cockpit worker for the given session. Returns Err if a
-    /// worker is already running for that session.
+    /// worker is already running for that session, or if the
+    /// `max_concurrent_workers` cap is full.
+    ///
+    /// Concurrency note: the AlreadyRunning + CapacityFull check
+    /// releases the workers lock before `AcpClient::spawn`, then
+    /// re-acquires it for the insert. Two concurrent `spawn(same_id)`
+    /// calls could in principle both pass the check and race to
+    /// insert. Today's callers don't trigger this — the auto-spawn
+    /// reconciler dedupes via its `attempted` set, REST handlers
+    /// gate on `is_running()`, and CLI add is single-process — so we
+    /// rely on the contract rather than holding the lock across the
+    /// (possibly seconds-long) `AcpClient::spawn().await`.
     pub async fn spawn(
         &self,
         session_id: String,
@@ -192,6 +227,12 @@ impl<S: BroadcastSink> Supervisor<S> {
             let workers = self.workers.lock().await;
             if workers.contains_key(&session_id) {
                 return Err(SupervisorError::AlreadyRunning(session_id));
+            }
+            if workers.len() >= self.max_concurrent_workers as usize {
+                return Err(SupervisorError::CapacityFull {
+                    current: workers.len(),
+                    limit: self.max_concurrent_workers,
+                });
             }
         }
 
@@ -241,7 +282,11 @@ impl<S: BroadcastSink> Supervisor<S> {
             WorkerHandle {
                 client,
                 drain_task,
-                restart_history: vec![Instant::now()],
+                // Empty: the initial spawn doesn't count toward the
+                // restart budget. Each crash-and-respawn appends one
+                // entry; budget burns when entries-in-window exceed
+                // MAX_RESPAWNS_IN_WINDOW.
+                restart_history: vec![],
                 spawn_config: Some(config),
             },
         );
@@ -300,7 +345,7 @@ impl<S: BroadcastSink> Supervisor<S> {
                                 message: format!(
                                     "ACP agent crashed more than {} times in {}s; \
                                      not respawning. Use the web dashboard to retry.",
-                                    MAX_RESTARTS_IN_WINDOW,
+                                    MAX_RESPAWNS_IN_WINDOW,
                                     RESTART_WINDOW.as_secs()
                                 ),
                             },
@@ -345,9 +390,32 @@ impl<S: BroadcastSink> Supervisor<S> {
                             return;
                         }
                     };
-                let new_inbound = new_client
-                    .take_inbound()
-                    .expect("freshly spawned AcpClient always has inbound receiver");
+                let new_inbound = match new_client.take_inbound() {
+                    Some(rx) => rx,
+                    None => {
+                        // Belt-and-braces: AcpClient::spawn pairs the
+                        // inbound receiver with the client today, so
+                        // this branch never fires. Logging instead of
+                        // panicking guards the daemon if a future
+                        // refactor breaks the invariant.
+                        warn!(
+                            target: "cockpit.supervisor",
+                            session = %session_id,
+                            "respawned client missing inbound receiver; parking",
+                        );
+                        let seq = next_seq(&next_seqs, &session_id);
+                        sink.publish(
+                            &session_id,
+                            seq,
+                            &Event::AgentStartupError {
+                                message: "respawned ACP client had no inbound channel".into(),
+                            },
+                        );
+                        let mut guard = workers.lock().await;
+                        guard.remove(&session_id);
+                        return;
+                    }
+                };
 
                 {
                     let mut guard = workers.lock().await;
@@ -474,7 +542,7 @@ async fn restart_decision(
     let window_start = now - RESTART_WINDOW;
     handle.restart_history.retain(|t| *t >= window_start);
     handle.restart_history.push(now);
-    if handle.restart_history.len() as u32 > MAX_RESTARTS_IN_WINDOW {
+    if handle.restart_history.len() as u32 > MAX_RESPAWNS_IN_WINDOW {
         return RestartDecision::BudgetBurned;
     }
     match handle.spawn_config.clone() {
@@ -646,7 +714,7 @@ mod tests {
         assert!(!sup.is_running("anything").await);
     }
 
-    /// Watchdog: after MAX_RESTARTS_IN_WINDOW respawn attempts inside
+    /// Watchdog: after MAX_RESPAWNS_IN_WINDOW respawn attempts inside
     /// RESTART_WINDOW, `restart_decision` returns `BudgetBurned` so the
     /// drain task parks the session instead of hot-looping.
     #[tokio::test]
@@ -683,7 +751,7 @@ mod tests {
             );
         }
 
-        for i in 0..MAX_RESTARTS_IN_WINDOW {
+        for i in 0..MAX_RESPAWNS_IN_WINDOW {
             let decision = restart_decision(&sup.workers, "s-1").await;
             assert!(
                 matches!(decision, RestartDecision::Respawn(_)),
@@ -729,6 +797,48 @@ mod tests {
             .find_map(|(sid, seq, _)| if sid == "s-1" { Some(*seq) } else { None });
         assert_eq!(startup_seq, Some(1));
         assert_eq!(drained_seq, 2, "drain seq must follow startup-error seq");
+    }
+
+    /// `with_capacity` enforces the configured cap. Past the cap,
+    /// new spawns return `CapacityFull` instead of starting another
+    /// worker. The error must include `current` and `limit` so the
+    /// REST surface can return a useful 503 body.
+    #[tokio::test]
+    async fn capacity_full_returns_after_limit() {
+        let sink = VecSink::new();
+        let sup = Supervisor::with_capacity(sink, 1);
+        // Pre-load one fake worker so the cap is full.
+        let mut workers = sup.workers.lock().await;
+        let (client, _tx) = AcpClient::fake_for_test(CockpitSessionId("s-1".into()));
+        let drain = tokio::spawn(async {});
+        workers.insert(
+            "s-1".into(),
+            WorkerHandle {
+                client: Arc::new(Mutex::new(client)),
+                drain_task: drain,
+                restart_history: vec![],
+                spawn_config: None,
+            },
+        );
+        drop(workers);
+
+        let result = sup
+            .spawn(
+                "s-2".into(),
+                "claude-code",
+                std::env::temp_dir(),
+                vec![],
+                vec![],
+                None,
+            )
+            .await;
+        match result {
+            Err(SupervisorError::CapacityFull { current, limit }) => {
+                assert_eq!(current, 1);
+                assert_eq!(limit, 1);
+            }
+            other => panic!("expected CapacityFull, got {other:?}"),
+        }
     }
 
     /// `forget_session` drops the seq counter so the next conversation

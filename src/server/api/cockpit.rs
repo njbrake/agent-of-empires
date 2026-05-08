@@ -116,6 +116,9 @@ pub async fn spawn_cockpit(
             format!("unknown cockpit agent: {name}"),
         )
             .into_response(),
+        Err(e @ SupervisorError::CapacityFull { .. }) => {
+            (StatusCode::SERVICE_UNAVAILABLE, format!("{e}")).into_response()
+        }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("spawn failed: {e}"),
@@ -583,6 +586,15 @@ pub struct ReplayResponse {
 /// Reconnect/snapshot endpoint. Mobile clients drop their WebSocket
 /// briefly any time a screen lock fires; this lets them resync without
 /// a full page reload by replaying the buffered frames they missed.
+///
+/// Gating note: only the standard auth middleware applies. The cockpit
+/// env-var/master-switch gates are deliberately NOT checked here —
+/// after an operator sets `AOE_NO_COCKPIT=1` we still let clients fetch
+/// already-recorded history, because the buffer has no privileged data
+/// the live channel didn't already broadcast and yanking history mid-
+/// session is more disruptive than the leak risk warrants. The
+/// reconciler's active tear-down (see `reconcile_cockpit_workers`) is
+/// what actually stops new events from flowing.
 pub async fn cockpit_replay(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,

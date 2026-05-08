@@ -789,16 +789,6 @@ impl SettingsView {
                     c.default_agent = None;
                 }
             }
-            FieldKey::CockpitApprovalTimeoutSecs => {
-                if let Some(c) = config.cockpit.as_mut() {
-                    c.approval_timeout_secs = None;
-                }
-            }
-            FieldKey::CockpitDestructiveDoubleConfirm => {
-                if let Some(c) = config.cockpit.as_mut() {
-                    c.destructive_require_double_confirm = None;
-                }
-            }
             FieldKey::CockpitMaxConcurrentWorkers => {
                 if let Some(c) = config.cockpit.as_mut() {
                     c.max_concurrent_workers = None;
