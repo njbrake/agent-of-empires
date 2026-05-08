@@ -75,7 +75,8 @@ cfg-if = "1.0"
 # Process handling
 nix = { version = "0.31", features = ["signal", "process", "net"] }
 
-# Unicode width
+# Unicode width + normalization (NFKD used to fold accents in title-derived branch names)
+unicode-normalization = "0.1"
 unicode-width = "0.2"
 
 # Terminal spinners

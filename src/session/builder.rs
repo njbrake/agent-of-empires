@@ -534,60 +534,36 @@ fn dedupe_branch_name(base: &str, taken: &std::collections::HashSet<String>) -> 
     }
 }
 
-/// Best-effort transliteration of common Latin diacritics to ASCII so that
-/// title-derived branch names retain meaning instead of silently dropping
-/// characters. Unsupported scripts (CJK, emoji, etc.) still fall through and
-/// are dropped by `branch_name_from_title`; users with such titles should set
-/// an explicit branch name via Ctrl+P.
-fn ascii_fold(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for ch in s.chars() {
-        match ch {
-            'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' | 'ā' | 'ă' | 'ą' => out.push('a'),
-            'À' | 'Á' | 'Â' | 'Ã' | 'Ä' | 'Å' | 'Ā' | 'Ă' | 'Ą' => out.push('A'),
-            'è' | 'é' | 'ê' | 'ë' | 'ē' | 'ĕ' | 'ė' | 'ę' | 'ě' => out.push('e'),
-            'È' | 'É' | 'Ê' | 'Ë' | 'Ē' | 'Ĕ' | 'Ė' | 'Ę' | 'Ě' => out.push('E'),
-            'ì' | 'í' | 'î' | 'ï' | 'ī' | 'ĭ' | 'į' => out.push('i'),
-            'Ì' | 'Í' | 'Î' | 'Ï' | 'Ī' | 'Ĭ' | 'Į' => out.push('I'),
-            'ò' | 'ó' | 'ô' | 'õ' | 'ö' | 'ø' | 'ō' | 'ŏ' | 'ő' => out.push('o'),
-            'Ò' | 'Ó' | 'Ô' | 'Õ' | 'Ö' | 'Ø' | 'Ō' | 'Ŏ' | 'Ő' => out.push('O'),
-            'ù' | 'ú' | 'û' | 'ü' | 'ū' | 'ŭ' | 'ů' | 'ű' | 'ų' => out.push('u'),
-            'Ù' | 'Ú' | 'Û' | 'Ü' | 'Ū' | 'Ŭ' | 'Ů' | 'Ű' | 'Ų' => out.push('U'),
-            'ý' | 'ÿ' => out.push('y'),
-            'Ý' | 'Ÿ' => out.push('Y'),
-            'ñ' | 'ń' | 'ň' | 'ņ' => out.push('n'),
-            'Ñ' | 'Ń' | 'Ň' | 'Ņ' => out.push('N'),
-            'ç' | 'ć' | 'č' | 'ĉ' | 'ċ' => out.push('c'),
-            'Ç' | 'Ć' | 'Č' | 'Ĉ' | 'Ċ' => out.push('C'),
-            'š' | 'ś' | 'ş' => out.push('s'),
-            'Š' | 'Ś' | 'Ş' => out.push('S'),
-            'ž' | 'ź' | 'ż' => out.push('z'),
-            'Ž' | 'Ź' | 'Ż' => out.push('Z'),
-            'ł' => out.push('l'),
-            'Ł' => out.push('L'),
-            'đ' | 'ď' => out.push('d'),
-            'Đ' | 'Ď' => out.push('D'),
-            'ř' | 'ŕ' => out.push('r'),
-            'Ř' | 'Ŕ' => out.push('R'),
-            'ť' | 'ţ' => out.push('t'),
-            'Ť' | 'Ţ' => out.push('T'),
-            'ß' => out.push_str("ss"),
-            'æ' => out.push_str("ae"),
-            'Æ' => out.push_str("AE"),
-            'œ' => out.push_str("oe"),
-            'Œ' => out.push_str("OE"),
-            other => out.push(other),
-        }
-    }
-    out
+/// Map Latin ligatures and stroked letters to their conventional ASCII expansions.
+/// NFKD decomposition handles accented characters (é → e + combining acute, then
+/// the combining mark is dropped by the ASCII filter), but ligatures and stroked
+/// letters have no canonical decomposition, so we expand them here.
+fn expand_ligature(c: char) -> Option<&'static str> {
+    Some(match c {
+        'ß' => "ss",
+        'æ' => "ae",
+        'Æ' => "AE",
+        'œ' => "oe",
+        'Œ' => "OE",
+        'ø' => "o",
+        'Ø' => "O",
+        'ł' => "l",
+        'Ł' => "L",
+        'đ' => "d",
+        'Đ' => "D",
+        'þ' => "th",
+        'Þ' => "Th",
+        _ => return None,
+    })
 }
 
 pub(crate) fn branch_name_from_title(title: &str) -> String {
-    let folded = ascii_fold(title.trim());
+    use unicode_normalization::UnicodeNormalization;
+
     let mut branch = String::new();
     let mut last_was_dash = false;
 
-    for ch in folded.chars() {
+    let mut push_processed = |ch: char| {
         let next = if ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_') {
             Some(ch.to_ascii_lowercase())
         } else if ch.is_whitespace() || ch.is_ascii_punctuation() {
@@ -599,13 +575,20 @@ pub(crate) fn branch_name_from_title(title: &str) -> String {
         if let Some(ch) = next {
             if ch == '-' {
                 if branch.is_empty() || last_was_dash {
-                    continue;
+                    return;
                 }
                 last_was_dash = true;
             } else {
                 last_was_dash = false;
             }
             branch.push(ch);
+        }
+    };
+
+    for ch in title.trim().nfkd() {
+        match expand_ligature(ch) {
+            Some(expansion) => expansion.chars().for_each(&mut push_processed),
+            None => push_processed(ch),
         }
     }
 
