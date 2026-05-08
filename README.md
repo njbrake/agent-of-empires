@@ -12,7 +12,7 @@
     <br>
     <a href="https://www.youtube.com/@agent-of-empires"><img src="https://img.shields.io/badge/YouTube-channel-red?logo=youtube" alt="YouTube"></a>
     <a href="https://x.com/natebrake"><img src="https://img.shields.io/badge/follow-%40natebrake-black?logo=x&logoColor=white" alt="Follow @natebrake"></a>
-    <a href="https://discord.gg/5N3QKX3f6s"><img src="https://img.shields.io/badge/Discord-Mozilla.AI-5865F2?logo=discord&logoColor=white" alt="Discord"></a>
+    <a href="https://discord.gg/5N3QKX3f6s"><img src="https://img.shields.io/badge/Discord-Mozilla.ai-5865F2?logo=discord&logoColor=white" alt="Discord"></a>
   </p>
 </p>
 
