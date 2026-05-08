@@ -51,7 +51,7 @@ fn prune_empty_parent_dirs(worktree_path: &Path, main_repo: &Path) {
             break;
         }
 
-        // Filesystem root has no parent -- never try to remove it.
+        // Filesystem root has no parent; never try to remove it.
         if parent.parent().is_none() {
             break;
         }
