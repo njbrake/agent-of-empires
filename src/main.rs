@@ -93,6 +93,7 @@ async fn main() -> Result<()> {
         _ => {}
     }
 
+    let profile_explicit = cli.profile.is_some();
     let profile = cli.profile.unwrap_or_default();
 
     // TUI mode handles migrations with a spinner; CLI runs them silently
@@ -109,7 +110,9 @@ async fn main() -> Result<()> {
         Some(Commands::Session { command }) => cli::session::run(&profile, command).await,
         Some(Commands::Group { command }) => cli::group::run(&profile, command).await,
         Some(Commands::Profile { command }) => cli::profile::run(command).await,
-        Some(Commands::Project { command }) => cli::project::run(&profile, command).await,
+        Some(Commands::Project { command }) => {
+            cli::project::run(&profile, profile_explicit, command).await
+        }
         Some(Commands::Worktree { command }) => cli::worktree::run(&profile, command).await,
         #[cfg(feature = "serve")]
         Some(Commands::Serve(args)) => cli::serve::run(&profile, args).await,

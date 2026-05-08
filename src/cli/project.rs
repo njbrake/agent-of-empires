@@ -58,10 +58,11 @@ pub struct ProjectAddArgs {
     #[arg(long)]
     name: Option<String>,
 
-    /// Registry scope. Default: GLOBAL (visible from every profile).
-    /// Pass `--scope profile` to scope the entry to the current profile only.
-    #[arg(long, value_enum, default_value_t = ScopeArg::Global)]
-    scope: ScopeArg,
+    /// Registry scope. When omitted: defaults to GLOBAL, unless `-p <profile>`
+    /// was passed at the top level, in which case it defaults to PROFILE
+    /// (scoping the entry to that profile only).
+    #[arg(long, value_enum)]
+    scope: Option<ScopeArg>,
 
     /// Allow registering this path even if it already exists in the other
     /// scope. Without this flag the command errors when the same canonical
@@ -78,9 +79,11 @@ pub struct ProjectRemoveArgs {
     #[arg(value_hint = ValueHint::AnyPath)]
     name_or_path: String,
 
-    /// Registry scope to remove from. Default: GLOBAL.
-    #[arg(long, value_enum, default_value_t = ScopeArg::Global)]
-    scope: ScopeArg,
+    /// Registry scope to remove from. When omitted: defaults to GLOBAL,
+    /// unless `-p <profile>` was passed at the top level, in which case it
+    /// defaults to PROFILE.
+    #[arg(long, value_enum)]
+    scope: Option<ScopeArg>,
 }
 
 #[derive(Serialize)]
@@ -90,11 +93,19 @@ struct ProjectInfo {
     scope: String,
 }
 
-pub async fn run(profile: &str, command: ProjectCommands) -> Result<()> {
+pub async fn run(profile: &str, profile_explicit: bool, command: ProjectCommands) -> Result<()> {
     match command {
         ProjectCommands::List(args) => list(profile, args).await,
-        ProjectCommands::Add(args) => add(profile, args).await,
-        ProjectCommands::Remove(args) => remove(profile, args).await,
+        ProjectCommands::Add(args) => add(profile, profile_explicit, args).await,
+        ProjectCommands::Remove(args) => remove(profile, profile_explicit, args).await,
+    }
+}
+
+fn resolve_default_scope(profile_explicit: bool) -> ProjectScope {
+    if profile_explicit {
+        ProjectScope::Profile
+    } else {
+        ProjectScope::Global
     }
 }
 
@@ -137,10 +148,11 @@ async fn list(profile: &str, args: ProjectListArgs) -> Result<()> {
     Ok(())
 }
 
-async fn add(profile: &str, args: ProjectAddArgs) -> Result<()> {
+async fn add(profile: &str, profile_explicit: bool, args: ProjectAddArgs) -> Result<()> {
     let scope = match args.scope {
-        ScopeArg::Global => ProjectScope::Global,
-        ScopeArg::Profile => ProjectScope::Profile,
+        Some(ScopeArg::Global) => ProjectScope::Global,
+        Some(ScopeArg::Profile) => ProjectScope::Profile,
+        None => resolve_default_scope(profile_explicit),
     };
 
     let canonical = args
@@ -174,10 +186,11 @@ async fn add(profile: &str, args: ProjectAddArgs) -> Result<()> {
     Ok(())
 }
 
-async fn remove(profile: &str, args: ProjectRemoveArgs) -> Result<()> {
+async fn remove(profile: &str, profile_explicit: bool, args: ProjectRemoveArgs) -> Result<()> {
     let scope = match args.scope {
-        ScopeArg::Global => ProjectScope::Global,
-        ScopeArg::Profile => ProjectScope::Profile,
+        Some(ScopeArg::Global) => ProjectScope::Global,
+        Some(ScopeArg::Profile) => ProjectScope::Profile,
+        None => resolve_default_scope(profile_explicit),
     };
     let removed = projects::remove(profile, scope, &args.name_or_path)?;
     println!(

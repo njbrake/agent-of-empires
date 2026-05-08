@@ -549,9 +549,7 @@ Add a project to the registry
 ###### **Options:**
 
 * `--name <NAME>` — Display name (defaults to the directory's basename)
-* `--scope <SCOPE>` — Registry scope. Default: GLOBAL (visible from every profile). Pass `--scope profile` to scope the entry to the current profile only
-
-  Default value: `global`
+* `--scope <SCOPE>` — Registry scope. When omitted: defaults to GLOBAL, unless `-p <profile>` was passed at the top level, in which case it defaults to PROFILE (scoping the entry to that profile only)
 
   Possible values: `global`, `profile`
 
@@ -571,9 +569,7 @@ Remove a project from the registry
 
 ###### **Options:**
 
-* `--scope <SCOPE>` — Registry scope to remove from. Default: GLOBAL
-
-  Default value: `global`
+* `--scope <SCOPE>` — Registry scope to remove from. When omitted: defaults to GLOBAL, unless `-p <profile>` was passed at the top level, in which case it defaults to PROFILE
 
   Possible values: `global`, `profile`
 
