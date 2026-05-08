@@ -61,6 +61,14 @@ pub struct ProjectAddArgs {
     /// Pass `--scope profile` to scope the entry to the current profile only.
     #[arg(long, value_enum, default_value_t = ScopeArg::Global)]
     scope: ScopeArg,
+
+    /// Allow registering this path even if it already exists in the other
+    /// scope. Without this flag the command errors when the same canonical
+    /// path is already registered globally (when adding to profile) or in any
+    /// profile (when adding globally). When override is allowed and both
+    /// scopes hold the same path, the profile entry shadows the global one.
+    #[arg(long)]
+    allow_override: bool,
 }
 
 #[derive(Args)]
@@ -148,7 +156,7 @@ async fn add(profile: &str, args: ProjectAddArgs) -> Result<()> {
     });
 
     let project = Project::new(name.clone(), canonical.to_string_lossy(), scope);
-    let saved = projects::add(profile, scope, project)?;
+    let saved = projects::add(profile, scope, project, args.allow_override)?;
     println!(
         "✓ Registered project '{}' [{}] at {}",
         saved.name,

@@ -26,7 +26,9 @@ pub struct ProjectsDialog {
     add_input: Input,
     /// Scope selection when adding (Global vs Profile)
     add_scope: ProjectScope,
-    /// Cursor field while adding: 0=path, 1=scope
+    /// Allow registering even if path is already in the other scope.
+    add_allow_override: bool,
+    /// Cursor field while adding: 0=path, 1=scope, 2=allow-override
     add_focused: usize,
     error: Option<String>,
     info: Option<String>,
@@ -41,6 +43,7 @@ impl ProjectsDialog {
             mode: Mode::Browse,
             add_input: Input::default(),
             add_scope: ProjectScope::Global,
+            add_allow_override: false,
             add_focused: 0,
             error: None,
             info: None,
@@ -89,6 +92,7 @@ impl ProjectsDialog {
                 self.mode = Mode::Adding;
                 self.add_input = Input::default();
                 self.add_scope = ProjectScope::Global;
+                self.add_allow_override = false;
                 self.add_focused = 0;
                 self.error = None;
                 DialogResult::Continue
@@ -117,11 +121,11 @@ impl ProjectsDialog {
                 DialogResult::Continue
             }
             KeyCode::Tab => {
-                self.add_focused = (self.add_focused + 1) % 2;
+                self.add_focused = (self.add_focused + 1) % 3;
                 DialogResult::Continue
             }
             KeyCode::BackTab => {
-                self.add_focused = if self.add_focused == 0 { 1 } else { 0 };
+                self.add_focused = (self.add_focused + 2) % 3;
                 DialogResult::Continue
             }
             KeyCode::Left | KeyCode::Right | KeyCode::Char(' ') if self.add_focused == 1 => {
@@ -129,6 +133,10 @@ impl ProjectsDialog {
                     ProjectScope::Global => ProjectScope::Profile,
                     ProjectScope::Profile => ProjectScope::Global,
                 };
+                DialogResult::Continue
+            }
+            KeyCode::Left | KeyCode::Right | KeyCode::Char(' ') if self.add_focused == 2 => {
+                self.add_allow_override = !self.add_allow_override;
                 DialogResult::Continue
             }
             KeyCode::Enter => {
@@ -149,7 +157,12 @@ impl ProjectsDialog {
                     .unwrap_or_else(|| "project".to_string());
                 let project =
                     Project::new(name.clone(), canonical.to_string_lossy(), self.add_scope);
-                match projects::add(&self.profile, self.add_scope, project) {
+                match projects::add(
+                    &self.profile,
+                    self.add_scope,
+                    project,
+                    self.add_allow_override,
+                ) {
                     Ok(saved) => {
                         self.info = Some(format!(
                             "Added '{}' [{}]",
@@ -177,7 +190,12 @@ impl ProjectsDialog {
     pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let dialog_width: u16 = 76;
         let list_height: u16 = (self.items.len() as u16).clamp(3, 12);
-        let dialog_height: u16 = list_height + 9;
+        let adding_extra: u16 = if matches!(self.mode, Mode::Adding) {
+            2
+        } else {
+            0
+        };
+        let dialog_height: u16 = list_height + 9 + adding_extra;
         let dialog_area = super::centered_rect(area, dialog_width, dialog_height);
         frame.render_widget(Clear, dialog_area);
 
@@ -194,7 +212,7 @@ impl ProjectsDialog {
             Constraint::Length(list_height),
             Constraint::Length(1),
             Constraint::Length(if matches!(self.mode, Mode::Adding) {
-                4
+                6
             } else {
                 1
             }),
@@ -295,7 +313,24 @@ impl ProjectsDialog {
                         Style::default().fg(theme.accent).bold(),
                     ),
                 ]);
-                let mut lines = vec![path_line, scope_line];
+                let override_label_style = if self.add_focused == 2 {
+                    Style::default().fg(theme.accent).underlined()
+                } else {
+                    Style::default().fg(theme.text)
+                };
+                let override_box = if self.add_allow_override {
+                    "[x]"
+                } else {
+                    "[ ]"
+                };
+                let override_line = Line::from(vec![
+                    Span::styled("Override: ", override_label_style),
+                    Span::styled(
+                        format!("{} allow shadowing other scope", override_box),
+                        Style::default().fg(theme.accent).bold(),
+                    ),
+                ]);
+                let mut lines = vec![path_line, scope_line, override_line];
                 if let Some(err) = &self.error {
                     lines.push(Line::from(Span::styled(
                         err.clone(),
@@ -322,7 +357,7 @@ impl ProjectsDialog {
                 Span::styled("Tab", Style::default().fg(theme.hint)),
                 Span::raw(" next  "),
                 Span::styled("Space/←/→", Style::default().fg(theme.hint)),
-                Span::raw(" toggle scope  "),
+                Span::raw(" toggle  "),
                 Span::styled("Enter", Style::default().fg(theme.hint)),
                 Span::raw(" save  "),
                 Span::styled("Esc", Style::default().fg(theme.hint)),

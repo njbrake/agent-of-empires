@@ -84,6 +84,11 @@ pub struct CreateProjectBody {
     /// "global" (default) or "profile".
     #[serde(default)]
     pub scope: Option<String>,
+    /// When true, allow registering this path even if it already exists in
+    /// the other scope. Defaults to false; cross-scope path collisions
+    /// otherwise return 409.
+    #[serde(default)]
+    pub allow_override: bool,
 }
 
 pub async fn create_project(
@@ -136,7 +141,7 @@ pub async fn create_project(
     });
 
     let project = Project::new(name, canonical.to_string_lossy(), scope);
-    match projects::add(&state.profile, scope, project) {
+    match projects::add(&state.profile, scope, project, body.allow_override) {
         Ok(saved) => (StatusCode::CREATED, Json(ProjectResponse::from(saved))).into_response(),
         Err(e) => (
             StatusCode::CONFLICT,

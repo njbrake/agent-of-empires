@@ -555,6 +555,7 @@ Add a project to the registry
 
   Possible values: `global`, `profile`
 
+* `--allow-override` — Allow registering this path even if it already exists in the other scope. Without this flag the command errors when the same canonical path is already registered globally (when adding to profile) or in any profile (when adding globally). When override is allowed and both scopes hold the same path, the profile entry shadows the global one
 
 
 

@@ -18,6 +18,7 @@ export function ProjectsView({ onClose, readOnly }: Props) {
   const [path, setPath] = useState("");
   const [name, setName] = useState("");
   const [scope, setScope] = useState<"global" | "profile">("global");
+  const [allowOverride, setAllowOverride] = useState(false);
   const [showBrowser, setShowBrowser] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
@@ -41,6 +42,7 @@ export function ProjectsView({ onClose, readOnly }: Props) {
       path: trimmedPath,
       name: name.trim() || undefined,
       scope,
+      allow_override: allowOverride || undefined,
     });
     setSubmitting(false);
     if (!result.ok) {
@@ -50,6 +52,7 @@ export function ProjectsView({ onClose, readOnly }: Props) {
     setPath("");
     setName("");
     setScope("global");
+    setAllowOverride(false);
     setShowAdd(false);
     setShowBrowser(false);
     await reload();
@@ -161,6 +164,23 @@ export function ProjectsView({ onClose, readOnly }: Props) {
               ))}
             </div>
 
+            <label className="flex items-start gap-2 mb-4 cursor-pointer select-none">
+              <input
+                type="checkbox"
+                checked={allowOverride}
+                onChange={(e) => setAllowOverride(e.target.checked)}
+                className="mt-0.5 cursor-pointer"
+              />
+              <span className="text-[12px] text-text-secondary">
+                Allow override
+                <span className="block text-text-dim text-[11px] mt-0.5">
+                  Permit registering even if this path already exists in the
+                  other scope. The profile entry will shadow the global one in
+                  merged views.
+                </span>
+              </span>
+            </label>
+
             <div className="flex justify-end gap-2">
               <button
                 type="button"
@@ -170,6 +190,7 @@ export function ProjectsView({ onClose, readOnly }: Props) {
                   setPath("");
                   setName("");
                   setScope("global");
+                  setAllowOverride(false);
                   setError(null);
                 }}
                 className="px-3 py-1.5 text-sm border border-surface-700 text-text-secondary hover:bg-surface-800 rounded-md cursor-pointer"

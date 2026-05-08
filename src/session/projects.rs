@@ -141,9 +141,20 @@ pub fn save_scope(profile: &str, scope: ProjectScope, projects: &[Project]) -> R
     write_file(&path, projects)
 }
 
-/// Append a project to the given scope. Errors if a project with the same name
-/// or canonical path already exists in that scope.
-pub fn add(profile: &str, scope: ProjectScope, mut project: Project) -> Result<Project> {
+/// Append a project to the given scope.
+///
+/// Errors if:
+/// - a project with the same name or canonical path already exists in the
+///   target scope (always; overriding within a scope makes no sense), or
+/// - the canonical path already exists in the *other* scope and
+///   `allow_override` is false. Pass `allow_override = true` to deliberately
+///   shadow a global entry from a profile (or vice versa).
+pub fn add(
+    profile: &str,
+    scope: ProjectScope,
+    mut project: Project,
+    allow_override: bool,
+) -> Result<Project> {
     project.scope = scope;
     let path_buf = PathBuf::from(&project.path);
     let canonical = path_buf.canonicalize().unwrap_or_else(|_| path_buf.clone());
@@ -169,6 +180,31 @@ pub fn add(profile: &str, scope: ProjectScope, mut project: Project) -> Result<P
                 p.name,
                 scope.as_str()
             );
+        }
+    }
+
+    if !allow_override {
+        let other_scope = match scope {
+            ProjectScope::Global => ProjectScope::Profile,
+            ProjectScope::Profile => ProjectScope::Global,
+        };
+        let other = match other_scope {
+            ProjectScope::Global => load_global().unwrap_or_default(),
+            ProjectScope::Profile => load_profile(profile).unwrap_or_default(),
+        };
+        for p in &other {
+            if canonical_key(&p.path) == canonical_key(&project.path) {
+                bail!(
+                    "Path '{}' is already registered as '{}' in {} scope.\n\
+                     Tip: remove it first with `aoe project remove {} --scope {}`,\n\
+                     or pass `--allow-override` to keep both entries (the profile entry shadows the global entry in merged views).",
+                    project.path,
+                    p.name,
+                    other_scope.as_str(),
+                    p.name,
+                    other_scope.as_str(),
+                );
+            }
         }
     }
 
@@ -247,6 +283,7 @@ mod tests {
             "default",
             ProjectScope::Global,
             Project::new("repoA", repo.to_string_lossy(), ProjectScope::Global),
+            false,
         )?;
 
         let loaded = load_global()?;
@@ -268,6 +305,7 @@ mod tests {
             "default",
             ProjectScope::Global,
             Project::new("global-name", repo.to_string_lossy(), ProjectScope::Global),
+            false,
         )?;
         add(
             "default",
@@ -277,6 +315,7 @@ mod tests {
                 repo.to_string_lossy(),
                 ProjectScope::Profile,
             ),
+            true,
         )?;
 
         let merged = load_merged("default")?;
@@ -300,13 +339,55 @@ mod tests {
             "default",
             ProjectScope::Global,
             Project::new("dup", repo1.to_string_lossy(), ProjectScope::Global),
+            false,
         )?;
         let err = add(
             "default",
             ProjectScope::Global,
             Project::new("dup", repo2.to_string_lossy(), ProjectScope::Global),
+            false,
         );
         assert!(err.is_err());
+        Ok(())
+    }
+
+    #[test]
+    #[serial]
+    fn cross_scope_path_collision_blocked_by_default() -> Result<()> {
+        let temp = tempdir()?;
+        setup(temp.path());
+        let repo = temp.path().join("repoZ");
+        let _ = git2::Repository::init(&repo);
+
+        add(
+            "default",
+            ProjectScope::Global,
+            Project::new("first", repo.to_string_lossy(), ProjectScope::Global),
+            false,
+        )?;
+        let err = add(
+            "default",
+            ProjectScope::Profile,
+            Project::new("second", repo.to_string_lossy(), ProjectScope::Profile),
+            false,
+        );
+        assert!(
+            err.is_err(),
+            "cross-scope dup should error without override"
+        );
+        let msg = format!("{}", err.unwrap_err());
+        assert!(
+            msg.contains("--allow-override") && msg.contains("global"),
+            "error should mention --allow-override and the other scope, got: {msg}"
+        );
+
+        // With override, succeeds.
+        add(
+            "default",
+            ProjectScope::Profile,
+            Project::new("second", repo.to_string_lossy(), ProjectScope::Profile),
+            true,
+        )?;
         Ok(())
     }
 
@@ -332,6 +413,7 @@ mod tests {
             "default",
             ProjectScope::Global,
             Project::new("repoR", repo.to_string_lossy(), ProjectScope::Global),
+            false,
         )?;
         let removed = remove("default", ProjectScope::Global, "repoR")?;
         assert_eq!(removed.name, "repoR");
