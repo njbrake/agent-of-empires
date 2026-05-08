@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
 import type { Workspace, RepoGroup, SessionStatus } from "../lib/types";
+import { MULTI_REPO_GROUP_ID } from "../hooks/useRepoGroups";
 import {
   STATUS_DOT_CLASS,
   getStatusTextClass,
@@ -679,7 +680,11 @@ export function WorkspaceSidebar({
                   group={{ ...group, collapsed: !showExpanded }}
                   hasActiveChild={!showExpanded && hasActiveChild}
                   onClick={() => !q && onToggleRepo(group.id)}
-                  onNewSession={() => onCreateSession(group.repoPath)}
+                  onNewSession={() =>
+                    group.id === MULTI_REPO_GROUP_ID
+                      ? onNew()
+                      : onCreateSession(group.repoPath)
+                  }
                 />
                 {showExpanded &&
                   group.workspaces.map((ws) => (
