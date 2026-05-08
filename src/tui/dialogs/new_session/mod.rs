@@ -944,7 +944,25 @@ impl NewSessionDialog {
                 }
                 DialogResult::Continue
             }
-            KeyCode::Left | KeyCode::Right if self.focused_field == tool_field => {
+            KeyCode::Left if self.focused_field == tool_field => {
+                self.tool_index = if self.tool_index == 0 {
+                    self.available_tools.len() - 1
+                } else {
+                    self.tool_index - 1
+                };
+                if self.selected_tool_always_yolo() {
+                    self.yolo_mode = true;
+                } else {
+                    self.yolo_mode = self.yolo_mode_default;
+                }
+                if self.selected_tool_host_only() {
+                    self.sandbox_enabled = false;
+                    self.worktree_branch.reset();
+                }
+                self.reload_tool_config();
+                DialogResult::Continue
+            }
+            KeyCode::Right if self.focused_field == tool_field => {
                 self.tool_index = (self.tool_index + 1) % self.available_tools.len();
                 if self.selected_tool_always_yolo() {
                     self.yolo_mode = true;

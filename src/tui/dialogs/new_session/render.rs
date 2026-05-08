@@ -176,20 +176,18 @@ impl NewSessionDialog {
 
             let mut tool_spans = vec![Span::styled("Tool:", label_style), Span::raw(" ")];
 
-            for (idx, tool_name) in self.available_tools.iter().enumerate() {
-                let is_selected = idx == self.tool_index;
-                let style = if is_selected {
-                    Style::default().fg(theme.accent).bold()
-                } else {
-                    Style::default().fg(theme.dimmed)
-                };
+            let selected_name = &self.available_tools[self.tool_index];
+            let total = self.available_tools.len();
+            let dimmed = Style::default().fg(theme.dimmed);
+            let accent = Style::default().fg(theme.accent).bold();
 
-                if idx > 0 {
-                    tool_spans.push(Span::raw("  "));
-                }
-                tool_spans.push(Span::styled(if is_selected { "● " } else { "○ " }, style));
-                tool_spans.push(Span::styled(tool_name.as_str(), style));
-            }
+            tool_spans.push(Span::styled("← ", dimmed));
+            tool_spans.push(Span::styled("● ", accent));
+            tool_spans.push(Span::styled(selected_name.as_str(), accent));
+            tool_spans.push(Span::styled(
+                format!("  [{}/{}]  →", self.tool_index + 1, total),
+                dimmed,
+            ));
 
             // Show Ctrl+P hint and summary of tool config
             let has_config =
