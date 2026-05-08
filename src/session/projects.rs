@@ -166,11 +166,12 @@ pub fn add(
     };
 
     for p in &existing {
-        if p.name == project.name {
+        if p.name.eq_ignore_ascii_case(&project.name) {
             bail!(
-                "Project '{}' already registered in {} scope",
+                "Project '{}' already registered in {} scope (as '{}')",
                 project.name,
-                scope.as_str()
+                scope.as_str(),
+                p.name,
             );
         }
         if canonical_key(&p.path) == canonical_key(&project.path) {
@@ -224,7 +225,9 @@ pub fn remove(profile: &str, scope: ProjectScope, name_or_path: &str) -> Result<
     let canonical_target = canonical_key(name_or_path);
     let idx = existing
         .iter()
-        .position(|p| p.name == name_or_path || canonical_key(&p.path) == canonical_target)
+        .position(|p| {
+            p.name.eq_ignore_ascii_case(name_or_path) || canonical_key(&p.path) == canonical_target
+        })
         .ok_or_else(|| {
             anyhow::anyhow!("No project '{}' in {} scope", name_or_path, scope.as_str())
         })?;
@@ -242,18 +245,21 @@ pub fn resolve_names(profile: &str, names: &[String]) -> Result<Vec<Project>> {
     let merged = load_merged(profile)?;
     let mut resolved = Vec::with_capacity(names.len());
     for name in names {
-        let project = merged.iter().find(|p| p.name == *name).ok_or_else(|| {
-            let available: Vec<String> = merged.iter().map(|p| p.name.clone()).collect();
-            anyhow::anyhow!(
-                "Unknown project '{}'. Available: {}",
-                name,
-                if available.is_empty() {
-                    "<none registered>".to_string()
-                } else {
-                    available.join(", ")
-                }
-            )
-        })?;
+        let project = merged
+            .iter()
+            .find(|p| p.name.eq_ignore_ascii_case(name))
+            .ok_or_else(|| {
+                let available: Vec<String> = merged.iter().map(|p| p.name.clone()).collect();
+                anyhow::anyhow!(
+                    "Unknown project '{}'. Available: {}",
+                    name,
+                    if available.is_empty() {
+                        "<none registered>".to_string()
+                    } else {
+                        available.join(", ")
+                    }
+                )
+            })?;
         resolved.push(project.clone());
     }
     Ok(resolved)
@@ -348,6 +354,43 @@ mod tests {
             false,
         );
         assert!(err.is_err());
+        Ok(())
+    }
+
+    #[test]
+    #[serial]
+    fn name_matching_is_case_insensitive() -> Result<()> {
+        let temp = tempdir()?;
+        setup(temp.path());
+        let repo1 = temp.path().join("Mixed");
+        let repo2 = temp.path().join("Other");
+        let _ = git2::Repository::init(&repo1);
+        let _ = git2::Repository::init(&repo2);
+
+        add(
+            "default",
+            ProjectScope::Global,
+            Project::new("MixedCase", repo1.to_string_lossy(), ProjectScope::Global),
+            false,
+        )?;
+
+        // Add with same name, different case → rejected.
+        let err = add(
+            "default",
+            ProjectScope::Global,
+            Project::new("mixedcase", repo2.to_string_lossy(), ProjectScope::Global),
+            false,
+        );
+        assert!(err.is_err(), "duplicate name (different case) should error");
+
+        // Resolve via lowercase finds the original.
+        let resolved = resolve_names("default", &["MIXEDCASE".to_string()])?;
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].name, "MixedCase");
+
+        // Remove via lowercase succeeds.
+        let removed = remove("default", ProjectScope::Global, "mixedcase")?;
+        assert_eq!(removed.name, "MixedCase");
         Ok(())
     }
 
