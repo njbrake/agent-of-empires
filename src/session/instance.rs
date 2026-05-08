@@ -781,7 +781,8 @@ impl Instance {
         let profile = self.effective_profile();
         let on_launch_hooks = self.resolve_on_launch_hooks(skip_on_launch, &profile);
 
-        let agent = crate::agents::get_agent(&self.tool);
+        let agent = crate::agents::get_agent(&self.tool)
+            .or_else(|| crate::agents::get_agent(&self.detect_as));
         self.install_agent_status_hooks(agent);
 
         let cmd = if self.is_sandboxed() {
