@@ -13,6 +13,86 @@ use super::GitWorktree;
 /// changes (e.g., `target/` accidentally tracked).
 const MAX_DIRTY_FILES_LISTED: usize = 30;
 
+/// Cap on how many empty parent directories `prune_empty_parent_dirs` will
+/// climb after a worktree removal. Shallow templates need 0-1 hops; deeper
+/// nested templates like `../{repo-name}-worktrees/{branch}/{repo-name}` need
+/// 2. Higher than that suggests a pathological template and we'd rather stop
+/// than walk too far up the user's filesystem.
+const MAX_PARENT_PRUNE_HOPS: usize = 4;
+
+/// Walk up from a removed worktree path, deleting empty wrapper directories
+/// that `git worktree add` created as a side effect of a nested path template.
+///
+/// Empty-only by design: uses `remove_dir`, never `remove_dir_all`. Anything
+/// non-empty (e.g., a sibling repo cloned by an `on_create` hook) keeps the
+/// wrapper alive so the user can decide what to do with the orphan.
+///
+/// Stops on:
+/// - First non-empty / inaccessible parent
+/// - Any directory that is `main_repo` itself or an ancestor of it
+/// - The user's home directory or any of its ancestors
+/// - Filesystem root
+/// - `MAX_PARENT_PRUNE_HOPS` levels climbed
+///
+/// Best-effort: failures are logged and swallowed. The caller's worktree
+/// removal already succeeded; an orphaned wrapper is a cosmetic leak, not a
+/// reason to fail the deletion.
+fn prune_empty_parent_dirs(worktree_path: &Path, main_repo: &Path) {
+    let main_canonical = main_repo
+        .canonicalize()
+        .unwrap_or_else(|_| main_repo.to_path_buf());
+    let home = dirs::home_dir();
+
+    let mut current = worktree_path.parent().map(|p| p.to_path_buf());
+    let mut hops = 0;
+
+    while let Some(parent) = current {
+        if hops >= MAX_PARENT_PRUNE_HOPS {
+            break;
+        }
+
+        // Filesystem root has no parent -- never try to remove it.
+        if parent.parent().is_none() {
+            break;
+        }
+
+        let parent_canonical = parent
+            .canonicalize()
+            .unwrap_or_else(|_| parent.to_path_buf());
+
+        // Refuse to touch the main repo or any of its ancestors.
+        if main_canonical.starts_with(&parent_canonical) {
+            break;
+        }
+
+        // Refuse to touch the user's home dir or any of its ancestors.
+        if let Some(h) = &home {
+            if h.starts_with(&parent_canonical) {
+                break;
+            }
+        }
+
+        match std::fs::remove_dir(&parent) {
+            Ok(()) => {
+                tracing::debug!(
+                    path = %parent.display(),
+                    "removed empty worktree wrapper dir"
+                );
+                current = parent.parent().map(|p| p.to_path_buf());
+                hops += 1;
+            }
+            Err(e) => {
+                tracing::debug!(
+                    path = %parent.display(),
+                    error = %e,
+                    "stopped pruning at non-empty or inaccessible parent"
+                );
+                break;
+            }
+        }
+    }
+}
+
 /// Remove a worktree directory from the filesystem.
 ///
 /// Always tries `remove_dir` first (fast path for empty dirs). When `force`
@@ -221,15 +301,24 @@ pub fn remove_managed_worktree(
         "worktree cleanup starting"
     );
 
+    let mut worktree_removed = false;
+
     if !has_dot_git {
         // .git is missing (manual deletion or other issue).
         // Remove the dir ourselves and prune stale references.
-        if let Err(e) = remove_worktree_dir(worktree_path, main_repo, force) {
-            tracing::debug!(error = %e, kind = ?e.kind(), "remove_worktree_dir failed (no .git)");
-            if !(is_permission_error(&e.to_string())
-                && try_sandbox_dir_cleanup(worktree_path, main_repo, instance))
-            {
-                errors.push(format!("Worktree: {}", e));
+        match remove_worktree_dir(worktree_path, main_repo, force) {
+            Ok(()) => {
+                worktree_removed = true;
+            }
+            Err(e) => {
+                tracing::debug!(error = %e, kind = ?e.kind(), "remove_worktree_dir failed (no .git)");
+                if is_permission_error(&e.to_string())
+                    && try_sandbox_dir_cleanup(worktree_path, main_repo, instance)
+                {
+                    worktree_removed = true;
+                } else {
+                    errors.push(format!("Worktree: {}", e));
+                }
             }
         }
         if let Err(e) = git_wt.prune_worktrees() {
@@ -237,7 +326,9 @@ pub fn remove_managed_worktree(
         }
     } else {
         match git_wt.remove_worktree(worktree_path, force) {
-            Ok(()) => {}
+            Ok(()) => {
+                worktree_removed = true;
+            }
             Err(e) => {
                 let err_str = e.to_string();
                 tracing::debug!(
@@ -251,6 +342,7 @@ pub fn remove_managed_worktree(
                 if is_permission_error(&err_str)
                     && try_sandbox_dir_cleanup(worktree_path, main_repo, instance)
                 {
+                    worktree_removed = true;
                     if let Err(e2) = git_wt.prune_worktrees() {
                         errors.push(format!("Worktree: {}", e2));
                     }
@@ -262,6 +354,14 @@ pub fn remove_managed_worktree(
                 }
             }
         }
+    }
+
+    // Clean up empty wrapper directories created by nested path templates
+    // (e.g., `../{repo-name}-worktrees/{branch}/{repo-name}` leaves an empty
+    // `{branch}/` behind once the leaf is gone). Best-effort, never fails
+    // deletion.
+    if worktree_removed {
+        prune_empty_parent_dirs(worktree_path, main_repo);
     }
 
     if errors.is_empty() {
@@ -439,5 +539,116 @@ mod tests {
             "fatal: '/some/path' contains modified or untracked files, use --force to delete it";
         let enriched = enrich_worktree_remove_error(stderr, &repo_path);
         assert!(enriched.contains("and 5 more"));
+    }
+
+    /// Mirrors the user's nested template `../{repo-name}-worktrees/{branch}/{repo-name}`
+    /// where the worktree leaf is two levels below a `<repo>-worktrees` base.
+    /// After removing the leaf, both intermediate dirs should also be cleaned.
+    #[test]
+    fn test_prune_empty_parent_dirs_climbs_through_nested_template() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let main_repo = dir.path().join("clawbolt-premium");
+        let base = dir.path().join("clawbolt-premium-worktrees");
+        let branch_dir = base.join("feature-foo");
+        let worktree = branch_dir.join("clawbolt-premium");
+        std::fs::create_dir_all(&main_repo).unwrap();
+        std::fs::create_dir_all(&worktree).unwrap();
+
+        // Simulate the leaf having just been removed by `git worktree remove`.
+        std::fs::remove_dir(&worktree).unwrap();
+        assert!(branch_dir.exists());
+
+        prune_empty_parent_dirs(&worktree, &main_repo);
+
+        assert!(!branch_dir.exists(), "branch wrapper dir should be gone");
+        assert!(!base.exists(), "worktrees base dir should be gone");
+        assert!(main_repo.exists(), "main repo must be untouched");
+    }
+
+    /// `on_create` hooks sometimes drop a sibling repo next to the worktree
+    /// (e.g. an OSS pin clone). After deleting the worktree, that sibling
+    /// keeps the wrapper non-empty and we MUST leave it alone.
+    #[test]
+    fn test_prune_empty_parent_dirs_preserves_non_empty_wrapper() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let main_repo = dir.path().join("clawbolt-premium");
+        let base = dir.path().join("clawbolt-premium-worktrees");
+        let branch_dir = base.join("feature-foo");
+        let worktree = branch_dir.join("clawbolt-premium");
+        let sibling = branch_dir.join("clawbolt"); // orphan from on_create hook
+        std::fs::create_dir_all(&main_repo).unwrap();
+        std::fs::create_dir_all(&worktree).unwrap();
+        std::fs::create_dir_all(&sibling).unwrap();
+        std::fs::write(sibling.join("README.md"), "oss pin").unwrap();
+
+        std::fs::remove_dir_all(&worktree).unwrap();
+
+        prune_empty_parent_dirs(&worktree, &main_repo);
+
+        assert!(
+            branch_dir.exists(),
+            "wrapper must survive non-empty sibling"
+        );
+        assert!(sibling.exists(), "sibling repo must not be touched");
+    }
+
+    /// Default template `../{repo-name}-worktrees/{branch}` keeps the
+    /// `<repo>-worktrees` base shared across multiple sessions. If another
+    /// branch's worktree is still there, we must stop at the base.
+    #[test]
+    fn test_prune_empty_parent_dirs_stops_at_shared_base() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let main_repo = dir.path().join("clawbolt-premium");
+        let base = dir.path().join("clawbolt-premium-worktrees");
+        let deleted_wt = base.join("feature-foo");
+        let other_wt = base.join("feature-bar");
+        std::fs::create_dir_all(&main_repo).unwrap();
+        std::fs::create_dir_all(&deleted_wt).unwrap();
+        std::fs::create_dir_all(&other_wt).unwrap();
+
+        std::fs::remove_dir(&deleted_wt).unwrap();
+
+        prune_empty_parent_dirs(&deleted_wt, &main_repo);
+
+        assert!(base.exists(), "shared base must survive other worktrees");
+        assert!(other_wt.exists(), "other worktree must be untouched");
+    }
+
+    /// Bare-repo template `./{branch}` puts the worktree inside the main repo.
+    /// We must never remove the main repo or any of its ancestors.
+    #[test]
+    fn test_prune_empty_parent_dirs_refuses_to_climb_into_main_repo() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let main_repo = dir.path().join("bare-repo");
+        let worktree = main_repo.join("feature-foo");
+        std::fs::create_dir_all(&worktree).unwrap();
+
+        std::fs::remove_dir(&worktree).unwrap();
+
+        prune_empty_parent_dirs(&worktree, &main_repo);
+
+        assert!(main_repo.exists(), "main repo must be untouched");
+    }
+
+    /// If the wrapper isn't actually empty for any reason (race, leftover
+    /// metadata file, FS quirk), `remove_dir` returns ENOTEMPTY and we stop.
+    /// Don't ever fall through to recursive deletion.
+    #[test]
+    fn test_prune_empty_parent_dirs_never_recurses() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let main_repo = dir.path().join("repo");
+        let wrapper = dir.path().join("wrapper");
+        let worktree = wrapper.join("wt");
+        let stray = wrapper.join("DS_Store_or_similar");
+        std::fs::create_dir_all(&main_repo).unwrap();
+        std::fs::create_dir_all(&worktree).unwrap();
+        std::fs::write(&stray, "junk").unwrap();
+
+        std::fs::remove_dir(&worktree).unwrap();
+
+        prune_empty_parent_dirs(&worktree, &main_repo);
+
+        assert!(wrapper.exists(), "wrapper with stray file must survive");
+        assert!(stray.exists(), "stray file must not be touched");
     }
 }
