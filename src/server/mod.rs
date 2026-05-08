@@ -799,6 +799,11 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/git/branches", get(api::list_branches))
         .route("/api/git/clone", post(api::clone_repo))
         .route("/api/groups", get(api::list_groups))
+        .route(
+            "/api/projects",
+            get(api::list_projects).post(api::create_project),
+        )
+        .route("/api/projects/{name}", delete(api::delete_project))
         .route("/api/docker/status", get(api::docker_status))
         // Settings + themes
         .route(
