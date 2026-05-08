@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { StepDef, StepId } from "../StepIndicator";
 import { getReviewSummary } from "../sessionNames";
 
-interface WizardData { path: string; title: string; worktreeBranch: string; group: string; tool: string; profile: string; profileDirty: boolean; yoloMode: boolean; sandboxEnabled: boolean; sandboxImage: string; extraArgs: string; customInstruction: string; commandOverride: string; [key: string]: unknown; }
+interface WizardData { path: string; title: string; worktreeBranch: string; useWorktree: boolean; group: string; tool: string; profile: string; profileDirty: boolean; yoloMode: boolean; sandboxEnabled: boolean; sandboxImage: string; extraArgs: string; customInstruction: string; commandOverride: string; [key: string]: unknown; }
 interface Props { data: WizardData; onChange: (field: string, value: unknown) => void; isSubmitting: boolean; error: string | null; onSubmit: () => void; onJumpTo: (stepId: StepId) => void; steps: StepDef[]; }
 
 const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.userAgent);
@@ -122,14 +122,18 @@ export function ReviewStep({ data, onChange, isSubmitting, error, onSubmit, onJu
           placeholder="Auto-generated"
           onChange={(v) => onChange("title", v)}
         />
-        <EditableRow
-          label="Branch"
-          value={data.worktreeBranch}
-          displayValue={summary.branch}
-          placeholder="Auto-generated"
-          onChange={(v) => onChange("worktreeBranch", v)}
-          accent
-        />
+        {data.useWorktree ? (
+          <EditableRow
+            label="Branch / worktree"
+            value={data.worktreeBranch}
+            displayValue={summary.branch}
+            placeholder="Auto-generated"
+            onChange={(v) => onChange("worktreeBranch", v)}
+            accent
+          />
+        ) : (
+          <Row label="Worktree" value="None — runs in repo folder" />
+        )}
         <Row label="Agent" value={data.tool || "(not set)"} stepId="agent" onJumpTo={onJumpTo} />
         {data.profile && (
           <Row label="Profile" value={data.profileDirty ? `${data.profile} (Custom)` : data.profile} stepId="agent" onJumpTo={onJumpTo} accent />

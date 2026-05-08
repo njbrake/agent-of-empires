@@ -4,6 +4,7 @@ import { fetchAgents, fetchGroups, fetchDockerStatus, fetchProfiles, fetchSettin
 import { StepIndicator } from "./StepIndicator";
 import type { StepDef, StepId } from "./StepIndicator";
 import { ProjectStep } from "./steps/ProjectStep";
+import { SessionStep } from "./steps/SessionStep";
 import { AgentStep } from "./steps/AgentStep";
 import { ReviewStep } from "./steps/ReviewStep";
 import { applyBranchOverride, getSubmittedBranch } from "./sessionNames";
@@ -13,6 +14,7 @@ export interface WizardData {
   title: string;
   worktreeBranch: string;
   worktreeBranchDirty: boolean;
+  useWorktree: boolean;
   group: string;
   tool: string;
   profile: string;
@@ -54,6 +56,7 @@ type Action =
 
 const initialData: WizardData = {
   path: "", title: "", worktreeBranch: "", worktreeBranchDirty: false,
+  useWorktree: true,
   group: "", tool: "claude", profile: "",
   yoloMode: false, sandboxEnabled: false, sandboxImage: "", extraEnv: [],
   advancedEnabled: false, profileDirty: false,
@@ -114,11 +117,12 @@ function reducer(state: WizardState, action: Action): WizardState {
   }
 }
 
-// Wizard: project path → agent/settings → review
+// Wizard: project path → session (title + worktree) → agent → review
 function computeSteps(_data: WizardData): StepDef[] {
   return [
     { id: "project", label: "Project" },
-    { id: "agent", label: "Settings" },
+    { id: "session", label: "Session" },
+    { id: "agent", label: "Agent" },
     { id: "review", label: "Review" },
   ];
 }
@@ -156,7 +160,7 @@ export function SessionWizard({ onClose, onCreated, prefill }: Props) {
     : initialData;
 
   const [state, dispatch] = useReducer(reducer, {
-    currentStep: prefill?.skipToReview ? 2 : (prefill?.path ? 1 : 0),
+    currentStep: prefill?.skipToReview ? 3 : (prefill?.path ? 1 : 0),
     data: prefillData, isSubmitting: false, error: null,
     agents: [], groups: [], profiles: [], dockerAvailable: false,
   });
@@ -201,8 +205,8 @@ export function SessionWizard({ onClose, onCreated, prefill }: Props) {
       path: d.path, tool: d.tool,
       title: d.title || undefined, group: d.group || undefined,
       yolo_mode: d.yoloMode,
-      worktree_branch: getSubmittedBranch(d.title, d.worktreeBranch),
-      create_new_branch: true,
+      worktree_branch: d.useWorktree ? getSubmittedBranch(d.title, d.worktreeBranch) : undefined,
+      create_new_branch: d.useWorktree,
       sandbox: d.sandboxEnabled,
       sandbox_image: d.sandboxEnabled ? d.sandboxImage : undefined,
       extra_env: d.sandboxEnabled && d.extraEnv.length > 0 ? d.extraEnv.filter(Boolean) : undefined,
@@ -224,6 +228,8 @@ export function SessionWizard({ onClose, onCreated, prefill }: Props) {
     switch (currentStepDef?.id) {
       case "project":
         return <ProjectStep data={state.data} onChange={handleChange} initialTab={prefill?.initialTab} />;
+      case "session":
+        return <SessionStep data={state.data} onChange={handleChange} />;
       case "agent":
         return (
           <AgentStep

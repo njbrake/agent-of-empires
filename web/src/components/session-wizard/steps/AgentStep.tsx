@@ -6,6 +6,7 @@ interface WizardData {
   tool: string;
   title: string;
   worktreeBranch: string;
+  useWorktree: boolean;
   profile: string;
   profileDirty: boolean;
   sandboxEnabled: boolean;
@@ -191,7 +192,10 @@ export function AgentStep({ data, onChange, agents, profiles, dockerAvailable, o
       </div>
 
       {isHostOnly && (
-        <p className="text-xs text-status-warning mt-3 mb-3">{selectedAgent?.name} can only run on the host. Container option is disabled.</p>
+        <p className="text-xs text-status-warning mt-3 mb-3">
+          {selectedAgent?.name} can only run on the host. Container is disabled
+          {data.useWorktree ? "; go back and turn off “Create a worktree” too." : "."}
+        </p>
       )}
 
       {/* Advanced settings (collapsible) */}
@@ -207,31 +211,6 @@ export function AgentStep({ data, onChange, agents, profiles, dockerAvailable, o
 
       {showAdvanced && (
         <div className="mt-2 space-y-4 border-t border-surface-700/30 pt-4">
-          {/* Session title / branch */}
-          <div>
-            <label className="block text-sm text-text-dim mb-1.5">Session title</label>
-            <input
-              type="text"
-              value={data.title}
-              onChange={(e) => onChange("title", e.target.value)}
-              placeholder="Shown in Agent of Empires"
-              className="w-full bg-surface-900 border border-surface-700 rounded-lg px-3 py-2.5 text-base font-mono text-text-primary placeholder:text-text-dim focus:border-brand-600 focus:outline-none"
-            />
-            <p className="text-xs text-text-dim mt-1">Shown in the dashboard and session lists. Renaming it later does not rename the git branch.</p>
-          </div>
-
-          <div>
-            <label className="block text-sm text-text-dim mb-1.5">Branch name</label>
-            <input
-              type="text"
-              value={data.worktreeBranch}
-              onChange={(e) => onChange("worktreeBranch", e.target.value)}
-              placeholder="Uses session title if empty"
-              className="w-full bg-surface-900 border border-surface-700 rounded-lg px-3 py-2.5 text-base font-mono text-text-primary placeholder:text-text-dim focus:border-brand-600 focus:outline-none"
-            />
-            <p className="text-xs text-text-dim mt-1">Git branch and worktree name. Clearing it switches back to the session title. Leave both title and branch empty to auto-generate.</p>
-          </div>
-
           {/* Container config (if sandbox enabled) */}
           {data.sandboxEnabled && (
             <>
