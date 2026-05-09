@@ -947,6 +947,70 @@ mod tests {
         assert_eq!(next_seq(&sup.next_seqs, "s-1"), 3);
     }
 
+    /// `publish_user_prompt` writes a `UserPromptSent { text }` event
+    /// through the sink with a fresh seq. The handler invokes this
+    /// before forwarding to the agent so the on-disk store has the
+    /// user side of the conversation; if seq weren't allocated here,
+    /// the agent's first reply chunk would collide on the same seq
+    /// and the client-side dedupe would silently drop one of them.
+    #[tokio::test]
+    async fn publish_user_prompt_emits_event_and_increments_seq() {
+        let sink = VecSink::new();
+        let sup = Supervisor::new(sink.clone());
+        sup.publish_user_prompt("s-1", "first prompt".into());
+        sup.publish_user_prompt("s-1", "second prompt".into());
+
+        let frames = sink.frames.lock().unwrap().clone();
+        assert_eq!(frames.len(), 2);
+        let (sid, seq, event) = &frames[0];
+        assert_eq!(sid, "s-1");
+        assert_eq!(*seq, 1);
+        assert!(matches!(
+            event,
+            Event::UserPromptSent { text } if text == "first prompt"
+        ));
+        let (_, seq2, event2) = &frames[1];
+        assert_eq!(*seq2, 2);
+        assert!(matches!(
+            event2,
+            Event::UserPromptSent { text } if text == "second prompt"
+        ));
+    }
+
+    /// After `hydrate_seqs` (called at startup with the on-disk
+    /// max-seq map), the next publish for that session must return
+    /// stored_max + 1, not 1. Without this, restoring from a
+    /// non-empty event store would re-issue seq=1 and the INSERT OR
+    /// IGNORE on the disk path would silently drop the new event.
+    #[tokio::test]
+    async fn hydrate_seqs_resumes_from_stored_max() {
+        let sink = VecSink::new();
+        let sup = Supervisor::new(sink.clone());
+        // Simulate: we've persisted up to seq=42 for s-1 and seq=7 for s-2.
+        sup.hydrate_seqs([("s-1".to_string(), 42), ("s-2".to_string(), 7)]);
+
+        sup.publish_user_prompt("s-1", "after restart".into());
+        sup.publish_startup_error("s-2", "retry".into());
+
+        let frames = sink.frames.lock().unwrap().clone();
+        let s1_seq = frames
+            .iter()
+            .find_map(|(sid, seq, _)| (sid == "s-1").then_some(*seq));
+        let s2_seq = frames
+            .iter()
+            .find_map(|(sid, seq, _)| (sid == "s-2").then_some(*seq));
+        assert_eq!(
+            s1_seq,
+            Some(43),
+            "s-1 should resume at stored_max + 1 = 43, not 1"
+        );
+        assert_eq!(
+            s2_seq,
+            Some(8),
+            "s-2 should resume at stored_max + 1 = 8, not 1"
+        );
+    }
+
     /// Regression: `publish_startup_error` and a subsequent drain-task
     /// publish must not collide on seq=1, otherwise the client-side
     /// dedupe (`frame.seq <= state.lastSeq → drop`) eats the agent's
@@ -1019,5 +1083,155 @@ mod tests {
         assert_eq!(next_seq(&sup.next_seqs, "s-1"), 2);
         sup.forget_session("s-1");
         assert_eq!(next_seq(&sup.next_seqs, "s-1"), 1);
+    }
+
+    /// End-to-end: build a real `ChannelSink` (broadcast tx +
+    /// in-memory ring + on-disk EventStore) and verify a single
+    /// `publish` call writes to ALL THREE — broadcast subscribers,
+    /// the per-session ReplayBuffer, and the SQLite store. This is
+    /// the contract every consumer relies on; before the EventStore
+    /// landed, only the first two existed.
+    #[tokio::test]
+    async fn channel_sink_publishes_to_broadcast_in_memory_and_disk() {
+        use crate::cockpit::event_store::EventStore;
+        use crate::cockpit::replay_buffer::BufferedEvent;
+        use std::collections::HashMap;
+        use tempfile::TempDir;
+        use tokio::sync::broadcast;
+
+        let tmp = TempDir::new().unwrap();
+        let db_path = tmp.path().join("cockpit.db");
+        let event_store = Arc::new(EventStore::open(&db_path, 1000).unwrap());
+        let (tx, mut rx) = broadcast::channel(16);
+        let on_approval: ApprovalHook = Arc::new(|_, _, _| {});
+        let sink = Arc::new(ChannelSink {
+            tx,
+            on_approval,
+            replay: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            replay_caps: (100, 100_000),
+            event_store: event_store.clone(),
+        });
+
+        sink.publish(
+            "s-42",
+            1,
+            &Event::UserPromptSent {
+                text: "hello world".into(),
+            },
+        );
+        sink.publish(
+            "s-42",
+            2,
+            &Event::AgentMessageChunk {
+                text: "agent reply".into(),
+            },
+        );
+
+        // 1. Broadcast subscribers see both frames in seq order.
+        let frame1 = rx.try_recv().expect("broadcast frame 1");
+        let frame2 = rx.try_recv().expect("broadcast frame 2");
+        assert_eq!(frame1.session_id, "s-42");
+        assert_eq!(frame1.seq, 1);
+        assert_eq!(frame2.seq, 2);
+
+        // 2. In-memory replay ring has the same two events.
+        let ring_entries: Vec<BufferedEvent> = {
+            let guard = sink.replay.lock().unwrap();
+            let buf = guard.get("s-42").expect("ring populated");
+            buf.replay_from(0).expect("no gap")
+        };
+        let ring_seqs: Vec<u64> = ring_entries
+            .iter()
+            .filter_map(|e| match e {
+                BufferedEvent::Event { seq, .. } => Some(*seq),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ring_seqs, vec![1, 2]);
+
+        // 3. On-disk store has the same two events.
+        let stored = event_store.replay_from("s-42", 0);
+        assert_eq!(stored.len(), 2);
+        assert_eq!(stored[0].0, 1);
+        assert!(matches!(
+            stored[0].1,
+            Event::UserPromptSent { ref text } if text == "hello world"
+        ));
+        assert_eq!(stored[1].0, 2);
+        assert!(matches!(
+            stored[1].1,
+            Event::AgentMessageChunk { ref text } if text == "agent reply"
+        ));
+    }
+
+    /// Restart simulation: publish through one Supervisor, drop it,
+    /// reopen the EventStore at the same path, hydrate a fresh
+    /// Supervisor's seqs from disk, and verify the next publish gets
+    /// stored_max + 1 (not 1). This is exactly what `aoe serve`
+    /// startup does after an unclean shutdown.
+    #[tokio::test]
+    async fn supervisor_resumes_seq_counter_from_disk_after_restart() {
+        use crate::cockpit::event_store::EventStore;
+        use std::collections::HashMap;
+        use tempfile::TempDir;
+        use tokio::sync::broadcast;
+
+        let tmp = TempDir::new().unwrap();
+        let db_path = tmp.path().join("cockpit.db");
+
+        // First "process": publish a few events, then drop everything.
+        {
+            let event_store = Arc::new(EventStore::open(&db_path, 1000).unwrap());
+            let (tx, _rx) = broadcast::channel(16);
+            let on_approval: ApprovalHook = Arc::new(|_, _, _| {});
+            let sink = Arc::new(ChannelSink {
+                tx,
+                on_approval,
+                replay: Arc::new(std::sync::Mutex::new(HashMap::new())),
+                replay_caps: (100, 100_000),
+                event_store: event_store.clone(),
+            });
+            let sup = Supervisor::new(sink);
+            sup.publish_user_prompt("s-99", "first".into());
+            sup.publish_user_prompt("s-99", "second".into());
+            sup.publish_user_prompt("s-99", "third".into());
+            // sup, sink, and the in-memory replay ring drop here.
+        }
+
+        // Second "process": reopen the store at the same path,
+        // hydrate the supervisor from disk, and publish.
+        let event_store = Arc::new(EventStore::open(&db_path, 1000).unwrap());
+        // Disk should still hold seqs 1..=3.
+        assert_eq!(event_store.highest_seq("s-99"), 3);
+
+        let (tx, mut rx) = broadcast::channel(16);
+        let on_approval: ApprovalHook = Arc::new(|_, _, _| {});
+        let sink = Arc::new(ChannelSink {
+            tx,
+            on_approval,
+            replay: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            replay_caps: (100, 100_000),
+            event_store: event_store.clone(),
+        });
+        let sup = Supervisor::new(sink);
+        sup.hydrate_seqs(event_store.all_session_seqs());
+        sup.publish_user_prompt("s-99", "after restart".into());
+
+        // The fresh publish must be seq=4, not seq=1. A seq=1
+        // publish would be a no-op on disk (INSERT OR IGNORE) and
+        // the client-side dedupe would silently drop it.
+        let frame = rx.try_recv().expect("post-restart frame");
+        assert_eq!(frame.seq, 4);
+
+        // Disk now holds 1..=4, with the user prompt text preserved.
+        let stored = event_store.replay_from("s-99", 0);
+        let texts: Vec<String> = stored
+            .iter()
+            .filter_map(|(_, ev)| match ev {
+                Event::UserPromptSent { text } => Some(text.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(texts, vec!["first", "second", "third", "after restart"]);
     }
 }
