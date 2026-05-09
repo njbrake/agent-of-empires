@@ -255,11 +255,14 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
   const [deletingWorkspaceId, setDeletingWorkspaceId] = useState<string | null>(null);
   const [serverAbout, setServerAbout] = useState<ServerAbout | null>(null);
 
-  useEffect(() => {
-    fetchAbout().then((about) => {
-      if (about) setServerAbout(about);
-    });
+  const refreshServerAbout = useCallback(async () => {
+    const about = await fetchAbout();
+    if (about) setServerAbout(about);
   }, []);
+
+  useEffect(() => {
+    refreshServerAbout();
+  }, [refreshServerAbout]);
 
   const deletingWorkspace = deletingWorkspaceId
     ? workspaces.find((w) => w.id === deletingWorkspaceId)
@@ -487,6 +490,8 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
           tab={settingsTab}
           onClose={handleCloseSettings}
           onSelectTab={(t) => navigate(`/settings/${t}`)}
+          serverAbout={serverAbout}
+          onServerAboutRefresh={refreshServerAbout}
         />
       );
     }

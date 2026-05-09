@@ -662,7 +662,9 @@ pub async fn create_session(
     // so the post-spawn write path (which still needs `state`) keeps
     // its handle.
     #[cfg(feature = "serve")]
-    let cockpit_master_enabled = state.cockpit_master_enabled;
+    let cockpit_master_enabled = state
+        .cockpit_master_enabled
+        .load(std::sync::atomic::Ordering::Relaxed);
 
     let result = tokio::task::spawn_blocking(move || {
         use crate::session::builder::{self, InstanceParams};

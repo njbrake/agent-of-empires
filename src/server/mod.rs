@@ -252,14 +252,14 @@ pub struct AppState {
     /// these caps.
     #[cfg(feature = "serve")]
     pub cockpit_replay_caps: (usize, usize),
-    /// Snapshot of `config.cockpit.enabled` taken at startup. Acts
-    /// as the documented master kill switch: when false, the
-    /// reconciler skips auto-spawn and every cockpit-spawning REST
-    /// path refuses with 503. Toggling the value in `config.toml`
-    /// requires `aoe serve` to restart, mirroring how
-    /// `web.notifications_enabled` works elsewhere.
+    /// Mirror of `config.cockpit.enabled`. Initialized at startup from
+    /// `config.toml`; the `PATCH /api/cockpit/master` endpoint persists
+    /// to disk and updates this atomic so the reconciler and REST gates
+    /// pick up the new value without an `aoe serve` restart. When false,
+    /// the reconciler skips auto-spawn and every cockpit-spawning REST
+    /// path refuses with 503.
     #[cfg(feature = "serve")]
-    pub cockpit_master_enabled: bool,
+    pub cockpit_master_enabled: std::sync::atomic::AtomicBool,
     /// Owns the per-session ACP agent subprocesses.
     #[cfg(feature = "serve")]
     pub cockpit_supervisor:
@@ -473,7 +473,7 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
         config.cockpit.replay_bytes as usize,
     );
     #[cfg(feature = "serve")]
-    let cockpit_master_enabled = config.cockpit.enabled;
+    let cockpit_master_enabled = std::sync::atomic::AtomicBool::new(config.cockpit.enabled);
     #[cfg(feature = "serve")]
     let cockpit_supervisor = {
         let push_for_sink = push_state.clone();
@@ -1001,7 +1001,8 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route(
             "/api/sessions/{id}/cockpit/approvals/{nonce}",
             post(api::resolve_approval),
-        );
+        )
+        .route("/api/cockpit/master", patch(api::set_cockpit_master));
 
     app
         // Static assets (Vite build output: assets/, manifest.json, sw.js, icons)
@@ -1286,11 +1287,12 @@ async fn reconcile_cockpit_workers(
     attempted: &mut std::collections::HashSet<String>,
 ) {
     // Honor `cockpit.enabled = false` from config.toml — the persistent
-    // master switch. Snapshotted at startup; flipping it requires
-    // `aoe serve` to restart, mirroring how `web.notifications_enabled`
-    // works. To stop cockpit on a running daemon: `aoe serve --stop`,
-    // toggle the field, then start again.
-    if !state.cockpit_master_enabled {
+    // master switch. Mirrored as an atomic; `PATCH /api/cockpit/master`
+    // flips it live without restarting `aoe serve`.
+    if !state
+        .cockpit_master_enabled
+        .load(std::sync::atomic::Ordering::Relaxed)
+    {
         return;
     }
 

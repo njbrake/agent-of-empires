@@ -52,11 +52,14 @@ pub async fn spawn_cockpit(
     Path(id): Path<String>,
     Json(req): Json<SpawnCockpitRequest>,
 ) -> impl IntoResponse {
-    if !state.cockpit_master_enabled {
+    if !state
+        .cockpit_master_enabled
+        .load(std::sync::atomic::Ordering::Relaxed)
+    {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             "cockpit is disabled (config.toml `cockpit.enabled = false`); \
-             toggle the field and restart `aoe serve` to use",
+             enable it from the web settings or set the field to true",
         )
             .into_response();
     }
@@ -289,11 +292,14 @@ pub async fn cockpit_enable(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    if !state.cockpit_master_enabled {
+    if !state
+        .cockpit_master_enabled
+        .load(std::sync::atomic::Ordering::Relaxed)
+    {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             "cockpit is disabled (config.toml `cockpit.enabled = false`); \
-             toggle the field and restart `aoe serve` to use",
+             enable it from the web settings or set the field to true",
         )
             .into_response();
     }
@@ -629,4 +635,89 @@ pub async fn cockpit_replay(
         highest_seq,
     })
     .into_response()
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SetMasterRequest {
+    pub enabled: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct MasterStateResponse {
+    pub master_enabled: bool,
+    pub env_enabled: bool,
+    pub effective: bool,
+}
+
+/// Toggle `config.cockpit.enabled` from the web UI. Persists to
+/// `config.toml` and updates the live atomic so the reconciler and
+/// gating endpoints pick up the new value without a server restart.
+/// `AOE_EXPERIMENTAL_COCKPIT` is process-scoped and not affected;
+/// it's reported in the response so the UI can explain why cockpit
+/// may still be unavailable after enabling the master switch.
+pub async fn set_cockpit_master(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<SetMasterRequest>,
+) -> impl IntoResponse {
+    if state.read_only {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({
+                "error": "read_only",
+                "message": "Server is in read-only mode",
+            })),
+        )
+            .into_response();
+    }
+    if !crate::cockpit::experimental_enabled() {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({
+                "error": "experimental_disabled",
+                "message": "cockpit is experimental; restart `aoe serve` with AOE_EXPERIMENTAL_COCKPIT=1 to manage the master switch",
+            })),
+        )
+            .into_response();
+    }
+    let new_value = req.enabled;
+    let result = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        let mut config = crate::session::Config::load_or_warn();
+        config.cockpit.enabled = new_value;
+        crate::session::save_config(&config)?;
+        Ok(())
+    })
+    .await;
+    match result {
+        Ok(Ok(())) => {
+            state
+                .cockpit_master_enabled
+                .store(new_value, std::sync::atomic::Ordering::Relaxed);
+            let env_enabled = crate::cockpit::experimental_enabled();
+            (
+                StatusCode::OK,
+                Json(MasterStateResponse {
+                    master_enabled: new_value,
+                    env_enabled,
+                    effective: new_value && env_enabled,
+                }),
+            )
+                .into_response()
+        }
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "error": "save_failed",
+                "message": e.to_string(),
+            })),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({
+                "error": "internal",
+                "message": e.to_string(),
+            })),
+        )
+            .into_response(),
+    }
 }
