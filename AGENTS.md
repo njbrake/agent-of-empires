@@ -35,6 +35,7 @@
 - `cargo fmt` + `cargo clippy`: run before pushing; fix clippy warnings unless there's a strong reason not to.
 - Debug logging: `AGENT_OF_EMPIRES_DEBUG=1 cargo run` (writes `debug.log` in app data dir).
 - Running from source needs `tmux` installed.
+- Debug builds use an isolated namespace so they don't collide with an installed release `aoe`: app data dir is `~/.agent-of-empires-dev` (macOS/Windows) or `~/.config/agent-of-empires-dev` (Linux), tmux session prefix is `aoe_dev_`, and `aoe serve` defaults to port `8081`. Release builds keep the original `agent-of-empires` paths, `aoe_` prefix, and port `8080`.
 
 ### Web Dashboard
 

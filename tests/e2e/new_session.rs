@@ -47,11 +47,7 @@ fn submit_new_session_dialog(h: &TuiTestHarness) {
 /// Write a global config with on_create hooks so session creation goes through
 /// the background CreationPoller and shows a Creating stub in the session list.
 fn write_config_with_hooks(h: &TuiTestHarness, hook_cmd: &str) {
-    let config_dir = if cfg!(target_os = "linux") {
-        h.home_path().join(".config").join("agent-of-empires")
-    } else {
-        h.home_path().join(".agent-of-empires")
-    };
+    let config_dir = crate::harness::app_dir_in(h.home_path());
     let config_content = format!(
         r#"[hooks]
 on_create = ["{hook_cmd}"]
