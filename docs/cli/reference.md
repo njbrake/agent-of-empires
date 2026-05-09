@@ -52,6 +52,11 @@ This document contains the help content for the `aoe` command-line program.
 * [`aoe theme export`↴](#aoe-theme-export)
 * [`aoe theme dir`↴](#aoe-theme-dir)
 * [`aoe serve`↴](#aoe-serve)
+* [`aoe cockpit`↴](#aoe-cockpit)
+* [`aoe cockpit doctor`↴](#aoe-cockpit-doctor)
+* [`aoe cockpit agents`↴](#aoe-cockpit-agents)
+* [`aoe cockpit logs`↴](#aoe-cockpit-logs)
+* [`aoe cockpit restart`↴](#aoe-cockpit-restart)
 * [`aoe uninstall`↴](#aoe-uninstall)
 * [`aoe update`↴](#aoe-update)
 * [`aoe completion`↴](#aoe-completion)
@@ -82,6 +87,7 @@ Run without arguments to launch the TUI dashboard.
 * `sounds` — Manage sound effects for agent state transitions
 * `theme` — Manage color themes (list, export, customize)
 * `serve` — Start a web dashboard for remote session access
+* `cockpit` — Cockpit (ACP-based native agent rendering) management
 * `uninstall` — Uninstall Agent of Empires
 * `update` — Update aoe to the latest release
 * `completion` — Generate shell completions
@@ -121,6 +127,10 @@ Add a new session
 * `--trust-hooks` — Automatically trust repository hooks without prompting
 * `--extra-args <EXTRA_ARGS>` — Extra arguments to append after the agent binary
 * `--cmd-override <CMD_OVERRIDE>` — Override the agent binary command
+* `--cockpit` — Use cockpit mode (ACP-based native rendering) for this session. Overrides the default-for-claude setting in cockpit config
+* `--no-cockpit` — Force terminal/PTY mode for this session, overriding the default-for-claude cockpit setting
+* `--agent <AGENT>` — Pick a specific cockpit agent (e.g., aoe-agent, claude-code). Implies --cockpit
+* `--model <MODEL>` — Override the model used by aoe-agent (e.g., claude-opus-4-7, gpt-5, gemini-2.5-pro). Forwarded to the agent at session start
 
 
 
@@ -761,6 +771,67 @@ Start a web dashboard for remote session access
 * `--daemon` — Run as a background daemon (detach from terminal)
 * `--stop` — Stop a running daemon
 * `--passphrase <PASSPHRASE>` — Require a passphrase for login (second-factor auth). Can also be set via AOE_SERVE_PASSPHRASE environment variable
+
+
+
+## `aoe cockpit`
+
+Cockpit (ACP-based native agent rendering) management
+
+**Usage:** `aoe cockpit <COMMAND>`
+
+###### **Subcommands:**
+
+* `doctor` — Verify the cockpit can start: Node runtime, configured agents, provider auth (claude login)
+* `agents` — List configured cockpit agents (claude-code, aoe-agent, etc.)
+* `logs` — Tail the worker stderr for a running cockpit session. Requires `aoe serve` to be running and is deferred until the worker supervisor lands
+* `restart` — Restart a wedged cockpit worker. Reserved for the supervisor slice
+
+
+
+## `aoe cockpit doctor`
+
+Verify the cockpit can start: Node runtime, configured agents, provider auth (claude login)
+
+**Usage:** `aoe cockpit doctor [OPTIONS]`
+
+###### **Options:**
+
+* `--json` — Emit machine-readable JSON instead of a human report
+* `--fix` — Attempt safe remediations: install missing claude-code-acp adapter, verify aoe-agent presence, etc. (Reserved for future release; the flag exists so scripts can opt in early.)
+
+
+
+## `aoe cockpit agents`
+
+List configured cockpit agents (claude-code, aoe-agent, etc.)
+
+**Usage:** `aoe cockpit agents`
+
+
+
+## `aoe cockpit logs`
+
+Tail the worker stderr for a running cockpit session. Requires `aoe serve` to be running and is deferred until the worker supervisor lands
+
+**Usage:** `aoe cockpit logs [OPTIONS]`
+
+###### **Options:**
+
+* `--session <SESSION>` — Session id whose worker logs to tail
+* `--follow` — Follow new lines as they arrive
+
+
+
+## `aoe cockpit restart`
+
+Restart a wedged cockpit worker. Reserved for the supervisor slice
+
+**Usage:** `aoe cockpit restart <SESSION>`
+
+###### **Arguments:**
+
+* `<SESSION>` — Session id whose worker to restart
 
 
 
