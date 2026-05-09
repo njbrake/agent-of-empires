@@ -23,7 +23,6 @@ import {
   ChevronDown,
   Copy as CopyIcon,
   ListChecks,
-  Pencil,
 } from "lucide-react";
 
 import { ApprovalCard } from "./ApprovalCard";
@@ -157,9 +156,6 @@ function UserMessage() {
         className="opacity-0 transition-opacity duration-100 group-hover:opacity-100 focus-within:opacity-100"
       >
         <div className="flex items-center gap-0.5 rounded-md border border-surface-700/60 bg-surface-850 p-0.5">
-          <ActionBarPrimitive.Edit asChild>
-            <ActionIconButton label="Edit" icon={<Pencil className="h-3 w-3" />} />
-          </ActionBarPrimitive.Edit>
           <ActionBarPrimitive.Copy asChild>
             <ActionIconButton label="Copy" icon={<CopyIcon className="h-3 w-3" />} />
           </ActionBarPrimitive.Copy>
