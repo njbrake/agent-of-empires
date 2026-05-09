@@ -1478,7 +1478,48 @@ async fn status_poll_loop(state: Arc<AppState>) {
         })
         .await;
 
-        if let Ok(instances) = updated {
+        if let Ok(mut instances) = updated {
+            // The poll loop refreshes from disk every tick, but the
+            // cockpit_status_listener's status writes are in-memory only
+            // (status is derived from live ACP events, not persisted
+            // per-event). Without re-applying them here the disk reload
+            // would silently revert cockpit sessions to whatever Status
+            // was last persisted (typically Idle from spawn) and the
+            // sidebar dot would never turn green after a prompt.
+            #[cfg(feature = "serve")]
+            {
+                let overlay: std::collections::HashMap<
+                    String,
+                    (
+                        Status,
+                        Option<chrono::DateTime<chrono::Utc>>,
+                        Option<chrono::DateTime<chrono::Utc>>,
+                    ),
+                > = {
+                    let state_instances = state.instances.read().await;
+                    state_instances
+                        .iter()
+                        .filter(|i| i.cockpit_mode)
+                        .map(|i| {
+                            (
+                                i.id.clone(),
+                                (i.status, i.last_accessed_at, i.idle_entered_at),
+                            )
+                        })
+                        .collect()
+                };
+                for inst in &mut instances {
+                    if !inst.cockpit_mode {
+                        continue;
+                    }
+                    if let Some((status, last_accessed, idle_entered)) = overlay.get(&inst.id) {
+                        inst.status = *status;
+                        inst.last_accessed_at = *last_accessed;
+                        inst.idle_entered_at = *idle_entered;
+                    }
+                }
+            }
+
             // Emit transitions before swapping in the new snapshot so
             // consumers see events in the same order regardless of when
             // they read state.instances themselves.
