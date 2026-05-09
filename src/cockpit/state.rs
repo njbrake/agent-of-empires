@@ -86,6 +86,27 @@ pub struct RateLimitInfo {
     pub kind: String,
 }
 
+/// Snapshot of the agent's last-reported context-window usage and
+/// (optionally) cumulative session cost. Mirrors the ACP
+/// `UsageUpdate` notification.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionUsage {
+    /// Tokens currently in context.
+    pub used: u64,
+    /// Total context window size in tokens.
+    pub size: u64,
+    /// Cumulative cost since session start, when the agent reports it.
+    #[serde(default)]
+    pub cost: Option<UsageCost>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UsageCost {
+    pub amount: f64,
+    /// ISO 4217 code (USD/EUR/...).
+    pub currency: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SessionMode {
     Default,
@@ -119,6 +140,10 @@ pub struct CockpitState {
     pub recent_diffs: Vec<DiffPreview>,
     pub thinking: Option<ThinkingSignal>,
     pub rate_limit: Option<RateLimitInfo>,
+    /// Last-known context-window usage from the agent's most recent
+    /// `UsageUpdate`. None until the agent emits one.
+    #[serde(default)]
+    pub usage: Option<SessionUsage>,
 
     pub last_seq: u64,
     pub updated_at: DateTime<Utc>,
@@ -142,6 +167,7 @@ impl CockpitState {
             recent_diffs: Vec::new(),
             thinking: None,
             rate_limit: None,
+            usage: None,
             last_seq: 0,
             updated_at: Utc::now(),
         }
@@ -222,6 +248,13 @@ pub enum Event {
     ThinkingEnded,
     RateLimit {
         info: RateLimitInfo,
+    },
+    /// Agent-reported context-window usage. Comes from ACP
+    /// `SessionUpdate::UsageUpdate` (gated on the
+    /// `unstable_session_usage` schema feature). Latest snapshot wins;
+    /// the agent typically resends after each turn.
+    UsageUpdated {
+        usage: SessionUsage,
     },
     ModeChanged {
         mode: SessionMode,
@@ -334,6 +367,7 @@ impl CockpitState {
             }
             Event::ThinkingEnded => self.thinking = None,
             Event::RateLimit { info } => self.rate_limit = Some(info),
+            Event::UsageUpdated { usage } => self.usage = Some(usage),
             Event::ModeChanged { mode } => self.mode = mode,
             // ModesAvailable + CurrentModeChanged carry the real ACP-
             // advertised modes. The cockpit's persistent state doesn't
@@ -430,5 +464,34 @@ mod tests {
         })
         .unwrap();
         assert!(s.in_flight_tool.is_none());
+    }
+
+    #[test]
+    fn usage_updated_replaces_previous_snapshot() {
+        let mut s = fresh_state();
+        assert!(s.usage.is_none());
+        s.apply_event(Event::UsageUpdated {
+            usage: SessionUsage {
+                used: 1_000,
+                size: 200_000,
+                cost: None,
+            },
+        })
+        .unwrap();
+        assert_eq!(s.usage.as_ref().map(|u| u.used), Some(1_000));
+        s.apply_event(Event::UsageUpdated {
+            usage: SessionUsage {
+                used: 5_000,
+                size: 200_000,
+                cost: Some(UsageCost {
+                    amount: 0.12,
+                    currency: "USD".into(),
+                }),
+            },
+        })
+        .unwrap();
+        let u = s.usage.as_ref().unwrap();
+        assert_eq!(u.used, 5_000);
+        assert_eq!(u.cost.as_ref().unwrap().currency, "USD");
     }
 }

@@ -39,7 +39,7 @@ use super::fs_handler::{self, FsPolicy};
 use super::permissions::build_approval;
 use super::state::{
     CockpitSessionId, DiffPreview, Event, ModeInfo, Plan, PlanStep, PlanStepStatus, SessionMode,
-    ToolCall,
+    SessionUsage, ToolCall, UsageCost,
 };
 use super::terminal_handler::TerminalManager;
 
@@ -698,6 +698,17 @@ fn map_update_to_events(update: SessionUpdate) -> Vec<Event> {
                 },
                 Event::ModeChanged { mode },
             ]
+        }
+        SessionUpdate::UsageUpdate(u) => {
+            let usage = SessionUsage {
+                used: u.used,
+                size: u.size,
+                cost: u.cost.map(|c| UsageCost {
+                    amount: c.amount,
+                    currency: c.currency,
+                }),
+            };
+            vec![Event::UsageUpdated { usage }]
         }
         // Variants we don't have a typed mapping for yet pass through as
         // RawAgentUpdate so the UI can render best-effort and we can
@@ -1464,6 +1475,24 @@ mod tests {
                 assert_eq!(content, "partial output");
             }
             other => panic!("expected ToolCallContent, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn map_usage_update_emits_typed_usage_event() {
+        use agent_client_protocol::schema::{Cost, UsageUpdate};
+        let u = UsageUpdate::new(12_345, 200_000).cost(Cost::new(0.42, "USD"));
+        let events = map_update_to_events(SessionUpdate::UsageUpdate(u));
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            Event::UsageUpdated { usage } => {
+                assert_eq!(usage.used, 12_345);
+                assert_eq!(usage.size, 200_000);
+                let cost = usage.cost.as_ref().expect("cost present");
+                assert!((cost.amount - 0.42).abs() < f64::EPSILON);
+                assert_eq!(cost.currency, "USD");
+            }
+            other => panic!("expected UsageUpdated, got {other:?}"),
         }
     }
 

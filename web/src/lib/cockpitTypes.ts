@@ -51,6 +51,15 @@ export interface RateLimitInfo {
   kind: string;
 }
 
+export interface SessionUsage {
+  /** Tokens currently in context. */
+  used: number;
+  /** Total context window size in tokens. */
+  size: number;
+  /** Cumulative session cost; undefined if the agent doesn't report it. */
+  cost?: { amount: number; currency: string } | null;
+}
+
 export interface Approval {
   nonce: string;
   tool_call: ToolCall;
@@ -107,6 +116,7 @@ export type CockpitEvent =
   | "ThinkingStarted"
   | "ThinkingEnded"
   | { RateLimit: { info: RateLimitInfo } }
+  | { UsageUpdated: { usage: SessionUsage } }
   | { ModeChanged: { mode: SessionMode } }
   | {
       ModesAvailable: {
@@ -137,6 +147,9 @@ export interface CockpitState {
   recentDiffs: DiffPreview[];
   thinking: boolean;
   rateLimit: RateLimitInfo | null;
+  /** Latest agent-reported context-window usage. Null until the agent
+   *  emits its first ACP `UsageUpdate`. */
+  sessionUsage: SessionUsage | null;
   /** Most recent assistant message chunks accumulated as a single
    *  text body. Cleared each time a new prompt is sent. */
   assistantMessage: string;
@@ -209,6 +222,7 @@ export function emptyCockpitState(): CockpitState {
     recentDiffs: [],
     thinking: false,
     rateLimit: null,
+    sessionUsage: null,
     assistantMessage: "",
     activity: [],
     lastSeq: 0,
@@ -352,6 +366,10 @@ export function applyEvent(
   }
   if ("RateLimit" in event) {
     next.rateLimit = event.RateLimit.info;
+    return next;
+  }
+  if ("UsageUpdated" in event) {
+    next.sessionUsage = event.UsageUpdated.usage;
     return next;
   }
   if ("ModeChanged" in event) {

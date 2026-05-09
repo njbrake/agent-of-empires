@@ -43,6 +43,9 @@ interface Props {
   /** Legacy enum-based mode used as fallback when the agent does not
    *  advertise modes via NewSessionResponse. */
   legacyMode: CockpitState["mode"];
+  /** Latest agent-reported context-window usage. Null until the agent
+   *  has emitted at least one ACP `UsageUpdate`. */
+  sessionUsage: CockpitState["sessionUsage"];
 }
 
 export function Composer({
@@ -50,6 +53,7 @@ export function Composer({
   availableModes,
   currentModeId,
   legacyMode,
+  sessionUsage,
 }: Props) {
   const taRef = useRef<HTMLTextAreaElement | null>(null);
   const { files } = useFilesIndex(sessionId);
@@ -196,6 +200,7 @@ export function Composer({
               </div>
 
               <div className="flex items-center gap-2">
+                <UsageHint usage={sessionUsage} />
                 <ThreadPrimitive.If running>
                   <StopButton />
                 </ThreadPrimitive.If>
@@ -497,6 +502,58 @@ function toneForId(id: string): string {
   if (/plan/i.test(id))
     return "border-cyan-800/50 bg-cyan-950/30 text-cyan-300 hover:border-cyan-700";
   return "border-surface-700 bg-surface-800 text-text-secondary hover:border-surface-600";
+}
+
+/* ── Usage hint ──────────────────────────────────────────────────── */
+
+function UsageHint({ usage }: { usage: CockpitState["sessionUsage"] }) {
+  if (!usage || usage.size <= 0) return null;
+  const pct = Math.min(100, Math.round((usage.used / usage.size) * 100));
+  const tone =
+    pct >= 90
+      ? "text-rose-400"
+      : pct >= 75
+        ? "text-amber-400"
+        : "text-text-dim";
+  const usedLabel = formatTokens(usage.used);
+  const sizeLabel = formatTokens(usage.size);
+  const cost = usage.cost
+    ? formatCost(usage.cost.amount, usage.cost.currency)
+    : null;
+  const title =
+    `Context: ${usage.used.toLocaleString()} / ${usage.size.toLocaleString()} tokens (${pct}%)` +
+    (cost ? ` · session cost ${cost}` : "");
+  return (
+    <span
+      className={`hidden sm:inline-flex items-center gap-1 text-[11px] tabular-nums ${tone}`}
+      title={title}
+      aria-label={title}
+    >
+      <span>
+        {usedLabel}/{sizeLabel}
+      </span>
+      <span className="opacity-70">({pct}%)</span>
+      {cost ? <span className="opacity-70">· {cost}</span> : null}
+    </span>
+  );
+}
+
+function formatTokens(n: number): string {
+  if (n < 1_000) return String(n);
+  if (n < 1_000_000) return `${(n / 1_000).toFixed(n < 10_000 ? 1 : 0)}k`;
+  return `${(n / 1_000_000).toFixed(n < 10_000_000 ? 2 : 1)}M`;
+}
+
+function formatCost(amount: number, currency: string): string {
+  try {
+    return new Intl.NumberFormat(undefined, {
+      style: "currency",
+      currency,
+      maximumFractionDigits: amount < 1 ? 4 : 2,
+    }).format(amount);
+  } catch {
+    return `${amount.toFixed(amount < 1 ? 4 : 2)} ${currency}`;
+  }
 }
 
 /* ── Send / Stop ─────────────────────────────────────────────────── */

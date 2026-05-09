@@ -314,6 +314,7 @@ fn event_kind(event: &Event) -> &'static str {
         Event::ThinkingStarted => "thinking_started",
         Event::ThinkingEnded => "thinking_ended",
         Event::RateLimit { .. } => "rate_limit",
+        Event::UsageUpdated { .. } => "usage_updated",
         Event::ModeChanged { .. } => "mode_changed",
         Event::ModesAvailable { .. } => "modes_available",
         Event::CurrentModeChanged { .. } => "current_mode_changed",
