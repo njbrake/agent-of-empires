@@ -47,6 +47,9 @@ pub struct BuildResult {
     pub created_worktree: Option<CreatedWorktree>,
     /// Workspace worktrees created during build (for cleanup)
     pub created_workspace_worktrees: Vec<CreatedWorktree>,
+    /// Non-fatal warnings from worktree/workspace creation. Callers should
+    /// surface these to the user (post-checkout hook failures etc.).
+    pub warnings: Vec<String>,
 }
 
 /// Info about a worktree created during instance building.
@@ -60,6 +63,9 @@ pub struct WorkspaceResult {
     pub workspace_info: WorkspaceInfo,
     pub created_worktrees: Vec<CreatedWorktree>,
     pub workspace_path: PathBuf,
+    /// Non-fatal warnings from worktree creation (e.g. post-checkout hook
+    /// failures where the worktree itself was created successfully).
+    pub warnings: Vec<String>,
 }
 
 /// Create a multi-repo workspace with worktrees for each repository.
@@ -109,9 +115,6 @@ pub fn create_workspace(
         }
     }
 
-    let mut repos = Vec::new();
-    let mut created_worktrees: Vec<CreatedWorktree> = Vec::new();
-
     let cleanup = |created: &[CreatedWorktree], ws_path: &std::path::Path| {
         for wt in created {
             if let Ok(git_wt) = GitWorktree::new(wt.main_repo_path.clone()) {
@@ -121,9 +124,18 @@ pub fn create_workspace(
         let _ = std::fs::remove_dir_all(ws_path);
     };
 
+    // Pre-validate every repo and resolve metadata sequentially. This is cheap
+    // (no network) and lets us fail fast before kicking off any worktree work.
+    struct RepoPlan {
+        repo_path: PathBuf,
+        repo_name: String,
+        main_repo_path: PathBuf,
+        worktree_subdir: PathBuf,
+    }
+    let mut plans: Vec<RepoPlan> = Vec::with_capacity(all_repo_paths.len());
     for repo_path in &all_repo_paths {
         if !GitWorktree::is_git_repo(repo_path) {
-            cleanup(&created_worktrees, &workspace_path);
+            cleanup(&[], &workspace_path);
             bail!(
                 "Path is not in a git repository: {}\n\
                  Tip: All --repo paths must be git repositories",
@@ -135,7 +147,6 @@ pub fn create_workspace(
         let main_repo_path = main_repo_path_raw
             .canonicalize()
             .unwrap_or(main_repo_path_raw);
-        let git_wt = GitWorktree::new(main_repo_path.clone())?;
 
         let repo_name = repo_path
             .file_name()
@@ -144,24 +155,85 @@ pub fn create_workspace(
 
         let worktree_subdir = workspace_path.join(&repo_name);
 
-        if let Err(e) = git_wt.create_worktree(branch, &worktree_subdir, create_new_branch) {
-            cleanup(&created_worktrees, &workspace_path);
-            bail!("Failed to create worktree for {}: {}", repo_name, e);
+        plans.push(RepoPlan {
+            repo_path: repo_path.clone(),
+            repo_name,
+            main_repo_path,
+            worktree_subdir,
+        });
+    }
+
+    // Run create_worktree for every repo concurrently. Each worktree lives in
+    // a different directory and uses a different main repo, so the operations
+    // are independent. Network IO (git fetch + git submodule update) dominates
+    // each step, so fanning out cuts wall time roughly to that of the slowest
+    // repo.
+    let create_start = std::time::Instant::now();
+    let parallel_results: Vec<std::result::Result<Vec<String>, String>> =
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = plans
+                .iter()
+                .map(|plan| {
+                    let branch = branch.to_string();
+                    let main_repo_path = plan.main_repo_path.clone();
+                    let worktree_subdir = plan.worktree_subdir.clone();
+                    let repo_name = plan.repo_name.clone();
+                    scope.spawn(move || -> std::result::Result<Vec<String>, String> {
+                        let git_wt = GitWorktree::new(main_repo_path)
+                            .map_err(|e| format!("{}: {}", repo_name, e))?;
+                        git_wt
+                            .create_worktree(&branch, &worktree_subdir, create_new_branch)
+                            .map_err(|e| format!("{}: {}", repo_name, e))
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|h| match h.join() {
+                    Ok(r) => r,
+                    Err(_) => Err("worktree thread panicked".to_string()),
+                })
+                .collect()
+        });
+    tracing::info!(
+        "workspace create: {} repos completed in {:?}",
+        plans.len(),
+        create_start.elapsed()
+    );
+
+    let mut warnings: Vec<String> = Vec::new();
+    let mut first_err: Option<String> = None;
+    let mut created_worktrees: Vec<CreatedWorktree> = Vec::new();
+    let mut repos: Vec<WorkspaceRepo> = Vec::with_capacity(plans.len());
+
+    for (plan, result) in plans.iter().zip(parallel_results) {
+        match result {
+            Ok(w) => {
+                warnings.extend(w);
+                created_worktrees.push(CreatedWorktree {
+                    path: plan.worktree_subdir.clone(),
+                    main_repo_path: plan.main_repo_path.clone(),
+                });
+                repos.push(WorkspaceRepo {
+                    name: plan.repo_name.clone(),
+                    source_path: plan.repo_path.to_string_lossy().to_string(),
+                    branch: branch.to_string(),
+                    worktree_path: plan.worktree_subdir.to_string_lossy().to_string(),
+                    main_repo_path: plan.main_repo_path.to_string_lossy().to_string(),
+                    managed_by_aoe: true,
+                });
+            }
+            Err(msg) => {
+                if first_err.is_none() {
+                    first_err = Some(msg);
+                }
+            }
         }
+    }
 
-        created_worktrees.push(CreatedWorktree {
-            path: worktree_subdir.clone(),
-            main_repo_path: main_repo_path.clone(),
-        });
-
-        repos.push(WorkspaceRepo {
-            name: repo_name,
-            source_path: repo_path.to_string_lossy().to_string(),
-            branch: branch.to_string(),
-            worktree_path: worktree_subdir.to_string_lossy().to_string(),
-            main_repo_path: main_repo_path.to_string_lossy().to_string(),
-            managed_by_aoe: true,
-        });
+    if let Some(msg) = first_err {
+        cleanup(&created_worktrees, &workspace_path);
+        bail!("Failed to create worktree for {}", msg);
     }
 
     Ok(WorkspaceResult {
@@ -174,6 +246,7 @@ pub fn create_workspace(
         },
         created_worktrees,
         workspace_path,
+        warnings,
     })
 }
 
@@ -226,6 +299,7 @@ pub fn build_instance(
     let mut created_worktree = None;
     let mut workspace_info = None;
     let mut created_workspace_worktrees: Vec<CreatedWorktree> = Vec::new();
+    let mut warnings: Vec<String> = Vec::new();
     let final_title = resolve_title(
         &params.title,
         params.worktree_branch.as_deref(),
@@ -276,6 +350,7 @@ pub fn build_instance(
             final_path = ws_result.workspace_path.to_string_lossy().to_string();
             workspace_info = Some(ws_result.workspace_info);
             created_workspace_worktrees = ws_result.created_worktrees;
+            warnings.extend(ws_result.warnings);
         } else {
             // Single worktree mode (existing logic)
             let path = PathBuf::from(&params.path);
@@ -314,7 +389,8 @@ pub fn build_instance(
                     let session_id = uuid::Uuid::new_v4().to_string();
                     let worktree_path = git_wt.compute_path(branch, template, &session_id[..8])?;
 
-                    git_wt.create_worktree(branch, &worktree_path, false)?;
+                    let w = git_wt.create_worktree(branch, &worktree_path, false)?;
+                    warnings.extend(w);
 
                     final_path = worktree_path.to_string_lossy().to_string();
                     created_worktree = Some(CreatedWorktree {
@@ -336,7 +412,8 @@ pub fn build_instance(
                     bail!("Worktree already exists at {}", worktree_path.display());
                 }
 
-                git_wt.create_worktree(branch, &worktree_path, true)?;
+                let w = git_wt.create_worktree(branch, &worktree_path, true)?;
+                warnings.extend(w);
 
                 final_path = worktree_path.to_string_lossy().to_string();
                 created_worktree = Some(CreatedWorktree {
@@ -418,6 +495,7 @@ pub fn build_instance(
         instance,
         created_worktree,
         created_workspace_worktrees,
+        warnings,
     })
 }
 
