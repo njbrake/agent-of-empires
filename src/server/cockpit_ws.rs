@@ -129,45 +129,22 @@ async fn handle(mut socket: WebSocket, session_id: String, state: Arc<AppState>)
     let _ = socket.send(Message::Close(None)).await;
 }
 
-/// Read every buffered event for `session_id` out of the replay
-/// buffer and forward it to the socket as a CockpitBroadcastFrame.
-/// Returns the number of frames sent. On serialise/send errors the
-/// loop stops early — the live-loop fallback below will pick up
-/// from there. Gap markers are skipped; they're surfaced via
-/// `lagged` messages from the live channel when relevant.
+/// Read every stored event for `session_id` out of the disk-backed
+/// event store and forward it to the socket as a CockpitBroadcastFrame.
+/// Returns the number of frames sent. The event store is the durable
+/// source — it survives `aoe serve` restart, so this drain works even
+/// when the in-memory ring is cold. The live broadcast channel is
+/// already subscribed by the caller before this runs, so any events
+/// published between the snapshot and the live-loop entry are still
+/// delivered (the client dedupes by seq).
 async fn drain_replay_into_socket(
     socket: &mut WebSocket,
     state: &AppState,
     session_id: &str,
 ) -> usize {
-    use crate::cockpit::replay_buffer::BufferedEvent;
-
-    // Snapshot the buffer entries under the lock, then drop it
-    // before any await so we don't block other publishers behind
-    // a slow socket.send.
-    let entries: Vec<BufferedEvent> = {
-        let guard = match state.cockpit_replay.lock() {
-            Ok(g) => g,
-            Err(poisoned) => poisoned.into_inner(),
-        };
-        let Some(buf) = guard.get(session_id) else {
-            return 0;
-        };
-        // `replay_from(0)` returns every event currently buffered.
-        // None means a leading gap blocks replay; in that case we
-        // give up on the replay path and let the client fall back
-        // to GET /cockpit/replay (which will return `lost: true`).
-        match buf.replay_from(0) {
-            Some(items) => items,
-            None => return 0,
-        }
-    };
-
+    let entries = state.cockpit_event_store.replay_from(session_id, 0);
     let mut sent = 0usize;
-    for item in entries {
-        let BufferedEvent::Event { seq, event } = item else {
-            continue;
-        };
+    for (seq, event) in entries {
         let frame = CockpitBroadcastFrame {
             session_id: session_id.to_string(),
             seq,

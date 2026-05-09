@@ -18,6 +18,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use anyhow::Context;
 use axum::Router;
 use rust_embed::Embed;
 use serde::Serialize;
@@ -252,6 +253,14 @@ pub struct AppState {
     /// these caps.
     #[cfg(feature = "serve")]
     pub cockpit_replay_caps: (usize, usize),
+    /// Disk-backed cockpit event log. Mirrors every publish in
+    /// `ChannelSink`, so reload, session-switch, and `aoe serve`
+    /// restart all reconstruct the conversation from durable history.
+    /// The in-memory `cockpit_replay` ring is still the hot path for
+    /// WS-on-connect drains; this store backs the snapshot endpoint
+    /// and seeds `Supervisor::next_seqs` at startup.
+    #[cfg(feature = "serve")]
+    pub cockpit_event_store: Arc<crate::cockpit::event_store::EventStore>,
     /// Mirror of `config.cockpit.enabled`. Initialized at startup from
     /// `config.toml`; the `PATCH /api/cockpit/master` endpoint persists
     /// to disk and updates this atomic so the reconciler and REST gates
@@ -475,6 +484,19 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
     #[cfg(feature = "serve")]
     let cockpit_master_enabled = std::sync::atomic::AtomicBool::new(config.cockpit.enabled);
     #[cfg(feature = "serve")]
+    let cockpit_event_store = {
+        let app_dir =
+            crate::session::get_app_dir().context("cockpit event store: resolve app dir")?;
+        let db_path = app_dir.join("cockpit_events.db");
+        Arc::new(
+            crate::cockpit::event_store::EventStore::open(
+                &db_path,
+                config.cockpit.replay_events as usize,
+            )
+            .context("cockpit event store: open")?,
+        )
+    };
+    #[cfg(feature = "serve")]
     let cockpit_supervisor = {
         let push_for_sink = push_state.clone();
         let push_enabled_for_sink = push_enabled;
@@ -508,11 +530,20 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
             on_approval,
             replay: cockpit_replay.clone(),
             replay_caps: cockpit_replay_caps,
+            event_store: cockpit_event_store.clone(),
         });
-        std::sync::Arc::new(crate::cockpit::supervisor::Supervisor::with_capacity(
-            sink,
-            config.cockpit.max_concurrent_workers,
-        ))
+        let supervisor =
+            std::sync::Arc::new(crate::cockpit::supervisor::Supervisor::with_capacity(
+                sink,
+                config.cockpit.max_concurrent_workers,
+            ));
+        // Seed the seq counter from disk so fresh publishes don't
+        // collide with restored history. Without this, after a
+        // restart the first publish would be seq=1 — duplicate of
+        // the row already on disk — and INSERT OR IGNORE would
+        // silently drop it.
+        supervisor.hydrate_seqs(cockpit_event_store.all_session_seqs());
+        supervisor
     };
 
     let state = Arc::new(AppState {
@@ -541,6 +572,8 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
         cockpit_replay: cockpit_replay.clone(),
         #[cfg(feature = "serve")]
         cockpit_replay_caps,
+        #[cfg(feature = "serve")]
+        cockpit_event_store: cockpit_event_store.clone(),
         #[cfg(feature = "serve")]
         cockpit_master_enabled,
         #[cfg(feature = "serve")]

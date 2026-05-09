@@ -445,6 +445,11 @@ pub async fn cockpit_disable(
     if let Ok(mut guard) = state.cockpit_replay.lock() {
         guard.remove(&id);
     }
+    // Drop on-disk history too so the next cockpit_enable starts
+    // truly fresh — without this, the seq=1 first publish would
+    // collide with a row already on disk and INSERT OR IGNORE
+    // would silently drop it.
+    state.cockpit_event_store.delete_session(&id);
     instance.cockpit_mode = false;
 
     // Persist + start tmux. start() now no longer short-circuits for
@@ -596,48 +601,31 @@ pub async fn cockpit_replay(
     Path(id): Path<String>,
     axum::extract::Query(q): axum::extract::Query<ReplayQuery>,
 ) -> impl IntoResponse {
-    use crate::cockpit::replay_buffer::BufferedEvent;
-
-    let guard = match state.cockpit_replay.lock() {
-        Ok(g) => g,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    let Some(buf) = guard.get(&id) else {
-        return Json(ReplayResponse {
-            frames: vec![],
-            lost: false,
-            highest_seq: 0,
-        })
-        .into_response();
-    };
-    let highest_seq = buf.highest_seq();
-    let entries = match buf.replay_from(q.since) {
-        Some(items) => items,
-        None => {
-            return Json(ReplayResponse {
-                frames: vec![],
-                lost: true,
-                highest_seq,
-            })
-            .into_response();
-        }
-    };
+    // Reads from the disk-backed event store so reload, session-switch,
+    // and `aoe serve` restart all reconstruct the full conversation
+    // (subject to the per-session retention cap). The in-memory replay
+    // buffer is still consulted on WS connect for the hot path; this
+    // endpoint backstops that when the in-memory ring is cold (server
+    // just restarted) or the client lagged far enough to need older
+    // events than the ring holds.
+    let highest_seq = state.cockpit_event_store.highest_seq(&id);
+    let entries = state.cockpit_event_store.replay_from(&id, q.since);
     let frames: Vec<crate::server::CockpitBroadcastFrame> = entries
         .into_iter()
-        .filter_map(|item| match item {
-            BufferedEvent::Event { seq, event } => Some(crate::server::CockpitBroadcastFrame {
-                session_id: id.clone(),
-                seq,
-                event: serde_json::to_value(&event).unwrap_or(serde_json::Value::Null),
-            }),
-            // Gap markers are surfaced via the `lost` flag if they
-            // block the replay; otherwise (gap older than `since`)
-            // they're not interesting to the client.
-            BufferedEvent::Gap { .. } => None,
+        .map(|(seq, event)| crate::server::CockpitBroadcastFrame {
+            session_id: id.clone(),
+            seq,
+            event: serde_json::to_value(&event).unwrap_or(serde_json::Value::Null),
         })
         .collect();
     Json(ReplayResponse {
         frames,
+        // The retention cap can drop oldest events; we don't currently
+        // expose lowest-stored-seq, so leave `lost=false` and trust the
+        // client's seq dedupe to hide any short-lived holes. If we
+        // need to surface a real "history truncated" signal later, the
+        // event store can grow a `lowest_seq()` query to compare with
+        // `since`.
         lost: false,
         highest_seq,
     })

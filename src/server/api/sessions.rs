@@ -461,6 +461,11 @@ pub async fn delete_session(
         if let Ok(mut guard) = state.cockpit_replay.lock() {
             guard.remove(&id);
         }
+        // On-disk history is the durable mirror; without this purge a
+        // recreated session with the same id would inherit the deleted
+        // session's transcript and the seq=1 first publish would
+        // collide with a row already in the store.
+        state.cockpit_event_store.delete_session(&id);
     }
 
     // Run deletion on a blocking thread (may do git/docker/tmux operations)

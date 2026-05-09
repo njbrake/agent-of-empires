@@ -243,6 +243,18 @@ impl<S: BroadcastSink> Supervisor<S> {
         }
     }
 
+    /// Pre-populate `next_seqs` from `(session_id, max_seq)` pairs.
+    /// Used at server startup to seed the counter from the on-disk
+    /// event store so a fresh publish gets max_seq + 1, not 1, and
+    /// doesn't collide with restored history.
+    pub fn hydrate_seqs(&self, pairs: impl IntoIterator<Item = (String, u64)>) {
+        if let Ok(mut guard) = self.next_seqs.lock() {
+            for (session_id, seq) in pairs {
+                guard.insert(session_id, seq);
+            }
+        }
+    }
+
     pub async fn upsert_agent(&self, name: String, spec: AgentSpec) {
         self.registry.lock().await.upsert(name, spec);
     }
@@ -735,13 +747,21 @@ pub type ApprovalHook = Arc<dyn Fn(&str, &str, bool) + Send + Sync>;
 pub struct ChannelSink {
     pub tx: broadcast::Sender<crate::server::CockpitBroadcastFrame>,
     pub on_approval: ApprovalHook,
-    /// Per-session replay buffer. Frames are appended on each publish
-    /// so a reconnecting client can resync via
-    /// `GET /api/sessions/{id}/cockpit/replay?since={seq}`.
+    /// Per-session in-memory replay buffer. Frames are appended on each
+    /// publish so a reconnecting client can resync via
+    /// `GET /api/sessions/{id}/cockpit/replay?since={seq}`. The on-disk
+    /// `event_store` mirrors every publish so history survives an
+    /// `aoe serve` restart; the in-memory ring is the hot path for
+    /// WS-on-connect drains.
     pub replay: Arc<std::sync::Mutex<HashMap<String, ReplayBuffer>>>,
     /// Per-session caps `(max_events, max_bytes)`. Pulled from
     /// `[cockpit]` config at startup; applied on lazy buffer init.
     pub replay_caps: (usize, usize),
+    /// Disk-backed event log. Same publish path; surviving across
+    /// restarts requires no extra coordination because each publish
+    /// already has a monotonic seq from `Supervisor::next_seqs`, which
+    /// is hydrated from this store at startup.
+    pub event_store: Arc<crate::cockpit::event_store::EventStore>,
 }
 
 impl BroadcastSink for ChannelSink {
@@ -761,6 +781,8 @@ impl BroadcastSink for ChannelSink {
                 .or_insert_with(|| ReplayBuffer::new(max_events, max_bytes));
             buf.push(seq, event.clone());
         }
+
+        self.event_store.record(session_id, seq, event);
     }
 
     fn approval_requested(&self, session_id: &str, approval_title: &str, destructive: bool) {
