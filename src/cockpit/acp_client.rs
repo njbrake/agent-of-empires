@@ -1042,6 +1042,18 @@ async fn run_connection_task<W, R>(
                                 stored_id = %stored,
                                 "session/load succeeded; suppressing post-load history replay"
                             );
+                            // Emit AcpSessionAssigned even on resume so the
+                            // frontend reducer can clear any sticky
+                            // `startupError` / `lastError` from a prior crash
+                            // (e.g. a respawn after the user's prompt hit a
+                            // dead pipe). The server-side listener treats a
+                            // same-id Assigned as a no-op, so this doesn't
+                            // rewrite sessions.json.
+                            let _ = event_tx_for_block
+                                .send(Event::AcpSessionAssigned {
+                                    acp_session_id: stored.clone(),
+                                })
+                                .await;
                             acp_session_id = Some(SessionId::from(stored));
                         }
                         Err(e) => {

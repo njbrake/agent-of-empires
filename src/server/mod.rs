@@ -1749,6 +1749,14 @@ fn derive_cockpit_status(event: &serde_json::Value) -> Option<Status> {
     if map.contains_key("AgentStartupError") {
         return Some(Status::Error);
     }
+    // A successful session/new or session/load — the agent is alive
+    // and ready. Bring the sidebar status back to Idle so a prior
+    // AgentStartupError (e.g. a crash mid-prompt that the supervisor
+    // then respawned through) heals on its own without waiting for
+    // the user to send a fresh prompt.
+    if map.contains_key("AcpSessionAssigned") {
+        return Some(Status::Idle);
+    }
     None
 }
 
@@ -1781,6 +1789,10 @@ mod tests {
         assert_eq!(
             derive_cockpit_status(&json!({"AgentStartupError": {"message": "boom"}})),
             Some(Status::Error)
+        );
+        assert_eq!(
+            derive_cockpit_status(&json!({"AcpSessionAssigned": {"acp_session_id": "uuid"}})),
+            Some(Status::Idle)
         );
     }
 

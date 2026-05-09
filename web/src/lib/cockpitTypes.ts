@@ -528,9 +528,19 @@ export function applyEvent(
     return next;
   }
   if ("AcpSessionAssigned" in event) {
-    // Persistence breadcrumb only; the server-side listener writes the
-    // id to sessions.json so a subsequent restart can call session/load.
-    // Nothing to render in the conversation surface.
+    // Primary purpose: persistence breadcrumb so the server-side
+    // listener can write the id to sessions.json for a subsequent
+    // session/load.
+    //
+    // Secondary purpose: signal that the agent connection is alive
+    // again. After a crash + respawn (e.g. the agent process was killed
+    // and the supervisor restarted it), the prior turn's
+    // AgentStartupError sat in SQLite and kept `startupError` set even
+    // though the agent had since recovered. Clear sticky error flags
+    // here so the red "Cockpit agent failed to start" banner heals on
+    // its own once the respawn completes the handshake.
+    next.startupError = null;
+    next.lastError = null;
     return next;
   }
   if ("SessionContextReset" in event) {
