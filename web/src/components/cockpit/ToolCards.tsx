@@ -7,7 +7,7 @@
 // surface the key fields (path, command, query) inline in the card
 // header and put output in a syntax-highlighted body.
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import ReactDiffViewer, { DiffMethod } from "react-diff-viewer-continued";
 import {
   ChevronDown,
@@ -22,6 +22,7 @@ import {
 } from "lucide-react";
 
 import { getHighlighter, langKeyForExt, loadLanguage } from "../../lib/highlighter";
+import { hasAnsi, parseAnsi, type AnsiStyle } from "../../lib/ansi";
 import type { ActivityRow, ToolCall } from "../../lib/cockpitTypes";
 
 interface Props {
@@ -237,7 +238,15 @@ function HighlightedBlock({
     showAll ? 1_000_000 : maxLines,
   );
 
+  // ANSI fast path: when the text carries SGR escape sequences (e.g.
+  // `gls --color=always`, `git status --color=always`), Shiki's bash
+  // grammar can't handle them — it would either render the literal
+  // `[01;34m` noise or fail to highlight at all. Render the styled
+  // segments directly instead.
+  const ansi = hasAnsi(shown);
+
   useEffect(() => {
+    if (ansi) return;
     let cancelled = false;
     if (!effectiveLang) return;
     (async () => {
@@ -262,7 +271,9 @@ function HighlightedBlock({
 
   return (
     <div className="border-t border-surface-800 bg-surface-950">
-      {html ? (
+      {ansi ? (
+        <AnsiBlock text={shown} />
+      ) : html ? (
         <div
           className="overflow-x-auto px-3 py-2 text-xs [&_pre]:!bg-transparent [&_pre]:!m-0 [&_pre]:!p-0"
           dangerouslySetInnerHTML={{ __html: html }}
@@ -283,6 +294,37 @@ function HighlightedBlock({
       )}
     </div>
   );
+}
+
+/** Render text with embedded ANSI SGR codes as styled spans. We use
+ *  `whitespace-pre` (not `pre-wrap`) because terminal output is
+ *  column-sensitive; wrapping mangles tabular layouts like `ps aux`
+ *  or `df -h`. */
+function AnsiBlock({ text }: { text: string }) {
+  const segments = useMemo(() => parseAnsi(text), [text]);
+  return (
+    <pre className="overflow-x-auto px-3 py-2 text-xs font-mono text-text-primary whitespace-pre">
+      {segments.map((seg, i) => (
+        <span key={i} style={ansiSegmentStyle(seg.style)}>
+          {seg.text}
+        </span>
+      ))}
+    </pre>
+  );
+}
+
+function ansiSegmentStyle(style: AnsiStyle): CSSProperties {
+  // Inverse swaps fg/bg before applying.
+  const fg = style.inverse ? style.bg : style.fg;
+  const bg = style.inverse ? style.fg : style.bg;
+  return {
+    color: fg,
+    backgroundColor: bg,
+    fontWeight: style.bold ? 600 : undefined,
+    fontStyle: style.italic ? "italic" : undefined,
+    textDecoration: style.underline ? "underline" : undefined,
+    opacity: style.dim ? 0.65 : undefined,
+  };
 }
 
 /* ── execute (bash) ─────────────────────────────────────────────── */
