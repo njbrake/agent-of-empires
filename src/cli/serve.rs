@@ -8,7 +8,8 @@ use std::sync::Mutex;
 #[derive(Args)]
 pub struct ServeArgs {
     /// Port to listen on
-    #[arg(long, default_value = "8080")]
+    #[cfg_attr(debug_assertions, arg(long, default_value = "8081"))]
+    #[cfg_attr(not(debug_assertions), arg(long, default_value = "8080"))]
     pub port: u16,
 
     /// Host/IP to bind to (use 0.0.0.0 for LAN/VPN access)

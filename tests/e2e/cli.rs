@@ -6,13 +6,8 @@ use crate::harness::{require_tmux, TuiTestHarness};
 
 /// Helper to read a session field from the sessions.json in the harness's isolated home.
 fn read_sessions_json(h: &TuiTestHarness) -> serde_json::Value {
-    let sessions_path = if cfg!(target_os = "linux") {
-        h.home_path()
-            .join(".config/agent-of-empires/profiles/default/sessions.json")
-    } else {
-        h.home_path()
-            .join(".agent-of-empires/profiles/default/sessions.json")
-    };
+    let sessions_path =
+        crate::harness::app_dir_in(h.home_path()).join("profiles/default/sessions.json");
     let content = std::fs::read_to_string(&sessions_path)
         .unwrap_or_else(|e| panic!("failed to read {}: {}", sessions_path.display(), e));
     serde_json::from_str(&content).expect("invalid sessions JSON")
@@ -108,11 +103,7 @@ fn test_cli_add_respects_config_extra_args() {
     let project = h.project_path();
 
     // Write config with agent_extra_args for claude
-    let config_dir = if cfg!(target_os = "linux") {
-        h.home_path().join(".config/agent-of-empires")
-    } else {
-        h.home_path().join(".agent-of-empires")
-    };
+    let config_dir = crate::harness::app_dir_in(h.home_path());
     let config_content = format!(
         r#"[updates]
 check_enabled = false
@@ -152,11 +143,7 @@ fn test_cli_add_respects_config_command_override() {
     let project = h.project_path();
 
     // Write config with agent_command_override for claude
-    let config_dir = if cfg!(target_os = "linux") {
-        h.home_path().join(".config/agent-of-empires")
-    } else {
-        h.home_path().join(".agent-of-empires")
-    };
+    let config_dir = crate::harness::app_dir_in(h.home_path());
     let config_content = format!(
         r#"[updates]
 check_enabled = false
@@ -196,11 +183,7 @@ fn test_cli_add_cli_flags_override_config() {
     let project = h.project_path();
 
     // Write config with agent_extra_args for claude
-    let config_dir = if cfg!(target_os = "linux") {
-        h.home_path().join(".config/agent-of-empires")
-    } else {
-        h.home_path().join(".agent-of-empires")
-    };
+    let config_dir = crate::harness::app_dir_in(h.home_path());
     let config_content = format!(
         r#"[updates]
 check_enabled = false
@@ -255,11 +238,7 @@ fn test_cli_add_respects_default_tool() {
     let h = TuiTestHarness::new("cli_add_default_tool");
     let project = h.project_path();
 
-    let config_dir = if cfg!(target_os = "linux") {
-        h.home_path().join(".config/agent-of-empires")
-    } else {
-        h.home_path().join(".agent-of-empires")
-    };
+    let config_dir = crate::harness::app_dir_in(h.home_path());
     let config_content = format!(
         r#"[updates]
 check_enabled = false
@@ -302,11 +281,7 @@ fn test_cli_add_cmd_overrides_default_tool() {
     let h = TuiTestHarness::new("cli_add_cmd_overrides");
     let project = h.project_path();
 
-    let config_dir = if cfg!(target_os = "linux") {
-        h.home_path().join(".config/agent-of-empires")
-    } else {
-        h.home_path().join(".agent-of-empires")
-    };
+    let config_dir = crate::harness::app_dir_in(h.home_path());
     let config_content = format!(
         r#"[updates]
 check_enabled = false
@@ -351,11 +326,7 @@ fn test_cli_add_respects_yolo_mode_default() {
     let h = TuiTestHarness::new("cli_add_yolo_default");
     let project = h.project_path();
 
-    let config_dir = if cfg!(target_os = "linux") {
-        h.home_path().join(".config/agent-of-empires")
-    } else {
-        h.home_path().join(".agent-of-empires")
-    };
+    let config_dir = crate::harness::app_dir_in(h.home_path());
     let config_content = format!(
         r#"[updates]
 check_enabled = false
@@ -517,7 +488,11 @@ fn test_cli_rename_preserves_tmux_session() {
     let truncated_id = &session_id[..8.min(session_id.len())];
 
     // 3. Compute the tmux session name that aoe would use
-    let old_tmux_name = format!("aoe_OldName_{}", truncated_id);
+    let old_tmux_name = format!(
+        "{}OldName_{}",
+        agent_of_empires::tmux::SESSION_PREFIX,
+        truncated_id
+    );
 
     // Create a real tmux session with that name (simulates a running session)
     let create = Command::new("tmux")
@@ -562,7 +537,11 @@ fn test_cli_rename_preserves_tmux_session() {
     );
 
     // 6. The new tmux session name should exist
-    let new_tmux_name = format!("aoe_NewName_{}", truncated_id);
+    let new_tmux_name = format!(
+        "{}NewName_{}",
+        agent_of_empires::tmux::SESSION_PREFIX,
+        truncated_id
+    );
     let new_exists = Command::new("tmux")
         .args(["has-session", "-t", &new_tmux_name])
         .output()
@@ -669,11 +648,7 @@ fn test_cli_add_workspace_global_hook_fallback() {
 
     // Set up global hooks (no repo config).
     let hook_marker = h.home_path().join("global-hook-ran.marker");
-    let config_dir = if cfg!(target_os = "linux") {
-        h.home_path().join(".config/agent-of-empires")
-    } else {
-        h.home_path().join(".agent-of-empires")
-    };
+    let config_dir = crate::harness::app_dir_in(h.home_path());
     let config_content = format!(
         r#"[updates]
 check_enabled = false

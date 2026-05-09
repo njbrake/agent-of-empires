@@ -53,6 +53,23 @@ use std::time::Duration;
 
 pub const DEFAULT_PROFILE: &str = "default";
 
+/// Linux app dir name (under `$XDG_CONFIG_HOME`). Debug builds use a `-dev`
+/// suffix so a `cargo run` instance shares no state with an installed
+/// release binary.
+pub const APP_DIR_NAME_LINUX: &str = if cfg!(debug_assertions) {
+    "agent-of-empires-dev"
+} else {
+    "agent-of-empires"
+};
+
+/// macOS/Windows app dir name (under `$HOME`). Debug builds use a `-dev`
+/// suffix; see `APP_DIR_NAME_LINUX`.
+pub const APP_DIR_NAME_OTHER: &str = if cfg!(debug_assertions) {
+    ".agent-of-empires-dev"
+} else {
+    ".agent-of-empires"
+};
+
 pub fn get_app_dir() -> Result<PathBuf> {
     let dir = get_app_dir_path()?;
     if !dir.exists() {
@@ -65,12 +82,12 @@ fn get_app_dir_path() -> Result<PathBuf> {
     #[cfg(target_os = "linux")]
     let dir = dirs::config_dir()
         .ok_or_else(|| anyhow::anyhow!("Cannot find config directory"))?
-        .join("agent-of-empires");
+        .join(APP_DIR_NAME_LINUX);
 
     #[cfg(not(target_os = "linux"))]
     let dir = dirs::home_dir()
         .ok_or_else(|| anyhow::anyhow!("Cannot find home directory"))?
-        .join(".agent-of-empires");
+        .join(APP_DIR_NAME_OTHER);
 
     Ok(dir)
 }
@@ -285,9 +302,9 @@ mod tests {
 
     fn app_dir(temp_home: &tempfile::TempDir) -> PathBuf {
         #[cfg(target_os = "linux")]
-        let dir = temp_home.path().join(".config").join("agent-of-empires");
+        let dir = temp_home.path().join(".config").join(APP_DIR_NAME_LINUX);
         #[cfg(not(target_os = "linux"))]
-        let dir = temp_home.path().join(".agent-of-empires");
+        let dir = temp_home.path().join(APP_DIR_NAME_OTHER);
         fs::create_dir_all(&dir).unwrap();
         dir
     }

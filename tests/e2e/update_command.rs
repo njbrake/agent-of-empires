@@ -36,7 +36,11 @@ fn update_calls_brew_when_method_is_homebrew() {
     // Create an isolated config dir with a fake update cache so check_for_update
     // thinks there's a newer version available (without hitting GitHub).
     let config_home = tempfile::tempdir().unwrap();
-    let app_dir = config_home.path().join("agent-of-empires");
+    // The binary under test is built in debug mode, so it resolves the app
+    // dir to the `-dev` namespace.
+    let app_dir = config_home
+        .path()
+        .join(agent_of_empires::session::APP_DIR_NAME_LINUX);
     fs::create_dir_all(&app_dir).unwrap();
 
     let cache = serde_json::json!({

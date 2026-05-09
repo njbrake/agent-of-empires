@@ -27,9 +27,24 @@ use std::process::Command;
 use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
-pub const SESSION_PREFIX: &str = "aoe_";
-pub const TERMINAL_PREFIX: &str = "aoe_term_";
-pub const CONTAINER_TERMINAL_PREFIX: &str = "aoe_cterm_";
+// Debug builds use `aoe_dev_*` prefixes so `cargo run` and an installed
+// release `aoe` can coexist on the same tmux server without seeing each
+// other's sessions.
+pub const SESSION_PREFIX: &str = if cfg!(debug_assertions) {
+    "aoe_dev_"
+} else {
+    "aoe_"
+};
+pub const TERMINAL_PREFIX: &str = if cfg!(debug_assertions) {
+    "aoe_dev_term_"
+} else {
+    "aoe_term_"
+};
+pub const CONTAINER_TERMINAL_PREFIX: &str = if cfg!(debug_assertions) {
+    "aoe_dev_cterm_"
+} else {
+    "aoe_cterm_"
+};
 
 /// Pre-fetched pane metadata from a single `tmux list-panes -a` call.
 #[derive(Debug, Clone)]
@@ -271,55 +286,54 @@ impl AvailableTools {
 mod tests {
     use super::*;
 
+    // Session names embed `SESSION_PREFIX`, which differs between release
+    // (`aoe_`) and debug (`aoe_dev_`) builds. Use the constant so the same
+    // test bodies cover both.
+    const P: &str = SESSION_PREFIX;
+
     #[test]
     fn test_parse_pane_metadata_basic() {
-        let output = "aoe_my_proj_abc12345|0|0|claude\n";
-        let map = parse_pane_metadata(output);
+        let output = format!("{P}my_proj_abc12345|0|0|claude\n");
+        let map = parse_pane_metadata(&output);
         assert_eq!(map.len(), 1);
-        let meta = map.get("aoe_my_proj_abc12345").unwrap();
+        let meta = map.get(&format!("{P}my_proj_abc12345")).unwrap();
         assert!(!meta.pane_dead);
         assert_eq!(meta.pane_current_command.as_deref(), Some("claude"));
     }
 
     #[test]
     fn test_parse_pane_metadata_dead_pane() {
-        let output = "aoe_proj_abc12345|0|1|bash\n";
-        let map = parse_pane_metadata(output);
-        let meta = map.get("aoe_proj_abc12345").unwrap();
+        let output = format!("{P}proj_abc12345|0|1|bash\n");
+        let map = parse_pane_metadata(&output);
+        let meta = map.get(&format!("{P}proj_abc12345")).unwrap();
         assert!(meta.pane_dead);
     }
 
     #[test]
     fn test_parse_pane_metadata_filters_non_aoe_sessions() {
-        let output = "\
-user_session|0|0|bash\n\
-aoe_proj_abc12345|0|0|claude\n\
-my_tmux|0|0|vim\n";
-        let map = parse_pane_metadata(output);
+        let output =
+            format!("user_session|0|0|bash\n{P}proj_abc12345|0|0|claude\nmy_tmux|0|0|vim\n");
+        let map = parse_pane_metadata(&output);
         assert_eq!(map.len(), 1);
-        assert!(map.contains_key("aoe_proj_abc12345"));
+        assert!(map.contains_key(&format!("{P}proj_abc12345")));
     }
 
     #[test]
     fn test_parse_pane_metadata_filters_non_zero_panes() {
-        let output = "\
-aoe_proj_abc12345|0|0|claude\n\
-aoe_proj_abc12345|1|0|bash\n";
-        let map = parse_pane_metadata(output);
+        let output = format!("{P}proj_abc12345|0|0|claude\n{P}proj_abc12345|1|0|bash\n");
+        let map = parse_pane_metadata(&output);
         assert_eq!(map.len(), 1);
-        let meta = map.get("aoe_proj_abc12345").unwrap();
+        let meta = map.get(&format!("{P}proj_abc12345")).unwrap();
         assert_eq!(meta.pane_current_command.as_deref(), Some("claude"));
     }
 
     #[test]
     fn test_parse_pane_metadata_first_window_wins() {
         // Two windows both have pane 0, first window's data should be kept
-        let output = "\
-aoe_proj_abc12345|0|0|claude\n\
-aoe_proj_abc12345|0|1|bash\n";
-        let map = parse_pane_metadata(output);
+        let output = format!("{P}proj_abc12345|0|0|claude\n{P}proj_abc12345|0|1|bash\n");
+        let map = parse_pane_metadata(&output);
         assert_eq!(map.len(), 1);
-        let meta = map.get("aoe_proj_abc12345").unwrap();
+        let meta = map.get(&format!("{P}proj_abc12345")).unwrap();
         assert!(!meta.pane_dead);
         assert_eq!(meta.pane_current_command.as_deref(), Some("claude"));
     }
@@ -331,45 +345,41 @@ aoe_proj_abc12345|0|1|bash\n";
 
     #[test]
     fn test_parse_pane_metadata_malformed_lines() {
-        let output = "\
-too|few|fields\n\
-aoe_proj_abc12345|0|0|claude\n\
-\n";
-        let map = parse_pane_metadata(output);
+        let output = format!("too|few|fields\n{P}proj_abc12345|0|0|claude\n\n");
+        let map = parse_pane_metadata(&output);
         assert_eq!(map.len(), 1);
     }
 
     #[test]
     fn test_parse_pane_metadata_empty_command() {
-        let output = "aoe_proj_abc12345|0|0|\n";
-        let map = parse_pane_metadata(output);
-        let meta = map.get("aoe_proj_abc12345").unwrap();
+        let output = format!("{P}proj_abc12345|0|0|\n");
+        let map = parse_pane_metadata(&output);
+        let meta = map.get(&format!("{P}proj_abc12345")).unwrap();
         assert!(meta.pane_current_command.is_none());
     }
 
     #[test]
     fn test_parse_pane_metadata_multiple_sessions() {
-        let output = "\
-aoe_proj_a_abc12345|0|0|claude\n\
-aoe_proj_b_def67890|0|0|opencode\n\
-aoe_proj_c_ghi11111|0|1|bash\n";
-        let map = parse_pane_metadata(output);
+        let output = format!(
+            "{P}proj_a_abc12345|0|0|claude\n{P}proj_b_def67890|0|0|opencode\n{P}proj_c_ghi11111|0|1|bash\n"
+        );
+        let map = parse_pane_metadata(&output);
         assert_eq!(map.len(), 3);
         assert_eq!(
-            map.get("aoe_proj_a_abc12345")
+            map.get(&format!("{P}proj_a_abc12345"))
                 .unwrap()
                 .pane_current_command
                 .as_deref(),
             Some("claude")
         );
         assert_eq!(
-            map.get("aoe_proj_b_def67890")
+            map.get(&format!("{P}proj_b_def67890"))
                 .unwrap()
                 .pane_current_command
                 .as_deref(),
             Some("opencode")
         );
-        assert!(map.get("aoe_proj_c_ghi11111").unwrap().pane_dead);
+        assert!(map.get(&format!("{P}proj_c_ghi11111")).unwrap().pane_dead);
     }
 
     fn tmux_available() -> bool {
