@@ -42,6 +42,7 @@ pub struct CockpitBroadcastFrame {
 }
 
 use crate::session::Instance;
+use crate::session::Status;
 use crate::session::Storage;
 
 use self::rate_limit::RateLimiter;
@@ -770,6 +771,18 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
         status_poll_loop(poll_state).await;
     });
 
+    // Cockpit status listener: cockpit-mode sessions skip the
+    // tmux-based status poll entirely (status_poll_loop short-circuits
+    // on `inst.cockpit_mode`), so without this they'd be stuck on
+    // whatever status they had at construction. Mirror ACP events
+    // into the regular Status enum so the sidebar / dashboard light up.
+    {
+        let cockpit_status_state = state.clone();
+        tokio::spawn(async move {
+            cockpit_status_listener(cockpit_status_state).await;
+        });
+    }
+
     // Push-notification consumer: subscribes to status_tx, applies
     // dwell + cooldown, sends pushes. No-op when push_state is None
     // (feature disabled via web.notifications_enabled=false).
@@ -1493,9 +1506,128 @@ async fn status_poll_loop(state: Arc<AppState>) {
     }
 }
 
+/// Listen on the cockpit broadcast and translate ACP events into
+/// `Status` transitions on the matching `Instance`. Cockpit-mode
+/// sessions skip the tmux-based `update_status_with_metadata` path,
+/// so without this they'd render a static "Idle" indicator in the
+/// sidebar regardless of what the agent is actually doing. Status
+/// changes are also forwarded over `state.status_tx` so the dashboard
+/// + push notification consumer see them like any other transition.
+#[cfg(feature = "serve")]
+async fn cockpit_status_listener(state: Arc<AppState>) {
+    let mut rx = state.cockpit_events_tx.subscribe();
+    while let Ok(frame) = rx.recv().await {
+        let Some(target) = derive_cockpit_status(&frame.event) else {
+            continue;
+        };
+        let mut instances = state.instances.write().await;
+        let Some(inst) = instances.iter_mut().find(|i| i.id == frame.session_id) else {
+            continue;
+        };
+        if !inst.cockpit_mode {
+            continue;
+        }
+        // Don't fight terminal lifecycle states. Cockpit events keep
+        // arriving for a few ticks after a Stop/Delete, and we don't
+        // want the spinner to flicker back to Running.
+        if matches!(
+            inst.status,
+            Status::Stopped | Status::Deleting | Status::Creating
+        ) {
+            continue;
+        }
+        if inst.status == target {
+            continue;
+        }
+        let prev = inst.status;
+        inst.status = target;
+        let now = chrono::Utc::now();
+        inst.last_accessed_at = Some(now);
+        inst.idle_entered_at = if target == Status::Idle {
+            Some(now)
+        } else {
+            None
+        };
+        let _ = state.status_tx.send(StatusChange {
+            instance_id: inst.id.clone(),
+            instance_title: inst.title.clone(),
+            old: prev,
+            new: target,
+            at: now,
+        });
+    }
+}
+
+/// Map a cockpit broadcast event JSON to the `Status` it implies.
+/// `None` means the event is informational and shouldn't move the
+/// session out of its current state.
+#[cfg(feature = "serve")]
+fn derive_cockpit_status(event: &serde_json::Value) -> Option<Status> {
+    let map = event.as_object()?;
+    if map.contains_key("UserPromptSent") || map.contains_key("ApprovalResolved") {
+        return Some(Status::Running);
+    }
+    if map.contains_key("ApprovalRequested") {
+        return Some(Status::Waiting);
+    }
+    if map.contains_key("Stopped") {
+        return Some(Status::Idle);
+    }
+    if map.contains_key("AgentStartupError") {
+        return Some(Status::Error);
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "serve")]
+    #[test]
+    fn derive_cockpit_status_maps_terminal_events() {
+        use serde_json::json;
+        assert_eq!(
+            derive_cockpit_status(&json!({"UserPromptSent": {"text": "hi"}})),
+            Some(Status::Running)
+        );
+        assert_eq!(
+            derive_cockpit_status(&json!({"ApprovalRequested": {"approval": {}}})),
+            Some(Status::Waiting)
+        );
+        assert_eq!(
+            derive_cockpit_status(
+                &json!({"ApprovalResolved": {"nonce": "x", "decision": "Allow"}})
+            ),
+            Some(Status::Running)
+        );
+        assert_eq!(
+            derive_cockpit_status(&json!({"Stopped": {"reason": "prompt_complete"}})),
+            Some(Status::Idle)
+        );
+        assert_eq!(
+            derive_cockpit_status(&json!({"AgentStartupError": {"message": "boom"}})),
+            Some(Status::Error)
+        );
+    }
+
+    #[cfg(feature = "serve")]
+    #[test]
+    fn derive_cockpit_status_ignores_streaming_and_string_events() {
+        use serde_json::json;
+        // Mid-turn events that shouldn't move the session out of Running.
+        assert_eq!(
+            derive_cockpit_status(&json!({"AgentMessageChunk": {"text": "x"}})),
+            None
+        );
+        assert_eq!(
+            derive_cockpit_status(&json!({"ToolCallStarted": {"tool_call": {}}})),
+            None
+        );
+        // Bare string variants (ThinkingStarted / ThinkingEnded) are
+        // serialised as JSON strings, not objects — must not match.
+        assert_eq!(derive_cockpit_status(&json!("ThinkingStarted")), None);
+    }
 
     #[test]
     fn generate_token_correct_length_and_charset() {
