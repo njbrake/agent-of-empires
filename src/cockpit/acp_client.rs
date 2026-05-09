@@ -1023,6 +1023,16 @@ async fn run_connection_task<W, R>(
                         stored_id = %stored,
                         "resuming session via session/load"
                     );
+                    // Set the flag BEFORE sending the request: claude-agent-acp
+                    // re-emits the prior transcript via session/update
+                    // notifications *during* the load handshake, before the
+                    // LoadSessionRequest response returns. Setting after .await
+                    // would let those notifications leak through to the event
+                    // store and produce duplicate ToolCallStarted rows on the
+                    // next reload (assistant-ui then panics with "Duplicate
+                    // key toolCallId-..."). Cleared on Err below if we fall
+                    // back to session/new, which has no replay payload.
+                    suppress_for_block.store(true, Ordering::Relaxed);
                     let req = LoadSessionRequest::new(stored.clone(), cwd.clone());
                     match connection.send_request(req).block_task().await {
                         Ok(_resp) => {
@@ -1032,11 +1042,6 @@ async fn run_connection_task<W, R>(
                                 stored_id = %stored,
                                 "session/load succeeded; suppressing post-load history replay"
                             );
-                            // Block agent-side history-dump notifications
-                            // until the user issues their first prompt.
-                            // See `suppress_history_replay` declaration
-                            // above for rationale.
-                            suppress_for_block.store(true, Ordering::Relaxed);
                             acp_session_id = Some(SessionId::from(stored));
                         }
                         Err(e) => {
@@ -1046,6 +1051,7 @@ async fn run_connection_task<W, R>(
                                 stored_id = %stored,
                                 "session/load failed, falling back to session/new: {e}"
                             );
+                            suppress_for_block.store(false, Ordering::Relaxed);
                             let _ = event_tx_for_block
                                 .send(Event::SessionContextReset {
                                     reason: format!("session/load failed: {e}"),

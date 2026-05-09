@@ -289,6 +289,23 @@ export function applyEvent(
   if ("ToolCallStarted" in event) {
     const tc = event.ToolCallStarted.tool_call;
     next.inFlightTool = tc;
+    // Skip duplicate tool_start rows. SQLite stores accumulated from
+    // pre-fix runs (where post-load history-replay leaked through) can
+    // contain the same tool_call_id twice; rendering both makes
+    // assistant-ui's tapResources throw "Duplicate key" and crash the
+    // panel. Patch the existing row in place instead.
+    const existing = next.activity.findIndex(
+      (r) => r.kind === "tool_start" && r.toolCallId === tc.id,
+    );
+    if (existing >= 0) {
+      const prev = next.activity[existing];
+      if (prev) {
+        const copy = next.activity.slice();
+        copy[existing] = { ...prev, tool: tc, text: tc.name };
+        next.activity = copy;
+      }
+      return next;
+    }
     next.activity = pushActivity(next.activity, {
       id: `start-${tc.id}`,
       kind: "tool_start",
