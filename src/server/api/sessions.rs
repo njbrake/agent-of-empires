@@ -722,6 +722,7 @@ pub async fn create_session(
         let build_result = builder::build_instance(params, &title_refs, &branch_refs, &profile)?;
         let mut instance = build_result.instance;
         instance.source_profile = profile.clone();
+        let build_warnings = build_result.warnings;
 
         // Apply per-session sandbox overrides from the request body.
         if let Some(ref mut sandbox) = instance.sandbox_info {
@@ -761,12 +762,12 @@ pub async fn create_session(
             instance.start()?;
         }
 
-        Ok::<Instance, anyhow::Error>(instance)
+        Ok::<(Instance, Vec<String>), anyhow::Error>((instance, build_warnings))
     })
     .await;
 
     match result {
-        Ok(Ok(instance)) => {
+        Ok(Ok((instance, warnings))) => {
             let resp = SessionResponse::from_instance(
                 &instance,
                 crate::claude_settings::read_tui_fullscreen(),
@@ -811,11 +812,22 @@ pub async fn create_session(
                 });
             }
 
-            (
-                StatusCode::CREATED,
-                Json(serde_json::to_value(resp).expect("SessionResponse is always serializable")),
-            )
-                .into_response()
+            let mut body =
+                serde_json::to_value(resp).expect("SessionResponse is always serializable");
+            if !warnings.is_empty() {
+                if let Some(obj) = body.as_object_mut() {
+                    obj.insert(
+                        "warnings".to_string(),
+                        serde_json::Value::Array(
+                            warnings
+                                .into_iter()
+                                .map(serde_json::Value::String)
+                                .collect(),
+                        ),
+                    );
+                }
+            }
+            (StatusCode::CREATED, Json(body)).into_response()
         }
         Ok(Err(e)) => {
             tracing::warn!("Session creation failed: {}", e);

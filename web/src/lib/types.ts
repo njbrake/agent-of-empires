@@ -38,6 +38,10 @@ export interface SessionResponse {
   claude_fullscreen: boolean;
   /** Repos in the multi-repo workspace. Empty array for single-repo sessions. */
   workspace_repos: WorkspaceRepoSummary[];
+  /** Non-fatal warnings emitted during worktree creation (e.g. post-checkout
+   *  hook failures where the worktree was created successfully anyway). Only
+   *  populated on the create-session response; absent on subsequent fetches. */
+  warnings?: string[];
 }
 
 export interface WorkspaceRepoSummary {

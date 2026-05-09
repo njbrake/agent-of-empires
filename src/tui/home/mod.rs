@@ -912,6 +912,7 @@ impl HomeView {
                 session_id,
                 instance,
                 on_launch_hooks_ran,
+                warnings,
                 ..
             } => {
                 // Remove the stub instance
@@ -954,6 +955,17 @@ impl HomeView {
                     tracing::warn!("Failed to reload session state: {e}");
                 }
                 self.new_dialog = None;
+
+                if !warnings.is_empty() {
+                    let body = warnings.join("\n\n");
+                    self.info_dialog = Some(InfoDialog::new(
+                        "Worktree warnings",
+                        &format!(
+                            "Session was created, but the following warnings were emitted during worktree setup:\n\n{}",
+                            body
+                        ),
+                    ));
+                }
 
                 Some(session_id)
             }
