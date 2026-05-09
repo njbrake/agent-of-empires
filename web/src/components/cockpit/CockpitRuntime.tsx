@@ -157,6 +157,14 @@ export function activityToThreadMessages(
     } else if (row.kind === "thinking") {
       // Thinking is rendered by the global rattle spinner, not the
       // message stream.
+    } else if (row.kind === "empty_output") {
+      // Synthesised when the agent finished a turn without emitting any
+      // text or tool calls (e.g. interactive-only slash commands like
+      // /usage, /status, /memory in claude-agent-acp — see upstream
+      // issue agentclientprotocol/claude-agent-acp#642). Surface it as
+      // a tiny muted notice instead of leaving the assistant bubble
+      // empty.
+      currentAssistant.appendText(`_${row.text}_`);
     } else {
       // Unknown kind: surface as a tiny text part so we don't lose
       // the data, but don't make it the whole message.

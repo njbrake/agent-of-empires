@@ -343,3 +343,70 @@ describe("applyEvent / AvailableCommandsUpdated", () => {
     expect(s2.availableCommands[0].accepts_input).toBe(true);
   });
 });
+
+describe("applyEvent / Stopped empty-output fallback", () => {
+  it("appends an empty_output row when the turn ended with no agent output", () => {
+    let state = applyEvent(emptyCockpitState(), {
+      session_id: "s-1",
+      seq: 1,
+      event: { UserPromptSent: { text: "/usage" } },
+    });
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 2,
+      event: { Stopped: {} },
+    });
+    const last = state.activity[state.activity.length - 1];
+    expect(last?.kind).toBe("empty_output");
+    expect(last?.text).toContain("no output");
+    expect(state.turnActive).toBe(false);
+  });
+
+  it("does not append the notice when the agent emitted a message", () => {
+    let state = applyEvent(emptyCockpitState(), {
+      session_id: "s-1",
+      seq: 1,
+      event: { UserPromptSent: { text: "/context" } },
+    });
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 2,
+      event: { AgentMessageChunk: { text: "Context Usage" } },
+    });
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 3,
+      event: { Stopped: {} },
+    });
+    expect(state.activity.find((r) => r.kind === "empty_output")).toBeUndefined();
+  });
+
+  it("does not append the notice when a tool call ran during the turn", () => {
+    let state = applyEvent(emptyCockpitState(), {
+      session_id: "s-1",
+      seq: 1,
+      event: { UserPromptSent: { text: "do a thing" } },
+    });
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 2,
+      event: {
+        ToolCallStarted: {
+          tool_call: {
+            id: "t1",
+            name: "Bash",
+            kind: "execute",
+            args_preview: "{}",
+            started_at: new Date().toISOString(),
+          },
+        },
+      },
+    });
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 3,
+      event: { Stopped: {} },
+    });
+    expect(state.activity.find((r) => r.kind === "empty_output")).toBeUndefined();
+  });
+});

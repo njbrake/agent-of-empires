@@ -218,7 +218,8 @@ export interface ActivityRow {
     | "tool_error"
     | "message"
     | "thinking"
-    | "user_prompt";
+    | "user_prompt"
+    | "empty_output";
   text: string;
   toolCallId?: string;
   /** Full ToolCall payload, present on tool_start rows so the UI can
@@ -429,6 +430,43 @@ export function applyEvent(
     // turn-active flag so the global "working" spinner stops.
     next.inFlightTool = null;
     next.turnActive = false;
+    // Some upstream slash commands (e.g. /usage, /status, /memory in
+    // claude-agent-acp) advertise via available_commands_update but
+    // produce no agent_message_chunk and no tool calls when invoked —
+    // see https://github.com/agentclientprotocol/claude-agent-acp/issues/642.
+    // Detect that case and append a notice row so the user sees the turn
+    // ran rather than silent dead air. Walk back to the last user_prompt;
+    // if no message/tool/thinking row appeared between it and now, the
+    // turn was a no-op.
+    let sawOutput = false;
+    let sawPrompt = false;
+    for (let i = next.activity.length - 1; i >= 0; i--) {
+      const r = next.activity[i];
+      if (!r) continue;
+      if (r.kind === "user_prompt") {
+        sawPrompt = true;
+        break;
+      }
+      if (
+        r.kind === "message" ||
+        r.kind === "tool_start" ||
+        r.kind === "tool_complete" ||
+        r.kind === "tool_error" ||
+        r.kind === "thinking" ||
+        r.kind === "empty_output"
+      ) {
+        sawOutput = true;
+        break;
+      }
+    }
+    if (sawPrompt && !sawOutput) {
+      next.activity = pushActivity(next.activity, {
+        id: `empty-${frame.seq}`,
+        kind: "empty_output",
+        text: "Command produced no output.",
+        at: new Date().toISOString(),
+      });
+    }
     return next;
   }
   if ("AgentStartupError" in event) {
