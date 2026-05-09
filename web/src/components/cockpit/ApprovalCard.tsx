@@ -10,7 +10,7 @@
 // Optimistic state shows a spinner until the server's broadcast removes
 // the approval from CockpitState.pendingApprovals.
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, Check, Shield, X } from "lucide-react";
 import type { Approval, ApprovalDecision } from "../../lib/cockpitTypes";
 
@@ -114,9 +114,7 @@ export function ApprovalCard({ approval, onResolve }: Props) {
         </span>
       </div>
 
-      <pre className="border-b border-surface-800/60 bg-surface-950 px-3 py-2 font-mono text-[11px] text-text-muted whitespace-pre-wrap break-all max-h-32 overflow-y-auto">
-        {approval.tool_call.args_preview}
-      </pre>
+      <ArgsView raw={approval.tool_call.args_preview} />
 
       {phase === "rolled-back" && (
         <p className="px-3 pt-2 text-rose-400 text-xs">
@@ -209,5 +207,66 @@ export function ApprovalCard({ approval, onResolve }: Props) {
         </button>
       </div>
     </div>
+  );
+}
+
+// Maps a JSON args_preview to a definition list. Falls back to a raw
+// <pre> when the payload doesn't parse as a plain object — preserves the
+// original behaviour for arrays, primitives, and truncated previews
+// (preview_args appends a "[truncated]" suffix that breaks JSON.parse).
+function ArgsView({ raw }: { raw: string }) {
+  const parsed = useMemo(() => parseObject(raw), [raw]);
+
+  if (!parsed) {
+    return (
+      <pre className="border-b border-surface-800/60 bg-surface-950 px-3 py-2 font-mono text-[11px] text-text-muted whitespace-pre-wrap break-all max-h-32 overflow-y-auto">
+        {raw}
+      </pre>
+    );
+  }
+
+  const entries = Object.entries(parsed).filter(([k]) => !k.startsWith("_aoe_"));
+  if (entries.length === 0) return null;
+
+  return (
+    <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1.5 border-b border-surface-800/60 bg-surface-950 px-3 py-2.5 max-h-48 overflow-y-auto text-xs">
+      {entries.map(([k, v]) => (
+        <Fragment key={k}>
+          <dt className="font-mono text-[10px] uppercase tracking-wider text-text-dim self-start pt-0.5">
+            {k}
+          </dt>
+          <dd className="font-mono text-text-secondary break-all whitespace-pre-wrap min-w-0">
+            <ArgValue value={v} />
+          </dd>
+        </Fragment>
+      ))}
+    </dl>
+  );
+}
+
+function parseObject(raw: string): Record<string, unknown> | null {
+  try {
+    const v = JSON.parse(raw);
+    return v && typeof v === "object" && !Array.isArray(v)
+      ? (v as Record<string, unknown>)
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+function ArgValue({ value }: { value: unknown }) {
+  if (value === null) return <span className="text-text-dim italic">null</span>;
+  if (value === undefined) return <span className="text-text-dim italic">—</span>;
+  if (typeof value === "string") {
+    return <>{value}</>;
+  }
+  if (typeof value === "number" || typeof value === "boolean") {
+    return <span className="text-amber-300">{String(value)}</span>;
+  }
+  return (
+    <pre className="font-mono text-[11px] text-text-muted whitespace-pre-wrap break-all m-0">
+      {JSON.stringify(value, null, 2)}
+    </pre>
   );
 }
