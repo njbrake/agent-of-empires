@@ -164,18 +164,50 @@ body {
   margin: 0.75rem 0;
 }
 .cockpit-markdown table {
-  margin: 0.5rem 0;
-  font-size: 0.875rem;
+  display: block;
+  width: max-content;
+  max-width: 100%;
+  margin: 0.75rem 0;
   border-collapse: collapse;
+  border: 1px solid var(--color-surface-800);
+  border-radius: 0.375rem;
+  overflow: auto;
+  max-height: 24rem;
+}
+.cockpit-markdown thead {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--color-surface-900);
 }
 .cockpit-markdown th {
   text-align: left;
+  padding: 0.375rem 0.625rem;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--color-text-dim);
   border-bottom: 1px solid var(--color-surface-700);
-  padding: 0.25rem 0.5rem;
+  white-space: nowrap;
 }
 .cockpit-markdown td {
-  border-bottom: 1px solid rgba(28, 28, 31, 0.6);
-  padding: 0.25rem 0.5rem;
+  padding: 0.3125rem 0.625rem;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  vertical-align: top;
+  white-space: nowrap;
+  color: var(--color-text-secondary);
+  border-bottom: 1px solid rgba(28, 28, 31, 0.5);
+}
+.cockpit-markdown tbody tr:nth-child(even) {
+  background: rgba(28, 28, 31, 0.3);
+}
+.cockpit-markdown tbody tr:hover {
+  background: var(--color-surface-800);
+}
+.cockpit-markdown tbody tr:last-child td {
+  border-bottom: none;
 }
 
 /* Subtle scrollbar styling */
