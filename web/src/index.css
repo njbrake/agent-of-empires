@@ -139,6 +139,16 @@ body {
   font-style: italic;
   margin: 0.5rem 0;
 }
+.cockpit-markdown blockquote.cockpit-callout-warn {
+  border-left: 3px solid #f59e0b;
+  background: rgb(245 158 11 / 0.08);
+  color: #fcd34d;
+  font-style: normal;
+  padding: 0.5rem 0.75rem;
+  border-radius: 0.25rem;
+}
+.cockpit-markdown blockquote.cockpit-callout-warn p { margin: 0; }
+.cockpit-markdown blockquote.cockpit-callout-warn strong { color: #fde68a; }
 .cockpit-markdown :where(p, li) > code {
   background: var(--color-surface-800);
   padding: 0 0.25rem;

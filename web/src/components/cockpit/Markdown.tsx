@@ -46,9 +46,44 @@ export function Markdown({ text }: Props) {
         SyntaxHighlighter: ShikiSyntaxHighlighter,
         CodeHeader,
         table: TableWithScroll,
+        blockquote: Blockquote,
       }}
     />
   );
+}
+
+/**
+ * Blockquote with a "warning callout" variant. When the rendered text
+ * starts with the ⚠️ marker (used today by the cockpit `context_reset`
+ * synthetic message — see CockpitRuntime.tsx), apply an amber-tinted
+ * variant so the notice stands out from the surrounding transcript.
+ * Plain agent-emitted blockquotes keep the default muted style.
+ */
+function Blockquote({
+  children,
+  ...rest
+}: React.ComponentPropsWithoutRef<"blockquote">) {
+  const text = childrenText(children);
+  const warn = text.trimStart().startsWith("⚠️");
+  return (
+    <blockquote
+      {...rest}
+      className={warn ? "cockpit-callout-warn" : undefined}
+    >
+      {children}
+    </blockquote>
+  );
+}
+
+function childrenText(children: React.ReactNode): string {
+  if (typeof children === "string") return children;
+  if (typeof children === "number") return String(children);
+  if (Array.isArray(children)) return children.map(childrenText).join("");
+  if (React.isValidElement(children)) {
+    const props = children.props as { children?: React.ReactNode };
+    return childrenText(props.children);
+  }
+  return "";
 }
 
 /**

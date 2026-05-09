@@ -140,6 +140,29 @@ export function activityToThreadMessages(
       continue;
     }
 
+    if (row.kind === "context_reset") {
+      // session/load failed and the agent fell back to session/new on
+      // an `aoe serve` restart, so the model's context window is empty
+      // even though our UI still replays the prior transcript. Render
+      // as a dedicated assistant bubble so it doesn't run on from any
+      // prior message, and use a blockquote with a ⚠️ prefix so the
+      // custom Markdown blockquote component can style it as an amber
+      // callout (see Markdown.tsx).
+      flushAssistant();
+      messages.push({
+        id: `assistant-${row.id}`,
+        role: "assistant",
+        content: [
+          {
+            type: "text",
+            text: `> ⚠️ **Conversation context reset** — ${row.text}`,
+          },
+        ],
+        createdAt: parseDate(row.at),
+      });
+      continue;
+    }
+
     if (!currentAssistant) {
       currentAssistant = new AssistantBuilder(row.id, row.at);
     }
@@ -165,12 +188,6 @@ export function activityToThreadMessages(
       // a tiny muted notice instead of leaving the assistant bubble
       // empty.
       currentAssistant.appendText(`_${row.text}_`);
-    } else if (row.kind === "context_reset") {
-      // session/load failed and the agent fell back to session/new on
-      // an `aoe serve` restart, so the model's context window is empty
-      // even though our UI still replays the prior transcript. Show a
-      // muted notice so users know the agent has lost prior turns.
-      currentAssistant.appendText(`_Conversation context reset — ${row.text}_`);
     } else {
       // Unknown kind: surface as a tiny text part so we don't lose
       // the data, but don't make it the whole message.
