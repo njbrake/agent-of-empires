@@ -204,6 +204,20 @@ function CopyButton({ text }: { text: string }) {
 
 /* ── Highlighted code block (used by Read, Edit, Execute output) ── */
 
+/** If the input is a single outer markdown code fence (```lang ... ```),
+ *  strip the fence and return the inner body plus the fence's language
+ *  hint. Tool output emitted by ACP agents (Claude in particular) is
+ *  routinely pre-wrapped in fenced blocks like ```console ...``` — left
+ *  un-stripped, the cards render literal backticks above the content. */
+function unwrapMarkdownFence(text: string): {
+  text: string;
+  lang: string | null;
+} {
+  const m = text.match(/^```([\w+-]+)?\s*\n([\s\S]*?)\n```\s*$/);
+  if (!m) return { text, lang: null };
+  return { text: m[2] ?? "", lang: m[1] ?? null };
+}
+
 function HighlightedBlock({
   text,
   language,
@@ -215,14 +229,20 @@ function HighlightedBlock({
 }) {
   const [html, setHtml] = useState<string | null>(null);
   const [showAll, setShowAll] = useState(false);
-  const { shown, truncated } = truncateLines(text, showAll ? 1_000_000 : maxLines);
+  const unwrapped = unwrapMarkdownFence(text);
+  const effectiveText = unwrapped.text;
+  const effectiveLang = unwrapped.lang ?? language;
+  const { shown, truncated } = truncateLines(
+    effectiveText,
+    showAll ? 1_000_000 : maxLines,
+  );
 
   useEffect(() => {
     let cancelled = false;
-    if (!language) return;
+    if (!effectiveLang) return;
     (async () => {
       try {
-        const langKey = langKeyForExt(language) ?? language;
+        const langKey = langKeyForExt(effectiveLang) ?? effectiveLang;
         await loadLanguage(langKey);
         const hl = await getHighlighter();
         if (cancelled) return;
@@ -238,7 +258,7 @@ function HighlightedBlock({
     return () => {
       cancelled = true;
     };
-  }, [language, shown]);
+  }, [effectiveLang, shown]);
 
   return (
     <div className="border-t border-surface-800 bg-surface-950">
@@ -283,7 +303,7 @@ function ExecuteToolCard({ tool, result }: Props) {
   const meta =
     output && status !== "running" ? (
       <span className="hidden md:inline text-[11px] text-text-dim">
-        {output.split("\n").length} lines
+        {unwrapMarkdownFence(output).text.split("\n").length} lines
       </span>
     ) : undefined;
 

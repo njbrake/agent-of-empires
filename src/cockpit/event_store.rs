@@ -306,6 +306,7 @@ fn event_kind(event: &Event) -> &'static str {
         Event::TodoListUpdated { .. } => "todo_list_updated",
         Event::ToolCallStarted { .. } => "tool_call_started",
         Event::ToolCallCompleted { .. } => "tool_call_completed",
+        Event::ToolCallContent { .. } => "tool_call_content",
         Event::ApprovalRequested { .. } => "approval_requested",
         Event::ApprovalResolved { .. } => "approval_resolved",
         Event::DiffEmitted { .. } => "diff_emitted",

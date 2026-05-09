@@ -175,6 +175,24 @@ pub enum Event {
     ToolCallCompleted {
         tool_call_id: String,
         is_error: bool,
+        /// Final textual output extracted from ACP `ToolCallUpdate.fields.content`
+        /// (concat of all `ToolCallContent::Content(Text(_))` blocks). Empty
+        /// when the agent emits no content blocks on completion. Renderers
+        /// fall back to a status word ("completed" / "tool failed") when this
+        /// is empty so cards still convey state.
+        #[serde(default)]
+        content: String,
+    },
+    /// Streaming tool output. Some agents emit `ToolCallUpdate` notifications
+    /// with `status != Completed` but populated `fields.content` to stream
+    /// stdout/stderr while the call is still running. Each event carries the
+    /// LATEST full content snapshot for that call (per ACP, the content
+    /// field is a replacement, not an append). Reducer buffers it keyed by
+    /// tool_call_id; on completion the buffer is used if the final update
+    /// shipped no content of its own.
+    ToolCallContent {
+        tool_call_id: String,
+        content: String,
     },
     ApprovalRequested {
         approval: Approval,
@@ -260,6 +278,7 @@ impl CockpitState {
                     self.in_flight_tool = None;
                 }
             }
+            Event::ToolCallContent { .. } => {}
             Event::ApprovalRequested { approval } => self.pending_approvals.push(approval),
             Event::ApprovalResolved { ref nonce, .. } => {
                 let pos = self
@@ -377,6 +396,7 @@ mod tests {
         s.apply_event(Event::ToolCallCompleted {
             tool_call_id: "tc-1".into(),
             is_error: false,
+            content: String::new(),
         })
         .unwrap();
         assert!(s.in_flight_tool.is_none());

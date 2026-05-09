@@ -114,6 +114,122 @@ describe("applyEvent / UserPromptSent", () => {
     expect(next.turnActive).toBe(true);
   });
 
+  it("renders tool output from ToolCallCompleted.content", () => {
+    // Most agents (Claude's claude-agent-acp included) ship the tool's
+    // textual output on the *completion* update via fields.content. If
+    // we lose this, the bash card body literally reads "completed".
+    let state = applyEvent(emptyCockpitState(), {
+      session_id: "s-1",
+      seq: 1,
+      event: {
+        ToolCallStarted: {
+          tool_call: {
+            id: "tc-bash",
+            name: "Terminal",
+            kind: "execute",
+            args_preview: "{}",
+            started_at: new Date().toISOString(),
+          },
+        },
+      },
+    });
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 2,
+      event: {
+        ToolCallCompleted: {
+          tool_call_id: "tc-bash",
+          is_error: false,
+          content: "abc1234 first commit\ndef5678 second commit\n",
+        },
+      },
+    });
+    const done = state.activity.find((a) => a.id === "done-tc-bash");
+    expect(done).toBeDefined();
+    expect(done!.kind).toBe("tool_complete");
+    expect(done!.text).toBe(
+      "abc1234 first commit\ndef5678 second commit\n",
+    );
+    expect(state.inFlightTool).toBeNull();
+  });
+
+  it("falls back to streamed ToolCallContent when completion has empty content", () => {
+    // Some agents stream stdout via interim ToolCallUpdate notifications
+    // (status=in_progress with content) and emit a final completion
+    // with empty content. The reducer buffers interim chunks keyed by
+    // tool_call_id and drains the buffer on completion.
+    let state = emptyCockpitState();
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 1,
+      event: {
+        ToolCallContent: {
+          tool_call_id: "tc-bash",
+          content: "line1\n",
+        },
+      },
+    });
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 2,
+      event: {
+        ToolCallContent: {
+          tool_call_id: "tc-bash",
+          content: "line1\nline2\n",
+        },
+      },
+    });
+    expect(state.toolOutputs["tc-bash"]).toBe("line1\nline2\n");
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 3,
+      event: {
+        ToolCallCompleted: {
+          tool_call_id: "tc-bash",
+          is_error: false,
+          content: "",
+        },
+      },
+    });
+    const done = state.activity.find((a) => a.id === "done-tc-bash");
+    expect(done!.text).toBe("line1\nline2\n");
+    // Buffer drained so a re-completion (replay) doesn't double-render.
+    expect(state.toolOutputs["tc-bash"]).toBeUndefined();
+  });
+
+  it("falls back to status word when no content arrived at all", () => {
+    const state = applyEvent(emptyCockpitState(), {
+      session_id: "s-1",
+      seq: 1,
+      event: {
+        ToolCallCompleted: {
+          tool_call_id: "tc-x",
+          is_error: false,
+          content: "",
+        },
+      },
+    });
+    const done = state.activity.find((a) => a.id === "done-tc-x");
+    expect(done!.text).toBe("completed");
+  });
+
+  it("uses 'tool failed' when error event has no content", () => {
+    const state = applyEvent(emptyCockpitState(), {
+      session_id: "s-1",
+      seq: 1,
+      event: {
+        ToolCallCompleted: {
+          tool_call_id: "tc-y",
+          is_error: true,
+          content: "",
+        },
+      },
+    });
+    const done = state.activity.find((a) => a.id === "done-tc-y");
+    expect(done!.kind).toBe("tool_error");
+    expect(done!.text).toBe("tool failed");
+  });
+
   it("reconstructs the user side of the conversation from a replay", () => {
     // Server restart scenario: client connects, WS drain delivers all
     // events from the on-disk store including UserPromptSent rows.

@@ -71,7 +71,24 @@ export type CockpitEvent =
   | { PlanUpdated: { plan: Plan } }
   | { TodoListUpdated: { todos: Array<{ id: string; text: string; completed: boolean }> } }
   | { ToolCallStarted: { tool_call: ToolCall } }
-  | { ToolCallCompleted: { tool_call_id: string; is_error: boolean } }
+  | {
+      ToolCallCompleted: {
+        tool_call_id: string;
+        is_error: boolean;
+        /** Final textual content extracted from
+         *  ACP `ToolCallUpdate.fields.content`. Empty when the agent
+         *  emitted no content blocks on completion. */
+        content: string;
+      };
+    }
+  | {
+      /** Streaming output for a still-running tool call. Carries the
+       *  latest full content snapshot (per ACP, content is a
+       *  replacement, not append). The reducer buffers it keyed by
+       *  tool_call_id and uses it on completion if the final
+       *  ToolCallCompleted carries no content of its own. */
+      ToolCallContent: { tool_call_id: string; content: string };
+    }
   | { ApprovalRequested: { approval: Approval } }
   | { ApprovalResolved: { nonce: string; decision: ApprovalDecision } }
   | { DiffEmitted: { diff: DiffPreview } }
@@ -142,6 +159,11 @@ export interface CockpitState {
    *  four-mode taxonomy in that case. */
   availableModes: Array<{ id: string; name: string; description?: string | null }>;
   currentModeId: string | null;
+  /** Streaming output buffer keyed by tool_call_id. Populated by
+   *  ToolCallContent frames while the call is still running, drained
+   *  on ToolCallCompleted (used as a fallback when the completion
+   *  carries no content of its own). */
+  toolOutputs: Record<string, string>;
 }
 
 export interface ActivityRow {
@@ -184,6 +206,7 @@ export function emptyCockpitState(): CockpitState {
     turnActive: false,
     availableModes: [],
     currentModeId: null,
+    toolOutputs: {},
   };
 }
 
@@ -227,17 +250,39 @@ export function applyEvent(
     return next;
   }
   if ("ToolCallCompleted" in event) {
-    const { tool_call_id, is_error } = event.ToolCallCompleted;
+    const { tool_call_id, is_error, content } = event.ToolCallCompleted;
     if (next.inFlightTool && next.inFlightTool.id === tool_call_id) {
       next.inFlightTool = null;
+    }
+    // Prefer content shipped with the completion event itself; fall
+    // back to whatever streamed earlier via ToolCallContent. Only use
+    // the status word when neither carried text.
+    const buffered = next.toolOutputs[tool_call_id] ?? "";
+    const text =
+      content && content.length > 0
+        ? content
+        : buffered.length > 0
+          ? buffered
+          : is_error
+            ? "tool failed"
+            : "completed";
+    if (buffered) {
+      const { [tool_call_id]: _drop, ...rest } = next.toolOutputs;
+      void _drop;
+      next.toolOutputs = rest;
     }
     next.activity = pushActivity(next.activity, {
       id: `done-${tool_call_id}`,
       kind: is_error ? "tool_error" : "tool_complete",
-      text: is_error ? "tool failed" : "completed",
+      text,
       toolCallId: tool_call_id,
       at: new Date().toISOString(),
     });
+    return next;
+  }
+  if ("ToolCallContent" in event) {
+    const { tool_call_id, content } = event.ToolCallContent;
+    next.toolOutputs = { ...next.toolOutputs, [tool_call_id]: content };
     return next;
   }
   if ("ApprovalRequested" in event) {

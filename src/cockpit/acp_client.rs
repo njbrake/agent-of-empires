@@ -630,10 +630,22 @@ fn map_update_to_events(update: SessionUpdate) -> Vec<Event> {
                 Some(agent_client_protocol::schema::ToolCallStatus::Completed)
                     | Some(agent_client_protocol::schema::ToolCallStatus::Failed)
             );
+            let content_text = update
+                .fields
+                .content
+                .as_ref()
+                .map(|blocks| extract_tool_content_text(blocks))
+                .unwrap_or_default();
             if completed {
                 vec![Event::ToolCallCompleted {
                     tool_call_id: id,
                     is_error,
+                    content: content_text,
+                }]
+            } else if !content_text.is_empty() {
+                vec![Event::ToolCallContent {
+                    tool_call_id: id,
+                    content: content_text,
                 }]
             } else {
                 vec![raw_event(&update)]
@@ -732,6 +744,27 @@ fn preview_args(raw: &serde_json::Value) -> String {
             continue;
         }
         out.push(c);
+    }
+    out
+}
+
+/// Concat the textual portion of a tool call's `content` array. Drops
+/// non-text content blocks (images, resources, embedded terminals) — the
+/// per-tool renderer fall-back path only knows how to display text. Diffs
+/// are surfaced separately via `extract_diff_from_locations` (and could
+/// later be picked up here too via `ToolCallContent::Diff`).
+fn extract_tool_content_text(blocks: &[agent_client_protocol::schema::ToolCallContent]) -> String {
+    use agent_client_protocol::schema::ToolCallContent;
+    let mut out = String::new();
+    for block in blocks {
+        if let ToolCallContent::Content(c) = block {
+            if let ContentBlock::Text(t) = &c.content {
+                if !out.is_empty() {
+                    out.push('\n');
+                }
+                out.push_str(&t.text);
+            }
+        }
     }
     out
 }
@@ -1350,6 +1383,77 @@ mod tests {
         let preview = preview_args(&big);
         assert!(preview.len() <= 16 * 1024 + 32);
         assert!(preview.contains("[truncated]"));
+    }
+
+    #[test]
+    fn extract_tool_content_text_concats_text_blocks() {
+        use agent_client_protocol::schema::{Content, ToolCallContent};
+        let blocks = vec![
+            ToolCallContent::Content(Content::new("stdout line 1")),
+            ToolCallContent::Content(Content::new("stdout line 2")),
+        ];
+        let text = extract_tool_content_text(&blocks);
+        assert_eq!(text, "stdout line 1\nstdout line 2");
+    }
+
+    #[test]
+    fn extract_tool_content_text_empty_for_no_text_blocks() {
+        // No content → empty string. The reducer falls back to the
+        // status word ("completed" / "tool failed") in that case so
+        // the card still conveys state.
+        assert_eq!(extract_tool_content_text(&[]), "");
+    }
+
+    #[test]
+    fn map_tool_call_update_completed_carries_content() {
+        use agent_client_protocol::schema::{
+            Content, ToolCallContent, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields,
+        };
+        let fields = ToolCallUpdateFields::new()
+            .status(ToolCallStatus::Completed)
+            .content(vec![ToolCallContent::Content(Content::new(
+                "abc1234 first commit",
+            ))]);
+        let update = ToolCallUpdate::new("tc-1", fields);
+        let events = map_update_to_events(SessionUpdate::ToolCallUpdate(update));
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            Event::ToolCallCompleted {
+                tool_call_id,
+                is_error,
+                content,
+            } => {
+                assert_eq!(tool_call_id, "tc-1");
+                assert!(!*is_error);
+                assert_eq!(content, "abc1234 first commit");
+            }
+            other => panic!("expected ToolCallCompleted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn map_tool_call_update_in_progress_with_content_emits_streaming_event() {
+        use agent_client_protocol::schema::{
+            Content, ToolCallContent, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields,
+        };
+        let fields = ToolCallUpdateFields::new()
+            .status(ToolCallStatus::InProgress)
+            .content(vec![ToolCallContent::Content(Content::new(
+                "partial output",
+            ))]);
+        let update = ToolCallUpdate::new("tc-2", fields);
+        let events = map_update_to_events(SessionUpdate::ToolCallUpdate(update));
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            Event::ToolCallContent {
+                tool_call_id,
+                content,
+            } => {
+                assert_eq!(tool_call_id, "tc-2");
+                assert_eq!(content, "partial output");
+            }
+            other => panic!("expected ToolCallContent, got {other:?}"),
+        }
     }
 
     #[test]
