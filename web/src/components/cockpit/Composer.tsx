@@ -11,6 +11,7 @@
 import {
   ComposerPrimitive,
   ThreadPrimitive,
+  useComposerRuntime,
   useThreadRuntime,
 } from "@assistant-ui/react";
 import {
@@ -29,13 +30,6 @@ import {
 import { useFilesIndex, fuzzyFilter } from "./useFilesIndex";
 import type { CockpitState } from "../../lib/cockpitTypes";
 
-const SLASH_COMMANDS: ReadonlyArray<Unstable_TriggerItem> = [
-  { id: "help", type: "command", label: "/help", description: "Show available commands" },
-  { id: "clear", type: "command", label: "/clear", description: "Reset conversation context" },
-  { id: "tools", type: "command", label: "/tools", description: "List the agent's tools" },
-  { id: "model", type: "command", label: "/model", description: "Show or switch the model" },
-];
-
 interface Props {
   sessionId: string;
   availableModes: CockpitState["availableModes"];
@@ -46,6 +40,10 @@ interface Props {
   /** Latest agent-reported context-window usage. Null until the agent
    *  has emitted at least one ACP `UsageUpdate`. */
   sessionUsage: CockpitState["sessionUsage"];
+  /** Slash commands the agent advertised in its most recent
+   *  AvailableCommandsUpdate. Includes plugins/skills/MCP commands.
+   *  Empty until the agent emits the first list. */
+  availableCommands: CockpitState["availableCommands"];
 }
 
 export function Composer({
@@ -54,6 +52,7 @@ export function Composer({
   currentModeId,
   legacyMode,
   sessionUsage,
+  availableCommands,
 }: Props) {
   const taRef = useRef<HTMLTextAreaElement | null>(null);
   const { files } = useFilesIndex(sessionId);
@@ -80,14 +79,31 @@ export function Composer({
     [files],
   );
 
+  // Slash commands: built from the agent's AvailableCommandsUpdate.
+  // Each item carries `acceptsInput` so onExecute knows whether to
+  // leave the cursor parked after the name (for commands with args)
+  // or to prepare for an immediate Enter-to-send.
+  const slashItems: Unstable_TriggerItem[] = useMemo(
+    () =>
+      availableCommands.map((c) => ({
+        id: c.name,
+        type: "command",
+        label: `/${c.name}`,
+        description: c.description,
+        acceptsInput: c.accepts_input,
+      })),
+    [availableCommands],
+  );
   const slashAdapter: Unstable_TriggerAdapter = useMemo(
     () => ({
       categories: () => [],
       categoryItems: () => [],
-      search: (query) => fuzzyFilter([...SLASH_COMMANDS], query, 30),
+      search: (query) => fuzzyFilter(slashItems, query, 30),
     }),
-    [],
+    [slashItems],
   );
+
+  const composerRuntime = useComposerRuntime();
 
   // Auto-grow the textarea up to ~6 visible lines.
   const onInput = (e: React.FormEvent<HTMLTextAreaElement>) => {
@@ -155,7 +171,7 @@ export function Composer({
               className="absolute bottom-full left-0 right-0 mb-2 z-30 overflow-hidden rounded-lg border border-surface-700 bg-surface-850 shadow-xl"
             >
               <ComposerPrimitive.Unstable_TriggerPopover.Action
-                onExecute={(item) => runSlashCommand(item)}
+                onExecute={(item) => insertSlashCommand(composerRuntime, item)}
                 removeOnExecute
               />
               <PopoverItems trigger="/" />
@@ -257,22 +273,26 @@ function PopoverItems({ trigger }: { trigger: string }) {
   );
 }
 
-function runSlashCommand(item: Unstable_TriggerItem) {
-  // Handlers are placeholders for now; wired up properly when the
-  // backend grows real slash-command support. Keeps the UX honest:
-  // selecting one inserts no chip and signals what *would* happen.
-  switch (item.id) {
-    case "help":
-      // TODO: surface a help overlay or send a synthetic prompt.
-      break;
-    case "clear":
-      // TODO: reset assistant-ui's thread (runtime.clear()).
-      break;
-    case "tools":
-    case "model":
-      // TODO: open the corresponding picker.
-      break;
-  }
+/** Insert the picked slash command into the composer text. The Action
+ *  popover already stripped the user's `/<typed>` from the input via
+ *  `removeOnExecute`, so we set the canonical `/<name>` form and add
+ *  a trailing space when the agent advertised that the command takes
+ *  free-form arguments. The user is then free to type args and hit
+ *  Enter to send, or hit Enter immediately for a no-arg command. */
+function insertSlashCommand(
+  runtime: ReturnType<typeof useComposerRuntime>,
+  item: Unstable_TriggerItem,
+) {
+  if (!runtime) return;
+  const accepts = (item as { acceptsInput?: boolean }).acceptsInput === true;
+  const current = runtime.getState().text;
+  const suffix = accepts ? " " : "";
+  // Preserve any text that was already in the buffer (e.g. user typed
+  // a long prompt then ran `/foo` mid-message). We just append the
+  // command at the end; the typed `/typed` token has already been
+  // removed by removeOnExecute, so trailing whitespace is rare.
+  const sep = current.length > 0 && !current.endsWith(" ") ? " " : "";
+  runtime.setText(`${current}${sep}/${item.id}${suffix}`);
 }
 
 /** Insert `text` at the textarea's caret and re-focus. The toolbar

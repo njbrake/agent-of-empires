@@ -38,8 +38,8 @@ use super::approvals::{is_destructive, ApprovalDecision, Nonce};
 use super::fs_handler::{self, FsPolicy};
 use super::permissions::build_approval;
 use super::state::{
-    CockpitSessionId, DiffPreview, Event, ModeInfo, Plan, PlanStep, PlanStepStatus, SessionMode,
-    SessionUsage, ToolCall, UsageCost,
+    AvailableCommand, CockpitSessionId, DiffPreview, Event, ModeInfo, Plan, PlanStep,
+    PlanStepStatus, SessionMode, SessionUsage, ToolCall, UsageCost,
 };
 use super::terminal_handler::TerminalManager;
 
@@ -709,6 +709,24 @@ fn map_update_to_events(update: SessionUpdate) -> Vec<Event> {
                 }),
             };
             vec![Event::UsageUpdated { usage }]
+        }
+        SessionUpdate::AvailableCommandsUpdate(u) => {
+            use agent_client_protocol::schema::AvailableCommandInput;
+            let commands: Vec<AvailableCommand> = u
+                .available_commands
+                .into_iter()
+                .map(|c| AvailableCommand {
+                    name: c.name,
+                    description: c.description,
+                    accepts_input: matches!(c.input, Some(AvailableCommandInput::Unstructured(_))),
+                })
+                .collect();
+            debug!(
+                target: "cockpit.acp",
+                count = commands.len(),
+                "received AvailableCommandsUpdate from agent"
+            );
+            vec![Event::AvailableCommandsUpdated { commands }]
         }
         // Variants we don't have a typed mapping for yet pass through as
         // RawAgentUpdate so the UI can render best-effort and we can
@@ -1493,6 +1511,33 @@ mod tests {
                 assert_eq!(cost.currency, "USD");
             }
             other => panic!("expected UsageUpdated, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn map_available_commands_update_emits_typed_event() {
+        use agent_client_protocol::schema::{
+            AvailableCommand as AcpAvailableCommand, AvailableCommandInput,
+            AvailableCommandsUpdate, UnstructuredCommandInput,
+        };
+        let cmds = vec![
+            AcpAvailableCommand::new("review", "Review changes").input(
+                AvailableCommandInput::Unstructured(UnstructuredCommandInput::new("PR url")),
+            ),
+            AcpAvailableCommand::new("clear", "Reset context"),
+        ];
+        let update = AvailableCommandsUpdate::new(cmds);
+        let events = map_update_to_events(SessionUpdate::AvailableCommandsUpdate(update));
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            Event::AvailableCommandsUpdated { commands } => {
+                assert_eq!(commands.len(), 2);
+                assert_eq!(commands[0].name, "review");
+                assert!(commands[0].accepts_input);
+                assert_eq!(commands[1].name, "clear");
+                assert!(!commands[1].accepts_input);
+            }
+            other => panic!("expected AvailableCommandsUpdated, got {other:?}"),
         }
     }
 

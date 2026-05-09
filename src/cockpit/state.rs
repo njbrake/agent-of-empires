@@ -126,6 +126,20 @@ pub struct ModeInfo {
     pub description: Option<String>,
 }
 
+/// One slash command advertised by the agent. Mirrors ACP's
+/// `AvailableCommand` shape. `name` is the canonical token (sent back
+/// to the agent as `/<name> <args>`); `description` is the human label
+/// for the picker; `accepts_input` is true when the agent reports an
+/// `Unstructured` input spec, signalling the command takes free-form
+/// arguments after the name.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AvailableCommand {
+    pub name: String,
+    pub description: String,
+    #[serde(default)]
+    pub accepts_input: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CockpitState {
     pub session_id: CockpitSessionId,
@@ -144,6 +158,12 @@ pub struct CockpitState {
     /// `UsageUpdate`. None until the agent emits one.
     #[serde(default)]
     pub usage: Option<SessionUsage>,
+    /// Slash commands the agent advertised in its most recent
+    /// `AvailableCommandsUpdate`. Empty until the agent emits one. Used
+    /// by the composer's `/` picker so users see real plugin/skill/MCP
+    /// commands instead of a hard-coded placeholder list.
+    #[serde(default)]
+    pub available_commands: Vec<AvailableCommand>,
 
     pub last_seq: u64,
     pub updated_at: DateTime<Utc>,
@@ -168,6 +188,7 @@ impl CockpitState {
             thinking: None,
             rate_limit: None,
             usage: None,
+            available_commands: Vec::new(),
             last_seq: 0,
             updated_at: Utc::now(),
         }
@@ -273,6 +294,13 @@ pub enum Event {
     CurrentModeChanged {
         current_mode_id: String,
     },
+    /// Full snapshot of the slash commands the agent advertises. Comes
+    /// from ACP `SessionUpdate::AvailableCommandsUpdate`. Replaces the
+    /// previous list (the agent re-broadcasts the full set whenever it
+    /// changes — e.g. after plugin enable/disable).
+    AvailableCommandsUpdated {
+        commands: Vec<AvailableCommand>,
+    },
     /// Passthrough for an ACP `session/update` payload that we have not yet
     /// finished mapping to a typed variant. Useful while the cockpit's
     /// typed schema is still expanding to cover every ACP update kind.
@@ -375,6 +403,9 @@ impl CockpitState {
             // replay), so this is just a no-op that bumps seq.
             Event::ModesAvailable { .. } => {}
             Event::CurrentModeChanged { .. } => {}
+            Event::AvailableCommandsUpdated { commands } => {
+                self.available_commands = commands;
+            }
             // The next four variants don't directly mutate persistent
             // CockpitState fields (yet); they bump seq/updated_at so
             // clients see them in the replay buffer and know the session
@@ -464,6 +495,39 @@ mod tests {
         })
         .unwrap();
         assert!(s.in_flight_tool.is_none());
+    }
+
+    #[test]
+    fn available_commands_updated_replaces_previous_list() {
+        let mut s = fresh_state();
+        assert!(s.available_commands.is_empty());
+        s.apply_event(Event::AvailableCommandsUpdated {
+            commands: vec![AvailableCommand {
+                name: "help".into(),
+                description: "Show help".into(),
+                accepts_input: false,
+            }],
+        })
+        .unwrap();
+        assert_eq!(s.available_commands.len(), 1);
+        s.apply_event(Event::AvailableCommandsUpdated {
+            commands: vec![
+                AvailableCommand {
+                    name: "review".into(),
+                    description: "Review PR".into(),
+                    accepts_input: true,
+                },
+                AvailableCommand {
+                    name: "clear".into(),
+                    description: "Clear context".into(),
+                    accepts_input: false,
+                },
+            ],
+        })
+        .unwrap();
+        assert_eq!(s.available_commands.len(), 2);
+        assert_eq!(s.available_commands[0].name, "review");
+        assert!(s.available_commands[0].accepts_input);
     }
 
     #[test]

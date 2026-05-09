@@ -134,6 +134,7 @@ function CockpitChrome({
           currentModeId={state.currentModeId}
           legacyMode={state.mode}
           sessionUsage={state.sessionUsage}
+          availableCommands={state.availableCommands}
         />
       </ThreadPrimitive.Root>
     </div>

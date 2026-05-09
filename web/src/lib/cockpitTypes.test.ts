@@ -308,3 +308,38 @@ describe("applyEvent / UserPromptSent", () => {
     expect(final.lastSeq).toBe(4);
   });
 });
+
+describe("applyEvent / AvailableCommandsUpdated", () => {
+  it("populates availableCommands and replaces the prior list", () => {
+    const f1: CockpitFrame = {
+      session_id: "s-1",
+      seq: 1,
+      event: {
+        AvailableCommandsUpdated: {
+          commands: [
+            { name: "help", description: "Show help", accepts_input: false },
+          ],
+        },
+      },
+    };
+    const s1 = applyEvent(emptyCockpitState(), f1);
+    expect(s1.availableCommands).toHaveLength(1);
+    expect(s1.availableCommands[0].name).toBe("help");
+
+    const f2: CockpitFrame = {
+      session_id: "s-1",
+      seq: 2,
+      event: {
+        AvailableCommandsUpdated: {
+          commands: [
+            { name: "review", description: "Review PR", accepts_input: true },
+            { name: "clear", description: "Clear context", accepts_input: false },
+          ],
+        },
+      },
+    };
+    const s2 = applyEvent(s1, f2);
+    expect(s2.availableCommands.map((c) => c.name)).toEqual(["review", "clear"]);
+    expect(s2.availableCommands[0].accepts_input).toBe(true);
+  });
+});

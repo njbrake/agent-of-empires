@@ -60,6 +60,20 @@ export interface SessionUsage {
   cost?: { amount: number; currency: string } | null;
 }
 
+/** One slash command advertised by the agent (mirrors ACP's
+ *  `AvailableCommand`). The composer's `/` picker renders these so
+ *  users see plugin/skill/MCP commands the agent actually has loaded
+ *  rather than a hard-coded placeholder list. */
+export interface AvailableCommand {
+  name: string;
+  description: string;
+  /** True when ACP reported an `Unstructured` input spec — i.e. the
+   *  command takes free-form arguments after the name. The composer
+   *  inserts a trailing space and leaves the cursor in place when
+   *  this is true so the user can keep typing. */
+  accepts_input: boolean;
+}
+
 export interface Approval {
   nonce: string;
   tool_call: ToolCall;
@@ -125,6 +139,7 @@ export type CockpitEvent =
       };
     }
   | { CurrentModeChanged: { current_mode_id: string } }
+  | { AvailableCommandsUpdated: { commands: AvailableCommand[] } }
   | { RawAgentUpdate: { payload: unknown } }
   | { AgentMessageChunk: { text: string } }
   | { Stopped: { reason: string } }
@@ -184,6 +199,10 @@ export interface CockpitState {
    *  four-mode taxonomy in that case. */
   availableModes: Array<{ id: string; name: string; description?: string | null }>;
   currentModeId: string | null;
+  /** Slash commands the agent advertised in its most recent
+   *  `AvailableCommandsUpdate`. Empty until the agent emits one; the
+   *  composer's `/` picker reads from here. */
+  availableCommands: AvailableCommand[];
   /** Streaming output buffer keyed by tool_call_id. Populated by
    *  ToolCallContent frames while the call is still running, drained
    *  on ToolCallCompleted (used as a fallback when the completion
@@ -232,6 +251,7 @@ export function emptyCockpitState(): CockpitState {
     turnActive: false,
     availableModes: [],
     currentModeId: null,
+    availableCommands: [],
     toolOutputs: {},
   };
 }
@@ -387,6 +407,10 @@ export function applyEvent(
   }
   if ("CurrentModeChanged" in event) {
     next.currentModeId = event.CurrentModeChanged.current_mode_id;
+    return next;
+  }
+  if ("AvailableCommandsUpdated" in event) {
+    next.availableCommands = event.AvailableCommandsUpdated.commands;
     return next;
   }
   if ("AgentMessageChunk" in event) {
