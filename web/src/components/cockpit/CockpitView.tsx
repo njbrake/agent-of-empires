@@ -24,7 +24,6 @@ import {
   Copy as CopyIcon,
   ListChecks,
   Pencil,
-  RefreshCcw,
 } from "lucide-react";
 
 import { ApprovalCard } from "./ApprovalCard";
@@ -191,12 +190,6 @@ function AssistantMessage() {
           <ActionBarPrimitive.Copy asChild>
             <ActionIconButton label="Copy" icon={<CopyIcon className="h-3 w-3" />} />
           </ActionBarPrimitive.Copy>
-          <ActionBarPrimitive.Reload asChild>
-            <ActionIconButton
-              label="Regenerate"
-              icon={<RefreshCcw className="h-3 w-3" />}
-            />
-          </ActionBarPrimitive.Reload>
         </div>
       </ActionBarPrimitive.Root>
     </MessagePrimitive.Root>
