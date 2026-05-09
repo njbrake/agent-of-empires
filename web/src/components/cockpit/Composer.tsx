@@ -22,7 +22,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AtSign,
   ChevronUp,
-  Paperclip,
   Slash,
   Square,
 } from "lucide-react";
@@ -186,11 +185,6 @@ export function Composer({
                   label="Slash command (/)"
                   hint="/"
                   onClick={() => insertAtCaret(taRef, "/")}
-                />
-                <ToolbarButton
-                  icon={<Paperclip className="h-3.5 w-3.5" />}
-                  label="Attach (coming soon)"
-                  disabled
                 />
                 <span className="mx-1 h-4 w-px bg-surface-700" aria-hidden />
                 <ModePicker
