@@ -443,9 +443,11 @@ fn spawn_subprocess(config: &SpawnConfig) -> Result<tokio::process::Child, AcpEr
         "CLAUDE_CODE_OAUTH_TOKEN",
         "CLAUDE_CONFIG_DIR",
     ];
+    let mut forwarded_keys: Vec<&str> = Vec::new();
     for name in always_forward {
         if let Ok(value) = std::env::var(name) {
             cmd.env(name, value);
+            forwarded_keys.push(name);
         }
     }
     if let Some(extra_allowlist) = &config.spec.env_allowlist {
@@ -456,15 +458,18 @@ fn spawn_subprocess(config: &SpawnConfig) -> Result<tokio::process::Child, AcpEr
             }
             if let Ok(value) = std::env::var(name) {
                 cmd.env(name, value);
+                forwarded_keys.push(name.as_str());
             }
         }
     }
+    let mut provider_keys: Vec<&str> = Vec::new();
     for (key, value) in &config.provider_env {
         if key == "AOE_TOKEN" {
             warn!(target: "cockpit", "ignoring AOE_TOKEN in provider env");
             continue;
         }
         cmd.env(key, value);
+        provider_keys.push(key.as_str());
     }
 
     // Socket-transport agents need to know where to connect. Pass the
@@ -474,7 +479,85 @@ fn spawn_subprocess(config: &SpawnConfig) -> Result<tokio::process::Child, AcpEr
         cmd.env("AOE_ACP_SOCKET", socket_path);
     }
 
-    cmd.spawn().map_err(|e| AcpError::Spawn(e.to_string()))
+    info!(
+        target: "cockpit.acp.spawn",
+        command = %config.spec.command,
+        args = ?config.spec.args,
+        cwd = %config.cwd.display(),
+        transport = if config.socket_path.is_some() { "socket" } else { "stdio" },
+        socket = ?config.socket_path,
+        env_forwarded = ?forwarded_keys,
+        provider_env = ?provider_keys,
+        "spawning ACP agent subprocess"
+    );
+
+    let mut child = cmd.spawn().map_err(|e| {
+        warn!(
+            target: "cockpit.acp.spawn",
+            command = %config.spec.command,
+            "spawn failed: {e}"
+        );
+        AcpError::Spawn(e.to_string())
+    })?;
+
+    let pid = child.id();
+    info!(
+        target: "cockpit.acp.spawn",
+        command = %config.spec.command,
+        pid = ?pid,
+        "ACP agent subprocess started"
+    );
+
+    // Drain stderr line-by-line into the tracing log. Without this the
+    // child's stderr pipe fills up at ~64KB and the agent blocks on
+    // write, looking like a wedged ACP handshake. Logging every line
+    // also gives us a record of what the adapter said before it died.
+    if let Some(stderr) = child.stderr.take() {
+        let command_label = config.spec.command.clone();
+        tokio::spawn(async move {
+            use tokio::io::{AsyncBufReadExt, BufReader};
+            let mut reader = BufReader::new(stderr).lines();
+            loop {
+                match reader.next_line().await {
+                    Ok(Some(line)) => {
+                        debug!(
+                            target: "cockpit.acp.stderr",
+                            command = %command_label,
+                            pid = ?pid,
+                            "{line}"
+                        );
+                    }
+                    Ok(None) => {
+                        debug!(
+                            target: "cockpit.acp.stderr",
+                            command = %command_label,
+                            pid = ?pid,
+                            "stderr EOF"
+                        );
+                        break;
+                    }
+                    Err(e) => {
+                        warn!(
+                            target: "cockpit.acp.stderr",
+                            command = %command_label,
+                            pid = ?pid,
+                            "stderr read error: {e}"
+                        );
+                        break;
+                    }
+                }
+            }
+        });
+    } else {
+        warn!(
+            target: "cockpit.acp.spawn",
+            command = %config.spec.command,
+            pid = ?pid,
+            "child has no stderr handle; agent crashes will be silent"
+        );
+    }
+
+    Ok(child)
 }
 
 /// Translate the user's decision into the matching option_id from the
@@ -685,6 +768,7 @@ async fn run_connection_task<W, R>(
     let event_tx_for_block = event_tx.clone();
     let pending_for_perm = pending_responders.clone();
     let cmd_rx = Arc::new(Mutex::new(cmd_rx));
+    let session_label_for_log = session_label.clone();
     let res_read = resources.clone();
     let res_write = resources.clone();
     let res_term_create = resources.clone();
@@ -880,20 +964,50 @@ async fn run_connection_task<W, R>(
         })
         .await;
 
-    if let Err(e) = &result {
-        error!(target: "cockpit.acp", "ACP connection task ended with error: {:?}", e);
-        let message = format!("ACP connection failed: {e}");
-        // If the handshake never completed, hand the failure back so
-        // `spawn()` can surface a typed error to the caller; otherwise
-        // publish a synthetic event so the UI can show a remediation
-        // hint instead of a silent dead session.
-        if let Some(tx) = ready_tx.lock().await.take() {
-            let _ = tx.send(Err(AcpError::Spawn(message.clone())));
-        } else {
-            let _ = event_tx.send(Event::AgentStartupError { message }).await;
+    match &result {
+        Err(e) => {
+            error!(
+                target: "cockpit.acp",
+                session = %session_label_for_log,
+                "ACP connection task ended with error: {:?}", e
+            );
+            let message = format!("ACP connection failed: {e}");
+            // If the handshake never completed, hand the failure back so
+            // `spawn()` can surface a typed error to the caller; otherwise
+            // publish a synthetic event so the UI can show a remediation
+            // hint instead of a silent dead session.
+            if let Some(tx) = ready_tx.lock().await.take() {
+                let _ = tx.send(Err(AcpError::Spawn(message.clone())));
+            } else {
+                let _ = event_tx.send(Event::AgentStartupError { message }).await;
+            }
+        }
+        Ok(()) => {
+            info!(
+                target: "cockpit.acp",
+                session = %session_label_for_log,
+                "ACP connection task ended cleanly"
+            );
         }
     }
     let mut guard = child.lock().await;
+    match guard.try_wait() {
+        Ok(Some(status)) => info!(
+            target: "cockpit.acp",
+            session = %session_label_for_log,
+            "agent process already exited: status={status}"
+        ),
+        Ok(None) => info!(
+            target: "cockpit.acp",
+            session = %session_label_for_log,
+            "killing agent process after connection task end"
+        ),
+        Err(e) => warn!(
+            target: "cockpit.acp",
+            session = %session_label_for_log,
+            "try_wait failed before kill: {e}"
+        ),
+    }
     let _ = guard.kill().await;
     // Clean up socket file on exit when this transport was socket-based.
     if let Some(path) = socket_path {

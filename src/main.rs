@@ -33,8 +33,14 @@ async fn main() -> Result<()> {
             .ok()
             .and_then(|p| std::fs::File::create(p).ok());
         if let Some(file) = log_file {
+            // Cockpit code uses custom log targets like `cockpit.acp`,
+            // `cockpit.supervisor`, `cockpit.acp.stderr`, etc., which
+            // don't match the `agent_of_empires` crate prefix. List
+            // them explicitly so debug.log captures the full picture
+            // when chasing a crashed agent. Add new top-level targets
+            // here when introducing them.
             tracing_subscriber::fmt()
-                .with_env_filter("agent_of_empires=debug")
+                .with_env_filter("agent_of_empires=debug,cockpit=debug")
                 .with_writer(std::sync::Mutex::new(file))
                 .with_ansi(false)
                 .init();
@@ -53,7 +59,7 @@ async fn main() -> Result<()> {
         // cert provisioning. Foreground `aoe serve` just prints to
         // the user's terminal; that's fine and matches other CLIs.
         tracing_subscriber::fmt()
-            .with_env_filter("agent_of_empires=info")
+            .with_env_filter("agent_of_empires=info,cockpit=info")
             .with_ansi(false)
             .try_init()
             .ok();

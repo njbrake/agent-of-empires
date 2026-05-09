@@ -324,17 +324,28 @@ impl<S: BroadcastSink> Supervisor<S> {
                 // Either the subprocess exited or the transport broke.
                 // Try to respawn within the restart budget; otherwise
                 // park the session with a synthetic error event.
-                debug!(
+                warn!(
                     target: "cockpit.supervisor",
                     session = %session_id,
-                    "drain channel closed; checking restart budget"
+                    "drain channel closed (agent connection task ended); evaluating respawn"
                 );
                 let respawn_config = match restart_decision(&workers, &session_id).await {
-                    RestartDecision::Respawn(cfg) => cfg,
+                    RestartDecision::Respawn(cfg) => {
+                        info!(
+                            target: "cockpit.supervisor",
+                            session = %session_id,
+                            command = %cfg.spec.command,
+                            "respawn approved; sleeping {}ms before restart",
+                            RESPAWN_BACKOFF.as_millis()
+                        );
+                        cfg
+                    }
                     RestartDecision::BudgetBurned => {
                         warn!(
                             target: "cockpit.supervisor",
                             session = %session_id,
+                            max_respawns = MAX_RESPAWNS_IN_WINDOW,
+                            window_secs = RESTART_WINDOW.as_secs(),
                             "restart budget burned; parking session"
                         );
                         let seq = next_seq(&next_seqs, &session_id);
@@ -536,13 +547,30 @@ async fn restart_decision(
 ) -> RestartDecision {
     let mut guard = workers.lock().await;
     let Some(handle) = guard.get_mut(session_id) else {
+        debug!(
+            target: "cockpit.supervisor",
+            session = %session_id,
+            "restart_decision: worker entry gone (shutdown / delete)"
+        );
         return RestartDecision::Gone;
     };
     let now = Instant::now();
     let window_start = now - RESTART_WINDOW;
+    let pre_count = handle.restart_history.len();
     handle.restart_history.retain(|t| *t >= window_start);
+    let pruned = pre_count - handle.restart_history.len();
     handle.restart_history.push(now);
-    if handle.restart_history.len() as u32 > MAX_RESPAWNS_IN_WINDOW {
+    let count = handle.restart_history.len() as u32;
+    debug!(
+        target: "cockpit.supervisor",
+        session = %session_id,
+        respawns_in_window = count,
+        max_in_window = MAX_RESPAWNS_IN_WINDOW,
+        window_secs = RESTART_WINDOW.as_secs(),
+        pruned_old_entries = pruned,
+        "restart_decision: tallied recent crashes"
+    );
+    if count > MAX_RESPAWNS_IN_WINDOW {
         return RestartDecision::BudgetBurned;
     }
     match handle.spawn_config.clone() {
