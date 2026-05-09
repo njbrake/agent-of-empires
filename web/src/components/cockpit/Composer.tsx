@@ -44,6 +44,12 @@ interface Props {
    *  AvailableCommandsUpdate. Includes plugins/skills/MCP commands.
    *  Empty until the agent emits the first list. */
   availableCommands: CockpitState["availableCommands"];
+  /** True when the cockpit WS is open. When false the composer
+   *  refuses new submissions: prompts dispatched while disconnected
+   *  would be lost (the POST /cockpit/prompt would fail with no way
+   *  to retry). TODO(post-disconnect): queue locally and flush on
+   *  reconnect instead of blocking. */
+  connected: boolean;
 }
 
 export function Composer({
@@ -53,6 +59,7 @@ export function Composer({
   legacyMode,
   sessionUsage,
   availableCommands,
+  connected,
 }: Props) {
   const taRef = useRef<HTMLTextAreaElement | null>(null);
   const { files } = useFilesIndex(sessionId);
@@ -221,7 +228,7 @@ export function Composer({
                   <StopButton />
                 </ThreadPrimitive.If>
                 <ThreadPrimitive.If running={false}>
-                  <SendButton />
+                  <SendButton disabled={!connected} />
                 </ThreadPrimitive.If>
               </div>
             </div>
@@ -578,13 +585,19 @@ function formatCost(amount: number, currency: string): string {
 
 /* ── Send / Stop ─────────────────────────────────────────────────── */
 
-function SendButton() {
+function SendButton({ disabled = false }: { disabled?: boolean }) {
+  // When the WS is closed we surface the offline state via `disabled`
+  // and a swapped tooltip; ComposerPrimitive.Send would still try to
+  // dispatch otherwise (it only knows about thread-runtime state, not
+  // our connection status). TODO: queue prompts locally and flush on
+  // reconnect instead of dropping them.
   return (
     <ComposerPrimitive.Send asChild>
       <button
         type="submit"
         aria-label="Send message"
-        title="Send · Enter"
+        title={disabled ? "Disconnected — reconnect to send" : "Send · Enter"}
+        disabled={disabled}
         className={[
           "group/send inline-flex items-center justify-center gap-1",
           "rounded-lg bg-brand-600 px-2.5 py-1.5 text-white shadow-sm",

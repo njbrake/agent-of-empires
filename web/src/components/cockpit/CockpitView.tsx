@@ -135,6 +135,7 @@ function CockpitChrome({
           legacyMode={state.mode}
           sessionUsage={state.sessionUsage}
           availableCommands={state.availableCommands}
+          connected={status === "open"}
         />
       </ThreadPrimitive.Root>
     </div>
@@ -507,10 +508,16 @@ function SystemNotices({
     messages.push({ kind: "info", text: "Connecting to cockpit…" });
   }
   if (status === "error") {
-    messages.push({ kind: "warn", text: "Cockpit connection error. Retrying…" });
+    messages.push({
+      kind: "warn",
+      text: "Cockpit reconnecting… showing cached transcript; new messages disabled.",
+    });
   }
   if (status === "closed") {
-    messages.push({ kind: "warn", text: "Cockpit disconnected." });
+    messages.push({
+      kind: "warn",
+      text: "Cockpit disconnected. Showing cached transcript; new messages disabled.",
+    });
   }
   if (lagged) {
     messages.push({ kind: "warn", text: "Some events were missed during reconnect." });

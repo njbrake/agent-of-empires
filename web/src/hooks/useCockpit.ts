@@ -25,7 +25,22 @@ type Action =
   | { kind: "error"; message: string }
   | { kind: "clear_error" }
   | { kind: "lagged_resolved" }
-  | { kind: "reset" };
+  | { kind: "reset" }
+  | { kind: "hydrate"; state: CockpitState };
+
+// Module-level cache keyed by cockpit session id. Survives component
+// unmount within the same page lifetime so the user can navigate
+// between cockpit sessions (or away from the dashboard and back) and
+// keep seeing the in-memory transcript while the WebSocket reconnects
+// in the background. Lost on full page reload by design — for reload
+// persistence we'd need sessionStorage and a versioning policy that
+// the team hasn't asked for yet.
+const stateCache = new Map<string, CockpitState>();
+
+function initialState(sessionId: string | null): CockpitState {
+  if (!sessionId) return emptyCockpitState();
+  return stateCache.get(sessionId) ?? emptyCockpitState();
+}
 
 function reducer(state: CockpitState, action: Action): CockpitState {
   if (action.kind === "frame") {
@@ -45,6 +60,9 @@ function reducer(state: CockpitState, action: Action): CockpitState {
   }
   if (action.kind === "clear_error") {
     return { ...state, lastError: null };
+  }
+  if (action.kind === "hydrate") {
+    return action.state;
   }
   if (action.kind === "user_prompt") {
     return {
@@ -73,8 +91,24 @@ export type ConnectionStatus =
   | "error";
 
 export function useCockpit(sessionId: string | null) {
-  const [state, dispatch] = useReducer(reducer, emptyCockpitState());
+  const [state, dispatch] = useReducer(reducer, sessionId, initialState);
   const [status, setStatus] = useState<ConnectionStatus>("connecting");
+  // Mirror status into a ref so sendPrompt's stable callback can short
+  // circuit when the WS is closed without re-creating the callback on
+  // every status flip (which would invalidate downstream memoised
+  // handlers).
+  const statusRef = useRef<ConnectionStatus>("connecting");
+  useEffect(() => {
+    statusRef.current = status;
+  }, [status]);
+
+  // Mirror every state change into the module-level cache so that on
+  // remount (e.g. user navigates back to the cockpit tab) we hydrate
+  // from the last-known state instead of staring at an empty chat
+  // until the WS connection completes.
+  useEffect(() => {
+    if (sessionId) stateCache.set(sessionId, state);
+  }, [sessionId, state]);
   const wsRef = useRef<WebSocket | null>(null);
   // Track lastSeq in a ref so the snapshot fetcher always sees the
   // latest value without re-running the effect when it changes.
@@ -135,7 +169,14 @@ export function useCockpit(sessionId: string | null) {
       setStatus("closed");
       return;
     }
-    dispatch({ kind: "reset" });
+    // Hydrate the reducer from the per-session cache rather than
+    // resetting to empty. fetchReplay will then top up anything that
+    // happened on the server while this component was unmounted using
+    // the cached lastSeq as the `since` cursor.
+    dispatch({
+      kind: "hydrate",
+      state: stateCache.get(sessionId) ?? emptyCockpitState(),
+    });
     setStatus("connecting");
     // On reconnect, replay anything we may have missed.
     fetchReplay(sessionId);
@@ -225,6 +266,18 @@ export function useCockpit(sessionId: string | null) {
   const sendPrompt = useCallback(
     async (text: string) => {
       if (!sessionId) return;
+      // Hard guard: if the WS isn't open, the agent won't see the
+      // prompt and the optimistic row would mislead the user into
+      // thinking it was sent. Surface the offline state via the
+      // existing error banner instead. TODO: queue the prompt
+      // locally and flush on reconnect.
+      if (statusRef.current !== "open") {
+        dispatch({
+          kind: "error",
+          message: "Cockpit disconnected — message not sent. Reconnect to retry.",
+        });
+        return;
+      }
       // Optimistically echo the user's message; the agent reply
       // streams back as session/update events on the WS. If the POST
       // fails we'll surface a banner and the user can retry — the
