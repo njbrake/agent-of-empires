@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { useServerDown, OFFLINE_TITLE } from "../lib/connectionState";
 import { ConnectedDevices } from "./ConnectedDevices";
 import { NotificationSettings } from "./NotificationSettings";
 import { SecuritySettings } from "./SecuritySettings";
@@ -98,6 +99,7 @@ export function SettingsView({
   serverAbout,
   onServerAboutRefresh,
 }: Props) {
+  const offline = useServerDown();
   const [settings, setSettings] = useState<Record<string, unknown> | null>(
     null,
   );
@@ -534,7 +536,17 @@ export function SettingsView({
           <div className="p-6 max-w-2xl mx-auto space-y-5">
             <h2 className="text-lg font-semibold text-text-bright">{currentTabLabel}</h2>
 
-            {renderTabContent()}
+            {offline && (
+              <div className="text-sm text-status-error bg-status-error/10 rounded-lg p-3">
+                {OFFLINE_TITLE} — toggles will not save while disconnected.
+              </div>
+            )}
+            <fieldset
+              disabled={offline}
+              className="space-y-5 disabled:opacity-50 border-0 m-0 p-0 min-w-0"
+            >
+              {renderTabContent()}
+            </fieldset>
           </div>
         </div>
       </div>
