@@ -1513,11 +1513,13 @@ impl HomeView {
     }
 
     /// Route a bracketed paste event to the active text input dialog.
+    ///
+    /// Active text-input dialogs (rename / send_message / new) win first so
+    /// multi-line voice/dictation lands in the dialog the user is actively
+    /// typing into. The settings view is checked LAST — its paste handler
+    /// strips newlines (settings/input.rs handle_paste sanitizes), which
+    /// would destroy multi-line dictation if we checked it first.
     pub fn handle_paste(&mut self, text: &str) {
-        if let Some(ref mut settings) = self.settings_view {
-            settings.handle_paste(text);
-            return;
-        }
         if let Some(ref mut dialog) = self.rename_dialog {
             dialog.handle_paste(text);
             return;
@@ -1528,6 +1530,10 @@ impl HomeView {
         }
         if let Some(ref mut dialog) = self.new_dialog {
             dialog.handle_paste(text);
+            return;
+        }
+        if let Some(ref mut settings) = self.settings_view {
+            settings.handle_paste(text);
         }
     }
 
