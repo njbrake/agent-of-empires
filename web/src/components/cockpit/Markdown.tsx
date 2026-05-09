@@ -18,6 +18,7 @@ import type {
   SyntaxHighlighterProps,
 } from "@assistant-ui/react-markdown";
 import { useEffect, useState } from "react";
+import remarkGfm from "remark-gfm";
 
 import {
   getHighlighter,
@@ -38,6 +39,7 @@ export function Markdown({ text }: Props) {
     <MarkdownTextPrimitive
       preprocess={() => text}
       smooth
+      remarkPlugins={[remarkGfm]}
       className="cockpit-markdown text-sm leading-relaxed"
       components={{
         SyntaxHighlighter: ShikiSyntaxHighlighter,
