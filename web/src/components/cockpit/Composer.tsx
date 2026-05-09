@@ -147,7 +147,7 @@ export function Composer({
 
   return (
     <div className="border-t border-surface-800 bg-surface-900 px-4 pt-3 pb-3">
-      <div className="mx-auto max-w-3xl">
+      <div className="mx-auto max-w-3xl xl:max-w-4xl 2xl:max-w-5xl">
         <ComposerPrimitive.Unstable_TriggerPopoverRoot>
           <ComposerPrimitive.Root
             className={[
