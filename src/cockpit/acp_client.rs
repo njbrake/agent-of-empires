@@ -19,13 +19,13 @@ use std::sync::Arc;
 use agent_client_protocol::schema::{
     CancelNotification, ClientCapabilities, ContentBlock, CreateTerminalRequest,
     CreateTerminalResponse, FileSystemCapabilities, InitializeRequest, KillTerminalRequest,
-    KillTerminalResponse, NewSessionRequest, PermissionOptionKind, PromptRequest, ProtocolVersion,
-    ReadTextFileRequest, ReadTextFileResponse, ReleaseTerminalRequest, ReleaseTerminalResponse,
-    RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
-    SelectedPermissionOutcome, SessionNotification, SessionUpdate, SetSessionModeRequest,
-    TerminalId, TerminalOutputRequest, TerminalOutputResponse, TextContent,
-    WaitForTerminalExitRequest, WaitForTerminalExitResponse, WriteTextFileRequest,
-    WriteTextFileResponse,
+    KillTerminalResponse, LoadSessionRequest, NewSessionRequest, PermissionOptionKind,
+    PromptRequest, ProtocolVersion, ReadTextFileRequest, ReadTextFileResponse,
+    ReleaseTerminalRequest, ReleaseTerminalResponse, RequestPermissionOutcome,
+    RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome, SessionId,
+    SessionNotification, SessionUpdate, SetSessionModeRequest, TerminalId, TerminalOutputRequest,
+    TerminalOutputResponse, TextContent, WaitForTerminalExitRequest, WaitForTerminalExitResponse,
+    WriteTextFileRequest, WriteTextFileResponse,
 };
 use agent_client_protocol::{Agent, ByteStreams, Client, ConnectionTo, Responder};
 use thiserror::Error;
@@ -76,6 +76,14 @@ pub struct SpawnConfig {
     /// mounted into the container so the in-container agent can reach
     /// the host-side aoe.
     pub socket_path: Option<PathBuf>,
+    /// ACP session id from a previous run, captured during the last
+    /// `session/new` and persisted on `Instance.cockpit_acp_session_id`.
+    /// When `Some` and the agent advertises
+    /// `agent_capabilities.load_session = true`, the connection task
+    /// sends `LoadSessionRequest` instead of `NewSessionRequest`. On
+    /// load failure the task falls back to `session/new` and emits a
+    /// `SessionContextReset` event.
+    pub stored_acp_session_id: Option<String>,
 }
 
 /// Commands sent from `AcpClient` methods to the background connection task.
@@ -177,6 +185,7 @@ impl AcpClient {
                 Self::start_with_stdio(
                     config.cwd,
                     config.additional_dirs,
+                    config.stored_acp_session_id,
                     session_id,
                     child,
                     pending_responders,
@@ -192,6 +201,7 @@ impl AcpClient {
                 Self::start_with_socket(
                     config.cwd,
                     config.additional_dirs,
+                    config.stored_acp_session_id,
                     session_id,
                     child,
                     pending_responders,
@@ -211,6 +221,7 @@ impl AcpClient {
     async fn start_with_stdio(
         cwd: PathBuf,
         additional_dirs: Vec<PathBuf>,
+        stored_acp_session_id: Option<String>,
         session_id: CockpitSessionId,
         child: Arc<Mutex<tokio::process::Child>>,
         pending_responders: PendingResponders,
@@ -259,6 +270,7 @@ impl AcpClient {
             pending_for_task,
             resources,
             None,
+            stored_acp_session_id,
             Some(ready_tx),
         ));
 
@@ -277,6 +289,7 @@ impl AcpClient {
     async fn start_with_socket(
         cwd: PathBuf,
         additional_dirs: Vec<PathBuf>,
+        stored_acp_session_id: Option<String>,
         session_id: CockpitSessionId,
         child: Arc<Mutex<tokio::process::Child>>,
         pending_responders: PendingResponders,
@@ -322,6 +335,7 @@ impl AcpClient {
             pending_for_task,
             resources,
             socket_path,
+            stored_acp_session_id,
             Some(ready_tx),
         ));
 
@@ -829,11 +843,14 @@ async fn run_connection_task<W, R>(
     pending_responders: PendingResponders,
     resources: SessionResources,
     socket_path: Option<PathBuf>,
+    stored_acp_session_id: Option<String>,
     ready_tx: Option<oneshot::Sender<Result<(), AcpError>>>,
 ) where
     W: futures_util::AsyncWrite + Send + 'static,
     R: futures_util::AsyncRead + Send + 'static,
 {
+    use std::sync::atomic::{AtomicBool, Ordering};
+
     let ready_tx = Arc::new(Mutex::new(ready_tx));
     let ready_for_block = ready_tx.clone();
     let event_tx_for_notif = event_tx.clone();
@@ -850,13 +867,38 @@ async fn run_connection_task<W, R>(
     let res_term_kill = resources.clone();
     let res_term_release = resources.clone();
 
+    // After a successful `session/load`, claude-agent-acp re-emits the
+    // full prior transcript as `session/update` notifications (each
+    // historical assistant turn replayed as agent_message_chunk
+    // events). Our SQLite event store already has those events from
+    // the original run, so passing them through would double the
+    // transcript on the next reload — every prior assistant bubble
+    // appears once from disk replay, then again from the agent's
+    // history dump. Suppress agent-side notifications during the
+    // window between session/load success and the first user prompt;
+    // cleared on the first ClientCmd::Prompt below.
+    let suppress_history_replay = Arc::new(AtomicBool::new(false));
+    let suppress_for_notif = suppress_history_replay.clone();
+    let suppress_for_block = suppress_history_replay.clone();
+    let session_label_for_notif = session_label.clone();
+
     let result = Client
         .builder()
         .name("aoe-cockpit")
         .on_receive_notification(
             move |notification: SessionNotification, _cx| {
                 let event_tx = event_tx_for_notif.clone();
+                let suppress = suppress_for_notif.clone();
+                let session_label = session_label_for_notif.clone();
                 async move {
+                    if suppress.load(Ordering::Relaxed) {
+                        debug!(
+                            target: "cockpit.acp",
+                            session = %session_label,
+                            "dropping post-load history-replay notification"
+                        );
+                        return Ok(());
+                    }
                     for event in map_update_to_events(notification.update) {
                         if event_tx.send(event).await.is_err() {
                             break;
@@ -949,7 +991,7 @@ async fn run_connection_task<W, R>(
                     .read_text_file(true)
                     .write_text_file(true))
                 .terminal(true);
-            let _init = connection
+            let init = connection
                 .send_request(
                     InitializeRequest::new(ProtocolVersion::V1)
                         .client_capabilities(capabilities),
@@ -957,35 +999,116 @@ async fn run_connection_task<W, R>(
                 .block_task()
                 .await?;
 
-            info!(target: "cockpit.acp", session = %session_label, "creating ACP session");
-            let new_session = connection
-                .send_request(NewSessionRequest::new(cwd))
-                .block_task()
-                .await?;
-            let acp_session_id = new_session.session_id.clone();
+            let load_session_capable = init.agent_capabilities.load_session;
+            info!(
+                target: "cockpit.acp",
+                session = %session_label,
+                load_session_capable,
+                stored_id = ?stored_acp_session_id,
+                "initialize handshake complete"
+            );
 
-            // Surface the agent-advertised modes (if any) so the UI
-            // can render the actual modes the agent supports rather
-            // than the hard-coded four. Claude's adapter typically
-            // ships a mode set with ids like "default" / "plan" /
-            // "accept_edits" / "bypass_permissions".
-            if let Some(modes) = &new_session.modes {
-                let infos: Vec<ModeInfo> = modes
-                    .available_modes
-                    .iter()
-                    .map(|m| ModeInfo {
-                        id: m.id.0.to_string(),
-                        name: m.name.clone(),
-                        description: m.description.clone(),
-                    })
-                    .collect();
+            // Decide whether to resume the prior agent session or create
+            // a fresh one. session/load is only attempted when the agent
+            // advertises support AND we have a stored id to feed it. On
+            // load failure (id GC'd, agent state lost, etc.) we fall
+            // through to session/new and emit SessionContextReset so the
+            // UI can show a notice and clear stale token-usage hints.
+            let mut acp_session_id: Option<SessionId> = None;
+            if load_session_capable {
+                if let Some(stored) = stored_acp_session_id.clone() {
+                    info!(
+                        target: "cockpit.acp",
+                        session = %session_label,
+                        stored_id = %stored,
+                        "resuming session via session/load"
+                    );
+                    let req = LoadSessionRequest::new(stored.clone(), cwd.clone());
+                    match connection.send_request(req).block_task().await {
+                        Ok(_resp) => {
+                            info!(
+                                target: "cockpit.acp",
+                                session = %session_label,
+                                stored_id = %stored,
+                                "session/load succeeded; suppressing post-load history replay"
+                            );
+                            // Block agent-side history-dump notifications
+                            // until the user issues their first prompt.
+                            // See `suppress_history_replay` declaration
+                            // above for rationale.
+                            suppress_for_block.store(true, Ordering::Relaxed);
+                            acp_session_id = Some(SessionId::from(stored));
+                        }
+                        Err(e) => {
+                            warn!(
+                                target: "cockpit.acp",
+                                session = %session_label,
+                                stored_id = %stored,
+                                "session/load failed, falling back to session/new: {e}"
+                            );
+                            let _ = event_tx_for_block
+                                .send(Event::SessionContextReset {
+                                    reason: format!("session/load failed: {e}"),
+                                })
+                                .await;
+                        }
+                    }
+                }
+            }
+
+            let acp_session_id = if let Some(id) = acp_session_id {
+                id
+            } else {
+                info!(
+                    target: "cockpit.acp",
+                    session = %session_label,
+                    "creating fresh session via session/new"
+                );
+                let new_session = connection
+                    .send_request(NewSessionRequest::new(cwd))
+                    .block_task()
+                    .await?;
+                let id = new_session.session_id.clone();
+                info!(
+                    target: "cockpit.acp",
+                    session = %session_label,
+                    new_id = %id.0,
+                    "session/new succeeded, captured acp_session_id"
+                );
+
+                // Surface the agent-advertised modes (if any) so the UI
+                // can render the actual modes the agent supports rather
+                // than the hard-coded four. Claude's adapter typically
+                // ships a mode set with ids like "default" / "plan" /
+                // "accept_edits" / "bypass_permissions".
+                if let Some(modes) = &new_session.modes {
+                    let infos: Vec<ModeInfo> = modes
+                        .available_modes
+                        .iter()
+                        .map(|m| ModeInfo {
+                            id: m.id.0.to_string(),
+                            name: m.name.clone(),
+                            description: m.description.clone(),
+                        })
+                        .collect();
+                    let _ = event_tx_for_block
+                        .send(Event::ModesAvailable {
+                            current_mode_id: modes.current_mode_id.0.to_string(),
+                            modes: infos,
+                        })
+                        .await;
+                }
+
+                // Tell the server-side listener so it can persist the
+                // new id on Instance.cockpit_acp_session_id.
                 let _ = event_tx_for_block
-                    .send(Event::ModesAvailable {
-                        current_mode_id: modes.current_mode_id.0.to_string(),
-                        modes: infos,
+                    .send(Event::AcpSessionAssigned {
+                        acp_session_id: id.0.to_string(),
                     })
                     .await;
-            }
+
+                id
+            };
 
             if let Some(tx) = ready_for_block.lock().await.take() {
                 let _ = tx.send(Ok(()));
@@ -998,6 +1121,17 @@ async fn run_connection_task<W, R>(
                 };
                 match cmd {
                     Some(ClientCmd::Prompt(text)) => {
+                        // First user prompt after session/load: stop
+                        // dropping notifications. The agent's history-
+                        // replay window is over; everything from now on
+                        // is live conversation.
+                        if suppress_for_block.swap(false, Ordering::Relaxed) {
+                            info!(
+                                target: "cockpit.acp",
+                                session = %session_label,
+                                "first user prompt after session/load; resuming notification pump"
+                            );
+                        }
                         info!(target: "cockpit.acp", "sending prompt ({} chars)", text.len());
                         let _ = connection
                             .send_request(PromptRequest::new(
@@ -1379,6 +1513,7 @@ mod tests {
             additional_dirs: vec![],
             provider_env: vec![],
             socket_path: None,
+            stored_acp_session_id: None,
         };
         let result = AcpClient::spawn(config, CockpitSessionId("s-1".into())).await;
         assert!(matches!(result, Err(AcpError::Spawn(_))));

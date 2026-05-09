@@ -276,6 +276,7 @@ impl<S: BroadcastSink> Supervisor<S> {
     /// budget respawning a worker the supervisor no longer points
     /// at. The reservation makes the second caller fail fast with
     /// AlreadyRunning instead.
+    #[allow(clippy::too_many_arguments)]
     pub async fn spawn(
         &self,
         session_id: String,
@@ -284,6 +285,7 @@ impl<S: BroadcastSink> Supervisor<S> {
         additional_dirs: Vec<PathBuf>,
         provider_env: Vec<(String, String)>,
         model: Option<String>,
+        stored_acp_session_id: Option<String>,
     ) -> Result<(), SupervisorError> {
         let _reservation = {
             let workers = self.workers.lock().await;
@@ -335,7 +337,15 @@ impl<S: BroadcastSink> Supervisor<S> {
             additional_dirs,
             provider_env: env,
             socket_path: None,
+            stored_acp_session_id: stored_acp_session_id.clone(),
         };
+
+        debug!(
+            target: "cockpit.supervisor",
+            session = %session_id,
+            stored_id = ?stored_acp_session_id,
+            "spawning cockpit worker"
+        );
 
         let cockpit_session_id = CockpitSessionId(session_id.clone());
         let mut client = AcpClient::spawn(config.clone(), cockpit_session_id.clone()).await?;
@@ -396,6 +406,44 @@ impl<S: BroadcastSink> Supervisor<S> {
             let mut inbound = initial_inbound;
             loop {
                 while let Some(event) = inbound.recv().await {
+                    // Mirror the agent-assigned id into the cached
+                    // spawn_config so a subsequent crash respawn picks
+                    // up the latest id and calls session/load instead
+                    // of session/new. Mirror SessionContextReset the
+                    // other way so a load failure on this run doesn't
+                    // keep retrying the same dead id on the next
+                    // respawn.
+                    match &event {
+                        Event::AcpSessionAssigned { acp_session_id } => {
+                            let mut guard = workers.lock().await;
+                            if let Some(handle) = guard.get_mut(&session_id) {
+                                if let Some(cfg) = handle.spawn_config.as_mut() {
+                                    info!(
+                                        target: "cockpit.supervisor",
+                                        session = %session_id,
+                                        acp_session_id = %acp_session_id,
+                                        "caching agent-assigned id for future respawn"
+                                    );
+                                    cfg.stored_acp_session_id = Some(acp_session_id.clone());
+                                }
+                            }
+                        }
+                        Event::SessionContextReset { reason } => {
+                            let mut guard = workers.lock().await;
+                            if let Some(handle) = guard.get_mut(&session_id) {
+                                if let Some(cfg) = handle.spawn_config.as_mut() {
+                                    info!(
+                                        target: "cockpit.supervisor",
+                                        session = %session_id,
+                                        %reason,
+                                        "clearing cached id after session/load failure"
+                                    );
+                                    cfg.stored_acp_session_id = None;
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
                     let seq = next_seq(&next_seqs, &session_id);
                     sink.publish(&session_id, seq, &event);
                     if let Event::ApprovalRequested { approval } = &event {
@@ -416,54 +464,56 @@ impl<S: BroadcastSink> Supervisor<S> {
                     session = %session_id,
                     "drain channel closed (agent connection task ended); evaluating respawn"
                 );
-                let respawn_config = match restart_decision(&workers, &session_id).await {
-                    RestartDecision::Respawn(cfg) => {
-                        info!(
-                            target: "cockpit.supervisor",
-                            session = %session_id,
-                            command = %cfg.spec.command,
-                            "respawn approved; sleeping {}ms before restart",
-                            RESPAWN_BACKOFF.as_millis()
-                        );
-                        cfg
-                    }
-                    RestartDecision::BudgetBurned => {
-                        warn!(
-                            target: "cockpit.supervisor",
-                            session = %session_id,
-                            max_respawns = MAX_RESPAWNS_IN_WINDOW,
-                            window_secs = RESTART_WINDOW.as_secs(),
-                            "restart budget burned; parking session"
-                        );
-                        let seq = next_seq(&next_seqs, &session_id);
-                        sink.publish(
-                            &session_id,
-                            seq,
-                            &Event::AgentStartupError {
-                                message: format!(
-                                    "ACP agent crashed more than {} times in {}s; \
+                let respawn_config: SpawnConfig =
+                    match restart_decision(&workers, &session_id).await {
+                        RestartDecision::Respawn(cfg) => {
+                            info!(
+                                target: "cockpit.supervisor",
+                                session = %session_id,
+                                command = %cfg.spec.command,
+                                stored_id = ?cfg.stored_acp_session_id,
+                                "respawn approved; sleeping {}ms before restart",
+                                RESPAWN_BACKOFF.as_millis()
+                            );
+                            *cfg
+                        }
+                        RestartDecision::BudgetBurned => {
+                            warn!(
+                                target: "cockpit.supervisor",
+                                session = %session_id,
+                                max_respawns = MAX_RESPAWNS_IN_WINDOW,
+                                window_secs = RESTART_WINDOW.as_secs(),
+                                "restart budget burned; parking session"
+                            );
+                            let seq = next_seq(&next_seqs, &session_id);
+                            sink.publish(
+                                &session_id,
+                                seq,
+                                &Event::AgentStartupError {
+                                    message: format!(
+                                        "ACP agent crashed more than {} times in {}s; \
                                      not respawning. Use the web dashboard to retry.",
-                                    MAX_RESPAWNS_IN_WINDOW,
-                                    RESTART_WINDOW.as_secs()
-                                ),
-                            },
-                        );
-                        // Remove the dead WorkerHandle so a retry
-                        // (POST /api/sessions/:id/cockpit/spawn) doesn't
-                        // hit AlreadyRunning. The seq counter and replay
-                        // buffer survive so the retry's events stay
-                        // monotonic and the user keeps the conversation
-                        // log up to the crash point.
-                        let mut guard = workers.lock().await;
-                        guard.remove(&session_id);
-                        return;
-                    }
-                    RestartDecision::Gone => {
-                        // The worker entry was removed (shutdown / delete).
-                        // Exit quietly.
-                        return;
-                    }
-                };
+                                        MAX_RESPAWNS_IN_WINDOW,
+                                        RESTART_WINDOW.as_secs()
+                                    ),
+                                },
+                            );
+                            // Remove the dead WorkerHandle so a retry
+                            // (POST /api/sessions/:id/cockpit/spawn) doesn't
+                            // hit AlreadyRunning. The seq counter and replay
+                            // buffer survive so the retry's events stay
+                            // monotonic and the user keeps the conversation
+                            // log up to the crash point.
+                            let mut guard = workers.lock().await;
+                            guard.remove(&session_id);
+                            return;
+                        }
+                        RestartDecision::Gone => {
+                            // The worker entry was removed (shutdown / delete).
+                            // Exit quietly.
+                            return;
+                        }
+                    };
 
                 tokio::time::sleep(RESPAWN_BACKOFF).await;
 
@@ -665,7 +715,11 @@ impl<S: BroadcastSink> Supervisor<S> {
 }
 
 enum RestartDecision {
-    Respawn(SpawnConfig),
+    // Boxed because `SpawnConfig` is significantly larger than the
+    // unit variants — clippy::large_enum_variant flags the size
+    // imbalance, and the indirection costs nothing on the cold-path
+    // respawn flow.
+    Respawn(Box<SpawnConfig>),
     BudgetBurned,
     /// The worker entry was removed (e.g. shutdown).
     Gone,
@@ -704,7 +758,7 @@ async fn restart_decision(
         return RestartDecision::BudgetBurned;
     }
     match handle.spawn_config.clone() {
-        Some(cfg) => RestartDecision::Respawn(cfg),
+        Some(cfg) => RestartDecision::Respawn(Box::new(cfg)),
         // Test handles inserted via fake_for_test: the entry exists but
         // we have no real spawn config. Treat as budget-burned so the
         // drain task exits cleanly.
@@ -835,6 +889,7 @@ mod tests {
                 vec![],
                 vec![],
                 None,
+                None,
             )
             .await;
         assert!(matches!(result, Err(SupervisorError::UnknownAgent(_))));
@@ -868,6 +923,7 @@ mod tests {
                 std::env::temp_dir(),
                 vec![],
                 vec![],
+                None,
                 None,
             )
             .await;
@@ -903,6 +959,7 @@ mod tests {
             additional_dirs: vec![],
             provider_env: vec![],
             socket_path: None,
+            stored_acp_session_id: None,
         };
         {
             let mut workers = sup.workers.lock().await;
@@ -1061,6 +1118,7 @@ mod tests {
                 std::env::temp_dir(),
                 vec![],
                 vec![],
+                None,
                 None,
             )
             .await;

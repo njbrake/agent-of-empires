@@ -344,6 +344,53 @@ describe("applyEvent / AvailableCommandsUpdated", () => {
   });
 });
 
+describe("applyEvent / ACP session id lifecycle", () => {
+  it("AcpSessionAssigned is a no-op for the conversation surface", () => {
+    const before = emptyCockpitState();
+    const after = applyEvent(before, {
+      session_id: "s-1",
+      seq: 1,
+      event: { AcpSessionAssigned: { acp_session_id: "uuid-1234" } },
+    });
+    // Seq advanced; no activity row appended; usage untouched.
+    expect(after.lastSeq).toBe(1);
+    expect(after.activity).toEqual([]);
+    expect(after.sessionUsage).toBeNull();
+  });
+
+  it("SessionContextReset clears stale usage and appends a context_reset row", () => {
+    let state = applyEvent(emptyCockpitState(), {
+      session_id: "s-1",
+      seq: 1,
+      event: { UsageUpdated: { usage: { used: 75000, size: 200000 } } },
+    });
+    expect(state.sessionUsage?.used).toBe(75000);
+
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 2,
+      event: {
+        SessionContextReset: { reason: "session/load failed: bad id" },
+      },
+    });
+    expect(state.sessionUsage).toBeNull();
+    const last = state.activity[state.activity.length - 1];
+    expect(last?.kind).toBe("context_reset");
+    expect(last?.text).toContain("session/load failed");
+  });
+
+  it("SessionContextReset uses a fallback message when reason is empty", () => {
+    const state = applyEvent(emptyCockpitState(), {
+      session_id: "s-1",
+      seq: 1,
+      event: { SessionContextReset: { reason: "" } },
+    });
+    const last = state.activity[state.activity.length - 1];
+    expect(last?.kind).toBe("context_reset");
+    expect(last?.text.length).toBeGreaterThan(0);
+  });
+});
+
 describe("applyEvent / Stopped empty-output fallback", () => {
   it("appends an empty_output row when the turn ended with no agent output", () => {
     let state = applyEvent(emptyCockpitState(), {

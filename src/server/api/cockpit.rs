@@ -85,6 +85,7 @@ pub async fn spawn_cockpit(
         .map(|p| (p.key, p.value))
         .collect();
     let model = req.model.or_else(|| instance.cockpit_model.clone());
+    let stored_acp_session_id = instance.cockpit_acp_session_id.clone();
 
     match state
         .cockpit_supervisor
@@ -95,6 +96,7 @@ pub async fn spawn_cockpit(
             req.additional_dirs,
             provider_env,
             model,
+            stored_acp_session_id,
         )
         .await
     {
@@ -383,9 +385,18 @@ pub async fn cockpit_enable(
     let supervisor = state.cockpit_supervisor.clone();
     let session_id = id.clone();
     let model = instance.cockpit_model.clone();
+    let stored_acp_session_id = instance.cockpit_acp_session_id.clone();
     tokio::spawn(async move {
         if let Err(e) = supervisor
-            .spawn(session_id.clone(), &agent_name, cwd, vec![], vec![], model)
+            .spawn(
+                session_id.clone(),
+                &agent_name,
+                cwd,
+                vec![],
+                vec![],
+                model,
+                stored_acp_session_id,
+            )
             .await
         {
             let message = format!("Failed to start cockpit agent {agent_name:?}: {e}");
@@ -451,6 +462,18 @@ pub async fn cockpit_disable(
     // would silently drop it.
     state.cockpit_event_store.delete_session(&id);
     instance.cockpit_mode = false;
+    // Clear the stored ACP session id: the agent's transcript is
+    // tied to the cockpit-mode lifecycle. If the user re-enables
+    // cockpit later, the agent should start a fresh session/new
+    // rather than try to resume an id that's no longer relevant.
+    if instance.cockpit_acp_session_id.is_some() {
+        tracing::debug!(
+            target: "cockpit.switch",
+            session = %id,
+            "clearing cockpit_acp_session_id on disable"
+        );
+        instance.cockpit_acp_session_id = None;
+    }
 
     // Persist + start tmux. start() now no longer short-circuits for
     // cockpit_mode, so it will create a fresh tmux session and run

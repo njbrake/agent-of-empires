@@ -144,7 +144,9 @@ export type CockpitEvent =
   | { AgentMessageChunk: { text: string } }
   | { Stopped: { reason: string } }
   | { AgentStartupError: { message: string } }
-  | { UserPromptSent: { text: string } };
+  | { UserPromptSent: { text: string } }
+  | { AcpSessionAssigned: { acp_session_id: string } }
+  | { SessionContextReset: { reason: string } };
 
 export interface CockpitFrame {
   session_id: string;
@@ -219,7 +221,8 @@ export interface ActivityRow {
     | "message"
     | "thinking"
     | "user_prompt"
-    | "empty_output";
+    | "empty_output"
+    | "context_reset";
   text: string;
   toolCallId?: string;
   /** Full ToolCall payload, present on tool_start rows so the UI can
@@ -505,6 +508,29 @@ export function applyEvent(
     next.startupError = null;
     next.lastError = null;
     next.turnActive = true;
+    return next;
+  }
+  if ("AcpSessionAssigned" in event) {
+    // Persistence breadcrumb only; the server-side listener writes the
+    // id to sessions.json so a subsequent restart can call session/load.
+    // Nothing to render in the conversation surface.
+    return next;
+  }
+  if ("SessionContextReset" in event) {
+    // session/load failed and the agent fell back to session/new — its
+    // context window is empty. Show a muted notice in the transcript
+    // and clear the now-stale token-usage hint so the composer footer
+    // doesn't keep showing the previous run's "75k / 200k" until the
+    // next UsageUpdate arrives.
+    next.sessionUsage = null;
+    next.activity = pushActivity(next.activity, {
+      id: `reset-${frame.seq}`,
+      kind: "context_reset",
+      text:
+        event.SessionContextReset.reason ||
+        "Conversation context reset; agent transcript was unavailable.",
+      at: new Date().toISOString(),
+    });
     return next;
   }
   // RawAgentUpdate, TodoListUpdated, anything else: pass through with

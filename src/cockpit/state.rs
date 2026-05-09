@@ -334,6 +334,23 @@ pub enum Event {
     UserPromptSent {
         text: String,
     },
+    /// Agent-assigned ACP session id from a successful `session/new`.
+    /// Server-side listener catches this and persists the id on
+    /// `Instance.cockpit_acp_session_id` so the next spawn can call
+    /// `session/load` and the model retains context across `aoe serve`
+    /// restarts. Not emitted on `session/load` success (id unchanged).
+    AcpSessionAssigned {
+        acp_session_id: String,
+    },
+    /// `session/load` failed and we fell back to `session/new`. The
+    /// agent's stored transcript is gone (or the id was never valid),
+    /// so the model starts with no context. UI uses this to render a
+    /// muted notice and clear the now-stale token-usage hint; the
+    /// server-side listener clears `Instance.cockpit_acp_session_id`
+    /// before the new id arrives via `AcpSessionAssigned`.
+    SessionContextReset {
+        reason: String,
+    },
 }
 
 impl CockpitState {
@@ -415,6 +432,14 @@ impl CockpitState {
             Event::Stopped { .. } => {}
             Event::AgentStartupError { .. } => {}
             Event::UserPromptSent { .. } => {}
+            Event::AcpSessionAssigned { .. } => {}
+            Event::SessionContextReset { .. } => {
+                // Agent's stored context is gone; clear the cached
+                // usage snapshot so the composer footer doesn't keep
+                // showing the old "75k / 200k" until the new session
+                // emits its first UsageUpdate.
+                self.usage = None;
+            }
         }
         self.last_seq = self.last_seq.saturating_add(1);
         self.updated_at = Utc::now();

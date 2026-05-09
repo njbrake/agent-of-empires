@@ -786,6 +786,7 @@ pub async fn create_session(
                     instance.cockpit_agent.clone(),
                     instance.cockpit_model.clone(),
                     instance.project_path.clone(),
+                    instance.cockpit_acp_session_id.clone(),
                 ))
             } else {
                 None
@@ -795,7 +796,9 @@ pub async fn create_session(
             drop(instances);
 
             #[cfg(feature = "serve")]
-            if let Some((id, tool, agent_override, model, project_path)) = cockpit_spawn_target {
+            if let Some((id, tool, agent_override, model, project_path, stored_acp_session_id)) =
+                cockpit_spawn_target
+            {
                 let agent = state
                     .cockpit_supervisor
                     .pick_agent_for_tool(&tool, agent_override.as_deref())
@@ -805,7 +808,15 @@ pub async fn create_session(
                 let state_for_check = state.clone();
                 tokio::spawn(async move {
                     if let Err(e) = supervisor
-                        .spawn(id.clone(), &agent, cwd, vec![], vec![], model)
+                        .spawn(
+                            id.clone(),
+                            &agent,
+                            cwd,
+                            vec![],
+                            vec![],
+                            model,
+                            stored_acp_session_id,
+                        )
                         .await
                     {
                         // If the session was deleted during the 2-3s

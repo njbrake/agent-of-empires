@@ -223,6 +223,15 @@ pub struct Instance {
     #[cfg(feature = "serve")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cockpit_model: Option<String>,
+    /// Agent-assigned ACP session id captured from `session/new`. When
+    /// the agent advertises `agent_capabilities.load_session = true`
+    /// (claude-agent-acp does), the next spawn calls `session/load`
+    /// with this id so the agent reloads its on-disk transcript and
+    /// the model retains context across `aoe serve` restarts. Cleared
+    /// on cockpit_disable, session delete, or `session/load` failure.
+    #[cfg(feature = "serve")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cockpit_acp_session_id: Option<String>,
 
     // Runtime state (not serialized)
     #[serde(skip)]
@@ -411,6 +420,8 @@ impl Instance {
             cockpit_agent: None,
             #[cfg(feature = "serve")]
             cockpit_model: None,
+            #[cfg(feature = "serve")]
+            cockpit_acp_session_id: None,
             last_error_check: None,
             last_start_time: None,
             last_error: None,
@@ -2215,6 +2226,28 @@ mod tests {
         assert!(!json.contains("last_error_check"));
         assert!(!json.contains("last_start_time"));
         assert!(!json.contains("last_error"));
+    }
+
+    #[cfg(feature = "serve")]
+    #[test]
+    fn test_instance_cockpit_acp_session_id_roundtrip() {
+        let mut inst = Instance::new("Test", "/tmp/test");
+        inst.cockpit_mode = true;
+        inst.cockpit_acp_session_id = Some("acp-uuid-1234".to_string());
+
+        let json = serde_json::to_string(&inst).unwrap();
+        assert!(json.contains("cockpit_acp_session_id"));
+        let deserialized: Instance = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            deserialized.cockpit_acp_session_id,
+            Some("acp-uuid-1234".to_string())
+        );
+
+        // None should not be serialized.
+        let mut inst2 = Instance::new("Test", "/tmp/test");
+        inst2.cockpit_mode = true;
+        let json2 = serde_json::to_string(&inst2).unwrap();
+        assert!(!json2.contains("cockpit_acp_session_id"));
     }
 
     #[test]

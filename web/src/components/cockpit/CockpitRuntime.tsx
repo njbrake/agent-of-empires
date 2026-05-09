@@ -165,6 +165,12 @@ export function activityToThreadMessages(
       // a tiny muted notice instead of leaving the assistant bubble
       // empty.
       currentAssistant.appendText(`_${row.text}_`);
+    } else if (row.kind === "context_reset") {
+      // session/load failed and the agent fell back to session/new on
+      // an `aoe serve` restart, so the model's context window is empty
+      // even though our UI still replays the prior transcript. Show a
+      // muted notice so users know the agent has lost prior turns.
+      currentAssistant.appendText(`_Conversation context reset — ${row.text}_`);
     } else {
       // Unknown kind: surface as a tiny text part so we don't lose
       // the data, but don't make it the whole message.

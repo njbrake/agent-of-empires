@@ -783,6 +783,18 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
         });
     }
 
+    // Cockpit ACP-session-id listener: persists the agent-assigned ACP
+    // session id onto Instance.cockpit_acp_session_id so the next
+    // spawn calls session/load and the model retains context across
+    // `aoe serve` restarts. Mirrors the cockpit_status_listener
+    // pattern; both subscribe to the same broadcast channel.
+    {
+        let acp_id_state = state.clone();
+        tokio::spawn(async move {
+            cockpit_acp_session_id_listener(acp_id_state).await;
+        });
+    }
+
     // Push-notification consumer: subscribes to status_tx, applies
     // dwell + cooldown, sends pushes. No-op when push_state is None
     // (feature disabled via web.notifications_enabled=false).
@@ -1354,6 +1366,7 @@ async fn reconcile_cockpit_workers(
                     i.cockpit_agent.clone(),
                     i.cockpit_model.clone(),
                     i.project_path.clone(),
+                    i.cockpit_acp_session_id.clone(),
                 )
             })
             .collect()
@@ -1362,7 +1375,7 @@ async fn reconcile_cockpit_workers(
     let live: std::collections::HashSet<&String> = targets.iter().map(|t| &t.0).collect();
     attempted.retain(|id| live.contains(id));
 
-    for (id, tool, agent_override, model, project_path) in targets {
+    for (id, tool, agent_override, model, project_path, stored_acp_session_id) in targets {
         if attempted.contains(&id) {
             continue;
         }
@@ -1410,7 +1423,15 @@ async fn reconcile_cockpit_workers(
         // sessions.rs) stays detached because it's the only spawn in
         // flight at that moment.
         let spawn_result = supervisor
-            .spawn(id.clone(), &agent, cwd, vec![], vec![], model)
+            .spawn(
+                id.clone(),
+                &agent,
+                cwd,
+                vec![],
+                vec![],
+                model,
+                stored_acp_session_id,
+            )
             .await;
         if let Err(e) = spawn_result {
             // Re-check whether the session still exists in instances.
@@ -1488,14 +1509,15 @@ async fn status_poll_loop(state: Arc<AppState>) {
             // sidebar dot would never turn green after a prompt.
             #[cfg(feature = "serve")]
             {
-                let overlay: std::collections::HashMap<
+                type CockpitStatusOverlay = std::collections::HashMap<
                     String,
                     (
                         Status,
                         Option<chrono::DateTime<chrono::Utc>>,
                         Option<chrono::DateTime<chrono::Utc>>,
                     ),
-                > = {
+                >;
+                let overlay: CockpitStatusOverlay = {
                     let state_instances = state.instances.read().await;
                     state_instances
                         .iter()
@@ -1599,6 +1621,116 @@ async fn cockpit_status_listener(state: Arc<AppState>) {
     }
 }
 
+/// What an event tells the ACP-session-id listener to do. `None` means
+/// the event is irrelevant. Extracted so the JSON-shape parsing has a
+/// pure-function test surface.
+#[cfg(feature = "serve")]
+#[derive(Debug, PartialEq, Eq)]
+enum AcpSessionChange {
+    Assigned(String),
+    Reset(String),
+}
+
+#[cfg(feature = "serve")]
+fn derive_acp_session_change(event: &serde_json::Value) -> Option<AcpSessionChange> {
+    let map = event.as_object()?;
+    if let Some(id) = map
+        .get("AcpSessionAssigned")
+        .and_then(|v| v.get("acp_session_id"))
+        .and_then(|v| v.as_str())
+    {
+        return Some(AcpSessionChange::Assigned(id.to_string()));
+    }
+    if let Some(reason) = map
+        .get("SessionContextReset")
+        .and_then(|v| v.get("reason"))
+        .and_then(|v| v.as_str())
+    {
+        return Some(AcpSessionChange::Reset(reason.to_string()));
+    }
+    None
+}
+
+/// Persist the agent-assigned ACP session id on
+/// `Instance.cockpit_acp_session_id` (and clear it on
+/// `SessionContextReset`) so a subsequent `aoe serve` restart can call
+/// `session/load` and keep the model's context window. Subscribes to
+/// the same broadcast channel as `cockpit_status_listener`; both run
+/// independently so one failing doesn't block the other.
+#[cfg(feature = "serve")]
+async fn cockpit_acp_session_id_listener(state: Arc<AppState>) {
+    let mut rx = state.cockpit_events_tx.subscribe();
+    while let Ok(frame) = rx.recv().await {
+        let Some(change) = derive_acp_session_change(&frame.event) else {
+            continue;
+        };
+
+        let profile = {
+            let mut instances = state.instances.write().await;
+            let Some(inst) = instances.iter_mut().find(|i| i.id == frame.session_id) else {
+                continue;
+            };
+            if !inst.cockpit_mode {
+                continue;
+            }
+            match &change {
+                AcpSessionChange::Assigned(new_id) => {
+                    if inst.cockpit_acp_session_id.as_deref() == Some(new_id.as_str()) {
+                        // Same id — already on disk, no need to rewrite.
+                        continue;
+                    }
+                    tracing::info!(
+                        target: "cockpit.supervisor",
+                        session = %frame.session_id,
+                        acp_session_id = %new_id,
+                        "persisting agent-assigned ACP session id"
+                    );
+                    inst.cockpit_acp_session_id = Some(new_id.clone());
+                }
+                AcpSessionChange::Reset(reason) => {
+                    tracing::info!(
+                        target: "cockpit.supervisor",
+                        session = %frame.session_id,
+                        %reason,
+                        "clearing stored ACP session id after session/load failure"
+                    );
+                    inst.cockpit_acp_session_id = None;
+                }
+            }
+            inst.source_profile.clone()
+        };
+
+        // Persist to sessions.json scoped to the owning profile, same
+        // pattern as cockpit_enable / cockpit_disable.
+        let scoped: Vec<_> = state
+            .instances
+            .read()
+            .await
+            .iter()
+            .filter(|i| i.source_profile == profile)
+            .cloned()
+            .collect();
+        match crate::session::Storage::new(&profile) {
+            Ok(storage) => {
+                if let Err(e) = storage.save(&scoped) {
+                    tracing::warn!(
+                        target: "cockpit.supervisor",
+                        session = %frame.session_id,
+                        "save after acp_session_id update: {e}"
+                    );
+                }
+            }
+            Err(e) => {
+                tracing::warn!(
+                    target: "cockpit.supervisor",
+                    session = %frame.session_id,
+                    "open storage for acp_session_id update: {e}"
+                );
+            }
+        }
+    }
+}
+
 /// Map a cockpit broadcast event JSON to the `Status` it implies.
 /// `None` means the event is informational and shouldn't move the
 /// session out of its current state.
@@ -1649,6 +1781,55 @@ mod tests {
         assert_eq!(
             derive_cockpit_status(&json!({"AgentStartupError": {"message": "boom"}})),
             Some(Status::Error)
+        );
+    }
+
+    #[cfg(feature = "serve")]
+    #[test]
+    fn derive_acp_session_change_extracts_assigned_id() {
+        use serde_json::json;
+        let ev = json!({"AcpSessionAssigned": {"acp_session_id": "uuid-1234"}});
+        assert_eq!(
+            derive_acp_session_change(&ev),
+            Some(AcpSessionChange::Assigned("uuid-1234".into()))
+        );
+    }
+
+    #[cfg(feature = "serve")]
+    #[test]
+    fn derive_acp_session_change_extracts_reset_reason() {
+        use serde_json::json;
+        let ev = json!({"SessionContextReset": {"reason": "session/load failed: bad id"}});
+        assert_eq!(
+            derive_acp_session_change(&ev),
+            Some(AcpSessionChange::Reset(
+                "session/load failed: bad id".into()
+            ))
+        );
+    }
+
+    #[cfg(feature = "serve")]
+    #[test]
+    fn derive_acp_session_change_ignores_unrelated_events() {
+        use serde_json::json;
+        assert_eq!(
+            derive_acp_session_change(&json!({"AgentMessageChunk": {"text": "x"}})),
+            None
+        );
+        assert_eq!(
+            derive_acp_session_change(&json!({"Stopped": {"reason": "prompt_complete"}})),
+            None
+        );
+        // Bare string variants must not match.
+        assert_eq!(derive_acp_session_change(&json!("ThinkingStarted")), None);
+        // Malformed payloads (missing required field) drop to None.
+        assert_eq!(
+            derive_acp_session_change(&json!({"AcpSessionAssigned": {}})),
+            None
+        );
+        assert_eq!(
+            derive_acp_session_change(&json!({"SessionContextReset": {}})),
+            None
         );
     }
 
