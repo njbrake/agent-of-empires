@@ -19,7 +19,7 @@
 //! `Supervisor::resolve_permission(session_id, nonce, decision)` route
 //! through the held client.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -104,12 +104,46 @@ pub struct Supervisor<S: BroadcastSink> {
     registry: Arc<Mutex<AgentRegistry>>,
     workers: Arc<Mutex<HashMap<String, WorkerHandle>>>,
     next_seqs: Arc<SeqMap>,
+    /// Reservation set: a session_id present here means another task
+    /// is mid-`spawn` for it. `AcpClient::spawn` takes 2-3s for the
+    /// initial handshake; without this reservation, two concurrent
+    /// callers (POST /api/sessions auto-spawn + 2s reconciler tick)
+    /// both pass the empty-`workers` check and race to insert,
+    /// silently overwriting the first WorkerHandle. The dropped
+    /// client's cmd_tx then closes its connection task and burns the
+    /// restart budget. The RAII `SpawnReservation` guard in `spawn`
+    /// removes the entry on success, error, or panic.
+    pending_spawns: Arc<Mutex<HashSet<String>>>,
     /// Cap on concurrently-running workers, snapshotted from
     /// `[cockpit] max_concurrent_workers` at startup. Enforced in
     /// `spawn`; new workers past the cap return `CapacityFull`.
     /// Tests use `Supervisor::new` (effectively unbounded); production
     /// uses `Supervisor::with_capacity`.
     max_concurrent_workers: u32,
+}
+
+/// RAII guard: ensures a session_id is removed from `pending_spawns`
+/// when `spawn` returns or unwinds, no matter which path was taken.
+/// Without this, a panic or early-return in the middle of `spawn`
+/// would leave a phantom reservation that blocks every future spawn
+/// for that session.
+struct SpawnReservation {
+    pending: Arc<Mutex<HashSet<String>>>,
+    session_id: String,
+}
+
+impl Drop for SpawnReservation {
+    fn drop(&mut self) {
+        // Sync remove via blocking_lock would deadlock inside an
+        // async runtime; spawn a detached task to release. The set
+        // operation is constant-time and the task lives only for the
+        // duration of one `lock().await` + remove.
+        let pending = Arc::clone(&self.pending);
+        let session_id = std::mem::take(&mut self.session_id);
+        tokio::spawn(async move {
+            pending.lock().await.remove(&session_id);
+        });
+    }
 }
 
 impl<S: BroadcastSink> Supervisor<S> {
@@ -127,6 +161,7 @@ impl<S: BroadcastSink> Supervisor<S> {
             registry: Arc::new(Mutex::new(AgentRegistry::with_defaults())),
             workers: Arc::new(Mutex::new(HashMap::new())),
             next_seqs: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            pending_spawns: Arc::new(Mutex::new(HashSet::new())),
             max_concurrent_workers,
         }
     }
@@ -202,18 +237,22 @@ impl<S: BroadcastSink> Supervisor<S> {
     }
 
     /// Spawn a cockpit worker for the given session. Returns Err if a
-    /// worker is already running for that session, or if the
+    /// worker is already running for that session, if a spawn for
+    /// the same session is already in progress, or if the
     /// `max_concurrent_workers` cap is full.
     ///
-    /// Concurrency note: the AlreadyRunning + CapacityFull check
-    /// releases the workers lock before `AcpClient::spawn`, then
-    /// re-acquires it for the insert. Two concurrent `spawn(same_id)`
-    /// calls could in principle both pass the check and race to
-    /// insert. Today's callers don't trigger this — the auto-spawn
-    /// reconciler dedupes via its `attempted` set, REST handlers
-    /// gate on `is_running()`, and CLI add is single-process — so we
-    /// rely on the contract rather than holding the lock across the
-    /// (possibly seconds-long) `AcpClient::spawn().await`.
+    /// Concurrency: `AcpClient::spawn` performs the ACP handshake
+    /// (initialize + session/new), which takes 2-3s while no lock is
+    /// held. Without the `pending_spawns` reservation below, two
+    /// concurrent callers for the same session_id would both pass
+    /// the empty-`workers` check, both finish the handshake, and
+    /// both insert into `workers` — the second insert silently
+    /// overwriting the first WorkerHandle. The dropped client's
+    /// cmd_tx would then close, its connection task would exit
+    /// cleanly, and the orphaned drain task would burn the restart
+    /// budget respawning a worker the supervisor no longer points
+    /// at. The reservation makes the second caller fail fast with
+    /// AlreadyRunning instead.
     pub async fn spawn(
         &self,
         session_id: String,
@@ -223,7 +262,7 @@ impl<S: BroadcastSink> Supervisor<S> {
         provider_env: Vec<(String, String)>,
         model: Option<String>,
     ) -> Result<(), SupervisorError> {
-        {
+        let _reservation = {
             let workers = self.workers.lock().await;
             if workers.contains_key(&session_id) {
                 return Err(SupervisorError::AlreadyRunning(session_id));
@@ -234,7 +273,21 @@ impl<S: BroadcastSink> Supervisor<S> {
                     limit: self.max_concurrent_workers,
                 });
             }
-        }
+            // Acquire pending_spawns under the same critical section
+            // as the workers check so the (workers ∪ pending) set is
+            // observed atomically. A second caller arriving here
+            // sees either the workers entry (after insert below) or
+            // the pending entry; in both cases it returns
+            // AlreadyRunning.
+            let mut pending = self.pending_spawns.lock().await;
+            if !pending.insert(session_id.clone()) {
+                return Err(SupervisorError::AlreadyRunning(session_id));
+            }
+            SpawnReservation {
+                pending: Arc::clone(&self.pending_spawns),
+                session_id: session_id.clone(),
+            }
+        };
 
         let mut spec = self.resolve_agent(agent).await?;
         // Apply ${aoe_data_dir} placeholder substitution against the
@@ -276,6 +329,17 @@ impl<S: BroadcastSink> Supervisor<S> {
         let client = Arc::new(Mutex::new(client));
 
         let mut workers = self.workers.lock().await;
+        // Belt-and-braces: even with the pending_spawns reservation,
+        // re-check that no worker has been inserted under our nose.
+        // If it has, drop the freshly-spawned client (its Drop will
+        // close cmd_tx and tear down the subprocess cleanly) and
+        // surface AlreadyRunning rather than overwriting the live
+        // WorkerHandle.
+        if workers.contains_key(&session_id) {
+            drop(workers);
+            drop(client);
+            return Err(SupervisorError::AlreadyRunning(session_id));
+        }
         let drain_task = self.start_drain_task(session_id.clone(), inbound);
         workers.insert(
             session_id,
@@ -523,9 +587,17 @@ impl<S: BroadcastSink> Supervisor<S> {
         }
     }
 
-    /// Whether this session has a running cockpit worker.
+    /// Whether this session has a running cockpit worker, or a
+    /// spawn currently in-flight. The pending check prevents the
+    /// reconciler from racing the auto-spawn-after-create path: a
+    /// freshly-created cockpit session takes 2-3s for the ACP
+    /// handshake to insert the WorkerHandle, and during that window
+    /// `workers.contains_key` is false.
     pub async fn is_running(&self, session_id: &str) -> bool {
-        self.workers.lock().await.contains_key(session_id)
+        if self.workers.lock().await.contains_key(session_id) {
+            return true;
+        }
+        self.pending_spawns.lock().await.contains(session_id)
     }
 
     /// Return the number of running workers (for the doctor + stats).
