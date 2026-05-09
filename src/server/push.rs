@@ -418,6 +418,10 @@ pub fn spawn_consumer(state: std::sync::Arc<super::AppState>) {
         let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(SEND_CONCURRENCY));
         let mut rx = state.status_tx.subscribe();
         let mut dwell: HashMap<String, DwellState> = HashMap::new();
+        // Tracks the last suppression reason so we only log on transitions
+        // (active → suppressed, suppressed → active, or reason flip),
+        // instead of every 500ms tick while the dashboard is open.
+        let mut last_suppress_reason: Option<&'static str> = None;
 
         // Interleave receiving status changes with polling the dwell
         // map for sessions whose dwell window has elapsed. A simple
@@ -441,7 +445,7 @@ pub fn spawn_consumer(state: std::sync::Arc<super::AppState>) {
                     }
                 }
                 _ = tick.tick() => {
-                    fire_due_pushes(state.clone(), &client, &semaphore, &mut dwell).await;
+                    fire_due_pushes(state.clone(), &client, &semaphore, &mut dwell, &mut last_suppress_reason).await;
                 }
             }
         }
@@ -499,6 +503,7 @@ async fn fire_due_pushes(
     client: &reqwest::Client,
     semaphore: &std::sync::Arc<tokio::sync::Semaphore>,
     dwell: &mut HashMap<String, DwellState>,
+    last_suppress_reason: &mut Option<&'static str>,
 ) {
     let Some(push) = app_state.push.as_ref() else {
         return; // feature disabled, nothing to do
@@ -518,8 +523,20 @@ async fn fire_due_pushes(
     } else {
         None
     };
-    if let Some(reason) = suppress_reason {
-        tracing::debug!("push: suppressed, {}", reason);
+    // Only log on transitions: entering a new suppression reason or
+    // resuming after suppression ends. Otherwise this fires every 500ms.
+    if suppress_reason != *last_suppress_reason {
+        match (*last_suppress_reason, suppress_reason) {
+            (None, Some(reason)) => tracing::debug!("push: suppressed, {}", reason),
+            (Some(_), Some(reason)) => {
+                tracing::debug!("push: suppression reason changed to {}", reason)
+            }
+            (Some(prev), None) => tracing::debug!("push: resumed (was suppressed: {})", prev),
+            (None, None) => {}
+        }
+        *last_suppress_reason = suppress_reason;
+    }
+    if suppress_reason.is_some() {
         return;
     }
 
