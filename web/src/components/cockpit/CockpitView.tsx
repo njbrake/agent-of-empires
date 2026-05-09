@@ -15,15 +15,10 @@
 
 import { useEffect, useState } from "react";
 import {
-  ActionBarPrimitive,
   MessagePrimitive,
   ThreadPrimitive,
 } from "@assistant-ui/react";
-import {
-  ChevronDown,
-  Copy as CopyIcon,
-  ListChecks,
-} from "lucide-react";
+import { ChevronDown, ListChecks } from "lucide-react";
 
 import { ApprovalCard } from "./ApprovalCard";
 import { CockpitRuntime, type CockpitContext } from "./CockpitRuntime";
@@ -154,16 +149,6 @@ function UserMessage() {
           }}
         />
       </div>
-      <ActionBarPrimitive.Root
-        autohide="not-last"
-        className="opacity-0 transition-opacity duration-100 group-hover:opacity-100 focus-within:opacity-100"
-      >
-        <div className="flex items-center gap-0.5 rounded-md border border-surface-700/60 bg-surface-850 p-0.5">
-          <ActionBarPrimitive.Copy asChild>
-            <ActionIconButton label="Copy" icon={<CopyIcon className="h-3 w-3" />} />
-          </ActionBarPrimitive.Copy>
-        </div>
-      </ActionBarPrimitive.Root>
     </MessagePrimitive.Root>
   );
 }
@@ -181,43 +166,7 @@ function AssistantMessage() {
           }}
         />
       </div>
-      <ActionBarPrimitive.Root
-        autohide="not-last"
-        className="mt-1 opacity-0 transition-opacity duration-100 group-hover:opacity-100 focus-within:opacity-100"
-      >
-        <div className="flex items-center gap-0.5 rounded-md border border-surface-700/60 bg-surface-850 p-0.5">
-          <ActionBarPrimitive.Copy asChild>
-            <ActionIconButton label="Copy" icon={<CopyIcon className="h-3 w-3" />} />
-          </ActionBarPrimitive.Copy>
-        </div>
-      </ActionBarPrimitive.Root>
     </MessagePrimitive.Root>
-  );
-}
-
-function ActionIconButton({
-  label,
-  icon,
-  ...rest
-}: {
-  label: string;
-  icon: React.ReactNode;
-} & React.ButtonHTMLAttributes<HTMLButtonElement>) {
-  return (
-    <button
-      type="button"
-      title={label}
-      aria-label={label}
-      {...rest}
-      className={[
-        "inline-flex h-6 w-6 items-center justify-center rounded text-text-dim",
-        "hover:bg-surface-800 hover:text-text-secondary",
-        "transition-colors",
-        rest.className ?? "",
-      ].join(" ")}
-    >
-      {icon}
-    </button>
   );
 }
 
