@@ -17,6 +17,7 @@ import type {
   CodeHeaderProps,
   SyntaxHighlighterProps,
 } from "@assistant-ui/react-markdown";
+import * as React from "react";
 import { useEffect, useState } from "react";
 import remarkGfm from "remark-gfm";
 
@@ -44,8 +45,27 @@ export function Markdown({ text }: Props) {
       components={{
         SyntaxHighlighter: ShikiSyntaxHighlighter,
         CodeHeader,
+        table: TableWithScroll,
       }}
     />
+  );
+}
+
+/**
+ * Wrap GFM tables in a scroll container so a real <table> element can
+ * keep its native auto-layout (cells distribute to fill the bubble
+ * width when content is short, expand and trigger horizontal scroll
+ * when content is long). Doing this on the bare <table> via
+ * `display: block` breaks column sizing.
+ */
+function TableWithScroll({
+  children,
+  ...rest
+}: React.ComponentPropsWithoutRef<"table">) {
+  return (
+    <div className="cockpit-table-wrap">
+      <table {...rest}>{children}</table>
+    </div>
   );
 }
 

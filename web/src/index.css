@@ -163,16 +163,16 @@ body {
   border-top: 1px solid var(--color-surface-800);
   margin: 0.75rem 0;
 }
-.cockpit-markdown table {
-  display: block;
-  width: max-content;
-  max-width: 100%;
+.cockpit-markdown .cockpit-table-wrap {
   margin: 0.75rem 0;
-  border-collapse: collapse;
   border: 1px solid var(--color-surface-800);
   border-radius: 0.375rem;
   overflow: auto;
   max-height: 24rem;
+}
+.cockpit-markdown table {
+  width: 100%;
+  border-collapse: collapse;
 }
 .cockpit-markdown thead {
   position: sticky;
