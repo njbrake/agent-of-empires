@@ -89,7 +89,7 @@ regex = "1.10"
 git2 = { version = "0.20", features = ["vendored-openssl"] }
 
 # Diff computation
-similar = "3.0"
+similar = "3.1"
 
 # Hashing
 sha2 = "0.11"
