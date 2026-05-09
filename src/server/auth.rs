@@ -208,6 +208,30 @@ pub async fn auth_middleware(
 ) -> Response {
     let client_ip = resolve_client_ip(addr, request.headers());
 
+    // Trace cockpit ws specifically so we can see whether the
+    // browser ever reached the server when the cockpit live updates
+    // get stuck. Other ws paths (terminal) are not as load-bearing
+    // for diagnostics today.
+    if request.uri().path().contains("/cockpit/ws") {
+        let token_sources: Vec<&'static str> = extract_tokens(&request)
+            .iter()
+            .map(|(_, src)| match src {
+                TokenSource::Cookie => "cookie",
+                TokenSource::QueryParam => "query",
+                TokenSource::Bearer => "bearer",
+                TokenSource::WebSocketProtocol => "ws-proto",
+            })
+            .collect();
+        let ws_protocols = extract_ws_protocols(&request);
+        tracing::debug!(
+            target: "auth",
+            ip = %client_ip,
+            token_sources = ?token_sources,
+            ws_protocol_count = ws_protocols.len(),
+            "auth_middleware entered for cockpit ws"
+        );
+    }
+
     // No-auth mode: pass everything through. Insert a zeroed
     // AuthenticatedTokenHash so handlers that extract the extension
     // still succeed; all no-auth clients share the same "owner" value.
@@ -314,6 +338,13 @@ pub async fn auth_middleware(
                 if !has_valid_session {
                     // For API routes, return JSON 401. For HTML routes, redirect.
                     if path.starts_with("/api/") || path.contains("/ws") {
+                        tracing::warn!(
+                            target: "auth",
+                            ip = %client_ip,
+                            path = %path,
+                            had_session_cookie = session_id.is_some(),
+                            "login session check failed; rejecting api/ws with 401"
+                        );
                         return (
                             StatusCode::UNAUTHORIZED,
                             axum::Json(serde_json::json!({

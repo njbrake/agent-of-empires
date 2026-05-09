@@ -34,13 +34,46 @@ pub async fn cockpit_ws(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    // Logged at DEBUG so we can prove the route was reached even
+    // when the upgrade fails. If this line is missing from debug.log
+    // for a session that's stuck on "no live updates", the request
+    // never got past auth_middleware (or never left the browser).
+    // One line per WS connect (not per message), so debug-level
+    // doesn't risk spamming.
+    debug!(target: "cockpit.ws", session = %id, "cockpit ws route entered, beginning upgrade");
+    let session_for_handler = id.clone();
     ws.protocols(["aoe-auth"])
-        .on_upgrade(move |socket| handle(socket, id, state))
+        .on_upgrade(move |socket| async move {
+            debug!(target: "cockpit.ws", session = %session_for_handler, "cockpit ws upgrade complete");
+            handle(socket, session_for_handler, state).await
+        })
 }
 
 async fn handle(mut socket: WebSocket, session_id: String, state: Arc<AppState>) {
+    // Subscribe BEFORE the replay snapshot so events published in the
+    // window between snapshot and live-loop entry land in `rx`. Such
+    // events also appear in the replay snapshot if the publish
+    // happens to interleave; the client dedupes via `frame.seq <=
+    // state.lastSeq`, so duplicates are no-ops. The reverse order
+    // (snapshot first, then subscribe) leaves a gap where live
+    // events get dropped.
     let mut rx = state.cockpit_events_tx.subscribe();
-    debug!(target: "cockpit.ws", session = %session_id, "cockpit ws subscribed");
+
+    // Replay buffered frames immediately on connect. Without this,
+    // any events published in the upgrade gap between the client's
+    // POST /cockpit/spawn (or the first /cockpit/prompt) and our
+    // `subscribe()` above are silently dropped by the broadcast
+    // channel, since tokio's `broadcast::Sender::send` discards the
+    // message when no receivers exist. The replay buffer captures
+    // every published event, so reading it here closes the race
+    // without forcing the client to GET /cockpit/replay separately.
+    let replay_count = drain_replay_into_socket(&mut socket, &state, &session_id).await;
+    debug!(
+        target: "cockpit.ws",
+        session = %session_id,
+        replayed = replay_count,
+        "cockpit ws subscribed"
+    );
 
     loop {
         select! {
@@ -94,6 +127,65 @@ async fn handle(mut socket: WebSocket, session_id: String, state: Arc<AppState>)
 
     debug!(target: "cockpit.ws", session = %session_id, "cockpit ws disconnected");
     let _ = socket.send(Message::Close(None)).await;
+}
+
+/// Read every buffered event for `session_id` out of the replay
+/// buffer and forward it to the socket as a CockpitBroadcastFrame.
+/// Returns the number of frames sent. On serialise/send errors the
+/// loop stops early — the live-loop fallback below will pick up
+/// from there. Gap markers are skipped; they're surfaced via
+/// `lagged` messages from the live channel when relevant.
+async fn drain_replay_into_socket(
+    socket: &mut WebSocket,
+    state: &AppState,
+    session_id: &str,
+) -> usize {
+    use crate::cockpit::replay_buffer::BufferedEvent;
+
+    // Snapshot the buffer entries under the lock, then drop it
+    // before any await so we don't block other publishers behind
+    // a slow socket.send.
+    let entries: Vec<BufferedEvent> = {
+        let guard = match state.cockpit_replay.lock() {
+            Ok(g) => g,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        let Some(buf) = guard.get(session_id) else {
+            return 0;
+        };
+        // `replay_from(0)` returns every event currently buffered.
+        // None means a leading gap blocks replay; in that case we
+        // give up on the replay path and let the client fall back
+        // to GET /cockpit/replay (which will return `lost: true`).
+        match buf.replay_from(0) {
+            Some(items) => items,
+            None => return 0,
+        }
+    };
+
+    let mut sent = 0usize;
+    for item in entries {
+        let BufferedEvent::Event { seq, event } = item else {
+            continue;
+        };
+        let frame = CockpitBroadcastFrame {
+            session_id: session_id.to_string(),
+            seq,
+            event: serde_json::to_value(&event).unwrap_or(serde_json::Value::Null),
+        };
+        let payload = match serde_json::to_string(&frame) {
+            Ok(s) => s,
+            Err(e) => {
+                warn!(target: "cockpit.ws", "serialise replay frame: {e}");
+                continue;
+            }
+        };
+        if socket.send(Message::Text(payload.into())).await.is_err() {
+            break;
+        }
+        sent += 1;
+    }
+    sent
 }
 
 /// Helper used by the worker supervisor (and integration tests) to
