@@ -510,8 +510,39 @@ impl<S: BroadcastSink> Supervisor<S> {
         })
     }
 
+    /// Wait until the worker for `session_id` is fully spawned, or the
+    /// pending spawn drops out (failed/cancelled), or `deadline` elapses.
+    /// Returns true if the worker is now in the map.
+    ///
+    /// Hooks for the prompt/cancel/set_mode REST handlers: the user can
+    /// click Send right after enabling cockpit, while `Supervisor::spawn`
+    /// is still in the 2-3s ACP handshake. Without this wait, those
+    /// requests would 404 because the WorkerHandle isn't in `workers`
+    /// yet, even though it's about to be. Polling at 50ms keeps the
+    /// happy-path latency negligible while bounding the wait.
+    async fn wait_for_worker(&self, session_id: &str, deadline: std::time::Duration) -> bool {
+        let start = std::time::Instant::now();
+        loop {
+            if self.workers.lock().await.contains_key(session_id) {
+                return true;
+            }
+            // No worker yet. If a spawn is in flight, wait for it;
+            // otherwise the worker isn't coming and we should fail
+            // fast rather than burn the full deadline.
+            if !self.pending_spawns.lock().await.contains(session_id) {
+                return false;
+            }
+            if start.elapsed() >= deadline {
+                return false;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+    }
+
     /// Send a user prompt to a running cockpit worker.
     pub async fn send_prompt(&self, session_id: &str, text: &str) -> Result<(), SupervisorError> {
+        self.wait_for_worker(session_id, std::time::Duration::from_secs(10))
+            .await;
         let workers = self.workers.lock().await;
         let handle = workers
             .get(session_id)
@@ -524,6 +555,8 @@ impl<S: BroadcastSink> Supervisor<S> {
     /// Cancel the current turn for a running cockpit worker. Best-effort:
     /// returns Ok if the worker exists even when no turn is in flight.
     pub async fn cancel_prompt(&self, session_id: &str) -> Result<(), SupervisorError> {
+        self.wait_for_worker(session_id, std::time::Duration::from_secs(10))
+            .await;
         let workers = self.workers.lock().await;
         let handle = workers
             .get(session_id)
@@ -535,6 +568,8 @@ impl<S: BroadcastSink> Supervisor<S> {
 
     /// Set the active session mode via ACP session/set_mode.
     pub async fn set_mode(&self, session_id: &str, mode_id: &str) -> Result<(), SupervisorError> {
+        self.wait_for_worker(session_id, std::time::Duration::from_secs(10))
+            .await;
         let workers = self.workers.lock().await;
         let handle = workers
             .get(session_id)
