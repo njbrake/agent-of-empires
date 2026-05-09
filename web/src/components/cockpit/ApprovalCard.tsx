@@ -13,6 +13,7 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AlertTriangle, Check, Shield, X } from "lucide-react";
 import type { Approval, ApprovalDecision } from "../../lib/cockpitTypes";
+import { useServerDown, OFFLINE_TITLE } from "../../lib/connectionState";
 
 interface Props {
   approval: Approval;
@@ -22,6 +23,7 @@ interface Props {
 const LONG_PRESS_MS = 800;
 
 export function ApprovalCard({ approval, onResolve }: Props) {
+  const offline = useServerDown();
   const [phase, setPhase] = useState<"pending" | "submitting" | "rolled-back">(
     "pending",
   );
@@ -121,6 +123,9 @@ export function ApprovalCard({ approval, onResolve }: Props) {
           Could not reach the server. Tap to retry.
         </p>
       )}
+      {offline && (
+        <p className="px-3 pt-2 text-status-error text-xs">{OFFLINE_TITLE}</p>
+      )}
 
       <div className="flex items-stretch gap-1.5 p-2">
         {approval.destructive ? (
@@ -133,7 +138,7 @@ export function ApprovalCard({ approval, onResolve }: Props) {
                 ? "bg-rose-600 hover:bg-rose-500"
                 : "bg-rose-700 opacity-70 cursor-wait",
             ].join(" ")}
-            disabled={phase !== "pending" && phase !== "rolled-back"}
+            disabled={offline || (phase !== "pending" && phase !== "rolled-back")}
             onMouseDown={startLongPress}
             onMouseUp={cancelLongPress}
             onMouseLeave={cancelLongPress}
@@ -162,7 +167,7 @@ export function ApprovalCard({ approval, onResolve }: Props) {
                   ? "bg-brand-600 hover:bg-brand-500"
                   : "bg-brand-700 opacity-70 cursor-wait",
               ].join(" ")}
-              disabled={phase !== "pending"}
+              disabled={offline || phase !== "pending"}
               onClick={() => void submit("Allow")}
             >
               <Check className="h-3.5 w-3.5" />
@@ -179,9 +184,9 @@ export function ApprovalCard({ approval, onResolve }: Props) {
               ]
                 .filter(Boolean)
                 .join(" ")}
-              disabled={phase === "submitting"}
+              disabled={offline || phase === "submitting"}
               onClick={() => void submit("AllowAlways")}
-              title="Allow this tool for the whole session"
+              title={offline ? OFFLINE_TITLE : "Allow this tool for the whole session"}
             >
               Always
             </button>
@@ -199,7 +204,7 @@ export function ApprovalCard({ approval, onResolve }: Props) {
           ]
             .filter(Boolean)
             .join(" ")}
-          disabled={phase === "submitting"}
+          disabled={offline || phase === "submitting"}
           onClick={() => void submit("Deny")}
         >
           <X className="h-3.5 w-3.5" />
