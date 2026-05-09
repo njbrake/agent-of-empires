@@ -509,6 +509,11 @@ impl GitWorktree {
     /// Delete a local git branch.
     /// Returns an error if the branch doesn't exist or is currently checked out.
     pub fn delete_branch(&self, branch: &str) -> Result<()> {
+        tracing::debug!(
+            branch,
+            repo = %self.repo_path.display(),
+            "delete_branch: invoking `git branch -d`"
+        );
         let output = std::process::Command::new("git")
             .args(["branch", "-d", branch])
             .current_dir(&self.repo_path)
@@ -516,6 +521,14 @@ impl GitWorktree {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            tracing::debug!(
+                branch,
+                exit = ?output.status.code(),
+                stderr = %stderr,
+                stdout = %stdout,
+                "delete_branch: `git branch -d` failed"
+            );
             // If the branch has unmerged changes, try force delete
             if stderr.contains("not fully merged") {
                 let force_output = std::process::Command::new("git")
@@ -524,10 +537,25 @@ impl GitWorktree {
                     .output()?;
 
                 if !force_output.status.success() {
-                    return Err(GitError::BranchNotFound(branch.to_string()));
+                    let force_stderr = String::from_utf8_lossy(&force_output.stderr);
+                    tracing::debug!(
+                        branch,
+                        exit = ?force_output.status.code(),
+                        stderr = %force_stderr,
+                        "delete_branch: `git branch -D` (force) also failed"
+                    );
+                    return Err(GitError::WorktreeCommandFailed(format!(
+                        "git branch -D {}: {}",
+                        branch,
+                        force_stderr.trim()
+                    )));
                 }
             } else {
-                return Err(GitError::BranchNotFound(branch.to_string()));
+                return Err(GitError::WorktreeCommandFailed(format!(
+                    "git branch -d {}: {}",
+                    branch,
+                    stderr.trim()
+                )));
             }
         }
 
