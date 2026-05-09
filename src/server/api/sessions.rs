@@ -797,18 +797,38 @@ pub async fn create_session(
                     .await;
                 let cwd = std::path::PathBuf::from(project_path);
                 let supervisor = state.cockpit_supervisor.clone();
+                let state_for_check = state.clone();
                 tokio::spawn(async move {
                     if let Err(e) = supervisor
                         .spawn(id.clone(), &agent, cwd, vec![], vec![], model)
                         .await
                     {
+                        // If the session was deleted during the 2-3s
+                        // ACP handshake, the spawn error is for a
+                        // vanished session; demote to debug instead
+                        // of publishing AgentStartupError to a UI
+                        // that no longer exists.
+                        let still_present = state_for_check
+                            .instances
+                            .read()
+                            .await
+                            .iter()
+                            .any(|i| i.id == id);
                         let message = format!("Failed to start cockpit agent {agent:?}: {e}");
-                        tracing::warn!(
-                            target: "cockpit.supervisor",
-                            session = %id,
-                            "auto-spawn after create failed: {message}"
-                        );
-                        supervisor.publish_startup_error(&id, message);
+                        if still_present {
+                            tracing::warn!(
+                                target: "cockpit.supervisor",
+                                session = %id,
+                                "auto-spawn after create failed: {message}"
+                            );
+                            supervisor.publish_startup_error(&id, message);
+                        } else {
+                            tracing::debug!(
+                                target: "cockpit.supervisor",
+                                session = %id,
+                                "auto-spawn after create error after session removed (ignored): {message}"
+                            );
+                        }
                     }
                 });
             }

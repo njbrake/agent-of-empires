@@ -1354,12 +1354,27 @@ async fn reconcile_cockpit_workers(
             .pick_agent_for_tool(&tool, agent_override.as_deref())
             .await;
         let cwd = std::path::PathBuf::from(project_path);
-        tokio::spawn(async move {
-            if let Err(e) = supervisor
-                .spawn(id.clone(), &agent, cwd, vec![], vec![], model)
-                .await
-            {
-                let message = format!("Failed to start cockpit agent {agent:?}: {e}");
+        // Serialize reconciler spawns: claude-agent-acp lazy-installs
+        // its native binary on first run, and two concurrent session/new
+        // calls against a partially-installed SDK race the install,
+        // causing the second spawn to fail with "Claude Code native
+        // binary not found". Awaiting each spawn before starting the
+        // next costs us a few seconds at daemon startup but keeps the
+        // batch reliable. Per-session auto-spawn (the create flow in
+        // sessions.rs) stays detached because it's the only spawn in
+        // flight at that moment.
+        let spawn_result = supervisor
+            .spawn(id.clone(), &agent, cwd, vec![], vec![], model)
+            .await;
+        if let Err(e) = spawn_result {
+            // Re-check whether the session still exists in instances.
+            // The user can delete a session during the spawn handshake
+            // (2-3s for ACP), and the resulting error is noise for a
+            // session that no longer exists. Demote to debug rather
+            // than warn + AgentStartupError publish in that case.
+            let still_present = state.instances.read().await.iter().any(|i| i.id == id);
+            let message = format!("Failed to start cockpit agent {agent:?}: {e}");
+            if still_present {
                 tracing::warn!(
                     target: "cockpit.supervisor",
                     session = %id,
@@ -1367,8 +1382,15 @@ async fn reconcile_cockpit_workers(
                     "auto-spawn reconciler failed: {message}"
                 );
                 supervisor.publish_startup_error(&id, message);
+            } else {
+                tracing::debug!(
+                    target: "cockpit.supervisor",
+                    session = %id,
+                    agent = %agent,
+                    "auto-spawn reconciler error after session removed (ignored): {message}"
+                );
             }
-        });
+        }
     }
 }
 
