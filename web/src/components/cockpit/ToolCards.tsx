@@ -328,6 +328,11 @@ function ExecuteToolCard({ tool, result }: Props) {
               {description}
             </div>
           )}
+          {/* Full command — the chrome's primary slot is single-line
+              truncated, so we surface the untruncated command here so
+              users can read and copy it. Shiki's bash grammar gives
+              the same coloring as our markdown code blocks. */}
+          <HighlightedBlock text={command} language="bash" maxLines={6} />
           {output ? (
             <HighlightedBlock text={output} language="bash" maxLines={20} />
           ) : (
