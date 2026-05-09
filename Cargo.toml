@@ -126,7 +126,7 @@ jsonwebtoken = { version = "10.3", optional = true }
 getrandom = { version = "0.4", optional = true }
 
 # Agent Client Protocol — drives the cockpit surface bundled with `serve`.
-agent-client-protocol = { version = "0.11", optional = true }
+agent-client-protocol = { version = "0.11", optional = true, features = ["unstable_session_usage"] }
 agent-client-protocol-tokio = { version = "0.11", optional = true }
 
 # Node tarball download + extraction for the cockpit's bundled-Node

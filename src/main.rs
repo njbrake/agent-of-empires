@@ -39,8 +39,17 @@ async fn main() -> Result<()> {
             // them explicitly so debug.log captures the full picture
             // when chasing a crashed agent. Add new top-level targets
             // here when introducing them.
+            //
+            // `agent_client_protocol` covers the ACP framework's own
+            // tracing (request/response/error dispatch). The
+            // transport_actor at TRACE level dumps every raw JSON-RPC
+            // line, which is essential for diagnosing schema
+            // mismatches between our 0.11 client and newer agent
+            // adapters that emit notifications we can't deserialize
+            // (those surface in the agent's stderr as "Invalid
+            // message" no-id error responses we sent back).
             tracing_subscriber::fmt()
-                .with_env_filter("agent_of_empires=debug,cockpit=debug")
+                .with_env_filter("agent_of_empires=debug,cockpit=debug,agent_client_protocol=debug,agent_client_protocol::jsonrpc::transport_actor=trace")
                 .with_writer(std::sync::Mutex::new(file))
                 .with_ansi(false)
                 .init();
