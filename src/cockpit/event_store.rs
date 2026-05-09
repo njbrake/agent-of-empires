@@ -12,7 +12,7 @@ use std::sync::Mutex;
 
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
-use tracing::warn;
+use tracing::{debug, warn};
 
 use super::state::Event;
 
@@ -57,6 +57,12 @@ impl EventStore {
                 ON cockpit_events(session_id, seq);",
         )
         .context("create cockpit_events schema")?;
+        debug!(
+            target: "cockpit.event_store",
+            path = %db_path.display(),
+            cap = max_events_per_session,
+            "cockpit event store opened"
+        );
         Ok(Self {
             conn: Mutex::new(conn),
             max_events_per_session,
@@ -73,25 +79,52 @@ impl EventStore {
                 return;
             }
         };
+        let bytes = json.len();
+        let kind = event_kind(event);
         let now_ms = chrono::Utc::now().timestamp_millis();
         let conn = match self.conn.lock() {
             Ok(g) => g,
             Err(p) => p.into_inner(),
         };
-        if let Err(e) = conn.execute(
+        let inserted = match conn.execute(
             "INSERT OR IGNORE INTO cockpit_events (session_id, seq, event_json, created_at)
              VALUES (?1, ?2, ?3, ?4)",
             params![session_id, seq as i64, json, now_ms],
         ) {
-            warn!(target: "cockpit.event_store", "insert {session_id}@{seq}: {e}");
-            return;
+            Ok(rows) => rows,
+            Err(e) => {
+                warn!(target: "cockpit.event_store", "insert {session_id}@{seq}: {e}");
+                return;
+            }
+        };
+        if inserted == 0 {
+            // Primary-key collision: same (session_id, seq) seen before.
+            // Logged at debug because the cause is usually a benign retry
+            // (publish_user_prompt + replay drain re-publishing) rather
+            // than a bug, but we still want a breadcrumb.
+            debug!(
+                target: "cockpit.event_store",
+                session = %session_id,
+                seq,
+                kind,
+                "skipped duplicate event (already on disk)"
+            );
+        } else {
+            debug!(
+                target: "cockpit.event_store",
+                session = %session_id,
+                seq,
+                kind,
+                bytes,
+                "recorded event"
+            );
         }
         // Prune oldest beyond the retention cap. Cheap when below the cap
         // (the subquery returns 0 rows). We do it on every insert rather
         // than periodically so the upper bound on per-session disk usage
         // is strict rather than amortised.
         if self.max_events_per_session > 0 {
-            if let Err(e) = conn.execute(
+            match conn.execute(
                 "DELETE FROM cockpit_events
                  WHERE session_id = ?1
                    AND seq <= (
@@ -102,7 +135,19 @@ impl EventStore {
                    )",
                 params![session_id, self.max_events_per_session as i64],
             ) {
-                warn!(target: "cockpit.event_store", "prune {session_id}: {e}");
+                Ok(0) => {}
+                Ok(pruned) => {
+                    debug!(
+                        target: "cockpit.event_store",
+                        session = %session_id,
+                        pruned,
+                        cap = self.max_events_per_session,
+                        "pruned oldest events past retention cap"
+                    );
+                }
+                Err(e) => {
+                    warn!(target: "cockpit.event_store", "prune {session_id}: {e}");
+                }
             }
         }
     }
@@ -149,6 +194,13 @@ impl EventStore {
                 Err(e) => warn!(target: "cockpit.event_store", "row error: {e}"),
             }
         }
+        debug!(
+            target: "cockpit.event_store",
+            session = %session_id,
+            since,
+            returned = out.len(),
+            "replayed events"
+        );
         out
     }
 
@@ -160,7 +212,7 @@ impl EventStore {
             Ok(g) => g,
             Err(p) => p.into_inner(),
         };
-        match conn
+        let max = match conn
             .query_row(
                 "SELECT MAX(seq) FROM cockpit_events WHERE session_id = ?1",
                 params![session_id],
@@ -170,7 +222,14 @@ impl EventStore {
         {
             Ok(Some(Some(max))) => max as u64,
             _ => 0,
-        }
+        };
+        debug!(
+            target: "cockpit.event_store",
+            session = %session_id,
+            highest_seq = max,
+            "highest_seq query"
+        );
+        max
     }
 
     /// Return every session_id that has at least one event stored, with
@@ -201,7 +260,13 @@ impl EventStore {
                 return Vec::new();
             }
         };
-        rows.filter_map(|r| r.ok()).collect()
+        let collected: Vec<(String, u64)> = rows.filter_map(|r| r.ok()).collect();
+        debug!(
+            target: "cockpit.event_store",
+            sessions = collected.len(),
+            "all_session_seqs hydration"
+        );
+        collected
     }
 
     /// Drop every event for a session. Called when the session is
@@ -212,12 +277,49 @@ impl EventStore {
             Ok(g) => g,
             Err(p) => p.into_inner(),
         };
-        if let Err(e) = conn.execute(
+        match conn.execute(
             "DELETE FROM cockpit_events WHERE session_id = ?1",
             params![session_id],
         ) {
-            warn!(target: "cockpit.event_store", "delete {session_id}: {e}");
+            Ok(deleted) => {
+                debug!(
+                    target: "cockpit.event_store",
+                    session = %session_id,
+                    deleted,
+                    "deleted session events"
+                );
+            }
+            Err(e) => {
+                warn!(target: "cockpit.event_store", "delete {session_id}: {e}");
+            }
         }
+    }
+}
+
+/// Cheap discriminant string for `Event` so debug logs don't dump the
+/// full payload (assistant chunks can be a few KB each). Unknown
+/// variants fall back to "other"; `event_kind` only exists for log
+/// breadcrumbs and doesn't need to stay in lockstep with the enum.
+fn event_kind(event: &Event) -> &'static str {
+    match event {
+        Event::PlanUpdated { .. } => "plan_updated",
+        Event::TodoListUpdated { .. } => "todo_list_updated",
+        Event::ToolCallStarted { .. } => "tool_call_started",
+        Event::ToolCallCompleted { .. } => "tool_call_completed",
+        Event::ApprovalRequested { .. } => "approval_requested",
+        Event::ApprovalResolved { .. } => "approval_resolved",
+        Event::DiffEmitted { .. } => "diff_emitted",
+        Event::ThinkingStarted => "thinking_started",
+        Event::ThinkingEnded => "thinking_ended",
+        Event::RateLimit { .. } => "rate_limit",
+        Event::ModeChanged { .. } => "mode_changed",
+        Event::ModesAvailable { .. } => "modes_available",
+        Event::CurrentModeChanged { .. } => "current_mode_changed",
+        Event::RawAgentUpdate { .. } => "raw_agent_update",
+        Event::AgentMessageChunk { .. } => "agent_message_chunk",
+        Event::Stopped { .. } => "stopped",
+        Event::AgentStartupError { .. } => "agent_startup_error",
+        Event::UserPromptSent { .. } => "user_prompt_sent",
     }
 }
 
