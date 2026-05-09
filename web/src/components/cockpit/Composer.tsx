@@ -22,7 +22,6 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AtSign,
   ChevronUp,
-  CornerDownLeft,
   Paperclip,
   Slash,
   Square,
@@ -208,10 +207,6 @@ export function Composer({
               </div>
 
               <div className="flex items-center gap-2">
-                <kbd className="hidden md:inline-flex items-center gap-1 rounded border border-surface-700 bg-surface-800/80 px-1.5 py-0.5 font-mono text-[10px] text-text-dim">
-                  <CornerDownLeft className="h-3 w-3" />
-                  <span>Send</span>
-                </kbd>
                 <ThreadPrimitive.If running>
                   <StopButton />
                 </ThreadPrimitive.If>
