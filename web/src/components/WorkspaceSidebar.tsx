@@ -10,6 +10,7 @@ import {
 } from "../lib/session";
 import { useIdleDecayWindowMs } from "../lib/idleDecay";
 import { renameSession, setSessionNotifications } from "../lib/api";
+import { useServerDown, OFFLINE_TITLE } from "../lib/connectionState";
 import { StatusGlyph } from "./StatusGlyph";
 import { OwnerAvatar } from "./OwnerAvatar";
 
@@ -424,11 +425,13 @@ const RepoGroupHeader = memo(function RepoGroupHeader({
   hasActiveChild,
   onClick,
   onNewSession,
+  offline,
 }: {
   group: RepoGroup;
   hasActiveChild: boolean;
   onClick: () => void;
   onNewSession: () => void;
+  offline: boolean;
 }) {
   const dotClass =
     STATUS_DOT_CLASS[
@@ -463,10 +466,11 @@ const RepoGroupHeader = memo(function RepoGroupHeader({
           {group.displayName}
         </span>
       </button>
-      <Tooltip text="New session">
+      <Tooltip text={offline ? OFFLINE_TITLE : "New session"}>
         <button
           onClick={onNewSession}
-          className="w-8 h-8 flex items-center justify-center shrink-0 rounded-md transition-colors text-text-muted hover:text-text-secondary hover:bg-surface-700/50 cursor-pointer"
+          disabled={offline}
+          className="w-8 h-8 flex items-center justify-center shrink-0 rounded-md transition-colors text-text-muted hover:text-text-secondary hover:bg-surface-700/50 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-text-muted disabled:hover:bg-transparent"
           aria-label={`New session in ${group.displayName}`}
         >
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
@@ -514,6 +518,7 @@ export function WorkspaceSidebar({
   onDeleteSession,
   readOnly,
 }: Props) {
+  const offline = useServerDown();
   const [width, setWidth] = useState(loadSavedWidth);
   const [filterOpen, setFilterOpen] = useState(false);
   const [filterQuery, setFilterQuery] = useState("");
@@ -622,10 +627,11 @@ export function WorkspaceSidebar({
               </svg>
             </button>
           </Tooltip>
-          <Tooltip text="New session">
+          <Tooltip text={offline ? OFFLINE_TITLE : "New session"}>
             <button
               onClick={onNew}
-              className="w-8 h-8 flex items-center justify-center text-text-muted hover:text-text-secondary hover:bg-surface-800 cursor-pointer rounded-md transition-colors"
+              disabled={offline}
+              className="w-8 h-8 flex items-center justify-center text-text-muted hover:text-text-secondary hover:bg-surface-800 cursor-pointer rounded-md transition-colors disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-text-muted disabled:hover:bg-transparent"
               aria-label="New session"
             >
               <svg
@@ -685,6 +691,7 @@ export function WorkspaceSidebar({
                       ? onNew()
                       : onCreateSession(group.repoPath)
                   }
+                  offline={offline}
                 />
                 {showExpanded &&
                   group.workspaces.map((ws) => (

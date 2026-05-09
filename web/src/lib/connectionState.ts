@@ -8,6 +8,8 @@
  * whether that request succeeds.
  */
 
+import { useEffect, useState } from "react";
+
 let serverDown = false;
 const listeners = new Set<(down: boolean) => void>();
 
@@ -25,3 +27,18 @@ export function onServerDownChange(fn: (down: boolean) => void): () => void {
   listeners.add(fn);
   return () => listeners.delete(fn);
 }
+
+/**
+ * React hook: returns whether the backend is currently unreachable.
+ * Subscribe to changes so any component can disable controls that
+ * depend on the API (new session, settings toggles, wizards, etc.)
+ * without prop-drilling an `isOffline` flag from App.tsx.
+ */
+export function useServerDown(): boolean {
+  const [down, setDown] = useState<boolean>(serverDown);
+  useEffect(() => onServerDownChange(setDown), []);
+  return down;
+}
+
+/** Tooltip text to surface on a control disabled because the server is down. */
+export const OFFLINE_TITLE = "Disconnected — reconnect to use";
