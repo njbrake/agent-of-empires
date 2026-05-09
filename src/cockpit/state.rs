@@ -232,6 +232,15 @@ pub enum Event {
     AgentStartupError {
         message: String,
     },
+    /// Echo of a user-submitted prompt. Published synchronously by the
+    /// `POST /cockpit/prompt` handler before the text is forwarded to
+    /// the agent, so the replay buffer (and the on-disk event store)
+    /// captures the user's side of the conversation. Without this,
+    /// reload/session-switch reconstructs only the agent's chunks and
+    /// every turn collapses into one assistant blob.
+    UserPromptSent {
+        text: String,
+    },
 }
 
 impl CockpitState {
@@ -291,6 +300,7 @@ impl CockpitState {
             Event::AgentMessageChunk { .. } => {}
             Event::Stopped { .. } => {}
             Event::AgentStartupError { .. } => {}
+            Event::UserPromptSent { .. } => {}
         }
         self.last_seq = self.last_seq.saturating_add(1);
         self.updated_at = Utc::now();

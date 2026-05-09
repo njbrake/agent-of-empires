@@ -222,6 +222,17 @@ impl<S: BroadcastSink> Supervisor<S> {
             .publish(session_id, seq, &Event::AgentStartupError { message });
     }
 
+    /// Publish a UserPromptSent event before forwarding the prompt to
+    /// the ACP agent. The replay buffer (and on-disk event store) needs
+    /// the user's side of the conversation in the same stream as agent
+    /// chunks; otherwise a reconnecting client sees only assistant text
+    /// and every turn concatenates into one giant message.
+    pub fn publish_user_prompt(&self, session_id: &str, text: String) {
+        let seq = next_seq(&self.next_seqs, session_id);
+        self.sink
+            .publish(session_id, seq, &Event::UserPromptSent { text });
+    }
+
     /// Drop per-session bookkeeping (replay seq counter). Called when
     /// the session is deleted or its substrate is switched away from
     /// cockpit, so the next cockpit_enable starts a fresh conversation

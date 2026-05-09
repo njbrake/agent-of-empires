@@ -148,6 +148,13 @@ pub async fn cockpit_prompt(
     Path(id): Path<String>,
     Json(req): Json<PromptRequest>,
 ) -> impl IntoResponse {
+    // Publish the user's prompt into the event stream BEFORE forwarding
+    // to the agent so the replay buffer / on-disk store captures it
+    // even if the agent forward fails. The frontend treats UserPromptSent
+    // as authoritative and dedupes against its own optimistic row.
+    state
+        .cockpit_supervisor
+        .publish_user_prompt(&id, req.text.clone());
     match state.cockpit_supervisor.send_prompt(&id, &req.text).await {
         Ok(()) => StatusCode::ACCEPTED.into_response(),
         Err(SupervisorError::UnknownSession(_)) => {

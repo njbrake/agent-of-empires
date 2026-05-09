@@ -89,7 +89,8 @@ export type CockpitEvent =
   | { RawAgentUpdate: { payload: unknown } }
   | { AgentMessageChunk: { text: string } }
   | { Stopped: { reason: string } }
-  | { AgentStartupError: { message: string } };
+  | { AgentStartupError: { message: string } }
+  | { UserPromptSent: { text: string } };
 
 export interface CockpitFrame {
   session_id: string;
@@ -298,6 +299,38 @@ export function applyEvent(
     next.startupError = event.AgentStartupError.message;
     next.inFlightTool = null;
     next.turnActive = false;
+    return next;
+  }
+  if ("UserPromptSent" in event) {
+    const text = event.UserPromptSent.text;
+    // Dedupe against the optimistic row that useCockpit's sendPrompt
+    // dispatched a moment ago: if the most recent activity row is a
+    // matching user_prompt with no server-assigned id yet (id starts
+    // with "user-" + a timestamp, not "user-seq-"), promote it to the
+    // authoritative seq-based id rather than appending a duplicate.
+    const lastIdx = next.activity.length - 1;
+    const last = lastIdx >= 0 ? next.activity[lastIdx] : null;
+    if (
+      last &&
+      last.kind === "user_prompt" &&
+      last.text === text &&
+      !last.id.startsWith("user-seq-")
+    ) {
+      const updated = next.activity.slice();
+      updated[lastIdx] = { ...last, id: `user-seq-${frame.seq}` };
+      next.activity = updated;
+      return next;
+    }
+    next.activity = pushActivity(next.activity, {
+      id: `user-seq-${frame.seq}`,
+      kind: "user_prompt",
+      text,
+      at: new Date().toISOString(),
+    });
+    next.assistantMessage = "";
+    next.startupError = null;
+    next.lastError = null;
+    next.turnActive = true;
     return next;
   }
   // RawAgentUpdate, TodoListUpdated, anything else: pass through with
