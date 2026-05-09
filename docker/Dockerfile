@@ -15,6 +15,7 @@ RUN apt-get update && apt-get install -y \
     openssh-client \
     ripgrep \
     fzf \
+    unzip \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Node.js (required for Codex CLI)
