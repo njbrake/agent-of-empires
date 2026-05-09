@@ -213,6 +213,50 @@ describe("applyEvent / UserPromptSent", () => {
     expect(done!.text).toBe("completed");
   });
 
+  it("patches tool_start args/title when ToolCallUpdated arrives later", () => {
+    // Claude's claude-agent-acp emits the initial tool_call with an
+    // empty raw_input and a generic title ("Terminal"); the actual
+    // command lands in a follow-up ToolCallUpdate. The reducer must
+    // overwrite the row's tool payload so the card header shows
+    // `$ git log -n 10` rather than `$ Terminal`.
+    let state = applyEvent(emptyCockpitState(), {
+      session_id: "s-1",
+      seq: 1,
+      event: {
+        ToolCallStarted: {
+          tool_call: {
+            id: "tc-bash",
+            name: "Terminal",
+            kind: "execute",
+            args_preview: "{}",
+            started_at: new Date().toISOString(),
+          },
+        },
+      },
+    });
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 2,
+      event: {
+        ToolCallUpdated: {
+          tool_call_id: "tc-bash",
+          title: null,
+          args_preview: '{"command":"git log -n 10"}',
+        },
+      },
+    });
+    const startRow = state.activity.find(
+      (a) => a.kind === "tool_start" && a.toolCallId === "tc-bash",
+    );
+    expect(startRow?.tool?.args_preview).toBe(
+      '{"command":"git log -n 10"}',
+    );
+    expect(startRow?.tool?.name).toBe("Terminal");
+    expect(state.inFlightTool?.args_preview).toBe(
+      '{"command":"git log -n 10"}',
+    );
+  });
+
   it("uses 'tool failed' when error event has no content", () => {
     const state = applyEvent(emptyCockpitState(), {
       session_id: "s-1",

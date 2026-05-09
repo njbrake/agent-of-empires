@@ -636,20 +636,31 @@ fn map_update_to_events(update: SessionUpdate) -> Vec<Event> {
                 .as_ref()
                 .map(|blocks| extract_tool_content_text(blocks))
                 .unwrap_or_default();
+            let new_args_preview = update.fields.raw_input.as_ref().map(preview_args);
+            let new_title = update.fields.title.clone();
+            let mut events: Vec<Event> = Vec::new();
+            if new_title.is_some() || new_args_preview.is_some() {
+                events.push(Event::ToolCallUpdated {
+                    tool_call_id: id.clone(),
+                    title: new_title,
+                    args_preview: new_args_preview,
+                });
+            }
             if completed {
-                vec![Event::ToolCallCompleted {
+                events.push(Event::ToolCallCompleted {
                     tool_call_id: id,
                     is_error,
                     content: content_text,
-                }]
+                });
             } else if !content_text.is_empty() {
-                vec![Event::ToolCallContent {
+                events.push(Event::ToolCallContent {
                     tool_call_id: id,
                     content: content_text,
-                }]
-            } else {
-                vec![raw_event(&update)]
+                });
+            } else if events.is_empty() {
+                events.push(raw_event(&update));
             }
+            events
         }
         SessionUpdate::Plan(p) => {
             let plan = Plan {

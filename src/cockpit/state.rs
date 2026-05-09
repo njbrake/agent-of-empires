@@ -194,6 +194,20 @@ pub enum Event {
         tool_call_id: String,
         content: String,
     },
+    /// Late-arriving title or raw_input for a tool call. Some agents
+    /// (Claude's claude-agent-acp among them) emit the initial
+    /// `tool_call` notification with an empty `raw_input` and only fill
+    /// in the actual inputs in a follow-up `ToolCallUpdate`. Without
+    /// this, bash cards render `$ Terminal` instead of the command and
+    /// edit cards lose their target path. The reducer locates the
+    /// matching tool_start row by id and overwrites its name/args.
+    ToolCallUpdated {
+        tool_call_id: String,
+        #[serde(default)]
+        title: Option<String>,
+        #[serde(default)]
+        args_preview: Option<String>,
+    },
     ApprovalRequested {
         approval: Approval,
     },
@@ -279,6 +293,22 @@ impl CockpitState {
                 }
             }
             Event::ToolCallContent { .. } => {}
+            Event::ToolCallUpdated {
+                tool_call_id,
+                title,
+                args_preview,
+            } => {
+                if let Some(tool) = self.in_flight_tool.as_mut() {
+                    if tool.id == tool_call_id {
+                        if let Some(t) = title {
+                            tool.name = t;
+                        }
+                        if let Some(a) = args_preview {
+                            tool.args_preview = a;
+                        }
+                    }
+                }
+            }
             Event::ApprovalRequested { approval } => self.pending_approvals.push(approval),
             Event::ApprovalResolved { ref nonce, .. } => {
                 let pos = self

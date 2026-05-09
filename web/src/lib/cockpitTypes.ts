@@ -89,6 +89,18 @@ export type CockpitEvent =
        *  ToolCallCompleted carries no content of its own. */
       ToolCallContent: { tool_call_id: string; content: string };
     }
+  | {
+      /** Late-arriving inputs/title for an already-started tool call.
+       *  Claude's claude-agent-acp emits the initial tool_call with an
+       *  empty `raw_input` and only fills in the actual command in a
+       *  follow-up ToolCallUpdate. Without this, bash cards display
+       *  `$ Terminal` (the title) rather than the command. */
+      ToolCallUpdated: {
+        tool_call_id: string;
+        title: string | null;
+        args_preview: string | null;
+      };
+    }
   | { ApprovalRequested: { approval: Approval } }
   | { ApprovalResolved: { nonce: string; decision: ApprovalDecision } }
   | { DiffEmitted: { diff: DiffPreview } }
@@ -283,6 +295,43 @@ export function applyEvent(
   if ("ToolCallContent" in event) {
     const { tool_call_id, content } = event.ToolCallContent;
     next.toolOutputs = { ...next.toolOutputs, [tool_call_id]: content };
+    return next;
+  }
+  if ("ToolCallUpdated" in event) {
+    const { tool_call_id, title, args_preview } = event.ToolCallUpdated;
+    if (next.inFlightTool && next.inFlightTool.id === tool_call_id) {
+      next.inFlightTool = {
+        ...next.inFlightTool,
+        name: title ?? next.inFlightTool.name,
+        args_preview: args_preview ?? next.inFlightTool.args_preview,
+      };
+    }
+    // Walk activity backwards to find the matching tool_start row and
+    // patch its `tool` payload in place. AssistantBuilder reads from
+    // here at render time, so updating the row is enough to refresh
+    // the per-tool card.
+    let patched = false;
+    const updated = next.activity.map((row) => {
+      if (
+        !patched &&
+        row.kind === "tool_start" &&
+        row.toolCallId === tool_call_id &&
+        row.tool
+      ) {
+        patched = true;
+        return {
+          ...row,
+          text: title ?? row.text,
+          tool: {
+            ...row.tool,
+            name: title ?? row.tool.name,
+            args_preview: args_preview ?? row.tool.args_preview,
+          },
+        };
+      }
+      return row;
+    });
+    if (patched) next.activity = updated;
     return next;
   }
   if ("ApprovalRequested" in event) {
