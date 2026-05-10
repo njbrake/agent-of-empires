@@ -179,8 +179,10 @@ exists if you came from 1.4.x.
 - `--no-cockpit` per session (CLI).
 - `cockpit.enabled = false` in `config.toml` (persistent master). The
   reconciler short-circuits, REST endpoints return 503, and the CLI
-  refuses `--cockpit`. Snapshotted at startup, so toggling requires
-  `aoe serve --stop` then a fresh start to take effect.
+  refuses `--cockpit`. The web settings panel toggles this live —
+  flipping the switch shuts down running workers within a couple of
+  seconds and respawns them when re-enabled, no `aoe serve --stop`
+  required.
 - Don't set `AOE_EXPERIMENTAL_COCKPIT` (per-process). With the master
   switch on but the env var unset, *new* browser sessions still get
   tmux; existing cockpit sessions keep running with a one-time warn
@@ -250,6 +252,43 @@ affordance. Both are tracked as deferred work below.
 
 Tools without ACP support continue to work exactly as they do today
 (tmux + PTY); cockpit is additive, not a replacement.
+
+## Conversation persistence
+
+Cockpit transcripts persist across reloads, session switches, and
+`aoe serve` restarts.
+
+- **UI history**: every cockpit event (user prompts, agent text, tool
+  cards, approvals, usage updates) is appended to a SQLite event store
+  keyed by `(session_id, seq)`. Reloading the dashboard or switching
+  to another session and back replays the stream from disk; the
+  WebSocket subscribe path uses `lastSeq` to top up anything missed
+  during a brief disconnect.
+- **Agent memory across restart**: when the agent advertises
+  `agent_capabilities.load_session = true` on the ACP `initialize`
+  response, the supervisor stores the agent-assigned `session_id` on
+  the `Instance` and uses `session/load` (instead of `session/new`)
+  on subsequent spawns. The model retains its prior conversation
+  context after `aoe serve --stop` + restart, after a worker crash
+  respawn, and after toggling the cockpit master switch off and back
+  on.
+- **Reset notice**: if `session/load` fails (e.g., the stored id no
+  longer exists on the agent side), cockpit falls back to
+  `session/new`, clears the stored id, and renders an amber
+  "⚠️ Conversation context reset" callout in the transcript. The
+  token-usage hint hides until the agent emits a fresh
+  `session/update` with `UsageUpdate`.
+- **Capability gating**: agents that don't advertise `load_session`
+  (e.g., the bundled `aoe-agent` today) always go through
+  `session/new`. The UI history still replays from SQLite; only the
+  model-side memory resets.
+
+The stored ACP session id lives on `Instance.cockpit_acp_session_id`
+in `sessions.json` under the active profile (e.g.,
+`~/.agent-of-empires-dev/profiles/default/sessions.json` for debug
+builds, `~/.agent-of-empires/profiles/default/sessions.json` for
+release). It is cleared on `cockpit_disable`, on session delete, and
+on a `session/load` failure.
 
 ## Approvals
 
