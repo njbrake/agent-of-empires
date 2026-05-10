@@ -16,6 +16,29 @@ function isMultiRepoWorkspace(ws: Workspace): boolean {
   return ws.sessions.some((s) => (s.workspace_repos?.length ?? 0) > 1);
 }
 
+// ISO-8601 strings compare lexicographically the same as chronologically.
+function workspaceActivityKey(ws: Workspace): string {
+  let best = "";
+  for (const s of ws.sessions) {
+    const t = s.last_accessed_at ?? "";
+    if (t > best) best = t;
+    const i = s.idle_entered_at ?? "";
+    if (i > best) best = i;
+    const c = s.created_at ?? "";
+    if (c > best) best = c;
+  }
+  return best;
+}
+
+function groupActivityKey(workspaces: Workspace[]): string {
+  let best = "";
+  for (const ws of workspaces) {
+    const k = workspaceActivityKey(ws);
+    if (k > best) best = k;
+  }
+  return best;
+}
+
 export function useRepoGroups(workspaces: Workspace[]): {
   groups: RepoGroup[];
   toggleRepoCollapsed: (repoId: string) => void;
@@ -43,9 +66,9 @@ export function useRepoGroups(workspaces: Workspace[]): {
       [...list].sort((a, b) => {
         if (a.status === "active" && b.status !== "active") return -1;
         if (a.status !== "active" && b.status === "active") return 1;
-        const aName = a.branch ?? "";
-        const bName = b.branch ?? "";
-        return aName.localeCompare(bName) || a.id.localeCompare(b.id);
+        const cmp = workspaceActivityKey(b).localeCompare(workspaceActivityKey(a));
+        if (cmp !== 0) return cmp;
+        return a.id.localeCompare(b.id);
       });
 
     const repoGroups: RepoGroup[] = [];
@@ -91,7 +114,11 @@ export function useRepoGroups(workspaces: Workspace[]): {
       if (b.id === MULTI_REPO_GROUP_ID) return -1;
       if (a.status === "active" && b.status !== "active") return -1;
       if (a.status !== "active" && b.status === "active") return 1;
-      return a.displayName.localeCompare(b.displayName) || a.repoPath.localeCompare(b.repoPath);
+      const cmp = groupActivityKey(b.workspaces).localeCompare(
+        groupActivityKey(a.workspaces),
+      );
+      if (cmp !== 0) return cmp;
+      return a.repoPath.localeCompare(b.repoPath);
     });
 
     return repoGroups;
