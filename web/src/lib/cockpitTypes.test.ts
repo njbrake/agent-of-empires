@@ -369,6 +369,12 @@ describe("applyEvent / ACP session id lifecycle", () => {
     state = applyEvent(state, {
       session_id: "s-1",
       seq: 2,
+      event: { UserPromptSent: { text: "hi" } },
+    });
+
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 3,
       event: {
         SessionContextReset: { reason: "session/load failed: bad id" },
       },
@@ -380,14 +386,64 @@ describe("applyEvent / ACP session id lifecycle", () => {
   });
 
   it("SessionContextReset uses a fallback message when reason is empty", () => {
-    const state = applyEvent(emptyCockpitState(), {
+    let state = applyEvent(emptyCockpitState(), {
       session_id: "s-1",
       seq: 1,
+      event: { UserPromptSent: { text: "hi" } },
+    });
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 2,
       event: { SessionContextReset: { reason: "" } },
     });
     const last = state.activity[state.activity.length - 1];
     expect(last?.kind).toBe("context_reset");
     expect(last?.text.length).toBeGreaterThan(0);
+  });
+
+  it("SessionContextReset is silent on a session with no prior user prompt", () => {
+    // 0-message session: agent never persisted a transcript, so
+    // session/load failing on the next spawn is expected. Don't
+    // surface a meaningless "context reset" warning.
+    let state = applyEvent(emptyCockpitState(), {
+      session_id: "s-1",
+      seq: 1,
+      event: { UsageUpdated: { usage: { used: 100, size: 200000 } } },
+    });
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 2,
+      event: {
+        SessionContextReset: { reason: "session/load failed: bad id" },
+      },
+    });
+    // Usage still cleared (defensive — should already be safe to drop).
+    expect(state.sessionUsage).toBeNull();
+    // No visible row appended.
+    expect(state.activity.some((r) => r.kind === "context_reset")).toBe(false);
+    expect(state.lastSeq).toBe(2);
+  });
+
+  it("SessionContextReset that arrives BEFORE the first prompt stays hidden after later prompts", () => {
+    // Replay order: reset@2, then prompt@3. The reset must NOT appear
+    // above the prompt later — applyEvent processes events in seq order
+    // and decides based on what's been seen so far.
+    let state = applyEvent(emptyCockpitState(), {
+      session_id: "s-1",
+      seq: 1,
+      event: { UsageUpdated: { usage: { used: 100, size: 200000 } } },
+    });
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 2,
+      event: { SessionContextReset: { reason: "session/load failed" } },
+    });
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 3,
+      event: { UserPromptSent: { text: "hi" } },
+    });
+    expect(state.activity.some((r) => r.kind === "context_reset")).toBe(false);
   });
 });
 

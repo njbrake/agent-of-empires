@@ -545,11 +545,21 @@ export function applyEvent(
   }
   if ("SessionContextReset" in event) {
     // session/load failed and the agent fell back to session/new — its
-    // context window is empty. Show a muted notice in the transcript
-    // and clear the now-stale token-usage hint so the composer footer
-    // doesn't keep showing the previous run's "75k / 200k" until the
-    // next UsageUpdate arrives.
+    // context window is empty. Clear the now-stale token-usage hint so
+    // the composer footer doesn't keep showing the previous run's
+    // "75k / 200k" until the next UsageUpdate arrives.
     next.sessionUsage = null;
+    // Suppress the visible notice on a session that never saw a user
+    // prompt: claude-agent-acp doesn't persist a 0-prompt session, so
+    // session/load failing on the next spawn is expected, not an
+    // incident the user needs to know about. Events arrive in seq
+    // order, so checking `activity` here captures "any prompt with a
+    // lower seq than this reset" — later prompts won't retroactively
+    // surface the suppressed row.
+    const hasPriorPrompt = next.activity.some((r) => r.kind === "user_prompt");
+    if (!hasPriorPrompt) {
+      return next;
+    }
     next.activity = pushActivity(next.activity, {
       id: `reset-${frame.seq}`,
       kind: "context_reset",
