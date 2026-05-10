@@ -19,6 +19,25 @@ AGENT_OF_EMPIRES_DEBUG=1 cargo run  # Debug logging (writes to debug.log in app 
 
 Requires `tmux` to be installed.
 
+### Dev namespace
+
+Debug builds use an isolated namespace so a local `cargo run` shares no
+state with an installed release `aoe`. Run them side-by-side without
+collisions on sessions, settings, the tmux server, or `aoe serve`.
+
+| | Release | Debug (`cargo run`) |
+| --- | --- | --- |
+| App dir (macOS / Windows) | `~/.agent-of-empires` | `~/.agent-of-empires-dev` |
+| App dir (Linux) | `~/.config/agent-of-empires` | `~/.config/agent-of-empires-dev` |
+| `tmux` session prefix | `aoe_` | `aoe_dev_` |
+| `aoe serve` default port | `8080` | `8081` |
+
+`debug.log` and `serve.log` live inside the app dir, so they are isolated
+automatically. Debug builds start with an empty namespace on first run, so
+nothing migrates from your real `~/.agent-of-empires`. Wipe dev state any
+time with `rm -rf ~/.agent-of-empires-dev` (or the Linux XDG equivalent);
+release data is untouched.
+
 ## Testing
 
 ```bash
