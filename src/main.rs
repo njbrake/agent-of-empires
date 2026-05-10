@@ -80,16 +80,28 @@ async fn main() -> Result<()> {
         if let Some(file) = log_file {
             // Cockpit code uses custom log targets like `cockpit.acp`,
             // `cockpit.supervisor`, `cockpit.acp.stderr`, etc., which
-            // don't match the `agent_of_empires` crate prefix. List
-            // them explicitly so debug.log captures the full picture
-            // when chasing a crashed agent. Add new top-level targets
-            // here when introducing them.
-            let mut filter = format!("agent_of_empires={level},cockpit={level}");
+            // don't match the `agent_of_empires` crate prefix. The web
+            // terminal WS handler uses `terminal.ws` and the per-byte
+            // firehose uses `terminal.ws.bytes`. List them explicitly so
+            // debug.log captures the full picture when chasing a crashed
+            // agent. Add new top-level targets here when introducing them.
+            let mut filter = format!("agent_of_empires={level},cockpit={level},terminal={level}");
             if std::env::var("AOE_ACP_TRACE").is_ok() {
                 filter.push_str(
                     ",agent_client_protocol=debug,\
                      agent_client_protocol::jsonrpc::transport_actor=trace",
                 );
+            }
+            // Per-WS-message byte firehose for the terminal relay, hidden
+            // behind its own opt-in. The bytes target (`terminal.ws.bytes`)
+            // logs at trace, so we only need to bump the `terminal` target
+            // up to trace when the user explicitly wants the firehose;
+            // a busy claude session emits thousands of frames/min and
+            // would drown the lifecycle signal otherwise. The duplicate
+            // directive overrides the baseline `terminal={level}` above
+            // (EnvFilter is last-wins per target).
+            if std::env::var("AOE_TERMINAL_TRACE").is_ok() {
+                filter.push_str(",terminal=trace");
             }
             tracing_subscriber::fmt()
                 .with_env_filter(filter)

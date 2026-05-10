@@ -15,6 +15,9 @@ The release binary is at `target/release/aoe`.
 ```bash
 cargo run --release            # Run from source
 AGENT_OF_EMPIRES_DEBUG=1 cargo run  # Debug logging (writes to debug.log in app data dir)
+AOE_LOG_LEVEL=trace cargo run        # Pick the log level explicitly
+AOE_ACP_TRACE=1 cargo run            # Plus raw ACP JSON-RPC firehose
+AOE_TERMINAL_TRACE=1 cargo run       # Plus per-message bytes for the web terminal WS (spammy)
 ```
 
 Requires `tmux` to be installed.
