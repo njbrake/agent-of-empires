@@ -40,33 +40,96 @@ pub async fn paired_terminal_ws(
 ) -> impl IntoResponse {
     debug!(target: "terminal.ws", session = %id, kind = "paired", "ws route entered");
     let instances = state.instances.read().await;
-    let session_info = instances
-        .iter()
-        .find(|i| i.id == id)
-        .map(|inst| crate::tmux::TerminalSession::generate_name(&inst.id, &inst.title));
+    let inst = instances.iter().find(|i| i.id == id).cloned();
     drop(instances);
 
     let read_only = state.read_only;
     let primaries = Arc::clone(&state.session_primaries);
     let pause_counts = Arc::clone(&state.session_pause_counts);
 
-    match session_info {
-        // Accept the "aoe-auth" subprotocol so the browser's handshake
-        // completes. The client offers `["aoe-auth", <token>]`; the auth
-        // middleware validates the token from the same header, and the
-        // server echoes back "aoe-auth" to satisfy the WS spec. The token
-        // itself is not echoed, only the marker.
-        Some(tmux_name) => ws
-            .protocols(["aoe-auth"])
-            .on_upgrade(move |socket| {
-                handle_terminal_ws(socket, tmux_name, read_only, primaries, pause_counts)
-            })
-            .into_response(),
-        None => {
-            warn!(target: "terminal.ws", session = %id, kind = "paired", "session not found, returning 404");
-            (axum::http::StatusCode::NOT_FOUND, "Session not found").into_response()
+    let Some(mut inst) = inst else {
+        warn!(target: "terminal.ws", session = %id, kind = "paired", "session not found, returning 404");
+        return (axum::http::StatusCode::NOT_FOUND, "Session not found").into_response();
+    };
+
+    // Auto-respawn a dead pane before upgrading. The browser's WS reconnect
+    // path goes straight to this route without re-running ensure_terminal,
+    // so without this check a pane that died while the page stayed open
+    // (most commonly across an `aoe serve` restart) would attach to a
+    // tombstone that swallows every keystroke. Match the kill+recreate
+    // dance in `ensure_terminal` and the TUI attach path.
+    let tmux_name = match respawn_paired_if_dead(&state, &id, &mut inst).await {
+        Ok(name) => name,
+        Err(e) => {
+            warn!(
+                target: "terminal.ws",
+                session = %id,
+                kind = "paired",
+                "failed to respawn dead pane: {}", e
+            );
+            return (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to revive terminal",
+            )
+                .into_response();
+        }
+    };
+
+    // Accept the "aoe-auth" subprotocol so the browser's handshake
+    // completes. The client offers `["aoe-auth", <token>]`; the auth
+    // middleware validates the token from the same header, and the
+    // server echoes back "aoe-auth" to satisfy the WS spec. The token
+    // itself is not echoed, only the marker.
+    ws.protocols(["aoe-auth"])
+        .on_upgrade(move |socket| {
+            handle_terminal_ws(socket, tmux_name, read_only, primaries, pause_counts)
+        })
+        .into_response()
+}
+
+/// Returns the tmux session name to attach to. If the existing pane is
+/// dead, kills and recreates the tmux session in a blocking task before
+/// returning. The instance's `terminal_info.created` flag is updated in
+/// the in-memory store on successful recreate.
+async fn respawn_paired_if_dead(
+    state: &Arc<AppState>,
+    id: &str,
+    inst: &mut crate::session::Instance,
+) -> anyhow::Result<String> {
+    let tmux_name = crate::tmux::TerminalSession::generate_name(&inst.id, &inst.title);
+
+    // Serialize concurrent reconnects for the same session so two
+    // simultaneous WS attaches don't both try to recreate the pane.
+    let lock = state.instance_lock(id).await;
+    let _guard = lock.lock().await;
+
+    let mut inst_for_blocking = inst.clone();
+    let tmux_name_clone = tmux_name.clone();
+    let respawned = tokio::task::spawn_blocking(move || -> anyhow::Result<bool> {
+        let session = inst_for_blocking.terminal_tmux_session()?;
+        if !session.exists() || !session.is_pane_dead() {
+            return Ok(false);
+        }
+        tracing::warn!(
+            target: "terminal.ws",
+            tmux = %tmux_name_clone,
+            "paired terminal pane dead at WS upgrade, killing and respawning"
+        );
+        let _ = session.kill();
+        inst_for_blocking.start_terminal()?;
+        Ok(true)
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("respawn task panicked: {e}"))??;
+
+    if respawned {
+        let mut instances = state.instances.write().await;
+        if let Some(stored) = instances.iter_mut().find(|i| i.id == id) {
+            stored.terminal_info = Some(crate::session::TerminalInfo { created: true });
         }
     }
+
+    Ok(tmux_name)
 }
 
 /// WebSocket for the paired container terminal (ContainerTerminalSession tmux session)
@@ -77,33 +140,79 @@ pub async fn container_terminal_ws(
 ) -> impl IntoResponse {
     debug!(target: "terminal.ws", session = %id, kind = "container", "ws route entered");
     let instances = state.instances.read().await;
-    let session_info = instances
-        .iter()
-        .find(|i| i.id == id)
-        .map(|inst| crate::tmux::ContainerTerminalSession::generate_name(&inst.id, &inst.title));
+    let inst = instances.iter().find(|i| i.id == id).cloned();
     drop(instances);
 
     let read_only = state.read_only;
     let primaries = Arc::clone(&state.session_primaries);
     let pause_counts = Arc::clone(&state.session_pause_counts);
 
-    match session_info {
-        // Accept the "aoe-auth" subprotocol so the browser's handshake
-        // completes. The client offers `["aoe-auth", <token>]`; the auth
-        // middleware validates the token from the same header, and the
-        // server echoes back "aoe-auth" to satisfy the WS spec. The token
-        // itself is not echoed, only the marker.
-        Some(tmux_name) => ws
-            .protocols(["aoe-auth"])
-            .on_upgrade(move |socket| {
-                handle_terminal_ws(socket, tmux_name, read_only, primaries, pause_counts)
-            })
-            .into_response(),
-        None => {
-            warn!(target: "terminal.ws", session = %id, kind = "container", "session not found, returning 404");
-            (axum::http::StatusCode::NOT_FOUND, "Session not found").into_response()
+    let Some(mut inst) = inst else {
+        warn!(target: "terminal.ws", session = %id, kind = "container", "session not found, returning 404");
+        return (axum::http::StatusCode::NOT_FOUND, "Session not found").into_response();
+    };
+
+    // See `paired_terminal_ws` for the dead-pane rescue rationale.
+    let tmux_name = match respawn_container_if_dead(&state, &id, &mut inst).await {
+        Ok(name) => name,
+        Err(e) => {
+            warn!(
+                target: "terminal.ws",
+                session = %id,
+                kind = "container",
+                "failed to respawn dead pane: {}", e
+            );
+            return (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to revive terminal",
+            )
+                .into_response();
         }
-    }
+    };
+
+    // Accept the "aoe-auth" subprotocol so the browser's handshake
+    // completes. The client offers `["aoe-auth", <token>]`; the auth
+    // middleware validates the token from the same header, and the
+    // server echoes back "aoe-auth" to satisfy the WS spec. The token
+    // itself is not echoed, only the marker.
+    ws.protocols(["aoe-auth"])
+        .on_upgrade(move |socket| {
+            handle_terminal_ws(socket, tmux_name, read_only, primaries, pause_counts)
+        })
+        .into_response()
+}
+
+/// Container-terminal counterpart of [`respawn_paired_if_dead`].
+async fn respawn_container_if_dead(
+    state: &Arc<AppState>,
+    id: &str,
+    inst: &mut crate::session::Instance,
+) -> anyhow::Result<String> {
+    let tmux_name = crate::tmux::ContainerTerminalSession::generate_name(&inst.id, &inst.title);
+
+    let lock = state.instance_lock(id).await;
+    let _guard = lock.lock().await;
+
+    let mut inst_for_blocking = inst.clone();
+    let tmux_name_clone = tmux_name.clone();
+    let _respawned = tokio::task::spawn_blocking(move || -> anyhow::Result<bool> {
+        let session = inst_for_blocking.container_terminal_tmux_session()?;
+        if !session.exists() || !session.is_pane_dead() {
+            return Ok(false);
+        }
+        tracing::warn!(
+            target: "terminal.ws",
+            tmux = %tmux_name_clone,
+            "container terminal pane dead at WS upgrade, killing and respawning"
+        );
+        let _ = session.kill();
+        inst_for_blocking.start_container_terminal_with_size(None)?;
+        Ok(true)
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("respawn task panicked: {e}"))??;
+
+    Ok(tmux_name)
 }
 
 /// WebSocket for the agent's main tmux session
