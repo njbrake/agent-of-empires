@@ -1077,22 +1077,49 @@ pub async fn ensure_terminal(
     let _guard = inst_lock.lock().await;
 
     // Re-check after acquiring the lock; the first caller may have created it.
+    // `has_terminal()` only checks the in-memory `terminal_info.created` flag.
+    // The pane shell can exit (Ctrl+D, `exit`, SIGHUP from a destroyed tmux
+    // client, etc.) while the flag stays true and the session keeps existing
+    // (because we set tmux's `remain-on-exit on`). When that happens the web
+    // UI would attach to a dead pane that swallows every keystroke, so do
+    // the same kill+recreate dance the TUI runs in src/tui/app.rs around the
+    // attach path.
     {
         let instances = state.instances.read().await;
         if let Some(i) = instances.iter().find(|i| i.id == id) {
             if i.has_terminal() {
-                return (
-                    StatusCode::OK,
-                    Json(serde_json::json!({"status": "exists"})),
-                )
-                    .into_response();
+                let pane_dead = i
+                    .terminal_tmux_session()
+                    .ok()
+                    .map(|s| s.exists() && s.is_pane_dead())
+                    .unwrap_or(false);
+                if !pane_dead {
+                    return (
+                        StatusCode::OK,
+                        Json(serde_json::json!({"status": "exists"})),
+                    )
+                        .into_response();
+                }
+                tracing::warn!(
+                    target: "terminal.ws",
+                    session = %id,
+                    "paired terminal pane is dead, respawning"
+                );
             }
         }
     }
 
     let mut inst_clone = inst;
 
-    let result = tokio::task::spawn_blocking(move || inst_clone.start_terminal()).await;
+    let result = tokio::task::spawn_blocking(move || {
+        if let Ok(session) = inst_clone.terminal_tmux_session() {
+            if session.exists() && session.is_pane_dead() {
+                let _ = session.kill();
+            }
+        }
+        inst_clone.start_terminal()
+    })
+    .await;
 
     match result {
         Ok(Ok(())) => {
@@ -1146,24 +1173,45 @@ pub async fn ensure_container_terminal(
     let inst_lock = state.instance_lock(&id).await;
     let _guard = inst_lock.lock().await;
 
+    // Same dead-pane rescue as `ensure_terminal`: an existing-but-dead
+    // pane would otherwise silently swallow every keystroke from the
+    // browser. See the longer comment in `ensure_terminal`.
     {
         let instances = state.instances.read().await;
         if let Some(i) = instances.iter().find(|i| i.id == id) {
             if i.has_container_terminal() {
-                return (
-                    StatusCode::OK,
-                    Json(serde_json::json!({"status": "exists"})),
-                )
-                    .into_response();
+                let pane_dead = i
+                    .container_terminal_tmux_session()
+                    .ok()
+                    .map(|s| s.exists() && s.is_pane_dead())
+                    .unwrap_or(false);
+                if !pane_dead {
+                    return (
+                        StatusCode::OK,
+                        Json(serde_json::json!({"status": "exists"})),
+                    )
+                        .into_response();
+                }
+                tracing::warn!(
+                    target: "terminal.ws",
+                    session = %id,
+                    "container terminal pane is dead, respawning"
+                );
             }
         }
     }
 
     let mut inst_clone = inst;
 
-    let result =
-        tokio::task::spawn_blocking(move || inst_clone.start_container_terminal_with_size(None))
-            .await;
+    let result = tokio::task::spawn_blocking(move || {
+        if let Ok(session) = inst_clone.container_terminal_tmux_session() {
+            if session.exists() && session.is_pane_dead() {
+                let _ = session.kill();
+            }
+        }
+        inst_clone.start_container_terminal_with_size(None)
+    })
+    .await;
 
     match result {
         Ok(Ok(())) => (
