@@ -367,7 +367,7 @@ impl Theme {
 
             diff_add: Color::Rgb(156, 207, 216),
             diff_delete: Color::Rgb(235, 111, 146),
-            diff_modified: Color::Rgb(246, 193, 119),
+            diff_modified: Color::Rgb(235, 188, 186),
             diff_header: Color::Rgb(49, 116, 143),
 
             help_key: Color::Rgb(246, 193, 119),

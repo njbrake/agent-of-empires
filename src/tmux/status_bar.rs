@@ -244,6 +244,7 @@ mod tests {
             "tokyo-night-storm",
             "catppuccin-latte",
             "dracula",
+            "rose-pine",
         ] {
             let theme = load_theme(theme_name);
             let colors = [
