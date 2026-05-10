@@ -52,6 +52,7 @@ This document contains the help content for the `aoe` command-line program.
 * [`aoe theme export`↴](#aoe-theme-export)
 * [`aoe theme dir`↴](#aoe-theme-dir)
 * [`aoe serve`↴](#aoe-serve)
+* [`aoe url`↴](#aoe-url)
 * [`aoe cockpit`↴](#aoe-cockpit)
 * [`aoe cockpit doctor`↴](#aoe-cockpit-doctor)
 * [`aoe cockpit agents`↴](#aoe-cockpit-agents)
@@ -87,6 +88,7 @@ Run without arguments to launch the TUI dashboard.
 * `sounds` — Manage sound effects for agent state transitions
 * `theme` — Manage color themes (list, export, customize)
 * `serve` — Start a web dashboard for remote session access
+* `url` — Print the current dashboard URL of a running `aoe serve` daemon
 * `cockpit` — Cockpit (ACP-based native agent rendering) management
 * `uninstall` — Uninstall Agent of Empires
 * `update` — Update aoe to the latest release
@@ -771,6 +773,19 @@ Start a web dashboard for remote session access
 * `--daemon` — Run as a background daemon (detach from terminal)
 * `--stop` — Stop a running daemon
 * `--passphrase <PASSPHRASE>` — Require a passphrase for login (second-factor auth). Can also be set via AOE_SERVE_PASSPHRASE environment variable
+
+
+
+## `aoe url`
+
+Print the current dashboard URL of a running `aoe serve` daemon
+
+**Usage:** `aoe url [OPTIONS]`
+
+###### **Options:**
+
+* `--all` — Print every labeled URL (Tailscale / LAN / localhost) on its own line. The primary URL is printed first as `primary\t<url>`; alternates use `<label>\t<url>`. The tab-separated format makes the output easy to parse from shell scripts
+* `--token-only` — Print only the auth token from the primary URL's `?token=` query parameter. Useful for scripted login flows or pasting into the PWA. Exits non-zero when the URL has no token (e.g. `--no-auth` server)
 
 
 

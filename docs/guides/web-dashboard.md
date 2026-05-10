@@ -46,6 +46,23 @@ Open this URL in any browser to access the dashboard. The token is set as a cook
 
 In `--remote` mode, a QR code is also printed for easy phone pairing.
 
+## Retrieving the live URL
+
+In `--remote` mode the auth token rotates every 4 hours, so a URL captured at startup eventually stops working. Use `aoe url` to print the current dashboard URL of a running daemon:
+
+```bash
+# Print the primary URL with the live token
+aoe url
+
+# Print every labeled URL (Tailscale / LAN / localhost), tab-separated
+aoe url --all
+
+# Print only the auth token (useful for scripted login flows)
+aoe url --token-only
+```
+
+`aoe url` exits non-zero if no daemon is running.
+
 ## Remote access
 
 The `--remote` flag is the recommended way to access the dashboard from your phone or another device:

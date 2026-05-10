@@ -87,16 +87,7 @@ impl ServeMode {
     }
 }
 
-/// One URL we can show in the Active state. Tunnel mode has exactly one.
-/// Local mode may have multiple (Tailscale + LAN + localhost), and the
-/// user can Tab-cycle between them.
-#[derive(Debug, Clone)]
-pub struct ServeUrl {
-    /// Optional human-readable label ("tailscale", "lan", "localhost").
-    /// None for the single tunnel URL, which doesn't need one.
-    pub label: Option<String>,
-    pub url: String,
-}
+pub use crate::cli::serve::{read_serve_urls, ServeUrl};
 
 /// Passphrase cache for daemons this TUI process spawned, so reopening
 /// the Remote Access dialog after closing it can re-display the same
@@ -1250,50 +1241,6 @@ fn restart_daemon(
 ) -> Result<(), String> {
     stop_daemon()?;
     spawn_daemon(mode, passphrase, transport)
-}
-
-/// Read serve.url as a list of labeled URLs. File format:
-///
-/// ```text
-/// <primary-url>           ← line 1, unlabeled (backward-compatible)
-/// <label>\t<alt-url>      ← line 2+, tab-separated label/url
-/// ```
-///
-/// Returns `[]` when the file is missing or empty. The primary URL gets
-/// `label: None` for rendering. Alternates carry their label.
-fn read_serve_urls() -> Vec<ServeUrl> {
-    let Some(dir) = crate::session::get_app_dir().ok() else {
-        return Vec::new();
-    };
-    let Ok(raw) = std::fs::read_to_string(dir.join("serve.url")) else {
-        return Vec::new();
-    };
-    let mut out: Vec<ServeUrl> = Vec::new();
-    for (i, line) in raw.lines().enumerate() {
-        let line = line.trim_end_matches('\r');
-        if line.is_empty() {
-            continue;
-        }
-        if i == 0 {
-            // Primary line is the bare URL.
-            out.push(ServeUrl {
-                label: None,
-                url: line.to_string(),
-            });
-        } else if let Some((label, url)) = line.split_once('\t') {
-            out.push(ServeUrl {
-                label: Some(label.to_string()),
-                url: url.to_string(),
-            });
-        } else {
-            // Defensive: unlabeled extra line. Show as a nameless extra.
-            out.push(ServeUrl {
-                label: None,
-                url: line.to_string(),
-            });
-        }
-    }
-    out
 }
 
 /// Read the current daemon's mode marker (`serve.mode`). Returns None

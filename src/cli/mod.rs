@@ -22,6 +22,8 @@ pub mod theme;
 pub mod tmux;
 pub mod uninstall;
 pub mod update;
+#[cfg(feature = "serve")]
+pub mod url;
 pub mod worktree;
 
 pub use definition::{Cli, Commands};

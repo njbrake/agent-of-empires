@@ -77,6 +77,55 @@ pub fn pid_file_path() -> Result<PathBuf> {
     Ok(dir.join("serve.pid"))
 }
 
+/// One URL we can show in the Active state. Tunnel mode has exactly one.
+/// Local mode may have multiple (Tailscale + LAN + localhost), and the
+/// user can Tab-cycle between them.
+#[derive(Debug, Clone)]
+pub struct ServeUrl {
+    /// Optional human-readable label ("tailscale", "lan", "localhost").
+    /// None for the single tunnel URL, which doesn't need one.
+    pub label: Option<String>,
+    pub url: String,
+}
+
+/// Read `$APP_DIR/serve.url`. Returns `[]` when the file is missing or
+/// empty. The primary URL gets `label: None` for rendering; alternates
+/// carry their label.
+pub fn read_serve_urls() -> Vec<ServeUrl> {
+    let Ok(dir) = crate::session::get_app_dir() else {
+        return Vec::new();
+    };
+    let Ok(raw) = std::fs::read_to_string(dir.join("serve.url")) else {
+        return Vec::new();
+    };
+    let mut out: Vec<ServeUrl> = Vec::new();
+    for (i, line) in raw.lines().enumerate() {
+        let line = line.trim_end_matches('\r');
+        if line.is_empty() {
+            continue;
+        }
+        if i == 0 {
+            // Primary line is the bare URL.
+            out.push(ServeUrl {
+                label: None,
+                url: line.to_string(),
+            });
+        } else if let Some((label, url)) = line.split_once('\t') {
+            out.push(ServeUrl {
+                label: Some(label.to_string()),
+                url: url.to_string(),
+            });
+        } else {
+            // Defensive: unlabeled extra line. Show as a nameless extra.
+            out.push(ServeUrl {
+                label: None,
+                url: line.to_string(),
+            });
+        }
+    }
+    out
+}
+
 /// Cached read of `$APP_DIR/serve.mode`, keyed on the current daemon
 /// PID. The status bar calls this on every render frame; without
 /// caching, that's a syscall + file read per frame just to compute a
