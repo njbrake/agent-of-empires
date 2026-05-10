@@ -14,7 +14,7 @@ use tui_input::Input;
 
 use super::DialogResult;
 use crate::containers::{self, ContainerRuntimeInterface};
-use crate::session::config::{DefaultTerminalMode, SandboxConfig};
+use crate::session::config::{load_config, save_config, DefaultTerminalMode, SandboxConfig};
 use crate::session::profile_config::resolve_config_or_warn;
 use crate::session::repo_config::HookProgress;
 #[cfg(test)]
@@ -802,6 +802,7 @@ impl NewSessionDialog {
         if self.dir_picker.is_active() {
             match self.dir_picker.handle_key(key) {
                 DirPickerResult::Selected(path) => {
+                    persist_last_browse_dir(&path);
                     if self.workspace_repo_dir_picker_active {
                         self.workspace_repo_editing_input = Some(Input::new(path));
                         self.workspace_repo_ghost = self
@@ -870,7 +871,12 @@ impl NewSessionDialog {
         if key.code == KeyCode::Char('p') && key.modifiers.contains(KeyModifiers::CONTROL) {
             if self.focused_field == self.path_field() {
                 let path_value = self.path.value().trim().to_string();
-                self.dir_picker.activate(&path_value);
+                let initial = if path_value.is_empty() {
+                    last_browse_dir().unwrap_or_default()
+                } else {
+                    path_value
+                };
+                self.dir_picker.activate(&initial);
                 return DialogResult::Continue;
             }
             if self.focused_field == tool_field {
@@ -1330,9 +1336,11 @@ impl NewSessionDialog {
                     .map(|i| i.value().trim().to_string())
                     .unwrap_or_default();
                 let initial = if initial.is_empty() {
-                    std::env::current_dir()
-                        .map(|p| p.to_string_lossy().to_string())
-                        .unwrap_or_else(|_| ".".to_string())
+                    last_browse_dir().unwrap_or_else(|| {
+                        std::env::current_dir()
+                            .map(|p| p.to_string_lossy().to_string())
+                            .unwrap_or_else(|_| ".".to_string())
+                    })
                 } else {
                     initial
                 };
@@ -1596,5 +1604,38 @@ impl NewSessionDialog {
                 DialogResult::Continue
             }
         }
+    }
+}
+
+fn last_browse_dir() -> Option<String> {
+    let cfg = load_config().ok().flatten()?;
+    let path = cfg.app_state.last_browse_dir?;
+    if path.is_dir() {
+        Some(path.to_string_lossy().to_string())
+    } else {
+        None
+    }
+}
+
+fn persist_last_browse_dir(selected: &str) {
+    let path = std::path::PathBuf::from(selected);
+    let dir = if path.is_dir() {
+        path
+    } else if let Some(parent) = path.parent() {
+        parent.to_path_buf()
+    } else {
+        return;
+    };
+    let mut cfg = match load_config() {
+        Ok(Some(c)) => c,
+        Ok(None) => Default::default(),
+        Err(e) => {
+            tracing::warn!("Failed to load config for last_browse_dir: {}", e);
+            return;
+        }
+    };
+    cfg.app_state.last_browse_dir = Some(dir);
+    if let Err(e) = save_config(&cfg) {
+        tracing::warn!("Failed to save last_browse_dir: {}", e);
     }
 }

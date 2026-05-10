@@ -2,6 +2,24 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { browseFilesystem, getHomePath } from "../lib/api";
 import type { DirEntry } from "../lib/types";
 
+const LAST_DIR_KEY = "aoe-last-browse-dir";
+
+function loadLastDir(): string | null {
+  try {
+    return localStorage.getItem(LAST_DIR_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function saveLastDir(path: string) {
+  try {
+    localStorage.setItem(LAST_DIR_KEY, path);
+  } catch {
+    // ignore
+  }
+}
+
 interface Props {
   initialPath?: string;
   onSelect: (path: string) => void;
@@ -16,7 +34,7 @@ export function DirectoryBrowser({ initialPath, onSelect }: Props) {
   const [filter, setFilter] = useState("");
   const initialized = useRef(false);
 
-  const navigate = useCallback(async (path: string) => {
+  const navigate = useCallback(async (path: string): Promise<boolean> => {
     setLoading(true);
     setError(null);
     setFilter("");
@@ -24,16 +42,18 @@ export function DirectoryBrowser({ initialPath, onSelect }: Props) {
     if (!resp.ok) {
       setError("Can't access this folder. It may not exist or is outside the home directory.");
       setLoading(false);
-      return;
+      return false;
     }
     // Success: update state even if empty (empty dir is valid)
     setEntries(resp.entries);
     setHasMore(resp.has_more);
     setCurrentPath(path);
     setLoading(false);
+    return true;
   }, []);
 
-  // Discover and navigate to home dir on mount
+  // Discover and navigate to a starting dir on mount.
+  // Priority: explicit initialPath -> last-used dir from localStorage -> home -> "/".
   useEffect(() => {
     if (initialized.current) return;
     initialized.current = true;
@@ -43,10 +63,12 @@ export function DirectoryBrowser({ initialPath, onSelect }: Props) {
       return;
     }
 
-    // Ask the server for the home directory path
-    getHomePath().then((home) => {
-      navigate(home || "/");
-    });
+    (async () => {
+      const lastDir = loadLastDir();
+      if (lastDir && (await navigate(lastDir))) return;
+      const home = await getHomePath();
+      await navigate(home || "/");
+    })();
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const pathSegments = currentPath.split("/").filter(Boolean);
@@ -63,6 +85,10 @@ export function DirectoryBrowser({ initialPath, onSelect }: Props) {
 
   const handleEntryClick = (entry: DirEntry) => {
     if (entry.is_git_repo) {
+      // Save parent so reopening the picker lands one level up,
+      // where this repo lives. Mirrors the TUI behavior.
+      const parent = entry.path.split("/").slice(0, -1).join("/") || "/";
+      saveLastDir(parent);
       onSelect(entry.path);
     } else {
       navigate(entry.path);

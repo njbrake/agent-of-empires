@@ -203,6 +203,11 @@ pub struct AppStateConfig {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub group_by: Option<GroupByMode>,
+
+    /// Last directory the user navigated to in the new-session dir picker.
+    /// Restored on subsequent opens so users don't re-navigate every time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_browse_dir: Option<PathBuf>,
 }
 
 /// Session-related configuration defaults
