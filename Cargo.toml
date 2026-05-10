@@ -103,6 +103,9 @@ futures-util = "0.3"
 # Temporary files and directories
 tempfile = "3.14"
 
+# PATH lookup for external viewers (lnav, bat, less) used by `aoe logs`.
+which = "7.0"
+
 # Local SQLite reader for opencode's session store. Bundled to avoid a
 # system libsqlite3 dependency. Used to read session state without spawning
 # `opencode session list`, which leaks a 4.5MB /tmp/.<hash>.so per invocation

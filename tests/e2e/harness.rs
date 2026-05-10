@@ -401,12 +401,19 @@ last_seen_version = "{}"
 
     /// Run `aoe <args>` as a subprocess (not in tmux) with the same env
     /// isolation. Returns the `Output` (stdout, stderr, status).
+    ///
+    /// Clears `AGENT_OF_EMPIRES_DEBUG` and `AOE_LOG_LEVEL` from the inherited
+    /// env so tests run with a deterministic logging configuration: when
+    /// either is set, `aoe` truncates `debug.log` on startup, which would
+    /// silently destroy any fixture that an `aoe logs` test seeded.
     pub fn run_cli(&self, args: &[&str]) -> Output {
         Command::new(&self.binary_path)
             .args(args)
             .env("HOME", self.home_dir.path())
             .env("XDG_CONFIG_HOME", self.home_dir.path().join(".config"))
             .env("PATH", self.env_path())
+            .env_remove("AGENT_OF_EMPIRES_DEBUG")
+            .env_remove("AOE_LOG_LEVEL")
             .output()
             .expect("failed to run aoe CLI")
     }

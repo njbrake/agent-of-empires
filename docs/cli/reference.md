@@ -9,6 +9,7 @@ This document contains the help content for the `aoe` command-line program.
 * [`aoe agents`↴](#aoe-agents)
 * [`aoe init`↴](#aoe-init)
 * [`aoe list`↴](#aoe-list)
+* [`aoe logs`↴](#aoe-logs)
 * [`aoe remove`↴](#aoe-remove)
 * [`aoe send`↴](#aoe-send)
 * [`aoe status`↴](#aoe-status)
@@ -76,6 +77,7 @@ Run without arguments to launch the TUI dashboard.
 * `agents` — List supported agents and their install status
 * `init` — Initialize .agent-of-empires/config.toml in a repository
 * `list` — List all sessions
+* `logs` — View AoE log files (debug.log, serve.log) with a pretty viewer
 * `remove` — Remove a session
 * `send` — Send a message to a running agent session
 * `status` — Show session status summary
@@ -168,6 +170,24 @@ List all sessions
 
 * `--json` — Output as JSON
 * `--all` — List sessions from all profiles
+
+
+
+## `aoe logs`
+
+View AoE log files (debug.log, serve.log) with a pretty viewer
+
+**Usage:** `aoe logs [OPTIONS]`
+
+###### **Options:**
+
+* `--debug` — View debug.log (default)
+* `--serve` — View serve.log (daemon stdout/stderr)
+* `--all` — View both debug.log and serve.log, merged by timestamp
+* `-f`, `--follow` — Live-tail the log
+* `-n`, `--lines <N>` — Show only the last N lines (fallback viewers; lnav handles its own)
+* `--no-pager` — Skip viewer detection; write plain log to stdout
+* `--path` — Print the resolved log file path(s) and exit (no viewing)
 
 
 

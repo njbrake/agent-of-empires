@@ -167,6 +167,7 @@ async fn main() -> Result<()> {
             };
         }
         Some(Commands::Agents) => return cli::agents::run(),
+        Some(Commands::Logs(args)) => return cli::logs::run(args).await,
         Some(Commands::Sounds { command }) => return cli::sounds::run(command).await,
         Some(Commands::Theme { command }) => {
             use cli::theme::ThemeCommands;

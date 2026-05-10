@@ -166,6 +166,12 @@ cargo build --release  # Release build
 
 # Debug logging (writes to debug.log in app data dir)
 AGENT_OF_EMPIRES_DEBUG=1 cargo run
+
+# View the resulting log with the best viewer available
+# (lnav > bat > less > stdout). Add --serve for the daemon log,
+# --all to merge both, --follow to live-tail, --path to print the
+# resolved file path, --no-pager to dump plain text.
+aoe logs
 ```
 
 Debug builds use a parallel namespace so they don't collide with an installed

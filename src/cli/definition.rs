@@ -12,6 +12,7 @@ use super::cockpit::CockpitCommands;
 use super::group::GroupCommands;
 use super::init::InitArgs;
 use super::list::ListArgs;
+use super::logs::LogsArgs;
 use super::profile::ProfileCommands;
 use super::project::ProjectCommands;
 use super::remove::RemoveArgs;
@@ -63,6 +64,9 @@ pub enum Commands {
     /// List all sessions
     #[command(alias = "ls")]
     List(ListArgs),
+
+    /// View AoE log files (debug.log, serve.log) with a pretty viewer
+    Logs(LogsArgs),
 
     /// Remove a session
     #[command(alias = "rm")]

@@ -18,6 +18,10 @@ AGENT_OF_EMPIRES_DEBUG=1 cargo run  # Debug logging (writes to debug.log in app 
 AOE_LOG_LEVEL=trace cargo run        # Pick the log level explicitly
 AOE_ACP_TRACE=1 cargo run            # Plus raw ACP JSON-RPC firehose
 AOE_TERMINAL_TRACE=1 cargo run       # Plus per-message bytes for the web terminal WS (spammy)
+aoe logs                       # View debug.log via lnav/bat/less (auto-detects)
+aoe logs --serve               # View serve.log (daemon stdout/stderr)
+aoe logs --all --no-pager      # Merge both logs, plain stdout
+aoe logs --path                # Print the resolved log file path
 ```
 
 Requires `tmux` to be installed.

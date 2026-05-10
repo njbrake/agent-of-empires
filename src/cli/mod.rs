@@ -8,6 +8,7 @@ pub mod definition;
 pub mod group;
 pub mod init;
 pub mod list;
+pub mod logs;
 pub mod output;
 pub mod profile;
 pub mod project;
