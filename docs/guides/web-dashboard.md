@@ -31,6 +31,9 @@ aoe serve --host 0.0.0.0
 # Run in background
 aoe serve --daemon
 
+# Open the printed URL in the default browser once the server is ready
+aoe serve --open
+
 # Read-only monitoring (no terminal input)
 aoe serve --remote --read-only
 ```
@@ -44,7 +47,7 @@ aoe web dashboard running at:
 
 Open this URL in any browser to access the dashboard. The token is set as a cookie on first visit so you don't need to keep it in the URL.
 
-In `--remote` mode, a QR code is also printed for easy phone pairing.
+`--open` is opt-in. It is suppressed when you also pass `--daemon` or `--remote`, when running over SSH (`SSH_CONNECTION` / `SSH_TTY` set), and on Linux/BSD with no `DISPLAY` / `WAYLAND_DISPLAY`.
 
 ## Retrieving the live URL
 
@@ -62,6 +65,8 @@ aoe url --token-only
 ```
 
 `aoe url` exits non-zero if no daemon is running.
+
+In `--remote` mode, a QR code is also printed for easy phone pairing.
 
 ## Remote access
 

@@ -378,6 +378,7 @@ pub struct ServerConfig<'a> {
     pub no_tailscale: bool,
     pub is_daemon: bool,
     pub passphrase: Option<&'a str>,
+    pub open_browser: bool,
 }
 
 pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
@@ -393,6 +394,7 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
         no_tailscale,
         is_daemon,
         passphrase,
+        open_browser,
     } = config;
 
     raise_fd_limit();
@@ -704,6 +706,12 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
             println!(
                 "Open any URL above in a browser. Share it to access from other devices on your network."
             );
+        }
+
+        if open_browser && !is_daemon {
+            if let Some((_, primary)) = labeled_urls.first() {
+                maybe_open_browser(primary);
+            }
         }
 
         // serve.url: primary URL on line 1 (unlabeled, backward-compatible
@@ -1091,6 +1099,29 @@ async fn serve_public_file(uri: axum::http::Uri) -> impl axum::response::IntoRes
     // Strip leading slash to match rust-embed paths
     let path = uri.path().trim_start_matches('/');
     serve_embedded_file(path)
+}
+
+/// Best-effort launch of `url` in the user's default browser. Suppressed
+/// in environments where opening a browser is not useful: SSH sessions
+/// (the user is on another host) and Linux/BSD without a display server.
+/// Failures are logged but never propagate; the server keeps running.
+fn maybe_open_browser(url: &str) {
+    if std::env::var_os("SSH_CONNECTION").is_some() || std::env::var_os("SSH_TTY").is_some() {
+        tracing::info!("--open ignored: running over SSH");
+        return;
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "openbsd"))]
+    {
+        if std::env::var_os("DISPLAY").is_none() && std::env::var_os("WAYLAND_DISPLAY").is_none() {
+            tracing::info!("--open ignored: no DISPLAY or WAYLAND_DISPLAY set");
+            return;
+        }
+    }
+
+    if let Err(e) = webbrowser::open(url) {
+        tracing::warn!("--open: failed to launch browser: {e}");
+    }
 }
 
 fn serve_embedded_file(path: &str) -> axum::response::Response {

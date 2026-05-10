@@ -56,6 +56,12 @@ pub struct ServeArgs {
     /// Can also be set via AOE_SERVE_PASSPHRASE environment variable.
     #[arg(long, env = "AOE_SERVE_PASSPHRASE")]
     pub passphrase: Option<String>,
+
+    /// Open the dashboard URL in the default browser once the server is ready.
+    /// Ignored under --daemon, --remote, SSH (SSH_CONNECTION/SSH_TTY), or when
+    /// no display server is reachable on Linux/BSD.
+    #[arg(long)]
+    pub open: bool,
 }
 
 /// True when `aoe serve --remote` will route through Cloudflare and therefore
@@ -386,6 +392,7 @@ pub async fn run(profile: &str, args: ServeArgs) -> Result<()> {
         no_tailscale: args.no_tailscale,
         is_daemon: false,
         passphrase: args.passphrase.as_deref(),
+        open_browser: args.open,
     })
     .await;
 
