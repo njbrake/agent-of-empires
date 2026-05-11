@@ -60,6 +60,13 @@ pub struct SessionResponse {
     /// Each entry mirrors `WorkspaceRepo` minus paths the dashboard does
     /// not need to display.
     pub workspace_repos: Vec<WorkspaceRepoSummary>,
+    /// Non-fatal warnings emitted during worktree creation (e.g.
+    /// post-checkout hook failures where the worktree was created
+    /// successfully). Only populated on the create-session response;
+    /// omitted from subsequent fetches because it lives on `BuildResult`
+    /// and is not persisted to the instance.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -134,6 +141,7 @@ impl SessionResponse {
                         .collect()
                 })
                 .unwrap_or_default(),
+            warnings: Vec::new(),
         }
     }
 }
@@ -768,10 +776,11 @@ pub async fn create_session(
 
     match result {
         Ok(Ok((instance, warnings))) => {
-            let resp = SessionResponse::from_instance(
+            let mut resp = SessionResponse::from_instance(
                 &instance,
                 crate::claude_settings::read_tui_fullscreen(),
             );
+            resp.warnings = warnings;
             #[cfg(feature = "serve")]
             let cockpit_spawn_target = if instance.cockpit_mode {
                 Some((
@@ -812,22 +821,7 @@ pub async fn create_session(
                 });
             }
 
-            let mut body =
-                serde_json::to_value(resp).expect("SessionResponse is always serializable");
-            if !warnings.is_empty() {
-                if let Some(obj) = body.as_object_mut() {
-                    obj.insert(
-                        "warnings".to_string(),
-                        serde_json::Value::Array(
-                            warnings
-                                .into_iter()
-                                .map(serde_json::Value::String)
-                                .collect(),
-                        ),
-                    );
-                }
-            }
-            (StatusCode::CREATED, Json(body)).into_response()
+            (StatusCode::CREATED, Json(resp)).into_response()
         }
         Ok(Err(e)) => {
             tracing::warn!("Session creation failed: {}", e);

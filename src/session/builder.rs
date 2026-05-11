@@ -179,11 +179,21 @@ pub fn create_workspace(
                     let worktree_subdir = plan.worktree_subdir.clone();
                     let repo_name = plan.repo_name.clone();
                     scope.spawn(move || -> std::result::Result<Vec<String>, String> {
-                        let git_wt = GitWorktree::new(main_repo_path)
-                            .map_err(|e| format!("{}: {}", repo_name, e))?;
-                        git_wt
-                            .create_worktree(&branch, &worktree_subdir, create_new_branch)
-                            .map_err(|e| format!("{}: {}", repo_name, e))
+                        let repo_start = std::time::Instant::now();
+                        let result = (|| -> std::result::Result<Vec<String>, String> {
+                            let git_wt = GitWorktree::new(main_repo_path)
+                                .map_err(|e| format!("{}: {}", repo_name, e))?;
+                            git_wt
+                                .create_worktree(&branch, &worktree_subdir, create_new_branch)
+                                .map_err(|e| format!("{}: {}", repo_name, e))
+                        })();
+                        tracing::info!(
+                            "workspace create: repo={} elapsed={:?} ok={}",
+                            repo_name,
+                            repo_start.elapsed(),
+                            result.is_ok()
+                        );
+                        result
                     })
                 })
                 .collect();
@@ -202,7 +212,7 @@ pub fn create_workspace(
     );
 
     let mut warnings: Vec<String> = Vec::new();
-    let mut first_err: Option<String> = None;
+    let mut errors: Vec<String> = Vec::new();
     let mut created_worktrees: Vec<CreatedWorktree> = Vec::new();
     let mut repos: Vec<WorkspaceRepo> = Vec::with_capacity(plans.len());
 
@@ -223,17 +233,21 @@ pub fn create_workspace(
                     managed_by_aoe: true,
                 });
             }
-            Err(msg) => {
-                if first_err.is_none() {
-                    first_err = Some(msg);
-                }
-            }
+            Err(msg) => errors.push(msg),
         }
     }
 
-    if let Some(msg) = first_err {
+    if !errors.is_empty() {
         cleanup(&created_worktrees, &workspace_path);
-        bail!("Failed to create worktree for {}", msg);
+        if errors.len() == 1 {
+            bail!("Failed to create worktree for {}", errors.remove(0));
+        } else {
+            bail!(
+                "Failed to create worktrees ({} repos):\n  - {}",
+                errors.len(),
+                errors.join("\n  - ")
+            );
+        }
     }
 
     Ok(WorkspaceResult {

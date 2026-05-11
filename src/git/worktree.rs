@@ -369,18 +369,25 @@ impl GitWorktree {
             }
         }
 
-        let WorktreeWalkStats {
-            file_count,
-            total_bytes,
-            capped,
-        } = walk_worktree_stats(path);
-        tracing::info!(
-            "worktree create: git worktree add done in {:?} ({} files, {} bytes checked out{})",
-            add_elapsed,
-            file_count,
-            total_bytes,
-            if capped { ", walk capped" } else { "" }
-        );
+        // `walk_worktree_stats` walks the entire checked-out tree, which is
+        // unwanted overhead on the hot path when no one is listening. Only
+        // pay the cost when the matching tracing target is actually emitting
+        // at INFO (i.e. AOE_LOG_LEVEL=info|debug|trace or the legacy
+        // AGENT_OF_EMPIRES_DEBUG=1).
+        if tracing::enabled!(tracing::Level::INFO) {
+            let WorktreeWalkStats {
+                file_count,
+                total_bytes,
+                capped,
+            } = walk_worktree_stats(path);
+            tracing::info!(
+                "worktree create: git worktree add done in {:?} ({} files, {} bytes checked out{})",
+                add_elapsed,
+                file_count,
+                total_bytes,
+                if capped { ", walk capped" } else { "" }
+            );
+        }
 
         // Convert the .git file from absolute to relative path.
         // Git always writes absolute paths, but relative paths work better when
@@ -2128,5 +2135,139 @@ mod tests {
             !wt_path.join(".claude").join("skill.md").is_file(),
             "blocked local submodules should be left uninitialized rather than forcing file transport"
         );
+    }
+
+    #[test]
+    fn test_walk_worktree_stats_counts_files_and_bytes() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+
+        std::fs::write(root.join("a.txt"), "hello").unwrap(); // 5 bytes
+        std::fs::write(root.join("b.txt"), "world!").unwrap(); // 6 bytes
+        std::fs::create_dir(root.join("sub")).unwrap();
+        std::fs::write(root.join("sub").join("c.txt"), "xy").unwrap(); // 2 bytes
+
+        let stats = walk_worktree_stats(root);
+        assert_eq!(stats.file_count, 3);
+        assert_eq!(stats.total_bytes, 13);
+        assert!(!stats.capped);
+    }
+
+    #[test]
+    fn test_walk_worktree_stats_skips_dot_git_at_root() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+
+        // Worktree pointer file: a regular file named ".git" at the root.
+        std::fs::write(root.join(".git"), "gitdir: /somewhere/else").unwrap();
+        std::fs::write(root.join("kept.txt"), "x").unwrap();
+
+        let stats = walk_worktree_stats(root);
+        assert_eq!(stats.file_count, 1, "should skip the root .git entry");
+        assert_eq!(stats.total_bytes, 1);
+    }
+
+    #[test]
+    fn test_walk_worktree_stats_caps_deep_trees() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+
+        // Build a path that exceeds the internal MAX_DEPTH (6). Visit caps
+        // when depth > MAX_DEPTH, so we need >7 nested levels to trigger it.
+        let mut cur = root.to_path_buf();
+        for i in 0..10 {
+            cur = cur.join(format!("d{i}"));
+            std::fs::create_dir(&cur).unwrap();
+        }
+        std::fs::write(cur.join("deep.txt"), "z").unwrap();
+
+        let stats = walk_worktree_stats(root);
+        assert!(
+            stats.capped,
+            "deeply nested trees should set the capped flag"
+        );
+        assert_eq!(
+            stats.file_count, 0,
+            "files past the depth cap should not be counted"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_create_worktree_tolerates_failing_post_checkout_hook() {
+        use std::os::unix::fs::PermissionsExt;
+
+        // Initialize a normal repo with one commit and the test-feature branch.
+        let repo_dir = TempDir::new().unwrap();
+        let repo = git2::Repository::init(repo_dir.path()).unwrap();
+        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+        std::fs::write(repo_dir.path().join("README.md"), "hi\n").unwrap();
+        let tree_id = {
+            let mut index = repo.index().unwrap();
+            index.add_path(Path::new("README.md")).unwrap();
+            index.write_tree().unwrap()
+        };
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
+        let head_commit = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.branch("test-feature", &head_commit, false).unwrap();
+
+        // Drop a post-checkout hook that always fails. `git worktree add`
+        // creates the worktree directory and the .git pointer BEFORE running
+        // hooks, so this is exactly the partial-success state the new
+        // tolerance branch is meant to surface as a warning.
+        let hooks_dir = repo_dir.path().join(".git").join("hooks");
+        std::fs::create_dir_all(&hooks_dir).unwrap();
+        let hook_path = hooks_dir.join("post-checkout");
+        std::fs::write(
+            &hook_path,
+            "#!/bin/sh\necho 'simulated hook failure' >&2\nexit 1\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&hook_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let git_wt = GitWorktree::new(repo_dir.path().to_path_buf()).unwrap();
+        let wt_parent = TempDir::new().unwrap();
+        let wt_path = wt_parent.path().join("hook-failure");
+
+        let warnings = git_wt
+            .create_worktree("test-feature", &wt_path, false)
+            .expect("create_worktree should succeed when only the post-checkout hook failed");
+
+        assert!(
+            wt_path.exists() && wt_path.join(".git").exists(),
+            "worktree should have been created"
+        );
+        assert!(
+            !warnings.is_empty(),
+            "hook failure should produce at least one warning"
+        );
+        let combined = warnings.join("\n");
+        assert!(
+            combined.contains("post-checkout hook failed"),
+            "warning should mention the post-checkout hook: {combined}"
+        );
+        assert!(
+            combined.contains("simulated hook failure"),
+            "warning should include the hook's stderr: {combined}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_walk_worktree_stats_skips_symlinks() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+
+        std::fs::write(root.join("real.txt"), "abc").unwrap();
+        std::os::unix::fs::symlink(root.join("real.txt"), root.join("link.txt")).unwrap();
+
+        let stats = walk_worktree_stats(root);
+        assert_eq!(
+            stats.file_count, 1,
+            "symlinks should not be counted alongside their target"
+        );
+        assert_eq!(stats.total_bytes, 3);
     }
 }
