@@ -126,8 +126,14 @@ async fn main() -> Result<()> {
         // stare at "(waiting for daemon output...)" for 30-60s during
         // cert provisioning. Foreground `aoe serve` just prints to
         // the user's terminal; that's fine and matches other CLIs.
+        //
+        // `terminal=info` mirrors the file logger's target list so a
+        // default serve (no AOE_LOG_LEVEL set) still captures
+        // `terminal.ws` warn/error lines in serve.log. Without this,
+        // dead-pane warnings, idle-reaper firings, and ws send/recv
+        // errors would be silently dropped in production.
         tracing_subscriber::fmt()
-            .with_env_filter("agent_of_empires=info,cockpit=info")
+            .with_env_filter("agent_of_empires=info,cockpit=info,terminal=info")
             .with_ansi(false)
             .try_init()
             .ok();
