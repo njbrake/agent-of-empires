@@ -31,7 +31,7 @@ import {
   useExternalStoreRuntime,
   type ThreadMessageLike,
 } from "@assistant-ui/react";
-import type { ReactNode } from "react";
+import { useMemo, type ReactNode } from "react";
 
 import { useCockpit } from "../../hooks/useCockpit";
 import type {
@@ -65,9 +65,15 @@ export interface CockpitContext {
  */
 export function CockpitRuntime({ sessionId, children }: Props) {
   const cockpit = useCockpit(sessionId);
-  const messages = activityToThreadMessages(
-    cockpit.state.activity,
-    cockpit.state.turnActive,
+  // Memoise the activity → ThreadMessageLike conversion. The function
+  // walks the entire activity array, allocates a new AssistantBuilder
+  // per turn, and produces brand-new message objects. Without
+  // useMemo, every parent re-render (e.g. WS heartbeat, hover state)
+  // re-builds the entire transcript and assistant-ui treats every
+  // message as changed. Memo on the two inputs the function reads.
+  const messages = useMemo(
+    () => activityToThreadMessages(cockpit.state.activity, cockpit.state.turnActive),
+    [cockpit.state.activity, cockpit.state.turnActive],
   );
 
   const runtime = useExternalStoreRuntime<ThreadMessageLike>({

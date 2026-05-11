@@ -71,14 +71,13 @@ impl EventStore {
 
     /// Append one event. Idempotent on duplicate (session_id, seq) thanks
     /// to the primary key — re-publishing the same seq is a no-op.
-    pub fn record(&self, session_id: &str, seq: u64, event: &Event) {
-        let json = match serde_json::to_string(event) {
-            Ok(s) => s,
-            Err(e) => {
-                warn!(target: "cockpit.event_store", "serialise event for {session_id}@{seq}: {e}");
-                return;
-            }
-        };
+    /// Returns Err when the event was *not* persisted, so the caller can
+    /// surface the gap (e.g. publish a `Lagged` frame on the broadcast
+    /// channel) instead of letting the on-disk log silently fall behind
+    /// the in-memory broadcast subscribers.
+    pub fn record(&self, session_id: &str, seq: u64, event: &Event) -> Result<()> {
+        let json = serde_json::to_string(event)
+            .with_context(|| format!("serialise event for {session_id}@{seq}"))?;
         let bytes = json.len();
         let kind = event_kind(event);
         let now_ms = chrono::Utc::now().timestamp_millis();
@@ -86,17 +85,13 @@ impl EventStore {
             Ok(g) => g,
             Err(p) => p.into_inner(),
         };
-        let inserted = match conn.execute(
-            "INSERT OR IGNORE INTO cockpit_events (session_id, seq, event_json, created_at)
+        let inserted = conn
+            .execute(
+                "INSERT OR IGNORE INTO cockpit_events (session_id, seq, event_json, created_at)
              VALUES (?1, ?2, ?3, ?4)",
-            params![session_id, seq as i64, json, now_ms],
-        ) {
-            Ok(rows) => rows,
-            Err(e) => {
-                warn!(target: "cockpit.event_store", "insert {session_id}@{seq}: {e}");
-                return;
-            }
-        };
+                params![session_id, seq as i64, json, now_ms],
+            )
+            .with_context(|| format!("insert {session_id}@{seq}"))?;
         if inserted == 0 {
             // Primary-key collision: same (session_id, seq) seen before.
             // Logged at debug because the cause is usually a benign retry
@@ -146,10 +141,15 @@ impl EventStore {
                     );
                 }
                 Err(e) => {
+                    // Prune failure isn't fatal — the row is recorded,
+                    // we just exceed the cap until the next prune
+                    // succeeds. Log + swallow so callers don't have to
+                    // distinguish "record failed" from "trim failed".
                     warn!(target: "cockpit.event_store", "prune {session_id}: {e}");
                 }
             }
         }
+        Ok(())
     }
 
     /// Return all events for `session_id` with `seq > since`, oldest
@@ -345,7 +345,7 @@ mod tests {
     fn record_and_replay_roundtrip() {
         let (_tmp, store) = open_store(1000);
         for i in 1..=5 {
-            store.record("s-1", i, &Event::ThinkingStarted);
+            store.record("s-1", i, &Event::ThinkingStarted).unwrap();
         }
         let replay = store.replay_from("s-1", 2);
         let seqs: Vec<u64> = replay.iter().map(|(s, _)| *s).collect();
@@ -356,17 +356,19 @@ mod tests {
     fn highest_seq_reflects_inserts() {
         let (_tmp, store) = open_store(1000);
         assert_eq!(store.highest_seq("s-1"), 0);
-        store.record("s-1", 1, &Event::ThinkingStarted);
-        store.record("s-1", 2, &Event::ThinkingEnded);
+        store.record("s-1", 1, &Event::ThinkingStarted).unwrap();
+        store.record("s-1", 2, &Event::ThinkingEnded).unwrap();
         assert_eq!(store.highest_seq("s-1"), 2);
     }
 
     #[test]
     fn duplicate_seq_is_idempotent() {
         let (_tmp, store) = open_store(1000);
-        store.record("s-1", 1, &Event::UserPromptSent { text: "hi".into() });
+        store
+            .record("s-1", 1, &Event::UserPromptSent { text: "hi".into() })
+            .unwrap();
         // Second insert at the same seq must not double-count.
-        store.record("s-1", 1, &Event::ThinkingStarted);
+        store.record("s-1", 1, &Event::ThinkingStarted).unwrap();
         let replay = store.replay_from("s-1", 0);
         assert_eq!(replay.len(), 1);
         // The first write wins (INSERT OR IGNORE).
@@ -381,7 +383,7 @@ mod tests {
     fn retention_cap_drops_oldest() {
         let (_tmp, store) = open_store(3);
         for i in 1..=5 {
-            store.record("s-1", i, &Event::ThinkingStarted);
+            store.record("s-1", i, &Event::ThinkingStarted).unwrap();
         }
         let replay = store.replay_from("s-1", 0);
         let seqs: Vec<u64> = replay.iter().map(|(s, _)| *s).collect();
@@ -392,8 +394,8 @@ mod tests {
     #[test]
     fn delete_session_clears_only_target() {
         let (_tmp, store) = open_store(1000);
-        store.record("s-1", 1, &Event::ThinkingStarted);
-        store.record("s-2", 1, &Event::ThinkingEnded);
+        store.record("s-1", 1, &Event::ThinkingStarted).unwrap();
+        store.record("s-2", 1, &Event::ThinkingEnded).unwrap();
         store.delete_session("s-1");
         assert_eq!(store.highest_seq("s-1"), 0);
         assert_eq!(store.highest_seq("s-2"), 1);
@@ -402,9 +404,9 @@ mod tests {
     #[test]
     fn all_session_seqs_lists_each_session_once() {
         let (_tmp, store) = open_store(1000);
-        store.record("s-1", 1, &Event::ThinkingStarted);
-        store.record("s-1", 2, &Event::ThinkingEnded);
-        store.record("s-2", 1, &Event::ThinkingStarted);
+        store.record("s-1", 1, &Event::ThinkingStarted).unwrap();
+        store.record("s-1", 2, &Event::ThinkingEnded).unwrap();
+        store.record("s-2", 1, &Event::ThinkingStarted).unwrap();
         let mut listed = store.all_session_seqs();
         listed.sort();
         assert_eq!(listed, vec![("s-1".to_string(), 2), ("s-2".to_string(), 1)]);
@@ -416,20 +418,24 @@ mod tests {
         let path = tmp.path().join("cockpit.db");
         {
             let store = EventStore::open(&path, 1000).unwrap();
-            store.record(
-                "s-1",
-                1,
-                &Event::UserPromptSent {
-                    text: "hello".into(),
-                },
-            );
-            store.record(
-                "s-1",
-                2,
-                &Event::AgentMessageChunk {
-                    text: "hi back".into(),
-                },
-            );
+            store
+                .record(
+                    "s-1",
+                    1,
+                    &Event::UserPromptSent {
+                        text: "hello".into(),
+                    },
+                )
+                .unwrap();
+            store
+                .record(
+                    "s-1",
+                    2,
+                    &Event::AgentMessageChunk {
+                        text: "hi back".into(),
+                    },
+                )
+                .unwrap();
         }
         // Drop and reopen the store; the rows should still be there.
         let store = EventStore::open(&path, 1000).unwrap();

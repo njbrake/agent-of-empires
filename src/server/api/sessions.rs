@@ -452,15 +452,10 @@ pub async fn delete_session(
                 );
             }
         }
-        // Drop the per-session replay buffer + seq counter too:
-        // keeping them would leak a few MB per deleted session and
-        // serve no purpose since the session is gone. Forgetting the
-        // counter also means a recreated session with the same id
-        // (rare, but possible) starts cleanly from seq=1.
+        // Drop the per-session seq counter so a recreated session
+        // with the same id (rare, but possible) starts cleanly from
+        // seq=1.
         state.cockpit_supervisor.forget_session(&id);
-        if let Ok(mut guard) = state.cockpit_replay.lock() {
-            guard.remove(&id);
-        }
         // On-disk history is the durable mirror; without this purge a
         // recreated session with the same id would inherit the deleted
         // session's transcript and the seq=1 first publish would
@@ -808,15 +803,15 @@ pub async fn create_session(
                 let state_for_check = state.clone();
                 tokio::spawn(async move {
                     if let Err(e) = supervisor
-                        .spawn(
-                            id.clone(),
-                            &agent,
+                        .spawn(crate::cockpit::supervisor::SpawnRequest {
+                            session_id: id.clone(),
+                            agent: agent.clone(),
                             cwd,
-                            vec![],
-                            vec![],
+                            additional_dirs: vec![],
+                            provider_env: vec![],
                             model,
                             stored_acp_session_id,
-                        )
+                        })
                         .await
                     {
                         // If the session was deleted during the 2-3s

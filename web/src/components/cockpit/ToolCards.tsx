@@ -23,6 +23,7 @@ import {
 
 import { getHighlighter, langKeyForExt, loadLanguage } from "../../lib/highlighter";
 import { hasAnsi, parseAnsi, type AnsiStyle } from "../../lib/ansi";
+import { parseJsonObject, pickFirst, pickStr } from "../../lib/cockpitArgs";
 import type { ActivityRow, ToolCall } from "../../lib/cockpitTypes";
 
 interface Props {
@@ -142,34 +143,6 @@ function CardChrome({
 }
 
 /* ── Helpers ─────────────────────────────────────────────────────── */
-
-function tryParseJson(s: string): Record<string, unknown> | null {
-  try {
-    const v = JSON.parse(s);
-    return v && typeof v === "object" && !Array.isArray(v)
-      ? (v as Record<string, unknown>)
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-function pickStr(o: Record<string, unknown> | null, ...keys: string[]): string | null {
-  if (!o) return null;
-  for (const k of keys) {
-    const v = o[k];
-    if (typeof v === "string") return v;
-  }
-  return null;
-}
-
-/** Return the first non-empty string in the chain, or null. */
-function pickFirst(...candidates: Array<string | null | undefined>): string | null {
-  for (const c of candidates) {
-    if (typeof c === "string" && c.trim() !== "") return c;
-  }
-  return null;
-}
 
 function truncateLines(text: string, max: number): {
   shown: string;
@@ -331,7 +304,7 @@ function ansiSegmentStyle(style: AnsiStyle): CSSProperties {
 
 function ExecuteToolCard({ tool, result }: Props) {
   const status = statusFor(result);
-  const args = tryParseJson(tool.args_preview);
+  const args = parseJsonObject(tool.args_preview);
   const argCommand = pickStr(args, "command", "cmd", "args");
   // Fallback chain: real command → ACP-provided title (forwarded via
   // _aoe_title in CockpitRuntime) → tool's own kind/name. Never show
@@ -392,7 +365,7 @@ function ExecuteToolCard({ tool, result }: Props) {
 
 function ReadToolCard({ tool, result }: Props) {
   const status = statusFor(result);
-  const args = tryParseJson(tool.args_preview);
+  const args = parseJsonObject(tool.args_preview);
   const argPath = pickStr(args, "path", "file_path", "filePath", "filename");
   const title = pickStr(args, "_aoe_title");
   const path = pickFirst(argPath, title, tool.name) ?? "(unknown file)";
@@ -444,7 +417,7 @@ function formatRange(args: Record<string, unknown> | null): string | null {
 
 function EditToolCard({ tool, result }: Props) {
   const status = statusFor(result);
-  const args = tryParseJson(tool.args_preview);
+  const args = parseJsonObject(tool.args_preview);
   const argPath = pickStr(args, "path", "file_path", "filePath", "filename");
   const title = pickStr(args, "_aoe_title");
   const path = pickFirst(argPath, title, tool.name) ?? "(unknown file)";
@@ -541,7 +514,7 @@ const DIFF_STYLES = {
 
 function DeleteToolCard({ tool, result }: Props) {
   const status = statusFor(result);
-  const args = tryParseJson(tool.args_preview);
+  const args = parseJsonObject(tool.args_preview);
   const argPath = pickStr(args, "path", "file_path", "filePath", "filename");
   const title = pickStr(args, "_aoe_title");
   const path = pickFirst(argPath, title, tool.name) ?? "(unknown file)";
@@ -560,7 +533,7 @@ function DeleteToolCard({ tool, result }: Props) {
 
 function SearchToolCard({ tool, result }: Props) {
   const status = statusFor(result);
-  const args = tryParseJson(tool.args_preview);
+  const args = parseJsonObject(tool.args_preview);
   const argQuery = pickStr(args, "query", "pattern", "q", "search");
   const title = pickStr(args, "_aoe_title");
   const query = pickFirst(argQuery, title, tool.name) ?? "(no query)";
@@ -623,7 +596,7 @@ function SearchToolCard({ tool, result }: Props) {
 
 function FetchToolCard({ tool, result }: Props) {
   const status = statusFor(result);
-  const args = tryParseJson(tool.args_preview);
+  const args = parseJsonObject(tool.args_preview);
   const argUrl = pickStr(args, "url", "uri", "endpoint");
   const title = pickStr(args, "_aoe_title");
   const url = pickFirst(argUrl, title, tool.name) ?? "(no url)";

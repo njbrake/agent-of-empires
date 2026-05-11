@@ -47,21 +47,44 @@ pub struct SpawnCockpitResponse {
     pub status: &'static str,
 }
 
+/// Single chokepoint for cockpit-availability checks. Both gates must
+/// be on for any cockpit-spawning endpoint to succeed:
+///   - `cockpit_master_enabled`: persistent config switch, toggleable
+///     via `PATCH /api/cockpit/master`.
+///   - `experimental_enabled()`: process-scoped `AOE_EXPERIMENTAL_COCKPIT=1`.
+///
+/// Used by `spawn_cockpit`, `cockpit_enable`, and `set_cockpit_master`
+/// so they can't drift out of sync (which previously let
+/// `spawn_cockpit` succeed against an unset env var while
+/// `cockpit_enable` 403'd).
+pub(crate) fn cockpit_gate(state: &AppState) -> Result<(), (StatusCode, &'static str)> {
+    if !state
+        .cockpit_master_enabled
+        .load(std::sync::atomic::Ordering::Relaxed)
+    {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "cockpit is disabled (config.toml `cockpit.enabled = false`); \
+             enable it from the web settings or set the field to true",
+        ));
+    }
+    if !crate::cockpit::experimental_enabled() {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "cockpit is experimental; restart `aoe serve` with \
+             AOE_EXPERIMENTAL_COCKPIT=1 to enable",
+        ));
+    }
+    Ok(())
+}
+
 pub async fn spawn_cockpit(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
     Json(req): Json<SpawnCockpitRequest>,
 ) -> impl IntoResponse {
-    if !state
-        .cockpit_master_enabled
-        .load(std::sync::atomic::Ordering::Relaxed)
-    {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            "cockpit is disabled (config.toml `cockpit.enabled = false`); \
-             enable it from the web settings or set the field to true",
-        )
-            .into_response();
+    if let Err(reason) = cockpit_gate(&state) {
+        return reason.into_response();
     }
     let instances = state.instances.read().await;
     let Some(instance) = instances.iter().find(|i| i.id == id).cloned() else {
@@ -87,22 +110,23 @@ pub async fn spawn_cockpit(
     let model = req.model.or_else(|| instance.cockpit_model.clone());
     let stored_acp_session_id = instance.cockpit_acp_session_id.clone();
 
+    let agent_for_response = agent.clone();
     match state
         .cockpit_supervisor
-        .spawn(
-            id.clone(),
-            &agent,
+        .spawn(crate::cockpit::supervisor::SpawnRequest {
+            session_id: id.clone(),
+            agent,
             cwd,
-            req.additional_dirs,
+            additional_dirs: req.additional_dirs,
             provider_env,
             model,
             stored_acp_session_id,
-        )
+        })
         .await
     {
         Ok(()) => Json(SpawnCockpitResponse {
             session_id: id,
-            agent,
+            agent: agent_for_response,
             status: "running",
         })
         .into_response(),
@@ -301,23 +325,8 @@ pub async fn cockpit_enable(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    if !state
-        .cockpit_master_enabled
-        .load(std::sync::atomic::Ordering::Relaxed)
-    {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            "cockpit is disabled (config.toml `cockpit.enabled = false`); \
-             enable it from the web settings or set the field to true",
-        )
-            .into_response();
-    }
-    if !crate::cockpit::experimental_enabled() {
-        return (
-            StatusCode::FORBIDDEN,
-            "cockpit is experimental; set AOE_EXPERIMENTAL_COCKPIT=1 to enable",
-        )
-            .into_response();
+    if let Err(reason) = cockpit_gate(&state) {
+        return reason.into_response();
     }
     let (mut instance, profile) = {
         let instances = state.instances.read().await;
@@ -388,15 +397,15 @@ pub async fn cockpit_enable(
     let stored_acp_session_id = instance.cockpit_acp_session_id.clone();
     tokio::spawn(async move {
         if let Err(e) = supervisor
-            .spawn(
-                session_id.clone(),
-                &agent_name,
+            .spawn(crate::cockpit::supervisor::SpawnRequest {
+                session_id: session_id.clone(),
+                agent: agent_name.clone(),
                 cwd,
-                vec![],
-                vec![],
+                additional_dirs: vec![],
+                provider_env: vec![],
                 model,
                 stored_acp_session_id,
-            )
+            })
             .await
         {
             let message = format!("Failed to start cockpit agent {agent_name:?}: {e}");
@@ -453,13 +462,10 @@ pub async fn cockpit_disable(
     // collide on a stale seq with the buffer entry from this
     // conversation, and the client-side dedupe would silently eat it.
     state.cockpit_supervisor.forget_session(&id);
-    if let Ok(mut guard) = state.cockpit_replay.lock() {
-        guard.remove(&id);
-    }
-    // Drop on-disk history too so the next cockpit_enable starts
-    // truly fresh — without this, the seq=1 first publish would
-    // collide with a row already on disk and INSERT OR IGNORE
-    // would silently drop it.
+    // Drop on-disk history so the next cockpit_enable starts truly
+    // fresh — without this, the seq=1 first publish would collide
+    // with a row already on disk and INSERT OR IGNORE would silently
+    // drop it.
     state.cockpit_event_store.delete_session(&id);
     instance.cockpit_mode = false;
     // Clear the stored ACP session id: the agent's transcript is
@@ -638,7 +644,7 @@ pub async fn cockpit_replay(
         .map(|(seq, event)| crate::server::CockpitBroadcastFrame {
             session_id: id.clone(),
             seq,
-            event: serde_json::to_value(&event).unwrap_or(serde_json::Value::Null),
+            event: Arc::new(event),
         })
         .collect();
     Json(ReplayResponse {
@@ -698,6 +704,14 @@ pub async fn set_cockpit_master(
             .into_response();
     }
     let new_value = req.enabled;
+    // The atomic is the live source of truth — the reconciler and
+    // every gating REST handler reads it. Flip it FIRST so an
+    // in-flight `cockpit_enable` arriving in the disk-write window
+    // sees the declared end state, not the previous one. If the
+    // disk write fails we restore the previous atomic value.
+    let prev = state
+        .cockpit_master_enabled
+        .swap(new_value, std::sync::atomic::Ordering::Relaxed);
     let result = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
         let mut config = crate::session::Config::load_or_warn();
         config.cockpit.enabled = new_value;
@@ -707,9 +721,6 @@ pub async fn set_cockpit_master(
     .await;
     match result {
         Ok(Ok(())) => {
-            state
-                .cockpit_master_enabled
-                .store(new_value, std::sync::atomic::Ordering::Relaxed);
             let env_enabled = crate::cockpit::experimental_enabled();
             (
                 StatusCode::OK,
@@ -721,21 +732,34 @@ pub async fn set_cockpit_master(
             )
                 .into_response()
         }
-        Ok(Err(e)) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({
-                "error": "save_failed",
-                "message": e.to_string(),
-            })),
-        )
-            .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({
-                "error": "internal",
-                "message": e.to_string(),
-            })),
-        )
-            .into_response(),
+        Ok(Err(e)) => {
+            // Persist failed: roll the atomic back so the live state
+            // matches what's actually on disk. A subsequent gating
+            // call won't be misled by the in-memory value.
+            state
+                .cockpit_master_enabled
+                .store(prev, std::sync::atomic::Ordering::Relaxed);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": "save_failed",
+                    "message": e.to_string(),
+                })),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            state
+                .cockpit_master_enabled
+                .store(prev, std::sync::atomic::Ordering::Relaxed);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": "internal",
+                    "message": e.to_string(),
+                })),
+            )
+                .into_response()
+        }
     }
 }

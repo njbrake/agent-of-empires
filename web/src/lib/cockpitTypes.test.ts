@@ -83,6 +83,28 @@ describe("applyEvent / UserPromptSent", () => {
     expect(next.activity[1].text).toBe("second");
   });
 
+  it("dedupes the OLDEST matching optimistic row when same text is sent twice", () => {
+    // Regression: user clicks Send with the same text twice in quick
+    // succession. Two optimistic rows are queued. The first server
+    // echo (seq=N) corresponds to the first submission and must
+    // promote row 0, not row 1. If we promoted the most-recent row,
+    // row 0 would be orphaned forever and the second echo (seq=N+1)
+    // would append a third row, leaving the user with three rows on
+    // screen for two prompts.
+    let state = withOptimisticPrompt(emptyCockpitState(), "ping");
+    state = withOptimisticPrompt(state, "ping");
+    expect(state.activity).toHaveLength(2);
+
+    state = applyEvent(state, frame(10, "ping"));
+    state = applyEvent(state, frame(11, "ping"));
+
+    expect(state.activity).toHaveLength(2);
+    expect(state.activity[0].id).toBe("user-seq-10");
+    expect(state.activity[1].id).toBe("user-seq-11");
+    expect(state.activity[0].text).toBe("ping");
+    expect(state.activity[1].text).toBe("ping");
+  });
+
   it("does not double-dedupe a prompt that already has a seq-based id", () => {
     // Replay scenario: reducer applied frame(seq=3) once, then a
     // later reconnect re-delivers the same frame. Without seq dedupe

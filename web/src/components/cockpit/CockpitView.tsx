@@ -190,17 +190,35 @@ interface ToolCallProps {
   isError?: boolean;
 }
 
+// Stable per-tool-call timestamp. assistant-ui doesn't carry the
+// original started_at through (we only get the call id + name), so
+// once we mint a date for a tool call we reuse it across renders
+// rather than producing a fresh ISO string every time. Without this
+// the ToolCard's `started_at` reference changes every render, which
+// invalidates downstream memoization.
+const TOOL_CALL_TIMES = new Map<string, string>();
+
+function toolCallTimestamp(id: string): string {
+  let t = TOOL_CALL_TIMES.get(id);
+  if (t === undefined) {
+    t = new Date().toISOString();
+    TOOL_CALL_TIMES.set(id, t);
+  }
+  return t;
+}
+
 function AssistantToolCall(props: ToolCallProps) {
   // Reconstruct the ToolCall shape our existing ToolCards.tsx
   // renderer expects. assistant-ui carries `toolName` (we set this to
   // ACP's lowercased ToolKind in CockpitRuntime) plus argsText (the
   // truncated JSON preview from the agent).
+  const stableAt = toolCallTimestamp(props.toolCallId);
   const tool: ToolCall = {
     id: props.toolCallId,
     name: prettifyToolName(props.toolName, props.args),
     kind: props.toolName,
     args_preview: props.argsText ?? safeStringify(props.args ?? null),
-    started_at: new Date().toISOString(),
+    started_at: stableAt,
   };
   const resultContent =
     props.result &&
@@ -217,7 +235,7 @@ function AssistantToolCall(props: ToolCallProps) {
             : ("tool_complete" as const),
           text: resultContent,
           toolCallId: props.toolCallId,
-          at: new Date().toISOString(),
+          at: stableAt,
         }
       : undefined;
   return <ToolCard tool={tool} result={result} />;

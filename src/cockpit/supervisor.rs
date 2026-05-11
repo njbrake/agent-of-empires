@@ -32,7 +32,6 @@ use tracing::{debug, info, warn};
 use super::acp_client::{AcpClient, AcpError, SpawnConfig};
 use super::agent_registry::{AgentRegistry, AgentSpec};
 use super::approvals::{ApprovalDecision, Nonce};
-use super::replay_buffer::ReplayBuffer;
 use super::state::{CockpitSessionId, Event};
 
 /// Maximum number of post-startup respawns within `RESTART_WINDOW`.
@@ -61,6 +60,13 @@ pub enum SupervisorError {
     /// rather than retrying.
     #[error("cockpit worker capacity full ({current}/{limit}); raise [cockpit] max_concurrent_workers or delete an existing cockpit session")]
     CapacityFull { current: usize, limit: u32 },
+    /// The spawn was cancelled by a concurrent `shutdown` call (e.g. the
+    /// user clicked Disable while the ACP handshake was still in
+    /// flight). The freshly-spawned client is dropped cleanly. Callers
+    /// should treat this as a soft success: the requested end state
+    /// (no worker for this session) holds.
+    #[error("spawn for session {0:?} was cancelled by a concurrent shutdown")]
+    SpawnCancelled(String),
 }
 
 /// Frame published to the broadcast channel; mirrors
@@ -114,6 +120,15 @@ pub struct Supervisor<S: BroadcastSink> {
     /// restart budget. The RAII `SpawnReservation` guard in `spawn`
     /// removes the entry on success, error, or panic.
     pending_spawns: Arc<Mutex<HashSet<String>>>,
+    /// Session ids whose in-flight `spawn` should bail out instead of
+    /// inserting the freshly-spawned WorkerHandle. Set by
+    /// `shutdown` when it observes a session that's in
+    /// `pending_spawns` but not yet in `workers` — without this, a
+    /// `cockpit_disable` arriving during the 2-3s ACP handshake
+    /// would no-op (shutdown returns UnknownSession) but the
+    /// in-flight spawn would still complete a few seconds later,
+    /// producing an orphaned worker the user can no longer manage.
+    cancelled_spawns: Arc<Mutex<HashSet<String>>>,
     /// Cap on concurrently-running workers, snapshotted from
     /// `[cockpit] max_concurrent_workers` at startup. Enforced in
     /// `spawn`; new workers past the cap return `CapacityFull`.
@@ -146,6 +161,26 @@ impl Drop for SpawnReservation {
     }
 }
 
+/// Inputs to `Supervisor::spawn`. A struct (rather than seven
+/// positional params with `#[allow(clippy::too_many_arguments)]`)
+/// because the previous signature was the kind that produces real
+/// bugs the next time someone adds a field — the auto-spawn caller in
+/// `create_session` had to thread six identical values through the
+/// API plus a seventh on this PR.
+#[derive(Debug, Clone)]
+pub struct SpawnRequest {
+    pub session_id: String,
+    pub agent: String,
+    pub cwd: PathBuf,
+    pub additional_dirs: Vec<PathBuf>,
+    pub provider_env: Vec<(String, String)>,
+    pub model: Option<String>,
+    /// ACP session id from a previous run; when `Some` and the agent
+    /// advertises `load_session = true`, the spawn calls
+    /// `LoadSessionRequest` instead of `NewSessionRequest`.
+    pub stored_acp_session_id: Option<String>,
+}
+
 impl<S: BroadcastSink> Supervisor<S> {
     /// Constructor with no concurrency cap. Used in tests; production
     /// callers should use [`Supervisor::with_capacity`] so the
@@ -162,6 +197,7 @@ impl<S: BroadcastSink> Supervisor<S> {
             workers: Arc::new(Mutex::new(HashMap::new())),
             next_seqs: Arc::new(std::sync::Mutex::new(HashMap::new())),
             pending_spawns: Arc::new(Mutex::new(HashSet::new())),
+            cancelled_spawns: Arc::new(Mutex::new(HashSet::new())),
             max_concurrent_workers,
         }
     }
@@ -276,17 +312,16 @@ impl<S: BroadcastSink> Supervisor<S> {
     /// budget respawning a worker the supervisor no longer points
     /// at. The reservation makes the second caller fail fast with
     /// AlreadyRunning instead.
-    #[allow(clippy::too_many_arguments)]
-    pub async fn spawn(
-        &self,
-        session_id: String,
-        agent: &str,
-        cwd: PathBuf,
-        additional_dirs: Vec<PathBuf>,
-        provider_env: Vec<(String, String)>,
-        model: Option<String>,
-        stored_acp_session_id: Option<String>,
-    ) -> Result<(), SupervisorError> {
+    pub async fn spawn(&self, req: SpawnRequest) -> Result<(), SupervisorError> {
+        let SpawnRequest {
+            session_id,
+            agent,
+            cwd,
+            additional_dirs,
+            provider_env,
+            model,
+            stored_acp_session_id,
+        } = req;
         let _reservation = {
             let workers = self.workers.lock().await;
             if workers.contains_key(&session_id) {
@@ -314,7 +349,7 @@ impl<S: BroadcastSink> Supervisor<S> {
             }
         };
 
-        let mut spec = self.resolve_agent(agent).await?;
+        let mut spec = self.resolve_agent(&agent).await?;
         // Apply ${aoe_data_dir} placeholder substitution against the
         // appropriate path; if the placeholder is not consumed it stays
         // as-is and the spawn will fail with a clear error.
@@ -372,6 +407,21 @@ impl<S: BroadcastSink> Supervisor<S> {
             drop(workers);
             drop(client);
             return Err(SupervisorError::AlreadyRunning(session_id));
+        }
+        // Cancellation: a concurrent shutdown observed this session
+        // mid-handshake and asked us to bail. Drop the client cleanly
+        // and skip the workers insert so the user's "disable" actually
+        // takes effect instead of being silently overwritten by the
+        // 2-3s-late spawn completion.
+        if self.cancelled_spawns.lock().await.remove(&session_id) {
+            debug!(
+                target: "cockpit.supervisor",
+                session = %session_id,
+                "spawn cancelled by concurrent shutdown; dropping freshly-spawned client"
+            );
+            drop(workers);
+            drop(client);
+            return Err(SupervisorError::SpawnCancelled(session_id));
         }
         let drain_task = self.start_drain_task(session_id.clone(), inbound);
         workers.insert(
@@ -535,6 +585,15 @@ impl<S: BroadcastSink> Supervisor<S> {
                                     message: format!("ACP agent respawn failed: {e}"),
                                 },
                             );
+                            // Drop the dead WorkerHandle so the user can
+                            // retry via POST /api/sessions/:id/cockpit/spawn
+                            // without hitting AlreadyRunning. Without this
+                            // the entry sticks around with a closed cmd_tx
+                            // and every send_prompt fails until the daemon
+                            // restarts. Mirrors the BudgetBurned and
+                            // missing-inbound branches.
+                            let mut guard = workers.lock().await;
+                            guard.remove(&session_id);
                             return;
                         }
                     };
@@ -670,16 +729,41 @@ impl<S: BroadcastSink> Supervisor<S> {
 
     /// Shutdown a single cockpit worker.
     pub async fn shutdown(&self, session_id: &str) -> Result<(), SupervisorError> {
+        // Hold workers + pending_spawns simultaneously so the spawn
+        // can't observe an empty workers map, finish the handshake,
+        // and insert a WorkerHandle while we're walking through this
+        // function. Lock order matches `spawn`: workers, then pending.
         let mut workers = self.workers.lock().await;
-        let handle = workers
-            .remove(session_id)
-            .ok_or_else(|| SupervisorError::UnknownSession(session_id.into()))?;
-        {
-            let client = handle.client.lock().await;
-            let _ = client.shutdown().await;
+        let pending_has_it = self.pending_spawns.lock().await.contains(session_id);
+        if let Some(handle) = workers.remove(session_id) {
+            // Worker is alive — tear it down.
+            drop(workers);
+            {
+                let client = handle.client.lock().await;
+                let _ = client.shutdown().await;
+            }
+            handle.drain_task.abort();
+            return Ok(());
         }
-        handle.drain_task.abort();
-        Ok(())
+        if pending_has_it {
+            // Spawn is mid-handshake. Mark it cancelled so
+            // `Supervisor::spawn`'s pre-insert check bails instead of
+            // installing an orphaned worker. The reservation cleanup
+            // (SpawnReservation::Drop) clears `pending_spawns` on
+            // exit, so we don't have to.
+            drop(workers);
+            self.cancelled_spawns
+                .lock()
+                .await
+                .insert(session_id.to_string());
+            debug!(
+                target: "cockpit.supervisor",
+                session = %session_id,
+                "shutdown: spawn in flight; marked for cancellation"
+            );
+            return Ok(());
+        }
+        Err(SupervisorError::UnknownSession(session_id.into()))
     }
 
     /// Shutdown every worker. Called on aoe serve shutdown.
@@ -801,42 +885,47 @@ pub type ApprovalHook = Arc<dyn Fn(&str, &str, bool) + Send + Sync>;
 pub struct ChannelSink {
     pub tx: broadcast::Sender<crate::server::CockpitBroadcastFrame>,
     pub on_approval: ApprovalHook,
-    /// Per-session in-memory replay buffer. Frames are appended on each
-    /// publish so a reconnecting client can resync via
-    /// `GET /api/sessions/{id}/cockpit/replay?since={seq}`. The on-disk
-    /// `event_store` mirrors every publish so history survives an
-    /// `aoe serve` restart; the in-memory ring is the hot path for
-    /// WS-on-connect drains.
-    pub replay: Arc<std::sync::Mutex<HashMap<String, ReplayBuffer>>>,
-    /// Per-session caps `(max_events, max_bytes)`. Pulled from
-    /// `[cockpit]` config at startup; applied on lazy buffer init.
-    pub replay_caps: (usize, usize),
-    /// Disk-backed event log. Same publish path; surviving across
-    /// restarts requires no extra coordination because each publish
-    /// already has a monotonic seq from `Supervisor::next_seqs`, which
-    /// is hydrated from this store at startup.
+    /// Disk-backed event log. The single source of truth for replay:
+    /// the WS-on-connect drain, the `/cockpit/replay` REST endpoint,
+    /// and the supervisor's startup `hydrate_seqs` all read from here.
+    /// Each publish has a monotonic seq from `Supervisor::next_seqs`
+    /// which is hydrated from this store at startup, so seqs survive
+    /// `aoe serve` restart without coordination.
     pub event_store: Arc<crate::cockpit::event_store::EventStore>,
 }
 
 impl BroadcastSink for ChannelSink {
     fn publish(&self, session_id: &str, seq: u64, event: &Event) {
-        let payload = serde_json::to_value(event).unwrap_or(serde_json::Value::Null);
+        // Persist FIRST so a disk failure can be surfaced before
+        // broadcast subscribers see an event the on-disk log doesn't
+        // have. If the write fails the seq is already burned (the
+        // caller allocated it via next_seq), so we publish a typed
+        // gap event in its place — the frontend reducer can render a
+        // "history truncated at seq N" notice and the user can
+        // reload to recover via the `/cockpit/replay` endpoint.
+        let event_to_publish: Event;
+        let event_ref: &Event = match self.event_store.record(session_id, seq, event) {
+            Ok(()) => event,
+            Err(e) => {
+                tracing::warn!(
+                    target: "cockpit.event_store",
+                    session = %session_id,
+                    seq,
+                    "event store write failed; substituting AgentStartupError so the gap is visible: {e}"
+                );
+                event_to_publish = Event::AgentStartupError {
+                    message: format!("event store write failed at seq {seq}: {e}"),
+                };
+                &event_to_publish
+            }
+        };
+
         let frame = crate::server::CockpitBroadcastFrame {
             session_id: session_id.to_string(),
             seq,
-            event: payload,
+            event: Arc::new(event_ref.clone()),
         };
         let _ = self.tx.send(frame);
-
-        if let Ok(mut guard) = self.replay.lock() {
-            let (max_events, max_bytes) = self.replay_caps;
-            let buf = guard
-                .entry(session_id.to_string())
-                .or_insert_with(|| ReplayBuffer::new(max_events, max_bytes));
-            buf.push(seq, event.clone());
-        }
-
-        self.event_store.record(session_id, seq, event);
     }
 
     fn approval_requested(&self, session_id: &str, approval_title: &str, destructive: bool) {
@@ -882,15 +971,15 @@ mod tests {
         let sink = VecSink::new();
         let sup = Supervisor::new(sink);
         let result = sup
-            .spawn(
-                "s-1".into(),
-                "no-such-agent",
-                std::env::temp_dir(),
-                vec![],
-                vec![],
-                None,
-                None,
-            )
+            .spawn(SpawnRequest {
+                session_id: "s-1".into(),
+                agent: "no-such-agent".into(),
+                cwd: std::env::temp_dir(),
+                additional_dirs: vec![],
+                provider_env: vec![],
+                model: None,
+                stored_acp_session_id: None,
+            })
             .await;
         assert!(matches!(result, Err(SupervisorError::UnknownAgent(_))));
     }
@@ -917,15 +1006,15 @@ mod tests {
         drop(workers);
 
         let result = sup
-            .spawn(
-                "s-1".into(),
-                "claude-code",
-                std::env::temp_dir(),
-                vec![],
-                vec![],
-                None,
-                None,
-            )
+            .spawn(SpawnRequest {
+                session_id: "s-1".into(),
+                agent: "claude-code".into(),
+                cwd: std::env::temp_dir(),
+                additional_dirs: vec![],
+                provider_env: vec![],
+                model: None,
+                stored_acp_session_id: None,
+            })
             .await;
         assert!(matches!(result, Err(SupervisorError::AlreadyRunning(_))));
     }
@@ -1071,6 +1160,42 @@ mod tests {
     /// Regression: `publish_startup_error` and a subsequent drain-task
     /// publish must not collide on seq=1, otherwise the client-side
     /// dedupe (`frame.seq <= state.lastSeq → drop`) eats the agent's
+    /// Regression: `shutdown` arriving while a spawn is mid-handshake
+    /// must mark the in-flight spawn for cancellation, so the spawn's
+    /// pre-insert check drops the freshly-built client instead of
+    /// installing an orphaned worker. This test exercises the
+    /// supervisor-side state machine without a real ACP handshake by
+    /// pre-seeding `pending_spawns` and asserting `shutdown`'s effect.
+    #[tokio::test]
+    async fn shutdown_during_pending_spawn_marks_for_cancellation() {
+        let sink = VecSink::new();
+        let sup = Supervisor::new(sink);
+        // Simulate "spawn in flight": session is in pending_spawns
+        // but no WorkerHandle yet. This is the exact window where
+        // the bug used to bite — shutdown returned UnknownSession
+        // and the late spawn completion installed an orphan.
+        sup.pending_spawns.lock().await.insert("s-cancel".into());
+        assert!(sup.is_running("s-cancel").await);
+
+        // The new shutdown contract: success (Ok(())), and the id is
+        // recorded in cancelled_spawns so the spawn's pre-insert
+        // check can bail.
+        sup.shutdown("s-cancel")
+            .await
+            .expect("shutdown of pending spawn should succeed");
+        assert!(
+            sup.cancelled_spawns.lock().await.contains("s-cancel"),
+            "shutdown must mark the pending spawn for cancellation"
+        );
+
+        // Sanity: a session that was never pending or running still
+        // returns UnknownSession.
+        match sup.shutdown("s-never").await {
+            Err(SupervisorError::UnknownSession(id)) => assert_eq!(id, "s-never"),
+            other => panic!("expected UnknownSession, got {other:?}"),
+        }
+    }
+
     /// first message after a retry.
     #[tokio::test]
     async fn startup_error_then_drain_publish_have_distinct_seqs() {
@@ -1112,15 +1237,15 @@ mod tests {
         drop(workers);
 
         let result = sup
-            .spawn(
-                "s-2".into(),
-                "claude-code",
-                std::env::temp_dir(),
-                vec![],
-                vec![],
-                None,
-                None,
-            )
+            .spawn(SpawnRequest {
+                session_id: "s-2".into(),
+                agent: "claude-code".into(),
+                cwd: std::env::temp_dir(),
+                additional_dirs: vec![],
+                provider_env: vec![],
+                model: None,
+                stored_acp_session_id: None,
+            })
             .await;
         match result {
             Err(SupervisorError::CapacityFull { current, limit }) => {
@@ -1143,17 +1268,14 @@ mod tests {
         assert_eq!(next_seq(&sup.next_seqs, "s-1"), 1);
     }
 
-    /// End-to-end: build a real `ChannelSink` (broadcast tx +
-    /// in-memory ring + on-disk EventStore) and verify a single
-    /// `publish` call writes to ALL THREE — broadcast subscribers,
-    /// the per-session ReplayBuffer, and the SQLite store. This is
-    /// the contract every consumer relies on; before the EventStore
-    /// landed, only the first two existed.
+    /// End-to-end: build a real `ChannelSink` (broadcast tx + on-disk
+    /// EventStore) and verify a single `publish` call reaches both —
+    /// broadcast subscribers AND the SQLite store. The on-disk path is
+    /// the durable mirror that the WS-on-connect drain and the
+    /// `/cockpit/replay` REST endpoint both serve from.
     #[tokio::test]
-    async fn channel_sink_publishes_to_broadcast_in_memory_and_disk() {
+    async fn channel_sink_publishes_to_broadcast_and_disk() {
         use crate::cockpit::event_store::EventStore;
-        use crate::cockpit::replay_buffer::BufferedEvent;
-        use std::collections::HashMap;
         use tempfile::TempDir;
         use tokio::sync::broadcast;
 
@@ -1165,8 +1287,6 @@ mod tests {
         let sink = Arc::new(ChannelSink {
             tx,
             on_approval,
-            replay: Arc::new(std::sync::Mutex::new(HashMap::new())),
-            replay_caps: (100, 100_000),
             event_store: event_store.clone(),
         });
 
@@ -1185,29 +1305,14 @@ mod tests {
             },
         );
 
-        // 1. Broadcast subscribers see both frames in seq order.
+        // Broadcast subscribers see both frames in seq order.
         let frame1 = rx.try_recv().expect("broadcast frame 1");
         let frame2 = rx.try_recv().expect("broadcast frame 2");
         assert_eq!(frame1.session_id, "s-42");
         assert_eq!(frame1.seq, 1);
         assert_eq!(frame2.seq, 2);
 
-        // 2. In-memory replay ring has the same two events.
-        let ring_entries: Vec<BufferedEvent> = {
-            let guard = sink.replay.lock().unwrap();
-            let buf = guard.get("s-42").expect("ring populated");
-            buf.replay_from(0).expect("no gap")
-        };
-        let ring_seqs: Vec<u64> = ring_entries
-            .iter()
-            .filter_map(|e| match e {
-                BufferedEvent::Event { seq, .. } => Some(*seq),
-                _ => None,
-            })
-            .collect();
-        assert_eq!(ring_seqs, vec![1, 2]);
-
-        // 3. On-disk store has the same two events.
+        // On-disk store has the same two events.
         let stored = event_store.replay_from("s-42", 0);
         assert_eq!(stored.len(), 2);
         assert_eq!(stored[0].0, 1);
@@ -1230,7 +1335,6 @@ mod tests {
     #[tokio::test]
     async fn supervisor_resumes_seq_counter_from_disk_after_restart() {
         use crate::cockpit::event_store::EventStore;
-        use std::collections::HashMap;
         use tempfile::TempDir;
         use tokio::sync::broadcast;
 
@@ -1245,8 +1349,6 @@ mod tests {
             let sink = Arc::new(ChannelSink {
                 tx,
                 on_approval,
-                replay: Arc::new(std::sync::Mutex::new(HashMap::new())),
-                replay_caps: (100, 100_000),
                 event_store: event_store.clone(),
             });
             let sup = Supervisor::new(sink);
@@ -1267,8 +1369,6 @@ mod tests {
         let sink = Arc::new(ChannelSink {
             tx,
             on_approval,
-            replay: Arc::new(std::sync::Mutex::new(HashMap::new())),
-            replay_caps: (100, 100_000),
             event_store: event_store.clone(),
         });
         let sup = Supervisor::new(sink);

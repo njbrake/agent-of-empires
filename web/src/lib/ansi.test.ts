@@ -22,6 +22,15 @@ describe("hasAnsi / stripAnsi", () => {
     const noisy = `${ESC}[2K${ESC}[1Aredraw`;
     expect(stripAnsi(noisy)).toBe("redraw");
   });
+
+  it("hasAnsi requires a real CSI shape, not just ESC[", () => {
+    // Markdown blob discussing ANSI codes contains the literal
+    // characters but no actual sequence. Triggering the ANSI fast
+    // path here would render the prose without Shiki highlighting.
+    expect(hasAnsi(`docs say: prefix is "${ESC}[" then params`)).toBe(false);
+    // Real SGR still detected.
+    expect(hasAnsi(`${ESC}[31mred${ESC}[0m`)).toBe(true);
+  });
 });
 
 describe("collapseCarriageReturns", () => {
@@ -33,6 +42,19 @@ describe("collapseCarriageReturns", () => {
   });
   it("is a no-op when there are no carriage returns", () => {
     expect(collapseCarriageReturns("plain\nlines")).toBe("plain\nlines");
+  });
+  it("preserves CRLF line endings", () => {
+    // Windows-style CRLF — the trailing \r is part of the line ending,
+    // not a redraw marker. Stripping it would corrupt the text.
+    expect(collapseCarriageReturns("line1\r\nline2\r\n")).toBe(
+      "line1\r\nline2\r\n",
+    );
+  });
+  it("collapses redraws within a CRLF-terminated line", () => {
+    // Mixed: redraws in the middle of a line, CRLF at the end.
+    expect(collapseCarriageReturns("p:1/3\rp:2/3\rp:3/3\r\nnext")).toBe(
+      "p:3/3\r\nnext",
+    );
   });
 });
 

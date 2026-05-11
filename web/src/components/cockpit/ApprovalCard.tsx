@@ -14,6 +14,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "rea
 import { AlertTriangle, Check, Shield, X } from "lucide-react";
 import type { Approval, ApprovalDecision } from "../../lib/cockpitTypes";
 import { useServerDown, OFFLINE_TITLE } from "../../lib/connectionState";
+import { parseJsonObject } from "../../lib/cockpitArgs";
 
 interface Props {
   approval: Approval;
@@ -220,7 +221,7 @@ export function ApprovalCard({ approval, onResolve }: Props) {
 // original behaviour for arrays, primitives, and truncated previews
 // (preview_args appends a "[truncated]" suffix that breaks JSON.parse).
 function ArgsView({ raw }: { raw: string }) {
-  const parsed = useMemo(() => parseObject(raw), [raw]);
+  const parsed = useMemo(() => parseJsonObject(raw), [raw]);
 
   if (!parsed) {
     return (
@@ -247,17 +248,6 @@ function ArgsView({ raw }: { raw: string }) {
       ))}
     </dl>
   );
-}
-
-function parseObject(raw: string): Record<string, unknown> | null {
-  try {
-    const v = JSON.parse(raw);
-    return v && typeof v === "object" && !Array.isArray(v)
-      ? (v as Record<string, unknown>)
-      : null;
-  } catch {
-    return null;
-  }
 }
 
 function ArgValue({ value }: { value: unknown }) {

@@ -31,14 +31,36 @@ use self::push::{PushState, StatusChange, STATUS_CHANNEL_CAPACITY};
 const COCKPIT_CHANNEL_CAPACITY: usize = 256;
 
 /// One frame on the per-AppState cockpit broadcast channel: the cockpit
-/// session id plus the serialised cockpit Event JSON. Subscribed
-/// WebSocket clients filter on the session id.
+/// session id plus the typed cockpit Event. Subscribed WebSocket
+/// clients filter on the session id and serialise to JSON only at the
+/// WS write boundary; in-process consumers (status listener,
+/// acp_session_id listener) match on the typed enum directly so a
+/// rename of an `Event` variant breaks the build instead of silently
+/// breaking listener behaviour.
+///
+/// `Arc<Event>` so the broadcast clone-per-subscriber stays cheap even
+/// as the number of WS clients grows.
 #[cfg(feature = "serve")]
-#[derive(Debug, Clone, serde::Serialize)]
+#[derive(Debug, Clone)]
 pub struct CockpitBroadcastFrame {
     pub session_id: String,
     pub seq: u64,
-    pub event: serde_json::Value,
+    pub event: Arc<crate::cockpit::Event>,
+}
+
+#[cfg(feature = "serve")]
+impl serde::Serialize for CockpitBroadcastFrame {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        // Custom impl so the wire format stays the same (untagged
+        // event JSON) without forcing every consumer to round-trip
+        // through serde_json::Value.
+        use serde::ser::SerializeStruct;
+        let mut s = serializer.serialize_struct("CockpitBroadcastFrame", 3)?;
+        s.serialize_field("session_id", &self.session_id)?;
+        s.serialize_field("seq", &self.seq)?;
+        s.serialize_field("event", &*self.event)?;
+        s.end()
+    }
 }
 
 use crate::session::Instance;
@@ -235,31 +257,12 @@ pub struct AppState {
     /// connected; senders never need to check before emitting.
     #[cfg(feature = "serve")]
     pub cockpit_events_tx: broadcast::Sender<CockpitBroadcastFrame>,
-    /// Per-session replay buffer of cockpit frames. Populated on every
-    /// `ChannelSink::publish`; consulted by
-    /// `GET /api/sessions/{id}/cockpit/replay?since={seq}` so a
-    /// reconnecting WebSocket client can recover any frames it missed
-    /// during a brief network blip without dropping the conversation.
-    /// Sync mutex (not async) so the publish path stays sync-only and
-    /// preserves seq ordering; both pushers and the snapshot reader
-    /// hold the lock for very brief operations.
-    #[cfg(feature = "serve")]
-    pub cockpit_replay: Arc<
-        std::sync::Mutex<
-            std::collections::HashMap<String, crate::cockpit::replay_buffer::ReplayBuffer>,
-        >,
-    >,
-    /// Per-session replay-buffer sizing pulled from `[cockpit]` config
-    /// at startup. Lazy-initialised entries in `cockpit_replay` use
-    /// these caps.
-    #[cfg(feature = "serve")]
-    pub cockpit_replay_caps: (usize, usize),
-    /// Disk-backed cockpit event log. Mirrors every publish in
-    /// `ChannelSink`, so reload, session-switch, and `aoe serve`
-    /// restart all reconstruct the conversation from durable history.
-    /// The in-memory `cockpit_replay` ring is still the hot path for
-    /// WS-on-connect drains; this store backs the snapshot endpoint
-    /// and seeds `Supervisor::next_seqs` at startup.
+    /// Disk-backed cockpit event log. The single source of truth for
+    /// replay: `ChannelSink::publish` writes here on every event, the
+    /// WS-on-connect drain reads from here, the `/cockpit/replay` REST
+    /// endpoint reads from here, and `Supervisor::next_seqs` is seeded
+    /// from here at startup so a fresh publish gets `max_seq + 1`
+    /// rather than 1.
     #[cfg(feature = "serve")]
     pub cockpit_event_store: Arc<crate::cockpit::event_store::EventStore>,
     /// Mirror of `config.cockpit.enabled`. Initialized at startup from
@@ -472,17 +475,6 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
     #[cfg(feature = "serve")]
     let cockpit_events_tx = broadcast::channel(COCKPIT_CHANNEL_CAPACITY).0;
     #[cfg(feature = "serve")]
-    let cockpit_replay: Arc<
-        std::sync::Mutex<
-            std::collections::HashMap<String, crate::cockpit::replay_buffer::ReplayBuffer>,
-        >,
-    > = Arc::new(std::sync::Mutex::new(std::collections::HashMap::new()));
-    #[cfg(feature = "serve")]
-    let cockpit_replay_caps = (
-        config.cockpit.replay_events as usize,
-        config.cockpit.replay_bytes as usize,
-    );
-    #[cfg(feature = "serve")]
     let cockpit_master_enabled = std::sync::atomic::AtomicBool::new(config.cockpit.enabled);
     #[cfg(feature = "serve")]
     let cockpit_event_store = {
@@ -529,8 +521,6 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
         let sink = std::sync::Arc::new(crate::cockpit::supervisor::ChannelSink {
             tx: cockpit_events_tx.clone(),
             on_approval,
-            replay: cockpit_replay.clone(),
-            replay_caps: cockpit_replay_caps,
             event_store: cockpit_event_store.clone(),
         });
         let supervisor =
@@ -569,10 +559,6 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
         status_tx: broadcast::channel(STATUS_CHANNEL_CAPACITY).0,
         #[cfg(feature = "serve")]
         cockpit_events_tx: cockpit_events_tx.clone(),
-        #[cfg(feature = "serve")]
-        cockpit_replay: cockpit_replay.clone(),
-        #[cfg(feature = "serve")]
-        cockpit_replay_caps,
         #[cfg(feature = "serve")]
         cockpit_event_store: cockpit_event_store.clone(),
         #[cfg(feature = "serve")]
@@ -771,27 +757,17 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
         status_poll_loop(poll_state).await;
     });
 
-    // Cockpit status listener: cockpit-mode sessions skip the
-    // tmux-based status poll entirely (status_poll_loop short-circuits
-    // on `inst.cockpit_mode`), so without this they'd be stuck on
-    // whatever status they had at construction. Mirror ACP events
-    // into the regular Status enum so the sidebar / dashboard light up.
+    // Cockpit broadcast listener: a single subscriber that handles
+    // every in-process consumer of cockpit events. Status mirroring
+    // (sidebar dot, push-notification source) and ACP-session-id
+    // persistence (so `session/load` works across restart) used to be
+    // two separate subscribers, which doubled the broadcast clone
+    // count and locked `state.instances` twice for the events that
+    // matter to both (e.g. AcpSessionAssigned).
     {
-        let cockpit_status_state = state.clone();
+        let listener_state = state.clone();
         tokio::spawn(async move {
-            cockpit_status_listener(cockpit_status_state).await;
-        });
-    }
-
-    // Cockpit ACP-session-id listener: persists the agent-assigned ACP
-    // session id onto Instance.cockpit_acp_session_id so the next
-    // spawn calls session/load and the model retains context across
-    // `aoe serve` restarts. Mirrors the cockpit_status_listener
-    // pattern; both subscribe to the same broadcast channel.
-    {
-        let acp_id_state = state.clone();
-        tokio::spawn(async move {
-            cockpit_acp_session_id_listener(acp_id_state).await;
+            cockpit_event_listener(listener_state).await;
         });
     }
 
@@ -1423,15 +1399,15 @@ async fn reconcile_cockpit_workers(
         // sessions.rs) stays detached because it's the only spawn in
         // flight at that moment.
         let spawn_result = supervisor
-            .spawn(
-                id.clone(),
-                &agent,
+            .spawn(crate::cockpit::supervisor::SpawnRequest {
+                session_id: id.clone(),
+                agent: agent.clone(),
                 cwd,
-                vec![],
-                vec![],
+                additional_dirs: vec![],
+                provider_env: vec![],
                 model,
                 stored_acp_session_id,
-            )
+            })
             .await;
         if let Err(e) = spawn_result {
             // Re-check whether the session still exists in instances.
@@ -1569,56 +1545,194 @@ async fn status_poll_loop(state: Arc<AppState>) {
     }
 }
 
-/// Listen on the cockpit broadcast and translate ACP events into
-/// `Status` transitions on the matching `Instance`. Cockpit-mode
-/// sessions skip the tmux-based `update_status_with_metadata` path,
-/// so without this they'd render a static "Idle" indicator in the
-/// sidebar regardless of what the agent is actually doing. Status
-/// changes are also forwarded over `state.status_tx` so the dashboard
-/// + push notification consumer see them like any other transition.
+/// Single subscriber for the cockpit broadcast channel. Pattern-matches
+/// each event once and dispatches to the in-process consumers:
+///
+/// - status mirroring (sidebar dot, push notifications)
+/// - ACP-session-id persistence (so `session/load` works across restart)
+///
+/// One task instead of two halves the broadcast clone count and locks
+/// `state.instances` once per event instead of twice for the events
+/// (e.g. `AcpSessionAssigned`) that both consumers care about.
 #[cfg(feature = "serve")]
-async fn cockpit_status_listener(state: Arc<AppState>) {
+async fn cockpit_event_listener(state: Arc<AppState>) {
     let mut rx = state.cockpit_events_tx.subscribe();
-    while let Ok(frame) = rx.recv().await {
-        let Some(target) = derive_cockpit_status(&frame.event) else {
-            continue;
+    loop {
+        let frame = match rx.recv().await {
+            Ok(f) => f,
+            // Lagged: a missed event can desync the sidebar dot or
+            // skip persisting an `AcpSessionAssigned`. Status will
+            // reconcile on the next event; a missed acp_session_id
+            // means at most one restart loses context. Far better to
+            // continue than to exit the listener entirely.
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                tracing::warn!(
+                    target: "cockpit.event_listener",
+                    skipped,
+                    "broadcast lagged; status and acp_session_id may briefly desync"
+                );
+                continue;
+            }
+            // Closed: AppState dropped (shutdown). Exit cleanly.
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                tracing::debug!(
+                    target: "cockpit.event_listener",
+                    "broadcast channel closed; listener exiting"
+                );
+                return;
+            }
         };
-        let mut instances = state.instances.write().await;
-        let Some(inst) = instances.iter_mut().find(|i| i.id == frame.session_id) else {
-            continue;
-        };
-        if !inst.cockpit_mode {
+
+        let status_intent = derive_cockpit_status(frame.event.as_ref());
+        let acp_change = derive_acp_session_change(frame.event.as_ref());
+        if status_intent.is_none() && acp_change.is_none() {
             continue;
         }
-        // Don't fight terminal lifecycle states. Cockpit events keep
-        // arriving for a few ticks after a Stop/Delete, and we don't
-        // want the spinner to flicker back to Running.
-        if matches!(
-            inst.status,
-            Status::Stopped | Status::Deleting | Status::Creating
-        ) {
-            continue;
-        }
-        if inst.status == target {
-            continue;
-        }
-        let prev = inst.status;
-        inst.status = target;
-        let now = chrono::Utc::now();
-        inst.last_accessed_at = Some(now);
-        inst.idle_entered_at = if target == Status::Idle {
-            Some(now)
-        } else {
-            None
+
+        // Acquire `instances` once for both branches. Releases before
+        // the (potentially blocking) sessions.json save.
+        let profile_to_save = {
+            let mut instances = state.instances.write().await;
+            let Some(inst) = instances.iter_mut().find(|i| i.id == frame.session_id) else {
+                continue;
+            };
+            if !inst.cockpit_mode {
+                continue;
+            }
+
+            apply_status_intent(inst, status_intent, &state.status_tx);
+            apply_acp_session_change(inst, &frame.session_id, acp_change.as_ref())
         };
-        let _ = state.status_tx.send(StatusChange {
-            instance_id: inst.id.clone(),
-            instance_title: inst.title.clone(),
-            old: prev,
-            new: target,
-            at: now,
-        });
+
+        // Persist `cockpit_acp_session_id` to disk if the field changed.
+        // Sync FS (file copy + JSON write) goes through spawn_blocking
+        // so the runtime stays responsive under large session lists.
+        if let Some(profile) = profile_to_save {
+            let scoped: Vec<_> = state
+                .instances
+                .read()
+                .await
+                .iter()
+                .filter(|i| i.source_profile == profile)
+                .cloned()
+                .collect();
+            let session_id_for_log = frame.session_id.clone();
+            let profile_for_save = profile.clone();
+            let save_result = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+                let storage = crate::session::Storage::new(&profile_for_save)?;
+                storage.save(&scoped)?;
+                Ok(())
+            })
+            .await;
+            match save_result {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => {
+                    tracing::warn!(
+                        target: "cockpit.event_listener",
+                        session = %session_id_for_log,
+                        "save after acp_session_id update: {e}"
+                    );
+                }
+                Err(join_err) => {
+                    tracing::warn!(
+                        target: "cockpit.event_listener",
+                        session = %session_id_for_log,
+                        "spawn_blocking join error during acp_session_id save: {join_err}"
+                    );
+                }
+            }
+        }
     }
+}
+
+/// Fold a derived `StatusIntent` into an `Instance`. Pure mutation;
+/// callers hold the write lock. Sends a `StatusChange` on
+/// `status_tx` so push notifications and the dashboard see the
+/// transition like any tmux-driven one.
+#[cfg(feature = "serve")]
+fn apply_status_intent(
+    inst: &mut Instance,
+    intent: Option<StatusIntent>,
+    status_tx: &broadcast::Sender<StatusChange>,
+) {
+    let Some(intent) = intent else { return };
+    // Don't fight terminal lifecycle states. Cockpit events keep
+    // arriving for a few ticks after a Stop/Delete, and we don't
+    // want the spinner to flicker back to Running.
+    if matches!(
+        inst.status,
+        Status::Stopped | Status::Deleting | Status::Creating
+    ) {
+        return;
+    }
+    let target = match intent {
+        StatusIntent::Set(s) => s,
+        // HealError: only move from Error → Idle. Skip when the
+        // session is in a normal state so a respawn during an active
+        // Running turn doesn't stop the spinner.
+        StatusIntent::HealError => {
+            if inst.status != Status::Error {
+                return;
+            }
+            Status::Idle
+        }
+    };
+    if inst.status == target {
+        return;
+    }
+    let prev = inst.status;
+    inst.status = target;
+    let now = chrono::Utc::now();
+    inst.last_accessed_at = Some(now);
+    inst.idle_entered_at = if target == Status::Idle {
+        Some(now)
+    } else {
+        None
+    };
+    let _ = status_tx.send(StatusChange {
+        instance_id: inst.id.clone(),
+        instance_title: inst.title.clone(),
+        old: prev,
+        new: target,
+        at: now,
+    });
+}
+
+/// Fold a derived `AcpSessionChange` into an `Instance`. Returns the
+/// owning profile when sessions.json needs to be re-saved (so the new
+/// `cockpit_acp_session_id` survives daemon restart), or `None` if the
+/// change was a no-op or no change was emitted.
+#[cfg(feature = "serve")]
+fn apply_acp_session_change(
+    inst: &mut Instance,
+    session_id: &str,
+    change: Option<&AcpSessionChange>,
+) -> Option<String> {
+    match change? {
+        AcpSessionChange::Assigned(new_id) => {
+            if inst.cockpit_acp_session_id.as_deref() == Some(new_id.as_str()) {
+                // Same id — already on disk, no need to rewrite.
+                return None;
+            }
+            tracing::info!(
+                target: "cockpit.event_listener",
+                session = %session_id,
+                acp_session_id = %new_id,
+                "persisting agent-assigned ACP session id"
+            );
+            inst.cockpit_acp_session_id = Some(new_id.clone());
+        }
+        AcpSessionChange::Reset(reason) => {
+            tracing::info!(
+                target: "cockpit.event_listener",
+                session = %session_id,
+                %reason,
+                "clearing stored ACP session id after session/load failure"
+            );
+            inst.cockpit_acp_session_id = None;
+        }
+    }
+    Some(inst.source_profile.clone())
 }
 
 /// What an event tells the ACP-session-id listener to do. `None` means
@@ -1632,132 +1746,47 @@ enum AcpSessionChange {
 }
 
 #[cfg(feature = "serve")]
-fn derive_acp_session_change(event: &serde_json::Value) -> Option<AcpSessionChange> {
-    let map = event.as_object()?;
-    if let Some(id) = map
-        .get("AcpSessionAssigned")
-        .and_then(|v| v.get("acp_session_id"))
-        .and_then(|v| v.as_str())
-    {
-        return Some(AcpSessionChange::Assigned(id.to_string()));
-    }
-    if let Some(reason) = map
-        .get("SessionContextReset")
-        .and_then(|v| v.get("reason"))
-        .and_then(|v| v.as_str())
-    {
-        return Some(AcpSessionChange::Reset(reason.to_string()));
-    }
-    None
-}
-
-/// Persist the agent-assigned ACP session id on
-/// `Instance.cockpit_acp_session_id` (and clear it on
-/// `SessionContextReset`) so a subsequent `aoe serve` restart can call
-/// `session/load` and keep the model's context window. Subscribes to
-/// the same broadcast channel as `cockpit_status_listener`; both run
-/// independently so one failing doesn't block the other.
-#[cfg(feature = "serve")]
-async fn cockpit_acp_session_id_listener(state: Arc<AppState>) {
-    let mut rx = state.cockpit_events_tx.subscribe();
-    while let Ok(frame) = rx.recv().await {
-        let Some(change) = derive_acp_session_change(&frame.event) else {
-            continue;
-        };
-
-        let profile = {
-            let mut instances = state.instances.write().await;
-            let Some(inst) = instances.iter_mut().find(|i| i.id == frame.session_id) else {
-                continue;
-            };
-            if !inst.cockpit_mode {
-                continue;
-            }
-            match &change {
-                AcpSessionChange::Assigned(new_id) => {
-                    if inst.cockpit_acp_session_id.as_deref() == Some(new_id.as_str()) {
-                        // Same id — already on disk, no need to rewrite.
-                        continue;
-                    }
-                    tracing::info!(
-                        target: "cockpit.supervisor",
-                        session = %frame.session_id,
-                        acp_session_id = %new_id,
-                        "persisting agent-assigned ACP session id"
-                    );
-                    inst.cockpit_acp_session_id = Some(new_id.clone());
-                }
-                AcpSessionChange::Reset(reason) => {
-                    tracing::info!(
-                        target: "cockpit.supervisor",
-                        session = %frame.session_id,
-                        %reason,
-                        "clearing stored ACP session id after session/load failure"
-                    );
-                    inst.cockpit_acp_session_id = None;
-                }
-            }
-            inst.source_profile.clone()
-        };
-
-        // Persist to sessions.json scoped to the owning profile, same
-        // pattern as cockpit_enable / cockpit_disable.
-        let scoped: Vec<_> = state
-            .instances
-            .read()
-            .await
-            .iter()
-            .filter(|i| i.source_profile == profile)
-            .cloned()
-            .collect();
-        match crate::session::Storage::new(&profile) {
-            Ok(storage) => {
-                if let Err(e) = storage.save(&scoped) {
-                    tracing::warn!(
-                        target: "cockpit.supervisor",
-                        session = %frame.session_id,
-                        "save after acp_session_id update: {e}"
-                    );
-                }
-            }
-            Err(e) => {
-                tracing::warn!(
-                    target: "cockpit.supervisor",
-                    session = %frame.session_id,
-                    "open storage for acp_session_id update: {e}"
-                );
-            }
+fn derive_acp_session_change(event: &crate::cockpit::Event) -> Option<AcpSessionChange> {
+    use crate::cockpit::Event;
+    match event {
+        Event::AcpSessionAssigned { acp_session_id } => {
+            Some(AcpSessionChange::Assigned(acp_session_id.clone()))
         }
+        Event::SessionContextReset { reason } => Some(AcpSessionChange::Reset(reason.clone())),
+        _ => None,
     }
 }
 
-/// Map a cockpit broadcast event JSON to the `Status` it implies.
-/// `None` means the event is informational and shouldn't move the
-/// session out of its current state.
+/// What a cockpit event implies for the sidebar status. `Set` is an
+/// unconditional transition; `HealError` only takes effect if the
+/// current status is `Error` (used to recover the sidebar from a
+/// sticky `AgentStartupError` banner after a successful respawn
+/// without clobbering an in-progress Running/Waiting turn).
 #[cfg(feature = "serve")]
-fn derive_cockpit_status(event: &serde_json::Value) -> Option<Status> {
-    let map = event.as_object()?;
-    if map.contains_key("UserPromptSent") || map.contains_key("ApprovalResolved") {
-        return Some(Status::Running);
+#[derive(Debug, PartialEq, Eq)]
+enum StatusIntent {
+    Set(Status),
+    HealError,
+}
+
+#[cfg(feature = "serve")]
+fn derive_cockpit_status(event: &crate::cockpit::Event) -> Option<StatusIntent> {
+    use crate::cockpit::Event;
+    match event {
+        Event::UserPromptSent { .. } | Event::ApprovalResolved { .. } => {
+            Some(StatusIntent::Set(Status::Running))
+        }
+        Event::ApprovalRequested { .. } => Some(StatusIntent::Set(Status::Waiting)),
+        Event::Stopped { .. } => Some(StatusIntent::Set(Status::Idle)),
+        Event::AgentStartupError { .. } => Some(StatusIntent::Set(Status::Error)),
+        // A successful session/new or session/load means the agent
+        // is alive. Heal a sticky Error banner so the sidebar dot
+        // reverts from red to grey; do NOT clobber an in-progress
+        // Running/Waiting turn (a respawn during an active turn
+        // would otherwise stop the spinner mid-stream).
+        Event::AcpSessionAssigned { .. } => Some(StatusIntent::HealError),
+        _ => None,
     }
-    if map.contains_key("ApprovalRequested") {
-        return Some(Status::Waiting);
-    }
-    if map.contains_key("Stopped") {
-        return Some(Status::Idle);
-    }
-    if map.contains_key("AgentStartupError") {
-        return Some(Status::Error);
-    }
-    // A successful session/new or session/load — the agent is alive
-    // and ready. Bring the sidebar status back to Idle so a prior
-    // AgentStartupError (e.g. a crash mid-prompt that the supervisor
-    // then respawned through) heals on its own without waiting for
-    // the user to send a fresh prompt.
-    if map.contains_key("AcpSessionAssigned") {
-        return Some(Status::Idle);
-    }
-    None
 }
 
 #[cfg(test)]
@@ -1767,40 +1796,63 @@ mod tests {
     #[cfg(feature = "serve")]
     #[test]
     fn derive_cockpit_status_maps_terminal_events() {
-        use serde_json::json;
+        use crate::cockpit::approvals::{ApprovalDecision, Nonce};
+        use crate::cockpit::permissions::build_approval;
+        use crate::cockpit::state::ToolCall;
+        use crate::cockpit::Event;
+        let tool_call = ToolCall {
+            id: "t".into(),
+            name: "shell".into(),
+            kind: "execute".into(),
+            args_preview: "{}".into(),
+            started_at: chrono::Utc::now(),
+        };
         assert_eq!(
-            derive_cockpit_status(&json!({"UserPromptSent": {"text": "hi"}})),
-            Some(Status::Running)
+            derive_cockpit_status(&Event::UserPromptSent { text: "hi".into() }),
+            Some(StatusIntent::Set(Status::Running))
         );
         assert_eq!(
-            derive_cockpit_status(&json!({"ApprovalRequested": {"approval": {}}})),
-            Some(Status::Waiting)
+            derive_cockpit_status(&Event::ApprovalRequested {
+                approval: build_approval(tool_call.clone()),
+            }),
+            Some(StatusIntent::Set(Status::Waiting))
         );
         assert_eq!(
-            derive_cockpit_status(
-                &json!({"ApprovalResolved": {"nonce": "x", "decision": "Allow"}})
-            ),
-            Some(Status::Running)
+            derive_cockpit_status(&Event::ApprovalResolved {
+                nonce: Nonce("x".into()),
+                decision: ApprovalDecision::Allow,
+            }),
+            Some(StatusIntent::Set(Status::Running))
         );
         assert_eq!(
-            derive_cockpit_status(&json!({"Stopped": {"reason": "prompt_complete"}})),
-            Some(Status::Idle)
+            derive_cockpit_status(&Event::Stopped {
+                reason: "prompt_complete".into()
+            }),
+            Some(StatusIntent::Set(Status::Idle))
         );
         assert_eq!(
-            derive_cockpit_status(&json!({"AgentStartupError": {"message": "boom"}})),
-            Some(Status::Error)
+            derive_cockpit_status(&Event::AgentStartupError {
+                message: "boom".into()
+            }),
+            Some(StatusIntent::Set(Status::Error))
         );
+        // AcpSessionAssigned heals an Error banner only — never
+        // clobbers an in-progress Running/Waiting turn.
         assert_eq!(
-            derive_cockpit_status(&json!({"AcpSessionAssigned": {"acp_session_id": "uuid"}})),
-            Some(Status::Idle)
+            derive_cockpit_status(&Event::AcpSessionAssigned {
+                acp_session_id: "uuid".into()
+            }),
+            Some(StatusIntent::HealError)
         );
     }
 
     #[cfg(feature = "serve")]
     #[test]
     fn derive_acp_session_change_extracts_assigned_id() {
-        use serde_json::json;
-        let ev = json!({"AcpSessionAssigned": {"acp_session_id": "uuid-1234"}});
+        use crate::cockpit::Event;
+        let ev = Event::AcpSessionAssigned {
+            acp_session_id: "uuid-1234".into(),
+        };
         assert_eq!(
             derive_acp_session_change(&ev),
             Some(AcpSessionChange::Assigned("uuid-1234".into()))
@@ -1810,8 +1862,10 @@ mod tests {
     #[cfg(feature = "serve")]
     #[test]
     fn derive_acp_session_change_extracts_reset_reason() {
-        use serde_json::json;
-        let ev = json!({"SessionContextReset": {"reason": "session/load failed: bad id"}});
+        use crate::cockpit::Event;
+        let ev = Event::SessionContextReset {
+            reason: "session/load failed: bad id".into(),
+        };
         assert_eq!(
             derive_acp_session_change(&ev),
             Some(AcpSessionChange::Reset(
@@ -1823,44 +1877,31 @@ mod tests {
     #[cfg(feature = "serve")]
     #[test]
     fn derive_acp_session_change_ignores_unrelated_events() {
-        use serde_json::json;
+        use crate::cockpit::Event;
         assert_eq!(
-            derive_acp_session_change(&json!({"AgentMessageChunk": {"text": "x"}})),
+            derive_acp_session_change(&Event::AgentMessageChunk { text: "x".into() }),
             None
         );
         assert_eq!(
-            derive_acp_session_change(&json!({"Stopped": {"reason": "prompt_complete"}})),
+            derive_acp_session_change(&Event::Stopped {
+                reason: "prompt_complete".into()
+            }),
             None
         );
-        // Bare string variants must not match.
-        assert_eq!(derive_acp_session_change(&json!("ThinkingStarted")), None);
-        // Malformed payloads (missing required field) drop to None.
-        assert_eq!(
-            derive_acp_session_change(&json!({"AcpSessionAssigned": {}})),
-            None
-        );
-        assert_eq!(
-            derive_acp_session_change(&json!({"SessionContextReset": {}})),
-            None
-        );
+        assert_eq!(derive_acp_session_change(&Event::ThinkingStarted), None);
     }
 
     #[cfg(feature = "serve")]
     #[test]
     fn derive_cockpit_status_ignores_streaming_and_string_events() {
-        use serde_json::json;
+        use crate::cockpit::Event;
         // Mid-turn events that shouldn't move the session out of Running.
         assert_eq!(
-            derive_cockpit_status(&json!({"AgentMessageChunk": {"text": "x"}})),
+            derive_cockpit_status(&Event::AgentMessageChunk { text: "x".into() }),
             None
         );
-        assert_eq!(
-            derive_cockpit_status(&json!({"ToolCallStarted": {"tool_call": {}}})),
-            None
-        );
-        // Bare string variants (ThinkingStarted / ThinkingEnded) are
-        // serialised as JSON strings, not objects — must not match.
-        assert_eq!(derive_cockpit_status(&json!("ThinkingStarted")), None);
+        assert_eq!(derive_cockpit_status(&Event::ThinkingStarted), None);
+        assert_eq!(derive_cockpit_status(&Event::ThinkingEnded), None);
     }
 
     #[test]

@@ -210,6 +210,12 @@ export interface CockpitState {
    *  on ToolCallCompleted (used as a fallback when the completion
    *  carries no content of its own). */
   toolOutputs: Record<string, string>;
+  /** True iff the current turn has produced at least one piece of
+   *  visible output (assistant chunk, tool call, thinking signal).
+   *  Reset to false on every UserPromptSent. Used by the Stopped
+   *  handler to detect "no-op turn" without walking the full
+   *  activity array. */
+  turnHasOutput: boolean;
 }
 
 export interface ActivityRow {
@@ -257,6 +263,7 @@ export function emptyCockpitState(): CockpitState {
     currentModeId: null,
     availableCommands: [],
     toolOutputs: {},
+    turnHasOutput: false,
   };
 }
 
@@ -277,6 +284,7 @@ export function applyEvent(
   if (typeof event === "string") {
     if (event === "ThinkingStarted") {
       next.thinking = true;
+      next.turnHasOutput = true;
     } else if (event === "ThinkingEnded") {
       next.thinking = false;
     }
@@ -314,6 +322,7 @@ export function applyEvent(
       tool: tc,
       at: tc.started_at,
     });
+    next.turnHasOutput = true;
     return next;
   }
   if ("ToolCallCompleted" in event) {
@@ -442,6 +451,7 @@ export function applyEvent(
       text: event.AgentMessageChunk.text,
       at: new Date().toISOString(),
     });
+    next.turnHasOutput = true;
     return next;
   }
   if ("Stopped" in event) {
@@ -454,32 +464,11 @@ export function applyEvent(
     // claude-agent-acp) advertise via available_commands_update but
     // produce no agent_message_chunk and no tool calls when invoked —
     // see https://github.com/agentclientprotocol/claude-agent-acp/issues/642.
-    // Detect that case and append a notice row so the user sees the turn
-    // ran rather than silent dead air. Walk back to the last user_prompt;
-    // if no message/tool/thinking row appeared between it and now, the
-    // turn was a no-op.
-    let sawOutput = false;
-    let sawPrompt = false;
-    for (let i = next.activity.length - 1; i >= 0; i--) {
-      const r = next.activity[i];
-      if (!r) continue;
-      if (r.kind === "user_prompt") {
-        sawPrompt = true;
-        break;
-      }
-      if (
-        r.kind === "message" ||
-        r.kind === "tool_start" ||
-        r.kind === "tool_complete" ||
-        r.kind === "tool_error" ||
-        r.kind === "thinking" ||
-        r.kind === "empty_output"
-      ) {
-        sawOutput = true;
-        break;
-      }
-    }
-    if (sawPrompt && !sawOutput) {
+    // Detect that case and append a notice row. The `turnHasOutput`
+    // flag is flipped by every output-producing handler and reset by
+    // UserPromptSent, so this check is O(1) instead of walking the
+    // full activity array on every Stopped.
+    if (state.turnActive && !state.turnHasOutput) {
       next.activity = pushActivity(next.activity, {
         id: `empty-${frame.seq}`,
         kind: "empty_output",
@@ -498,22 +487,26 @@ export function applyEvent(
   if ("UserPromptSent" in event) {
     const text = event.UserPromptSent.text;
     // Dedupe against the optimistic row that useCockpit's sendPrompt
-    // dispatched a moment ago: if the most recent activity row is a
-    // matching user_prompt with no server-assigned id yet (id starts
-    // with "user-" + a timestamp, not "user-seq-"), promote it to the
-    // authoritative seq-based id rather than appending a duplicate.
-    const lastIdx = next.activity.length - 1;
-    const last = lastIdx >= 0 ? next.activity[lastIdx] : null;
-    if (
-      last &&
-      last.kind === "user_prompt" &&
-      last.text === text &&
-      !last.id.startsWith("user-seq-")
-    ) {
-      const updated = next.activity.slice();
-      updated[lastIdx] = { ...last, id: `user-seq-${frame.seq}` };
-      next.activity = updated;
-      return next;
+    // dispatched a moment ago: find the OLDEST matching un-promoted
+    // user_prompt with the same text and promote it to the
+    // authoritative seq-based id. Walking oldest-first matters when
+    // the user submits the same text twice in quick succession — the
+    // first server echo must promote the first optimistic row, not
+    // the second, so the seq order matches the submission order.
+    const matchIdx = next.activity.findIndex(
+      (r) =>
+        r.kind === "user_prompt" &&
+        r.text === text &&
+        !r.id.startsWith("user-seq-"),
+    );
+    if (matchIdx >= 0) {
+      const match = next.activity[matchIdx];
+      if (match) {
+        const updated = next.activity.slice();
+        updated[matchIdx] = { ...match, id: `user-seq-${frame.seq}` };
+        next.activity = updated;
+        return next;
+      }
     }
     next.activity = pushActivity(next.activity, {
       id: `user-seq-${frame.seq}`,
@@ -525,6 +518,9 @@ export function applyEvent(
     next.startupError = null;
     next.lastError = null;
     next.turnActive = true;
+    // New turn — reset the no-output detector so Stopped fires the
+    // empty-output notice if the agent produces nothing.
+    next.turnHasOutput = false;
     return next;
   }
   if ("AcpSessionAssigned" in event) {

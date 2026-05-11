@@ -13,7 +13,6 @@
 //   3. Walk the remaining SGR sequences (`\x1b[<n;n;…>m`) and emit
 //      typed segments the React layer can style.
 
-const ESC = "";
 // Any CSI sequence: ESC [ params final-byte (any letter).
 const ANY_CSI = /\[[\d;?]*[a-zA-Z]/g;
 // SGR specifically: same shape, terminated by `m`.
@@ -39,8 +38,15 @@ export interface AnsiSegment {
   style: AnsiStyle;
 }
 
+// Match a real CSI sequence (`ESC [ params final-byte`), not just the
+// `ESC [` prefix. A markdown blob that quotes the literal characters
+// "\x1b[" — e.g. agent docs about color output — would otherwise trip
+// the ANSI fast path, find no SGR, and render as a plain `<pre>`
+// instead of going through Shiki for highlighting.
+const HAS_ANSI = /\x1b\[[\d;?]*[a-zA-Z]/;
+
 export function hasAnsi(text: string): boolean {
-  return text.indexOf(ESC + "[") >= 0;
+  return HAS_ANSI.test(text);
 }
 
 export function stripAnsi(text: string): string {
@@ -49,14 +55,23 @@ export function stripAnsi(text: string): string {
 
 /** Collapse `\r` repaints: within each `\n`-separated line, drop
  *  everything before the last `\r` so progress bars show their
- *  final state instead of a concatenated history. */
+ *  final state instead of a concatenated history. CRLF line endings
+ *  are preserved (a bare `\r` immediately before `\n` carries no
+ *  redraw payload, and stripping it would corrupt Windows-emitted
+ *  output). */
 export function collapseCarriageReturns(text: string): string {
   if (text.indexOf("\r") < 0) return text;
   return text
     .split("\n")
     .map((line) => {
-      const idx = line.lastIndexOf("\r");
-      return idx >= 0 ? line.slice(idx + 1) : line;
+      // Strip a trailing `\r` (the leftover half of `\r\n`) before
+      // looking for redraw markers, then re-attach if no redraw was
+      // present so multi-line CRLF text round-trips unchanged.
+      const hadCrlf = line.endsWith("\r");
+      const body = hadCrlf ? line.slice(0, -1) : line;
+      const idx = body.lastIndexOf("\r");
+      const collapsed = idx >= 0 ? body.slice(idx + 1) : body;
+      return hadCrlf ? `${collapsed}\r` : collapsed;
     })
     .join("\n");
 }
