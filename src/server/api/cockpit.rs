@@ -47,6 +47,25 @@ pub struct SpawnCockpitResponse {
     pub status: &'static str,
 }
 
+/// 403 helper for `aoe serve --read-only`. Matches the response shape used
+/// by `sessions.rs` write endpoints so the read-only contract is uniform
+/// across the API surface.
+pub(crate) fn read_only_block(state: &AppState) -> Option<axum::response::Response> {
+    if state.read_only {
+        return Some(
+            (
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({
+                    "error": "read_only",
+                    "message": "Server is in read-only mode",
+                })),
+            )
+                .into_response(),
+        );
+    }
+    None
+}
+
 /// Single chokepoint for cockpit-availability checks. Both gates must
 /// be on for any cockpit-spawning endpoint to succeed:
 ///   - `cockpit_master_enabled`: persistent config switch, toggleable
@@ -83,6 +102,9 @@ pub async fn spawn_cockpit(
     Path(id): Path<String>,
     Json(req): Json<SpawnCockpitRequest>,
 ) -> impl IntoResponse {
+    if let Some(resp) = read_only_block(&state) {
+        return resp;
+    }
     if let Err(reason) = cockpit_gate(&state) {
         return reason.into_response();
     }
@@ -153,6 +175,9 @@ pub async fn shutdown_cockpit(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    if let Some(resp) = read_only_block(&state) {
+        return resp;
+    }
     match state.cockpit_supervisor.shutdown(&id).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(SupervisorError::UnknownSession(_)) => StatusCode::NOT_FOUND.into_response(),
@@ -174,6 +199,9 @@ pub async fn cockpit_prompt(
     Path(id): Path<String>,
     Json(req): Json<PromptRequest>,
 ) -> impl IntoResponse {
+    if let Some(resp) = read_only_block(&state) {
+        return resp;
+    }
     // Publish the user's prompt into the event stream BEFORE forwarding
     // to the agent so the replay buffer / on-disk store captures it
     // even if the agent forward fails. The frontend treats UserPromptSent
@@ -198,6 +226,9 @@ pub async fn cockpit_cancel(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    if let Some(resp) = read_only_block(&state) {
+        return resp;
+    }
     match state.cockpit_supervisor.cancel_prompt(&id).await {
         Ok(()) => StatusCode::ACCEPTED.into_response(),
         Err(SupervisorError::UnknownSession(_)) => {
@@ -325,6 +356,9 @@ pub async fn cockpit_enable(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    if let Some(resp) = read_only_block(&state) {
+        return resp;
+    }
     if let Err(reason) = cockpit_gate(&state) {
         return reason.into_response();
     }
@@ -431,6 +465,9 @@ pub async fn cockpit_disable(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    if let Some(resp) = read_only_block(&state) {
+        return resp;
+    }
     let (mut instance, profile) = {
         let instances = state.instances.read().await;
         let Some(inst) = instances.iter().find(|i| i.id == id).cloned() else {
@@ -531,6 +568,9 @@ pub async fn cockpit_set_mode(
     Path(id): Path<String>,
     Json(req): Json<SetModeRequest>,
 ) -> impl IntoResponse {
+    if let Some(resp) = read_only_block(&state) {
+        return resp;
+    }
     match state.cockpit_supervisor.set_mode(&id, &req.mode_id).await {
         Ok(()) => StatusCode::ACCEPTED.into_response(),
         Err(SupervisorError::UnknownSession(_)) => {
@@ -572,6 +612,9 @@ pub async fn resolve_approval(
     Path((id, nonce_str)): Path<(String, String)>,
     Json(req): Json<ResolveApprovalRequest>,
 ) -> impl IntoResponse {
+    if let Some(resp) = read_only_block(&state) {
+        return resp;
+    }
     let nonce = Nonce(nonce_str);
     match state
         .cockpit_supervisor
