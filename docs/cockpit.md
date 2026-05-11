@@ -358,6 +358,17 @@ agent receives a structured cancellation; you'll typically see a
 follow-up message asking again. Bump the timeout if you're in a
 context where approvals legitimately take longer.
 
+### Sharing debug logs
+
+`AOE_LOG_LEVEL=debug` (or the legacy `AGENT_OF_EMPIRES_DEBUG=1`) writes
+agent stderr verbatim to `debug.log` under the app data dir. We scrub
+common API-key prefixes (Anthropic `sk-...`, GitHub `ghp_...`, AWS
+`AKIA...`, `Bearer <token>`, etc.) before they hit disk, but the scrub
+is best-effort — a hand-rolled secret with no recognisable shape will
+pass through. Before attaching `debug.log` to a bug report, skim it
+for anything that looks like a credential, and replace it with
+`<redacted>` if needed.
+
 ## CLI reference
 
 ```

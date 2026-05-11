@@ -430,6 +430,59 @@ impl AcpClient {
     }
 }
 
+/// Reject `provider_env` request entries whose key would either escape
+/// the agent sandbox (PATH, HOME, etc. — `always_forward` already wires
+/// those from the operator's environment) or hijack the dynamic linker
+/// (LD_PRELOAD, DYLD_INSERT_LIBRARIES, etc.) to run arbitrary code in
+/// the child. Provider auth keys (`ANTHROPIC_API_KEY`, etc.) are
+/// deliberately NOT on the denylist because per-session provider auth
+/// is the legitimate use case for `provider_env`.
+///
+/// Returns `Some(reason)` if the key is rejected, `None` if it's safe
+/// to forward. The reason string is logged as a structured field.
+fn provider_env_denyreason(key: &str) -> Option<&'static str> {
+    if key.is_empty() {
+        return Some("empty key");
+    }
+    if key == "AOE_TOKEN" {
+        return Some("aoe auth token, must not reach the agent");
+    }
+    // Infrastructure / locale keys that `always_forward` already wires
+    // from the parent env. Letting `provider_env` override them lets the
+    // request point the agent's binary lookup or home tree at an
+    // attacker-controlled location.
+    const INFRA_KEYS: &[&str] = &["PATH", "HOME", "USER", "LANG", "LC_ALL", "TERM"];
+    if INFRA_KEYS.contains(&key) {
+        return Some("infrastructure key, controlled by operator env");
+    }
+    // Dynamic linker hooks: glibc `LD_*` and macOS `DYLD_*`. Overriding
+    // these causes the child process to load attacker-chosen shared
+    // objects before main(), bypassing the agent binary entirely.
+    if key.starts_with("LD_") || key.starts_with("DYLD_") {
+        return Some("dynamic linker hook, would alter child binary load");
+    }
+    None
+}
+
+/// Scrub well-known secret patterns from agent stderr before it lands in
+/// `debug.log`. Conservative — only redacts strings that unambiguously
+/// signal a secret via prefix (Anthropic `sk-`, GitHub `ghp_`,
+/// `Bearer <token>`, etc.). Catches the common case where an adapter
+/// prints "auth failed: api_key=sk-ant-..."; will not catch a hand-rolled
+/// secret with no recognisable shape. Users sharing logs in bug reports
+/// should still scan them — see docs/cockpit.md#sharing-debug-logs.
+fn scrub_stderr_secrets(line: &str) -> std::borrow::Cow<'_, str> {
+    use std::sync::OnceLock;
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| {
+        regex::Regex::new(
+            r"\b(sk-(?:ant-)?[A-Za-z0-9_\-]{16,}|ghp_[A-Za-z0-9]{16,}|gho_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{16,}|AKIA[A-Z0-9]{16}|Bearer\s+[A-Za-z0-9_.\-]{20,})",
+        )
+        .expect("static secret-scrub regex must compile")
+    });
+    re.replace_all(line, "<redacted-secret>")
+}
+
 fn spawn_subprocess(config: &SpawnConfig) -> Result<tokio::process::Child, AcpError> {
     let mut cmd = tokio::process::Command::new(&config.spec.command);
     cmd.args(&config.spec.args)
@@ -478,8 +531,13 @@ fn spawn_subprocess(config: &SpawnConfig) -> Result<tokio::process::Child, AcpEr
     }
     let mut provider_keys: Vec<&str> = Vec::new();
     for (key, value) in &config.provider_env {
-        if key == "AOE_TOKEN" {
-            warn!(target: "cockpit", "ignoring AOE_TOKEN in provider env");
+        if let Some(reason) = provider_env_denyreason(key) {
+            warn!(
+                target: "cockpit",
+                key = %key,
+                reason,
+                "rejecting provider_env override of protected key",
+            );
             continue;
         }
         cmd.env(key, value);
@@ -538,7 +596,8 @@ fn spawn_subprocess(config: &SpawnConfig) -> Result<tokio::process::Child, AcpEr
                             target: "cockpit.acp.stderr",
                             command = %command_label,
                             pid = ?pid,
-                            "{line}"
+                            "{}",
+                            scrub_stderr_secrets(&line),
                         );
                     }
                     Ok(None) => {
@@ -1776,5 +1835,66 @@ mod tests {
         }
         assert!(preview.contains("hello"));
         assert!(preview.contains("world"));
+    }
+
+    #[test]
+    fn provider_env_denyreason_blocks_infra_and_linker_keys() {
+        assert!(provider_env_denyreason("AOE_TOKEN").is_some());
+        assert!(provider_env_denyreason("PATH").is_some());
+        assert!(provider_env_denyreason("HOME").is_some());
+        assert!(provider_env_denyreason("LD_PRELOAD").is_some());
+        assert!(provider_env_denyreason("LD_LIBRARY_PATH").is_some());
+        assert!(provider_env_denyreason("DYLD_INSERT_LIBRARIES").is_some());
+        assert!(provider_env_denyreason("").is_some());
+    }
+
+    #[test]
+    fn provider_env_denyreason_allows_provider_auth_keys() {
+        // The legitimate use case: per-session auth override.
+        assert!(provider_env_denyreason("ANTHROPIC_API_KEY").is_none());
+        assert!(provider_env_denyreason("CLAUDE_CODE_OAUTH_TOKEN").is_none());
+        assert!(provider_env_denyreason("OPENAI_API_KEY").is_none());
+        assert!(provider_env_denyreason("AOE_AGENT_MODEL").is_none());
+        // Custom provider keys should pass through.
+        assert!(provider_env_denyreason("MY_CUSTOM_VAR").is_none());
+    }
+
+    #[test]
+    fn scrub_stderr_secrets_redacts_known_prefixes() {
+        let cases = [
+            ("auth failed: sk-ant-abcdefghijklmnop1234567890", true),
+            ("Bearer abcdefghijklmnop1234567890.signature", true),
+            ("GitHub PAT: ghp_abcdefghijklmnop1234567890", true),
+            ("legacy fine grained: github_pat_abcdefghijklmnop1234", true),
+            ("AWS: AKIAIOSFODNN7EXAMPLE", true),
+        ];
+        for (input, should_redact) in cases {
+            let scrubbed = scrub_stderr_secrets(input);
+            if should_redact {
+                assert!(
+                    scrubbed.contains("<redacted-secret>"),
+                    "expected redaction in {input:?}, got {scrubbed:?}"
+                );
+            } else {
+                assert_eq!(scrubbed, input);
+            }
+        }
+    }
+
+    #[test]
+    fn scrub_stderr_secrets_leaves_innocuous_lines_alone() {
+        // Common-case debug lines that must not get false-positive
+        // redaction or the log loses diagnostic value.
+        let lines = [
+            "agent connected at /tmp/aoe.sock",
+            "session/initialize ok, capabilities: load_session=true",
+            "user prompt: please refactor src/main.rs to use anyhow",
+            // Even though "sk-" appears, the literal isn't long enough
+            // to match the secret regex.
+            "the variable sk-test is fine",
+        ];
+        for line in lines {
+            assert_eq!(scrub_stderr_secrets(line), line);
+        }
     }
 }
