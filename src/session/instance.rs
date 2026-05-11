@@ -706,6 +706,19 @@ impl Instance {
         Ok(())
     }
 
+    /// Kill the paired terminal tmux session if its pane is dead (shell
+    /// exited while `remain-on-exit on` kept the session as a tombstone).
+    /// Returns true if a kill happened so the caller knows to re-spawn.
+    /// A missing session or a live pane both return Ok(false).
+    pub fn kill_terminal_if_dead(&self) -> Result<bool> {
+        let session = self.terminal_tmux_session()?;
+        if session.exists() && session.is_pane_dead() {
+            let _ = session.kill();
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
     pub fn container_terminal_tmux_session(&self) -> Result<tmux::ContainerTerminalSession> {
         tmux::ContainerTerminalSession::new(&self.id, &self.title)
     }
@@ -772,6 +785,16 @@ impl Instance {
             session.kill()?;
         }
         Ok(())
+    }
+
+    /// Container counterpart of [`Self::kill_terminal_if_dead`].
+    pub fn kill_container_terminal_if_dead(&self) -> Result<bool> {
+        let session = self.container_terminal_tmux_session()?;
+        if session.exists() && session.is_pane_dead() {
+            let _ = session.kill();
+            return Ok(true);
+        }
+        Ok(false)
     }
 
     fn sandbox_display(&self) -> Option<crate::tmux::status_bar::SandboxDisplay> {
@@ -2741,5 +2764,134 @@ mod tests {
 
         // Longer names like "opencode" should still match.
         assert!(pane_has_agent_content("OpenCode v1.0", "opencode"));
+    }
+
+    mod kill_terminal_if_dead {
+        use super::*;
+        use std::process::Command;
+
+        fn tmux_available() -> bool {
+            Command::new("tmux")
+                .arg("-V")
+                .output()
+                .map(|o| o.status.success())
+                .unwrap_or(false)
+        }
+
+        /// Manually create a tmux session under `name` with `remain-on-exit on`
+        /// so the session survives the inner command's exit. Used to simulate
+        /// the dead-pane state without going through `start_terminal`, which
+        /// would also apply unrelated tmux options.
+        fn spawn_remain_on_exit(name: &str, cmd: &str) {
+            let output = Command::new("tmux")
+                .args([
+                    "new-session",
+                    "-d",
+                    "-s",
+                    name,
+                    "-x",
+                    "80",
+                    "-y",
+                    "24",
+                    cmd,
+                    ";",
+                    "set-option",
+                    "-p",
+                    "-t",
+                    name,
+                    "remain-on-exit",
+                    "on",
+                ])
+                .output()
+                .expect("tmux new-session");
+            assert!(
+                output.status.success(),
+                "tmux new-session failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            crate::tmux::refresh_session_cache();
+        }
+
+        fn cleanup(name: &str) {
+            let _ = Command::new("tmux")
+                .args(["kill-session", "-t", name])
+                .output();
+            crate::tmux::refresh_session_cache();
+        }
+
+        #[test]
+        #[serial_test::serial]
+        fn returns_false_when_no_session() {
+            if !tmux_available() {
+                eprintln!("Skipping: tmux not available");
+                return;
+            }
+            let inst = Instance::new("ktid_missing", "/tmp");
+            crate::tmux::refresh_session_cache();
+            assert!(!inst.kill_terminal_if_dead().unwrap());
+        }
+
+        #[test]
+        #[serial_test::serial]
+        fn returns_false_when_pane_alive() {
+            if !tmux_available() {
+                eprintln!("Skipping: tmux not available");
+                return;
+            }
+            let inst = Instance::new("ktid_alive", "/tmp");
+            let name = crate::tmux::TerminalSession::generate_name(&inst.id, &inst.title);
+            spawn_remain_on_exit(&name, "sleep 30");
+            // Give tmux a moment to register the pane.
+            std::thread::sleep(std::time::Duration::from_millis(200));
+
+            let result = inst.kill_terminal_if_dead();
+            cleanup(&name);
+
+            assert!(!result.unwrap(), "live pane should not trigger a kill");
+        }
+
+        #[test]
+        #[serial_test::serial]
+        fn kills_dead_pane_session() {
+            if !tmux_available() {
+                eprintln!("Skipping: tmux not available");
+                return;
+            }
+            let inst = Instance::new("ktid_dead", "/tmp");
+            let name = crate::tmux::TerminalSession::generate_name(&inst.id, &inst.title);
+            // `true` exits immediately; remain-on-exit keeps the session alive
+            // with a dead pane (matches the production failure mode: shell
+            // exited via Ctrl+D / `exit` / SIGHUP, session still listed).
+            spawn_remain_on_exit(&name, "true");
+            // Allow the pane to transition to dead.
+            std::thread::sleep(std::time::Duration::from_millis(300));
+
+            let session = inst.terminal_tmux_session().unwrap();
+            assert!(
+                session.exists(),
+                "session should still exist via remain-on-exit"
+            );
+            assert!(
+                session.is_pane_dead(),
+                "pane should be dead after `true` exits"
+            );
+
+            let killed = inst.kill_terminal_if_dead().unwrap();
+            assert!(
+                killed,
+                "kill_terminal_if_dead should return true for dead pane"
+            );
+
+            let session = inst.terminal_tmux_session().unwrap();
+            assert!(!session.exists(), "session should be gone after kill");
+
+            // Idempotent: second call on now-missing session returns false.
+            assert!(
+                !inst.kill_terminal_if_dead().unwrap(),
+                "second call on missing session should return false"
+            );
+
+            cleanup(&name);
+        }
     }
 }

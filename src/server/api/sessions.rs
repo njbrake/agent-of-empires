@@ -1112,11 +1112,7 @@ pub async fn ensure_terminal(
     let mut inst_clone = inst;
 
     let result = tokio::task::spawn_blocking(move || {
-        if let Ok(session) = inst_clone.terminal_tmux_session() {
-            if session.exists() && session.is_pane_dead() {
-                let _ = session.kill();
-            }
-        }
+        let _ = inst_clone.kill_terminal_if_dead();
         inst_clone.start_terminal()
     })
     .await;
@@ -1204,11 +1200,7 @@ pub async fn ensure_container_terminal(
     let mut inst_clone = inst;
 
     let result = tokio::task::spawn_blocking(move || {
-        if let Ok(session) = inst_clone.container_terminal_tmux_session() {
-            if session.exists() && session.is_pane_dead() {
-                let _ = session.kill();
-            }
-        }
+        let _ = inst_clone.kill_container_terminal_if_dead();
         inst_clone.start_container_terminal_with_size(None)
     })
     .await;

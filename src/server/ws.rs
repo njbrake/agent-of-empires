@@ -106,8 +106,7 @@ async fn respawn_paired_if_dead(
     let mut inst_for_blocking = inst.clone();
     let tmux_name_clone = tmux_name.clone();
     let respawned = tokio::task::spawn_blocking(move || -> anyhow::Result<bool> {
-        let session = inst_for_blocking.terminal_tmux_session()?;
-        if !session.exists() || !session.is_pane_dead() {
+        if !inst_for_blocking.kill_terminal_if_dead()? {
             return Ok(false);
         }
         tracing::warn!(
@@ -115,7 +114,6 @@ async fn respawn_paired_if_dead(
             tmux = %tmux_name_clone,
             "paired terminal pane dead at WS upgrade, killing and respawning"
         );
-        let _ = session.kill();
         inst_for_blocking.start_terminal()?;
         Ok(true)
     })
@@ -199,8 +197,7 @@ async fn respawn_container_if_dead(
     // queries tmux directly, so unlike the paired variant we don't need to write
     // back a `terminal_info` flag after a successful respawn.
     let _respawned = tokio::task::spawn_blocking(move || -> anyhow::Result<bool> {
-        let session = inst_for_blocking.container_terminal_tmux_session()?;
-        if !session.exists() || !session.is_pane_dead() {
+        if !inst_for_blocking.kill_container_terminal_if_dead()? {
             return Ok(false);
         }
         tracing::warn!(
@@ -208,7 +205,6 @@ async fn respawn_container_if_dead(
             tmux = %tmux_name_clone,
             "container terminal pane dead at WS upgrade, killing and respawning"
         );
-        let _ = session.kill();
         inst_for_blocking.start_container_terminal_with_size(None)?;
         Ok(true)
     })
