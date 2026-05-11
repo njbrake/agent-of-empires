@@ -1,11 +1,50 @@
 //! Disk-backed event log for cockpit sessions.
 //!
 //! Every event published through `ChannelSink` is appended here so the
-//! conversation survives `aoe serve` restarts. The in-memory replay
-//! buffer (`replay_buffer.rs`) still serves WS-on-connect drains for
-//! speed, but the snapshot endpoint and startup hydration go through
-//! this store, which holds full history (subject to the per-session
-//! retention cap).
+//! conversation transcript survives page reloads, session switches,
+//! and `aoe serve` restarts. One row per `(session_id, seq)` with a
+//! per-session retention cap; older events are pruned on insert once
+//! the row count exceeds the cap.
+//!
+//! ## How replay flows
+//!
+//! - **WebSocket on-connect drain.** The client passes the `lastSeq` it
+//!   has cached (or 0 on first connect) as a query param to
+//!   `/sessions/{id}/cockpit/ws`. The handler reads
+//!   `replay_from(session_id, since)` out of this store and pushes
+//!   those frames before forwarding the live broadcast, closing the
+//!   subscribe-gap race that would otherwise drop the agent's first
+//!   chunks on a fast page load.
+//! - **Snapshot endpoint.** `GET /cockpit/replay?since=N` reads the
+//!   same data path, used by the React reducer when it sees a `lagged`
+//!   notice from the WS to catch up missed frames.
+//! - **Startup hydration.** On boot, `next_seqs` is rehydrated from
+//!   `MAX(seq) + 1` per session so post-restart writes don't collide
+//!   with pre-restart rows via `INSERT OR IGNORE`.
+//!
+//! ## How it relates to agent-side memory
+//!
+//! This store only persists the *UI transcript*. The model's
+//! conversation context across `aoe serve` restarts is a separate
+//! mechanism in `supervisor.rs`: when the agent advertises
+//! `agent_capabilities.load_session = true` on the ACP `initialize`
+//! response, the supervisor stores the agent-assigned `session_id` on
+//! `Instance.cockpit_acp_session_id` and uses `session/load` on
+//! subsequent spawns instead of `session/new`. If `session/load`
+//! fails, the stored id is cleared and a `SessionContextReset` event
+//! is published; the UI renders an amber callout in the transcript so
+//! the user knows prior turns are no longer in the model's context.
+//!
+//! The bundled `aoe-agent` does not yet advertise `load_session`, so
+//! its UI transcript replays from this store on restart but the model
+//! itself starts fresh each spawn (tracked in #1005).
+//!
+//! ## Lifecycle
+//!
+//! Per-session rows are dropped on session delete and on
+//! `cockpit_disable` (the master switch turning off, or a per-session
+//! opt-out). The connection has WAL mode enabled so the publish path
+//! and the replay endpoint don't block each other under load.
 
 use std::path::Path;
 use std::sync::Mutex;
