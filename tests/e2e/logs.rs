@@ -175,3 +175,30 @@ fn logs_missing_debug_log_exits_zero_with_hint() {
         "stderr should explain missing file: {stderr}"
     );
 }
+
+#[test]
+#[serial]
+fn logs_all_missing_both_files_exits_zero_with_hints() {
+    if !cfg!(feature = "serve") {
+        eprintln!("Skipping: built without `serve` feature");
+        return;
+    }
+
+    let h = TuiTestHarness::new("logs_all_missing");
+    // Don't seed either log file.
+    let out = h.run_cli(&["logs", "--all", "--no-pager"]);
+    assert!(
+        out.status.success(),
+        "should exit 0 when both files missing; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    assert!(
+        stderr.matches("does not exist").count() >= 2,
+        "stderr should list both missing paths: {stderr}"
+    );
+    assert!(
+        String::from_utf8_lossy(&out.stdout).is_empty(),
+        "stdout should be empty when no viewer runs"
+    );
+}

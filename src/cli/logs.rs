@@ -120,9 +120,18 @@ pub async fn run(args: LogsArgs) -> Result<()> {
     }
 
     // For --all, materialize a merged stream into a temp file and view that.
-    // _guard keeps the tempfile alive for the duration of the viewer.
+    // _guard keeps the tempfile alive for the duration of the viewer. If no
+    // source file exists, print does-not-exist hints rather than opening an
+    // empty viewer, matching the --debug/--serve behavior below.
     let (target_path, _guard) = match mode {
         Mode::All => {
+            if paths.iter().all(|p| !p.exists()) {
+                for p in &paths {
+                    eprintln!("{} does not exist (yet).", p.display());
+                }
+                eprintln!("Tip: run with AGENT_OF_EMPIRES_DEBUG=1 to generate debug.log.");
+                return Ok(());
+            }
             let merged = merged_temp_file(&paths)?;
             (merged.path().to_path_buf(), Some(merged))
         }
@@ -138,10 +147,10 @@ pub async fn run(args: LogsArgs) -> Result<()> {
     }
 
     let viewer = detect_viewer(args.no_pager);
-    if !args.no_pager && viewer != Viewer::Lnav {
+    if !args.no_pager && viewer != Viewer::Lnav && std::env::var_os("AOE_NO_LNAV_TIP").is_none() {
         eprintln!(
             "Tip: install `lnav` for color, level filters, and search (https://lnav.org). \
-             Falling back to {}.",
+             Set AOE_NO_LNAV_TIP=1 to silence. Falling back to {}.",
             viewer_name(viewer)
         );
     }
@@ -206,6 +215,12 @@ fn run_viewer(viewer: Viewer, path: &Path, args: &LogsArgs) -> Result<()> {
         }
         Viewer::Less => {
             if args.follow {
+                // `less +F` on a file can't seek to "last N"; route through
+                // tail when --lines is set so the user only sees the recent
+                // window plus live appends.
+                if let Some(n) = args.lines {
+                    return tail_pipe_into(path, n, Command::new("less").args(["-R", "+F"]));
+                }
                 Command::new("less")
                     .arg("-R")
                     .arg("+F")
@@ -218,7 +233,11 @@ fn run_viewer(viewer: Viewer, path: &Path, args: &LogsArgs) -> Result<()> {
         }
         Viewer::PlainStdout => {
             if args.follow {
-                Command::new("tail").arg("-F").arg(path).status()?;
+                let mut cmd = Command::new("tail");
+                if let Some(n) = args.lines {
+                    cmd.args(["-n", &n.to_string()]);
+                }
+                cmd.arg("-F").arg(path).status()?;
                 return Ok(());
             }
             let content = read_content(path, args.lines)?;
@@ -257,6 +276,24 @@ fn pipe_through(cmd: &mut Command, content: &str) -> Result<()> {
         let _ = stdin.write_all(content.as_bytes());
     }
     let _ = child.wait()?;
+    Ok(())
+}
+
+/// Spawn `tail -n N -F path` and feed its stdout into `viewer`'s stdin so the
+/// viewer keeps following live appends while only showing the last N lines.
+/// Kills tail when the viewer exits so we don't leak a background tail.
+fn tail_pipe_into(path: &Path, lines: usize, viewer: &mut Command) -> Result<()> {
+    use std::process::Stdio;
+    let mut tail = Command::new("tail")
+        .args(["-n", &lines.to_string(), "-F"])
+        .arg(path)
+        .stdout(Stdio::piped())
+        .spawn()?;
+    let tail_out = tail.stdout.take().expect("piped stdout");
+    let status = viewer.stdin(Stdio::from(tail_out)).status();
+    let _ = tail.kill();
+    let _ = tail.wait();
+    status?;
     Ok(())
 }
 
