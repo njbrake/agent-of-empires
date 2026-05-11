@@ -149,12 +149,15 @@ impl GitWorktree {
         loop {
             match child.try_wait() {
                 Ok(Some(status)) => {
+                    let elapsed = start.elapsed();
                     if !status.success() {
                         if let Some(mut stderr) = child.stderr.take() {
                             let mut msg = String::new();
                             let _ = std::io::Read::read_to_string(&mut stderr, &mut msg);
                             tracing::warn!("git fetch {remote}/{branch} failed: {}", msg.trim());
                         }
+                    } else {
+                        tracing::info!("git fetch {remote}/{branch} ok in {:?}", elapsed);
                     }
                     return Ok(());
                 }
@@ -223,19 +226,41 @@ impl GitWorktree {
         ))
     }
 
-    pub fn create_worktree(&self, branch: &str, path: &Path, create_branch: bool) -> Result<()> {
+    /// Create a new worktree at `path` checking out `branch`.
+    ///
+    /// Returns a list of non-fatal warnings (e.g. post-checkout hook failures
+    /// where the worktree directory was successfully created anyway). Callers
+    /// should surface these to the user (CLI/TUI/web) so they know about the
+    /// hook failure without aborting session creation.
+    pub fn create_worktree(
+        &self,
+        branch: &str,
+        path: &Path,
+        create_branch: bool,
+    ) -> Result<Vec<String>> {
+        let total_start = std::time::Instant::now();
+        let mut warnings: Vec<String> = Vec::new();
+        tracing::info!(
+            "worktree create: start branch={} path={}",
+            branch,
+            path.display()
+        );
+
         if path.exists() {
             return Err(GitError::WorktreeAlreadyExists(path.to_path_buf()));
         }
 
         // Prune stale worktree entries so git doesn't reject a path that was
         // previously used by a now-deleted worktree directory.
+        let t = std::time::Instant::now();
         self.prune_worktrees()?;
+        tracing::info!("worktree create: prune done in {:?}", t.elapsed());
 
         // Fetch from remote so the worktree starts from the latest state.
         // For new branches, fetch the default branch (main/master) to use as
         // the base. For existing branches, fetch that specific branch.
         // Fails silently on network errors, falling back to local refs.
+        let t = std::time::Instant::now();
         let default_branch = if create_branch {
             let db = self
                 .detect_default_branch()
@@ -246,7 +271,9 @@ impl GitWorktree {
             self.fetch_branch(FETCH_REMOTE, branch)?;
             None
         };
+        tracing::info!("worktree create: fetch step done in {:?}", t.elapsed());
 
+        let t = std::time::Instant::now();
         let repo = open_repo_at(&self.repo_path)?;
 
         if let Some(default_branch) = default_branch {
@@ -300,27 +327,95 @@ impl GitWorktree {
             }
         }
 
+        tracing::info!("worktree create: branch resolve done in {:?}", t.elapsed());
+
         let path_str = path
             .to_str()
             .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid path"))?;
 
+        let t = std::time::Instant::now();
         let output = std::process::Command::new("git")
             .args(["worktree", "add", path_str, branch])
             .current_dir(&self.repo_path)
             .output()?;
+        let add_elapsed = t.elapsed();
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
-            return Err(GitError::WorktreeCommandFailed(stderr));
+            let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            let combined = match (stdout.is_empty(), stderr.is_empty()) {
+                (true, true) => "git worktree add failed".to_string(),
+                (false, true) => stdout,
+                (true, false) => stderr,
+                (false, false) => format!("{stdout}\n{stderr}"),
+            };
+
+            // post-checkout hooks (e.g. pre-commit's hook-type=post-checkout
+            // running uv-sync, npm install, etc.) can fail after git has
+            // already created the worktree directory. When that happens, the
+            // worktree IS usable; we record a warning instead of aborting
+            // session creation.
+            let worktree_created = path.exists() && path.join(".git").exists();
+            if worktree_created {
+                let warning = format!(
+                    "post-checkout hook failed for {} (worktree created, hook output below):\n{}",
+                    path.display(),
+                    combined.trim()
+                );
+                tracing::warn!("worktree create: {}", warning);
+                warnings.push(warning);
+            } else {
+                return Err(GitError::WorktreeCommandFailed(combined));
+            }
+        }
+
+        // `walk_worktree_stats` walks the entire checked-out tree, which is
+        // unwanted overhead on the hot path when no one is listening. Only
+        // pay the cost when the matching tracing target is actually emitting
+        // at INFO (i.e. AOE_LOG_LEVEL=info|debug|trace or the legacy
+        // AGENT_OF_EMPIRES_DEBUG=1).
+        if tracing::enabled!(tracing::Level::INFO) {
+            let WorktreeWalkStats {
+                file_count,
+                total_bytes,
+                capped,
+            } = walk_worktree_stats(path);
+            tracing::info!(
+                "worktree create: git worktree add done in {:?} ({} files, {} bytes checked out{})",
+                add_elapsed,
+                file_count,
+                total_bytes,
+                if capped { ", walk capped" } else { "" }
+            );
         }
 
         // Convert the .git file from absolute to relative path.
         // Git always writes absolute paths, but relative paths work better when
         // the repo is mounted at different locations (e.g., in Docker containers).
+        let t = std::time::Instant::now();
         Self::convert_git_file_to_relative(path)?;
-        Self::initialize_submodules(path)?;
+        tracing::info!(
+            "worktree create: convert .git file done in {:?}",
+            t.elapsed()
+        );
 
-        Ok(())
+        let t = std::time::Instant::now();
+        let submodule_status = Self::initialize_submodules(path)?;
+        tracing::info!(
+            "worktree create: submodules ({}) done in {:?}",
+            submodule_status,
+            t.elapsed()
+        );
+
+        tracing::info!(
+            "worktree create: TOTAL {:?} branch={} path={} warnings={}",
+            total_start.elapsed(),
+            branch,
+            path.display(),
+            warnings.len()
+        );
+
+        Ok(warnings)
     }
 
     /// Prune stale worktree entries whose directories no longer exist on disk.
@@ -377,11 +472,19 @@ impl GitWorktree {
         Ok(())
     }
 
-    fn initialize_submodules(worktree_path: &Path) -> Result<()> {
+    fn initialize_submodules(worktree_path: &Path) -> Result<String> {
         let gitmodules_path = worktree_path.join(".gitmodules");
         if !gitmodules_path.is_file() {
-            return Ok(());
+            return Ok("none".to_string());
         }
+
+        let submodule_count = std::fs::read_to_string(&gitmodules_path)
+            .map(|s| {
+                s.lines()
+                    .filter(|l| l.trim_start().starts_with("[submodule"))
+                    .count()
+            })
+            .unwrap_or(0);
 
         let output = std::process::Command::new("git")
             .args(["submodule", "update", "--init", "--recursive"])
@@ -398,7 +501,10 @@ impl GitWorktree {
                     worktree_path.display(),
                     message
                 );
-                return Ok(());
+                return Ok(format!(
+                    "skipped:file-transport-blocked count={}",
+                    submodule_count
+                ));
             }
             return Err(GitError::WorktreeCommandFailed(if message.is_empty() {
                 "git submodule update --init --recursive failed".to_string()
@@ -407,7 +513,7 @@ impl GitWorktree {
             }));
         }
 
-        Ok(())
+        Ok(format!("initialized count={}", submodule_count))
     }
 
     fn is_file_transport_blocked(message: &str) -> bool {
@@ -605,6 +711,66 @@ impl GitWorktree {
             Err(GitError::NotAGitRepo)
         }
     }
+}
+
+struct WorktreeWalkStats {
+    file_count: u64,
+    total_bytes: u64,
+    capped: bool,
+}
+
+/// Walk a freshly created worktree to report file count and byte size of the
+/// checked-out tracked files. Used purely for instrumentation/logging.
+///
+/// - Skips the `.git` entry (worktree pointer file or shared dir).
+/// - Does not follow symlinks.
+/// - Caps recursion depth at 6 to bound the cost on pathological trees.
+fn walk_worktree_stats(root: &Path) -> WorktreeWalkStats {
+    const MAX_DEPTH: usize = 6;
+
+    fn visit(dir: &Path, depth: usize, files: &mut u64, bytes: &mut u64, capped: &mut bool) {
+        if depth > MAX_DEPTH {
+            *capped = true;
+            return;
+        }
+        let entries = match std::fs::read_dir(dir) {
+            Ok(e) => e,
+            Err(_) => return,
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            if depth == 0 && name == ".git" {
+                continue;
+            }
+            let metadata = match entry.metadata() {
+                Ok(m) => m,
+                Err(_) => continue,
+            };
+            if metadata.file_type().is_symlink() {
+                continue;
+            }
+            if metadata.is_dir() {
+                visit(&entry.path(), depth + 1, files, bytes, capped);
+            } else if metadata.is_file() {
+                *files += 1;
+                *bytes += metadata.len();
+            }
+        }
+    }
+
+    let mut stats = WorktreeWalkStats {
+        file_count: 0,
+        total_bytes: 0,
+        capped: false,
+    };
+    visit(
+        root,
+        0,
+        &mut stats.file_count,
+        &mut stats.total_bytes,
+        &mut stats.capped,
+    );
+    stats
 }
 
 #[cfg(test)]
@@ -2064,5 +2230,139 @@ mod tests {
             !wt_path.join(".claude").join("skill.md").is_file(),
             "blocked local submodules should be left uninitialized rather than forcing file transport"
         );
+    }
+
+    #[test]
+    fn test_walk_worktree_stats_counts_files_and_bytes() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+
+        std::fs::write(root.join("a.txt"), "hello").unwrap(); // 5 bytes
+        std::fs::write(root.join("b.txt"), "world!").unwrap(); // 6 bytes
+        std::fs::create_dir(root.join("sub")).unwrap();
+        std::fs::write(root.join("sub").join("c.txt"), "xy").unwrap(); // 2 bytes
+
+        let stats = walk_worktree_stats(root);
+        assert_eq!(stats.file_count, 3);
+        assert_eq!(stats.total_bytes, 13);
+        assert!(!stats.capped);
+    }
+
+    #[test]
+    fn test_walk_worktree_stats_skips_dot_git_at_root() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+
+        // Worktree pointer file: a regular file named ".git" at the root.
+        std::fs::write(root.join(".git"), "gitdir: /somewhere/else").unwrap();
+        std::fs::write(root.join("kept.txt"), "x").unwrap();
+
+        let stats = walk_worktree_stats(root);
+        assert_eq!(stats.file_count, 1, "should skip the root .git entry");
+        assert_eq!(stats.total_bytes, 1);
+    }
+
+    #[test]
+    fn test_walk_worktree_stats_caps_deep_trees() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+
+        // Build a path that exceeds the internal MAX_DEPTH (6). Visit caps
+        // when depth > MAX_DEPTH, so we need >7 nested levels to trigger it.
+        let mut cur = root.to_path_buf();
+        for i in 0..10 {
+            cur = cur.join(format!("d{i}"));
+            std::fs::create_dir(&cur).unwrap();
+        }
+        std::fs::write(cur.join("deep.txt"), "z").unwrap();
+
+        let stats = walk_worktree_stats(root);
+        assert!(
+            stats.capped,
+            "deeply nested trees should set the capped flag"
+        );
+        assert_eq!(
+            stats.file_count, 0,
+            "files past the depth cap should not be counted"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_create_worktree_tolerates_failing_post_checkout_hook() {
+        use std::os::unix::fs::PermissionsExt;
+
+        // Initialize a normal repo with one commit and the test-feature branch.
+        let repo_dir = TempDir::new().unwrap();
+        let repo = git2::Repository::init(repo_dir.path()).unwrap();
+        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+        std::fs::write(repo_dir.path().join("README.md"), "hi\n").unwrap();
+        let tree_id = {
+            let mut index = repo.index().unwrap();
+            index.add_path(Path::new("README.md")).unwrap();
+            index.write_tree().unwrap()
+        };
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
+        let head_commit = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.branch("test-feature", &head_commit, false).unwrap();
+
+        // Drop a post-checkout hook that always fails. `git worktree add`
+        // creates the worktree directory and the .git pointer BEFORE running
+        // hooks, so this is exactly the partial-success state the new
+        // tolerance branch is meant to surface as a warning.
+        let hooks_dir = repo_dir.path().join(".git").join("hooks");
+        std::fs::create_dir_all(&hooks_dir).unwrap();
+        let hook_path = hooks_dir.join("post-checkout");
+        std::fs::write(
+            &hook_path,
+            "#!/bin/sh\necho 'simulated hook failure' >&2\nexit 1\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&hook_path, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let git_wt = GitWorktree::new(repo_dir.path().to_path_buf()).unwrap();
+        let wt_parent = TempDir::new().unwrap();
+        let wt_path = wt_parent.path().join("hook-failure");
+
+        let warnings = git_wt
+            .create_worktree("test-feature", &wt_path, false)
+            .expect("create_worktree should succeed when only the post-checkout hook failed");
+
+        assert!(
+            wt_path.exists() && wt_path.join(".git").exists(),
+            "worktree should have been created"
+        );
+        assert!(
+            !warnings.is_empty(),
+            "hook failure should produce at least one warning"
+        );
+        let combined = warnings.join("\n");
+        assert!(
+            combined.contains("post-checkout hook failed"),
+            "warning should mention the post-checkout hook: {combined}"
+        );
+        assert!(
+            combined.contains("simulated hook failure"),
+            "warning should include the hook's stderr: {combined}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_walk_worktree_stats_skips_symlinks() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path();
+
+        std::fs::write(root.join("real.txt"), "abc").unwrap();
+        std::os::unix::fs::symlink(root.join("real.txt"), root.join("link.txt")).unwrap();
+
+        let stats = walk_worktree_stats(root);
+        assert_eq!(
+            stats.file_count, 1,
+            "symlinks should not be counted alongside their target"
+        );
+        assert_eq!(stats.total_bytes, 3);
     }
 }

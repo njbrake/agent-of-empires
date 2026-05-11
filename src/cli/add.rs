@@ -170,6 +170,10 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
             path = ws_result.workspace_path;
             workspace_info_opt = Some(ws_result.workspace_info);
 
+            for w in &ws_result.warnings {
+                eprintln!("⚠ {}", w);
+            }
+
             println!("✓ Workspace created successfully");
         } else {
             // Single worktree mode (existing logic)
@@ -201,7 +205,7 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
             }
 
             println!("Creating worktree at: {}", worktree_path.display());
-            git_wt.create_worktree(branch, &worktree_path, args.create_branch)?;
+            let warnings = git_wt.create_worktree(branch, &worktree_path, args.create_branch)?;
 
             path = worktree_path;
 
@@ -211,6 +215,10 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
                 managed_by_aoe: true,
                 created_at: Utc::now(),
             });
+
+            for w in &warnings {
+                eprintln!("⚠ {}", w);
+            }
 
             println!("✓ Worktree created successfully");
         }

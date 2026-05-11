@@ -60,6 +60,13 @@ pub struct SessionResponse {
     /// Each entry mirrors `WorkspaceRepo` minus paths the dashboard does
     /// not need to display.
     pub workspace_repos: Vec<WorkspaceRepoSummary>,
+    /// Non-fatal warnings emitted during worktree creation (e.g.
+    /// post-checkout hook failures where the worktree was created
+    /// successfully). Only populated on the create-session response;
+    /// omitted from subsequent fetches because it lives on `BuildResult`
+    /// and is not persisted to the instance.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -134,6 +141,7 @@ impl SessionResponse {
                         .collect()
                 })
                 .unwrap_or_default(),
+            warnings: Vec::new(),
         }
     }
 }
@@ -724,6 +732,7 @@ pub async fn create_session(
         let build_result = builder::build_instance(params, &title_refs, &branch_refs, &profile)?;
         let mut instance = build_result.instance;
         instance.source_profile = profile.clone();
+        let build_warnings = build_result.warnings;
 
         // Apply per-session sandbox overrides from the request body.
         if let Some(ref mut sandbox) = instance.sandbox_info {
@@ -763,16 +772,17 @@ pub async fn create_session(
             instance.start()?;
         }
 
-        Ok::<Instance, anyhow::Error>(instance)
+        Ok::<(Instance, Vec<String>), anyhow::Error>((instance, build_warnings))
     })
     .await;
 
     match result {
-        Ok(Ok(instance)) => {
-            let resp = SessionResponse::from_instance(
+        Ok(Ok((instance, warnings))) => {
+            let mut resp = SessionResponse::from_instance(
                 &instance,
                 crate::claude_settings::read_tui_fullscreen(),
             );
+            resp.warnings = warnings;
             #[cfg(feature = "serve")]
             let cockpit_spawn_target = if instance.cockpit_mode {
                 Some((
@@ -844,11 +854,7 @@ pub async fn create_session(
                 });
             }
 
-            (
-                StatusCode::CREATED,
-                Json(serde_json::to_value(resp).expect("SessionResponse is always serializable")),
-            )
-                .into_response()
+            (StatusCode::CREATED, Json(resp)).into_response()
         }
         Ok(Err(e)) => {
             tracing::warn!("Session creation failed: {}", e);
@@ -1638,6 +1644,40 @@ mod tests {
         assert_eq!(json["status"], "Running");
         assert_eq!(json["is_sandboxed"], false);
         assert_eq!(json["claude_fullscreen"], false);
+    }
+
+    #[test]
+    fn session_response_omits_empty_warnings() {
+        let inst = make_test_instance();
+        let resp = SessionResponse::from_instance(&inst, false);
+        assert!(resp.warnings.is_empty());
+
+        let json = serde_json::to_value(&resp).unwrap();
+        assert!(
+            json.get("warnings").is_none(),
+            "empty warnings should be omitted from the JSON body, got: {json}"
+        );
+    }
+
+    #[test]
+    fn session_response_serializes_populated_warnings() {
+        let inst = make_test_instance();
+        let mut resp = SessionResponse::from_instance(&inst, false);
+        resp.warnings = vec![
+            "post-checkout hook failed for repo-a".to_string(),
+            "post-checkout hook failed for repo-b".to_string(),
+        ];
+
+        let json = serde_json::to_value(&resp).unwrap();
+        let warnings = json
+            .get("warnings")
+            .expect("warnings should appear in JSON when populated");
+        let arr = warnings
+            .as_array()
+            .expect("warnings should serialize as a JSON array");
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0], "post-checkout hook failed for repo-a");
+        assert_eq!(arr[1], "post-checkout hook failed for repo-b");
     }
 
     #[test]
