@@ -39,7 +39,7 @@ Running one AI agent is easy. Running five of them across different branches, ke
 - **Multi-agent support**: Claude Code, OpenCode, Mistral Vibe, Codex CLI, Gemini CLI, Cursor CLI, Copilot CLI, Pi.dev, Factory Droid, Hermes, and Kiro CLI
 - **TUI app**: visual interface to create, monitor, and manage sessions
 - **Web app** (Beta, stabilization in progress): create, monitor, and control your agents from any browser, installable as a PWA ([guide](https://www.agent-of-empires.com/guides/web-dashboard/))
-- **Cockpit** (Beta): mobile-first native rendering of agent state via the Agent Client Protocol with plan panels, tool-call cards, and swipe-to-approve ([guide](https://www.agent-of-empires.com/docs/cockpit/))
+  - **Cockpit** (Alpha, opt-in): mobile-first native rendering of agent state via the Agent Client Protocol, with plan panels, tool-call cards, and swipe-to-approve ([guide](https://www.agent-of-empires.com/docs/cockpit/))
 - **CLI app**: create, monitor, and control agents from the command line (integrates with tools like OpenClaw) ([reference](https://www.agent-of-empires.com/docs/cli/reference/))
 - **Remote access from your phone**: press `R` in the TUI to expose the web dashboard over HTTPS with QR + passphrase auth. Uses Tailscale Funnel when available (stable URL, installable PWAs keep working across restarts) or Cloudflare Tunnel as a fallback ([guide](https://www.agent-of-empires.com/guides/remote-phone-access/))
 - **Status detection**: see which agents are running, waiting for input, or idle
@@ -48,10 +48,6 @@ Running one AI agent is easy. Running five of them across different branches, ke
 - **Docker sandboxing**: isolate agents in containers with shared auth volumes ([guide](https://www.agent-of-empires.com/guides/sandbox/))
 - **Diff view**: review git changes and edit files without leaving the TUI ([guide](https://www.agent-of-empires.com/guides/diff-view/))
 - **Session resume**: persist and resume Claude conversations across reboots and upgrades ([guide](https://www.agent-of-empires.com/guides/session-resume/))
-- **Agent command overrides**: override agent commands with custom scripts or sandboxed wrappers ([guide](https://www.agent-of-empires.com/guides/agent-override/))
-- **Repo config & hooks**: per-project settings and automation ([guide](https://www.agent-of-empires.com/guides/repo-config/))
-- **tmux status bar**: integrated session monitoring in your tmux status line ([guide](https://www.agent-of-empires.com/guides/tmux-status-bar/))
-- **Sound effects**: audible notifications when agent state changes ([guide](https://www.agent-of-empires.com/docs/sounds/))
 - **Profiles**: separate workspaces for different projects or clients ([guide](https://www.agent-of-empires.com/docs/guides/configuration/#profiles))
 
 ## Web Dashboard (Beta, stabilization in progress)
