@@ -17,7 +17,9 @@ import type {
   CodeHeaderProps,
   SyntaxHighlighterProps,
 } from "@assistant-ui/react-markdown";
+import * as React from "react";
 import { useEffect, useState } from "react";
+import remarkGfm from "remark-gfm";
 
 import {
   getHighlighter,
@@ -38,12 +40,67 @@ export function Markdown({ text }: Props) {
     <MarkdownTextPrimitive
       preprocess={() => text}
       smooth
+      remarkPlugins={[remarkGfm]}
       className="cockpit-markdown text-sm leading-relaxed"
       components={{
         SyntaxHighlighter: ShikiSyntaxHighlighter,
         CodeHeader,
+        table: TableWithScroll,
+        blockquote: Blockquote,
       }}
     />
+  );
+}
+
+/**
+ * Blockquote with a "warning callout" variant. When the rendered text
+ * starts with the ⚠️ marker (used today by the cockpit `context_reset`
+ * synthetic message — see CockpitRuntime.tsx), apply an amber-tinted
+ * variant so the notice stands out from the surrounding transcript.
+ * Plain agent-emitted blockquotes keep the default muted style.
+ */
+function Blockquote({
+  children,
+  ...rest
+}: React.ComponentPropsWithoutRef<"blockquote">) {
+  const text = childrenText(children);
+  const warn = text.trimStart().startsWith("⚠️");
+  return (
+    <blockquote
+      {...rest}
+      className={warn ? "cockpit-callout-warn" : undefined}
+    >
+      {children}
+    </blockquote>
+  );
+}
+
+function childrenText(children: React.ReactNode): string {
+  if (typeof children === "string") return children;
+  if (typeof children === "number") return String(children);
+  if (Array.isArray(children)) return children.map(childrenText).join("");
+  if (React.isValidElement(children)) {
+    const props = children.props as { children?: React.ReactNode };
+    return childrenText(props.children);
+  }
+  return "";
+}
+
+/**
+ * Wrap GFM tables in a scroll container so a real <table> element can
+ * keep its native auto-layout (cells distribute to fill the bubble
+ * width when content is short, expand and trigger horizontal scroll
+ * when content is long). Doing this on the bare <table> via
+ * `display: block` breaks column sizing.
+ */
+function TableWithScroll({
+  children,
+  ...rest
+}: React.ComponentPropsWithoutRef<"table">) {
+  return (
+    <div className="cockpit-table-wrap">
+      <table {...rest}>{children}</table>
+    </div>
   );
 }
 

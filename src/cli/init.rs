@@ -1,6 +1,6 @@
 //! `agent-of-empires init` command implementation
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use clap::Args;
 use std::fs;
 use std::path::PathBuf;
@@ -18,7 +18,12 @@ pub async fn run(args: InitArgs) -> Result<()> {
     let path = if args.path.as_os_str() == "." {
         std::env::current_dir()?
     } else {
-        args.path.canonicalize()?
+        if !args.path.exists() {
+            bail!("Path does not exist: {}", args.path.display());
+        }
+        args.path
+            .canonicalize()
+            .with_context(|| format!("Failed to resolve path: {}", args.path.display()))?
     };
 
     let config_dir = path.join(".agent-of-empires");

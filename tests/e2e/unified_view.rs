@@ -5,11 +5,7 @@ use crate::harness::{require_tmux, TuiTestHarness};
 
 /// Helper: create a profile with a session in the harness's isolated home.
 fn create_profile_with_session(h: &TuiTestHarness, profile: &str, title: &str) {
-    let config_dir = if cfg!(target_os = "linux") {
-        h.home_path().join(".config").join("agent-of-empires")
-    } else {
-        h.home_path().join(".agent-of-empires")
-    };
+    let config_dir = crate::harness::app_dir_in(h.home_path());
     let profile_dir = config_dir.join("profiles").join(profile);
     std::fs::create_dir_all(&profile_dir).expect("create profile dir");
 

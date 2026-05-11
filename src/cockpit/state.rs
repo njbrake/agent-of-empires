@@ -86,6 +86,27 @@ pub struct RateLimitInfo {
     pub kind: String,
 }
 
+/// Snapshot of the agent's last-reported context-window usage and
+/// (optionally) cumulative session cost. Mirrors the ACP
+/// `UsageUpdate` notification.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SessionUsage {
+    /// Tokens currently in context.
+    pub used: u64,
+    /// Total context window size in tokens.
+    pub size: u64,
+    /// Cumulative cost since session start, when the agent reports it.
+    #[serde(default)]
+    pub cost: Option<UsageCost>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UsageCost {
+    pub amount: f64,
+    /// ISO 4217 code (USD/EUR/...).
+    pub currency: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SessionMode {
     Default,
@@ -105,6 +126,20 @@ pub struct ModeInfo {
     pub description: Option<String>,
 }
 
+/// One slash command advertised by the agent. Mirrors ACP's
+/// `AvailableCommand` shape. `name` is the canonical token (sent back
+/// to the agent as `/<name> <args>`); `description` is the human label
+/// for the picker; `accepts_input` is true when the agent reports an
+/// `Unstructured` input spec, signalling the command takes free-form
+/// arguments after the name.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AvailableCommand {
+    pub name: String,
+    pub description: String,
+    #[serde(default)]
+    pub accepts_input: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CockpitState {
     pub session_id: CockpitSessionId,
@@ -119,6 +154,16 @@ pub struct CockpitState {
     pub recent_diffs: Vec<DiffPreview>,
     pub thinking: Option<ThinkingSignal>,
     pub rate_limit: Option<RateLimitInfo>,
+    /// Last-known context-window usage from the agent's most recent
+    /// `UsageUpdate`. None until the agent emits one.
+    #[serde(default)]
+    pub usage: Option<SessionUsage>,
+    /// Slash commands the agent advertised in its most recent
+    /// `AvailableCommandsUpdate`. Empty until the agent emits one. Used
+    /// by the composer's `/` picker so users see real plugin/skill/MCP
+    /// commands instead of a hard-coded placeholder list.
+    #[serde(default)]
+    pub available_commands: Vec<AvailableCommand>,
 
     pub last_seq: u64,
     pub updated_at: DateTime<Utc>,
@@ -142,6 +187,8 @@ impl CockpitState {
             recent_diffs: Vec::new(),
             thinking: None,
             rate_limit: None,
+            usage: None,
+            available_commands: Vec::new(),
             last_seq: 0,
             updated_at: Utc::now(),
         }
@@ -175,6 +222,38 @@ pub enum Event {
     ToolCallCompleted {
         tool_call_id: String,
         is_error: bool,
+        /// Final textual output extracted from ACP `ToolCallUpdate.fields.content`
+        /// (concat of all `ToolCallContent::Content(Text(_))` blocks). Empty
+        /// when the agent emits no content blocks on completion. Renderers
+        /// fall back to a status word ("completed" / "tool failed") when this
+        /// is empty so cards still convey state.
+        #[serde(default)]
+        content: String,
+    },
+    /// Streaming tool output. Some agents emit `ToolCallUpdate` notifications
+    /// with `status != Completed` but populated `fields.content` to stream
+    /// stdout/stderr while the call is still running. Each event carries the
+    /// LATEST full content snapshot for that call (per ACP, the content
+    /// field is a replacement, not an append). Reducer buffers it keyed by
+    /// tool_call_id; on completion the buffer is used if the final update
+    /// shipped no content of its own.
+    ToolCallContent {
+        tool_call_id: String,
+        content: String,
+    },
+    /// Late-arriving title or raw_input for a tool call. Some agents
+    /// (Claude's claude-agent-acp among them) emit the initial
+    /// `tool_call` notification with an empty `raw_input` and only fill
+    /// in the actual inputs in a follow-up `ToolCallUpdate`. Without
+    /// this, bash cards render `$ Terminal` instead of the command and
+    /// edit cards lose their target path. The reducer locates the
+    /// matching tool_start row by id and overwrites its name/args.
+    ToolCallUpdated {
+        tool_call_id: String,
+        #[serde(default)]
+        title: Option<String>,
+        #[serde(default)]
+        args_preview: Option<String>,
     },
     ApprovalRequested {
         approval: Approval,
@@ -190,6 +269,13 @@ pub enum Event {
     ThinkingEnded,
     RateLimit {
         info: RateLimitInfo,
+    },
+    /// Agent-reported context-window usage. Comes from ACP
+    /// `SessionUpdate::UsageUpdate` (gated on the
+    /// `unstable_session_usage` schema feature). Latest snapshot wins;
+    /// the agent typically resends after each turn.
+    UsageUpdated {
+        usage: SessionUsage,
     },
     ModeChanged {
         mode: SessionMode,
@@ -207,6 +293,13 @@ pub enum Event {
     /// `SessionUpdate::CurrentModeUpdate`; UI swaps `current_mode_id`.
     CurrentModeChanged {
         current_mode_id: String,
+    },
+    /// Full snapshot of the slash commands the agent advertises. Comes
+    /// from ACP `SessionUpdate::AvailableCommandsUpdate`. Replaces the
+    /// previous list (the agent re-broadcasts the full set whenever it
+    /// changes — e.g. after plugin enable/disable).
+    AvailableCommandsUpdated {
+        commands: Vec<AvailableCommand>,
     },
     /// Passthrough for an ACP `session/update` payload that we have not yet
     /// finished mapping to a typed variant. Useful while the cockpit's
@@ -232,6 +325,32 @@ pub enum Event {
     AgentStartupError {
         message: String,
     },
+    /// Echo of a user-submitted prompt. Published synchronously by the
+    /// `POST /cockpit/prompt` handler before the text is forwarded to
+    /// the agent, so the replay buffer (and the on-disk event store)
+    /// captures the user's side of the conversation. Without this,
+    /// reload/session-switch reconstructs only the agent's chunks and
+    /// every turn collapses into one assistant blob.
+    UserPromptSent {
+        text: String,
+    },
+    /// Agent-assigned ACP session id from a successful `session/new`.
+    /// Server-side listener catches this and persists the id on
+    /// `Instance.cockpit_acp_session_id` so the next spawn can call
+    /// `session/load` and the model retains context across `aoe serve`
+    /// restarts. Not emitted on `session/load` success (id unchanged).
+    AcpSessionAssigned {
+        acp_session_id: String,
+    },
+    /// `session/load` failed and we fell back to `session/new`. The
+    /// agent's stored transcript is gone (or the id was never valid),
+    /// so the model starts with no context. UI uses this to render a
+    /// muted notice and clear the now-stale token-usage hint; the
+    /// server-side listener clears `Instance.cockpit_acp_session_id`
+    /// before the new id arrives via `AcpSessionAssigned`.
+    SessionContextReset {
+        reason: String,
+    },
 }
 
 impl CockpitState {
@@ -249,6 +368,23 @@ impl CockpitState {
                     .unwrap_or(false)
                 {
                     self.in_flight_tool = None;
+                }
+            }
+            Event::ToolCallContent { .. } => {}
+            Event::ToolCallUpdated {
+                tool_call_id,
+                title,
+                args_preview,
+            } => {
+                if let Some(tool) = self.in_flight_tool.as_mut() {
+                    if tool.id == tool_call_id {
+                        if let Some(t) = title {
+                            tool.name = t;
+                        }
+                        if let Some(a) = args_preview {
+                            tool.args_preview = a;
+                        }
+                    }
                 }
             }
             Event::ApprovalRequested { approval } => self.pending_approvals.push(approval),
@@ -276,6 +412,7 @@ impl CockpitState {
             }
             Event::ThinkingEnded => self.thinking = None,
             Event::RateLimit { info } => self.rate_limit = Some(info),
+            Event::UsageUpdated { usage } => self.usage = Some(usage),
             Event::ModeChanged { mode } => self.mode = mode,
             // ModesAvailable + CurrentModeChanged carry the real ACP-
             // advertised modes. The cockpit's persistent state doesn't
@@ -283,6 +420,9 @@ impl CockpitState {
             // replay), so this is just a no-op that bumps seq.
             Event::ModesAvailable { .. } => {}
             Event::CurrentModeChanged { .. } => {}
+            Event::AvailableCommandsUpdated { commands } => {
+                self.available_commands = commands;
+            }
             // The next four variants don't directly mutate persistent
             // CockpitState fields (yet); they bump seq/updated_at so
             // clients see them in the replay buffer and know the session
@@ -291,6 +431,15 @@ impl CockpitState {
             Event::AgentMessageChunk { .. } => {}
             Event::Stopped { .. } => {}
             Event::AgentStartupError { .. } => {}
+            Event::UserPromptSent { .. } => {}
+            Event::AcpSessionAssigned { .. } => {}
+            Event::SessionContextReset { .. } => {
+                // Agent's stored context is gone; clear the cached
+                // usage snapshot so the composer footer doesn't keep
+                // showing the old "75k / 200k" until the new session
+                // emits its first UsageUpdate.
+                self.usage = None;
+            }
         }
         self.last_seq = self.last_seq.saturating_add(1);
         self.updated_at = Utc::now();
@@ -367,8 +516,71 @@ mod tests {
         s.apply_event(Event::ToolCallCompleted {
             tool_call_id: "tc-1".into(),
             is_error: false,
+            content: String::new(),
         })
         .unwrap();
         assert!(s.in_flight_tool.is_none());
+    }
+
+    #[test]
+    fn available_commands_updated_replaces_previous_list() {
+        let mut s = fresh_state();
+        assert!(s.available_commands.is_empty());
+        s.apply_event(Event::AvailableCommandsUpdated {
+            commands: vec![AvailableCommand {
+                name: "help".into(),
+                description: "Show help".into(),
+                accepts_input: false,
+            }],
+        })
+        .unwrap();
+        assert_eq!(s.available_commands.len(), 1);
+        s.apply_event(Event::AvailableCommandsUpdated {
+            commands: vec![
+                AvailableCommand {
+                    name: "review".into(),
+                    description: "Review PR".into(),
+                    accepts_input: true,
+                },
+                AvailableCommand {
+                    name: "clear".into(),
+                    description: "Clear context".into(),
+                    accepts_input: false,
+                },
+            ],
+        })
+        .unwrap();
+        assert_eq!(s.available_commands.len(), 2);
+        assert_eq!(s.available_commands[0].name, "review");
+        assert!(s.available_commands[0].accepts_input);
+    }
+
+    #[test]
+    fn usage_updated_replaces_previous_snapshot() {
+        let mut s = fresh_state();
+        assert!(s.usage.is_none());
+        s.apply_event(Event::UsageUpdated {
+            usage: SessionUsage {
+                used: 1_000,
+                size: 200_000,
+                cost: None,
+            },
+        })
+        .unwrap();
+        assert_eq!(s.usage.as_ref().map(|u| u.used), Some(1_000));
+        s.apply_event(Event::UsageUpdated {
+            usage: SessionUsage {
+                used: 5_000,
+                size: 200_000,
+                cost: Some(UsageCost {
+                    amount: 0.12,
+                    currency: "USD".into(),
+                }),
+            },
+        })
+        .unwrap();
+        let u = s.usage.as_ref().unwrap();
+        assert_eq!(u.used, 5_000);
+        assert_eq!(u.cost.as_ref().unwrap().currency, "USD");
     }
 }

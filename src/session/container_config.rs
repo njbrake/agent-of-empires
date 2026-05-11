@@ -244,6 +244,18 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
         preserve_files: &[],
         clean_files: &[],
     },
+    AgentConfigMount {
+        tool_name: "qwen",
+        host_rel: ".qwen",
+        container_suffix: ".qwen",
+        skip_entries: &["sandbox", "sessions", "cache"],
+        seed_files: &[],
+        copy_dirs: &[],
+        keychain_credential: None,
+        home_seed_files: &[],
+        preserve_files: &[],
+        clean_files: &[],
+    },
 ];
 
 /// Sync host agent config into the shared sandbox directory. Copies top-level files
@@ -2387,9 +2399,12 @@ extra_volumes = ["/host/data:/container/data:ro"]
         std::env::set_var("XDG_CONFIG_HOME", temp_home.path().join(".config"));
 
         #[cfg(target_os = "linux")]
-        let app_dir = temp_home.path().join(".config").join("agent-of-empires");
+        let app_dir = temp_home
+            .path()
+            .join(".config")
+            .join(crate::session::APP_DIR_NAME_LINUX);
         #[cfg(not(target_os = "linux"))]
-        let app_dir = temp_home.path().join(".agent-of-empires");
+        let app_dir = temp_home.path().join(crate::session::APP_DIR_NAME_OTHER);
 
         let profiles_dir = app_dir.join("profiles");
         fs::create_dir_all(profiles_dir.join("default")).unwrap();

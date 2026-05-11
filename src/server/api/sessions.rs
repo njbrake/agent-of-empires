@@ -60,6 +60,13 @@ pub struct SessionResponse {
     /// Each entry mirrors `WorkspaceRepo` minus paths the dashboard does
     /// not need to display.
     pub workspace_repos: Vec<WorkspaceRepoSummary>,
+    /// Non-fatal warnings emitted during worktree creation (e.g.
+    /// post-checkout hook failures where the worktree was created
+    /// successfully). Only populated on the create-session response;
+    /// omitted from subsequent fetches because it lives on `BuildResult`
+    /// and is not persisted to the instance.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -134,6 +141,7 @@ impl SessionResponse {
                         .collect()
                 })
                 .unwrap_or_default(),
+            warnings: Vec::new(),
         }
     }
 }
@@ -452,15 +460,15 @@ pub async fn delete_session(
                 );
             }
         }
-        // Drop the per-session replay buffer + seq counter too:
-        // keeping them would leak a few MB per deleted session and
-        // serve no purpose since the session is gone. Forgetting the
-        // counter also means a recreated session with the same id
-        // (rare, but possible) starts cleanly from seq=1.
+        // Drop the per-session seq counter so a recreated session
+        // with the same id (rare, but possible) starts cleanly from
+        // seq=1.
         state.cockpit_supervisor.forget_session(&id);
-        if let Ok(mut guard) = state.cockpit_replay.lock() {
-            guard.remove(&id);
-        }
+        // On-disk history is the durable mirror; without this purge a
+        // recreated session with the same id would inherit the deleted
+        // session's transcript and the seq=1 first publish would
+        // collide with a row already in the store.
+        state.cockpit_event_store.delete_session(&id);
     }
 
     // Run deletion on a blocking thread (may do git/docker/tmux operations)
@@ -662,7 +670,9 @@ pub async fn create_session(
     // so the post-spawn write path (which still needs `state`) keeps
     // its handle.
     #[cfg(feature = "serve")]
-    let cockpit_master_enabled = state.cockpit_master_enabled;
+    let cockpit_master_enabled = state
+        .cockpit_master_enabled
+        .load(std::sync::atomic::Ordering::Relaxed);
 
     let result = tokio::task::spawn_blocking(move || {
         use crate::session::builder::{self, InstanceParams};
@@ -722,6 +732,7 @@ pub async fn create_session(
         let build_result = builder::build_instance(params, &title_refs, &branch_refs, &profile)?;
         let mut instance = build_result.instance;
         instance.source_profile = profile.clone();
+        let build_warnings = build_result.warnings;
 
         // Apply per-session sandbox overrides from the request body.
         if let Some(ref mut sandbox) = instance.sandbox_info {
@@ -761,16 +772,17 @@ pub async fn create_session(
             instance.start()?;
         }
 
-        Ok::<Instance, anyhow::Error>(instance)
+        Ok::<(Instance, Vec<String>), anyhow::Error>((instance, build_warnings))
     })
     .await;
 
     match result {
-        Ok(Ok(instance)) => {
-            let resp = SessionResponse::from_instance(
+        Ok(Ok((instance, warnings))) => {
+            let mut resp = SessionResponse::from_instance(
                 &instance,
                 crate::claude_settings::read_tui_fullscreen(),
             );
+            resp.warnings = warnings;
             #[cfg(feature = "serve")]
             let cockpit_spawn_target = if instance.cockpit_mode {
                 Some((
@@ -779,6 +791,7 @@ pub async fn create_session(
                     instance.cockpit_agent.clone(),
                     instance.cockpit_model.clone(),
                     instance.project_path.clone(),
+                    instance.cockpit_acp_session_id.clone(),
                 ))
             } else {
                 None
@@ -788,34 +801,60 @@ pub async fn create_session(
             drop(instances);
 
             #[cfg(feature = "serve")]
-            if let Some((id, tool, agent_override, model, project_path)) = cockpit_spawn_target {
+            if let Some((id, tool, agent_override, model, project_path, stored_acp_session_id)) =
+                cockpit_spawn_target
+            {
                 let agent = state
                     .cockpit_supervisor
                     .pick_agent_for_tool(&tool, agent_override.as_deref())
                     .await;
                 let cwd = std::path::PathBuf::from(project_path);
                 let supervisor = state.cockpit_supervisor.clone();
+                let state_for_check = state.clone();
                 tokio::spawn(async move {
                     if let Err(e) = supervisor
-                        .spawn(id.clone(), &agent, cwd, vec![], vec![], model)
+                        .spawn(crate::cockpit::supervisor::SpawnRequest {
+                            session_id: id.clone(),
+                            agent: agent.clone(),
+                            cwd,
+                            additional_dirs: vec![],
+                            provider_env: vec![],
+                            model,
+                            stored_acp_session_id,
+                        })
                         .await
                     {
+                        // If the session was deleted during the 2-3s
+                        // ACP handshake, the spawn error is for a
+                        // vanished session; demote to debug instead
+                        // of publishing AgentStartupError to a UI
+                        // that no longer exists.
+                        let still_present = state_for_check
+                            .instances
+                            .read()
+                            .await
+                            .iter()
+                            .any(|i| i.id == id);
                         let message = format!("Failed to start cockpit agent {agent:?}: {e}");
-                        tracing::warn!(
-                            target: "cockpit.supervisor",
-                            session = %id,
-                            "auto-spawn after create failed: {message}"
-                        );
-                        supervisor.publish_startup_error(&id, message);
+                        if still_present {
+                            tracing::warn!(
+                                target: "cockpit.supervisor",
+                                session = %id,
+                                "auto-spawn after create failed: {message}"
+                            );
+                            supervisor.publish_startup_error(&id, message);
+                        } else {
+                            tracing::debug!(
+                                target: "cockpit.supervisor",
+                                session = %id,
+                                "auto-spawn after create error after session removed (ignored): {message}"
+                            );
+                        }
                     }
                 });
             }
 
-            (
-                StatusCode::CREATED,
-                Json(serde_json::to_value(resp).expect("SessionResponse is always serializable")),
-            )
-                .into_response()
+            (StatusCode::CREATED, Json(resp)).into_response()
         }
         Ok(Err(e)) => {
             tracing::warn!("Session creation failed: {}", e);
@@ -1044,22 +1083,45 @@ pub async fn ensure_terminal(
     let _guard = inst_lock.lock().await;
 
     // Re-check after acquiring the lock; the first caller may have created it.
+    // `has_terminal()` only checks the in-memory `terminal_info.created` flag.
+    // The pane shell can exit (Ctrl+D, `exit`, SIGHUP from a destroyed tmux
+    // client, etc.) while the flag stays true and the session keeps existing
+    // (because we set tmux's `remain-on-exit on`). When that happens the web
+    // UI would attach to a dead pane that swallows every keystroke, so do
+    // the same kill+recreate dance the TUI runs in src/tui/app.rs around the
+    // attach path.
     {
         let instances = state.instances.read().await;
         if let Some(i) = instances.iter().find(|i| i.id == id) {
             if i.has_terminal() {
-                return (
-                    StatusCode::OK,
-                    Json(serde_json::json!({"status": "exists"})),
-                )
-                    .into_response();
+                let pane_dead = i
+                    .terminal_tmux_session()
+                    .ok()
+                    .map(|s| s.exists() && s.is_pane_dead())
+                    .unwrap_or(false);
+                if !pane_dead {
+                    return (
+                        StatusCode::OK,
+                        Json(serde_json::json!({"status": "exists"})),
+                    )
+                        .into_response();
+                }
+                tracing::warn!(
+                    target: "terminal.ws",
+                    session = %id,
+                    "paired terminal pane is dead, respawning"
+                );
             }
         }
     }
 
     let mut inst_clone = inst;
 
-    let result = tokio::task::spawn_blocking(move || inst_clone.start_terminal()).await;
+    let result = tokio::task::spawn_blocking(move || {
+        let _ = inst_clone.kill_terminal_if_dead();
+        inst_clone.start_terminal()
+    })
+    .await;
 
     match result {
         Ok(Ok(())) => {
@@ -1113,24 +1175,41 @@ pub async fn ensure_container_terminal(
     let inst_lock = state.instance_lock(&id).await;
     let _guard = inst_lock.lock().await;
 
+    // Same dead-pane rescue as `ensure_terminal`: an existing-but-dead
+    // pane would otherwise silently swallow every keystroke from the
+    // browser. See the longer comment in `ensure_terminal`.
     {
         let instances = state.instances.read().await;
         if let Some(i) = instances.iter().find(|i| i.id == id) {
             if i.has_container_terminal() {
-                return (
-                    StatusCode::OK,
-                    Json(serde_json::json!({"status": "exists"})),
-                )
-                    .into_response();
+                let pane_dead = i
+                    .container_terminal_tmux_session()
+                    .ok()
+                    .map(|s| s.exists() && s.is_pane_dead())
+                    .unwrap_or(false);
+                if !pane_dead {
+                    return (
+                        StatusCode::OK,
+                        Json(serde_json::json!({"status": "exists"})),
+                    )
+                        .into_response();
+                }
+                tracing::warn!(
+                    target: "terminal.ws",
+                    session = %id,
+                    "container terminal pane is dead, respawning"
+                );
             }
         }
     }
 
     let mut inst_clone = inst;
 
-    let result =
-        tokio::task::spawn_blocking(move || inst_clone.start_container_terminal_with_size(None))
-            .await;
+    let result = tokio::task::spawn_blocking(move || {
+        let _ = inst_clone.kill_container_terminal_if_dead();
+        inst_clone.start_container_terminal_with_size(None)
+    })
+    .await;
 
     match result {
         Ok(Ok(())) => (
@@ -1565,6 +1644,40 @@ mod tests {
         assert_eq!(json["status"], "Running");
         assert_eq!(json["is_sandboxed"], false);
         assert_eq!(json["claude_fullscreen"], false);
+    }
+
+    #[test]
+    fn session_response_omits_empty_warnings() {
+        let inst = make_test_instance();
+        let resp = SessionResponse::from_instance(&inst, false);
+        assert!(resp.warnings.is_empty());
+
+        let json = serde_json::to_value(&resp).unwrap();
+        assert!(
+            json.get("warnings").is_none(),
+            "empty warnings should be omitted from the JSON body, got: {json}"
+        );
+    }
+
+    #[test]
+    fn session_response_serializes_populated_warnings() {
+        let inst = make_test_instance();
+        let mut resp = SessionResponse::from_instance(&inst, false);
+        resp.warnings = vec![
+            "post-checkout hook failed for repo-a".to_string(),
+            "post-checkout hook failed for repo-b".to_string(),
+        ];
+
+        let json = serde_json::to_value(&resp).unwrap();
+        let warnings = json
+            .get("warnings")
+            .expect("warnings should appear in JSON when populated");
+        let arr = warnings
+            .as_array()
+            .expect("warnings should serialize as a JSON array");
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0], "post-checkout hook failed for repo-a");
+        assert_eq!(arr[1], "post-checkout hook failed for repo-b");
     }
 
     #[test]

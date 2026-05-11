@@ -237,6 +237,28 @@ export interface ServerAbout {
    *  is on AND AOE_EXPERIMENTAL_COCKPIT=1 is set). When false, every
    *  new session is tmux. */
   experimental_cockpit: boolean;
+  /** Live value of the cockpit master switch (`config.cockpit.enabled`).
+   *  Toggleable from the web settings via PATCH /api/cockpit/master. */
+  cockpit_master_enabled: boolean;
+  /** Whether the server process has AOE_EXPERIMENTAL_COCKPIT=1 set.
+   *  Read-only; flipping requires restarting `aoe serve`. */
+  cockpit_env_enabled: boolean;
+}
+
+export async function setCockpitMaster(
+  enabled: boolean,
+): Promise<{ master_enabled: boolean; env_enabled: boolean; effective: boolean } | null> {
+  try {
+    const res = await fetch("/api/cockpit/master", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled }),
+    });
+    if (!res.ok) return null;
+    return await res.json();
+  } catch {
+    return null;
+  }
 }
 
 export function fetchAbout(): Promise<ServerAbout | null> {

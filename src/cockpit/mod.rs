@@ -15,10 +15,10 @@
 pub mod acp_client;
 pub mod agent_registry;
 pub mod approvals;
+pub mod event_store;
 pub mod fs_handler;
 pub mod node;
 pub mod permissions;
-pub mod replay_buffer;
 pub mod state;
 pub mod supervisor;
 pub mod terminal_handler;

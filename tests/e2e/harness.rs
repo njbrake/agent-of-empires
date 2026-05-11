@@ -18,6 +18,22 @@ use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
 // ---------------------------------------------------------------------------
+// App dir name (mirrors `agent_of_empires::session::APP_DIR_NAME_*`).
+// Debug builds use the `-dev` suffix; tests run in debug, so this resolves
+// to `agent-of-empires-dev` for the binary under test.
+// ---------------------------------------------------------------------------
+
+/// Return the app dir under the given test home, matching `get_app_dir_path`.
+pub fn app_dir_in(home: &Path) -> PathBuf {
+    if cfg!(target_os = "linux") {
+        home.join(".config")
+            .join(agent_of_empires::session::APP_DIR_NAME_LINUX)
+    } else {
+        home.join(agent_of_empires::session::APP_DIR_NAME_OTHER)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // tmux availability guard
 // ---------------------------------------------------------------------------
 
@@ -142,13 +158,10 @@ impl TuiTestHarness {
         }
 
         // Pre-seed config.toml to skip the welcome dialog and update checks.
-        // On Linux the app uses $XDG_CONFIG_HOME/agent-of-empires/ (set below),
-        // on macOS it uses $HOME/.agent-of-empires/.
-        let config_dir = if cfg!(target_os = "linux") {
-            home_dir.path().join(".config").join("agent-of-empires")
-        } else {
-            home_dir.path().join(".agent-of-empires")
-        };
+        // On Linux the app uses $XDG_CONFIG_HOME/agent-of-empires[-dev]/ (set
+        // below), on macOS it uses $HOME/.agent-of-empires[-dev]/. The `-dev`
+        // suffix kicks in on debug builds, which is what `cargo test` produces.
+        let config_dir = app_dir_in(home_dir.path());
         std::fs::create_dir_all(&config_dir).expect("create config dir");
         let config_content = format!(
             r#"[updates]

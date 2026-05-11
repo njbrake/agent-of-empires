@@ -31,7 +31,7 @@ import {
   useExternalStoreRuntime,
   type ThreadMessageLike,
 } from "@assistant-ui/react";
-import type { ReactNode } from "react";
+import { useMemo, type ReactNode } from "react";
 
 import { useCockpit } from "../../hooks/useCockpit";
 import type {
@@ -65,9 +65,15 @@ export interface CockpitContext {
  */
 export function CockpitRuntime({ sessionId, children }: Props) {
   const cockpit = useCockpit(sessionId);
-  const messages = activityToThreadMessages(
-    cockpit.state.activity,
-    cockpit.state.turnActive,
+  // Memoise the activity → ThreadMessageLike conversion. The function
+  // walks the entire activity array, allocates a new AssistantBuilder
+  // per turn, and produces brand-new message objects. Without
+  // useMemo, every parent re-render (e.g. WS heartbeat, hover state)
+  // re-builds the entire transcript and assistant-ui treats every
+  // message as changed. Memo on the two inputs the function reads.
+  const messages = useMemo(
+    () => activityToThreadMessages(cockpit.state.activity, cockpit.state.turnActive),
+    [cockpit.state.activity, cockpit.state.turnActive],
   );
 
   const runtime = useExternalStoreRuntime<ThreadMessageLike>({
@@ -140,6 +146,29 @@ export function activityToThreadMessages(
       continue;
     }
 
+    if (row.kind === "context_reset") {
+      // session/load failed and the agent fell back to session/new on
+      // an `aoe serve` restart, so the model's context window is empty
+      // even though our UI still replays the prior transcript. Render
+      // as a dedicated assistant bubble so it doesn't run on from any
+      // prior message, and use a blockquote with a ⚠️ prefix so the
+      // custom Markdown blockquote component can style it as an amber
+      // callout (see Markdown.tsx).
+      flushAssistant();
+      messages.push({
+        id: `assistant-${row.id}`,
+        role: "assistant",
+        content: [
+          {
+            type: "text",
+            text: `> ⚠️ **Conversation context reset** — ${row.text}`,
+          },
+        ],
+        createdAt: parseDate(row.at),
+      });
+      continue;
+    }
+
     if (!currentAssistant) {
       currentAssistant = new AssistantBuilder(row.id, row.at);
     }
@@ -157,6 +186,14 @@ export function activityToThreadMessages(
     } else if (row.kind === "thinking") {
       // Thinking is rendered by the global rattle spinner, not the
       // message stream.
+    } else if (row.kind === "empty_output") {
+      // Synthesised when the agent finished a turn without emitting any
+      // text or tool calls (e.g. interactive-only slash commands like
+      // /usage, /status, /memory in claude-agent-acp — see upstream
+      // issue agentclientprotocol/claude-agent-acp#642). Surface it as
+      // a tiny muted notice instead of leaving the assistant bubble
+      // empty.
+      currentAssistant.appendText(`_${row.text}_`);
     } else {
       // Unknown kind: surface as a tiny text part so we don't lose
       // the data, but don't make it the whole message.

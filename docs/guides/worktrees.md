@@ -88,6 +88,38 @@ path_template = "/absolute/path/to/worktrees/{repo-name}/{branch}"
 path_template = "../wt/{branch}-{session-id}"
 ```
 
+## Post-Checkout Hooks
+
+Some repos install pre-commit hooks at the `post-checkout` stage (`uv-sync`, `npm install`, LFS smudge, etc.) that fire when `git worktree add` checks out the new branch. If such a hook fails, the worktree directory and its `.git` pointer have already been created, and the worktree is usable. AOE no longer aborts session creation in that case: the hook output is captured and surfaced as a warning.
+
+| Surface | Where the warning appears |
+|---|---|
+| CLI (`aoe add`) | `⚠ <message>` line on stderr after `✓ Worktree created successfully` |
+| TUI | `Worktree warnings` info dialog opens after the session is added |
+| Web | Toast per warning, plus `warnings: string[]` on the `POST /api/sessions` response body |
+
+Common cause: the hook calls a tool (uv, npm, pip) that needs network access or credentials the new worktree does not yet have. Re-run the hook manually inside the worktree once the environment is set up, or disable it for AOE-created worktrees by configuring `core.hooksPath` per checkout.
+
+## Performance & Debug Logging
+
+`create_worktree` is instrumented end-to-end so a slow run can be diagnosed from `debug.log` (`AGENT_OF_EMPIRES_DEBUG=1`):
+
+```
+INFO worktree create: start branch=... path=...
+INFO worktree create: prune done in 12ms
+INFO git fetch origin/main ok in 1.7s
+INFO worktree create: fetch step done in 1.7s
+INFO worktree create: branch resolve done in 2ms
+INFO worktree create: git worktree add done in 90ms (518 files, 5690035 bytes checked out)
+INFO worktree create: convert .git file done in 120µs
+INFO worktree create: submodules (initialized count=1) done in 2.0s
+INFO worktree create: TOTAL 3.9s branch=... path=... warnings=0
+```
+
+Network IO (`git fetch`, `git submodule update`) dominates almost every slow run. `git worktree add` itself only checks out tracked files; it does **not** copy `node_modules`, `.venv`, `target/`, or any other gitignored content.
+
+For multi-repo workspaces, the per-repo `create_worktree` calls run concurrently via `std::thread::scope`, so wall-clock time is roughly that of the slowest single repo rather than the sum across repos.
+
 ## Cleanup Behavior
 
 | Scenario | Cleanup Prompt? |

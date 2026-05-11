@@ -1,6 +1,6 @@
 //! `agent-of-empires add` command implementation
 
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use clap::Args;
 use std::path::PathBuf;
 
@@ -105,7 +105,12 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
     let mut path = if args.path.as_os_str() == "." {
         std::env::current_dir()?
     } else {
-        args.path.canonicalize()?
+        if !args.path.exists() {
+            bail!("Path does not exist: {}", args.path.display());
+        }
+        args.path
+            .canonicalize()
+            .with_context(|| format!("Failed to resolve path: {}", args.path.display()))?
     };
 
     if !path.is_dir() {
@@ -165,6 +170,10 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
             path = ws_result.workspace_path;
             workspace_info_opt = Some(ws_result.workspace_info);
 
+            for w in &ws_result.warnings {
+                eprintln!("⚠ {}", w);
+            }
+
             println!("✓ Workspace created successfully");
         } else {
             // Single worktree mode (existing logic)
@@ -196,7 +205,7 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
             }
 
             println!("Creating worktree at: {}", worktree_path.display());
-            git_wt.create_worktree(branch, &worktree_path, args.create_branch)?;
+            let warnings = git_wt.create_worktree(branch, &worktree_path, args.create_branch)?;
 
             path = worktree_path;
 
@@ -206,6 +215,10 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
                 managed_by_aoe: true,
                 created_at: Utc::now(),
             });
+
+            for w in &warnings {
+                eprintln!("⚠ {}", w);
+            }
 
             println!("✓ Worktree created successfully");
         }

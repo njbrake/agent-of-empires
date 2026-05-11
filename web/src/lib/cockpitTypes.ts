@@ -51,6 +51,29 @@ export interface RateLimitInfo {
   kind: string;
 }
 
+export interface SessionUsage {
+  /** Tokens currently in context. */
+  used: number;
+  /** Total context window size in tokens. */
+  size: number;
+  /** Cumulative session cost; undefined if the agent doesn't report it. */
+  cost?: { amount: number; currency: string } | null;
+}
+
+/** One slash command advertised by the agent (mirrors ACP's
+ *  `AvailableCommand`). The composer's `/` picker renders these so
+ *  users see plugin/skill/MCP commands the agent actually has loaded
+ *  rather than a hard-coded placeholder list. */
+export interface AvailableCommand {
+  name: string;
+  description: string;
+  /** True when ACP reported an `Unstructured` input spec — i.e. the
+   *  command takes free-form arguments after the name. The composer
+   *  inserts a trailing space and leaves the cursor in place when
+   *  this is true so the user can keep typing. */
+  accepts_input: boolean;
+}
+
 export interface Approval {
   nonce: string;
   tool_call: ToolCall;
@@ -71,13 +94,43 @@ export type CockpitEvent =
   | { PlanUpdated: { plan: Plan } }
   | { TodoListUpdated: { todos: Array<{ id: string; text: string; completed: boolean }> } }
   | { ToolCallStarted: { tool_call: ToolCall } }
-  | { ToolCallCompleted: { tool_call_id: string; is_error: boolean } }
+  | {
+      ToolCallCompleted: {
+        tool_call_id: string;
+        is_error: boolean;
+        /** Final textual content extracted from
+         *  ACP `ToolCallUpdate.fields.content`. Empty when the agent
+         *  emitted no content blocks on completion. */
+        content: string;
+      };
+    }
+  | {
+      /** Streaming output for a still-running tool call. Carries the
+       *  latest full content snapshot (per ACP, content is a
+       *  replacement, not append). The reducer buffers it keyed by
+       *  tool_call_id and uses it on completion if the final
+       *  ToolCallCompleted carries no content of its own. */
+      ToolCallContent: { tool_call_id: string; content: string };
+    }
+  | {
+      /** Late-arriving inputs/title for an already-started tool call.
+       *  Claude's claude-agent-acp emits the initial tool_call with an
+       *  empty `raw_input` and only fills in the actual command in a
+       *  follow-up ToolCallUpdate. Without this, bash cards display
+       *  `$ Terminal` (the title) rather than the command. */
+      ToolCallUpdated: {
+        tool_call_id: string;
+        title: string | null;
+        args_preview: string | null;
+      };
+    }
   | { ApprovalRequested: { approval: Approval } }
   | { ApprovalResolved: { nonce: string; decision: ApprovalDecision } }
   | { DiffEmitted: { diff: DiffPreview } }
   | "ThinkingStarted"
   | "ThinkingEnded"
   | { RateLimit: { info: RateLimitInfo } }
+  | { UsageUpdated: { usage: SessionUsage } }
   | { ModeChanged: { mode: SessionMode } }
   | {
       ModesAvailable: {
@@ -86,10 +139,14 @@ export type CockpitEvent =
       };
     }
   | { CurrentModeChanged: { current_mode_id: string } }
+  | { AvailableCommandsUpdated: { commands: AvailableCommand[] } }
   | { RawAgentUpdate: { payload: unknown } }
   | { AgentMessageChunk: { text: string } }
   | { Stopped: { reason: string } }
-  | { AgentStartupError: { message: string } };
+  | { AgentStartupError: { message: string } }
+  | { UserPromptSent: { text: string } }
+  | { AcpSessionAssigned: { acp_session_id: string } }
+  | { SessionContextReset: { reason: string } };
 
 export interface CockpitFrame {
   session_id: string;
@@ -107,6 +164,9 @@ export interface CockpitState {
   recentDiffs: DiffPreview[];
   thinking: boolean;
   rateLimit: RateLimitInfo | null;
+  /** Latest agent-reported context-window usage. Null until the agent
+   *  emits its first ACP `UsageUpdate`. */
+  sessionUsage: SessionUsage | null;
   /** Most recent assistant message chunks accumulated as a single
    *  text body. Cleared each time a new prompt is sent. */
   assistantMessage: string;
@@ -141,6 +201,21 @@ export interface CockpitState {
    *  four-mode taxonomy in that case. */
   availableModes: Array<{ id: string; name: string; description?: string | null }>;
   currentModeId: string | null;
+  /** Slash commands the agent advertised in its most recent
+   *  `AvailableCommandsUpdate`. Empty until the agent emits one; the
+   *  composer's `/` picker reads from here. */
+  availableCommands: AvailableCommand[];
+  /** Streaming output buffer keyed by tool_call_id. Populated by
+   *  ToolCallContent frames while the call is still running, drained
+   *  on ToolCallCompleted (used as a fallback when the completion
+   *  carries no content of its own). */
+  toolOutputs: Record<string, string>;
+  /** True iff the current turn has produced at least one piece of
+   *  visible output (assistant chunk, tool call, thinking signal).
+   *  Reset to false on every UserPromptSent. Used by the Stopped
+   *  handler to detect "no-op turn" without walking the full
+   *  activity array. */
+  turnHasOutput: boolean;
 }
 
 export interface ActivityRow {
@@ -151,7 +226,9 @@ export interface ActivityRow {
     | "tool_error"
     | "message"
     | "thinking"
-    | "user_prompt";
+    | "user_prompt"
+    | "empty_output"
+    | "context_reset";
   text: string;
   toolCallId?: string;
   /** Full ToolCall payload, present on tool_start rows so the UI can
@@ -174,6 +251,7 @@ export function emptyCockpitState(): CockpitState {
     recentDiffs: [],
     thinking: false,
     rateLimit: null,
+    sessionUsage: null,
     assistantMessage: "",
     activity: [],
     lastSeq: 0,
@@ -183,6 +261,9 @@ export function emptyCockpitState(): CockpitState {
     turnActive: false,
     availableModes: [],
     currentModeId: null,
+    availableCommands: [],
+    toolOutputs: {},
+    turnHasOutput: false,
   };
 }
 
@@ -203,6 +284,7 @@ export function applyEvent(
   if (typeof event === "string") {
     if (event === "ThinkingStarted") {
       next.thinking = true;
+      next.turnHasOutput = true;
     } else if (event === "ThinkingEnded") {
       next.thinking = false;
     }
@@ -215,6 +297,23 @@ export function applyEvent(
   if ("ToolCallStarted" in event) {
     const tc = event.ToolCallStarted.tool_call;
     next.inFlightTool = tc;
+    // Skip duplicate tool_start rows. SQLite stores accumulated from
+    // pre-fix runs (where post-load history-replay leaked through) can
+    // contain the same tool_call_id twice; rendering both makes
+    // assistant-ui's tapResources throw "Duplicate key" and crash the
+    // panel. Patch the existing row in place instead.
+    const existing = next.activity.findIndex(
+      (r) => r.kind === "tool_start" && r.toolCallId === tc.id,
+    );
+    if (existing >= 0) {
+      const prev = next.activity[existing];
+      if (prev) {
+        const copy = next.activity.slice();
+        copy[existing] = { ...prev, tool: tc, text: tc.name };
+        next.activity = copy;
+      }
+      return next;
+    }
     next.activity = pushActivity(next.activity, {
       id: `start-${tc.id}`,
       kind: "tool_start",
@@ -223,20 +322,80 @@ export function applyEvent(
       tool: tc,
       at: tc.started_at,
     });
+    next.turnHasOutput = true;
     return next;
   }
   if ("ToolCallCompleted" in event) {
-    const { tool_call_id, is_error } = event.ToolCallCompleted;
+    const { tool_call_id, is_error, content } = event.ToolCallCompleted;
     if (next.inFlightTool && next.inFlightTool.id === tool_call_id) {
       next.inFlightTool = null;
+    }
+    // Prefer content shipped with the completion event itself; fall
+    // back to whatever streamed earlier via ToolCallContent. Only use
+    // the status word when neither carried text.
+    const buffered = next.toolOutputs[tool_call_id] ?? "";
+    const text =
+      content && content.length > 0
+        ? content
+        : buffered.length > 0
+          ? buffered
+          : is_error
+            ? "tool failed"
+            : "completed";
+    if (buffered) {
+      const { [tool_call_id]: _drop, ...rest } = next.toolOutputs;
+      void _drop;
+      next.toolOutputs = rest;
     }
     next.activity = pushActivity(next.activity, {
       id: `done-${tool_call_id}`,
       kind: is_error ? "tool_error" : "tool_complete",
-      text: is_error ? "tool failed" : "completed",
+      text,
       toolCallId: tool_call_id,
       at: new Date().toISOString(),
     });
+    return next;
+  }
+  if ("ToolCallContent" in event) {
+    const { tool_call_id, content } = event.ToolCallContent;
+    next.toolOutputs = { ...next.toolOutputs, [tool_call_id]: content };
+    return next;
+  }
+  if ("ToolCallUpdated" in event) {
+    const { tool_call_id, title, args_preview } = event.ToolCallUpdated;
+    if (next.inFlightTool && next.inFlightTool.id === tool_call_id) {
+      next.inFlightTool = {
+        ...next.inFlightTool,
+        name: title ?? next.inFlightTool.name,
+        args_preview: args_preview ?? next.inFlightTool.args_preview,
+      };
+    }
+    // Walk activity backwards to find the matching tool_start row and
+    // patch its `tool` payload in place. AssistantBuilder reads from
+    // here at render time, so updating the row is enough to refresh
+    // the per-tool card.
+    let patched = false;
+    const updated = next.activity.map((row) => {
+      if (
+        !patched &&
+        row.kind === "tool_start" &&
+        row.toolCallId === tool_call_id &&
+        row.tool
+      ) {
+        patched = true;
+        return {
+          ...row,
+          text: title ?? row.text,
+          tool: {
+            ...row.tool,
+            name: title ?? row.tool.name,
+            args_preview: args_preview ?? row.tool.args_preview,
+          },
+        };
+      }
+      return row;
+    });
+    if (patched) next.activity = updated;
     return next;
   }
   if ("ApprovalRequested" in event) {
@@ -259,6 +418,10 @@ export function applyEvent(
     next.rateLimit = event.RateLimit.info;
     return next;
   }
+  if ("UsageUpdated" in event) {
+    next.sessionUsage = event.UsageUpdated.usage;
+    return next;
+  }
   if ("ModeChanged" in event) {
     next.mode = event.ModeChanged.mode;
     return next;
@@ -276,6 +439,10 @@ export function applyEvent(
     next.currentModeId = event.CurrentModeChanged.current_mode_id;
     return next;
   }
+  if ("AvailableCommandsUpdated" in event) {
+    next.availableCommands = event.AvailableCommandsUpdated.commands;
+    return next;
+  }
   if ("AgentMessageChunk" in event) {
     next.assistantMessage = next.assistantMessage + event.AgentMessageChunk.text;
     next.activity = pushActivity(next.activity, {
@@ -284,6 +451,7 @@ export function applyEvent(
       text: event.AgentMessageChunk.text,
       at: new Date().toISOString(),
     });
+    next.turnHasOutput = true;
     return next;
   }
   if ("Stopped" in event) {
@@ -292,12 +460,110 @@ export function applyEvent(
     // turn-active flag so the global "working" spinner stops.
     next.inFlightTool = null;
     next.turnActive = false;
+    // Some upstream slash commands (e.g. /usage, /status, /memory in
+    // claude-agent-acp) advertise via available_commands_update but
+    // produce no agent_message_chunk and no tool calls when invoked —
+    // see https://github.com/agentclientprotocol/claude-agent-acp/issues/642.
+    // Detect that case and append a notice row. The `turnHasOutput`
+    // flag is flipped by every output-producing handler and reset by
+    // UserPromptSent, so this check is O(1) instead of walking the
+    // full activity array on every Stopped.
+    if (state.turnActive && !state.turnHasOutput) {
+      next.activity = pushActivity(next.activity, {
+        id: `empty-${frame.seq}`,
+        kind: "empty_output",
+        text: "Command produced no output.",
+        at: new Date().toISOString(),
+      });
+    }
     return next;
   }
   if ("AgentStartupError" in event) {
     next.startupError = event.AgentStartupError.message;
     next.inFlightTool = null;
     next.turnActive = false;
+    return next;
+  }
+  if ("UserPromptSent" in event) {
+    const text = event.UserPromptSent.text;
+    // Dedupe against the optimistic row that useCockpit's sendPrompt
+    // dispatched a moment ago: find the OLDEST matching un-promoted
+    // user_prompt with the same text and promote it to the
+    // authoritative seq-based id. Walking oldest-first matters when
+    // the user submits the same text twice in quick succession — the
+    // first server echo must promote the first optimistic row, not
+    // the second, so the seq order matches the submission order.
+    const matchIdx = next.activity.findIndex(
+      (r) =>
+        r.kind === "user_prompt" &&
+        r.text === text &&
+        !r.id.startsWith("user-seq-"),
+    );
+    if (matchIdx >= 0) {
+      const match = next.activity[matchIdx];
+      if (match) {
+        const updated = next.activity.slice();
+        updated[matchIdx] = { ...match, id: `user-seq-${frame.seq}` };
+        next.activity = updated;
+        return next;
+      }
+    }
+    next.activity = pushActivity(next.activity, {
+      id: `user-seq-${frame.seq}`,
+      kind: "user_prompt",
+      text,
+      at: new Date().toISOString(),
+    });
+    next.assistantMessage = "";
+    next.startupError = null;
+    next.lastError = null;
+    next.turnActive = true;
+    // New turn — reset the no-output detector so Stopped fires the
+    // empty-output notice if the agent produces nothing.
+    next.turnHasOutput = false;
+    return next;
+  }
+  if ("AcpSessionAssigned" in event) {
+    // Primary purpose: persistence breadcrumb so the server-side
+    // listener can write the id to sessions.json for a subsequent
+    // session/load.
+    //
+    // Secondary purpose: signal that the agent connection is alive
+    // again. After a crash + respawn (e.g. the agent process was killed
+    // and the supervisor restarted it), the prior turn's
+    // AgentStartupError sat in SQLite and kept `startupError` set even
+    // though the agent had since recovered. Clear sticky error flags
+    // here so the red "Cockpit agent failed to start" banner heals on
+    // its own once the respawn completes the handshake.
+    next.startupError = null;
+    next.lastError = null;
+    return next;
+  }
+  if ("SessionContextReset" in event) {
+    // session/load failed and the agent fell back to session/new — its
+    // context window is empty. Clear the now-stale token-usage hint so
+    // the composer footer doesn't keep showing the previous run's
+    // "75k / 200k" until the next UsageUpdate arrives.
+    next.sessionUsage = null;
+    // Suppress the visible notice on a session that never saw a user
+    // prompt: claude-agent-acp doesn't persist a 0-prompt session, so
+    // session/load failing on the next spawn is expected, not an
+    // incident the user needs to know about. Events arrive in seq
+    // order, so checking `activity` here captures "any prompt with a
+    // lower seq than this reset" — later prompts won't retroactively
+    // surface the suppressed row.
+    const hasPriorPrompt = next.activity.some((r) => r.kind === "user_prompt");
+    if (!hasPriorPrompt) {
+      return next;
+    }
+    next.activity = pushActivity(next.activity, {
+      id: `reset-${frame.seq}`,
+      kind: "context_reset",
+      text:
+        event.SessionContextReset.reason ||
+        "Conversation context reset; agent transcript was unavailable.",
+      at: new Date().toISOString(),
+    });
     return next;
   }
   // RawAgentUpdate, TodoListUpdated, anything else: pass through with

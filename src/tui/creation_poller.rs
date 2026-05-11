@@ -28,6 +28,9 @@ pub enum CreationResult {
         created_worktree: Option<CreatedWorktreeInfo>,
         /// Whether on_launch hooks were already executed in the background
         on_launch_hooks_ran: bool,
+        /// Non-fatal warnings from worktree creation (e.g. post-checkout hook
+        /// failures). Surfaced as a transient toast in the UI.
+        warnings: Vec<String>,
     },
     Error(String),
 }
@@ -137,6 +140,7 @@ impl CreationPoller {
         instance.source_profile = profile.clone();
         let created_worktree = build_result.created_worktree;
         let created_workspace_worktrees = build_result.created_workspace_worktrees;
+        let warnings = build_result.warnings;
 
         let has_on_create = hooks.as_ref().is_some_and(|h| !h.on_create.is_empty());
         let has_on_launch = hooks.as_ref().is_some_and(|h| !h.on_launch.is_empty());
@@ -241,6 +245,7 @@ impl CreationPoller {
             instance: Box::new(instance),
             created_worktree: created_worktree_info,
             on_launch_hooks_ran: has_on_launch,
+            warnings,
         }
     }
 

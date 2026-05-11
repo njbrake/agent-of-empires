@@ -27,6 +27,20 @@ pub struct DeletionResult {
 pub fn perform_deletion(request: &DeletionRequest) -> DeletionResult {
     let mut errors = Vec::new();
 
+    tracing::debug!(
+        session_id = %request.session_id,
+        title = %request.instance.title,
+        delete_worktree = request.delete_worktree,
+        delete_branch = request.delete_branch,
+        delete_sandbox = request.delete_sandbox,
+        force_delete = request.force_delete,
+        worktree_branch = request.instance.worktree_info.as_ref().map(|w| w.branch.as_str()).unwrap_or("<none>"),
+        worktree_managed = request.instance.worktree_info.as_ref().map(|w| w.managed_by_aoe).unwrap_or(false),
+        worktree_main_repo = request.instance.worktree_info.as_ref().map(|w| w.main_repo_path.as_str()).unwrap_or("<none>"),
+        workspace_repos = request.instance.workspace_info.as_ref().map(|w| w.repos.len()).unwrap_or(0),
+        "perform_deletion: starting"
+    );
+
     // Execute on_destroy hooks before any cleanup so resources (containers,
     // worktrees) are still available for teardown commands.
     run_on_destroy_hooks(&request.instance);
@@ -42,6 +56,9 @@ pub fn perform_deletion(request: &DeletionRequest) -> DeletionResult {
     } else {
         None
     };
+    if let Some((b, r)) = branch_to_delete.as_ref() {
+        tracing::debug!(branch = %b, main_repo = %r.display(), "perform_deletion: branch_to_delete resolved");
+    }
 
     // Worktree cleanup (if user opted to delete it)
     // Must happen before branch deletion since the worktree is using the branch
@@ -116,17 +133,24 @@ pub fn perform_deletion(request: &DeletionRequest) -> DeletionResult {
     if let Some((branch, main_repo)) = branch_to_delete {
         let worktree_ok =
             !request.delete_worktree || !errors.iter().any(|e| e.starts_with("Worktree:"));
+        tracing::debug!(branch = %branch, main_repo = %main_repo.display(), worktree_ok, "perform_deletion: attempting branch deletion");
         if worktree_ok {
-            match GitWorktree::new(main_repo) {
+            match GitWorktree::new(main_repo.clone()) {
                 Ok(git_wt) => {
                     if let Err(e) = git_wt.delete_branch(&branch) {
+                        tracing::debug!(branch = %branch, error = %e, "perform_deletion: delete_branch returned error");
                         errors.push(format!("Branch: {}", e));
                     }
                 }
                 Err(e) => {
+                    tracing::debug!(main_repo = %main_repo.display(), error = %e, "perform_deletion: GitWorktree::new failed");
                     errors.push(format!("Branch: {}", e));
                 }
             }
+        } else {
+            tracing::debug!(
+                "perform_deletion: skipping branch deletion (worktree removal had errors)"
+            );
         }
     }
 
@@ -172,6 +196,17 @@ pub fn perform_deletion(request: &DeletionRequest) -> DeletionResult {
 
     // Clean up hook status files
     crate::hooks::cleanup_hook_status_dir(&request.instance.id);
+
+    if !errors.is_empty() {
+        tracing::debug!(
+            session_id = %request.session_id,
+            error_count = errors.len(),
+            errors = ?errors,
+            "perform_deletion: completed with errors"
+        );
+    } else {
+        tracing::debug!(session_id = %request.session_id, "perform_deletion: completed successfully");
+    }
 
     DeletionResult {
         session_id: request.session_id.clone(),

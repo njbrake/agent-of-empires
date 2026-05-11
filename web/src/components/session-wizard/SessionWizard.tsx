@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useReducer } from "react";
 import type { AgentInfo, GroupInfo, ProfileInfo, CreateSessionRequest, SessionResponse } from "../../lib/types";
 import { fetchAgents, fetchGroups, fetchDockerStatus, fetchProfiles, fetchSettings, createSession } from "../../lib/api";
 import { ACP_CAPABLE_TOOLS } from "../../lib/acpCapableTools";
+import { toastBus } from "../../lib/toastBus";
 import { StepIndicator } from "./StepIndicator";
 import type { StepDef, StepId } from "./StepIndicator";
 import { ProjectStep } from "./steps/ProjectStep";
@@ -233,8 +234,14 @@ export function SessionWizard({ onClose, onCreated, prefill, experimentalCockpit
       cockpit_mode: experimentalCockpit && ACP_CAPABLE_TOOLS.has(d.tool),
     };
     const result = await createSession(body);
-    if (result.ok) { dispatch({ type: "SUBMIT_SUCCESS" }); onCreated(result.session); }
-    else dispatch({ type: "SUBMIT_ERROR", error: result.error || "Unknown error" });
+    if (result.ok) {
+      dispatch({ type: "SUBMIT_SUCCESS" });
+      const warnings = result.session?.warnings;
+      if (warnings && warnings.length > 0) {
+        for (const w of warnings) toastBus.handler?.error(w);
+      }
+      onCreated(result.session);
+    } else dispatch({ type: "SUBMIT_ERROR", error: result.error || "Unknown error" });
   };
 
   useEffect(() => {
