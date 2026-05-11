@@ -2078,8 +2078,18 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_create_worktree_initializes_submodules() {
+    /// Build a main repo with a single submodule served by a `git daemon`
+    /// fixture, then create a `test-feature` branch on its current HEAD.
+    /// Returns the `TempDir` containers, the daemon guard (must stay alive
+    /// for `git submodule update` to reach the URL), and the repo path.
+    ///
+    /// The submodule is added at `.claude/` and contains a `skill.md` file,
+    /// so tests can assert on `wt_path.join(".claude").join("skill.md")` to
+    /// distinguish "submodule initialized" from "only .gitmodules checked
+    /// out".
+    fn build_repo_with_submodule_and_branch(
+        branch: &str,
+    ) -> (TempDir, TempDir, GitDaemonGuard, TempDir) {
         let submodule_src_dir = TempDir::new().unwrap();
         let submodule_repo = git2::Repository::init(submodule_src_dir.path()).unwrap();
         let sig = git2::Signature::now("Test", "test@example.com").unwrap();
@@ -2116,7 +2126,7 @@ mod tests {
                 "submodule.git",
             ],
         );
-        let (_daemon, submodule_url) = spawn_git_daemon(daemon_root.path(), "submodule.git");
+        let (daemon, submodule_url) = spawn_git_daemon(daemon_root.path(), "submodule.git");
 
         let repo_dir = TempDir::new().unwrap();
         let repo = git2::Repository::init(repo_dir.path()).unwrap();
@@ -2146,12 +2156,19 @@ mod tests {
             repo_dir.path(),
             &["submodule", "add", &submodule_url, ".claude"],
         );
-
         run_git(repo_dir.path(), &["commit", "-am", "Add submodule"]);
 
         let repo = git2::Repository::open(repo_dir.path()).unwrap();
         let head_commit = repo.head().unwrap().peel_to_commit().unwrap();
-        repo.branch("test-feature", &head_commit, false).unwrap();
+        repo.branch(branch, &head_commit, false).unwrap();
+
+        (submodule_src_dir, daemon_root, daemon, repo_dir)
+    }
+
+    #[test]
+    fn test_create_worktree_initializes_submodules() {
+        let (_submodule_src, _daemon_root, _daemon, repo_dir) =
+            build_repo_with_submodule_and_branch("test-feature");
 
         let git_wt = GitWorktree::new(repo_dir.path().to_path_buf()).unwrap();
         let worktree_parent = TempDir::new().unwrap();
@@ -2168,80 +2185,10 @@ mod tests {
 
     #[test]
     fn test_create_worktree_skips_submodules_when_disabled() {
-        // Same fixture as test_create_worktree_initializes_submodules, but
         // with_init_submodules(false) must skip the `git submodule update`
         // step entirely so the worktree shows up before submodules clone.
-        let submodule_src_dir = TempDir::new().unwrap();
-        let submodule_repo = git2::Repository::init(submodule_src_dir.path()).unwrap();
-        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
-
-        std::fs::write(
-            submodule_src_dir.path().join("skill.md"),
-            "hello from submodule\n",
-        )
-        .unwrap();
-        let submodule_tree_id = {
-            let mut index = submodule_repo.index().unwrap();
-            index.add_path(Path::new("skill.md")).unwrap();
-            index.write_tree().unwrap()
-        };
-        let submodule_tree = submodule_repo.find_tree(submodule_tree_id).unwrap();
-        submodule_repo
-            .commit(
-                Some("HEAD"),
-                &sig,
-                &sig,
-                "Initial submodule commit",
-                &submodule_tree,
-                &[],
-            )
-            .unwrap();
-
-        let daemon_root = TempDir::new().unwrap();
-        run_git(
-            daemon_root.path(),
-            &[
-                "clone",
-                "--bare",
-                submodule_src_dir.path().to_str().unwrap(),
-                "submodule.git",
-            ],
-        );
-        let (_daemon, submodule_url) = spawn_git_daemon(daemon_root.path(), "submodule.git");
-
-        let repo_dir = TempDir::new().unwrap();
-        let repo = git2::Repository::init(repo_dir.path()).unwrap();
-        std::fs::write(repo_dir.path().join("README.md"), "main repo\n").unwrap();
-        let initial_tree_id = {
-            let mut index = repo.index().unwrap();
-            index.add_path(Path::new("README.md")).unwrap();
-            index.write_tree().unwrap()
-        };
-        let initial_tree = repo.find_tree(initial_tree_id).unwrap();
-        repo.commit(
-            Some("HEAD"),
-            &sig,
-            &sig,
-            "Initial commit",
-            &initial_tree,
-            &[],
-        )
-        .unwrap();
-
-        run_git(repo_dir.path(), &["config", "user.name", "Test"]);
-        run_git(
-            repo_dir.path(),
-            &["config", "user.email", "test@example.com"],
-        );
-        run_git(
-            repo_dir.path(),
-            &["submodule", "add", &submodule_url, ".claude"],
-        );
-        run_git(repo_dir.path(), &["commit", "-am", "Add submodule"]);
-
-        let repo = git2::Repository::open(repo_dir.path()).unwrap();
-        let head_commit = repo.head().unwrap().peel_to_commit().unwrap();
-        repo.branch("test-feature", &head_commit, false).unwrap();
+        let (_submodule_src, _daemon_root, _daemon, repo_dir) =
+            build_repo_with_submodule_and_branch("test-feature");
 
         let git_wt = GitWorktree::new(repo_dir.path().to_path_buf())
             .unwrap()
