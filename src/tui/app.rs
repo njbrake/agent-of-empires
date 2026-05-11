@@ -230,7 +230,14 @@ impl App {
         // is `width - 4` columns wide (borders + 1-cell margin on each side),
         // so each \n-separated line wraps to ceil(len / inner_width) visual
         // rows. Borders + margin + the OK button take 6 rows.
-        const WIDTH: u16 = 80;
+        //
+        // 96, not 80: at the typical ~35-col sidebar width, a centered
+        // 80-wide dialog on a 150-col terminal lands its left border exactly
+        // at the sidebar's right border, which makes the modal visually
+        // blend into the layout. 96 shifts the coincidence point off the
+        // common laptop-fullscreen width and gives long path lines (e.g.
+        // `~/.config/agent-of-empires-dev`) more breathing room.
+        const WIDTH: u16 = 96;
         let inner_width = WIDTH.saturating_sub(4) as usize;
         let visual_lines: usize = message
             .lines()

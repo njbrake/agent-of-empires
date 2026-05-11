@@ -48,7 +48,7 @@ pub use storage::Storage;
 
 use anyhow::Result;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 pub const DEFAULT_PROFILE: &str = "default";
@@ -90,6 +90,66 @@ fn get_app_dir_path() -> Result<PathBuf> {
         .join(APP_DIR_NAME_OTHER);
 
     Ok(dir)
+}
+
+/// Detect the first-launch case where a debug build is being run on a
+/// machine that has populated release-build state in `~/.agent-of-empires`
+/// but no dev-build state yet. Returns the (release_dir, dev_dir) pair so
+/// callers can surface the paths in a one-time warning.
+///
+/// Self-extinguishing by design: once `get_app_dir` creates the dev dir on
+/// any subsequent call, this returns `None` and the warning stops. No flag
+/// file, no config state, no dismissal logic — the directory topology IS
+/// the state.
+///
+/// Returns `None` on release builds (the dev/release split doesn't apply),
+/// when the release dir is absent or empty (user has no prior state to
+/// "lose visibility of"), or when the dev dir already exists.
+pub fn debug_namespace_drift() -> Option<(PathBuf, PathBuf)> {
+    if !cfg!(debug_assertions) {
+        return None;
+    }
+
+    #[cfg(target_os = "linux")]
+    let release_dir = dirs::config_dir()?.join("agent-of-empires");
+    #[cfg(not(target_os = "linux"))]
+    let release_dir = dirs::home_dir()?.join(".agent-of-empires");
+
+    #[cfg(target_os = "linux")]
+    let dev_dir = dirs::config_dir()?.join(APP_DIR_NAME_LINUX);
+    #[cfg(not(target_os = "linux"))]
+    let dev_dir = dirs::home_dir()?.join(APP_DIR_NAME_OTHER);
+
+    let release_populated = fs::read_dir(&release_dir)
+        .map(|mut entries| entries.next().is_some())
+        .unwrap_or(false);
+
+    if release_populated && !dev_dir.exists() {
+        Some((release_dir, dev_dir))
+    } else {
+        None
+    }
+}
+
+/// Format the user-facing warning shown when `debug_namespace_drift()`
+/// fires. Shared between the CLI stderr print and the TUI startup popup so
+/// both surfaces say exactly the same thing.
+pub fn format_debug_namespace_warning(release: &Path, dev: &Path) -> String {
+    format!(
+        "Debug builds now use an isolated app dir:\n  \
+         {}\n\n\
+         Your existing state in\n  \
+         {}\n\
+         is not visible to this build.\n\n\
+         To migrate it, run:\n  \
+         cp -r {} {}\n\n\
+         Otherwise, do nothing — this notice will not repeat once the dev dir exists.\n\
+         See docs/development.md for details.",
+        dev.display(),
+        release.display(),
+        release.display(),
+        dev.display(),
+    )
 }
 
 pub fn get_profile_dir(profile: &str) -> Result<PathBuf> {
@@ -348,5 +408,74 @@ mod tests {
 
         let warning = collect_startup_config_warnings("default").expect("expected a warning");
         assert!(warning.contains("Failed to load profile config 'default'"));
+    }
+
+    fn release_dir_in(temp: &tempfile::TempDir) -> PathBuf {
+        #[cfg(target_os = "linux")]
+        let d = temp.path().join(".config").join("agent-of-empires");
+        #[cfg(not(target_os = "linux"))]
+        let d = temp.path().join(".agent-of-empires");
+        d
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_drift_none_when_no_release_dir() {
+        let _temp = isolate_app_dir();
+        // Neither dir exists → no drift to flag.
+        assert!(debug_namespace_drift().is_none());
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_drift_none_when_release_empty() {
+        let temp = isolate_app_dir();
+        let release = release_dir_in(&temp);
+        fs::create_dir_all(&release).unwrap();
+        // Release dir exists but has no content — user has no prior state
+        // to lose visibility of, so don't nag them.
+        assert!(debug_namespace_drift().is_none());
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_drift_fires_when_release_populated_and_dev_absent() {
+        let temp = isolate_app_dir();
+        let release = release_dir_in(&temp);
+        fs::create_dir_all(release.join("profiles")).unwrap();
+
+        let drift = debug_namespace_drift();
+        // Only assert presence on debug builds — release builds compile this
+        // function to `None`.
+        if cfg!(debug_assertions) {
+            let (r, d) = drift.expect("expected drift on debug build");
+            assert_eq!(r, release);
+            assert!(d.to_string_lossy().contains("-dev"));
+        } else {
+            assert!(drift.is_none());
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_drift_silent_once_dev_dir_exists() {
+        let temp = isolate_app_dir();
+        let release = release_dir_in(&temp);
+        fs::create_dir_all(release.join("profiles")).unwrap();
+        // Simulate "user has already run aoe once after the namespace
+        // change" by creating the dev dir.
+        let _dev = app_dir(&temp);
+        assert!(debug_namespace_drift().is_none());
+    }
+
+    #[test]
+    fn test_format_warning_mentions_both_paths_and_migration_command() {
+        let release = PathBuf::from("/home/u/.config/agent-of-empires");
+        let dev = PathBuf::from("/home/u/.config/agent-of-empires-dev");
+        let msg = format_debug_namespace_warning(&release, &dev);
+        assert!(msg.contains("/home/u/.config/agent-of-empires"));
+        assert!(msg.contains("/home/u/.config/agent-of-empires-dev"));
+        assert!(msg.contains("cp -r"));
+        assert!(msg.contains("not repeat"));
     }
 }

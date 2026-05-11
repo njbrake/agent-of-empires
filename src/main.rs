@@ -24,6 +24,12 @@ fn is_serve_command(_cli: &Cli) -> bool {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
+    // Detect drift between release-build state and dev-build state BEFORE
+    // anything below calls `get_app_dir()` (which would auto-create the dev
+    // dir and silently flip the trigger condition for the rest of this
+    // process). Compiled away in release builds.
+    let debug_namespace_drift = agent_of_empires::session::debug_namespace_drift();
+
     let mut debug_log_warning: Option<String> = None;
     if std::env::var("AGENT_OF_EMPIRES_DEBUG").is_ok() {
         // Log to file to avoid corrupting the TUI on stderr.
@@ -57,6 +63,19 @@ async fn main() -> Result<()> {
             .with_ansi(false)
             .try_init()
             .ok();
+    }
+
+    // CLI invocations get the dev-namespace drift warning on stderr right
+    // away. TUI mode handles it via the existing startup-warning popup
+    // pipeline below — we don't print here for TUI because ratatui's
+    // alt-screen would clobber the message.
+    if cli.command.is_some() {
+        if let Some((release, dev)) = debug_namespace_drift.as_ref() {
+            eprintln!(
+                "\n{}\n",
+                agent_of_empires::session::format_debug_namespace_warning(release, dev),
+            );
+        }
     }
 
     // Handle commands that don't need app data or migrations.
@@ -118,7 +137,21 @@ async fn main() -> Result<()> {
         Some(Commands::Serve(args)) => cli::serve::run(&profile, args).await,
         #[cfg(feature = "serve")]
         Some(Commands::Cockpit { command }) => cli::cockpit::run(command).await,
-        None => tui::run(&profile, debug_log_warning).await,
+        None => {
+            // Fold the drift notice into the existing startup-warning channel
+            // so the TUI surfaces both (debug-log + drift, if both fire) in a
+            // single modal instead of stacking two dialogs.
+            let drift_msg = debug_namespace_drift.as_ref().map(|(release, dev)| {
+                agent_of_empires::session::format_debug_namespace_warning(release, dev)
+            });
+            let combined = match (debug_log_warning, drift_msg) {
+                (Some(a), Some(b)) => Some(format!("{a}\n\n{b}")),
+                (Some(a), None) => Some(a),
+                (None, Some(b)) => Some(b),
+                (None, None) => None,
+            };
+            tui::run(&profile, combined).await
+        }
         _ => unreachable!(),
     }
 }
