@@ -613,8 +613,9 @@ pub fn detect_gemini_status(raw_content: &str) -> Status {
 }
 
 /// Qwen Code status detection via tmux pane parsing.
-/// Qwen Code is a full-screen TUI. It shows spinners and activity indicators
-/// while processing, and displays approval prompts when actions need confirmation.
+/// Qwen Code is a fork of Gemini CLI, so the running/waiting markers mirror
+/// Gemini's: braille spinner + "esc to interrupt" while working, approval
+/// prompts and a numbered `❯` selection menu while waiting.
 pub fn detect_qwen_status(raw_content: &str) -> Status {
     let content = raw_content.to_lowercase();
     let lines: Vec<&str> = content.lines().collect();
@@ -624,7 +625,7 @@ pub fn detect_qwen_status(raw_content: &str) -> Status {
         .copied()
         .collect();
 
-    let last_lines: String = non_empty_lines
+    let last_lines_lower: String = non_empty_lines
         .iter()
         .rev()
         .take(30)
@@ -632,16 +633,6 @@ pub fn detect_qwen_status(raw_content: &str) -> Status {
         .copied()
         .collect::<Vec<&str>>()
         .join("\n");
-    let last_lines_lower = last_lines.to_lowercase();
-
-    // RUNNING: Spinners and interrupt hints
-    for line in &lines {
-        for spinner in SPINNER_CHARS {
-            if line.contains(spinner) {
-                return Status::Running;
-            }
-        }
-    }
 
     if last_lines_lower.contains("esc to interrupt")
         || last_lines_lower.contains("ctrl+c to interrupt")
@@ -649,65 +640,39 @@ pub fn detect_qwen_status(raw_content: &str) -> Status {
         return Status::Running;
     }
 
-    // RUNNING: Activity indicators
-    let activity_indicators = [
-        "thinking",
-        "working",
-        "reading",
-        "writing",
-        "executing",
-        "generating",
-        "processing",
-    ];
-    for indicator in &activity_indicators {
-        if last_lines_lower.contains(indicator) {
-            return Status::Running;
-        }
+    if has_any_spinner(&lines) {
+        return Status::Running;
     }
 
-    // WAITING: Approval prompts
-    let approval_prompts = [
-        "(y/n)",
-        "[y/n]",
-        "allow",
-        "approve",
-        "execute?",
-        "run command?",
-        "enter to select",
-        "esc to cancel",
-    ];
-    for prompt in &approval_prompts {
-        if last_lines_lower.contains(prompt) {
-            return Status::Waiting;
-        }
+    if contains_approval_prompt(
+        &last_lines_lower,
+        &[
+            "execute?",
+            "run command?",
+            "enter to select",
+            "esc to cancel",
+        ],
+    ) {
+        return Status::Waiting;
     }
 
-    // WAITING: Selection menus with numbered options
+    // Numbered selection menu cursor. Qwen renders `›` (U+203A) by default but
+    // also `❯` (U+276F) in some themes; the shared helpers don't cover either.
     for line in &lines {
         let trimmed = line.trim();
-        if trimmed.starts_with("❯") && trimmed.len() > 2 {
-            let after_cursor = trimmed.get(3..).unwrap_or("").trim_start();
-            if after_cursor.starts_with("1.")
-                || after_cursor.starts_with("2.")
-                || after_cursor.starts_with("3.")
-            {
+        let after_cursor = trimmed
+            .strip_prefix("›")
+            .or_else(|| trimmed.strip_prefix("❯"));
+        if let Some(rest) = after_cursor {
+            let rest = rest.trim_start();
+            if rest.starts_with("1.") || rest.starts_with("2.") || rest.starts_with("3.") {
                 return Status::Waiting;
             }
         }
     }
 
-    // WAITING: Input prompt ready
-    for line in non_empty_lines.iter().rev().take(10) {
-        let clean_line = strip_ansi(line).trim().to_string();
-        if clean_line == ">" || clean_line == "> " || clean_line == "qwen>" {
-            return Status::Waiting;
-        }
-        if clean_line.starts_with("> ")
-            && !clean_line.to_lowercase().contains("esc")
-            && clean_line.len() < 100
-        {
-            return Status::Waiting;
-        }
+    if matches_input_prompt(&non_empty_lines, 10, &["qwen>"]) {
+        return Status::Waiting;
     }
 
     Status::Idle
@@ -1154,13 +1119,16 @@ mod tests {
             Status::Running
         );
         assert_eq!(
-            detect_qwen_status("Thinking about your request"),
+            detect_qwen_status("⠋ Thinking about your request"),
             Status::Running
         );
         assert_eq!(detect_qwen_status("working ⠋"), Status::Running);
         assert_eq!(detect_qwen_status("loading ⠹"), Status::Running);
-        assert_eq!(detect_qwen_status("generating code"), Status::Running);
-        assert_eq!(detect_qwen_status("reading file.rs"), Status::Running);
+        assert_eq!(
+            detect_qwen_status("⠹ Generating code\nesc to interrupt"),
+            Status::Running
+        );
+        assert_eq!(detect_qwen_status("⠧ Reading file.rs"), Status::Running);
     }
 
     #[test]
@@ -1178,6 +1146,11 @@ mod tests {
         assert_eq!(detect_qwen_status("done\nqwen>"), Status::Waiting);
         assert_eq!(
             detect_qwen_status("Select:\n❯ 1. Option A\n  2. Option B"),
+            Status::Waiting
+        );
+        // Qwen's default theme uses `›` (U+203A), not `❯`.
+        assert_eq!(
+            detect_qwen_status("Select Authentication Method\n› 1. Alibaba ModelStudio"),
             Status::Waiting
         );
     }

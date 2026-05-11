@@ -132,6 +132,38 @@ const CLAUDE_CURSOR_HOOK_EVENTS: &[HookEvent] = &[
     },
 ];
 
+/// Qwen Code uses the same Claude-style event schema and `permission_prompt`/
+/// `elicitation_dialog` notification types, but does not emit `ElicitationResult`.
+/// `PostToolUse` is used instead to clear the waiting state after the user
+/// approves a permission prompt and the tool runs to completion.
+const QWEN_HOOK_EVENTS: &[HookEvent] = &[
+    HookEvent {
+        name: "PreToolUse",
+        matcher: None,
+        status: Some("running"),
+    },
+    HookEvent {
+        name: "UserPromptSubmit",
+        matcher: None,
+        status: Some("running"),
+    },
+    HookEvent {
+        name: "PostToolUse",
+        matcher: None,
+        status: Some("running"),
+    },
+    HookEvent {
+        name: "Stop",
+        matcher: None,
+        status: Some("idle"),
+    },
+    HookEvent {
+        name: "Notification",
+        matcher: Some("permission_prompt|elicitation_dialog"),
+        status: Some("waiting"),
+    },
+];
+
 pub const AGENTS: &[AgentDef] = &[
     AgentDef {
         name: "claude",
@@ -386,17 +418,20 @@ pub const AGENTS: &[AgentDef] = &[
         detection: DetectionMethod::Which("qwen"),
         yolo: Some(YoloMode::CliFlag("--yolo")),
         instruction_flag: Some("--append-system-prompt {}"),
-        set_default_command: true,
+        set_default_command: false,
         detect_status: status_detection::detect_qwen_status,
         container_env: &[],
         hook_config: Some(AgentHookConfig {
             settings_rel_path: ".qwen/settings.json",
-            events: CLAUDE_CURSOR_HOOK_EVENTS,
+            events: QWEN_HOOK_EVENTS,
         }),
-        resume_strategy: ResumeStrategy::Flag("--resume"),
+        resume_strategy: ResumeStrategy::FlagPair {
+            existing: "--resume",
+            new_session: "--session-id",
+        },
         host_only: false,
         send_keys_enter_delay_ms: 0,
-        install_hint: "brew install qwen-code",
+        install_hint: "npm install -g @qwen-code/qwen-code",
     },
 ];
 
