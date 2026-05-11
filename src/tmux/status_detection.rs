@@ -40,20 +40,9 @@ pub fn detect_status_from_content(content: &str, tool: &str) -> Status {
     // called with -e (to preserve colors for the TUI preview), but color codes
     // interspersed in text like "esc interrupt" break plain substring matches.
     let clean = strip_ansi(content);
-    let status = crate::agents::get_agent(tool)
+    crate::agents::get_agent(tool)
         .map(|a| (a.detect_status)(&clean))
-        .unwrap_or(Status::Idle);
-
-    if status == Status::Idle {
-        let last_lines: Vec<&str> = clean.lines().rev().take(5).collect();
-        tracing::debug!(
-            "status detection returned Idle for tool '{}', last 5 lines: {:?}",
-            tool,
-            last_lines
-        );
-    }
-
-    status
+        .unwrap_or(Status::Idle)
 }
 
 /// Spinner frame characters Claude Code rotates through next to its active
