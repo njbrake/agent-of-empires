@@ -1647,6 +1647,40 @@ mod tests {
     }
 
     #[test]
+    fn session_response_omits_empty_warnings() {
+        let inst = make_test_instance();
+        let resp = SessionResponse::from_instance(&inst, false);
+        assert!(resp.warnings.is_empty());
+
+        let json = serde_json::to_value(&resp).unwrap();
+        assert!(
+            json.get("warnings").is_none(),
+            "empty warnings should be omitted from the JSON body, got: {json}"
+        );
+    }
+
+    #[test]
+    fn session_response_serializes_populated_warnings() {
+        let inst = make_test_instance();
+        let mut resp = SessionResponse::from_instance(&inst, false);
+        resp.warnings = vec![
+            "post-checkout hook failed for repo-a".to_string(),
+            "post-checkout hook failed for repo-b".to_string(),
+        ];
+
+        let json = serde_json::to_value(&resp).unwrap();
+        let warnings = json
+            .get("warnings")
+            .expect("warnings should appear in JSON when populated");
+        let arr = warnings
+            .as_array()
+            .expect("warnings should serialize as a JSON array");
+        assert_eq!(arr.len(), 2);
+        assert_eq!(arr[0], "post-checkout hook failed for repo-a");
+        assert_eq!(arr[1], "post-checkout hook failed for repo-b");
+    }
+
+    #[test]
     fn claude_fullscreen_set_for_claude_when_enabled() {
         let resp = SessionResponse::from_instance(&make_test_instance(), true);
         assert_eq!(resp.tool, "claude");

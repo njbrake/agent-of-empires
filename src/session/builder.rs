@@ -791,4 +791,101 @@ mod tests {
         taken.insert("fix-bug-3".to_string());
         assert_eq!(dedupe_branch_name("fix-bug", &taken), "fix-bug-4");
     }
+
+    /// Init a non-bare repo named `name` inside its own TempDir with one
+    /// commit. Returns the TempDir (path is the repo root).
+    fn init_repo_with_commit(name: &str) -> tempfile::TempDir {
+        // We want the directory's file_name to be `name` so the parallel
+        // error message references it. TempDir uses random suffixes, so we
+        // create a wrapping TempDir and then a known-named subdir inside it
+        // by leveraging tempfile::Builder.
+        let parent = tempfile::Builder::new()
+            .prefix("aoe-test-")
+            .tempdir()
+            .unwrap();
+        let dir = parent.path().join(name);
+        std::fs::create_dir(&dir).unwrap();
+        let repo = git2::Repository::init(&dir).unwrap();
+        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+        std::fs::write(dir.join("README.md"), format!("{name}\n")).unwrap();
+        let tree_id = {
+            let mut index = repo.index().unwrap();
+            index.add_path(std::path::Path::new("README.md")).unwrap();
+            index.write_tree().unwrap()
+        };
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
+        parent
+    }
+
+    #[test]
+    fn test_create_workspace_reports_all_concurrent_failures() {
+        // Two repos that each only have a "main"/"master" branch. Asking for
+        // a non-existent branch with create_new_branch=false makes both
+        // create_worktree calls fail in parallel; the bail! message must
+        // include both repo names.
+        let parent_a = init_repo_with_commit("repo-a-fail");
+        let parent_b = init_repo_with_commit("repo-b-fail");
+        let repo_a = parent_a.path().join("repo-a-fail");
+        let repo_b = parent_b.path().join("repo-b-fail");
+        let workspaces_root = tempfile::TempDir::new().unwrap();
+        let template = workspaces_root
+            .path()
+            .join("{branch}")
+            .to_string_lossy()
+            .into_owned();
+
+        let result = create_workspace(&repo_a, &[repo_b], "nonexistent-branch", false, &template);
+
+        let err = match result {
+            Ok(_) => panic!("workspace creation should fail when no repo has the branch"),
+            Err(e) => e,
+        };
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("Failed to create worktrees"),
+            "multi-error bail! prefix missing: {msg}"
+        );
+        assert!(msg.contains("(2 repos)"), "should report repo count: {msg}");
+        assert!(
+            msg.contains("repo-a-fail"),
+            "first repo name missing from message: {msg}"
+        );
+        assert!(
+            msg.contains("repo-b-fail"),
+            "second repo name missing from message: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_create_workspace_single_failure_keeps_simple_message() {
+        // One bad repo; the message should NOT use the multi-error format
+        // (no "(N repos):" prefix) and SHOULD use the singular phrasing.
+        let parent_a = init_repo_with_commit("repo-solo-fail");
+        let repo_a = parent_a.path().join("repo-solo-fail");
+        let workspaces_root = tempfile::TempDir::new().unwrap();
+        let template = workspaces_root
+            .path()
+            .join("{branch}")
+            .to_string_lossy()
+            .into_owned();
+
+        let result = create_workspace(&repo_a, &[], "nonexistent-branch", false, &template);
+
+        let err = match result {
+            Ok(_) => panic!("single-repo failure should still surface"),
+            Err(e) => e,
+        };
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("Failed to create worktree for"),
+            "singular phrasing missing: {msg}"
+        );
+        assert!(
+            !msg.contains("repos):"),
+            "single-failure path should not use multi-error wording: {msg}"
+        );
+        assert!(msg.contains("repo-solo-fail"), "repo name missing: {msg}");
+    }
 }
