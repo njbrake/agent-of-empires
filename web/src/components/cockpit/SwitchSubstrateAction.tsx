@@ -7,6 +7,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { ArrowRightLeft, Loader2 } from "lucide-react";
+import { useServerDown, OFFLINE_TITLE } from "../../lib/connectionState";
 
 interface Props {
   sessionId: string;
@@ -31,6 +32,7 @@ export function SwitchSubstrateAction({
   className,
   variant = "icon",
 }: Props) {
+  const offline = useServerDown();
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -80,16 +82,18 @@ export function SwitchSubstrateAction({
   };
 
   const triggerLabel = cockpitMode ? "Switch to terminal mode" : "Switch to cockpit mode";
-  const triggerDisabled = !cockpitMode && !acpCapable;
+  const triggerDisabled = (!cockpitMode && !acpCapable) || offline;
 
   return (
     <>
       <button
         type="button"
         title={
-          triggerDisabled
-            ? "This agent has no ACP adapter — cockpit unavailable"
-            : triggerLabel
+          offline
+            ? OFFLINE_TITLE
+            : triggerDisabled
+              ? "This agent has no ACP adapter — cockpit unavailable"
+              : triggerLabel
         }
         aria-label={triggerLabel}
         disabled={triggerDisabled}

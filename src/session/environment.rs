@@ -457,9 +457,12 @@ mod tests {
 
         // Determine app dir layout (matches session::get_app_dir_path).
         #[cfg(target_os = "linux")]
-        let app_dir = temp_home.path().join(".config").join("agent-of-empires");
+        let app_dir = temp_home
+            .path()
+            .join(".config")
+            .join(crate::session::APP_DIR_NAME_LINUX);
         #[cfg(not(target_os = "linux"))]
-        let app_dir = temp_home.path().join(".agent-of-empires");
+        let app_dir = temp_home.path().join(crate::session::APP_DIR_NAME_OTHER);
 
         let profiles_dir = app_dir.join("profiles");
         std::fs::create_dir_all(profiles_dir.join("default")).unwrap();

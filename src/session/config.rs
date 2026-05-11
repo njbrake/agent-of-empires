@@ -845,9 +845,12 @@ mod tests {
         std::env::set_var("XDG_CONFIG_HOME", temp_home.path().join(".config"));
 
         #[cfg(target_os = "linux")]
-        let app_dir = temp_home.path().join(".config").join("agent-of-empires");
+        let app_dir = temp_home
+            .path()
+            .join(".config")
+            .join(crate::session::APP_DIR_NAME_LINUX);
         #[cfg(not(target_os = "linux"))]
-        let app_dir = temp_home.path().join(".agent-of-empires");
+        let app_dir = temp_home.path().join(crate::session::APP_DIR_NAME_OTHER);
 
         std::fs::create_dir_all(&app_dir).unwrap();
         std::fs::write(app_dir.join("config.toml"), r#"default_profile = "alpha""#).unwrap();
@@ -868,9 +871,12 @@ mod tests {
         std::env::set_var("XDG_CONFIG_HOME", temp_home.path().join(".config"));
 
         #[cfg(target_os = "linux")]
-        let app_dir = temp_home.path().join(".config").join("agent-of-empires");
+        let app_dir = temp_home
+            .path()
+            .join(".config")
+            .join(crate::session::APP_DIR_NAME_LINUX);
         #[cfg(not(target_os = "linux"))]
-        let app_dir = temp_home.path().join(".agent-of-empires");
+        let app_dir = temp_home.path().join(crate::session::APP_DIR_NAME_OTHER);
 
         std::fs::create_dir_all(&app_dir).unwrap();
         // Malformed: 'enabled_by_default' under [sandbox] expects a boolean.

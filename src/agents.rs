@@ -132,6 +132,38 @@ const CLAUDE_CURSOR_HOOK_EVENTS: &[HookEvent] = &[
     },
 ];
 
+/// Qwen Code uses the same Claude-style event schema and `permission_prompt`/
+/// `elicitation_dialog` notification types, but does not emit `ElicitationResult`.
+/// `PostToolUse` is used instead to clear the waiting state after the user
+/// approves a permission prompt and the tool runs to completion.
+const QWEN_HOOK_EVENTS: &[HookEvent] = &[
+    HookEvent {
+        name: "PreToolUse",
+        matcher: None,
+        status: Some("running"),
+    },
+    HookEvent {
+        name: "UserPromptSubmit",
+        matcher: None,
+        status: Some("running"),
+    },
+    HookEvent {
+        name: "PostToolUse",
+        matcher: None,
+        status: Some("running"),
+    },
+    HookEvent {
+        name: "Stop",
+        matcher: None,
+        status: Some("idle"),
+    },
+    HookEvent {
+        name: "Notification",
+        matcher: Some("permission_prompt|elicitation_dialog"),
+        status: Some("waiting"),
+    },
+];
+
 pub const AGENTS: &[AgentDef] = &[
     AgentDef {
         name: "claude",
@@ -379,6 +411,28 @@ pub const AGENTS: &[AgentDef] = &[
         send_keys_enter_delay_ms: 0,
         install_hint: "curl -fsSL https://cli.kiro.dev/install | bash",
     },
+    AgentDef {
+        name: "qwen",
+        binary: "qwen",
+        aliases: &[],
+        detection: DetectionMethod::Which("qwen"),
+        yolo: Some(YoloMode::CliFlag("--yolo")),
+        instruction_flag: Some("--append-system-prompt {}"),
+        set_default_command: false,
+        detect_status: status_detection::detect_qwen_status,
+        container_env: &[],
+        hook_config: Some(AgentHookConfig {
+            settings_rel_path: ".qwen/settings.json",
+            events: QWEN_HOOK_EVENTS,
+        }),
+        resume_strategy: ResumeStrategy::FlagPair {
+            existing: "--resume",
+            new_session: "--session-id",
+        },
+        host_only: false,
+        send_keys_enter_delay_ms: 0,
+        install_hint: "npm install -g @qwen-code/qwen-code",
+    },
 ];
 
 /// Look up an agent by canonical name.
@@ -463,6 +517,7 @@ mod tests {
         assert_eq!(get_agent("settl").unwrap().binary, "settl");
         assert_eq!(get_agent("hermes").unwrap().binary, "hermes");
         assert_eq!(get_agent("kiro").unwrap().binary, "kiro-cli");
+        assert_eq!(get_agent("qwen").unwrap().binary, "qwen");
     }
 
     #[test]
@@ -494,7 +549,7 @@ mod tests {
             names,
             vec![
                 "claude", "opencode", "vibe", "codex", "gemini", "cursor", "copilot", "pi",
-                "droid", "settl", "hermes", "kiro"
+                "droid", "settl", "hermes", "kiro", "qwen"
             ]
         );
     }
@@ -518,6 +573,7 @@ mod tests {
         assert_eq!(resolve_tool_name("hermes"), Some("hermes"));
         assert_eq!(resolve_tool_name("kiro"), Some("kiro"));
         assert_eq!(resolve_tool_name("kiro-cli"), Some("kiro"));
+        assert_eq!(resolve_tool_name("qwen"), Some("qwen"));
         assert_eq!(resolve_tool_name(""), Some("claude"));
         assert_eq!(resolve_tool_name("agent"), Some("cursor"));
         assert_eq!(resolve_tool_name("unknown-tool"), None);
@@ -535,6 +591,7 @@ mod tests {
         assert_eq!(settings_index_from_name(Some("settl")), 10);
         assert_eq!(settings_index_from_name(Some("hermes")), 11);
         assert_eq!(settings_index_from_name(Some("kiro")), 12);
+        assert_eq!(settings_index_from_name(Some("qwen")), 13);
 
         assert_eq!(name_from_settings_index(0), None);
         assert_eq!(name_from_settings_index(1), Some("claude"));
@@ -546,6 +603,7 @@ mod tests {
         assert_eq!(name_from_settings_index(10), Some("settl"));
         assert_eq!(name_from_settings_index(11), Some("hermes"));
         assert_eq!(name_from_settings_index(12), Some("kiro"));
+        assert_eq!(name_from_settings_index(13), Some("qwen"));
         assert_eq!(name_from_settings_index(99), None);
     }
 

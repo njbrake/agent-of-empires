@@ -2,6 +2,7 @@ import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } fro
 import { useMatch, useNavigate } from "react-router-dom";
 import { IDLE_DECAY_WINDOW_MS, isSessionActive } from "./lib/session";
 import { useSessions } from "./hooks/useSessions";
+import { clearCockpitCache } from "./hooks/useCockpit";
 import { useWorkspaces } from "./hooks/useWorkspaces";
 import { useRepoGroups } from "./hooks/useRepoGroups";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
@@ -255,11 +256,14 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
   const [deletingWorkspaceId, setDeletingWorkspaceId] = useState<string | null>(null);
   const [serverAbout, setServerAbout] = useState<ServerAbout | null>(null);
 
-  useEffect(() => {
-    fetchAbout().then((about) => {
-      if (about) setServerAbout(about);
-    });
+  const refreshServerAbout = useCallback(async () => {
+    const about = await fetchAbout();
+    if (about) setServerAbout(about);
   }, []);
+
+  useEffect(() => {
+    refreshServerAbout();
+  }, [refreshServerAbout]);
 
   const deletingWorkspace = deletingWorkspaceId
     ? workspaces.find((w) => w.id === deletingWorkspaceId)
@@ -290,6 +294,11 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
       toastBus.handler?.error(result.error || "Failed to delete session");
       return;
     }
+
+    // Drop the per-session cockpit cache so a recreated session with
+    // the same id doesn't briefly show the prior transcript on
+    // remount before fetchReplay clears it.
+    clearCockpitCache(sessionId);
 
     toastBus.handler?.info("Session deleted");
   }, [deletingSession, activeSessionId, setSessionStatus, navigate]);
@@ -487,6 +496,8 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
           tab={settingsTab}
           onClose={handleCloseSettings}
           onSelectTab={(t) => navigate(`/settings/${t}`)}
+          serverAbout={serverAbout}
+          onServerAboutRefresh={refreshServerAbout}
         />
       );
     }

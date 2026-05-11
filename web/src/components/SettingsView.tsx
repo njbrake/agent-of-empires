@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { useServerDown, OFFLINE_TITLE } from "../lib/connectionState";
 import { ConnectedDevices } from "./ConnectedDevices";
 import { NotificationSettings } from "./NotificationSettings";
 import { SecuritySettings } from "./SecuritySettings";
@@ -6,8 +7,10 @@ import { TerminalSettings } from "./TerminalSettings";
 import {
   fetchProfiles,
   fetchSettings,
+  setCockpitMaster,
   setDefaultProfile,
   updateProfileSettings,
+  type ServerAbout,
 } from "../lib/api";
 import type { ProfileInfo } from "../lib/types";
 import {
@@ -33,50 +36,84 @@ type TabId =
   | "notifications"
   | "terminal"
   | "security"
-  | "devices";
+  | "devices"
+  | "cockpit";
 
 type SidebarItem =
   | { kind: "tab"; id: TabId; label: string }
   | { kind: "divider"; label: string };
 
-const SIDEBAR: SidebarItem[] = [
-  { kind: "divider", label: "General" },
-  { kind: "tab", id: "session", label: "Session" },
-  { kind: "tab", id: "sandbox", label: "Sandbox" },
-  { kind: "tab", id: "worktree", label: "Worktree" },
-  { kind: "tab", id: "theme", label: "Theme" },
-  { kind: "tab", id: "sound", label: "Sound" },
-  { kind: "tab", id: "tmux", label: "Tmux" },
-  { kind: "tab", id: "updates", label: "Updates" },
-  { kind: "divider", label: "Web Dashboard" },
-  { kind: "tab", id: "notifications", label: "Notifications" },
-  { kind: "tab", id: "terminal", label: "Terminal" },
-  { kind: "tab", id: "security", label: "Security" },
-  { kind: "tab", id: "devices", label: "Devices" },
-];
-
-const TABS = SIDEBAR.filter((s): s is { kind: "tab"; id: TabId; label: string } => s.kind === "tab");
+function buildSidebar(showCockpit: boolean): SidebarItem[] {
+  const items: SidebarItem[] = [
+    { kind: "divider", label: "General" },
+    { kind: "tab", id: "session", label: "Session" },
+    { kind: "tab", id: "sandbox", label: "Sandbox" },
+    { kind: "tab", id: "worktree", label: "Worktree" },
+    { kind: "tab", id: "theme", label: "Theme" },
+    { kind: "tab", id: "sound", label: "Sound" },
+    { kind: "tab", id: "tmux", label: "Tmux" },
+    { kind: "tab", id: "updates", label: "Updates" },
+    { kind: "divider", label: "Web Dashboard" },
+    { kind: "tab", id: "notifications", label: "Notifications" },
+    { kind: "tab", id: "terminal", label: "Terminal" },
+    { kind: "tab", id: "security", label: "Security" },
+    { kind: "tab", id: "devices", label: "Devices" },
+  ];
+  if (showCockpit) {
+    items.push({ kind: "tab", id: "cockpit", label: "Cockpit" });
+  }
+  return items;
+}
 
 interface Props {
   onClose: () => void;
   tab: string | null;
   onSelectTab: (tab: TabId) => void;
+  serverAbout: ServerAbout | null;
+  onServerAboutRefresh: () => Promise<void> | void;
 }
 
-const TAB_IDS = new Set<TabId>(TABS.map((t) => t.id));
+const ALL_TAB_IDS = new Set<TabId>([
+  "session",
+  "sandbox",
+  "worktree",
+  "theme",
+  "sound",
+  "tmux",
+  "updates",
+  "notifications",
+  "terminal",
+  "security",
+  "devices",
+  "cockpit",
+]);
 
 function isTabId(value: unknown): value is TabId {
-  return typeof value === "string" && TAB_IDS.has(value as TabId);
+  return typeof value === "string" && ALL_TAB_IDS.has(value as TabId);
 }
 
-export function SettingsView({ onClose, tab, onSelectTab }: Props) {
+export function SettingsView({
+  onClose,
+  tab,
+  onSelectTab,
+  serverAbout,
+  onServerAboutRefresh,
+}: Props) {
+  const offline = useServerDown();
   const [settings, setSettings] = useState<Record<string, unknown> | null>(
     null,
   );
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [selectedProfile, setSelectedProfile] = useState("default");
-  const activeTab: TabId = isTabId(tab) ? tab : "session";
+  const cockpitEnvEnabled = !!serverAbout?.cockpit_env_enabled;
+  const sidebar = buildSidebar(cockpitEnvEnabled);
+  const tabs = sidebar.filter(
+    (s): s is { kind: "tab"; id: TabId; label: string } => s.kind === "tab",
+  );
+  const requested: TabId = isTabId(tab) ? tab : "session";
+  const activeTab: TabId =
+    requested === "cockpit" && !cockpitEnvEnabled ? "session" : requested;
   const [profiles, setProfiles] = useState<ProfileInfo[]>([]);
 
   useEffect(() => {
@@ -149,7 +186,7 @@ export function SettingsView({ onClose, tab, onSelectTab }: Props) {
   );
 
   const renderTabContent = () => {
-    if (!settings && activeTab !== "notifications" && activeTab !== "terminal" && activeTab !== "security" && activeTab !== "devices") {
+    if (!settings && activeTab !== "notifications" && activeTab !== "terminal" && activeTab !== "security" && activeTab !== "devices" && activeTab !== "cockpit") {
       return <div className="text-sm text-text-dim">Loading settings...</div>;
     }
 
@@ -406,10 +443,17 @@ export function SettingsView({ onClose, tab, onSelectTab }: Props) {
         return <SecuritySettings />;
       case "devices":
         return <ConnectedDevices />;
+      case "cockpit":
+        return (
+          <CockpitSettings
+            serverAbout={serverAbout}
+            onRefresh={onServerAboutRefresh}
+          />
+        );
     }
   };
 
-  const currentTabLabel = TABS.find((t) => t.id === activeTab)?.label ?? "";
+  const currentTabLabel = tabs.find((t) => t.id === activeTab)?.label ?? "";
 
   return (
     <div className="flex-1 flex flex-col overflow-hidden bg-surface-900">
@@ -439,7 +483,7 @@ export function SettingsView({ onClose, tab, onSelectTab }: Props) {
       {/* Mobile tabs (horizontal scroll) */}
       <div className="md:hidden border-b border-surface-700 bg-surface-850 overflow-x-auto">
         <div className="flex items-center">
-          {SIDEBAR.map((item) =>
+          {sidebar.map((item) =>
             item.kind === "divider" ? (
               <div key={item.label} className="h-4 w-px bg-surface-700 mx-1 shrink-0" />
             ) : (
@@ -463,7 +507,7 @@ export function SettingsView({ onClose, tab, onSelectTab }: Props) {
       <div className="flex-1 flex min-h-0">
         {/* Side tabs (desktop only) */}
         <nav className="hidden md:flex flex-col w-44 shrink-0 border-r border-surface-700 bg-surface-850 py-2 overflow-y-auto">
-          {SIDEBAR.map((item, i) =>
+          {sidebar.map((item, i) =>
             item.kind === "divider" ? (
               <div
                 key={item.label}
@@ -492,10 +536,97 @@ export function SettingsView({ onClose, tab, onSelectTab }: Props) {
           <div className="p-6 max-w-2xl mx-auto space-y-5">
             <h2 className="text-lg font-semibold text-text-bright">{currentTabLabel}</h2>
 
-            {renderTabContent()}
+            {offline && (
+              <div className="text-sm text-status-error bg-status-error/10 rounded-lg p-3">
+                {OFFLINE_TITLE} — toggles will not save while disconnected.
+              </div>
+            )}
+            <fieldset
+              disabled={offline}
+              className="space-y-5 disabled:opacity-50 border-0 m-0 p-0 min-w-0"
+            >
+              {renderTabContent()}
+            </fieldset>
           </div>
         </div>
       </div>
+    </div>
+  );
+}
+
+function CockpitSettings({
+  serverAbout,
+  onRefresh,
+}: {
+  serverAbout: ServerAbout | null;
+  onRefresh: () => Promise<void> | void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const envEnabled = !!serverAbout?.cockpit_env_enabled;
+  const masterEnabled = !!serverAbout?.cockpit_master_enabled;
+  const effective = envEnabled && masterEnabled;
+
+  const onToggle = async (next: boolean) => {
+    setBusy(true);
+    setError(null);
+    const res = await setCockpitMaster(next);
+    setBusy(false);
+    if (!res) {
+      setError("Failed to update; check server logs");
+      return;
+    }
+    await onRefresh();
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="rounded border border-surface-700 bg-surface-800/40 p-3 text-xs text-text-dim space-y-1">
+        <div>
+          <span className="text-text-muted">Status:</span>{" "}
+          {effective ? (
+            <span className="text-emerald-400">Cockpit available for new sessions</span>
+          ) : (
+            <span className="text-amber-400">Cockpit unavailable</span>
+          )}
+        </div>
+        <div>
+          <span className="text-text-muted">AOE_EXPERIMENTAL_COCKPIT:</span>{" "}
+          <code className="rounded bg-surface-900 px-1">{envEnabled ? "1" : "(unset)"}</code>
+        </div>
+        <div>
+          <span className="text-text-muted">cockpit.enabled:</span>{" "}
+          <code className="rounded bg-surface-900 px-1">{masterEnabled ? "true" : "false"}</code>
+        </div>
+        <div className="text-text-dim pt-1">
+          Both gates must be on. The env var is per-process and only flips by restarting{" "}
+          <code className="rounded bg-surface-900 px-1">aoe serve</code> with{" "}
+          <code className="rounded bg-surface-900 px-1">AOE_EXPERIMENTAL_COCKPIT=1</code>.
+        </div>
+      </div>
+
+      <div className="flex items-start justify-between gap-3 py-1">
+        <div>
+          <div className="text-sm text-text-bright">Cockpit master switch</div>
+          <div className="text-xs text-text-dim mt-0.5">
+            Persists to <code>config.toml</code> as <code>cockpit.enabled</code>; takes effect immediately.
+          </div>
+        </div>
+        <button
+          type="button"
+          disabled={busy}
+          onClick={() => onToggle(!masterEnabled)}
+          className={`shrink-0 rounded px-3 py-1 text-xs font-medium transition-colors ${
+            masterEnabled
+              ? "bg-brand-500 text-white hover:bg-brand-400"
+              : "bg-surface-700 text-text-secondary hover:bg-surface-600"
+          } ${busy ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}`}
+        >
+          {masterEnabled ? "Enabled" : "Disabled"}
+        </button>
+      </div>
+
+      {error && <div className="text-xs text-rose-400">{error}</div>}
     </div>
   );
 }

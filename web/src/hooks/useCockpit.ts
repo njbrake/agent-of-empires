@@ -25,7 +25,62 @@ type Action =
   | { kind: "error"; message: string }
   | { kind: "clear_error" }
   | { kind: "lagged_resolved" }
-  | { kind: "reset" };
+  | { kind: "reset" }
+  | { kind: "hydrate"; state: CockpitState };
+
+// LRU-capped module cache keyed by cockpit session id. Survives
+// component unmount within the same page lifetime so the user can
+// navigate between cockpit sessions (or away from the dashboard and
+// back) and keep seeing the in-memory transcript while the
+// WebSocket reconnects in the background. Lost on full page reload
+// by design.
+//
+// The cap prevents long-running dashboards from accumulating state
+// for every cockpit session ever opened (Map.set with an existing
+// key is a no-op for ordering, so we delete-then-set to refresh the
+// LRU position). `clearCockpitCache(id?)` is exported so the
+// session-delete handler and logout flow can drop stale entries
+// instead of waiting for them to age out.
+const STATE_CACHE_CAP = 32;
+const stateCache = new Map<string, CockpitState>();
+
+function cacheGet(sessionId: string): CockpitState | undefined {
+  const value = stateCache.get(sessionId);
+  if (value !== undefined) {
+    // Touch the LRU position by re-inserting at the back of the Map's
+    // insertion order.
+    stateCache.delete(sessionId);
+    stateCache.set(sessionId, value);
+  }
+  return value;
+}
+
+function cacheSet(sessionId: string, value: CockpitState): void {
+  stateCache.delete(sessionId);
+  stateCache.set(sessionId, value);
+  while (stateCache.size > STATE_CACHE_CAP) {
+    const oldest = stateCache.keys().next().value;
+    if (oldest === undefined) break;
+    stateCache.delete(oldest);
+  }
+}
+
+/** Drop a session's cached state (or the entire cache when called
+ *  with no argument). Call from the session-delete handler so the
+ *  next session created with the same id doesn't briefly show the
+ *  prior transcript on remount. */
+export function clearCockpitCache(sessionId?: string): void {
+  if (sessionId === undefined) {
+    stateCache.clear();
+  } else {
+    stateCache.delete(sessionId);
+  }
+}
+
+function initialState(sessionId: string | null): CockpitState {
+  if (!sessionId) return emptyCockpitState();
+  return cacheGet(sessionId) ?? emptyCockpitState();
+}
 
 function reducer(state: CockpitState, action: Action): CockpitState {
   if (action.kind === "frame") {
@@ -45,6 +100,9 @@ function reducer(state: CockpitState, action: Action): CockpitState {
   }
   if (action.kind === "clear_error") {
     return { ...state, lastError: null };
+  }
+  if (action.kind === "hydrate") {
+    return action.state;
   }
   if (action.kind === "user_prompt") {
     return {
@@ -73,8 +131,24 @@ export type ConnectionStatus =
   | "error";
 
 export function useCockpit(sessionId: string | null) {
-  const [state, dispatch] = useReducer(reducer, emptyCockpitState());
+  const [state, dispatch] = useReducer(reducer, sessionId, initialState);
   const [status, setStatus] = useState<ConnectionStatus>("connecting");
+  // Mirror status into a ref so sendPrompt's stable callback can short
+  // circuit when the WS is closed without re-creating the callback on
+  // every status flip (which would invalidate downstream memoised
+  // handlers).
+  const statusRef = useRef<ConnectionStatus>("connecting");
+  useEffect(() => {
+    statusRef.current = status;
+  }, [status]);
+
+  // Mirror every state change into the module-level cache so that on
+  // remount (e.g. user navigates back to the cockpit tab) we hydrate
+  // from the last-known state instead of staring at an empty chat
+  // until the WS connection completes.
+  useEffect(() => {
+    if (sessionId) cacheSet(sessionId, state);
+  }, [sessionId, state]);
   const wsRef = useRef<WebSocket | null>(null);
   // Track lastSeq in a ref so the snapshot fetcher always sees the
   // latest value without re-running the effect when it changes.
@@ -132,24 +206,54 @@ export function useCockpit(sessionId: string | null) {
 
   useEffect(() => {
     if (!sessionId) {
+      statusRef.current = "closed";
       setStatus("closed");
       return;
     }
-    dispatch({ kind: "reset" });
+    // Hydrate the reducer from the per-session cache rather than
+    // resetting to empty. fetchReplay will then top up anything that
+    // happened on the server while this component was unmounted using
+    // the cached lastSeq as the `since` cursor.
+    dispatch({
+      kind: "hydrate",
+      state: cacheGet(sessionId) ?? emptyCockpitState(),
+    });
+    statusRef.current = "connecting";
     setStatus("connecting");
     // On reconnect, replay anything we may have missed.
     fetchReplay(sessionId);
 
     const token = getToken();
     const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-    const url = `${protocol}://${window.location.host}/sessions/${encodeURIComponent(sessionId)}/cockpit/ws`;
+    // Pass `?since=<lastSeq>` so the server's on-connect drain only
+    // resends events newer than what we already have. Without this,
+    // a long-running session resends its full transcript on every
+    // reconnect (page refresh / mobile flap), which can be tens of
+    // MB at the retention cap. lastSeqRef stays current via the
+    // effect below.
+    const since = lastSeqRef.current;
+    const url = `${protocol}://${window.location.host}/sessions/${encodeURIComponent(sessionId)}/cockpit/ws?since=${since}`;
 
     const ws = new WebSocket(url, token ? ["aoe-auth", token] : ["aoe-auth"]);
     wsRef.current = ws;
 
-    ws.onopen = () => setStatus("open");
-    ws.onerror = () => setStatus("error");
-    ws.onclose = () => setStatus("closed");
+    // Set the ref synchronously alongside setState so sendPrompt's
+    // gate (which reads the ref) doesn't race the next render. Without
+    // this, a click landing in the same event-loop tick as `onclose`
+    // could see statusRef.current === "open" and dispatch an
+    // optimistic prompt against a closed socket.
+    ws.onopen = () => {
+      statusRef.current = "open";
+      setStatus("open");
+    };
+    ws.onerror = () => {
+      statusRef.current = "error";
+      setStatus("error");
+    };
+    ws.onclose = () => {
+      statusRef.current = "closed";
+      setStatus("closed");
+    };
     ws.onmessage = (ev) => {
       try {
         const data = JSON.parse(ev.data) as
@@ -225,6 +329,18 @@ export function useCockpit(sessionId: string | null) {
   const sendPrompt = useCallback(
     async (text: string) => {
       if (!sessionId) return;
+      // Hard guard: if the WS isn't open, the agent won't see the
+      // prompt and the optimistic row would mislead the user into
+      // thinking it was sent. Surface the offline state via the
+      // existing error banner instead. TODO: queue the prompt
+      // locally and flush on reconnect.
+      if (statusRef.current !== "open") {
+        dispatch({
+          kind: "error",
+          message: "Cockpit disconnected — message not sent. Reconnect to retry.",
+        });
+        return;
+      }
       // Optimistically echo the user's message; the agent reply
       // streams back as session/update events on the WS. If the POST
       // fails we'll surface a banner and the user can retry — the

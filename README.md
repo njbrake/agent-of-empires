@@ -36,7 +36,7 @@ Running one AI agent is easy. Running five of them across different branches, ke
 
 ## Features
 
-- **Multi-agent support**: Claude Code, OpenCode, Mistral Vibe, Codex CLI, Gemini CLI, Cursor CLI, Copilot CLI, Pi.dev, Factory Droid, Hermes, and Kiro CLI
+- **Multi-agent support**: Claude Code, OpenCode, Mistral Vibe, Codex CLI, Gemini CLI, Cursor CLI, Copilot CLI, Pi.dev, Factory Droid, Hermes, Kiro CLI, and Qwen Code
 - **TUI app**: visual interface to create, monitor, and manage sessions
 - **Web app** (Beta, stabilization in progress): create, monitor, and control your agents from any browser, installable as a PWA ([guide](docs/guides/web-dashboard.md))
 - **CLI app**: create, monitor, and control agents from the command line (integrates with tools like OpenClaw)
@@ -115,7 +115,7 @@ Nothing. Sessions are tmux sessions running in the background. Open and close `a
 
 ### Which AI tools are supported?
 
-Claude Code, OpenCode, Mistral Vibe, Codex CLI, Gemini CLI, Cursor CLI, Copilot CLI, Pi.dev, Factory Droid, Hermes, and Kiro CLI. AoE auto-detects which are installed on your system.
+Claude Code, OpenCode, Mistral Vibe, Codex CLI, Gemini CLI, Cursor CLI, Copilot CLI, Pi.dev, Factory Droid, Hermes, Kiro CLI, and Qwen Code. AoE auto-detects which are installed on your system.
 
 ### Can I use AoE over SSH?
 
@@ -158,6 +158,12 @@ cargo build --release  # Release build
 # Debug logging (writes to debug.log in app data dir)
 AGENT_OF_EMPIRES_DEBUG=1 cargo run
 ```
+
+Debug builds use a parallel namespace so they don't collide with an installed
+release `aoe`: app data lives in `~/.agent-of-empires-dev` (macOS/Windows) or
+`~/.config/agent-of-empires-dev` (Linux), tmux sessions are prefixed
+`aoe_dev_`, and `aoe serve` defaults to port `8081`. Release builds are
+unchanged.
 
 ## Star History
 

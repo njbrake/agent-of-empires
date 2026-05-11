@@ -7,7 +7,7 @@
 // surface the key fields (path, command, query) inline in the card
 // header and put output in a syntax-highlighted body.
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import ReactDiffViewer, { DiffMethod } from "react-diff-viewer-continued";
 import {
   ChevronDown,
@@ -22,6 +22,8 @@ import {
 } from "lucide-react";
 
 import { getHighlighter, langKeyForExt, loadLanguage } from "../../lib/highlighter";
+import { hasAnsi, parseAnsi, type AnsiStyle } from "../../lib/ansi";
+import { parseJsonObject, pickFirst, pickStr } from "../../lib/cockpitArgs";
 import type { ActivityRow, ToolCall } from "../../lib/cockpitTypes";
 
 interface Props {
@@ -142,34 +144,6 @@ function CardChrome({
 
 /* ── Helpers ─────────────────────────────────────────────────────── */
 
-function tryParseJson(s: string): Record<string, unknown> | null {
-  try {
-    const v = JSON.parse(s);
-    return v && typeof v === "object" && !Array.isArray(v)
-      ? (v as Record<string, unknown>)
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-function pickStr(o: Record<string, unknown> | null, ...keys: string[]): string | null {
-  if (!o) return null;
-  for (const k of keys) {
-    const v = o[k];
-    if (typeof v === "string") return v;
-  }
-  return null;
-}
-
-/** Return the first non-empty string in the chain, or null. */
-function pickFirst(...candidates: Array<string | null | undefined>): string | null {
-  for (const c of candidates) {
-    if (typeof c === "string" && c.trim() !== "") return c;
-  }
-  return null;
-}
-
 function truncateLines(text: string, max: number): {
   shown: string;
   truncated: number;
@@ -204,6 +178,20 @@ function CopyButton({ text }: { text: string }) {
 
 /* ── Highlighted code block (used by Read, Edit, Execute output) ── */
 
+/** If the input is a single outer markdown code fence (```lang ... ```),
+ *  strip the fence and return the inner body plus the fence's language
+ *  hint. Tool output emitted by ACP agents (Claude in particular) is
+ *  routinely pre-wrapped in fenced blocks like ```console ...``` — left
+ *  un-stripped, the cards render literal backticks above the content. */
+function unwrapMarkdownFence(text: string): {
+  text: string;
+  lang: string | null;
+} {
+  const m = text.match(/^```([\w+-]+)?\s*\n([\s\S]*?)\n```\s*$/);
+  if (!m) return { text, lang: null };
+  return { text: m[2] ?? "", lang: m[1] ?? null };
+}
+
 function HighlightedBlock({
   text,
   language,
@@ -215,14 +203,28 @@ function HighlightedBlock({
 }) {
   const [html, setHtml] = useState<string | null>(null);
   const [showAll, setShowAll] = useState(false);
-  const { shown, truncated } = truncateLines(text, showAll ? 1_000_000 : maxLines);
+  const unwrapped = unwrapMarkdownFence(text);
+  const effectiveText = unwrapped.text;
+  const effectiveLang = unwrapped.lang ?? language;
+  const { shown, truncated } = truncateLines(
+    effectiveText,
+    showAll ? 1_000_000 : maxLines,
+  );
+
+  // ANSI fast path: when the text carries SGR escape sequences (e.g.
+  // `gls --color=always`, `git status --color=always`), Shiki's bash
+  // grammar can't handle them — it would either render the literal
+  // `[01;34m` noise or fail to highlight at all. Render the styled
+  // segments directly instead.
+  const ansi = hasAnsi(shown);
 
   useEffect(() => {
+    if (ansi) return;
     let cancelled = false;
-    if (!language) return;
+    if (!effectiveLang) return;
     (async () => {
       try {
-        const langKey = langKeyForExt(language) ?? language;
+        const langKey = langKeyForExt(effectiveLang) ?? effectiveLang;
         await loadLanguage(langKey);
         const hl = await getHighlighter();
         if (cancelled) return;
@@ -238,11 +240,13 @@ function HighlightedBlock({
     return () => {
       cancelled = true;
     };
-  }, [language, shown]);
+  }, [effectiveLang, shown]);
 
   return (
     <div className="border-t border-surface-800 bg-surface-950">
-      {html ? (
+      {ansi ? (
+        <AnsiBlock text={shown} />
+      ) : html ? (
         <div
           className="overflow-x-auto px-3 py-2 text-xs [&_pre]:!bg-transparent [&_pre]:!m-0 [&_pre]:!p-0"
           dangerouslySetInnerHTML={{ __html: html }}
@@ -265,11 +269,42 @@ function HighlightedBlock({
   );
 }
 
+/** Render text with embedded ANSI SGR codes as styled spans. We use
+ *  `whitespace-pre` (not `pre-wrap`) because terminal output is
+ *  column-sensitive; wrapping mangles tabular layouts like `ps aux`
+ *  or `df -h`. */
+function AnsiBlock({ text }: { text: string }) {
+  const segments = useMemo(() => parseAnsi(text), [text]);
+  return (
+    <pre className="overflow-x-auto px-3 py-2 text-xs font-mono text-text-primary whitespace-pre">
+      {segments.map((seg, i) => (
+        <span key={i} style={ansiSegmentStyle(seg.style)}>
+          {seg.text}
+        </span>
+      ))}
+    </pre>
+  );
+}
+
+function ansiSegmentStyle(style: AnsiStyle): CSSProperties {
+  // Inverse swaps fg/bg before applying.
+  const fg = style.inverse ? style.bg : style.fg;
+  const bg = style.inverse ? style.fg : style.bg;
+  return {
+    color: fg,
+    backgroundColor: bg,
+    fontWeight: style.bold ? 600 : undefined,
+    fontStyle: style.italic ? "italic" : undefined,
+    textDecoration: style.underline ? "underline" : undefined,
+    opacity: style.dim ? 0.65 : undefined,
+  };
+}
+
 /* ── execute (bash) ─────────────────────────────────────────────── */
 
 function ExecuteToolCard({ tool, result }: Props) {
   const status = statusFor(result);
-  const args = tryParseJson(tool.args_preview);
+  const args = parseJsonObject(tool.args_preview);
   const argCommand = pickStr(args, "command", "cmd", "args");
   // Fallback chain: real command → ACP-provided title (forwarded via
   // _aoe_title in CockpitRuntime) → tool's own kind/name. Never show
@@ -283,7 +318,7 @@ function ExecuteToolCard({ tool, result }: Props) {
   const meta =
     output && status !== "running" ? (
       <span className="hidden md:inline text-[11px] text-text-dim">
-        {output.split("\n").length} lines
+        {unwrapMarkdownFence(output).text.split("\n").length} lines
       </span>
     ) : undefined;
 
@@ -308,6 +343,11 @@ function ExecuteToolCard({ tool, result }: Props) {
               {description}
             </div>
           )}
+          {/* Full command — the chrome's primary slot is single-line
+              truncated, so we surface the untruncated command here so
+              users can read and copy it. Shiki's bash grammar gives
+              the same coloring as our markdown code blocks. */}
+          <HighlightedBlock text={command} language="bash" maxLines={6} />
           {output ? (
             <HighlightedBlock text={output} language="bash" maxLines={20} />
           ) : (
@@ -325,7 +365,7 @@ function ExecuteToolCard({ tool, result }: Props) {
 
 function ReadToolCard({ tool, result }: Props) {
   const status = statusFor(result);
-  const args = tryParseJson(tool.args_preview);
+  const args = parseJsonObject(tool.args_preview);
   const argPath = pickStr(args, "path", "file_path", "filePath", "filename");
   const title = pickStr(args, "_aoe_title");
   const path = pickFirst(argPath, title, tool.name) ?? "(unknown file)";
@@ -377,7 +417,7 @@ function formatRange(args: Record<string, unknown> | null): string | null {
 
 function EditToolCard({ tool, result }: Props) {
   const status = statusFor(result);
-  const args = tryParseJson(tool.args_preview);
+  const args = parseJsonObject(tool.args_preview);
   const argPath = pickStr(args, "path", "file_path", "filePath", "filename");
   const title = pickStr(args, "_aoe_title");
   const path = pickFirst(argPath, title, tool.name) ?? "(unknown file)";
@@ -474,7 +514,7 @@ const DIFF_STYLES = {
 
 function DeleteToolCard({ tool, result }: Props) {
   const status = statusFor(result);
-  const args = tryParseJson(tool.args_preview);
+  const args = parseJsonObject(tool.args_preview);
   const argPath = pickStr(args, "path", "file_path", "filePath", "filename");
   const title = pickStr(args, "_aoe_title");
   const path = pickFirst(argPath, title, tool.name) ?? "(unknown file)";
@@ -493,7 +533,7 @@ function DeleteToolCard({ tool, result }: Props) {
 
 function SearchToolCard({ tool, result }: Props) {
   const status = statusFor(result);
-  const args = tryParseJson(tool.args_preview);
+  const args = parseJsonObject(tool.args_preview);
   const argQuery = pickStr(args, "query", "pattern", "q", "search");
   const title = pickStr(args, "_aoe_title");
   const query = pickFirst(argQuery, title, tool.name) ?? "(no query)";
@@ -556,7 +596,7 @@ function SearchToolCard({ tool, result }: Props) {
 
 function FetchToolCard({ tool, result }: Props) {
   const status = statusFor(result);
-  const args = tryParseJson(tool.args_preview);
+  const args = parseJsonObject(tool.args_preview);
   const argUrl = pickStr(args, "url", "uri", "endpoint");
   const title = pickStr(args, "_aoe_title");
   const url = pickFirst(argUrl, title, tool.name) ?? "(no url)";

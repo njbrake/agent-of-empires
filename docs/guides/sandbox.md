@@ -2,7 +2,7 @@
 
 ## Overview
 
-Docker sandboxing runs your AI coding agents (Claude Code, OpenCode, Mistral Vibe, Hermes, Codex CLI, Gemini CLI, Cursor CLI, Copilot CLI, Pi, Kiro CLI) inside isolated Docker containers while maintaining access to your project files and credentials.
+Docker sandboxing runs your AI coding agents (Claude Code, OpenCode, Mistral Vibe, Hermes, Codex CLI, Gemini CLI, Cursor CLI, Copilot CLI, Pi, Kiro CLI, Qwen Code) inside isolated Docker containers while maintaining access to your project files and credentials.
 
 > **Linux users:** AoE also supports [Podman](podman.md) as a daemonless, rootless-friendly alternative to Docker.
 >
@@ -192,7 +192,7 @@ AOE provides two official sandbox images:
 
 | Image | Description |
 |-------|-------------|
-| `ghcr.io/njbrake/aoe-sandbox:latest` | Base image with Claude Code, OpenCode, Mistral Vibe, Hermes, Codex CLI, Gemini CLI, Cursor CLI, Copilot CLI, Pi, Kiro CLI, git, ripgrep, fzf |
+| `ghcr.io/njbrake/aoe-sandbox:latest` | Base image with Claude Code, OpenCode, Mistral Vibe, Hermes, Codex CLI, Gemini CLI, Cursor CLI, Copilot CLI, Pi, Kiro CLI, Qwen Code, git, ripgrep, fzf |
 | `ghcr.io/njbrake/aoe-dev-sandbox:latest` | Extended image with additional dev tools |
 
 ### Dev Sandbox Tools

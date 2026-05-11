@@ -11,6 +11,7 @@
 import {
   ComposerPrimitive,
   ThreadPrimitive,
+  useComposerRuntime,
   useThreadRuntime,
 } from "@assistant-ui/react";
 import {
@@ -22,22 +23,12 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import {
   AtSign,
   ChevronUp,
-  CornerDownLeft,
-  Paperclip,
   Slash,
   Square,
 } from "lucide-react";
 
 import { useFilesIndex, fuzzyFilter } from "./useFilesIndex";
-import { SwitchSubstrateAction } from "./SwitchSubstrateAction";
 import type { CockpitState } from "../../lib/cockpitTypes";
-
-const SLASH_COMMANDS: ReadonlyArray<Unstable_TriggerItem> = [
-  { id: "help", type: "command", label: "/help", description: "Show available commands" },
-  { id: "clear", type: "command", label: "/clear", description: "Reset conversation context" },
-  { id: "tools", type: "command", label: "/tools", description: "List the agent's tools" },
-  { id: "model", type: "command", label: "/model", description: "Show or switch the model" },
-];
 
 interface Props {
   sessionId: string;
@@ -46,6 +37,19 @@ interface Props {
   /** Legacy enum-based mode used as fallback when the agent does not
    *  advertise modes via NewSessionResponse. */
   legacyMode: CockpitState["mode"];
+  /** Latest agent-reported context-window usage. Null until the agent
+   *  has emitted at least one ACP `UsageUpdate`. */
+  sessionUsage: CockpitState["sessionUsage"];
+  /** Slash commands the agent advertised in its most recent
+   *  AvailableCommandsUpdate. Includes plugins/skills/MCP commands.
+   *  Empty until the agent emits the first list. */
+  availableCommands: CockpitState["availableCommands"];
+  /** True when the cockpit WS is open. When false the composer
+   *  refuses new submissions: prompts dispatched while disconnected
+   *  would be lost (the POST /cockpit/prompt would fail with no way
+   *  to retry). TODO(post-disconnect): queue locally and flush on
+   *  reconnect instead of blocking. */
+  connected: boolean;
 }
 
 export function Composer({
@@ -53,6 +57,9 @@ export function Composer({
   availableModes,
   currentModeId,
   legacyMode,
+  sessionUsage,
+  availableCommands,
+  connected,
 }: Props) {
   const taRef = useRef<HTMLTextAreaElement | null>(null);
   const { files } = useFilesIndex(sessionId);
@@ -79,14 +86,31 @@ export function Composer({
     [files],
   );
 
+  // Slash commands: built from the agent's AvailableCommandsUpdate.
+  // Each item carries `acceptsInput` so onExecute knows whether to
+  // leave the cursor parked after the name (for commands with args)
+  // or to prepare for an immediate Enter-to-send.
+  const slashItems: Unstable_TriggerItem[] = useMemo(
+    () =>
+      availableCommands.map((c) => ({
+        id: c.name,
+        type: "command",
+        label: `/${c.name}`,
+        description: c.description,
+        acceptsInput: c.accepts_input,
+      })),
+    [availableCommands],
+  );
   const slashAdapter: Unstable_TriggerAdapter = useMemo(
     () => ({
       categories: () => [],
       categoryItems: () => [],
-      search: (query) => fuzzyFilter([...SLASH_COMMANDS], query, 30),
+      search: (query) => fuzzyFilter(slashItems, query, 30),
     }),
-    [],
+    [slashItems],
   );
+
+  const composerRuntime = useComposerRuntime();
 
   // Auto-grow the textarea up to ~6 visible lines.
   const onInput = (e: React.FormEvent<HTMLTextAreaElement>) => {
@@ -123,7 +147,7 @@ export function Composer({
 
   return (
     <div className="border-t border-surface-800 bg-surface-900 px-4 pt-3 pb-3">
-      <div className="mx-auto max-w-3xl">
+      <div className="mx-auto max-w-3xl xl:max-w-4xl 2xl:max-w-5xl">
         <ComposerPrimitive.Unstable_TriggerPopoverRoot>
           <ComposerPrimitive.Root
             className={[
@@ -154,7 +178,7 @@ export function Composer({
               className="absolute bottom-full left-0 right-0 mb-2 z-30 overflow-hidden rounded-lg border border-surface-700 bg-surface-850 shadow-xl"
             >
               <ComposerPrimitive.Unstable_TriggerPopover.Action
-                onExecute={(item) => runSlashCommand(item)}
+                onExecute={(item) => insertSlashCommand(composerRuntime, item)}
                 removeOnExecute
               />
               <PopoverItems trigger="/" />
@@ -189,11 +213,6 @@ export function Composer({
                   hint="/"
                   onClick={() => insertAtCaret(taRef, "/")}
                 />
-                <ToolbarButton
-                  icon={<Paperclip className="h-3.5 w-3.5" />}
-                  label="Attach (coming soon)"
-                  disabled
-                />
                 <span className="mx-1 h-4 w-px bg-surface-700" aria-hidden />
                 <ModePicker
                   sessionId={sessionId}
@@ -201,22 +220,15 @@ export function Composer({
                   currentModeId={currentModeId}
                   legacyMode={legacyMode}
                 />
-                <SwitchSubstrateAction
-                  sessionId={sessionId}
-                  cockpitMode={true}
-                />
               </div>
 
               <div className="flex items-center gap-2">
-                <kbd className="hidden md:inline-flex items-center gap-1 rounded border border-surface-700 bg-surface-800/80 px-1.5 py-0.5 font-mono text-[10px] text-text-dim">
-                  <CornerDownLeft className="h-3 w-3" />
-                  <span>Send</span>
-                </kbd>
+                <UsageHint usage={sessionUsage} />
                 <ThreadPrimitive.If running>
                   <StopButton />
                 </ThreadPrimitive.If>
                 <ThreadPrimitive.If running={false}>
-                  <SendButton />
+                  <SendButton disabled={!connected} />
                 </ThreadPrimitive.If>
               </div>
             </div>
@@ -268,22 +280,26 @@ function PopoverItems({ trigger }: { trigger: string }) {
   );
 }
 
-function runSlashCommand(item: Unstable_TriggerItem) {
-  // Handlers are placeholders for now; wired up properly when the
-  // backend grows real slash-command support. Keeps the UX honest:
-  // selecting one inserts no chip and signals what *would* happen.
-  switch (item.id) {
-    case "help":
-      // TODO: surface a help overlay or send a synthetic prompt.
-      break;
-    case "clear":
-      // TODO: reset assistant-ui's thread (runtime.clear()).
-      break;
-    case "tools":
-    case "model":
-      // TODO: open the corresponding picker.
-      break;
-  }
+/** Insert the picked slash command into the composer text. The Action
+ *  popover already stripped the user's `/<typed>` from the input via
+ *  `removeOnExecute`, so we set the canonical `/<name>` form and add
+ *  a trailing space when the agent advertised that the command takes
+ *  free-form arguments. The user is then free to type args and hit
+ *  Enter to send, or hit Enter immediately for a no-arg command. */
+function insertSlashCommand(
+  runtime: ReturnType<typeof useComposerRuntime>,
+  item: Unstable_TriggerItem,
+) {
+  if (!runtime) return;
+  const accepts = (item as { acceptsInput?: boolean }).acceptsInput === true;
+  const current = runtime.getState().text;
+  const suffix = accepts ? " " : "";
+  // Preserve any text that was already in the buffer (e.g. user typed
+  // a long prompt then ran `/foo` mid-message). We just append the
+  // command at the end; the typed `/typed` token has already been
+  // removed by removeOnExecute, so trailing whitespace is rare.
+  const sep = current.length > 0 && !current.endsWith(" ") ? " " : "";
+  runtime.setText(`${current}${sep}/${item.id}${suffix}`);
 }
 
 /** Insert `text` at the textarea's caret and re-focus. The toolbar
@@ -515,15 +531,73 @@ function toneForId(id: string): string {
   return "border-surface-700 bg-surface-800 text-text-secondary hover:border-surface-600";
 }
 
+/* ── Usage hint ──────────────────────────────────────────────────── */
+
+function UsageHint({ usage }: { usage: CockpitState["sessionUsage"] }) {
+  if (!usage || usage.size <= 0) return null;
+  const pct = Math.min(100, Math.round((usage.used / usage.size) * 100));
+  const tone =
+    pct >= 90
+      ? "text-rose-400"
+      : pct >= 75
+        ? "text-amber-400"
+        : "text-text-dim";
+  const usedLabel = formatTokens(usage.used);
+  const sizeLabel = formatTokens(usage.size);
+  const cost = usage.cost
+    ? formatCost(usage.cost.amount, usage.cost.currency)
+    : null;
+  const title =
+    `Context: ${usage.used.toLocaleString()} / ${usage.size.toLocaleString()} tokens (${pct}%)` +
+    (cost ? ` · session cost ${cost}` : "");
+  return (
+    <span
+      className={`hidden sm:inline-flex items-center gap-1 text-[11px] tabular-nums ${tone}`}
+      title={title}
+      aria-label={title}
+    >
+      <span>
+        {usedLabel}/{sizeLabel}
+      </span>
+      <span className="opacity-70">({pct}%)</span>
+      {cost ? <span className="opacity-70">· {cost}</span> : null}
+    </span>
+  );
+}
+
+function formatTokens(n: number): string {
+  if (n < 1_000) return String(n);
+  if (n < 1_000_000) return `${(n / 1_000).toFixed(n < 10_000 ? 1 : 0)}k`;
+  return `${(n / 1_000_000).toFixed(n < 10_000_000 ? 2 : 1)}M`;
+}
+
+function formatCost(amount: number, currency: string): string {
+  try {
+    return new Intl.NumberFormat(undefined, {
+      style: "currency",
+      currency,
+      maximumFractionDigits: amount < 1 ? 4 : 2,
+    }).format(amount);
+  } catch {
+    return `${amount.toFixed(amount < 1 ? 4 : 2)} ${currency}`;
+  }
+}
+
 /* ── Send / Stop ─────────────────────────────────────────────────── */
 
-function SendButton() {
+function SendButton({ disabled = false }: { disabled?: boolean }) {
+  // When the WS is closed we surface the offline state via `disabled`
+  // and a swapped tooltip; ComposerPrimitive.Send would still try to
+  // dispatch otherwise (it only knows about thread-runtime state, not
+  // our connection status). TODO: queue prompts locally and flush on
+  // reconnect instead of dropping them.
   return (
     <ComposerPrimitive.Send asChild>
       <button
         type="submit"
         aria-label="Send message"
-        title="Send · Enter"
+        title={disabled ? "Disconnected — reconnect to send" : "Send · Enter"}
+        disabled={disabled}
         className={[
           "group/send inline-flex items-center justify-center gap-1",
           "rounded-lg bg-brand-600 px-2.5 py-1.5 text-white shadow-sm",

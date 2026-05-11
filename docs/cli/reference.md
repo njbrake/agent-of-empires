@@ -756,9 +756,7 @@ Start a web dashboard for remote session access
 
 ###### **Options:**
 
-* `--port <PORT>` — Port to listen on
-
-  Default value: `8080`
+* `--port <PORT>` — Port to listen on (default: 8080; debug builds default to 8081 so a `cargo run` instance does not collide with an installed release `aoe`)
 * `--host <HOST>` — Host/IP to bind to (use 0.0.0.0 for LAN/VPN access)
 
   Default value: `127.0.0.1`

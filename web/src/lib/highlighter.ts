@@ -114,12 +114,36 @@ export function langImportForPath(
 }
 
 /**
+ * Aliases that markdown fences and ACP tool output use which Shiki's
+ * grammar registry doesn't recognise on its own. Map them to a key
+ * Shiki *does* know after loading the underlying grammar (e.g.
+ * `console` from claude-agent-acp's Bash output → `bash`, which
+ * shellscript.mjs registers as an alias).
+ */
+const FENCE_ALIASES: Record<string, string> = {
+  console: "bash",
+  shellsession: "bash",
+  "bash-session": "bash",
+  terminal: "bash",
+  shell: "bash",
+  // fish has no separate grammar in the bundled langs; reuse bash so
+  // we at least get colored prompts/keywords instead of plain text.
+  fish: "bash",
+  // Common typos / casing that the markdown side surfaces.
+  yml: "yaml",
+  rs: "rust",
+  py: "python",
+  rb: "ruby",
+};
+
+/**
  * Map a markdown fence language hint (e.g. `bash`, `tsx`, `js`) to a
  * Shiki language key. Falls back to the hint itself.
  */
 export function langKeyForExt(ext: string): string | null {
   const lower = ext.toLowerCase();
-  if (EXT_TO_LANG[lower] || FILENAME_TO_LANG[ext]) return lower;
+  const canonical = FENCE_ALIASES[lower] ?? lower;
+  if (EXT_TO_LANG[canonical] || FILENAME_TO_LANG[ext]) return canonical;
   return null;
 }
 

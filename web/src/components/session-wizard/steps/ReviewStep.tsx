@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { StepDef, StepId } from "../StepIndicator";
 import { getReviewSummary } from "../sessionNames";
+import { useServerDown, OFFLINE_TITLE } from "../../../lib/connectionState";
 
 interface WizardData { path: string; title: string; worktreeBranch: string; useWorktree: boolean; group: string; tool: string; profile: string; profileDirty: boolean; yoloMode: boolean; sandboxEnabled: boolean; sandboxImage: string; extraArgs: string; customInstruction: string; commandOverride: string; [key: string]: unknown; }
 interface Props { data: WizardData; onChange: (field: string, value: unknown) => void; isSubmitting: boolean; error: string | null; onSubmit: () => void; onJumpTo: (stepId: StepId) => void; steps: StepDef[]; }
@@ -95,7 +96,8 @@ function EditableRow({ label, value, displayValue, placeholder, onChange, accent
 
 export function ReviewStep({ data, onChange, isSubmitting, error, onSubmit, onJumpTo, steps }: Props) {
   const hasStep = (id: StepId) => steps.some((s) => s.id === id);
-  const canSubmit = !isSubmitting && !!data.path && !!data.tool;
+  const offline = useServerDown();
+  const canSubmit = !isSubmitting && !offline && !!data.path && !!data.tool;
   const summary = getReviewSummary(data.title, data.worktreeBranch);
 
   useEffect(() => {
@@ -148,6 +150,11 @@ export function ReviewStep({ data, onChange, isSubmitting, error, onSubmit, onJu
         {data.commandOverride && <Row label="Command override" value={data.commandOverride} />}
       </div>
       {error && <div className="text-sm text-red-400 bg-red-400/10 rounded-lg p-3 mb-4">{error}</div>}
+      {offline && (
+        <div className="text-sm text-status-error bg-status-error/10 rounded-lg p-3 mb-4">
+          {OFFLINE_TITLE}
+        </div>
+      )}
       <button
         onClick={onSubmit}
         disabled={!canSubmit}

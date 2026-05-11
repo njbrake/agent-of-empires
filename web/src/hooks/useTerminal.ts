@@ -10,6 +10,39 @@ import type {
 import { getToken } from "../lib/token";
 import { useWebSettings } from "./useWebSettings";
 
+// Client-side terminal WS debug logging is gated behind a runtime flag
+// so production users don't get a console full of lifecycle chatter.
+// Two opt-ins, both checked once and cached: `localStorage.aoeDebug = '1'`
+// (sticky across reloads) or `?debug=1` URL param (per-tab). Mirrors the
+// server's AOE_LOG_LEVEL/AOE_TERMINAL_TRACE pair so a full triage trace
+// can be captured by setting both.
+const TERMINAL_DEBUG_ENABLED = (() => {
+  if (typeof window === "undefined") return false;
+  try {
+    if (window.localStorage?.getItem("aoeDebug") === "1") return true;
+  } catch {
+    // localStorage can throw (Safari private mode, sandboxed iframes).
+    // Fall through to URL param.
+  }
+  try {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("debug") === "1") return true;
+  } catch {
+    // location.search can throw in pathological embeds; treat as off.
+  }
+  return false;
+})();
+const tdbg = (...args: unknown[]) => {
+  if (!TERMINAL_DEBUG_ENABLED) return;
+  console.debug("[terminal.ws]", ...args);
+};
+const twarn = (...args: unknown[]) => {
+  // Warnings are always emitted (cheap, low-volume, useful in the wild
+  // even without the debug toggle). Use console.warn so DevTools filters
+  // can surface terminal-specific issues quickly.
+  console.warn("[terminal.ws]", ...args);
+};
+
 // Exponential backoff: 1s, 2s, 4s, 8s, 16s, 30s, 30s (cap). Seven attempts
 // cover typical tunnel restarts and transient WiFi drops without flooding
 // the server or burning the user's battery on a truly dead backend.
@@ -432,6 +465,13 @@ export function useTerminal(
       // Tailscale, any reverse proxy); subprotocol headers don't.
       const token = getToken();
       const url = `${proto}//${location.host}/sessions/${sessionId}/${wsPath}`;
+      tdbg("connect()", {
+        sessionId,
+        wsPath,
+        url,
+        tokenPresent: !!token,
+        attempt: retryCountRef.current,
+      });
       const ws = token
         ? new WebSocket(url, ["aoe-auth", token])
         : new WebSocket(url);
@@ -439,6 +479,11 @@ export function useTerminal(
       wsRef.current = ws;
 
       ws.onopen = () => {
+        tdbg("ws.onopen", {
+          sessionId,
+          readyState: ws.readyState,
+          protocol: ws.protocol,
+        });
         retryCountRef.current = 0;
         // Reset the dedup baseline so the first resize on a fresh
         // connection always reaches the server, even if it matches
@@ -509,13 +554,26 @@ export function useTerminal(
         }
       };
 
-      ws.onclose = () => {
+      ws.onclose = (event: CloseEvent) => {
+        const closeInfo = {
+          sessionId,
+          code: event.code,
+          reason: event.reason,
+          wasClean: event.wasClean,
+          attempt: retryCountRef.current,
+        };
         setState((prev) => ({ ...prev, connected: false }));
         if (retryCountRef.current < MAX_RETRIES) {
           retryCountRef.current += 1;
           const count = retryCountRef.current;
           const delayMs = retryDelayMs(count);
           let countdown = Math.ceil(delayMs / 1000);
+
+          tdbg("ws.onclose -> scheduling retry", {
+            ...closeInfo,
+            nextAttempt: count,
+            delayMs,
+          });
 
           setState((prev) => ({
             ...prev,
@@ -526,7 +584,7 @@ export function useTerminal(
           }));
 
           term.write(
-            `\r\n\x1b[33m[Disconnected, reconnecting in ${countdown}s... (${count}/${MAX_RETRIES})]\x1b[0m\r\n`,
+            `\r\n\x1b[33m[Disconnected (code=${event.code}${event.reason ? ` ${event.reason}` : ""}), reconnecting in ${countdown}s... (${count}/${MAX_RETRIES})]\x1b[0m\r\n`,
           );
 
           countdownRef.current = setInterval(() => {
@@ -538,11 +596,13 @@ export function useTerminal(
 
           retryTimerRef.current = setTimeout(() => {
             if (countdownRef.current) clearInterval(countdownRef.current);
+            tdbg("retry timer fired, calling connect()", { attempt: count });
             connect();
           }, delayMs);
         } else {
+          twarn("ws.onclose -> retries exhausted", closeInfo);
           term.write(
-            "\r\n\x1b[31m[Connection lost. Click retry or press Enter to reconnect.]\x1b[0m\r\n",
+            `\r\n\x1b[31m[Connection lost (code=${event.code}${event.reason ? ` ${event.reason}` : ""}). Click retry or press Enter to reconnect.]\x1b[0m\r\n`,
           );
           setState((prev) => ({
             ...prev,
@@ -554,8 +614,15 @@ export function useTerminal(
         }
       };
 
-      ws.onerror = () => {
-        // onclose will fire after onerror
+      ws.onerror = (event: Event) => {
+        // onclose will fire after onerror; log here so debug.log captures
+        // both sides of the failure (the close path only sees code/reason,
+        // not the underlying transport error type).
+        twarn("ws.onerror", {
+          sessionId,
+          readyState: ws.readyState,
+          type: event.type,
+        });
       };
 
       // Relay keystrokes as binary. When the virtual Ctrl button is armed,
@@ -1004,16 +1071,24 @@ export function useTerminal(
       }
     };
     const onVisibilityChange = () => {
+      tdbg("visibilitychange", {
+        state: document.visibilityState,
+        readyState: wsRef.current?.readyState,
+      });
       if (document.visibilityState === "visible") sendActivate();
     };
+    const onWindowFocus = () => {
+      tdbg("window.focus", { readyState: wsRef.current?.readyState });
+      sendActivate();
+    };
     document.addEventListener("visibilitychange", onVisibilityChange);
-    window.addEventListener("focus", sendActivate);
+    window.addEventListener("focus", onWindowFocus);
 
     return () => {
       connectOnReady = false;
       cancelMomentum();
       document.removeEventListener("visibilitychange", onVisibilityChange);
-      window.removeEventListener("focus", sendActivate);
+      window.removeEventListener("focus", onWindowFocus);
       viewport.removeEventListener("touchstart", onTouchStart, touchOpts);
       viewport.removeEventListener("touchmove", onTouchMove, touchOpts);
       viewport.removeEventListener("touchend", onTouchEnd, touchOpts);
@@ -1062,6 +1137,11 @@ export function useTerminal(
   }, [state.isInScrollback]);
 
   const manualReconnect = () => {
+    const ws = wsRef.current;
+    tdbg("manualReconnect()", {
+      readyState: ws?.readyState,
+      previousAttempt: retryCountRef.current,
+    });
     retryCountRef.current = 0;
     setState((prev) => ({
       ...prev,
@@ -1070,7 +1150,7 @@ export function useTerminal(
       retryCount: 0,
       retryCountdown: 0,
     }));
-    wsRef.current?.close();
+    ws?.close();
   };
 
   const sendData = useCallback((data: string) => {

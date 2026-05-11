@@ -40,20 +40,9 @@ pub fn detect_status_from_content(content: &str, tool: &str) -> Status {
     // called with -e (to preserve colors for the TUI preview), but color codes
     // interspersed in text like "esc interrupt" break plain substring matches.
     let clean = strip_ansi(content);
-    let status = crate::agents::get_agent(tool)
+    crate::agents::get_agent(tool)
         .map(|a| (a.detect_status)(&clean))
-        .unwrap_or(Status::Idle);
-
-    if status == Status::Idle {
-        let last_lines: Vec<&str> = clean.lines().rev().take(5).collect();
-        tracing::debug!(
-            "status detection returned Idle for tool '{}', last 5 lines: {:?}",
-            tool,
-            last_lines
-        );
-    }
-
-    status
+        .unwrap_or(Status::Idle)
 }
 
 /// Spinner frame characters Claude Code rotates through next to its active
@@ -623,6 +612,72 @@ pub fn detect_gemini_status(raw_content: &str) -> Status {
     Status::Idle
 }
 
+/// Qwen Code status detection via tmux pane parsing.
+/// Qwen Code is a fork of Gemini CLI, so the running/waiting markers mirror
+/// Gemini's: braille spinner + "esc to interrupt" while working, approval
+/// prompts and a numbered `❯` selection menu while waiting.
+pub fn detect_qwen_status(raw_content: &str) -> Status {
+    let content = raw_content.to_lowercase();
+    let lines: Vec<&str> = content.lines().collect();
+    let non_empty_lines: Vec<&str> = lines
+        .iter()
+        .filter(|l| !l.trim().is_empty())
+        .copied()
+        .collect();
+
+    let last_lines_lower: String = non_empty_lines
+        .iter()
+        .rev()
+        .take(30)
+        .rev()
+        .copied()
+        .collect::<Vec<&str>>()
+        .join("\n");
+
+    if last_lines_lower.contains("esc to interrupt")
+        || last_lines_lower.contains("ctrl+c to interrupt")
+    {
+        return Status::Running;
+    }
+
+    if has_any_spinner(&lines) {
+        return Status::Running;
+    }
+
+    if contains_approval_prompt(
+        &last_lines_lower,
+        &[
+            "execute?",
+            "run command?",
+            "enter to select",
+            "esc to cancel",
+        ],
+    ) {
+        return Status::Waiting;
+    }
+
+    // Numbered selection menu cursor. Qwen renders `›` (U+203A) by default but
+    // also `❯` (U+276F) in some themes; the shared helpers don't cover either.
+    for line in &lines {
+        let trimmed = line.trim();
+        let after_cursor = trimmed
+            .strip_prefix("›")
+            .or_else(|| trimmed.strip_prefix("❯"));
+        if let Some(rest) = after_cursor {
+            let rest = rest.trim_start();
+            if rest.starts_with("1.") || rest.starts_with("2.") || rest.starts_with("3.") {
+                return Status::Waiting;
+            }
+        }
+    }
+
+    if matches_input_prompt(&non_empty_lines, 10, &["qwen>"]) {
+        return Status::Waiting;
+    }
+
+    Status::Idle
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1055,6 +1110,55 @@ mod tests {
     fn test_detect_settl_status_is_stub() {
         // settl uses hook-based detection; the stub always returns Idle
         assert_eq!(detect_settl_status("anything"), Status::Idle);
+    }
+
+    #[test]
+    fn test_detect_qwen_status_running() {
+        assert_eq!(
+            detect_qwen_status("processing request\nesc to interrupt"),
+            Status::Running
+        );
+        assert_eq!(
+            detect_qwen_status("⠋ Thinking about your request"),
+            Status::Running
+        );
+        assert_eq!(detect_qwen_status("working ⠋"), Status::Running);
+        assert_eq!(detect_qwen_status("loading ⠹"), Status::Running);
+        assert_eq!(
+            detect_qwen_status("⠹ Generating code\nesc to interrupt"),
+            Status::Running
+        );
+        assert_eq!(detect_qwen_status("⠧ Reading file.rs"), Status::Running);
+    }
+
+    #[test]
+    fn test_detect_qwen_status_waiting() {
+        assert_eq!(detect_qwen_status("run command? (y/n)"), Status::Waiting);
+        assert_eq!(
+            detect_qwen_status("Allow this tool to run?"),
+            Status::Waiting
+        );
+        assert_eq!(
+            detect_qwen_status("pick an option\nenter to select"),
+            Status::Waiting
+        );
+        assert_eq!(detect_qwen_status("done\n>"), Status::Waiting);
+        assert_eq!(detect_qwen_status("done\nqwen>"), Status::Waiting);
+        assert_eq!(
+            detect_qwen_status("Select:\n❯ 1. Option A\n  2. Option B"),
+            Status::Waiting
+        );
+        // Qwen's default theme uses `›` (U+203A), not `❯`.
+        assert_eq!(
+            detect_qwen_status("Select Authentication Method\n› 1. Alibaba ModelStudio"),
+            Status::Waiting
+        );
+    }
+
+    #[test]
+    fn test_detect_qwen_status_idle() {
+        assert_eq!(detect_qwen_status("file saved"), Status::Idle);
+        assert_eq!(detect_qwen_status("random output text"), Status::Idle);
     }
 
     #[test]

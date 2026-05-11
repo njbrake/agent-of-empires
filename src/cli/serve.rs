@@ -7,9 +7,10 @@ use std::sync::Mutex;
 
 #[derive(Args)]
 pub struct ServeArgs {
-    /// Port to listen on
-    #[arg(long, default_value = "8080")]
-    pub port: u16,
+    /// Port to listen on (default: 8080; debug builds default to 8081 so a
+    /// `cargo run` instance does not collide with an installed release `aoe`).
+    #[arg(long)]
+    pub port: Option<u16>,
 
     /// Host/IP to bind to (use 0.0.0.0 for LAN/VPN access)
     #[arg(long, default_value = "127.0.0.1")]
@@ -56,6 +57,17 @@ pub struct ServeArgs {
     /// Can also be set via AOE_SERVE_PASSPHRASE environment variable.
     #[arg(long, env = "AOE_SERVE_PASSPHRASE")]
     pub passphrase: Option<String>,
+}
+
+impl ServeArgs {
+    /// Resolve the port: explicit `--port` wins; otherwise 8081 in debug
+    /// builds, 8080 in release. The `-dev` suffix on the app dir keeps
+    /// state isolated, but two daemons cannot share a port, so the default
+    /// shifts as well.
+    pub fn resolved_port(&self) -> u16 {
+        self.port
+            .unwrap_or(if cfg!(debug_assertions) { 8081 } else { 8080 })
+    }
 }
 
 /// True when `aoe serve --remote` will route through Cloudflare and therefore
@@ -328,7 +340,7 @@ pub async fn run(profile: &str, args: ServeArgs) -> Result<()> {
     let result = crate::server::start_server(crate::server::ServerConfig {
         profile,
         host: &host,
-        port: args.port,
+        port: args.resolved_port(),
         no_auth: args.no_auth,
         read_only: args.read_only,
         remote: args.remote,
@@ -379,7 +391,7 @@ fn start_daemon(profile: &str, args: &ServeArgs) -> Result<()> {
     cmd.args([
         "serve",
         "--port",
-        &args.port.to_string(),
+        &args.resolved_port().to_string(),
         "--host",
         &args.host,
     ]);

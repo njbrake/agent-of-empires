@@ -179,8 +179,10 @@ exists if you came from 1.4.x.
 - `--no-cockpit` per session (CLI).
 - `cockpit.enabled = false` in `config.toml` (persistent master). The
   reconciler short-circuits, REST endpoints return 503, and the CLI
-  refuses `--cockpit`. Snapshotted at startup, so toggling requires
-  `aoe serve --stop` then a fresh start to take effect.
+  refuses `--cockpit`. The web settings panel toggles this live —
+  flipping the switch shuts down running workers within a couple of
+  seconds and respawns them when re-enabled, no `aoe serve --stop`
+  required.
 - Don't set `AOE_EXPERIMENTAL_COCKPIT` (per-process). With the master
   switch on but the env var unset, *new* browser sessions still get
   tmux; existing cockpit sessions keep running with a one-time warn
@@ -250,6 +252,24 @@ affordance. Both are tracked as deferred work below.
 
 Tools without ACP support continue to work exactly as they do today
 (tmux + PTY); cockpit is additive, not a replacement.
+
+## Conversation persistence
+
+Cockpit transcripts survive page reloads, session switches, and
+`aoe serve --stop`/restart cycles. For agents that support session
+restoration (Claude today), the model itself also retains conversation
+context across restarts — so a follow-up like "what did we just
+decide?" still works after a daemon restart.
+
+If context restoration fails (e.g., the agent's stored session is no
+longer available), cockpit falls back to a fresh session and renders
+an amber "Conversation context reset" callout in the transcript so
+you know prior turns are no longer in the model's context window.
+
+The bundled `aoe-agent` doesn't yet support context restoration; its
+transcript still replays from disk, but the model starts fresh on each
+spawn. Tracked in
+[#1005](https://github.com/njbrake/agent-of-empires/issues/1005).
 
 ## Approvals
 
@@ -337,6 +357,17 @@ Approvals expire after `approval_timeout_secs` (default 300). The
 agent receives a structured cancellation; you'll typically see a
 follow-up message asking again. Bump the timeout if you're in a
 context where approvals legitimately take longer.
+
+### Sharing debug logs
+
+`AOE_LOG_LEVEL=debug` (or the legacy `AGENT_OF_EMPIRES_DEBUG=1`) writes
+agent stderr verbatim to `debug.log` under the app data dir. We scrub
+common API-key prefixes (Anthropic `sk-...`, GitHub `ghp_...`, AWS
+`AKIA...`, `Bearer <token>`, etc.) before they hit disk, but the scrub
+is best-effort — a hand-rolled secret with no recognisable shape will
+pass through. Before attaching `debug.log` to a bug report, skim it
+for anything that looks like a credential, and replace it with
+`<redacted>` if needed.
 
 ## CLI reference
 
