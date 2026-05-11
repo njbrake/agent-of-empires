@@ -15,17 +15,10 @@
 
 import { useEffect, useState } from "react";
 import {
-  ActionBarPrimitive,
   MessagePrimitive,
   ThreadPrimitive,
 } from "@assistant-ui/react";
-import {
-  ChevronDown,
-  Copy as CopyIcon,
-  ListChecks,
-  Pencil,
-  RefreshCcw,
-} from "lucide-react";
+import { ChevronDown, ListChecks } from "lucide-react";
 
 import { ApprovalCard } from "./ApprovalCard";
 import { CockpitRuntime, type CockpitContext } from "./CockpitRuntime";
@@ -99,7 +92,7 @@ function CockpitChrome({
           autoScroll
           className="flex-1 overflow-y-auto"
         >
-          <div className="mx-auto max-w-3xl px-4 py-6">
+          <div className="mx-auto max-w-3xl xl:max-w-4xl 2xl:max-w-5xl px-4 py-6">
             <ThreadPrimitive.Empty>
               <EmptyState onPick={sendPrompt} />
             </ThreadPrimitive.Empty>
@@ -135,6 +128,9 @@ function CockpitChrome({
           availableModes={state.availableModes}
           currentModeId={state.currentModeId}
           legacyMode={state.mode}
+          sessionUsage={state.sessionUsage}
+          availableCommands={state.availableCommands}
+          connected={status === "open"}
         />
       </ThreadPrimitive.Root>
     </div>
@@ -153,19 +149,6 @@ function UserMessage() {
           }}
         />
       </div>
-      <ActionBarPrimitive.Root
-        autohide="not-last"
-        className="opacity-0 transition-opacity duration-100 group-hover:opacity-100 focus-within:opacity-100"
-      >
-        <div className="flex items-center gap-0.5 rounded-md border border-surface-700/60 bg-surface-850 p-0.5">
-          <ActionBarPrimitive.Edit asChild>
-            <ActionIconButton label="Edit" icon={<Pencil className="h-3 w-3" />} />
-          </ActionBarPrimitive.Edit>
-          <ActionBarPrimitive.Copy asChild>
-            <ActionIconButton label="Copy" icon={<CopyIcon className="h-3 w-3" />} />
-          </ActionBarPrimitive.Copy>
-        </div>
-      </ActionBarPrimitive.Root>
     </MessagePrimitive.Root>
   );
 }
@@ -183,49 +166,7 @@ function AssistantMessage() {
           }}
         />
       </div>
-      <ActionBarPrimitive.Root
-        autohide="not-last"
-        className="mt-1 opacity-0 transition-opacity duration-100 group-hover:opacity-100 focus-within:opacity-100"
-      >
-        <div className="flex items-center gap-0.5 rounded-md border border-surface-700/60 bg-surface-850 p-0.5">
-          <ActionBarPrimitive.Copy asChild>
-            <ActionIconButton label="Copy" icon={<CopyIcon className="h-3 w-3" />} />
-          </ActionBarPrimitive.Copy>
-          <ActionBarPrimitive.Reload asChild>
-            <ActionIconButton
-              label="Regenerate"
-              icon={<RefreshCcw className="h-3 w-3" />}
-            />
-          </ActionBarPrimitive.Reload>
-        </div>
-      </ActionBarPrimitive.Root>
     </MessagePrimitive.Root>
-  );
-}
-
-function ActionIconButton({
-  label,
-  icon,
-  ...rest
-}: {
-  label: string;
-  icon: React.ReactNode;
-} & React.ButtonHTMLAttributes<HTMLButtonElement>) {
-  return (
-    <button
-      type="button"
-      title={label}
-      aria-label={label}
-      {...rest}
-      className={[
-        "inline-flex h-6 w-6 items-center justify-center rounded text-text-dim",
-        "hover:bg-surface-800 hover:text-text-secondary",
-        "transition-colors",
-        rest.className ?? "",
-      ].join(" ")}
-    >
-      {icon}
-    </button>
   );
 }
 
@@ -249,17 +190,35 @@ interface ToolCallProps {
   isError?: boolean;
 }
 
+// Stable per-tool-call timestamp. assistant-ui doesn't carry the
+// original started_at through (we only get the call id + name), so
+// once we mint a date for a tool call we reuse it across renders
+// rather than producing a fresh ISO string every time. Without this
+// the ToolCard's `started_at` reference changes every render, which
+// invalidates downstream memoization.
+const TOOL_CALL_TIMES = new Map<string, string>();
+
+function toolCallTimestamp(id: string): string {
+  let t = TOOL_CALL_TIMES.get(id);
+  if (t === undefined) {
+    t = new Date().toISOString();
+    TOOL_CALL_TIMES.set(id, t);
+  }
+  return t;
+}
+
 function AssistantToolCall(props: ToolCallProps) {
   // Reconstruct the ToolCall shape our existing ToolCards.tsx
   // renderer expects. assistant-ui carries `toolName` (we set this to
   // ACP's lowercased ToolKind in CockpitRuntime) plus argsText (the
   // truncated JSON preview from the agent).
+  const stableAt = toolCallTimestamp(props.toolCallId);
   const tool: ToolCall = {
     id: props.toolCallId,
     name: prettifyToolName(props.toolName, props.args),
     kind: props.toolName,
     args_preview: props.argsText ?? safeStringify(props.args ?? null),
-    started_at: new Date().toISOString(),
+    started_at: stableAt,
   };
   const resultContent =
     props.result &&
@@ -276,7 +235,7 @@ function AssistantToolCall(props: ToolCallProps) {
             : ("tool_complete" as const),
           text: resultContent,
           toolCallId: props.toolCallId,
-          at: new Date().toISOString(),
+          at: stableAt,
         }
       : undefined;
   return <ToolCard tool={tool} result={result} />;
@@ -516,10 +475,16 @@ function SystemNotices({
     messages.push({ kind: "info", text: "Connecting to cockpit…" });
   }
   if (status === "error") {
-    messages.push({ kind: "warn", text: "Cockpit connection error. Retrying…" });
+    messages.push({
+      kind: "warn",
+      text: "Cockpit reconnecting… showing cached transcript; new messages disabled.",
+    });
   }
   if (status === "closed") {
-    messages.push({ kind: "warn", text: "Cockpit disconnected." });
+    messages.push({
+      kind: "warn",
+      text: "Cockpit disconnected. Showing cached transcript; new messages disabled.",
+    });
   }
   if (lagged) {
     messages.push({ kind: "warn", text: "Some events were missed during reconnect." });

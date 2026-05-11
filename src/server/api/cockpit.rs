@@ -47,18 +47,66 @@ pub struct SpawnCockpitResponse {
     pub status: &'static str,
 }
 
+/// 403 helper for `aoe serve --read-only`. Matches the response shape used
+/// by `sessions.rs` write endpoints so the read-only contract is uniform
+/// across the API surface.
+pub(crate) fn read_only_block(state: &AppState) -> Option<axum::response::Response> {
+    if state.read_only {
+        return Some(
+            (
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({
+                    "error": "read_only",
+                    "message": "Server is in read-only mode",
+                })),
+            )
+                .into_response(),
+        );
+    }
+    None
+}
+
+/// Single chokepoint for cockpit-availability checks. Both gates must
+/// be on for any cockpit-spawning endpoint to succeed:
+///   - `cockpit_master_enabled`: persistent config switch, toggleable
+///     via `PATCH /api/cockpit/master`.
+///   - `experimental_enabled()`: process-scoped `AOE_EXPERIMENTAL_COCKPIT=1`.
+///
+/// Used by `spawn_cockpit`, `cockpit_enable`, and `set_cockpit_master`
+/// so they can't drift out of sync (which previously let
+/// `spawn_cockpit` succeed against an unset env var while
+/// `cockpit_enable` 403'd).
+pub(crate) fn cockpit_gate(state: &AppState) -> Result<(), (StatusCode, &'static str)> {
+    if !state
+        .cockpit_master_enabled
+        .load(std::sync::atomic::Ordering::Relaxed)
+    {
+        return Err((
+            StatusCode::SERVICE_UNAVAILABLE,
+            "cockpit is disabled (config.toml `cockpit.enabled = false`); \
+             enable it from the web settings or set the field to true",
+        ));
+    }
+    if !crate::cockpit::experimental_enabled() {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "cockpit is experimental; restart `aoe serve` with \
+             AOE_EXPERIMENTAL_COCKPIT=1 to enable",
+        ));
+    }
+    Ok(())
+}
+
 pub async fn spawn_cockpit(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
     Json(req): Json<SpawnCockpitRequest>,
 ) -> impl IntoResponse {
-    if !state.cockpit_master_enabled {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            "cockpit is disabled (config.toml `cockpit.enabled = false`); \
-             toggle the field and restart `aoe serve` to use",
-        )
-            .into_response();
+    if let Some(resp) = read_only_block(&state) {
+        return resp;
+    }
+    if let Err(reason) = cockpit_gate(&state) {
+        return reason.into_response();
     }
     let instances = state.instances.read().await;
     let Some(instance) = instances.iter().find(|i| i.id == id).cloned() else {
@@ -82,22 +130,25 @@ pub async fn spawn_cockpit(
         .map(|p| (p.key, p.value))
         .collect();
     let model = req.model.or_else(|| instance.cockpit_model.clone());
+    let stored_acp_session_id = instance.cockpit_acp_session_id.clone();
 
+    let agent_for_response = agent.clone();
     match state
         .cockpit_supervisor
-        .spawn(
-            id.clone(),
-            &agent,
+        .spawn(crate::cockpit::supervisor::SpawnRequest {
+            session_id: id.clone(),
+            agent,
             cwd,
-            req.additional_dirs,
+            additional_dirs: req.additional_dirs,
             provider_env,
             model,
-        )
+            stored_acp_session_id,
+        })
         .await
     {
         Ok(()) => Json(SpawnCockpitResponse {
             session_id: id,
-            agent,
+            agent: agent_for_response,
             status: "running",
         })
         .into_response(),
@@ -124,6 +175,9 @@ pub async fn shutdown_cockpit(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    if let Some(resp) = read_only_block(&state) {
+        return resp;
+    }
     match state.cockpit_supervisor.shutdown(&id).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(SupervisorError::UnknownSession(_)) => StatusCode::NOT_FOUND.into_response(),
@@ -145,6 +199,16 @@ pub async fn cockpit_prompt(
     Path(id): Path<String>,
     Json(req): Json<PromptRequest>,
 ) -> impl IntoResponse {
+    if let Some(resp) = read_only_block(&state) {
+        return resp;
+    }
+    // Publish the user's prompt into the event stream BEFORE forwarding
+    // to the agent so the replay buffer / on-disk store captures it
+    // even if the agent forward fails. The frontend treats UserPromptSent
+    // as authoritative and dedupes against its own optimistic row.
+    state
+        .cockpit_supervisor
+        .publish_user_prompt(&id, req.text.clone());
     match state.cockpit_supervisor.send_prompt(&id, &req.text).await {
         Ok(()) => StatusCode::ACCEPTED.into_response(),
         Err(SupervisorError::UnknownSession(_)) => {
@@ -162,6 +226,9 @@ pub async fn cockpit_cancel(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    if let Some(resp) = read_only_block(&state) {
+        return resp;
+    }
     match state.cockpit_supervisor.cancel_prompt(&id).await {
         Ok(()) => StatusCode::ACCEPTED.into_response(),
         Err(SupervisorError::UnknownSession(_)) => {
@@ -289,20 +356,11 @@ pub async fn cockpit_enable(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    if !state.cockpit_master_enabled {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            "cockpit is disabled (config.toml `cockpit.enabled = false`); \
-             toggle the field and restart `aoe serve` to use",
-        )
-            .into_response();
+    if let Some(resp) = read_only_block(&state) {
+        return resp;
     }
-    if !crate::cockpit::experimental_enabled() {
-        return (
-            StatusCode::FORBIDDEN,
-            "cockpit is experimental; set AOE_EXPERIMENTAL_COCKPIT=1 to enable",
-        )
-            .into_response();
+    if let Err(reason) = cockpit_gate(&state) {
+        return reason.into_response();
     }
     let (mut instance, profile) = {
         let instances = state.instances.read().await;
@@ -370,9 +428,18 @@ pub async fn cockpit_enable(
     let supervisor = state.cockpit_supervisor.clone();
     let session_id = id.clone();
     let model = instance.cockpit_model.clone();
+    let stored_acp_session_id = instance.cockpit_acp_session_id.clone();
     tokio::spawn(async move {
         if let Err(e) = supervisor
-            .spawn(session_id.clone(), &agent_name, cwd, vec![], vec![], model)
+            .spawn(crate::cockpit::supervisor::SpawnRequest {
+                session_id: session_id.clone(),
+                agent: agent_name.clone(),
+                cwd,
+                additional_dirs: vec![],
+                provider_env: vec![],
+                model,
+                stored_acp_session_id,
+            })
             .await
         {
             let message = format!("Failed to start cockpit agent {agent_name:?}: {e}");
@@ -398,6 +465,9 @@ pub async fn cockpit_disable(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    if let Some(resp) = read_only_block(&state) {
+        return resp;
+    }
     let (mut instance, profile) = {
         let instances = state.instances.read().await;
         let Some(inst) = instances.iter().find(|i| i.id == id).cloned() else {
@@ -429,10 +499,24 @@ pub async fn cockpit_disable(
     // collide on a stale seq with the buffer entry from this
     // conversation, and the client-side dedupe would silently eat it.
     state.cockpit_supervisor.forget_session(&id);
-    if let Ok(mut guard) = state.cockpit_replay.lock() {
-        guard.remove(&id);
-    }
+    // Drop on-disk history so the next cockpit_enable starts truly
+    // fresh — without this, the seq=1 first publish would collide
+    // with a row already on disk and INSERT OR IGNORE would silently
+    // drop it.
+    state.cockpit_event_store.delete_session(&id);
     instance.cockpit_mode = false;
+    // Clear the stored ACP session id: the agent's transcript is
+    // tied to the cockpit-mode lifecycle. If the user re-enables
+    // cockpit later, the agent should start a fresh session/new
+    // rather than try to resume an id that's no longer relevant.
+    if instance.cockpit_acp_session_id.is_some() {
+        tracing::debug!(
+            target: "cockpit.switch",
+            session = %id,
+            "clearing cockpit_acp_session_id on disable"
+        );
+        instance.cockpit_acp_session_id = None;
+    }
 
     // Persist + start tmux. start() now no longer short-circuits for
     // cockpit_mode, so it will create a fresh tmux session and run
@@ -484,6 +568,9 @@ pub async fn cockpit_set_mode(
     Path(id): Path<String>,
     Json(req): Json<SetModeRequest>,
 ) -> impl IntoResponse {
+    if let Some(resp) = read_only_block(&state) {
+        return resp;
+    }
     match state.cockpit_supervisor.set_mode(&id, &req.mode_id).await {
         Ok(()) => StatusCode::ACCEPTED.into_response(),
         Err(SupervisorError::UnknownSession(_)) => {
@@ -525,6 +612,9 @@ pub async fn resolve_approval(
     Path((id, nonce_str)): Path<(String, String)>,
     Json(req): Json<ResolveApprovalRequest>,
 ) -> impl IntoResponse {
+    if let Some(resp) = read_only_block(&state) {
+        return resp;
+    }
     let nonce = Nonce(nonce_str);
     match state
         .cockpit_supervisor
@@ -583,50 +673,136 @@ pub async fn cockpit_replay(
     Path(id): Path<String>,
     axum::extract::Query(q): axum::extract::Query<ReplayQuery>,
 ) -> impl IntoResponse {
-    use crate::cockpit::replay_buffer::BufferedEvent;
-
-    let guard = match state.cockpit_replay.lock() {
-        Ok(g) => g,
-        Err(poisoned) => poisoned.into_inner(),
-    };
-    let Some(buf) = guard.get(&id) else {
-        return Json(ReplayResponse {
-            frames: vec![],
-            lost: false,
-            highest_seq: 0,
-        })
-        .into_response();
-    };
-    let highest_seq = buf.highest_seq();
-    let entries = match buf.replay_from(q.since) {
-        Some(items) => items,
-        None => {
-            return Json(ReplayResponse {
-                frames: vec![],
-                lost: true,
-                highest_seq,
-            })
-            .into_response();
-        }
-    };
+    // Reads from the disk-backed event store so reload, session-switch,
+    // and `aoe serve` restart all reconstruct the full conversation
+    // (subject to the per-session retention cap). The in-memory replay
+    // buffer is still consulted on WS connect for the hot path; this
+    // endpoint backstops that when the in-memory ring is cold (server
+    // just restarted) or the client lagged far enough to need older
+    // events than the ring holds.
+    let highest_seq = state.cockpit_event_store.highest_seq(&id);
+    let entries = state.cockpit_event_store.replay_from(&id, q.since);
     let frames: Vec<crate::server::CockpitBroadcastFrame> = entries
         .into_iter()
-        .filter_map(|item| match item {
-            BufferedEvent::Event { seq, event } => Some(crate::server::CockpitBroadcastFrame {
-                session_id: id.clone(),
-                seq,
-                event: serde_json::to_value(&event).unwrap_or(serde_json::Value::Null),
-            }),
-            // Gap markers are surfaced via the `lost` flag if they
-            // block the replay; otherwise (gap older than `since`)
-            // they're not interesting to the client.
-            BufferedEvent::Gap { .. } => None,
+        .map(|(seq, event)| crate::server::CockpitBroadcastFrame {
+            session_id: id.clone(),
+            seq,
+            event: Arc::new(event),
         })
         .collect();
     Json(ReplayResponse {
         frames,
+        // The retention cap can drop oldest events; we don't currently
+        // expose lowest-stored-seq, so leave `lost=false` and trust the
+        // client's seq dedupe to hide any short-lived holes. If we
+        // need to surface a real "history truncated" signal later, the
+        // event store can grow a `lowest_seq()` query to compare with
+        // `since`.
         lost: false,
         highest_seq,
     })
     .into_response()
+}
+
+#[derive(Debug, Deserialize)]
+pub struct SetMasterRequest {
+    pub enabled: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct MasterStateResponse {
+    pub master_enabled: bool,
+    pub env_enabled: bool,
+    pub effective: bool,
+}
+
+/// Toggle `config.cockpit.enabled` from the web UI. Persists to
+/// `config.toml` and updates the live atomic so the reconciler and
+/// gating endpoints pick up the new value without a server restart.
+/// `AOE_EXPERIMENTAL_COCKPIT` is process-scoped and not affected;
+/// it's reported in the response so the UI can explain why cockpit
+/// may still be unavailable after enabling the master switch.
+pub async fn set_cockpit_master(
+    State(state): State<Arc<AppState>>,
+    Json(req): Json<SetMasterRequest>,
+) -> impl IntoResponse {
+    if state.read_only {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({
+                "error": "read_only",
+                "message": "Server is in read-only mode",
+            })),
+        )
+            .into_response();
+    }
+    if !crate::cockpit::experimental_enabled() {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({
+                "error": "experimental_disabled",
+                "message": "cockpit is experimental; restart `aoe serve` with AOE_EXPERIMENTAL_COCKPIT=1 to manage the master switch",
+            })),
+        )
+            .into_response();
+    }
+    let new_value = req.enabled;
+    // The atomic is the live source of truth — the reconciler and
+    // every gating REST handler reads it. Flip it FIRST so an
+    // in-flight `cockpit_enable` arriving in the disk-write window
+    // sees the declared end state, not the previous one. If the
+    // disk write fails we restore the previous atomic value.
+    let prev = state
+        .cockpit_master_enabled
+        .swap(new_value, std::sync::atomic::Ordering::Relaxed);
+    let result = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        let mut config = crate::session::Config::load_or_warn();
+        config.cockpit.enabled = new_value;
+        crate::session::save_config(&config)?;
+        Ok(())
+    })
+    .await;
+    match result {
+        Ok(Ok(())) => {
+            let env_enabled = crate::cockpit::experimental_enabled();
+            (
+                StatusCode::OK,
+                Json(MasterStateResponse {
+                    master_enabled: new_value,
+                    env_enabled,
+                    effective: new_value && env_enabled,
+                }),
+            )
+                .into_response()
+        }
+        Ok(Err(e)) => {
+            // Persist failed: roll the atomic back so the live state
+            // matches what's actually on disk. A subsequent gating
+            // call won't be misled by the in-memory value.
+            state
+                .cockpit_master_enabled
+                .store(prev, std::sync::atomic::Ordering::Relaxed);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": "save_failed",
+                    "message": e.to_string(),
+                })),
+            )
+                .into_response()
+        }
+        Err(e) => {
+            state
+                .cockpit_master_enabled
+                .store(prev, std::sync::atomic::Ordering::Relaxed);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({
+                    "error": "internal",
+                    "message": e.to_string(),
+                })),
+            )
+                .into_response()
+        }
+    }
 }

@@ -20,7 +20,7 @@ mod system;
 #[cfg(feature = "serve")]
 pub use cockpit::{
     cockpit_cancel, cockpit_disable, cockpit_enable, cockpit_files, cockpit_prompt, cockpit_replay,
-    cockpit_set_mode, resolve_approval, shutdown_cockpit, spawn_cockpit,
+    cockpit_set_mode, resolve_approval, set_cockpit_master, shutdown_cockpit, spawn_cockpit,
 };
 
 pub use git::{clone_repo, list_branches};

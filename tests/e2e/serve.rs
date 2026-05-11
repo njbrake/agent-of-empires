@@ -21,12 +21,7 @@ use crate::harness::{require_tmux, TuiTestHarness};
 /// Resolve the daemon's PID file inside the harness's isolated home.
 /// Mirrors `crate::session::get_app_dir`'s platform split.
 fn daemon_pid_path(h: &TuiTestHarness) -> PathBuf {
-    let dir = if cfg!(target_os = "linux") {
-        h.home_path().join(".config").join("agent-of-empires")
-    } else {
-        h.home_path().join(".agent-of-empires")
-    };
-    dir.join("serve.pid")
+    crate::harness::app_dir_in(h.home_path()).join("serve.pid")
 }
 
 /// Bind a TCP listener to an ephemeral port, drop it, and return the port.

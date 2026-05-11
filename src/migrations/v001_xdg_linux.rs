@@ -13,6 +13,11 @@ use tracing::debug;
 use {std::fs, tracing::info};
 
 pub fn run() -> Result<()> {
+    if cfg!(debug_assertions) {
+        debug!("Skipping v001 XDG migration in debug build (dev namespace is isolated from release data)");
+        return Ok(());
+    }
+
     #[cfg(target_os = "linux")]
     {
         let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("Cannot find home directory"))?;

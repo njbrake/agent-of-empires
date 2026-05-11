@@ -87,6 +87,13 @@ test.describe("Command palette", () => {
   });
 
   test("opens from within a focused input", async ({ page }) => {
+    // Stub /api/sessions so useSessions reports the server as reachable;
+    // otherwise useServerDown disables the sidebar "New session" button
+    // (introduced with the offline-state UI) and the click below would
+    // time out waiting for the button to become enabled. The dashboard
+    // offline-indicator test in dashboard.spec.ts exercises the
+    // opposite case (no stub → offline UI surfaces).
+    await page.route("**/api/sessions", (r) => r.fulfill({ json: [] }));
     await page.setViewportSize({ width: 1280, height: 720 });
     await page.goto("/");
     await page.getByLabel("New session").first().click();

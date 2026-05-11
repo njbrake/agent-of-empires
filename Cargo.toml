@@ -126,7 +126,7 @@ jsonwebtoken = { version = "10.3", optional = true }
 getrandom = { version = "0.4", optional = true }
 
 # Agent Client Protocol — drives the cockpit surface bundled with `serve`.
-agent-client-protocol = { version = "0.11", optional = true }
+agent-client-protocol = { version = "0.11", optional = true, features = ["unstable_session_usage"] }
 agent-client-protocol-tokio = { version = "0.11", optional = true }
 
 # Node tarball download + extraction for the cockpit's bundled-Node
@@ -189,6 +189,10 @@ strip = true
 inherits = "release"
 lto = false
 codegen-units = 16
+# Same "is this a dev build?" gate as the default dev profile, so the
+# isolated app dir / tmux prefix / serve port apply here too. Anything
+# that's not a true release build shares the dev namespace.
+debug-assertions = true
 
 [[bin]]
 name = "aoe"

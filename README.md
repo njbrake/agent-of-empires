@@ -159,6 +159,12 @@ cargo build --release  # Release build
 AGENT_OF_EMPIRES_DEBUG=1 cargo run
 ```
 
+Debug builds use a parallel namespace so they don't collide with an installed
+release `aoe`: app data lives in `~/.agent-of-empires-dev` (macOS/Windows) or
+`~/.config/agent-of-empires-dev` (Linux), tmux sessions are prefixed
+`aoe_dev_`, and `aoe serve` defaults to port `8081`. Release builds are
+unchanged.
+
 ## Star History
 
 [![Star History Chart](https://api.star-history.com/svg?repos=njbrake/agent-of-empires&type=date&legend=top-left)](https://www.star-history.com/#njbrake/agent-of-empires&type=date&legend=top-left)

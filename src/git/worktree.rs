@@ -507,8 +507,19 @@ impl GitWorktree {
     }
 
     /// Delete a local git branch.
-    /// Returns an error if the branch doesn't exist or is currently checked out.
+    ///
+    /// Idempotent: if the branch does not exist, returns Ok(()) — the caller
+    /// asked for the branch to be gone, and it is. This matters for session
+    /// deletion where the branch may never have been created (e.g. session
+    /// metadata stamped with a stale value, or worktree creation aborted
+    /// mid-flight). Returns an error only when git rejects the operation
+    /// for a reason other than "not found".
     pub fn delete_branch(&self, branch: &str) -> Result<()> {
+        tracing::debug!(
+            branch,
+            repo = %self.repo_path.display(),
+            "delete_branch: invoking `git branch -d`"
+        );
         let output = std::process::Command::new("git")
             .args(["branch", "-d", branch])
             .current_dir(&self.repo_path)
@@ -516,6 +527,23 @@ impl GitWorktree {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            tracing::debug!(
+                branch,
+                exit = ?output.status.code(),
+                stderr = %stderr,
+                stdout = %stdout,
+                "delete_branch: `git branch -d` failed"
+            );
+            // Branch already gone: treat as success. Git emits
+            // "error: branch '<name>' not found" in this case.
+            if stderr.contains("not found") {
+                tracing::debug!(
+                    branch,
+                    "delete_branch: branch already absent, treating as success"
+                );
+                return Ok(());
+            }
             // If the branch has unmerged changes, try force delete
             if stderr.contains("not fully merged") {
                 let force_output = std::process::Command::new("git")
@@ -524,10 +552,25 @@ impl GitWorktree {
                     .output()?;
 
                 if !force_output.status.success() {
-                    return Err(GitError::BranchNotFound(branch.to_string()));
+                    let force_stderr = String::from_utf8_lossy(&force_output.stderr);
+                    tracing::debug!(
+                        branch,
+                        exit = ?force_output.status.code(),
+                        stderr = %force_stderr,
+                        "delete_branch: `git branch -D` (force) also failed"
+                    );
+                    return Err(GitError::WorktreeCommandFailed(format!(
+                        "git branch -D {}: {}",
+                        branch,
+                        force_stderr.trim()
+                    )));
                 }
             } else {
-                return Err(GitError::BranchNotFound(branch.to_string()));
+                return Err(GitError::WorktreeCommandFailed(format!(
+                    "git branch -d {}: {}",
+                    branch,
+                    stderr.trim()
+                )));
             }
         }
 
@@ -1083,14 +1126,66 @@ mod tests {
     }
 
     #[test]
-    fn test_delete_branch_fails_for_nonexistent_branch() {
+    fn test_delete_branch_is_idempotent_for_nonexistent_branch() {
+        // Sessions whose metadata stamps a branch that was never actually
+        // created (e.g. stale or corrupted session record) should still
+        // delete cleanly. The caller asked for the branch to be gone, and
+        // it is — that's the intended end state.
         let (_dir, repo) = setup_test_repo();
         let repo_path = repo.path().parent().unwrap();
 
         let git_wt = GitWorktree::new(repo_path.to_path_buf()).unwrap();
         let result = git_wt.delete_branch("nonexistent");
 
-        assert!(result.is_err());
+        assert!(
+            result.is_ok(),
+            "delete_branch should succeed when branch is absent, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_delete_branch_idempotent_for_branch_with_spaces_in_name() {
+        // Regression for sessions whose branch field was populated with a
+        // free-form string ("too many open files"). Git rejects such a name
+        // with "branch '<name>' not found"; treat as success.
+        let (_dir, repo) = setup_test_repo();
+        let repo_path = repo.path().parent().unwrap();
+
+        let git_wt = GitWorktree::new(repo_path.to_path_buf()).unwrap();
+        let result = git_wt.delete_branch("too many open files");
+
+        assert!(
+            result.is_ok(),
+            "delete_branch should be idempotent for never-created branch names, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_delete_branch_returns_error_for_other_failures() {
+        // Trying to delete the currently checked-out branch should still
+        // fail — that's a real error, not a "branch doesn't exist" case.
+        let (_dir, repo) = setup_test_repo();
+        let repo_path = repo.path().parent().unwrap();
+
+        // The setup_test_repo helper checks out a branch named "main" or
+        // "master" depending on git defaults. Either way, it's the active
+        // branch and cannot be deleted.
+        let head_branch = repo
+            .head()
+            .ok()
+            .and_then(|h| h.shorthand().map(String::from))
+            .expect("HEAD should be a branch");
+
+        let git_wt = GitWorktree::new(repo_path.to_path_buf()).unwrap();
+        let result = git_wt.delete_branch(&head_branch);
+
+        assert!(
+            result.is_err(),
+            "delete_branch should fail for the checked-out branch, got {:?}",
+            result
+        );
     }
 
     #[test]

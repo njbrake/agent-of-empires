@@ -7,7 +7,7 @@
 
 use std::io::{Read, Write};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use axum::{
     extract::{
@@ -18,6 +18,17 @@ use axum::{
 };
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
 use tokio::sync::RwLock;
+use tracing::{debug, error, info, trace, warn};
+
+/// Per-message byte tracing is hidden behind `AOE_TERMINAL_TRACE=1` so the
+/// default `AOE_LOG_LEVEL=debug` run captures lifecycle without drowning
+/// the log in PTY-byte chatter (a busy claude session emits thousands of
+/// frames/min). Read once at connect time so the gate is a single atomic
+/// load per message instead of an env lookup.
+fn terminal_trace_enabled() -> bool {
+    static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ENABLED.get_or_init(|| std::env::var("AOE_TERMINAL_TRACE").is_ok())
+}
 
 use super::AppState;
 
@@ -27,31 +38,96 @@ pub async fn paired_terminal_ws(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    debug!(target: "terminal.ws", session = %id, kind = "paired", "ws route entered");
     let instances = state.instances.read().await;
-    let session_info = instances
-        .iter()
-        .find(|i| i.id == id)
-        .map(|inst| crate::tmux::TerminalSession::generate_name(&inst.id, &inst.title));
+    let inst = instances.iter().find(|i| i.id == id).cloned();
     drop(instances);
 
     let read_only = state.read_only;
     let primaries = Arc::clone(&state.session_primaries);
     let pause_counts = Arc::clone(&state.session_pause_counts);
 
-    match session_info {
-        // Accept the "aoe-auth" subprotocol so the browser's handshake
-        // completes. The client offers `["aoe-auth", <token>]`; the auth
-        // middleware validates the token from the same header, and the
-        // server echoes back "aoe-auth" to satisfy the WS spec. The token
-        // itself is not echoed, only the marker.
-        Some(tmux_name) => ws
-            .protocols(["aoe-auth"])
-            .on_upgrade(move |socket| {
-                handle_terminal_ws(socket, tmux_name, read_only, primaries, pause_counts)
-            })
-            .into_response(),
-        None => (axum::http::StatusCode::NOT_FOUND, "Session not found").into_response(),
+    let Some(inst) = inst else {
+        warn!(target: "terminal.ws", session = %id, kind = "paired", "session not found, returning 404");
+        return (axum::http::StatusCode::NOT_FOUND, "Session not found").into_response();
+    };
+
+    // Auto-respawn a dead pane before upgrading. The browser's WS reconnect
+    // path goes straight to this route without re-running ensure_terminal,
+    // so without this check a pane that died while the page stayed open
+    // (most commonly across an `aoe serve` restart) would attach to a
+    // tombstone that swallows every keystroke. Match the kill+recreate
+    // dance in `ensure_terminal` and the TUI attach path.
+    let tmux_name = match respawn_paired_if_dead(&state, &id, &inst).await {
+        Ok(name) => name,
+        Err(e) => {
+            warn!(
+                target: "terminal.ws",
+                session = %id,
+                kind = "paired",
+                "failed to respawn dead pane: {}", e
+            );
+            return (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to revive terminal",
+            )
+                .into_response();
+        }
+    };
+
+    // Accept the "aoe-auth" subprotocol so the browser's handshake
+    // completes. The client offers `["aoe-auth", <token>]`; the auth
+    // middleware validates the token from the same header, and the
+    // server echoes back "aoe-auth" to satisfy the WS spec. The token
+    // itself is not echoed, only the marker.
+    ws.protocols(["aoe-auth"])
+        .on_upgrade(move |socket| {
+            handle_terminal_ws(socket, tmux_name, read_only, primaries, pause_counts)
+        })
+        .into_response()
+}
+
+/// Returns the tmux session name to attach to. If the existing pane is
+/// dead, kills and recreates the tmux session in a blocking task before
+/// returning. The instance's `terminal_info.created` flag is updated in
+/// the in-memory store on successful recreate.
+async fn respawn_paired_if_dead(
+    state: &Arc<AppState>,
+    id: &str,
+    inst: &crate::session::Instance,
+) -> anyhow::Result<String> {
+    let tmux_name = crate::tmux::TerminalSession::generate_name(&inst.id, &inst.title);
+
+    // Serialize concurrent reconnects for the same session so two
+    // simultaneous WS attaches don't both try to recreate the pane.
+    let lock = state.instance_lock(id).await;
+    let _guard = lock.lock().await;
+
+    let mut inst_for_blocking = inst.clone();
+    let tmux_name_clone = tmux_name.clone();
+    let respawned = tokio::task::spawn_blocking(move || -> anyhow::Result<bool> {
+        if !inst_for_blocking.kill_terminal_if_dead()? {
+            return Ok(false);
+        }
+        tracing::warn!(
+            target: "terminal.ws",
+            tmux = %tmux_name_clone,
+            "paired terminal pane dead at WS upgrade, killing and respawning"
+        );
+        inst_for_blocking.start_terminal()?;
+        Ok(true)
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("respawn task panicked: {e}"))??;
+
+    if respawned {
+        let mut instances = state.instances.write().await;
+        if let Some(stored) = instances.iter_mut().find(|i| i.id == id) {
+            stored.terminal_info = Some(crate::session::TerminalInfo { created: true });
+        }
     }
+
+    Ok(tmux_name)
 }
 
 /// WebSocket for the paired container terminal (ContainerTerminalSession tmux session)
@@ -60,31 +136,82 @@ pub async fn container_terminal_ws(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    debug!(target: "terminal.ws", session = %id, kind = "container", "ws route entered");
     let instances = state.instances.read().await;
-    let session_info = instances
-        .iter()
-        .find(|i| i.id == id)
-        .map(|inst| crate::tmux::ContainerTerminalSession::generate_name(&inst.id, &inst.title));
+    let inst = instances.iter().find(|i| i.id == id).cloned();
     drop(instances);
 
     let read_only = state.read_only;
     let primaries = Arc::clone(&state.session_primaries);
     let pause_counts = Arc::clone(&state.session_pause_counts);
 
-    match session_info {
-        // Accept the "aoe-auth" subprotocol so the browser's handshake
-        // completes. The client offers `["aoe-auth", <token>]`; the auth
-        // middleware validates the token from the same header, and the
-        // server echoes back "aoe-auth" to satisfy the WS spec. The token
-        // itself is not echoed, only the marker.
-        Some(tmux_name) => ws
-            .protocols(["aoe-auth"])
-            .on_upgrade(move |socket| {
-                handle_terminal_ws(socket, tmux_name, read_only, primaries, pause_counts)
-            })
-            .into_response(),
-        None => (axum::http::StatusCode::NOT_FOUND, "Session not found").into_response(),
-    }
+    let Some(inst) = inst else {
+        warn!(target: "terminal.ws", session = %id, kind = "container", "session not found, returning 404");
+        return (axum::http::StatusCode::NOT_FOUND, "Session not found").into_response();
+    };
+
+    // See `paired_terminal_ws` for the dead-pane rescue rationale.
+    let tmux_name = match respawn_container_if_dead(&state, &id, &inst).await {
+        Ok(name) => name,
+        Err(e) => {
+            warn!(
+                target: "terminal.ws",
+                session = %id,
+                kind = "container",
+                "failed to respawn dead pane: {}", e
+            );
+            return (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to revive terminal",
+            )
+                .into_response();
+        }
+    };
+
+    // Accept the "aoe-auth" subprotocol so the browser's handshake
+    // completes. The client offers `["aoe-auth", <token>]`; the auth
+    // middleware validates the token from the same header, and the
+    // server echoes back "aoe-auth" to satisfy the WS spec. The token
+    // itself is not echoed, only the marker.
+    ws.protocols(["aoe-auth"])
+        .on_upgrade(move |socket| {
+            handle_terminal_ws(socket, tmux_name, read_only, primaries, pause_counts)
+        })
+        .into_response()
+}
+
+/// Container-terminal counterpart of [`respawn_paired_if_dead`].
+async fn respawn_container_if_dead(
+    state: &Arc<AppState>,
+    id: &str,
+    inst: &crate::session::Instance,
+) -> anyhow::Result<String> {
+    let tmux_name = crate::tmux::ContainerTerminalSession::generate_name(&inst.id, &inst.title);
+
+    let lock = state.instance_lock(id).await;
+    let _guard = lock.lock().await;
+
+    let mut inst_for_blocking = inst.clone();
+    let tmux_name_clone = tmux_name.clone();
+    // No in-memory cache to update for container terminal: `has_container_terminal()`
+    // queries tmux directly, so unlike the paired variant we don't need to write
+    // back a `terminal_info` flag after a successful respawn.
+    let _respawned = tokio::task::spawn_blocking(move || -> anyhow::Result<bool> {
+        if !inst_for_blocking.kill_container_terminal_if_dead()? {
+            return Ok(false);
+        }
+        tracing::warn!(
+            target: "terminal.ws",
+            tmux = %tmux_name_clone,
+            "container terminal pane dead at WS upgrade, killing and respawning"
+        );
+        inst_for_blocking.start_container_terminal_with_size(None)?;
+        Ok(true)
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("respawn task panicked: {e}"))??;
+
+    Ok(tmux_name)
 }
 
 /// WebSocket for the agent's main tmux session
@@ -93,6 +220,7 @@ pub async fn terminal_ws(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    debug!(target: "terminal.ws", session = %id, kind = "agent", "ws route entered");
     // Verify session exists before upgrading
     let instances = state.instances.read().await;
     let session_info = instances
@@ -117,7 +245,10 @@ pub async fn terminal_ws(
                 handle_terminal_ws(socket, tmux_name, read_only, primaries, pause_counts)
             })
             .into_response(),
-        None => (axum::http::StatusCode::NOT_FOUND, "Session not found").into_response(),
+        None => {
+            warn!(target: "terminal.ws", session = %id, kind = "agent", "session not found, returning 404");
+            (axum::http::StatusCode::NOT_FOUND, "Session not found").into_response()
+        }
     }
 }
 
@@ -171,6 +302,16 @@ async fn handle_terminal_ws(
         "ws-{}",
         CLIENT_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     );
+    let started_at = Instant::now();
+    let trace_bytes = terminal_trace_enabled();
+    info!(
+        target: "terminal.ws",
+        client = %client_id,
+        tmux = %tmux_name,
+        read_only,
+        trace_bytes,
+        "ws upgrade complete, starting PTY relay"
+    );
 
     // Spawn tmux attach inside a PTY
     let pty_system = NativePtySystem::default();
@@ -182,7 +323,12 @@ async fn handle_terminal_ws(
     }) {
         Ok(pair) => pair,
         Err(e) => {
-            tracing::error!("Failed to open PTY: {}", e);
+            error!(
+                target: "terminal.ws",
+                client = %client_id,
+                tmux = %tmux_name,
+                "openpty failed, aborting ws: {}", e
+            );
             return;
         }
     };
@@ -225,10 +371,21 @@ async fn handle_terminal_ws(
     let mut child = match pair.slave.spawn_command(cmd) {
         Ok(child) => child,
         Err(e) => {
-            tracing::error!("Failed to spawn tmux attach: {}", e);
+            error!(
+                target: "terminal.ws",
+                client = %client_id,
+                tmux = %tmux_name,
+                "spawn tmux attach-session failed: {}", e
+            );
             return;
         }
     };
+    debug!(
+        target: "terminal.ws",
+        client = %client_id,
+        tmux = %tmux_name,
+        "tmux attach-session spawned"
+    );
 
     // We're done with the slave side
     drop(pair.slave);
@@ -241,7 +398,12 @@ async fn handle_terminal_ws(
     let mut reader = match master.try_clone_reader() {
         Ok(r) => r,
         Err(e) => {
-            tracing::error!("Failed to clone PTY reader: {}", e);
+            error!(
+                target: "terminal.ws",
+                client = %client_id,
+                tmux = %tmux_name,
+                "clone PTY reader failed, killing tmux child: {}", e
+            );
             let _ = child.kill();
             let _ = child.wait();
             return;
@@ -251,7 +413,12 @@ async fn handle_terminal_ws(
     let writer = match master.take_writer() {
         Ok(w) => w,
         Err(e) => {
-            tracing::error!("Failed to take PTY writer: {}", e);
+            error!(
+                target: "terminal.ws",
+                client = %client_id,
+                tmux = %tmux_name,
+                "take PTY writer failed, killing tmux child: {}", e
+            );
             let _ = child.kill();
             let _ = child.wait();
             return;
@@ -271,22 +438,60 @@ async fn handle_terminal_ws(
     let (ctrl_tx, mut ctrl_rx) = tokio::sync::mpsc::channel::<String>(8);
 
     // Task 1: PTY stdout -> channel (blocking read in dedicated thread)
+    let reader_client = client_id.clone();
+    let reader_tmux = tmux_name.clone();
     tokio::task::spawn_blocking(move || {
         let mut buf = [0u8; 4096];
+        let mut total_bytes: u64 = 0;
+        let exit_reason: &'static str;
         loop {
             match reader.read(&mut buf) {
-                Ok(0) => break,
+                Ok(0) => {
+                    exit_reason = "pty_eof";
+                    break;
+                }
                 Ok(n) => {
+                    total_bytes += n as u64;
+                    if trace_bytes {
+                        trace!(
+                            target: "terminal.ws.bytes",
+                            client = %reader_client,
+                            tmux = %reader_tmux,
+                            dir = "pty->ws",
+                            bytes = n,
+                            "pty read"
+                        );
+                    }
                     if output_tx.blocking_send(buf[..n].to_vec()).is_err() {
+                        exit_reason = "ws_closed";
                         break; // receiver dropped (WebSocket closed)
                     }
                 }
-                Err(_) => break,
+                Err(e) => {
+                    warn!(
+                        target: "terminal.ws",
+                        client = %reader_client,
+                        tmux = %reader_tmux,
+                        "pty read error after {} bytes: {}", total_bytes, e
+                    );
+                    exit_reason = "pty_read_error";
+                    break;
+                }
             }
         }
+        debug!(
+            target: "terminal.ws",
+            client = %reader_client,
+            tmux = %reader_tmux,
+            reason = exit_reason,
+            bytes = total_bytes,
+            "pty reader task exiting"
+        );
     });
 
     // Task 2: PTY output + control messages -> WebSocket sender
+    let send_client = client_id.clone();
+    let send_tmux = tmux_name.clone();
     let send_handle = tokio::spawn(async move {
         let mut ping_interval = tokio::time::interval(PING_INTERVAL);
         ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -294,26 +499,70 @@ async fn handle_terminal_ws(
         // we don't ping at connection time (the browser hasn't even
         // attached its onmessage handler yet on first connect).
         ping_interval.tick().await;
+        let exit_reason: &'static str;
         loop {
             tokio::select! {
                 data = output_rx.recv() => {
                     match data {
                         Some(data) => {
+                            let n = data.len();
                             if ws_sender.send(Message::Binary(data.into())).await.is_err() {
+                                warn!(
+                                    target: "terminal.ws",
+                                    client = %send_client,
+                                    tmux = %send_tmux,
+                                    "ws send (binary) failed, peer gone"
+                                );
+                                exit_reason = "ws_send_error_binary";
                                 break;
                             }
+                            if trace_bytes {
+                                trace!(
+                                    target: "terminal.ws.bytes",
+                                    client = %send_client,
+                                    tmux = %send_tmux,
+                                    dir = "ws->client",
+                                    bytes = n,
+                                    "ws send binary"
+                                );
+                            }
                         }
-                        None => break,
+                        None => {
+                            debug!(
+                                target: "terminal.ws",
+                                client = %send_client,
+                                tmux = %send_tmux,
+                                "pty output channel closed (reader task exited)"
+                            );
+                            exit_reason = "pty_output_channel_closed";
+                            break;
+                        }
                     }
                 }
                 msg = ctrl_rx.recv() => {
                     match msg {
                         Some(text) => {
                             if ws_sender.send(Message::Text(text.into())).await.is_err() {
+                                warn!(
+                                    target: "terminal.ws",
+                                    client = %send_client,
+                                    tmux = %send_tmux,
+                                    "ws send (control text) failed, peer gone"
+                                );
+                                exit_reason = "ws_send_error_ctrl";
                                 break;
                             }
                         }
-                        None => break,
+                        None => {
+                            debug!(
+                                target: "terminal.ws",
+                                client = %send_client,
+                                tmux = %send_tmux,
+                                "control channel closed (recv task dropped sender)"
+                            );
+                            exit_reason = "ctrl_channel_closed";
+                            break;
+                        }
                     }
                 }
                 _ = ping_interval.tick() => {
@@ -322,11 +571,31 @@ async fn handle_terminal_ws(
                     // client Pongs to the recv loop, which resets its
                     // idle timer.
                     if ws_sender.send(Message::Ping(Vec::new().into())).await.is_err() {
+                        warn!(
+                            target: "terminal.ws",
+                            client = %send_client,
+                            tmux = %send_tmux,
+                            "ws send Ping failed, peer gone"
+                        );
+                        exit_reason = "ws_ping_error";
                         break;
                     }
+                    trace!(
+                        target: "terminal.ws",
+                        client = %send_client,
+                        tmux = %send_tmux,
+                        "sent keepalive Ping"
+                    );
                 }
             }
         }
+        debug!(
+            target: "terminal.ws",
+            client = %send_client,
+            tmux = %send_tmux,
+            reason = exit_reason,
+            "send task exiting, sending Close frame"
+        );
         let _ = ws_sender.send(Message::Close(None)).await;
     });
 
@@ -343,10 +612,13 @@ async fn handle_terminal_ws(
     let this_ws_paused = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let this_ws_paused_for_recv = this_ws_paused.clone();
 
+    let recv_client = client_id.clone();
+    let recv_tmux = tmux_name.clone();
     let recv_handle = tokio::spawn(async move {
         // Track the last resize the browser requested so we can apply it
         // when this client becomes primary.
         let mut pending_size: Option<(u16, u16)> = None;
+        let exit_reason: &'static str;
 
         loop {
             // Wrap each receive in IDLE_TIMEOUT so a silent socket
@@ -356,16 +628,64 @@ async fn handle_terminal_ws(
             // send task elicit Pongs that arrive here and reset the
             // timer, so live-but-idle sessions stay open indefinitely.
             let msg = match tokio::time::timeout(IDLE_TIMEOUT, ws_receiver.next()).await {
-                Err(_) => break,
-                Ok(None) => break,
-                Ok(Some(Err(_))) => break,
+                Err(_) => {
+                    warn!(
+                        target: "terminal.ws",
+                        client = %recv_client,
+                        tmux = %recv_tmux,
+                        idle_timeout_secs = IDLE_TIMEOUT.as_secs(),
+                        "ws idle reaper fired (no client traffic, including Pongs)"
+                    );
+                    exit_reason = "idle_reaper";
+                    break;
+                }
+                Ok(None) => {
+                    debug!(
+                        target: "terminal.ws",
+                        client = %recv_client,
+                        tmux = %recv_tmux,
+                        "ws stream returned None (peer closed cleanly)"
+                    );
+                    exit_reason = "ws_stream_end";
+                    break;
+                }
+                Ok(Some(Err(e))) => {
+                    warn!(
+                        target: "terminal.ws",
+                        client = %recv_client,
+                        tmux = %recv_tmux,
+                        "ws recv error: {}", e
+                    );
+                    exit_reason = "ws_recv_error";
+                    break;
+                }
                 Ok(Some(Ok(msg))) => msg,
             };
             match msg {
                 Message::Binary(data) => {
                     // Raw bytes from xterm.js -> PTY stdin (blocked in read-only mode)
                     if read_only {
+                        if trace_bytes {
+                            trace!(
+                                target: "terminal.ws.bytes",
+                                client = %recv_client,
+                                tmux = %recv_tmux,
+                                bytes = data.len(),
+                                "dropped client binary (read_only)"
+                            );
+                        }
                         continue;
+                    }
+
+                    if trace_bytes {
+                        trace!(
+                            target: "terminal.ws.bytes",
+                            client = %recv_client,
+                            tmux = %recv_tmux,
+                            dir = "client->pty",
+                            bytes = data.len(),
+                            "client binary"
+                        );
                     }
 
                     // Claim primary on input. If we just became primary,
@@ -377,6 +697,12 @@ async fn handle_terminal_ws(
                     )
                     .await;
                     if became_primary {
+                        debug!(
+                            target: "terminal.ws",
+                            client = %recv_client,
+                            tmux = %recv_tmux,
+                            "claimed primary on binary input"
+                        );
                         if let Some((cols, rows)) = pending_size {
                             resize_pty(&master_for_resize, cols, rows).await;
                         }
@@ -399,6 +725,14 @@ async fn handle_terminal_ws(
                     if let Ok(control) = serde_json::from_str::<ControlMessage>(&text) {
                         match control {
                             ControlMessage::Resize { cols, rows } if cols > 0 && rows > 0 => {
+                                debug!(
+                                    target: "terminal.ws",
+                                    client = %recv_client,
+                                    tmux = %recv_tmux,
+                                    cols,
+                                    rows,
+                                    "control: resize"
+                                );
                                 pending_size = Some((cols, rows));
 
                                 let dominated = is_primary_or_vacant(
@@ -419,8 +753,23 @@ async fn handle_terminal_ws(
                                 }
                             }
                             // Ignore zero-dimension resize (buggy client)
-                            ControlMessage::Resize { .. } => {}
+                            ControlMessage::Resize { cols, rows } => {
+                                warn!(
+                                    target: "terminal.ws",
+                                    client = %recv_client,
+                                    tmux = %recv_tmux,
+                                    cols,
+                                    rows,
+                                    "control: ignoring zero-dimension resize"
+                                );
+                            }
                             ControlMessage::Activate => {
+                                debug!(
+                                    target: "terminal.ws",
+                                    client = %recv_client,
+                                    tmux = %recv_tmux,
+                                    "control: activate"
+                                );
                                 // In read-only mode, don't claim primary. All
                                 // viewers get independent resize (vacant state).
                                 if read_only {
@@ -454,6 +803,12 @@ async fn handle_terminal_ws(
                                 // from the same ws are idempotent so a client
                                 // that sends two pause_outputs doesn't
                                 // over-contribute to the count.
+                                debug!(
+                                    target: "terminal.ws",
+                                    client = %recv_client,
+                                    tmux = %recv_tmux,
+                                    "control: pause_output"
+                                );
                                 if read_only {
                                     continue;
                                 }
@@ -468,6 +823,12 @@ async fn handle_terminal_ws(
                                 // Decrement this ws's contribution; only
                                 // SIGCONT when the refcount reaches 0. Safe
                                 // to call even if this ws wasn't paused.
+                                debug!(
+                                    target: "terminal.ws",
+                                    client = %recv_client,
+                                    tmux = %recv_tmux,
+                                    "control: resume_output"
+                                );
                                 pause_exit(
                                     &pause_counts_for_recv,
                                     &tmux_name_for_recv,
@@ -477,6 +838,16 @@ async fn handle_terminal_ws(
                             }
                         }
                     } else if !read_only {
+                        if trace_bytes {
+                            trace!(
+                                target: "terminal.ws.bytes",
+                                client = %recv_client,
+                                tmux = %recv_tmux,
+                                dir = "client->pty",
+                                bytes = text.len(),
+                                "client text (non-control)"
+                            );
+                        }
                         // Plain text input -> PTY stdin (blocked in read-only mode).
                         // Also claims primary, same as binary input.
                         let became_primary = claim_primary(
@@ -505,17 +876,64 @@ async fn handle_terminal_ws(
                         .await;
                     }
                 }
-                Message::Close(_) => break,
-                _ => {}
+                Message::Close(frame) => {
+                    let (code, reason) = match frame {
+                        Some(cf) => (Some(cf.code), cf.reason.to_string()),
+                        None => (None, String::new()),
+                    };
+                    debug!(
+                        target: "terminal.ws",
+                        client = %recv_client,
+                        tmux = %recv_tmux,
+                        code = ?code,
+                        reason = %reason,
+                        "client sent Close frame"
+                    );
+                    exit_reason = "client_close";
+                    break;
+                }
+                Message::Ping(_) => {
+                    trace!(
+                        target: "terminal.ws",
+                        client = %recv_client,
+                        tmux = %recv_tmux,
+                        "received Ping (axum auto-replies with Pong)"
+                    );
+                }
+                Message::Pong(_) => {
+                    trace!(
+                        target: "terminal.ws",
+                        client = %recv_client,
+                        tmux = %recv_tmux,
+                        "received Pong (resets idle timer)"
+                    );
+                }
             }
         }
+        debug!(
+            target: "terminal.ws",
+            client = %recv_client,
+            tmux = %recv_tmux,
+            reason = exit_reason,
+            "recv task exiting"
+        );
     });
 
     // Wait for either direction to finish
-    tokio::select! {
-        _ = send_handle => {},
-        _ = recv_handle => {},
-    }
+    let exit_side = tokio::select! {
+        _ = send_handle => "send",
+        _ = recv_handle => "recv",
+    };
+    let elapsed = started_at.elapsed();
+    info!(
+        target: "terminal.ws",
+        client = %client_id,
+        tmux = %tmux_name,
+        exit_side,
+        elapsed_secs = elapsed.as_secs(),
+        elapsed_ms = elapsed.as_millis() as u64,
+        "ws session ended, cleaning up"
+    );
 
     // Release primary if this client held it, so the next client can take over.
     release_primary(&primaries, &tmux_name, &client_id).await;
@@ -529,6 +947,12 @@ async fn handle_terminal_ws(
     // Clean up: kill the tmux attach process
     let _ = child.kill();
     let _ = child.wait();
+    debug!(
+        target: "terminal.ws",
+        client = %client_id,
+        tmux = %tmux_name,
+        "tmux attach child reaped, ws handler done"
+    );
 }
 
 /// Claim primary for this client. Returns `true` if the client was NOT

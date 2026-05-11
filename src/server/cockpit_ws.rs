@@ -5,42 +5,96 @@
 //! `session_id` matches the route param. Frames are JSON. The protocol
 //! is one-way today (server -> client); inbound messages are ignored.
 //!
-//! Durability lives in the replay buffer (`AppState::cockpit_replay`),
-//! NOT this channel. The broadcast channel is best-effort: a client
-//! that connects between a `tx.send` and its `subscribe()` misses
-//! frames, and `RecvError::Lagged` drops frames when the channel
-//! overflows. Both cases recover via
-//! `GET /api/sessions/{id}/cockpit/replay?since=<seq>`, which reads
-//! the per-session ring buffer that `ChannelSink::publish` writes
-//! synchronously on every event. The channel is the fast path; the
-//! buffer is the truth.
+//! Durability lives in `AppState::cockpit_event_store` (SQLite), not
+//! this channel. The broadcast channel is best-effort: a client that
+//! connects between a `tx.send` and its `subscribe()` misses frames,
+//! and `RecvError::Lagged` drops frames when the channel overflows.
+//! Both cases recover via the on-connect drain, which reads the
+//! event store from `?since=` (or 0 for fresh subscribers); the
+//! same store backs `GET /api/sessions/{id}/cockpit/replay`. The
+//! channel is the fast path; the store is the truth.
 
 use std::sync::Arc;
 
 use axum::extract::{
     ws::{Message, WebSocket, WebSocketUpgrade},
-    Path, State,
+    Path, Query, State,
 };
 use axum::response::IntoResponse;
+use serde::Deserialize;
 use tokio::select;
 use tokio::sync::broadcast::error::RecvError;
 use tracing::{debug, warn};
 
 use super::{AppState, CockpitBroadcastFrame};
 
+/// Query parameters for the cockpit WS upgrade. Clients pass
+/// `?since=<lastSeq>` so the on-connect drain only resends events
+/// newer than what they already have. Without this, a long-running
+/// session resends its full transcript on every reconnect (page
+/// refresh / mobile flap), which can be tens of MB at the retention
+/// cap.
+#[derive(Debug, Default, Deserialize)]
+pub struct CockpitWsQuery {
+    #[serde(default)]
+    pub since: Option<u64>,
+}
+
 /// Public route handler for the cockpit WebSocket.
 pub async fn cockpit_ws(
     ws: WebSocketUpgrade,
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
+    Query(q): Query<CockpitWsQuery>,
 ) -> impl IntoResponse {
+    // Logged at DEBUG so we can prove the route was reached even
+    // when the upgrade fails. If this line is missing from debug.log
+    // for a session that's stuck on "no live updates", the request
+    // never got past auth_middleware (or never left the browser).
+    // One line per WS connect (not per message), so debug-level
+    // doesn't risk spamming.
+    let since = q.since.unwrap_or(0);
+    debug!(
+        target: "cockpit.ws",
+        session = %id,
+        since,
+        "cockpit ws route entered, beginning upgrade"
+    );
+    let session_for_handler = id.clone();
     ws.protocols(["aoe-auth"])
-        .on_upgrade(move |socket| handle(socket, id, state))
+        .on_upgrade(move |socket| async move {
+            debug!(target: "cockpit.ws", session = %session_for_handler, "cockpit ws upgrade complete");
+            handle(socket, session_for_handler, state, since).await
+        })
 }
 
-async fn handle(mut socket: WebSocket, session_id: String, state: Arc<AppState>) {
+async fn handle(mut socket: WebSocket, session_id: String, state: Arc<AppState>, since: u64) {
+    // Subscribe BEFORE the replay snapshot so events published in the
+    // window between snapshot and live-loop entry land in `rx`. Such
+    // events also appear in the replay snapshot if the publish
+    // happens to interleave; the client dedupes via `frame.seq <=
+    // state.lastSeq`, so duplicates are no-ops. The reverse order
+    // (snapshot first, then subscribe) leaves a gap where live
+    // events get dropped.
     let mut rx = state.cockpit_events_tx.subscribe();
-    debug!(target: "cockpit.ws", session = %session_id, "cockpit ws subscribed");
+
+    // Replay events newer than `since` immediately on connect. Without
+    // this, any events published in the upgrade gap between the
+    // client's POST /cockpit/spawn (or the first /cockpit/prompt) and
+    // our `subscribe()` above are silently dropped by the broadcast
+    // channel, since tokio's `broadcast::Sender::send` discards the
+    // message when no receivers exist. The disk-backed event store
+    // captures every published event, so reading it here closes the
+    // race without forcing the client to GET /cockpit/replay
+    // separately.
+    let replay_count = drain_replay_into_socket(&mut socket, &state, &session_id, since).await;
+    debug!(
+        target: "cockpit.ws",
+        session = %session_id,
+        since,
+        replayed = replay_count,
+        "cockpit ws subscribed"
+    );
 
     loop {
         select! {
@@ -94,6 +148,43 @@ async fn handle(mut socket: WebSocket, session_id: String, state: Arc<AppState>)
 
     debug!(target: "cockpit.ws", session = %session_id, "cockpit ws disconnected");
     let _ = socket.send(Message::Close(None)).await;
+}
+
+/// Read every stored event for `session_id` with `seq > since` out of
+/// the disk-backed event store and forward it to the socket as a
+/// `CockpitBroadcastFrame`. Returns the number of frames sent. The
+/// event store survives `aoe serve` restart, so this drain works even
+/// after the daemon has restarted. The live broadcast channel is
+/// already subscribed by the caller before this runs, so any events
+/// published between the snapshot and the live-loop entry are still
+/// delivered (the client dedupes by seq).
+async fn drain_replay_into_socket(
+    socket: &mut WebSocket,
+    state: &AppState,
+    session_id: &str,
+    since: u64,
+) -> usize {
+    let entries = state.cockpit_event_store.replay_from(session_id, since);
+    let mut sent = 0usize;
+    for (seq, event) in entries {
+        let frame = CockpitBroadcastFrame {
+            session_id: session_id.to_string(),
+            seq,
+            event: Arc::new(event),
+        };
+        let payload = match serde_json::to_string(&frame) {
+            Ok(s) => s,
+            Err(e) => {
+                warn!(target: "cockpit.ws", "serialise replay frame: {e}");
+                continue;
+            }
+        };
+        if socket.send(Message::Text(payload.into())).await.is_err() {
+            break;
+        }
+        sent += 1;
+    }
+    sent
 }
 
 /// Helper used by the worker supervisor (and integration tests) to
@@ -199,7 +290,7 @@ mod tests {
         let send_result = tx.send(CockpitBroadcastFrame {
             session_id: "s".into(),
             seq: 1,
-            event: serde_json::Value::Null,
+            event: Arc::new(crate::cockpit::Event::ThinkingStarted),
         });
         // Sending to a channel with no receivers returns Err, but
         // publish() in this module deliberately discards the result.
