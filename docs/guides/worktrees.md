@@ -59,7 +59,12 @@ bare_repo_path_template = "./{branch}"
 auto_cleanup = true
 show_branch_in_tui = true
 delete_branch_on_cleanup = false
+init_submodules = true
 ```
+
+### Skipping submodule init
+
+`init_submodules = false` skips the `git submodule update --init --recursive` step that runs after `git worktree add` when the checkout contains a `.gitmodules` file. Useful for repos that vendor deep submodule trees (e.g. OpenROAD-flow-scripts, llvm-project, chromium) where every new session would otherwise sit in `Creating…` for minutes while submodules clone. Per-invocation override on the CLI: `aoe add --worktree <branch> --no-submodules`.
 
 ### Template Variables
 

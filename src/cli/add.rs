@@ -52,6 +52,13 @@ pub struct AddArgs {
     #[arg(long = "project")]
     projects: Vec<String>,
 
+    /// Skip `git submodule update --init --recursive` after creating the
+    /// worktree, overriding the `worktree.init_submodules` config (default
+    /// true). Useful for repos with large or deeply nested submodule trees
+    /// that you don't need inside the agent session.
+    #[arg(long = "no-submodules")]
+    no_submodules: bool,
+
     /// Run session in a container sandbox
     #[arg(short = 's', long)]
     sandbox: bool,
@@ -150,6 +157,7 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
         use chrono::Utc;
 
         let branch = branch_raw.trim();
+        let init_submodules = config.worktree.init_submodules && !args.no_submodules;
 
         if !all_extra_repos.is_empty() {
             let ws_result = builder::create_workspace(
@@ -158,6 +166,7 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
                 branch,
                 args.create_branch,
                 &config.worktree.workspace_path_template,
+                init_submodules,
             )?;
 
             for repo in &ws_result.workspace_info.repos {
@@ -182,7 +191,8 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
             }
 
             let main_repo_path = GitWorktree::find_main_repo(&path)?;
-            let git_wt = GitWorktree::new(main_repo_path.clone())?;
+            let git_wt =
+                GitWorktree::new(main_repo_path.clone())?.with_init_submodules(init_submodules);
 
             let session_id = uuid::Uuid::new_v4().to_string();
             let session_id_short = &session_id[..8];

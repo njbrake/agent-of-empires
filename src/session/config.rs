@@ -497,6 +497,15 @@ pub struct WorktreeConfig {
     /// Supports {branch} and {session-id} placeholders.
     #[serde(default = "default_workspace_template")]
     pub workspace_path_template: String,
+
+    /// Run `git submodule update --init --recursive` after creating a worktree
+    /// when the checkout contains a `.gitmodules` file. Defaults to true to
+    /// preserve the behavior introduced in #942. Disable for repos with large
+    /// or deeply-nested submodule trees that you don't need inside agent
+    /// sessions; new sessions then finish creating instead of stalling in
+    /// `Creating…` while submodules clone.
+    #[serde(default = "default_true")]
+    pub init_submodules: bool,
 }
 
 impl Default for WorktreeConfig {
@@ -509,6 +518,7 @@ impl Default for WorktreeConfig {
             show_branch_in_tui: true,
             delete_branch_on_cleanup: false,
             workspace_path_template: default_workspace_template(),
+            init_submodules: true,
         }
     }
 }
@@ -1032,6 +1042,10 @@ mod tests {
         assert_eq!(wt.path_template, "../{repo-name}-worktrees/{branch}");
         assert!(wt.auto_cleanup);
         assert!(wt.show_branch_in_tui);
+        assert!(
+            wt.init_submodules,
+            "init_submodules must default to true to preserve #942 behavior"
+        );
     }
 
     #[test]
@@ -1041,12 +1055,25 @@ mod tests {
             path_template = "/custom/{branch}"
             auto_cleanup = false
             show_branch_in_tui = false
+            init_submodules = false
         "#;
         let wt: WorktreeConfig = toml::from_str(toml).unwrap();
         assert!(wt.enabled);
         assert_eq!(wt.path_template, "/custom/{branch}");
         assert!(!wt.auto_cleanup);
         assert!(!wt.show_branch_in_tui);
+        assert!(!wt.init_submodules);
+    }
+
+    #[test]
+    fn test_worktree_config_init_submodules_defaults_when_absent() {
+        // Configs predating this option must continue to recursively init
+        // submodules (preserve #942 behavior) when upgrading.
+        let toml = r#"
+            enabled = true
+        "#;
+        let wt: WorktreeConfig = toml::from_str(toml).unwrap();
+        assert!(wt.init_submodules);
     }
 
     // Tests for SandboxConfig

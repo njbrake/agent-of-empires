@@ -61,6 +61,7 @@ pub enum FieldKey {
     WorktreeAutoCleanup,
     DeleteBranchOnCleanup,
     WorkspacePathTemplate,
+    InitSubmodules,
     // Sandbox
     SandboxEnabledByDefault,
     YoloModeDefault,
@@ -621,6 +622,11 @@ fn build_worktree_fields(
         global.worktree.workspace_path_template.clone(),
         wt.and_then(|w| w.workspace_path_template.clone()),
     );
+    let (init_submodules, o6) = resolve_value(
+        scope,
+        global.worktree.init_submodules,
+        wt.and_then(|w| w.init_submodules),
+    );
 
     vec![
         SettingField {
@@ -688,6 +694,15 @@ fn build_worktree_fields(
                 o5,
                 FieldValue::Text(global.worktree.workspace_path_template.clone()),
             ),
+        },
+        SettingField {
+            key: FieldKey::InitSubmodules,
+            label: "Init Submodules",
+            description: "Run `git submodule update --init --recursive` after creating a worktree",
+            value: FieldValue::Bool(init_submodules),
+            category: SettingsCategory::Worktree,
+            has_override: o6,
+            inherited_display: inherited_if(o6, FieldValue::Bool(global.worktree.init_submodules)),
         },
     ]
 }
@@ -1604,6 +1619,7 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
         (FieldKey::WorkspacePathTemplate, FieldValue::Text(v)) => {
             config.worktree.workspace_path_template = v.clone()
         }
+        (FieldKey::InitSubmodules, FieldValue::Bool(v)) => config.worktree.init_submodules = *v,
         // Sandbox
         (FieldKey::SandboxEnabledByDefault, FieldValue::Bool(v)) => {
             config.sandbox.enabled_by_default = *v
@@ -1816,6 +1832,9 @@ fn apply_field_to_profile(field: &SettingField, _global: &Config, config: &mut P
             set_profile_override(v.clone(), &mut config.worktree, |s, val| {
                 s.workspace_path_template = val
             });
+        }
+        (FieldKey::InitSubmodules, FieldValue::Bool(v)) => {
+            set_profile_override(*v, &mut config.worktree, |s, val| s.init_submodules = val);
         }
         // Sandbox
         (FieldKey::SandboxEnabledByDefault, FieldValue::Bool(v)) => {

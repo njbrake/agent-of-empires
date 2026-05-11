@@ -593,6 +593,11 @@ impl SettingsView {
                     w.workspace_path_template = None;
                 }
             }
+            FieldKey::InitSubmodules => {
+                if let Some(ref mut w) = config.worktree {
+                    w.init_submodules = None;
+                }
+            }
             // Sandbox
             FieldKey::DefaultImage => {
                 if let Some(ref mut s) = config.sandbox {

@@ -78,6 +78,7 @@ pub fn create_workspace(
     branch: &str,
     create_new_branch: bool,
     workspace_template: &str,
+    init_submodules: bool,
 ) -> Result<WorkspaceResult> {
     let primary_main_repo = GitWorktree::find_main_repo(primary_path)?;
     let primary_git_wt = GitWorktree::new(primary_main_repo)?;
@@ -182,7 +183,8 @@ pub fn create_workspace(
                         let repo_start = std::time::Instant::now();
                         let result = (|| -> std::result::Result<Vec<String>, String> {
                             let git_wt = GitWorktree::new(main_repo_path)
-                                .map_err(|e| format!("{}: {}", repo_name, e))?;
+                                .map_err(|e| format!("{}: {}", repo_name, e))?
+                                .with_init_submodules(init_submodules);
                             git_wt
                                 .create_worktree(&branch, &worktree_subdir, create_new_branch)
                                 .map_err(|e| format!("{}: {}", repo_name, e))
@@ -359,6 +361,7 @@ pub fn build_instance(
                 branch,
                 params.create_new_branch,
                 &config.worktree.workspace_path_template,
+                config.worktree.init_submodules,
             )?;
 
             final_path = ws_result.workspace_path.to_string_lossy().to_string();
@@ -375,7 +378,8 @@ pub fn build_instance(
             let main_repo_path = main_repo_path_raw
                 .canonicalize()
                 .unwrap_or(main_repo_path_raw);
-            let git_wt = GitWorktree::new(main_repo_path.clone())?;
+            let git_wt = GitWorktree::new(main_repo_path.clone())?
+                .with_init_submodules(config.worktree.init_submodules);
 
             // Choose appropriate template based on repo type (bare vs regular)
             // Use main_repo_path (not path) to correctly detect bare repos when running from a worktree
@@ -836,7 +840,14 @@ mod tests {
             .to_string_lossy()
             .into_owned();
 
-        let result = create_workspace(&repo_a, &[repo_b], "nonexistent-branch", false, &template);
+        let result = create_workspace(
+            &repo_a,
+            &[repo_b],
+            "nonexistent-branch",
+            false,
+            &template,
+            true,
+        );
 
         let err = match result {
             Ok(_) => panic!("workspace creation should fail when no repo has the branch"),
@@ -871,7 +882,7 @@ mod tests {
             .to_string_lossy()
             .into_owned();
 
-        let result = create_workspace(&repo_a, &[], "nonexistent-branch", false, &template);
+        let result = create_workspace(&repo_a, &[], "nonexistent-branch", false, &template, true);
 
         let err = match result {
             Ok(_) => panic!("single-repo failure should still surface"),

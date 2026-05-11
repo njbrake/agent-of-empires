@@ -108,6 +108,7 @@ bare_repo_path_template = "./{branch}"
 auto_cleanup = true
 show_branch_in_tui = true
 delete_branch_on_cleanup = false
+init_submodules = true
 ```
 
 | Option | Default | Description |
@@ -118,6 +119,7 @@ delete_branch_on_cleanup = false
 | `auto_cleanup` | `true` | Prompt to remove worktree when deleting a session |
 | `show_branch_in_tui` | `true` | Display branch name in the TUI session list |
 | `delete_branch_on_cleanup` | `false` | Also delete the git branch when removing a worktree |
+| `init_submodules` | `true` | Run `git submodule update --init --recursive` after creating a worktree; set to `false` (or pass `--no-submodules` to `aoe add`) to skip submodule init for repos with large or deeply-nested submodule trees |
 
 **Template variables:**
 

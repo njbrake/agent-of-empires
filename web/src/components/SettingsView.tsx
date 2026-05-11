@@ -384,6 +384,12 @@ export function SettingsView({
               checked={(worktree.delete_branch_on_cleanup as boolean) ?? false}
               onChange={(v) => saveField("worktree", worktree, "delete_branch_on_cleanup", v)}
             />
+            <ToggleField
+              label="Init submodules"
+              description="Run `git submodule update --init --recursive` after creating a worktree"
+              checked={(worktree.init_submodules as boolean) ?? true}
+              onChange={(v) => saveField("worktree", worktree, "init_submodules", v)}
+            />
           </div>
         );
 

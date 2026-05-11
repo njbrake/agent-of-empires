@@ -119,6 +119,9 @@ pub struct WorktreeConfigOverride {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace_path_template: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub init_submodules: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -375,6 +378,9 @@ pub fn apply_worktree_overrides(
     }
     if let Some(ref workspace_path_template) = source.workspace_path_template {
         target.workspace_path_template = workspace_path_template.clone();
+    }
+    if let Some(init_submodules) = source.init_submodules {
+        target.init_submodules = init_submodules;
     }
 }
 
