@@ -47,7 +47,7 @@ pub async fn paired_terminal_ws(
     let primaries = Arc::clone(&state.session_primaries);
     let pause_counts = Arc::clone(&state.session_pause_counts);
 
-    let Some(mut inst) = inst else {
+    let Some(inst) = inst else {
         warn!(target: "terminal.ws", session = %id, kind = "paired", "session not found, returning 404");
         return (axum::http::StatusCode::NOT_FOUND, "Session not found").into_response();
     };
@@ -58,7 +58,7 @@ pub async fn paired_terminal_ws(
     // (most commonly across an `aoe serve` restart) would attach to a
     // tombstone that swallows every keystroke. Match the kill+recreate
     // dance in `ensure_terminal` and the TUI attach path.
-    let tmux_name = match respawn_paired_if_dead(&state, &id, &mut inst).await {
+    let tmux_name = match respawn_paired_if_dead(&state, &id, &inst).await {
         Ok(name) => name,
         Err(e) => {
             warn!(
@@ -94,7 +94,7 @@ pub async fn paired_terminal_ws(
 async fn respawn_paired_if_dead(
     state: &Arc<AppState>,
     id: &str,
-    inst: &mut crate::session::Instance,
+    inst: &crate::session::Instance,
 ) -> anyhow::Result<String> {
     let tmux_name = crate::tmux::TerminalSession::generate_name(&inst.id, &inst.title);
 
@@ -147,13 +147,13 @@ pub async fn container_terminal_ws(
     let primaries = Arc::clone(&state.session_primaries);
     let pause_counts = Arc::clone(&state.session_pause_counts);
 
-    let Some(mut inst) = inst else {
+    let Some(inst) = inst else {
         warn!(target: "terminal.ws", session = %id, kind = "container", "session not found, returning 404");
         return (axum::http::StatusCode::NOT_FOUND, "Session not found").into_response();
     };
 
     // See `paired_terminal_ws` for the dead-pane rescue rationale.
-    let tmux_name = match respawn_container_if_dead(&state, &id, &mut inst).await {
+    let tmux_name = match respawn_container_if_dead(&state, &id, &inst).await {
         Ok(name) => name,
         Err(e) => {
             warn!(
@@ -186,7 +186,7 @@ pub async fn container_terminal_ws(
 async fn respawn_container_if_dead(
     state: &Arc<AppState>,
     id: &str,
-    inst: &mut crate::session::Instance,
+    inst: &crate::session::Instance,
 ) -> anyhow::Result<String> {
     let tmux_name = crate::tmux::ContainerTerminalSession::generate_name(&inst.id, &inst.title);
 
@@ -195,6 +195,9 @@ async fn respawn_container_if_dead(
 
     let mut inst_for_blocking = inst.clone();
     let tmux_name_clone = tmux_name.clone();
+    // No in-memory cache to update for container terminal: `has_container_terminal()`
+    // queries tmux directly, so unlike the paired variant we don't need to write
+    // back a `terminal_info` flag after a successful respawn.
     let _respawned = tokio::task::spawn_blocking(move || -> anyhow::Result<bool> {
         let session = inst_for_blocking.container_terminal_tmux_session()?;
         if !session.exists() || !session.is_pane_dead() {
