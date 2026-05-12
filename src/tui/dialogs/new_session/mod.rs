@@ -529,8 +529,22 @@ impl NewSessionDialog {
         crate::agents::get_agent(tool_name).is_some_and(|a| a.host_only)
     }
 
-    /// The field index of the path field (shifts based on whether profile picker is visible)
+    /// The field index of the path field. Path comes BEFORE title in the
+    /// dialog so the user browses to a directory first and the title can
+    /// then auto-fill from the folder basename. Shifts based on whether
+    /// the profile picker is visible at field 0.
     fn path_field(&self) -> usize {
+        if self.has_profile_selection() {
+            1
+        } else {
+            0
+        }
+    }
+
+    /// The field index of the title field. Title sits one slot AFTER path
+    /// so the picker-flow lands on title with a sensible default already
+    /// filled in (or empty if the user typed the path manually).
+    fn title_field(&self) -> usize {
         if self.has_profile_selection() {
             2
         } else {
@@ -841,7 +855,8 @@ impl NewSessionDialog {
         let is_host_only = self.selected_tool_host_only();
         let has_sandbox = self.docker_available && !is_host_only;
         let has_yolo = !self.selected_tool_always_yolo();
-        // Field order: [profile], title, path, [tool], [yolo], worktree, [sandbox], group
+        // Field order: [profile], path, title, [tool], [yolo], worktree, [sandbox], group
+        // Path is first so browse → auto-fills title from folder basename.
         // Worktree sub-options (new_branch, extra_repos) are in a Ctrl+P overlay.
         // Tool config (extra_args, command_override) is in a Ctrl+P overlay on tool field.
         // Sandbox sub-options are in a separate sandbox_config_mode overlay.
@@ -1497,7 +1512,7 @@ impl NewSessionDialog {
         let group_field = fi;
 
         let path_field = self.path_field();
-        let title_field = if self.has_profile_selection() { 1 } else { 0 };
+        let title_field = self.title_field();
         match self.focused_field {
             n if n == title_field => &mut self.title,
             n if n == path_field => &mut self.path,

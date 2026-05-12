@@ -109,9 +109,11 @@ impl NewSessionDialog {
         // Render fields sequentially, tracking chunk index to match dynamic constraints
         let mut ci = 0; // chunk index
 
-        // Field index calculations (must match handle_key)
+        // Field index calculations (must match handle_key).
+        // Field order: [profile], path, title, [tool], ...
+        // Path is first so browse → auto-fills title from folder basename.
         let base = if has_profile_selection { 1 } else { 0 };
-        let title_field = base;
+        let title_field = base + 1;
         let mut fi = base + 2 + if has_tool_selection { 1 } else { 0 };
         let yolo_mode_field = if has_yolo {
             let f = fi;
@@ -142,7 +144,18 @@ impl NewSessionDialog {
             ci += 1;
         }
 
-        // Title
+        // Path (rendered FIRST so the user browses to a directory, then
+        // the title auto-fills from the folder basename on the next chunk).
+        let path_placeholder = if self.focused_field == self.path_field() {
+            Some("(Ctrl+P to browse directories)")
+        } else {
+            None
+        };
+        self.render_path_field(frame, chunks[ci], path_placeholder, theme);
+        ci += 1;
+
+        // Title (auto-populated from the path's folder basename when the
+        // user picks a path via the Ctrl+P browser and hasn't typed one).
         render_text_field(
             frame,
             chunks[ci],
@@ -152,15 +165,6 @@ impl NewSessionDialog {
             Some("(random civ)"),
             theme,
         );
-        ci += 1;
-
-        // Path
-        let path_placeholder = if self.focused_field == self.path_field() {
-            Some("(Ctrl+P to browse directories)")
-        } else {
-            None
-        };
-        self.render_path_field(frame, chunks[ci], path_placeholder, theme);
         ci += 1;
 
         // Tool (always shown, interactive or read-only)
