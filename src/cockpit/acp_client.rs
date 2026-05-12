@@ -967,7 +967,7 @@ async fn run_connection_task<W, R>(
     let event_tx_for_perm = event_tx.clone();
     let event_tx_for_block = event_tx.clone();
     let pending_for_perm = pending_responders.clone();
-    let cmd_rx = Arc::new(Mutex::new(cmd_rx));
+    let mut cmd_rx = cmd_rx;
     let session_label_for_log = session_label.clone();
     let res_read = resources.clone();
     let res_write = resources.clone();
@@ -1253,10 +1253,7 @@ async fn run_connection_task<W, R>(
             }
 
             loop {
-                let cmd = {
-                    let mut rx = cmd_rx.lock().await;
-                    rx.recv().await
-                };
+                let cmd = cmd_rx.recv().await;
                 match cmd {
                     Some(ClientCmd::Prompt(text)) => {
                         // First user prompt after session/load: stop
@@ -1271,13 +1268,80 @@ async fn run_connection_task<W, R>(
                             );
                         }
                         info!(target: "cockpit.acp", "sending prompt ({} chars)", text.len());
-                        let _ = connection
+                        // Drive the prompt request concurrently with the
+                        // command channel so out-of-band notifications
+                        // (Cancel, SetMode) can be delivered to the agent
+                        // mid-turn. Per the ACP spec, session/cancel is a
+                        // notification specifically designed to be sent
+                        // while a session/prompt request is in flight; if
+                        // we serialise the loop on the prompt's await, the
+                        // cancel sits idle in the channel and only goes
+                        // out after the turn already finished.
+                        let prompt_fut = connection
                             .send_request(PromptRequest::new(
                                 acp_session_id.clone(),
                                 vec![ContentBlock::Text(TextContent::new(text))],
                             ))
-                            .block_task()
-                            .await?;
+                            .block_task();
+                        tokio::pin!(prompt_fut);
+
+                        let mut shutdown = false;
+                        loop {
+                            tokio::select! {
+                                res = &mut prompt_fut => {
+                                    let _ = res?;
+                                    break;
+                                }
+                                cmd = cmd_rx.recv() => {
+                                    match cmd {
+                                        Some(ClientCmd::Cancel) => {
+                                            info!(
+                                                target: "cockpit.acp",
+                                                "sending session/cancel during in-flight prompt"
+                                            );
+                                            connection.send_notification(
+                                                CancelNotification::new(acp_session_id.clone()),
+                                            )?;
+                                            // Keep awaiting the prompt; the
+                                            // agent should resolve it with
+                                            // StopReason::Cancelled.
+                                        }
+                                        Some(ClientCmd::SetMode(mode_id)) => {
+                                            info!(
+                                                target: "cockpit.acp",
+                                                "sending session/set_mode mode={mode_id} during in-flight prompt"
+                                            );
+                                            let _ = connection
+                                                .send_request(SetSessionModeRequest::new(
+                                                    acp_session_id.clone(),
+                                                    mode_id,
+                                                ))
+                                                .block_task()
+                                                .await?;
+                                        }
+                                        Some(ClientCmd::Prompt(_)) => {
+                                            // Client-side prompt queueing is
+                                            // tracked separately in #1031.
+                                            warn!(
+                                                target: "cockpit.acp",
+                                                "received Prompt while one is in flight; dropping (queueing tracked in #1031)"
+                                            );
+                                        }
+                                        Some(ClientCmd::Shutdown) | None => {
+                                            info!(
+                                                target: "cockpit.acp",
+                                                "shutdown received during in-flight prompt; aborting turn"
+                                            );
+                                            shutdown = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        if shutdown {
+                            break;
+                        }
                         let _ = event_tx_for_block
                             .send(Event::Stopped {
                                 reason: "prompt_complete".into(),
@@ -1285,7 +1349,7 @@ async fn run_connection_task<W, R>(
                             .await;
                     }
                     Some(ClientCmd::Cancel) => {
-                        info!(target: "cockpit.acp", "sending session/cancel");
+                        info!(target: "cockpit.acp", "sending session/cancel (no prompt in flight)");
                         connection
                             .send_notification(CancelNotification::new(acp_session_id.clone()))?;
                     }
