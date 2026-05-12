@@ -107,6 +107,58 @@ impl Session {
         is_pane_running_shell(&self.name)
     }
 
+    /// Revive a dead pane in place via `tmux respawn-pane -k` without
+    /// tearing down the surrounding tmux session.
+    ///
+    /// When `remain-on-exit on` is set, a pane whose process has exited
+    /// stays around as a dead pane and the tmux session remains. The
+    /// normal restart flow (kill-session + new-session) is correct for
+    /// that case, but kill-session can race against the session cache:
+    /// process-tree kill of a defunct pid stalls on macOS, and the
+    /// subsequent kill can run while exists() still sees the cached
+    /// entry, leaving the dead pane in place. Respawning first puts the
+    /// pane back into a live state so the kill path proceeds cleanly.
+    ///
+    /// Returns `Ok(true)` if the first window's pane was dead and was
+    /// respawned with `command` (using `working_dir` as the cwd). Returns
+    /// `Ok(false)` if the pane is alive (no action taken) or the session
+    /// does not exist. Returns `Err` if tmux respawn-pane fails.
+    pub fn respawn_dead_pane(&self, working_dir: &str, command: Option<&str>) -> Result<bool> {
+        if !self.exists() {
+            return Ok(false);
+        }
+        if !self.is_pane_dead() {
+            return Ok(false);
+        }
+
+        // `^.0` targets the first window's first pane regardless of
+        // base-index (matches is_pane_dead/capture_pane targeting). The
+        // `-k` flag forces respawn even though the pane has a remembered
+        // exit status; without it tmux refuses to respawn dead panes.
+        let target = format!("{}:^.0", self.name);
+        let mut args: Vec<String> = vec![
+            "respawn-pane".to_string(),
+            "-k".to_string(),
+            "-t".to_string(),
+            target,
+            "-c".to_string(),
+            working_dir.to_string(),
+        ];
+        if let Some(cmd) = command {
+            args.push(cmd.to_string());
+        }
+
+        let output = Command::new("tmux").args(&args).output()?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!("Failed to respawn dead pane: {}", stderr);
+        }
+
+        super::refresh_session_cache();
+        Ok(true)
+    }
+
     pub fn kill(&self) -> Result<()> {
         if !self.exists() {
             return Ok(());
@@ -1005,5 +1057,99 @@ mod tests {
         let _ = Command::new("tmux")
             .args(["kill-session", "-t", &session_name])
             .output();
+    }
+
+    /// Regression test for the dead-pane restart bug: a session whose pane
+    /// has died (remain-on-exit kept the session) must be revivable via
+    /// respawn_dead_pane without tearing down the tmux session.
+    #[test]
+    #[serial_test::serial]
+    fn test_respawn_dead_pane_revives_dead_pane() {
+        if !tmux_available() {
+            eprintln!("Skipping test: tmux not available");
+            return;
+        }
+
+        let session_name = format!("aoe_test_respawn_{}", std::process::id());
+
+        // Start a session with a command that exits immediately and
+        // remain-on-exit set, so we end up with a dead pane. Pin
+        // pane-base-index 0 to match what aoe does in production;
+        // without this, users with `pane-base-index 1` in their
+        // tmux.conf cause the `^.0` target to miss.
+        let output = Command::new("tmux")
+            .args([
+                "new-session",
+                "-d",
+                "-s",
+                &session_name,
+                "-x",
+                "80",
+                "-y",
+                "24",
+                "true",
+                ";",
+                "set-option",
+                "-p",
+                "-t",
+                &session_name,
+                "remain-on-exit",
+                "on",
+                ";",
+                "set-option",
+                "-t",
+                &session_name,
+                "pane-base-index",
+                "0",
+            ])
+            .output()
+            .expect("tmux new-session");
+        assert!(output.status.success());
+
+        std::thread::sleep(std::time::Duration::from_millis(500));
+
+        let session = Session::from_name(&session_name);
+        super::refresh_session_cache();
+
+        assert!(session.exists(), "Session should exist via remain-on-exit");
+        assert!(session.is_pane_dead(), "Pane should be dead after `true`");
+
+        let respawned = session
+            .respawn_dead_pane("/tmp", Some("sleep 30"))
+            .expect("respawn_dead_pane should succeed");
+        assert!(respawned, "respawn_dead_pane should report it acted");
+
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(session.exists(), "Session should still exist after respawn");
+        assert!(
+            !session.is_pane_dead(),
+            "Pane should be alive after respawn"
+        );
+
+        let respawned_again = session
+            .respawn_dead_pane("/tmp", Some("sleep 30"))
+            .expect("respawn_dead_pane on live pane should not error");
+        assert!(
+            !respawned_again,
+            "respawn_dead_pane should report no-op on live pane"
+        );
+
+        let _ = Command::new("tmux")
+            .args(["kill-session", "-t", &session_name])
+            .output();
+    }
+
+    /// respawn_dead_pane on a non-existent session is a safe no-op.
+    #[test]
+    #[serial_test::serial]
+    fn test_respawn_dead_pane_no_session() {
+        let session = Session::from_name("aoe_test_nonexistent_session_xyz");
+        let result = session
+            .respawn_dead_pane("/tmp", Some("zsh"))
+            .expect("respawn_dead_pane should not error on missing session");
+        assert!(
+            !result,
+            "respawn_dead_pane should return false for missing session"
+        );
     }
 }

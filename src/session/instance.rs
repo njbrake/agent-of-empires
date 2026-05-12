@@ -1391,7 +1391,37 @@ impl Instance {
         let session = self.tmux_session()?;
 
         if session.exists() {
+            // Dead-pane case: `remain-on-exit on` keeps the tmux session
+            // alive after the agent process exits, leaving a frozen pane.
+            // The plain kill-session + new-session flow can race against
+            // the session cache (kill_process_tree on a defunct pid
+            // stalls on macOS, and the subsequent kill can run while
+            // start's exists() check still sees the cached entry),
+            // leaving the dead pane in place. Respawning the pane into a
+            // shell first puts it back in a live state so the kill path
+            // proceeds cleanly. The kill below then sees a live pane and
+            // tears it down; start_with_size_opts recreates the session
+            // with the agent command.
+            if session.is_pane_dead() {
+                tracing::info!(
+                    "restart: pane dead for session {} (remain-on-exit), \
+                     respawning shell before recreate",
+                    session.name()
+                );
+                if let Err(e) = session.respawn_dead_pane(&self.project_path, Some("zsh")) {
+                    tracing::warn!(
+                        "respawn_dead_pane failed for {}: {} -- falling back to kill+start",
+                        session.name(),
+                        e
+                    );
+                }
+            }
             session.kill()?;
+            // Force the session cache to drop any stale "exists=true"
+            // entry so start_with_size_opts sees the post-kill state
+            // immediately. kill() already refreshes, but an explicit
+            // refresh here is defensive against future caching changes.
+            crate::tmux::refresh_session_cache();
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
 
