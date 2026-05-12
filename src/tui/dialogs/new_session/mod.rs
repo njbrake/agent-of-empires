@@ -811,6 +811,19 @@ impl NewSessionDialog {
                             .and_then(path_input::compute_path_ghost);
                         self.workspace_repo_dir_picker_active = false;
                     } else {
+                        // Auto-fill title from folder basename when the user
+                        // hasn't typed one yet. The folder name is almost
+                        // always what they'd call the session anyway, and
+                        // making it the default removes a second step after
+                        // the browse picker selects a directory.
+                        if self.title.value().is_empty() {
+                            if let Some(basename) = std::path::Path::new(&path)
+                                .file_name()
+                                .and_then(|n| n.to_str())
+                            {
+                                self.title = Input::new(basename.to_string());
+                            }
+                        }
                         self.path = Input::new(path);
                         self.recompute_path_ghost();
                     }
