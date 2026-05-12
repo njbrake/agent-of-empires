@@ -543,6 +543,7 @@ function StartupErrorBanner({
   message: string;
 }) {
   const isAuth = /authentic|login|api[_ -]?key/i.test(message);
+  const isCapacity = /capacity full|max_concurrent_workers/i.test(message);
   const [retryState, setRetryState] = useState<
     "idle" | "retrying" | "ok" | "failed"
   >("idle");
@@ -614,6 +615,16 @@ function StartupErrorBanner({
             in a terminal to write credentials to{" "}
             <code className="rounded bg-rose-900/60 px-1">~/.claude</code>,
             then restart aoe.
+          </>
+        ) : isCapacity ? (
+          <>
+            All cockpit worker slots are in use. Either raise{" "}
+            <code className="rounded bg-rose-900/60 px-1">[cockpit] max_concurrent_workers</code>{" "}
+            in <code className="rounded bg-rose-900/60 px-1">config.toml</code>{" "}
+            and restart <code className="rounded bg-rose-900/60 px-1">aoe serve</code>,
+            or free a slot by deleting an existing cockpit session
+            or switching one to the tmux substrate. Reinstalling the adapter
+            won't help — the adapter is fine, the cap is the limit.
           </>
         ) : (
           <>
