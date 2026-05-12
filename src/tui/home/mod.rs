@@ -663,6 +663,14 @@ impl HomeView {
         use crate::session::Status;
 
         let old_status = self.get_instance(&update.id).map(|i| i.status);
+        // Capture old pane_dead so we can detect the Live→Dead transition
+        // and auto-archive the row (user directive 2026-05-11: "killed/dead
+        // should be the same as archive"). Dead corpses sink to tier 99
+        // italic+dim instead of rendering red Error tier 1.
+        let old_pane_dead = self
+            .get_instance(&update.id)
+            .map(|i| i.pane_dead_observed)
+            .unwrap_or(false);
         let should_update = old_status.is_some_and(|s| {
             s != Status::Deleting
                 && s != Status::Creating
@@ -672,6 +680,7 @@ impl HomeView {
 
         let new_last_accessed = update.last_accessed_at;
         let new_pane_dead = update.pane_dead;
+        let dead_transition = new_pane_dead && !old_pane_dead;
 
         if should_update {
             let new_status = update.status;
@@ -688,6 +697,9 @@ impl HomeView {
                     inst.last_accessed_at = new_last_accessed;
                 }
                 inst.pane_dead_observed = new_pane_dead;
+                if dead_transition && !inst.is_archived() {
+                    inst.archive();
+                }
             });
 
             if let Some(old) = old_status {
@@ -699,6 +711,9 @@ impl HomeView {
             self.mutate_instance(&update.id, |inst| {
                 inst.last_accessed_at = new_last_accessed;
                 inst.pane_dead_observed = new_pane_dead;
+                if dead_transition && !inst.is_archived() {
+                    inst.archive();
+                }
             });
         } else {
             // No status change AND no fresh activity stamp. We still
@@ -707,6 +722,9 @@ impl HomeView {
             // current reality. Cheap mutate (one bool write).
             self.mutate_instance(&update.id, |inst| {
                 inst.pane_dead_observed = new_pane_dead;
+                if dead_transition && !inst.is_archived() {
+                    inst.archive();
+                }
             });
         }
     }
