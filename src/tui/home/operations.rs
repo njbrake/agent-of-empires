@@ -360,6 +360,37 @@ impl HomeView {
         if let Some(id) = &self.selected_session {
             let id = id.clone();
 
+            // delete-as-archive: when the user picks `d` without checking any
+            // destructive cleanup boxes, treat it as archive+kill. The entry
+            // persists in sessions.json with `archived_at` set, the pane dies,
+            // and the row sinks to tier 99 italic+dim. Recoverable via
+            // unarchive (`u`) or `aoe session unarchive`. Hard purge — actual
+            // worktree/branch/sandbox tear-down — happens only when the user
+            // explicitly opts in via the dialog checkboxes.
+            //
+            // User directive 2026-05-11: "I want the delete function in aoe
+            // to really be our archive."
+            let is_hard_purge =
+                options.delete_worktree || options.delete_branch || options.delete_sandbox;
+
+            if !is_hard_purge {
+                let kill_result = self
+                    .get_instance(&id)
+                    .map(|inst| inst.kill())
+                    .unwrap_or(Ok(()));
+                if let Err(e) = kill_result {
+                    tracing::warn!("delete-as-archive: failed to kill pane for {}: {}", id, e);
+                }
+                self.mutate_instance(&id, |inst| {
+                    if !inst.is_archived() {
+                        inst.archive();
+                    }
+                });
+                self.save()?;
+                self.flat_items = self.build_flat_items();
+                return Ok(());
+            }
+
             self.set_instance_status(&id, Status::Deleting);
 
             if let Some(inst) = self.get_instance(&id) {

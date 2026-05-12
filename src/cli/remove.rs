@@ -29,6 +29,14 @@ pub struct RemoveArgs {
     /// Keep container instead of deleting it (default: delete per config)
     #[arg(long = "keep-container")]
     keep_container: bool,
+
+    /// Hard purge: tear down worktree/branch/container too. Without this,
+    /// `aoe remove` archives the session (kills the pane, marks
+    /// archived_at, keeps the entry recoverable). Use this when you really
+    /// want destruction — equivalent to passing --delete-worktree
+    /// --delete-branch together.
+    #[arg(long)]
+    hard: bool,
 }
 
 fn needs_worktree_cleanup(inst: &Instance, args: &RemoveArgs) -> bool {
@@ -38,6 +46,20 @@ fn needs_worktree_cleanup(inst: &Instance, args: &RemoveArgs) -> bool {
 }
 
 pub async fn run(profile: &str, args: RemoveArgs) -> Result<()> {
+    // delete-as-archive: by default `aoe remove` no longer destroys.
+    // It archives the session — kills the tmux pane and sets
+    // archived_at — so the entry stays recoverable. Destructive
+    // tear-down (worktree / branch / container) requires explicit
+    // opt-in via --hard or --delete-worktree/--delete-branch.
+    // User directive 2026-05-11: "I want the delete function in aoe
+    // to really be our archive."
+    let is_hard_purge =
+        args.hard || args.delete_worktree || args.delete_branch;
+
+    if !is_hard_purge {
+        return run_archive(profile, &args.identifier).await;
+    }
+
     let storage = Storage::new(profile)?;
     let (instances, groups) = storage.load_with_groups()?;
 
@@ -245,6 +267,55 @@ pub async fn run(profile: &str, args: RemoveArgs) -> Result<()> {
         "  Removed session: {} (from profile '{}')",
         removed_title,
         storage.profile()
+    );
+
+    Ok(())
+}
+
+/// Soft-delete: kill the pane, set archived_at, save. Entry stays in
+/// sessions.json — recoverable via `aoe session unarchive` or TUI `u`.
+async fn run_archive(profile: &str, identifier: &str) -> Result<()> {
+    let storage = Storage::new(profile)?;
+    let (mut instances, groups) = storage.load_with_groups()?;
+
+    let mut found = false;
+    let mut archived_title = String::new();
+
+    for inst in instances.iter_mut() {
+        if inst.id == identifier
+            || inst.id.starts_with(identifier)
+            || inst.title == identifier
+        {
+            found = true;
+            archived_title = inst.title.clone();
+
+            if let Err(e) = inst.kill() {
+                eprintln!("Warning: failed to kill tmux session: {}", e);
+            }
+            if !inst.is_archived() {
+                inst.archive();
+            }
+            break;
+        }
+    }
+
+    if !found {
+        bail!(
+            "Session not found in profile '{}': {}",
+            storage.profile(),
+            identifier
+        );
+    }
+
+    let group_tree = GroupTree::new_with_groups(&instances, &groups);
+    storage.save_with_groups(&instances, &group_tree)?;
+
+    println!(
+        "  Archived session: {} (from profile '{}'). Run `aoe session unarchive {}` or `aoe remove --hard {}` to remove permanently.",
+        archived_title,
+        storage.profile(),
+        identifier,
+        identifier
     );
 
     Ok(())
