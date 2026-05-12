@@ -21,7 +21,7 @@
 > for any session.
 >
 > The data model (`cockpit_mode: bool` per session) is stable; the
-> UI and reliability story are still evolving — see "What's deferred".
+> UI and reliability story are still evolving; see "What's deferred".
 
 Cockpit is aoe's native rendering surface for AI coding agents. Instead
 of viewing the agent through a terminal pane (PTY bytes piped through
@@ -49,7 +49,7 @@ The wizard greys out the cockpit option for tools not in this set.
 | `vibe`     | `vibe-acp` (native, Mistral)                               | Mistral API key; set up via `vibe` first |
 | `pi`       | `pi-acp` (adapter, requires `@mariozechner/pi-coding-agent`) | `pi-acp --terminal-login` for OAuth, or env vars per provider |
 | `aoe-agent`| Bundled multi-provider agent (Vercel AI SDK 6)             | Whatever provider env vars Vercel AI SDK expects |
-| *aider, cursor, copilot, droid, settl, hermes* | not yet wired into the cockpit registry — fall back to terminal mode |
+| *aider, cursor, copilot, droid, settl, hermes* | not yet wired into the cockpit registry; fall back to terminal mode |
 
 The four env vars cockpit always forwards to the agent process are
 `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`,
@@ -114,13 +114,13 @@ Configured agents:
 [OK] claude-code  (Alias for `claude` (legacy name))
 [!! ] codex  (OpenAI Codex CLI via Zed adapter …)
     install: npm install -g @zed-industries/codex-acp
-[!! ] gemini  (Google Gemini CLI — native ACP via `gemini --acp`)
+[!! ] gemini  (Google Gemini CLI; native ACP via `gemini --acp`)
     install: npm install -g @google/gemini-cli  (then `gemini --acp`)
-[!! ] opencode  (OpenCode (SST) — native ACP via `opencode acp`)
+[!! ] opencode  (OpenCode (SST); native ACP via `opencode acp`)
     install: curl -fsSL https://opencode.ai/install | bash  (then `opencode acp`)
 [!! ] pi  (Hermes coding agent (`pi`) via the pi-acp adapter …)
     install: npm install -g pi-acp  (also requires `npm i -g @mariozechner/pi-coding-agent`)
-[!! ] vibe  (Mistral Vibe — native ACP via the bundled `vibe-acp` binary)
+[!! ] vibe  (Mistral Vibe; native ACP via the bundled `vibe-acp` binary)
     install: follow https://github.com/mistralai/mistral-vibe (ships the `vibe-acp` binary)
 
 Overall: partial
@@ -162,9 +162,10 @@ default_agent = "aoe-agent"
 approval_timeout_secs = 300
 destructive_require_double_confirm = true
 max_concurrent_workers = 5
-replay_events = 500
+replay_events = 0  # 0 = unlimited history; set a positive value to cap per-session rows
 replay_bytes = 5_242_880
 node_path = ""
+show_tool_durations = true  # per-tool elapsed-time label in the web UI
 ```
 
 `enabled = false` is a master kill switch; cockpit refuses to spawn
@@ -172,14 +173,17 @@ even if a session has `--cockpit`. `default_for_claude = true` makes
 new Claude sessions cockpit-mode by default on mobile clients.
 
 Migration v005 seeds these defaults on upgrade so the section already
-exists if you came from 1.4.x.
+exists if you came from 1.4.x. Migration v006 then flips the v005-seeded
+`replay_events = 500` to `0` so upgraders pick up the new unlimited
+default; any user who has explicitly chosen a different cap is left
+alone.
 
 ## Disabling / escape hatches
 
 - `--no-cockpit` per session (CLI).
 - `cockpit.enabled = false` in `config.toml` (persistent master). The
   reconciler short-circuits, REST endpoints return 503, and the CLI
-  refuses `--cockpit`. The web settings panel toggles this live —
+  refuses `--cockpit`. The web settings panel toggles this live;
   flipping the switch shuts down running workers within a couple of
   seconds and respawns them when re-enabled, no `aoe serve --stop`
   required.
@@ -253,12 +257,68 @@ affordance. Both are tracked as deferred work below.
 Tools without ACP support continue to work exactly as they do today
 (tmux + PTY); cockpit is additive, not a replacement.
 
+## Worker persistence across `aoe serve` restart
+
+> **Behavior change (cockpit-only).** Prior releases tore down every
+> cockpit ACP worker on `aoe serve --stop` (and any other daemon
+> shutdown). As of this release, the daemon detaches without killing
+> the runner: in-flight turns survive `aoe serve --stop`, `aoe update`,
+> daemon crashes, and host suspend/wake. To actually terminate
+> workers, use `aoe cockpit stop <session>` or `aoe cockpit stop --all`
+> (graceful), or `aoe cockpit kill <session>` (force). tmux-based
+> (non-cockpit) sessions are unaffected.
+
+Cockpit workers run as detached `aoe __cockpit-runner` processes that
+outlive the daemon. `aoe serve --stop` drops the daemon's connection
+to each worker but does **not** terminate the runner: the agent
+keeps running, in-flight turns continue, and a subsequent `aoe serve`
+reattaches via the worker's unix socket.
+
+Each runner registers itself at
+`<app_dir>/cockpit-workers/<session_id>.json` with its PID, socket
+path, and cached ACP session id. The same directory holds the
+per-session `.sock` (unix socket) and `.log` (runner stderr drain)
+files. `aoe cockpit ps` lists running workers.
+
+Practical implications:
+
+- `aoe update` followed by `aoe serve --stop` + `aoe serve` keeps
+  every cockpit agent's in-flight turn alive.
+- Closing the laptop or restarting the host with `aoe serve` running:
+  the daemon dies on suspend, but the runner continues. On wake the
+  next `aoe serve` reattaches.
+- To actually terminate a worker, run `aoe cockpit stop <session>` or
+  `aoe cockpit stop --all`. To force-kill, `aoe cockpit kill <session>`.
+- During the detach window (between `aoe serve --stop` and the next
+  `aoe serve`), the runner buffers up to 256 agent → daemon
+  notification lines so per-stream chunks emitted while the daemon was
+  down get replayed on reattach. Permission requests issued while
+  detached block the agent's turn until reattach.
+- **Mid-turn reattach.** When the daemon comes back up against a
+  session that was actively streaming a prompt, the new daemon resumes
+  the existing ACP session id directly (no `session/new` or
+  `session/load` is sent; the agent process never died, so its in-
+  memory session is still addressable). The agent's eventual response
+  to the orphaned in-flight `session/prompt` is dropped silently by
+  the transport because its request id was issued by the previous
+  daemon; to keep the UI from staying stuck on "thinking" forever,
+  the daemon arms a resume-idle watchdog that emits a synthetic
+  `Stopped { reason: "reattach_idle" }` event after 10s of inbound
+  silence. Sessions that the runner cannot reattach to (dead PID,
+  missing socket, etc.) fall through to a fresh spawn; if the on-disk
+  event log shows that fresh spawn's session was mid-prompt at the
+  moment the daemon died, the reconciler publishes a
+  `Stopped { reason: "orphaned_at_restart" }` event before the new
+  agent starts so the UI clears immediately. The same path covers the
+  `main`-branch case where there is no runner at all and every cockpit
+  session takes the fresh-spawn branch on restart.
+
 ## Conversation persistence
 
 Cockpit transcripts survive page reloads, session switches, and
 `aoe serve --stop`/restart cycles. For agents that support session
 restoration (Claude today), the model itself also retains conversation
-context across restarts — so a follow-up like "what did we just
+context across restarts; so a follow-up like "what did we just
 decide?" still works after a daemon restart.
 
 If context restoration fails (e.g., the agent's stored session is no
@@ -336,6 +396,12 @@ npm install -g @agentclientprotocol/claude-agent-acp
 
 Then run `claude login` if you haven't already.
 
+### "Failed to start cockpit agent" while the adapter is installed
+
+`aoe serve` captures the launching shell's PATH at startup and keeps it for the daemon's lifetime. If the adapter is installed under a node-version-manager dir (`~/.nvm/versions/node/v<ver>/bin`, `~/.fnm/node-versions/.../installation/bin`, mise/asdf equivalents) and the active node version on the daemon's PATH doesn't match, the spawn fails with `agent spawn failed: No such file or directory`.
+
+The spawn path scans common node-manager bin dirs (nvm, fnm, mise, asdf, Volta, `~/.npm-global/bin`, `~/.local/bin`, `/usr/local/bin`, `/opt/homebrew/bin`) per spawn, so a `nvm use <other-version>` after the daemon started is picked up on the next worker respawn without a daemon restart. If the binary lives somewhere else, either restart `aoe serve` from a shell where `which claude-agent-acp` resolves, or symlink it into one of those dirs.
+
 ### Cockpit feels "stuck" with no events
 
 - Check `aoe cockpit logs --follow` (when the worker supervisor lands)
@@ -364,7 +430,7 @@ context where approvals legitimately take longer.
 agent stderr verbatim to `debug.log` under the app data dir. We scrub
 common API-key prefixes (Anthropic `sk-...`, GitHub `ghp_...`, AWS
 `AKIA...`, `Bearer <token>`, etc.) before they hit disk, but the scrub
-is best-effort — a hand-rolled secret with no recognisable shape will
+is best-effort; a hand-rolled secret with no recognisable shape will
 pass through. Before attaching `debug.log` to a bug report, skim it
 for anything that looks like a credential, and replace it with
 `<redacted>` if needed.
@@ -374,13 +440,13 @@ for anything that looks like a credential, and replace it with
 ```
 aoe cockpit doctor [--json] [--fix]
 aoe cockpit agents
+aoe cockpit ps [--json]
+aoe cockpit stop <session>            # graceful: SIGTERM the runner
+aoe cockpit stop --all
+aoe cockpit kill <session>            # immediate: SIGKILL the runner
 aoe cockpit logs [--session <id>] [--follow]
-aoe cockpit restart <session>
+aoe cockpit restart <session>         # stop + let daemon respawn
 ```
-
-`logs` and `restart` are reserved for the worker supervisor wiring
-(landing in a follow-up release); they print a clear "not yet
-available" message today so scripts can check the surface stably.
 
 ## What's deferred
 

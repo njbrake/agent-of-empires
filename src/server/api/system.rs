@@ -395,9 +395,13 @@ pub struct ServerAbout {
     /// `PATCH /api/cockpit/master`.
     pub cockpit_master_enabled: bool,
     /// Whether the server process has `AOE_EXPERIMENTAL_COCKPIT=1` set.
-    /// Read-only from the web — flipping requires restarting `aoe serve`
+    /// Read-only from the web; flipping requires restarting `aoe serve`
     /// with the env var set.
     pub cockpit_env_enabled: bool,
+    /// Resolved value of `cockpit.show_tool_durations` from the active
+    /// profile's config. Drives the per-tool elapsed-time label in the
+    /// web UI; cross-device since it lives in config.toml.
+    pub cockpit_show_tool_durations: bool,
 }
 
 pub async fn get_about(State(state): State<Arc<AppState>>) -> Json<ServerAbout> {
@@ -407,6 +411,10 @@ pub async fn get_about(State(state): State<Arc<AppState>>) -> Json<ServerAbout> 
         .load(std::sync::atomic::Ordering::Relaxed);
     let cockpit_env_enabled = crate::cockpit::experimental_enabled();
     let experimental_cockpit = cockpit_master_enabled && cockpit_env_enabled;
+    let cockpit_show_tool_durations =
+        crate::session::profile_config::resolve_config_or_warn(&state.profile)
+            .cockpit
+            .show_tool_durations;
     Json(ServerAbout {
         version: env!("CARGO_PKG_VERSION").to_string(),
         auth_required,
@@ -417,6 +425,7 @@ pub async fn get_about(State(state): State<Arc<AppState>>) -> Json<ServerAbout> 
         experimental_cockpit,
         cockpit_master_enabled,
         cockpit_env_enabled,
+        cockpit_show_tool_durations,
     })
 }
 

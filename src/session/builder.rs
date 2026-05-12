@@ -607,10 +607,62 @@ fn resolve_worktree_branch(
     }
     Some(
         match worktree_branch.map(str::trim).filter(|b| !b.is_empty()) {
-            Some(b) => BranchSource::Explicit(b.to_string()),
+            // Defense-in-depth: even if the frontend slug missed a forbidden
+            // char (or the caller is a CLI/API user typing a title-shaped
+            // string into the branch field), sanitise here so libgit2 never
+            // sees a value it'll reject with InvalidSpec. `/` is preserved
+            // since it's the legal namespace separator in git refs.
+            Some(b) => BranchSource::Explicit(git_sanitize_branch_name(b)),
             None => BranchSource::Derived(branch_name_from_title(final_title)),
         },
     )
+}
+
+/// Replace characters that git ref names cannot contain (per
+/// `git-check-ref-format(1)`) with '-'. Unlike `branch_name_from_title`
+/// this keeps the user's casing and preserves '/' so `feat/auth`-style
+/// branches survive when the user types them explicitly.
+fn git_sanitize_branch_name(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut last_was_dash = false;
+    for ch in s.trim().chars() {
+        let forbidden = ch.is_whitespace()
+            || ch.is_control()
+            || matches!(ch, '~' | '^' | ':' | '?' | '*' | '[' | '\\');
+        let push_ch = if forbidden { '-' } else { ch };
+        if push_ch == '-' {
+            if out.is_empty() || last_was_dash {
+                continue;
+            }
+            last_was_dash = true;
+        } else {
+            last_was_dash = false;
+        }
+        out.push(push_ch);
+    }
+    // Disallowed multi-char sequences: ".." and "@{".
+    let mut out = out.replace("..", "-").replace("@{", "-");
+    // Strip the ".lock" suffix from every slash-separated component, not
+    // just the last one; git-check-ref-format(1) rejects any component
+    // ending in ".lock" (e.g. `foo.lock/bar` is just as invalid as
+    // `foo.lock`).
+    out = out
+        .split('/')
+        .map(|seg| seg.strip_suffix(".lock").unwrap_or(seg))
+        .collect::<Vec<_>>()
+        .join("/");
+    while matches!(out.chars().last(), Some('-' | '.' | '/')) {
+        out.pop();
+    }
+    while matches!(out.chars().next(), Some('-' | '.' | '/')) {
+        out.remove(0);
+    }
+    // A lone '@' is also rejected by git as a complete ref name.
+    if out.is_empty() || out == "@" {
+        "session".to_string()
+    } else {
+        out
+    }
 }
 
 /// Find the next branch name not present in `taken`.
@@ -739,8 +791,71 @@ mod tests {
 
     #[test]
     fn test_worktree_branch_preserves_explicit_name() {
+        // The git-safe sanitiser leaves valid refs alone: '/' is a legal
+        // namespace separator, so `feat/auth` survives unchanged.
         let branch = resolve_worktree_branch(true, Some("feat/auth"), "Fix Login Flow").unwrap();
         assert!(matches!(branch, BranchSource::Explicit(ref s) if s == "feat/auth"));
+    }
+
+    #[test]
+    fn test_worktree_branch_sanitizes_explicit_with_spaces() {
+        // Without this, the value reaches libgit2 and surfaces as the opaque
+        // 'reference name … is not valid' InvalidSpec error in the dashboard.
+        let branch =
+            resolve_worktree_branch(true, Some("Exploration and issues v2"), "Fix Login Flow")
+                .unwrap();
+        assert!(
+            matches!(branch, BranchSource::Explicit(ref s) if s == "Exploration-and-issues-v2")
+        );
+    }
+
+    #[test]
+    fn test_git_sanitize_branch_name_passes_through_valid_refs() {
+        assert_eq!(git_sanitize_branch_name("feat/auth"), "feat/auth");
+        assert_eq!(git_sanitize_branch_name("release-1.2.3"), "release-1.2.3");
+        assert_eq!(
+            git_sanitize_branch_name("user_name/topic"),
+            "user_name/topic"
+        );
+    }
+
+    #[test]
+    fn test_git_sanitize_branch_name_replaces_forbidden_chars() {
+        assert_eq!(git_sanitize_branch_name("has spaces"), "has-spaces");
+        assert_eq!(git_sanitize_branch_name("a:b?c*d"), "a-b-c-d");
+        assert_eq!(git_sanitize_branch_name("ref^name"), "ref-name");
+        assert_eq!(git_sanitize_branch_name("a..b"), "a-b");
+        assert_eq!(git_sanitize_branch_name("a@{b"), "a-b");
+    }
+
+    #[test]
+    fn test_git_sanitize_branch_name_trims_edges() {
+        assert_eq!(git_sanitize_branch_name("  hello  "), "hello");
+        assert_eq!(git_sanitize_branch_name("-leading"), "leading");
+        assert_eq!(git_sanitize_branch_name(".hidden"), "hidden");
+        assert_eq!(git_sanitize_branch_name("/foo"), "foo");
+        assert_eq!(git_sanitize_branch_name("foo/"), "foo");
+        assert_eq!(git_sanitize_branch_name("foo.lock"), "foo");
+        assert_eq!(git_sanitize_branch_name(""), "session");
+    }
+
+    #[test]
+    fn test_git_sanitize_branch_name_strips_interior_lock_suffix() {
+        // git-check-ref-format rejects ANY slash-separated component ending
+        // in ".lock", not just the trailing one.
+        assert_eq!(git_sanitize_branch_name("foo.lock/bar"), "foo/bar");
+        assert_eq!(
+            git_sanitize_branch_name("feat/release.lock/v2"),
+            "feat/release/v2"
+        );
+    }
+
+    #[test]
+    fn test_git_sanitize_branch_name_rejects_bare_at_sign() {
+        // git-check-ref-format also rejects the single character "@" as a
+        // complete ref name; fall back to "session" rather than producing
+        // a name libgit2 will refuse.
+        assert_eq!(git_sanitize_branch_name("@"), "session");
     }
 
     #[test]

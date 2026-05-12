@@ -9,7 +9,7 @@ import { ProjectStep } from "./steps/ProjectStep";
 import { SessionStep } from "./steps/SessionStep";
 import { AgentStep } from "./steps/AgentStep";
 import { ReviewStep } from "./steps/ReviewStep";
-import { applyBranchOverride, getSubmittedBranch } from "./sessionNames";
+import { applyBranchOverride, getSubmittedBranch, slugifyBranch } from "./sessionNames";
 
 export interface WizardData {
   path: string;
@@ -74,7 +74,7 @@ function reducer(state: WizardState, action: Action): WizardState {
     case "SET_FIELD": {
       const newData = { ...state.data, [action.field]: action.value };
       if (action.field === "title" && !state.data.worktreeBranchDirty) {
-        newData.worktreeBranch = String(action.value);
+        newData.worktreeBranch = slugifyBranch(String(action.value));
       }
       if (action.field === "worktreeBranch") {
         const override = applyBranchOverride(

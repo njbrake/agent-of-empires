@@ -3,6 +3,7 @@ import { useMatch, useNavigate } from "react-router-dom";
 import { IDLE_DECAY_WINDOW_MS, isSessionActive } from "./lib/session";
 import { useSessions } from "./hooks/useSessions";
 import { clearCockpitCache } from "./hooks/useCockpit";
+import { CockpitPrefsProvider } from "./lib/cockpitPrefs";
 import { useWorkspaces } from "./hooks/useWorkspaces";
 import { useRepoGroups } from "./hooks/useRepoGroups";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
@@ -447,6 +448,12 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
       () => ({
         onNew: () => setShowSessionWizard(true),
         onDiff: () => toggleDiff(),
+        // Escape closes local UI surfaces only (dialogs, palette,
+        // wizard, settings, help, file viewer). Never wire this to
+        // cockpit.cancelPrompt; Claude Code CLI does that and stray
+        // Escape presses kill in-flight turns the user didn't mean to
+        // abort. Cancel/stop must stay behind an explicit gesture
+        // (the assistant-ui Stop button in the composer).
         onEscape: () => {
           if (deletingWorkspaceId) {
             setDeletingWorkspaceId(null);
@@ -596,7 +603,15 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
       ? { height: `${stableViewportHeight}px` }
       : undefined;
 
+  const cockpitPrefs = useMemo(
+    () => ({
+      showToolDurations: serverAbout?.cockpit_show_tool_durations ?? true,
+    }),
+    [serverAbout?.cockpit_show_tool_durations],
+  );
+
   return (
+    <CockpitPrefsProvider value={cockpitPrefs}>
     <div
       className="h-dvh flex flex-col bg-surface-900 text-text-primary overflow-hidden safe-area-inset"
       style={rootStyle}
@@ -690,6 +705,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
         style={{ top: -9999, left: -9999 }}
       />
     </div>
+    </CockpitPrefsProvider>
   );
 }
 

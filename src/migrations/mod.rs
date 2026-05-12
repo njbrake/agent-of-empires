@@ -13,13 +13,14 @@ mod v002_seed_sandbox_from_volumes;
 mod v003_yolo_mode_config;
 mod v004_unified_environment;
 mod v005_cockpit_defaults;
+mod v006_unlimited_cockpit_history;
 
 use anyhow::Result;
 use std::fs;
 use std::path::PathBuf;
 use tracing::{debug, info};
 
-const CURRENT_VERSION: u32 = 5;
+const CURRENT_VERSION: u32 = 6;
 const VERSION_FILE: &str = ".schema_version";
 
 struct Migration {
@@ -53,6 +54,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 5,
         name: "cockpit_defaults",
         run: v005_cockpit_defaults::run,
+    },
+    Migration {
+        version: 6,
+        name: "unlimited_cockpit_history",
+        run: v006_unlimited_cockpit_history::run,
     },
 ];
 

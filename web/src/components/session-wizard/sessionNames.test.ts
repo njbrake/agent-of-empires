@@ -3,6 +3,7 @@ import {
   applyBranchOverride,
   getReviewSummary,
   getSubmittedBranch,
+  slugifyBranch,
 } from "./sessionNames";
 
 describe("applyBranchOverride", () => {
@@ -13,17 +14,17 @@ describe("applyBranchOverride", () => {
     });
   });
 
-  it("resets an empty branch back to the title-derived default", () => {
+  it("honors an explicit clear and marks the field dirty so the title mirror stops", () => {
     expect(applyBranchOverride("session-title", "")).toEqual({
-      worktreeBranch: "session-title",
-      worktreeBranchDirty: false,
+      worktreeBranch: "",
+      worktreeBranchDirty: true,
     });
   });
 
   it("keeps both fields empty when there is no title to fall back to", () => {
     expect(applyBranchOverride("", "")).toEqual({
       worktreeBranch: "",
-      worktreeBranchDirty: false,
+      worktreeBranchDirty: true,
     });
   });
 });
@@ -41,6 +42,40 @@ describe("getSubmittedBranch", () => {
 
   it("leaves the branch empty only when both fields are empty", () => {
     expect(getSubmittedBranch("", "")).toBe("");
+  });
+});
+
+describe("slugifyBranch", () => {
+  it("kebab-cases titles with spaces", () => {
+    expect(slugifyBranch("Exploration and issues v2")).toBe(
+      "exploration-and-issues-v2",
+    );
+  });
+
+  it("collapses runs of punctuation into a single dash", () => {
+    expect(slugifyBranch("Fix: login @ mobile #42")).toBe(
+      "fix-login-mobile-42",
+    );
+  });
+
+  it("replaces forward slashes; git allows them but the slug stays kebab", () => {
+    expect(slugifyBranch("feat/auth.refactor")).toBe("feat-auth-refactor");
+  });
+
+  it("folds Latin diacritics and ligatures", () => {
+    expect(slugifyBranch("café fix")).toBe("cafe-fix");
+    expect(slugifyBranch("Straße")).toBe("strasse");
+    expect(slugifyBranch("œuvre")).toBe("oeuvre");
+  });
+
+  it("strips leading and trailing punctuation", () => {
+    expect(slugifyBranch("  hello world!  ")).toBe("hello-world");
+  });
+
+  it("falls back to 'session' when nothing survives", () => {
+    expect(slugifyBranch("")).toBe("session");
+    expect(slugifyBranch("---")).toBe("session");
+    expect(slugifyBranch("🚀")).toBe("session");
   });
 });
 

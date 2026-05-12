@@ -535,3 +535,113 @@ describe("applyEvent / Stopped empty-output fallback", () => {
     expect(state.activity.find((r) => r.kind === "empty_output")).toBeUndefined();
   });
 });
+
+describe("applyEvent / Stopped user_stopped", () => {
+  it("sets workerStopped on reason=user_stopped and clears turnActive", () => {
+    let state = applyEvent(emptyCockpitState(), {
+      session_id: "s-1",
+      seq: 1,
+      event: { UserPromptSent: { text: "long task" } },
+    });
+    expect(state.turnActive).toBe(true);
+    expect(state.workerStopped).toBe(false);
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 2,
+      event: { Stopped: { reason: "user_stopped" } },
+    });
+    expect(state.workerStopped).toBe(true);
+    expect(state.turnActive).toBe(false);
+  });
+
+  it("does NOT set workerStopped on reason=prompt_complete", () => {
+    let state = applyEvent(emptyCockpitState(), {
+      session_id: "s-1",
+      seq: 1,
+      event: { UserPromptSent: { text: "hi" } },
+    });
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 2,
+      event: { Stopped: { reason: "prompt_complete" } },
+    });
+    expect(state.workerStopped).toBe(false);
+  });
+
+  it("clears workerStopped on the next UserPromptSent", () => {
+    let state = applyEvent(emptyCockpitState(), {
+      session_id: "s-1",
+      seq: 1,
+      event: { Stopped: { reason: "user_stopped" } },
+    });
+    expect(state.workerStopped).toBe(true);
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 2,
+      event: { UserPromptSent: { text: "back online" } },
+    });
+    expect(state.workerStopped).toBe(false);
+  });
+
+  it("clears workerStopped on AcpSessionAssigned (manual reconnect succeeded)", () => {
+    let state = applyEvent(emptyCockpitState(), {
+      session_id: "s-1",
+      seq: 1,
+      event: { Stopped: { reason: "user_stopped" } },
+    });
+    expect(state.workerStopped).toBe(true);
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 2,
+      event: { AcpSessionAssigned: { acp_session_id: "abc-123" } },
+    });
+    expect(state.workerStopped).toBe(false);
+  });
+});
+
+describe("applyEvent / Stopped restart_pending", () => {
+  it("sets workerRestarting (not workerStopped) on reason=restart_pending", () => {
+    const state = applyEvent(emptyCockpitState(), {
+      session_id: "s-1",
+      seq: 1,
+      event: { Stopped: { reason: "restart_pending" } },
+    });
+    expect(state.workerRestarting).toBe(true);
+    expect(state.workerStopped).toBe(false);
+    expect(state.turnActive).toBe(false);
+  });
+
+  it("clears workerRestarting on AcpSessionAssigned (reconciler auto-respawn finished)", () => {
+    let state = applyEvent(emptyCockpitState(), {
+      session_id: "s-1",
+      seq: 1,
+      event: { Stopped: { reason: "restart_pending" } },
+    });
+    expect(state.workerRestarting).toBe(true);
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 2,
+      event: { AcpSessionAssigned: { acp_session_id: "fresh-id" } },
+    });
+    expect(state.workerRestarting).toBe(false);
+  });
+
+  it("user_stopped → restart_pending transitions cleanly", () => {
+    // Edge case: user runs `aoe cockpit stop`, then realises they meant
+    // `restart`. The two reasons must not pile up — restart_pending
+    // wins because it's the most recent signal from the daemon.
+    let state = applyEvent(emptyCockpitState(), {
+      session_id: "s-1",
+      seq: 1,
+      event: { Stopped: { reason: "user_stopped" } },
+    });
+    expect(state.workerStopped).toBe(true);
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 2,
+      event: { Stopped: { reason: "restart_pending" } },
+    });
+    expect(state.workerStopped).toBe(false);
+    expect(state.workerRestarting).toBe(true);
+  });
+});

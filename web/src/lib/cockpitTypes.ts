@@ -67,7 +67,7 @@ export interface SessionUsage {
 export interface AvailableCommand {
   name: string;
   description: string;
-  /** True when ACP reported an `Unstructured` input spec — i.e. the
+  /** True when ACP reported an `Unstructured` input spec; i.e. the
    *  command takes free-form arguments after the name. The composer
    *  inserts a trailing space and leaves the cursor in place when
    *  this is true so the user can keep typing. */
@@ -102,6 +102,14 @@ export type CockpitEvent =
          *  ACP `ToolCallUpdate.fields.content`. Empty when the agent
          *  emitted no content blocks on completion. */
         content: string;
+        /** Server-side ISO-8601 wall clock at which the completion
+         *  was minted. Used to stamp the activity row's `at` so the
+         *  duration label survives page reload; without it, the
+         *  reducer would assign `new Date()` at replay time and the
+         *  measured duration would count from "now". Optional for
+         *  backward compatibility with events persisted before this
+         *  field landed. */
+        completed_at?: string;
       };
     }
   | {
@@ -122,6 +130,12 @@ export type CockpitEvent =
         tool_call_id: string;
         title: string | null;
         args_preview: string | null;
+        /** Re-stamped start time when the agent reports the tool's
+         *  status transitioned to InProgress. See acp_client.rs;
+         *  reused so the duration label measures real tool runtime
+         *  rather than adapter scheduling time. Null for non-status
+         *  updates. */
+        started_at?: string | null;
       };
     }
   | { ApprovalRequested: { approval: Approval } }
@@ -216,6 +230,19 @@ export interface CockpitState {
    *  handler to detect "no-op turn" without walking the full
    *  activity array. */
   turnHasOutput: boolean;
+  /** Set true when the daemon publishes `Stopped { reason: "user_stopped" }`,
+   *  meaning `aoe cockpit stop|kill` (or an equivalent external
+   *  teardown) terminated the runner. The composer disables itself and
+   *  shows a reconnect banner; cleared on the next UserPromptSent or
+   *  AcpSessionAssigned (a fresh worker is online). */
+  workerStopped: boolean;
+  /** Set true when the daemon publishes `Stopped { reason: "restart_pending" }`,
+   *  meaning `aoe cockpit restart` ran and the reconciler will respawn
+   *  the worker on its next 2s tick with the cached `acp_session_id`
+   *  (transcript continuity). The composer disables itself and a
+   *  transient "Restarting…" banner appears without a reconnect button;
+   *  cleared on AcpSessionAssigned or UserPromptSent. */
+  workerRestarting: boolean;
 }
 
 export interface ActivityRow {
@@ -264,6 +291,8 @@ export function emptyCockpitState(): CockpitState {
     availableCommands: [],
     toolOutputs: {},
     turnHasOutput: false,
+    workerStopped: false,
+    workerRestarting: false,
   };
 }
 
@@ -326,7 +355,8 @@ export function applyEvent(
     return next;
   }
   if ("ToolCallCompleted" in event) {
-    const { tool_call_id, is_error, content } = event.ToolCallCompleted;
+    const { tool_call_id, is_error, content, completed_at } =
+      event.ToolCallCompleted;
     if (next.inFlightTool && next.inFlightTool.id === tool_call_id) {
       next.inFlightTool = null;
     }
@@ -347,12 +377,16 @@ export function applyEvent(
       void _drop;
       next.toolOutputs = rest;
     }
+    // Use the server-side completion timestamp when present so the
+    // duration label survives page reload. Events persisted before
+    // `completed_at` landed fall back to "now" (same bug as before for
+    // those specific rows only).
     next.activity = pushActivity(next.activity, {
       id: `done-${tool_call_id}`,
       kind: is_error ? "tool_error" : "tool_complete",
       text,
       toolCallId: tool_call_id,
-      at: new Date().toISOString(),
+      at: completed_at ?? new Date().toISOString(),
     });
     return next;
   }
@@ -362,12 +396,14 @@ export function applyEvent(
     return next;
   }
   if ("ToolCallUpdated" in event) {
-    const { tool_call_id, title, args_preview } = event.ToolCallUpdated;
+    const { tool_call_id, title, args_preview, started_at } =
+      event.ToolCallUpdated;
     if (next.inFlightTool && next.inFlightTool.id === tool_call_id) {
       next.inFlightTool = {
         ...next.inFlightTool,
         name: title ?? next.inFlightTool.name,
         args_preview: args_preview ?? next.inFlightTool.args_preview,
+        started_at: started_at ?? next.inFlightTool.started_at,
       };
     }
     // Walk activity backwards to find the matching tool_start row and
@@ -390,6 +426,7 @@ export function applyEvent(
             ...row.tool,
             name: title ?? row.tool.name,
             args_preview: args_preview ?? row.tool.args_preview,
+            started_at: started_at ?? row.tool.started_at,
           },
         };
       }
@@ -460,9 +497,24 @@ export function applyEvent(
     // turn-active flag so the global "working" spinner stops.
     next.inFlightTool = null;
     next.turnActive = false;
+    // The "user_stopped" / "restart_pending" reasons are published by
+    // the supervisor's reap_user_stopped pass when it detects an
+    // out-of-band CLI teardown. Surface a distinct UI state for each:
+    //   - user_stopped: persistent "Stopped" banner with a Reconnect
+    //     button; the daemon will NOT auto-respawn.
+    //   - restart_pending: transient "Restarting…" banner without a
+    //     reconnect affordance; the reconciler will respawn within ~2s
+    //     and AcpSessionAssigned clears the flag.
+    if (event.Stopped.reason === "user_stopped") {
+      next.workerStopped = true;
+      next.workerRestarting = false;
+    } else if (event.Stopped.reason === "restart_pending") {
+      next.workerRestarting = true;
+      next.workerStopped = false;
+    }
     // Some upstream slash commands (e.g. /usage, /status, /memory in
     // claude-agent-acp) advertise via available_commands_update but
-    // produce no agent_message_chunk and no tool calls when invoked —
+    // produce no agent_message_chunk and no tool calls when invoked;
     // see https://github.com/agentclientprotocol/claude-agent-acp/issues/642.
     // Detect that case and append a notice row. The `turnHasOutput`
     // flag is flipped by every output-producing handler and reset by
@@ -490,7 +542,7 @@ export function applyEvent(
     // dispatched a moment ago: find the OLDEST matching un-promoted
     // user_prompt with the same text and promote it to the
     // authoritative seq-based id. Walking oldest-first matters when
-    // the user submits the same text twice in quick succession — the
+    // the user submits the same text twice in quick succession; the
     // first server echo must promote the first optimistic row, not
     // the second, so the seq order matches the submission order.
     const matchIdx = next.activity.findIndex(
@@ -518,9 +570,13 @@ export function applyEvent(
     next.startupError = null;
     next.lastError = null;
     next.turnActive = true;
-    // New turn — reset the no-output detector so Stopped fires the
+    // New turn; reset the no-output detector so Stopped fires the
     // empty-output notice if the agent produces nothing.
     next.turnHasOutput = false;
+    // A fresh prompt means the worker is alive again; clear the
+    // user_stopped banner without waiting for AcpSessionAssigned.
+    next.workerStopped = false;
+    next.workerRestarting = false;
     return next;
   }
   if ("AcpSessionAssigned" in event) {
@@ -537,10 +593,15 @@ export function applyEvent(
     // its own once the respawn completes the handshake.
     next.startupError = null;
     next.lastError = null;
+    // A fresh agent (via POST /cockpit/spawn after `aoe cockpit stop`
+    // or via the reconciler's auto-respawn after `aoe cockpit restart`)
+    // is online; clear both transient worker banners.
+    next.workerStopped = false;
+    next.workerRestarting = false;
     return next;
   }
   if ("SessionContextReset" in event) {
-    // session/load failed and the agent fell back to session/new — its
+    // session/load failed and the agent fell back to session/new; its
     // context window is empty. Clear the now-stale token-usage hint so
     // the composer footer doesn't keep showing the previous run's
     // "75k / 200k" until the next UsageUpdate arrives.
@@ -550,7 +611,7 @@ export function applyEvent(
     // session/load failing on the next spawn is expected, not an
     // incident the user needs to know about. Events arrive in seq
     // order, so checking `activity` here captures "any prompt with a
-    // lower seq than this reset" — later prompts won't retroactively
+    // lower seq than this reset"; later prompts won't retroactively
     // surface the suppressed row.
     const hasPriorPrompt = next.activity.some((r) => r.kind === "user_prompt");
     if (!hasPriorPrompt) {

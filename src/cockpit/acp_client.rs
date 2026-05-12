@@ -94,6 +94,67 @@ enum ClientCmd {
     Shutdown,
 }
 
+/// How the connection task should handle the ACP handshake against the
+/// agent.
+///
+/// `Fresh` is the standard path: send `initialize`, then either
+/// `session/load` (if the agent advertises support AND we have a stored
+/// id) or `session/new`.
+///
+/// `Resume` is used by `AcpClient::attach` on `aoe serve` restart, when
+/// the per-session `aoe __cockpit-runner` shim kept the agent process
+/// alive across the daemon's death. The agent is already initialized
+/// and the session is already in its in-memory map; re-sending
+/// `session/new` would split context onto a new session id (which the
+/// in-flight turn does not address), and re-sending `session/load`
+/// against an agent that advertises `loadSession: false` (e.g. the
+/// bundled `aoe-agent`) would fall through to `session/new` with the
+/// same split-context bug. In `Resume` mode the daemon still sends
+/// `initialize` (idempotent for capabilities, cheap, lets us learn the
+/// agent's caps) but skips both `session/new` and `session/load` and
+/// uses the supplied `acp_session_id` as-is. `in_flight_turn` arms the
+/// resume-idle watchdog described in `run_connection_task`.
+#[derive(Debug, Clone)]
+enum ConnectMode {
+    Fresh {
+        stored_acp_session_id: Option<String>,
+    },
+    Resume {
+        acp_session_id: String,
+        in_flight_turn: bool,
+    },
+}
+
+/// Time without any inbound notification, after a `Resume`-mode attach
+/// with `in_flight_turn = true`, before the watchdog synthesizes a
+/// `Stopped { reason: "reattach_idle" }` event. LLM streams rarely have
+/// intra-turn silence near this duration so the false-positive risk
+/// (UI flips to Idle then back to Streaming on the next chunk) is
+/// bounded.
+const RESUME_IDLE_GRACE_DEFAULT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Monotonic counter appended to synthetic tool-call IDs so two events
+/// minted within the same millisecond don't collide on the
+/// `(session_id, tool_id)` keys used by the cockpit event store.
+static SYNTHETIC_TOOL_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Read the resume-idle grace. In debug builds, honors
+/// `AOE_RESUME_IDLE_GRACE_MS` so integration tests can short-circuit
+/// the default 10s without making real failures racy. Values below
+/// 100ms are clamped up so a typo can't effectively disable the
+/// watchdog. Release builds always use `RESUME_IDLE_GRACE_DEFAULT`
+/// so a misconfigured env var can't surface false-positive Stopped
+/// events to real users.
+fn resume_idle_grace() -> std::time::Duration {
+    #[cfg(debug_assertions)]
+    if let Ok(raw) = std::env::var("AOE_RESUME_IDLE_GRACE_MS") {
+        if let Ok(ms) = raw.parse::<u64>() {
+            return std::time::Duration::from_millis(ms.max(100));
+        }
+    }
+    RESUME_IDLE_GRACE_DEFAULT
+}
+
 /// Resolution channel + the option set the agent offered. Stored in the
 /// pending-responders map keyed by the cockpit's server-generated nonce.
 struct PendingResponder {
@@ -159,69 +220,57 @@ impl AcpClient {
         let (event_tx, event_rx) = mpsc::channel::<Event>(64);
         let pending_responders: PendingResponders = Arc::new(Mutex::new(HashMap::new()));
 
-        // Choose transport: if a socket path is set, bind a listener
-        // first, then spawn the agent with AOE_ACP_SOCKET pointing at
-        // it. Otherwise fall back to stdio over the child's stdin/out.
-        let socket_listener = if let Some(socket_path) = &config.socket_path {
-            // Remove any stale socket so bind succeeds.
-            let _ = tokio::fs::remove_file(socket_path).await;
-            if let Some(parent) = socket_path.parent() {
-                tokio::fs::create_dir_all(parent)
-                    .await
-                    .map_err(|e| AcpError::Spawn(format!("socket parent: {e}")))?;
-            }
-            let listener = tokio::net::UnixListener::bind(socket_path)
-                .map_err(|e| AcpError::Spawn(format!("bind unix socket: {e}")))?;
-            Some(listener)
-        } else {
-            None
+        // Two transports:
+        //  - Socket (runner-mediated): for every cockpit session in
+        //    production. Spawn `aoe __cockpit-runner` detached via
+        //    `setsid`; the runner binds the unix socket, spawns the
+        //    agent over stdio, and survives `aoe serve --stop`. The
+        //    daemon then dials the socket and runs the ACP handshake.
+        //  - Stdio (in-proc): the legacy direct-spawn path. Retained for
+        //    tests where we don't want to depend on `current_exe()` being
+        //    a real `aoe` binary, and as a safety valve.
+        let mode = ConnectMode::Fresh {
+            stored_acp_session_id: config.stored_acp_session_id.clone(),
         };
+        if let Some(socket_path) = config.socket_path.clone() {
+            spawn_runner_detached(&config, &socket_path, session_id.0.clone())?;
+            return Self::connect_via_socket(
+                socket_path,
+                config.cwd,
+                config.additional_dirs,
+                mode,
+                session_id,
+                pending_responders,
+                cmd_tx,
+                cmd_rx,
+                event_tx,
+                event_rx,
+            )
+            .await;
+        }
 
         let child = spawn_subprocess(&config)?;
         let child = Arc::new(Mutex::new(child));
-
-        match socket_listener {
-            None => {
-                Self::start_with_stdio(
-                    config.cwd,
-                    config.additional_dirs,
-                    config.stored_acp_session_id,
-                    session_id,
-                    child,
-                    pending_responders,
-                    cmd_tx,
-                    cmd_rx,
-                    event_tx,
-                    event_rx,
-                )
-                .await
-            }
-            Some(listener) => {
-                let socket_path = config.socket_path.clone();
-                Self::start_with_socket(
-                    config.cwd,
-                    config.additional_dirs,
-                    config.stored_acp_session_id,
-                    session_id,
-                    child,
-                    pending_responders,
-                    cmd_tx,
-                    cmd_rx,
-                    event_tx,
-                    event_rx,
-                    listener,
-                    socket_path,
-                )
-                .await
-            }
-        }
+        Self::start_with_stdio(
+            config.cwd,
+            config.additional_dirs,
+            mode,
+            session_id,
+            child,
+            pending_responders,
+            cmd_tx,
+            cmd_rx,
+            event_tx,
+            event_rx,
+        )
+        .await
     }
 
     #[allow(clippy::too_many_arguments)]
     async fn start_with_stdio(
         cwd: PathBuf,
         additional_dirs: Vec<PathBuf>,
-        stored_acp_session_id: Option<String>,
+        mode: ConnectMode,
         session_id: CockpitSessionId,
         child: Arc<Mutex<tokio::process::Child>>,
         pending_responders: PendingResponders,
@@ -266,15 +315,15 @@ impl AcpClient {
             cmd_rx,
             cwd,
             session_label.clone(),
-            child_for_task,
+            Some(child_for_task),
             pending_for_task,
             resources,
             None,
-            stored_acp_session_id,
+            mode,
             Some(ready_tx),
         ));
 
-        wait_for_handshake(&session_label, ready_rx, &child).await?;
+        wait_for_handshake(&session_label, ready_rx, Some(&child)).await?;
 
         Ok(Self {
             session_id,
@@ -285,28 +334,30 @@ impl AcpClient {
         })
     }
 
+    /// Connect to a per-session runner over its unix socket. Used by the
+    /// post-spawn "wait for runner to bind, then dial" path AND by the
+    /// `Self::attach` reattach path on `aoe serve` startup. The runner
+    /// owns the agent subprocess so this constructor returns an
+    /// `AcpClient` with `_child = None`; dropping the client does not
+    /// terminate the worker.
     #[allow(clippy::too_many_arguments)]
-    async fn start_with_socket(
+    async fn connect_via_socket(
+        socket_path: PathBuf,
         cwd: PathBuf,
         additional_dirs: Vec<PathBuf>,
-        stored_acp_session_id: Option<String>,
+        mode: ConnectMode,
         session_id: CockpitSessionId,
-        child: Arc<Mutex<tokio::process::Child>>,
         pending_responders: PendingResponders,
         cmd_tx: mpsc::Sender<ClientCmd>,
         cmd_rx: mpsc::Receiver<ClientCmd>,
         event_tx: mpsc::Sender<Event>,
         event_rx: mpsc::Receiver<Event>,
-        listener: tokio::net::UnixListener,
-        socket_path: Option<PathBuf>,
     ) -> Result<Self, AcpError> {
-        // Wait for the agent to connect. Bound the wait so a wedged
-        // agent doesn't park spawn() forever.
-        let accept = tokio::time::timeout(std::time::Duration::from_secs(10), listener.accept())
-            .await
-            .map_err(|_| AcpError::Spawn("agent did not connect to socket within 10s".into()))?
-            .map_err(|e| AcpError::Spawn(format!("accept: {e}")))?;
-        let (stream, _addr) = accept;
+        // Poll for the runner to finish binding the socket. The runner
+        // binds before it spawns the agent so this is usually fast (a
+        // few ms) but bound the wait so a wedged runner returns a typed
+        // error instead of parking the supervisor.
+        let stream = wait_for_socket(&socket_path, std::time::Duration::from_secs(10)).await?;
         let (read_half, write_half) = stream.into_split();
         let transport = ByteStreams::new(write_half.compat_write(), read_half.compat());
 
@@ -320,7 +371,6 @@ impl AcpClient {
         };
 
         let session_label = session_id.0.clone();
-        let child_for_task = child.clone();
         let pending_for_task = pending_responders.clone();
 
         let (ready_tx, ready_rx) = oneshot::channel::<Result<(), AcpError>>();
@@ -331,23 +381,74 @@ impl AcpClient {
             cmd_rx,
             cwd,
             session_label.clone(),
-            child_for_task,
+            None,
             pending_for_task,
             resources,
-            socket_path,
-            stored_acp_session_id,
+            None,
+            mode,
             Some(ready_tx),
         ));
 
-        wait_for_handshake(&session_label, ready_rx, &child).await?;
+        wait_for_handshake(&session_label, ready_rx, None).await?;
 
         Ok(Self {
             session_id,
             inbound: Some(event_rx),
             cmd_tx: Some(cmd_tx),
             pending_responders,
-            _child: Some(child),
+            _child: None,
         })
+    }
+
+    /// Reattach to an already-running cockpit worker over its unix
+    /// socket. Used by `aoe serve` startup when a registry entry has a
+    /// live PID and an existing socket file; we connect, send only the
+    /// (idempotent) ACP `initialize` request, and reuse the existing
+    /// `stored_acp_session_id` directly. We deliberately do NOT issue
+    /// `session/new` or `session/load`: the agent process is still
+    /// running (the runner kept it alive across `aoe serve --stop`) and
+    /// the session is already loaded in its memory, so re-sending those
+    /// requests would either split context onto a new session id (when
+    /// the agent doesn't advertise `loadSession`) or double-load against
+    /// a busy session.
+    ///
+    /// `in_flight_turn = true` tells the connection task that the
+    /// session was mid-prompt when the previous daemon detached. The
+    /// task arms a watchdog that emits a synthetic
+    /// `Event::Stopped { reason: "reattach_idle" }` after
+    /// `RESUME_IDLE_GRACE` of inbound silence, because the agent's
+    /// eventual response to the orphaned `session/prompt` carries a
+    /// request id this client never issued and is dropped silently by
+    /// the underlying transport, leaving the UI otherwise stuck on
+    /// "thinking".
+    pub async fn attach(
+        socket_path: PathBuf,
+        cwd: PathBuf,
+        additional_dirs: Vec<PathBuf>,
+        stored_acp_session_id: String,
+        in_flight_turn: bool,
+        session_id: CockpitSessionId,
+    ) -> Result<Self, AcpError> {
+        let (cmd_tx, cmd_rx) = mpsc::channel::<ClientCmd>(16);
+        let (event_tx, event_rx) = mpsc::channel::<Event>(64);
+        let pending_responders: PendingResponders = Arc::new(Mutex::new(HashMap::new()));
+        let mode = ConnectMode::Resume {
+            acp_session_id: stored_acp_session_id,
+            in_flight_turn,
+        };
+        Self::connect_via_socket(
+            socket_path,
+            cwd,
+            additional_dirs,
+            mode,
+            session_id,
+            pending_responders,
+            cmd_tx,
+            cmd_rx,
+            event_tx,
+            event_rx,
+        )
+        .await
     }
 
     /// Send a user message to the agent (ACP `session/prompt`).
@@ -431,7 +532,7 @@ impl AcpClient {
 }
 
 /// Reject `provider_env` request entries whose key would either escape
-/// the agent sandbox (PATH, HOME, etc. — `always_forward` already wires
+/// the agent sandbox (PATH, HOME, etc.; `always_forward` already wires
 /// those from the operator's environment) or hijack the dynamic linker
 /// (LD_PRELOAD, DYLD_INSERT_LIBRARIES, etc.) to run arbitrary code in
 /// the child. Provider auth keys (`ANTHROPIC_API_KEY`, etc.) are
@@ -465,12 +566,12 @@ fn provider_env_denyreason(key: &str) -> Option<&'static str> {
 }
 
 /// Scrub well-known secret patterns from agent stderr before it lands in
-/// `debug.log`. Conservative — only redacts strings that unambiguously
+/// `debug.log`. Conservative; only redacts strings that unambiguously
 /// signal a secret via prefix (Anthropic `sk-`, GitHub `ghp_`,
 /// `Bearer <token>`, etc.). Catches the common case where an adapter
 /// prints "auth failed: api_key=sk-ant-..."; will not catch a hand-rolled
 /// secret with no recognisable shape. Users sharing logs in bug reports
-/// should still scan them — see docs/cockpit.md#sharing-debug-logs.
+/// should still scan them; see docs/cockpit.md#sharing-debug-logs.
 fn scrub_stderr_secrets(line: &str) -> std::borrow::Cow<'_, str> {
     use std::sync::OnceLock;
     static RE: OnceLock<regex::Regex> = OnceLock::new();
@@ -483,8 +584,312 @@ fn scrub_stderr_secrets(line: &str) -> std::borrow::Cow<'_, str> {
     re.replace_all(line, "<redacted-secret>")
 }
 
+/// Resolve a bare agent command name to an absolute path, scanning common
+/// node-version-manager bin dirs (nvm, fnm, mise, asdf, Volta) plus the
+/// usual system locations. Returns the absolute binary path and the bin
+/// dir we found it in; the caller prepends that dir to the agent's PATH
+/// so the adapter's own subprocesses (`node`, `npx`) can still resolve.
+///
+/// Re-runs per spawn (no cache) so an `nvm use <other-version>` after the
+/// daemon started picks up immediately without a daemon restart. Returns
+/// None when the command is already a path, contains a `${placeholder}`,
+/// or isn't found anywhere we know to look.
+pub fn resolve_agent_command(command: &str) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+    if command.contains('/') || command.contains('\\') || command.contains("${") {
+        return None;
+    }
+
+    if let Some(path) = find_in_path_env(command) {
+        let parent = path
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(std::path::PathBuf::new);
+        return Some((path, parent));
+    }
+
+    for dir in node_search_dirs() {
+        let candidate = dir.join(command);
+        if candidate.is_file() {
+            return Some((candidate, dir));
+        }
+    }
+    None
+}
+
+fn find_in_path_env(binary: &str) -> Option<std::path::PathBuf> {
+    let path_var = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path_var) {
+        let candidate = dir.join(binary);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+/// Best-effort enumeration of node bin dirs the user is likely to have
+/// the adapter installed into. Order matters only for tie-breaking; the
+/// first hit wins, but in practice each binary only lives in one place.
+fn node_search_dirs() -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    if let Some(home) = dirs::home_dir() {
+        // nvm: `~/.nvm/versions/node/v<ver>/bin/<binary>`
+        push_subdirs(&mut out, &home.join(".nvm/versions/node"), "bin");
+        // fnm: `~/.fnm/node-versions/v<ver>/installation/bin/<binary>`
+        push_subdirs(
+            &mut out,
+            &home.join(".fnm/node-versions"),
+            "installation/bin",
+        );
+        // mise: `~/.local/share/mise/installs/node/<ver>/bin/<binary>`
+        push_subdirs(
+            &mut out,
+            &home.join(".local/share/mise/installs/node"),
+            "bin",
+        );
+        // asdf: `~/.asdf/installs/nodejs/<ver>/bin/<binary>`
+        push_subdirs(&mut out, &home.join(".asdf/installs/nodejs"), "bin");
+        // Volta + user-scoped npm prefixes
+        out.push(home.join(".volta/bin"));
+        out.push(home.join(".npm-global/bin"));
+        out.push(home.join(".local/bin"));
+        out.push(home.join("bin"));
+    }
+    out.push(std::path::PathBuf::from("/usr/local/bin"));
+    out.push(std::path::PathBuf::from("/opt/homebrew/bin"));
+    out.push(std::path::PathBuf::from("/usr/bin"));
+    out
+}
+
+fn push_subdirs(out: &mut Vec<std::path::PathBuf>, root: &std::path::Path, leaf: &str) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let bin = entry.path().join(leaf);
+        if bin.is_dir() {
+            out.push(bin);
+        }
+    }
+}
+
+/// Spawn the `aoe __cockpit-runner` shim as a detached process. The
+/// runner owns the agent subprocess and outlives the daemon. We retain
+/// no `Child` handle here; once the runner is up, the daemon talks to
+/// it over the unix socket and the OS keeps the runner alive across
+/// `aoe serve` restarts.
+fn spawn_runner_detached(
+    config: &SpawnConfig,
+    socket_path: &std::path::Path,
+    session_id: String,
+) -> Result<(), AcpError> {
+    use std::process::Command as StdCommand;
+    let current_exe =
+        std::env::current_exe().map_err(|e| AcpError::Spawn(format!("current_exe: {e}")))?;
+    let log_path = crate::cockpit::worker_registry::log_path_for(&session_id)
+        .map_err(|e| AcpError::Spawn(format!("log path: {e}")))?;
+    if let Some(parent) = log_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+
+    // Resolve the agent binary against PATH + known node-manager dirs so
+    // the runner spawns the right binary even when the daemon's frozen
+    // PATH doesn't contain it. See #1048. The resolved bin dir is also
+    // prepended to PATH below so the adapter's own `node`/`npx`
+    // subprocesses land in the same install.
+    let resolved = resolve_agent_command(&config.spec.command);
+    let (spawn_command, extra_path_dir) = match &resolved {
+        Some((abs, dir)) => (abs.to_string_lossy().into_owned(), Some(dir.clone())),
+        None => (config.spec.command.clone(), None),
+    };
+
+    let mut cmd = StdCommand::new(&current_exe);
+    cmd.arg("__cockpit-runner")
+        .arg("--socket")
+        .arg(socket_path)
+        .arg("--session-id")
+        .arg(&session_id)
+        .arg("--agent-name")
+        .arg(&config.spec.command)
+        .arg("--cwd")
+        .arg(&config.cwd);
+    if !config.additional_dirs.is_empty() {
+        cmd.arg("--additional-dirs").arg(
+            config
+                .additional_dirs
+                .iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join(","),
+        );
+    }
+    let provider_keys: Vec<&str> = config
+        .provider_env
+        .iter()
+        .map(|(k, _)| k.as_str())
+        .collect();
+    if !provider_keys.is_empty() {
+        cmd.arg("--provider-env-keys").arg(provider_keys.join(","));
+    }
+    if let Some(stored) = &config.stored_acp_session_id {
+        cmd.arg("--stored-acp-session-id").arg(stored);
+    }
+    cmd.arg("--");
+    // Pass the resolved absolute path (or fall back to the bare command).
+    // The runner spawns whatever it receives, so an absolute path bypasses
+    // any PATH lookup inside the runner.
+    cmd.arg(&spawn_command);
+    for a in &config.spec.args {
+        cmd.arg(a);
+    }
+
+    // Env: apply the same allowlist + provider_env filtering that the
+    // legacy in-proc path does, then hand the cleaned env to the runner.
+    // The runner inherits this env when it spawns the agent (no second
+    // filter pass needed). AOE_TOKEN is stripped here so it never reaches
+    // either process.
+    cmd.env_clear();
+    apply_env_filter(&mut cmd, config);
+    if let Some(extra) = &extra_path_dir {
+        // Prepend the resolved bin dir to the PATH we just forwarded so
+        // the adapter's own `node`/`npx` lookups land in the same install
+        // as the adapter itself, not whatever node happens to be on the
+        // daemon's frozen PATH.
+        let current = std::env::var("PATH").unwrap_or_default();
+        let extra_s = extra.to_string_lossy();
+        if !std::env::split_paths(&current).any(|p| p == *extra) {
+            cmd.env("PATH", format!("{}:{}", extra_s, current));
+        }
+    }
+
+    // Detach: child becomes its own session leader so a SIGTERM/SIGHUP
+    // to the aoe daemon's group doesn't cascade. The runner installs its
+    // own signal handlers.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        unsafe {
+            cmd.pre_exec(|| {
+                nix::unistd::setsid().map_err(std::io::Error::other)?;
+                Ok(())
+            });
+        }
+    }
+
+    // Redirect stdio: the runner writes its own log file. Inheriting our
+    // stdio would (a) pollute serve.log with the per-session noise and
+    // (b) keep a pipe open to the daemon, which then closes when we die,
+    // making the runner observe EOF on its own stdin/stdout.
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+
+    info!(
+        target: "cockpit.acp.spawn",
+        session = %session_id,
+        socket = %socket_path.display(),
+        runner = %current_exe.display(),
+        agent = %config.spec.command,
+        resolved = %spawn_command,
+        "spawning detached cockpit runner"
+    );
+
+    cmd.spawn().map_err(|e| {
+        warn!(
+            target: "cockpit.acp.spawn",
+            session = %session_id,
+            "runner spawn failed: {e}"
+        );
+        AcpError::Spawn(format!("spawn runner: {e}"))
+    })?;
+    // Drop the std::process::Child here. std::process::Command doesn't
+    // wait on drop, so the runner stays alive. setsid + nohup-equivalent
+    // make this an actual detach.
+    Ok(())
+}
+
+/// Apply the env_clear + allowlist + provider_env filtering used by both
+/// the detached-runner path and the in-proc stdio path. Pulled out so
+/// the two spawn sites share the same security posture.
+fn apply_env_filter(cmd: &mut std::process::Command, config: &SpawnConfig) {
+    const ALWAYS_FORWARD: &[&str] = &[
+        "PATH",
+        "HOME",
+        "LANG",
+        "LC_ALL",
+        "TERM",
+        "USER",
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "CLAUDE_CONFIG_DIR",
+    ];
+    for name in ALWAYS_FORWARD {
+        if let Ok(value) = std::env::var(name) {
+            cmd.env(name, value);
+        }
+    }
+    if let Some(extra_allowlist) = &config.spec.env_allowlist {
+        for name in extra_allowlist {
+            if name == "AOE_TOKEN" {
+                continue;
+            }
+            if let Ok(value) = std::env::var(name) {
+                cmd.env(name, value);
+            }
+        }
+    }
+    for (key, value) in &config.provider_env {
+        if provider_env_denyreason(key).is_some() {
+            continue;
+        }
+        cmd.env(key, value);
+    }
+}
+
+/// Poll the socket file's existence with `connect()` until a deadline.
+/// Used by `connect_via_socket` to wait for the runner to finish binding
+/// before the daemon dials in.
+async fn wait_for_socket(
+    path: &std::path::Path,
+    deadline: std::time::Duration,
+) -> Result<tokio::net::UnixStream, AcpError> {
+    let started = std::time::Instant::now();
+    let mut delay_ms = 20_u64;
+    loop {
+        if path.exists() {
+            match tokio::net::UnixStream::connect(path).await {
+                Ok(s) => return Ok(s),
+                Err(e) if matches!(e.kind(), std::io::ErrorKind::ConnectionRefused) => {
+                    // Listener not yet ready; back off and retry.
+                }
+                Err(e) => return Err(AcpError::Spawn(format!("connect {}: {e}", path.display()))),
+            }
+        }
+        if started.elapsed() >= deadline {
+            return Err(AcpError::Spawn(format!(
+                "runner socket {} did not appear within {}s",
+                path.display(),
+                deadline.as_secs()
+            )));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+        delay_ms = (delay_ms * 2).min(200);
+    }
+}
+
 fn spawn_subprocess(config: &SpawnConfig) -> Result<tokio::process::Child, AcpError> {
-    let mut cmd = tokio::process::Command::new(&config.spec.command);
+    // Resolve bare command names against PATH + known node-manager dirs.
+    // `aoe serve` captures PATH at daemon-launch time and freezes it for
+    // its lifetime; without this, a `nvm use` after launch leaves the
+    // adapter installed but unreachable. See #1048.
+    let resolved = resolve_agent_command(&config.spec.command);
+    let (spawn_command, extra_path_dir) = match &resolved {
+        Some((abs, dir)) => (abs.to_string_lossy().into_owned(), Some(dir.clone())),
+        None => (config.spec.command.clone(), None),
+    };
+
+    let mut cmd = tokio::process::Command::new(&spawn_command);
     cmd.args(&config.spec.args)
         .current_dir(&config.cwd)
         .stdin(Stdio::piped())
@@ -512,7 +917,19 @@ fn spawn_subprocess(config: &SpawnConfig) -> Result<tokio::process::Child, AcpEr
     ];
     let mut forwarded_keys: Vec<&str> = Vec::new();
     for name in always_forward {
-        if let Ok(value) = std::env::var(name) {
+        if let Ok(mut value) = std::env::var(name) {
+            // Prepend the resolved bin dir to PATH so the adapter's own
+            // `node`/`npx` lookups land in the same node install as the
+            // adapter itself, not whatever node happens to be on the
+            // daemon's frozen PATH.
+            if name == "PATH" {
+                if let Some(extra) = &extra_path_dir {
+                    let extra_s = extra.to_string_lossy();
+                    if !std::env::split_paths(&value).any(|p| p == *extra) {
+                        value = format!("{}:{}", extra_s, value);
+                    }
+                }
+            }
             cmd.env(name, value);
             forwarded_keys.push(name);
         }
@@ -554,6 +971,7 @@ fn spawn_subprocess(config: &SpawnConfig) -> Result<tokio::process::Child, AcpEr
     info!(
         target: "cockpit.acp.spawn",
         command = %config.spec.command,
+        resolved = %spawn_command,
         args = ?config.spec.args,
         cwd = %config.cwd.display(),
         transport = if config.socket_path.is_some() { "socket" } else { "stdio" },
@@ -567,9 +985,24 @@ fn spawn_subprocess(config: &SpawnConfig) -> Result<tokio::process::Child, AcpEr
         warn!(
             target: "cockpit.acp.spawn",
             command = %config.spec.command,
+            resolved = %spawn_command,
             "spawn failed: {e}"
         );
-        AcpError::Spawn(e.to_string())
+        // ENOENT on a bare command means we couldn't find the binary on
+        // PATH or in any known node-manager dir. Bubble up a hint instead
+        // of the bare libc message; the daemon's frozen PATH is the
+        // most common cause and the generic message doesn't say so.
+        if e.kind() == std::io::ErrorKind::NotFound && resolved.is_none() {
+            AcpError::Spawn(format!(
+                "{} (binary `{}` not found on the daemon's PATH or in any \
+                 known node-manager bin dir; install it where the daemon \
+                 can see it, or restart `aoe serve` from a shell where \
+                 `which {}` resolves)",
+                e, config.spec.command, config.spec.command
+            ))
+        } else {
+            AcpError::Spawn(e.to_string())
+        }
     })?;
 
     let pid = child.id();
@@ -713,13 +1146,137 @@ fn transcript_event_kind(event: &Event) -> &'static str {
     }
 }
 
+/// Parse Claude's ExitPlanMode tool input into a structured `Plan`.
+/// Claude ships the plan markdown in `raw_input.plan`; we extract its
+/// bullet- or number-prefixed lines as `PlanStep`s with status=Pending,
+/// matching the ACP `SessionUpdate::Plan` shape so the existing
+/// PlanStrip renderer can consume it.
+///
+/// Returns `None` when the input has no `plan` key, the value isn't a
+/// string, or the string has no recognisable list items; in which case
+/// the generic tool card is still rendered so the user sees the raw
+/// plan text. See #1059 for the upstream gap this works around.
+fn extract_plan_from_switch_mode(raw_input: &serde_json::Value) -> Option<Plan> {
+    let plan_text = raw_input.get("plan")?.as_str()?;
+    let steps = parse_plan_steps(plan_text);
+    if steps.is_empty() {
+        return None;
+    }
+    Some(Plan {
+        plan_id: format!("plan-{}", chrono::Utc::now().timestamp_millis()),
+        version: 1,
+        steps,
+    })
+}
+
+/// Flatten plan markdown into `PlanStep`s. v1 heuristic: every line
+/// starting with `-`, `*`, or `<digit>.` becomes one step. Sub-bullets
+/// flatten into the parent list (PlanEntry has no nesting field in the
+/// ACP spec). Strips bold/italic markers from the step title so the
+/// PlanStrip doesn't render literal `**foo**`.
+fn parse_plan_steps(text: &str) -> Vec<PlanStep> {
+    use std::sync::OnceLock;
+    static BULLET: OnceLock<regex::Regex> = OnceLock::new();
+    let bullet = BULLET.get_or_init(|| {
+        regex::Regex::new(r"^\s*(?:[-*]|\d+\.)\s+(.+?)\s*$")
+            .expect("static plan-step regex must compile")
+    });
+
+    let mut steps = Vec::new();
+    for line in text.lines() {
+        if let Some(caps) = bullet.captures(line) {
+            let raw_title = caps.get(1).map(|m| m.as_str()).unwrap_or("");
+            let title = strip_markdown_emphasis(raw_title);
+            if title.is_empty() {
+                continue;
+            }
+            steps.push(PlanStep {
+                id: format!("step-{}", steps.len()),
+                title,
+                detail: None,
+                status: PlanStepStatus::Pending,
+            });
+        }
+    }
+    steps
+}
+
+fn strip_markdown_emphasis(s: &str) -> String {
+    // Replace **bold**, __bold__, *italic*, _italic_ markers with their
+    // inner text. Keep it permissive; the source is Claude's planning
+    // markdown, which is usually well-formed but occasionally drops a
+    // closing marker.
+    use std::sync::OnceLock;
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| {
+        regex::Regex::new(r"\*\*(.+?)\*\*|__(.+?)__|\*([^*]+?)\*|_([^_]+?)_")
+            .expect("static emphasis-strip regex must compile")
+    });
+    re.replace_all(s.trim(), |caps: &regex::Captures<'_>| {
+        for i in 1..=4 {
+            if let Some(m) = caps.get(i) {
+                return m.as_str().to_string();
+            }
+        }
+        String::new()
+    })
+    .into_owned()
+}
+
+/// Heuristic detector for the end of a `/compact` cycle. The Claude ACP
+/// adapter emits "Compacting..." while the compaction runs and
+/// "Compacting completed." once the model's context window has been
+/// replaced by a summary; both as plain `agent_message_chunk`s with no
+/// `_meta` flag (see #1050 for the upstream gap). String-matching on
+/// the completion message is fragile to localisation but the wrong-firing
+/// failure mode (an extra "context reset" divider) is harmless; it can
+/// never destroy transcript data.
+fn is_compact_completion(text: &str) -> bool {
+    text.contains("Compacting completed.")
+}
+
 /// Map an ACP `SessionUpdate` to the cockpit's typed `Event`. Variants we
 /// don't yet handle pass through as `RawAgentUpdate` so UI clients can at
 /// least see them; we'll narrow these as the schema stabilises.
 fn map_update_to_events(update: SessionUpdate) -> Vec<Event> {
     match update {
         SessionUpdate::AgentMessageChunk(chunk) => match chunk.content {
-            ContentBlock::Text(text) => vec![Event::AgentMessageChunk { text: text.text }],
+            ContentBlock::Text(text) => {
+                // /compact emits a plain text chunk ("Compacting completed.")
+                // and a usage_update with used=0; no typed signal. Detect
+                // the literal string the adapter uses and append a typed
+                // SessionContextReset event so the cockpit can render a
+                // divider, otherwise the silent context replacement leaves
+                // the chat looking unchanged while the model's view has
+                // been swapped out underneath the user. See #1050.
+                let mut events = vec![Event::AgentMessageChunk {
+                    text: text.text.clone(),
+                }];
+                if is_compact_completion(&text.text) {
+                    events.push(Event::SessionContextReset {
+                        reason: "Conversation compacted; earlier turns above \
+                                 are summarised in the model's context."
+                            .into(),
+                    });
+                    // /compact wipes the model's tool-state alongside the
+                    // chat history, so any TodoWrite plan it was tracking
+                    // is gone from its perspective. The cockpit plan strip
+                    // (PlanStrip + sidebar PlanProgressMini) lives in our
+                    // own event log though, so without this clear it keeps
+                    // showing a plan Claude no longer remembers; the user
+                    // then asks "resolve the first task" and Claude
+                    // responds "no task list." Emit an empty PlanUpdated
+                    // so the UI matches the model's actual context.
+                    events.push(Event::PlanUpdated {
+                        plan: Plan {
+                            plan_id: format!("plan-{}", chrono::Utc::now().timestamp_millis()),
+                            version: 1,
+                            steps: Vec::new(),
+                        },
+                    });
+                }
+                events
+            }
             other => vec![raw_event(&other)],
         },
         SessionUpdate::AgentThoughtChunk(_) => vec![Event::ThinkingStarted],
@@ -741,6 +1298,17 @@ fn map_update_to_events(update: SessionUpdate) -> Vec<Event> {
             if let Some(diff) = extract_diff_from_locations(&tc.locations) {
                 events.push(Event::DiffEmitted { diff });
             }
+            // claude-agent-acp routes Claude's built-in ExitPlanMode through
+            // the tool channel (kind=switch_mode, plan markdown in
+            // raw_input.plan) instead of the structured SessionUpdate::Plan
+            // channel. Synthesise a PlanUpdated event so the cockpit's
+            // PlanStrip and the rest of the plan-aware UI light up. See
+            // #1059.
+            if matches!(tc.kind, agent_client_protocol::schema::ToolKind::SwitchMode) {
+                if let Some(plan) = extract_plan_from_switch_mode(&raw_args) {
+                    events.push(Event::PlanUpdated { plan });
+                }
+            }
             events
         }
         SessionUpdate::ToolCallUpdate(update) => {
@@ -754,6 +1322,17 @@ fn map_update_to_events(update: SessionUpdate) -> Vec<Event> {
                 Some(agent_client_protocol::schema::ToolCallStatus::Completed)
                     | Some(agent_client_protocol::schema::ToolCallStatus::Failed)
             );
+            // claude-agent-acp emits the initial `tool_call` frame
+            // eagerly, often well before the underlying bash / read /
+            // edit actually starts running. Use `status: InProgress` as
+            // the canonical "running now" signal and re-stamp the
+            // tool's `started_at` so the duration label measures real
+            // tool runtime rather than adapter scheduling overhead.
+            // See #1060.
+            let in_progress = matches!(
+                update.fields.status,
+                Some(agent_client_protocol::schema::ToolCallStatus::InProgress)
+            );
             let content_text = update
                 .fields
                 .content
@@ -763,11 +1342,16 @@ fn map_update_to_events(update: SessionUpdate) -> Vec<Event> {
             let new_args_preview = update.fields.raw_input.as_ref().map(preview_args);
             let new_title = update.fields.title.clone();
             let mut events: Vec<Event> = Vec::new();
-            if new_title.is_some() || new_args_preview.is_some() {
+            if new_title.is_some() || new_args_preview.is_some() || in_progress {
                 events.push(Event::ToolCallUpdated {
                     tool_call_id: id.clone(),
                     title: new_title,
                     args_preview: new_args_preview,
+                    started_at: if in_progress {
+                        Some(chrono::Utc::now())
+                    } else {
+                        None
+                    },
                 });
             }
             if completed {
@@ -775,6 +1359,7 @@ fn map_update_to_events(update: SessionUpdate) -> Vec<Event> {
                     tool_call_id: id,
                     is_error,
                     content: content_text,
+                    completed_at: chrono::Utc::now(),
                 });
             } else if !content_text.is_empty() {
                 events.push(Event::ToolCallContent {
@@ -787,22 +1372,73 @@ fn map_update_to_events(update: SessionUpdate) -> Vec<Event> {
             events
         }
         SessionUpdate::Plan(p) => {
-            let plan = Plan {
-                plan_id: format!("plan-{}", chrono::Utc::now().timestamp_millis()),
-                version: 1,
-                steps: p
-                    .entries
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, e)| PlanStep {
-                        id: format!("step-{i}"),
-                        title: e.content,
-                        detail: None,
-                        status: map_plan_status(e.status),
+            // Build the structured plan + a synthetic TodoWrite tool call
+            // from the same entries. claude-agent-acp routes Claude's
+            // TodoWrite through the structured `SessionUpdate::Plan`
+            // channel (not the tool channel), so without this synthesis
+            // the cockpit's PlanStrip + sidebar light up but no tool
+            // card ever renders; the user sees a plan appear "from
+            // nowhere" and has no per-update record of which calls
+            // produced which states. Emit a ToolCallStarted /
+            // ToolCallCompleted pair shaped to match what the
+            // TodoUpdateCard classifier in ToolCards.tsx expects
+            // (`name = "TodoWrite"`, `args.todos = [...]`), one per
+            // adapter update.
+            // Append a session-local monotonic counter so two plan updates
+            // arriving in the same millisecond don't share a synthetic ID
+            // (which would collide in the cockpit_events row keys and
+            // render as a single card instead of two).
+            let ts_ms = chrono::Utc::now().timestamp_millis();
+            let seq = SYNTHETIC_TOOL_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let plan_id = format!("plan-{ts_ms}-{seq}");
+            let tool_id = format!("todo-{ts_ms}-{seq}");
+            let todos_json: Vec<serde_json::Value> = p
+                .entries
+                .iter()
+                .map(|e| {
+                    serde_json::json!({
+                        "content": e.content,
+                        "status": plan_status_to_str(&e.status),
                     })
-                    .collect(),
-            };
-            vec![Event::PlanUpdated { plan }]
+                })
+                .collect();
+            let args_preview = serde_json::json!({ "todos": todos_json }).to_string();
+            let steps: Vec<PlanStep> = p
+                .entries
+                .into_iter()
+                .enumerate()
+                .map(|(i, e)| PlanStep {
+                    id: format!("step-{i}"),
+                    title: e.content,
+                    detail: None,
+                    status: map_plan_status(e.status),
+                })
+                .collect();
+            let now = chrono::Utc::now();
+            vec![
+                Event::ToolCallStarted {
+                    tool_call: ToolCall {
+                        id: tool_id.clone(),
+                        name: "TodoWrite".to_string(),
+                        kind: "think".to_string(),
+                        args_preview,
+                        started_at: now,
+                    },
+                },
+                Event::PlanUpdated {
+                    plan: Plan {
+                        plan_id,
+                        version: 1,
+                        steps,
+                    },
+                },
+                Event::ToolCallCompleted {
+                    tool_call_id: tool_id,
+                    is_error: false,
+                    content: String::new(),
+                    completed_at: now,
+                },
+            ]
         }
         SessionUpdate::CurrentModeUpdate(mode_update) => {
             let id = mode_update.current_mode_id.0.to_string();
@@ -870,6 +1506,20 @@ fn map_plan_status(status: agent_client_protocol::schema::PlanEntryStatus) -> Pl
     }
 }
 
+/// Lowercase string form of a PlanEntryStatus for the synthetic
+/// TodoWrite args payload. Matches the values
+/// `web/src/components/cockpit/ToolCards.tsx::normaliseTodoStatus`
+/// accepts so the TodoUpdateCard renders the right glyph.
+fn plan_status_to_str(status: &agent_client_protocol::schema::PlanEntryStatus) -> &'static str {
+    use agent_client_protocol::schema::PlanEntryStatus;
+    match status {
+        PlanEntryStatus::Pending => "pending",
+        PlanEntryStatus::InProgress => "in_progress",
+        PlanEntryStatus::Completed => "completed",
+        _ => "pending",
+    }
+}
+
 fn raw_event<T: serde::Serialize>(value: &T) -> Event {
     Event::RawAgentUpdate {
         payload: serde_json::to_value(value).unwrap_or(serde_json::Value::Null),
@@ -913,7 +1563,7 @@ fn preview_args(raw: &serde_json::Value) -> String {
 }
 
 /// Concat the textual portion of a tool call's `content` array. Drops
-/// non-text content blocks (images, resources, embedded terminals) — the
+/// non-text content blocks (images, resources, embedded terminals); the
 /// per-tool renderer fall-back path only knows how to display text. Diffs
 /// are surfaced separately via `extract_diff_from_locations` (and could
 /// later be picked up here too via `ToolCallContent::Diff`).
@@ -949,17 +1599,17 @@ async fn run_connection_task<W, R>(
     cmd_rx: mpsc::Receiver<ClientCmd>,
     cwd: PathBuf,
     session_label: String,
-    child: Arc<Mutex<tokio::process::Child>>,
+    child: Option<Arc<Mutex<tokio::process::Child>>>,
     pending_responders: PendingResponders,
     resources: SessionResources,
     socket_path: Option<PathBuf>,
-    stored_acp_session_id: Option<String>,
+    mode: ConnectMode,
     ready_tx: Option<oneshot::Sender<Result<(), AcpError>>>,
 ) where
     W: futures_util::AsyncWrite + Send + 'static,
     R: futures_util::AsyncRead + Send + 'static,
 {
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 
     let ready_tx = Arc::new(Mutex::new(ready_tx));
     let ready_for_block = ready_tx.clone();
@@ -967,7 +1617,7 @@ async fn run_connection_task<W, R>(
     let event_tx_for_perm = event_tx.clone();
     let event_tx_for_block = event_tx.clone();
     let pending_for_perm = pending_responders.clone();
-    let cmd_rx = Arc::new(Mutex::new(cmd_rx));
+    let mut cmd_rx = cmd_rx;
     let session_label_for_log = session_label.clone();
     let res_read = resources.clone();
     let res_write = resources.clone();
@@ -982,7 +1632,7 @@ async fn run_connection_task<W, R>(
     // historical assistant turn replayed as agent_message_chunk
     // events). Our SQLite event store already has those events from
     // the original run, so passing them through would double the
-    // transcript on the next reload — every prior assistant bubble
+    // transcript on the next reload; every prior assistant bubble
     // appears once from disk replay, then again from the agent's
     // history dump. Suppress agent-side notifications during the
     // window between session/load success and the first user prompt;
@@ -992,6 +1642,21 @@ async fn run_connection_task<W, R>(
     let suppress_for_block = suppress_history_replay.clone();
     let session_label_for_notif = session_label.clone();
 
+    // Watchdog inputs (only consulted when `mode` is `Resume { in_flight_turn: true }`):
+    //   - `last_event_at`: epoch-ms of the last inbound notification.
+    //     Updated by the notification handler below. Initialized to "now"
+    //     so a session that never receives a single notification still
+    //     fires Stopped after RESUME_IDLE_GRACE rather than immediately.
+    //   - `prompt_sent_since_attach`: set when the user issues a prompt
+    //     after attach; the user's real PromptRequest will own the next
+    //     Stopped, so the watchdog must stand down.
+    //   - `watchdog_fired`: ensures we synthesize Stopped at most once.
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let last_event_at = Arc::new(AtomicI64::new(now_ms));
+    let prompt_sent_since_attach = Arc::new(AtomicBool::new(false));
+    let watchdog_fired = Arc::new(AtomicBool::new(false));
+    let last_event_at_for_notif = last_event_at.clone();
+
     let result = Client
         .builder()
         .name("aoe-cockpit")
@@ -1000,7 +1665,10 @@ async fn run_connection_task<W, R>(
                 let event_tx = event_tx_for_notif.clone();
                 let suppress = suppress_for_notif.clone();
                 let session_label = session_label_for_notif.clone();
+                let last_event_at = last_event_at_for_notif.clone();
                 async move {
+                    last_event_at
+                        .store(chrono::Utc::now().timestamp_millis(), Ordering::Relaxed);
                     let suppressing = suppress.load(Ordering::Relaxed);
                     for event in map_update_to_events(notification.update) {
                         // During the post-load replay window, drop only
@@ -1008,7 +1676,7 @@ async fn run_connection_task<W, R>(
                         // visible transcript (assistant chunks, tool
                         // calls, plans, etc.). Ambient state events
                         // (mode/usage/available_commands) and lifecycle
-                        // events (stopped, errors) must pass through —
+                        // events (stopped, errors) must pass through;
                         // otherwise the composer footer and pickers
                         // stay stale until the user types something.
                         if suppressing && is_transcript_event(&event) {
@@ -1111,6 +1779,10 @@ async fn run_connection_task<W, R>(
                     .read_text_file(true)
                     .write_text_file(true))
                 .terminal(true);
+            // `initialize` is sent in both Fresh and Resume modes.
+            // It's idempotent on every ACP agent we ship against
+            // (aoe-agent, claude-agent-acp); the response only carries
+            // capability metadata; so re-sending it on attach is safe.
             let init = connection
                 .send_request(
                     InitializeRequest::new(ProtocolVersion::V1)
@@ -1120,143 +1792,242 @@ async fn run_connection_task<W, R>(
                 .await?;
 
             let load_session_capable = init.agent_capabilities.load_session;
+            // Snapshot the watchdog-arming flag before `mode` is moved
+            // into the match below.
+            let arm_resume_watchdog = matches!(
+                &mode,
+                ConnectMode::Resume {
+                    in_flight_turn: true,
+                    ..
+                }
+            );
             info!(
                 target: "cockpit.acp",
                 session = %session_label,
                 load_session_capable,
-                stored_id = ?stored_acp_session_id,
+                ?mode,
                 "initialize handshake complete"
             );
 
-            // Decide whether to resume the prior agent session or create
-            // a fresh one. session/load is only attempted when the agent
-            // advertises support AND we have a stored id to feed it. On
-            // load failure (id GC'd, agent state lost, etc.) we fall
-            // through to session/new and emit SessionContextReset so the
-            // UI can show a notice and clear stale token-usage hints.
-            let mut acp_session_id: Option<SessionId> = None;
-            if load_session_capable {
-                if let Some(stored) = stored_acp_session_id.clone() {
+            let acp_session_id: SessionId = match mode {
+                ConnectMode::Resume {
+                    acp_session_id: stored,
+                    in_flight_turn: _,
+                } => {
+                    // INVARIANT: Resume mode MUST NOT send `session/new`
+                    // or `session/load`. This is the load-bearing trick
+                    // that makes mid-turn continuity work across
+                    // `aoe serve --stop` + `aoe serve`. Do not "fix" it
+                    // by adding either call here.
+                    //
+                    // Why: the runner kept the agent process alive
+                    // across the daemon restart, so the ACP session is
+                    // still loaded in the agent's memory and addressable
+                    // via its original id. `session/load` would either
+                    // fail (agents that advertise loadSession=false) or
+                    // double-load against a still-busy session and
+                    // replay the entire transcript at the user.
+                    // `session/new` would split context onto a new id
+                    // the in-flight `session/prompt` doesn't address,
+                    // silently orphaning the turn the user is waiting
+                    // on. See issue #1037 and the
+                    // `tests/cockpit_midturn_resume.rs` integration
+                    // coverage.
                     info!(
                         target: "cockpit.acp",
                         session = %session_label,
                         stored_id = %stored,
-                        "resuming session via session/load"
+                        "resume mode: reusing existing acp session id without handshake"
                     );
-                    // Set the flag BEFORE sending the request: claude-agent-acp
-                    // re-emits the prior transcript via session/update
-                    // notifications *during* the load handshake, before the
-                    // LoadSessionRequest response returns. Setting after .await
-                    // would let those notifications leak through to the event
-                    // store and produce duplicate ToolCallStarted rows on the
-                    // next reload (assistant-ui then panics with "Duplicate
-                    // key toolCallId-..."). Cleared on Err below if we fall
-                    // back to session/new, which has no replay payload.
-                    suppress_for_block.store(true, Ordering::Relaxed);
-                    let req = LoadSessionRequest::new(stored.clone(), cwd.clone());
-                    match connection.send_request(req).block_task().await {
-                        Ok(_resp) => {
+                    // Emit AcpSessionAssigned so the frontend reducer
+                    // clears any sticky startupError/lastError from the
+                    // crash. The server-side listener treats a same-id
+                    // Assigned as a no-op, so this doesn't rewrite
+                    // sessions.json.
+                    let _ = event_tx_for_block
+                        .send(Event::AcpSessionAssigned {
+                            acp_session_id: stored.clone(),
+                        })
+                        .await;
+                    SessionId::from(stored)
+                }
+                ConnectMode::Fresh {
+                    stored_acp_session_id,
+                } => {
+                    // Decide whether to resume the prior agent session or create
+                    // a fresh one. session/load is only attempted when the agent
+                    // advertises support AND we have a stored id to feed it. On
+                    // load failure (id GC'd, agent state lost, etc.) we fall
+                    // through to session/new and emit SessionContextReset so the
+                    // UI can show a notice and clear stale token-usage hints.
+                    let mut acp_session_id: Option<SessionId> = None;
+                    if load_session_capable {
+                        if let Some(stored) = stored_acp_session_id.clone() {
                             info!(
                                 target: "cockpit.acp",
                                 session = %session_label,
                                 stored_id = %stored,
-                                "session/load succeeded; suppressing post-load history replay"
+                                "resuming session via session/load"
                             );
-                            // Emit AcpSessionAssigned even on resume so the
-                            // frontend reducer can clear any sticky
-                            // `startupError` / `lastError` from a prior crash
-                            // (e.g. a respawn after the user's prompt hit a
-                            // dead pipe). The server-side listener treats a
-                            // same-id Assigned as a no-op, so this doesn't
-                            // rewrite sessions.json.
-                            let _ = event_tx_for_block
-                                .send(Event::AcpSessionAssigned {
-                                    acp_session_id: stored.clone(),
-                                })
-                                .await;
-                            acp_session_id = Some(SessionId::from(stored));
-                        }
-                        Err(e) => {
-                            warn!(
-                                target: "cockpit.acp",
-                                session = %session_label,
-                                stored_id = %stored,
-                                "session/load failed, falling back to session/new: {e}"
-                            );
-                            suppress_for_block.store(false, Ordering::Relaxed);
-                            let _ = event_tx_for_block
-                                .send(Event::SessionContextReset {
-                                    reason: format!("session/load failed: {e}"),
-                                })
-                                .await;
+                            // Set the flag BEFORE sending the request: claude-agent-acp
+                            // re-emits the prior transcript via session/update
+                            // notifications *during* the load handshake, before the
+                            // LoadSessionRequest response returns. Setting after .await
+                            // would let those notifications leak through to the event
+                            // store and produce duplicate ToolCallStarted rows on the
+                            // next reload (assistant-ui then panics with "Duplicate
+                            // key toolCallId-..."). Cleared on Err below if we fall
+                            // back to session/new, which has no replay payload.
+                            suppress_for_block.store(true, Ordering::Relaxed);
+                            let req = LoadSessionRequest::new(stored.clone(), cwd.clone());
+                            match connection.send_request(req).block_task().await {
+                                Ok(_resp) => {
+                                    info!(
+                                        target: "cockpit.acp",
+                                        session = %session_label,
+                                        stored_id = %stored,
+                                        "session/load succeeded; suppressing post-load history replay"
+                                    );
+                                    // Emit AcpSessionAssigned even on resume so the
+                                    // frontend reducer can clear any sticky
+                                    // `startupError` / `lastError` from a prior crash
+                                    // (e.g. a respawn after the user's prompt hit a
+                                    // dead pipe). The server-side listener treats a
+                                    // same-id Assigned as a no-op, so this doesn't
+                                    // rewrite sessions.json.
+                                    let _ = event_tx_for_block
+                                        .send(Event::AcpSessionAssigned {
+                                            acp_session_id: stored.clone(),
+                                        })
+                                        .await;
+                                    acp_session_id = Some(SessionId::from(stored));
+                                }
+                                Err(e) => {
+                                    warn!(
+                                        target: "cockpit.acp",
+                                        session = %session_label,
+                                        stored_id = %stored,
+                                        "session/load failed, falling back to session/new: {e}"
+                                    );
+                                    suppress_for_block.store(false, Ordering::Relaxed);
+                                    let _ = event_tx_for_block
+                                        .send(Event::SessionContextReset {
+                                            reason: format!("session/load failed: {e}"),
+                                        })
+                                        .await;
+                                }
+                            }
                         }
                     }
+
+                    if let Some(id) = acp_session_id {
+                        id
+                    } else {
+                        info!(
+                            target: "cockpit.acp",
+                            session = %session_label,
+                            "creating fresh session via session/new"
+                        );
+                        let new_session = connection
+                            .send_request(NewSessionRequest::new(cwd))
+                            .block_task()
+                            .await?;
+                        let id = new_session.session_id.clone();
+                        info!(
+                            target: "cockpit.acp",
+                            session = %session_label,
+                            new_id = %id.0,
+                            "session/new succeeded, captured acp_session_id"
+                        );
+
+                        // Surface the agent-advertised modes (if any) so the UI
+                        // can render the actual modes the agent supports rather
+                        // than the hard-coded four. Claude's adapter typically
+                        // ships a mode set with ids like "default" / "plan" /
+                        // "accept_edits" / "bypass_permissions".
+                        if let Some(modes) = &new_session.modes {
+                            let infos: Vec<ModeInfo> = modes
+                                .available_modes
+                                .iter()
+                                .map(|m| ModeInfo {
+                                    id: m.id.0.to_string(),
+                                    name: m.name.clone(),
+                                    description: m.description.clone(),
+                                })
+                                .collect();
+                            let _ = event_tx_for_block
+                                .send(Event::ModesAvailable {
+                                    current_mode_id: modes.current_mode_id.0.to_string(),
+                                    modes: infos,
+                                })
+                                .await;
+                        }
+
+                        // Tell the server-side listener so it can persist the
+                        // new id on Instance.cockpit_acp_session_id.
+                        let _ = event_tx_for_block
+                            .send(Event::AcpSessionAssigned {
+                                acp_session_id: id.0.to_string(),
+                            })
+                            .await;
+
+                        id
+                    }
                 }
-            }
-
-            let acp_session_id = if let Some(id) = acp_session_id {
-                id
-            } else {
-                info!(
-                    target: "cockpit.acp",
-                    session = %session_label,
-                    "creating fresh session via session/new"
-                );
-                let new_session = connection
-                    .send_request(NewSessionRequest::new(cwd))
-                    .block_task()
-                    .await?;
-                let id = new_session.session_id.clone();
-                info!(
-                    target: "cockpit.acp",
-                    session = %session_label,
-                    new_id = %id.0,
-                    "session/new succeeded, captured acp_session_id"
-                );
-
-                // Surface the agent-advertised modes (if any) so the UI
-                // can render the actual modes the agent supports rather
-                // than the hard-coded four. Claude's adapter typically
-                // ships a mode set with ids like "default" / "plan" /
-                // "accept_edits" / "bypass_permissions".
-                if let Some(modes) = &new_session.modes {
-                    let infos: Vec<ModeInfo> = modes
-                        .available_modes
-                        .iter()
-                        .map(|m| ModeInfo {
-                            id: m.id.0.to_string(),
-                            name: m.name.clone(),
-                            description: m.description.clone(),
-                        })
-                        .collect();
-                    let _ = event_tx_for_block
-                        .send(Event::ModesAvailable {
-                            current_mode_id: modes.current_mode_id.0.to_string(),
-                            modes: infos,
-                        })
-                        .await;
-                }
-
-                // Tell the server-side listener so it can persist the
-                // new id on Instance.cockpit_acp_session_id.
-                let _ = event_tx_for_block
-                    .send(Event::AcpSessionAssigned {
-                        acp_session_id: id.0.to_string(),
-                    })
-                    .await;
-
-                id
             };
 
             if let Some(tx) = ready_for_block.lock().await.take() {
                 let _ = tx.send(Ok(()));
             }
 
+            // Arm the resume-idle watchdog. The agent's response to the
+            // orphaned in-flight `session/prompt` (from the previous
+            // daemon) carries a request id this client never issued and
+            // is dropped silently by the transport. Without this
+            // synthesized Stopped, the UI's "thinking" indicator never
+            // clears until the user manually sends a new prompt.
+            if arm_resume_watchdog {
+                let event_tx_for_watchdog = event_tx_for_block.clone();
+                let last_event_at = last_event_at.clone();
+                let prompt_sent_since_attach = prompt_sent_since_attach.clone();
+                let watchdog_fired = watchdog_fired.clone();
+                let session_label_for_watchdog = session_label.clone();
+                let grace = resume_idle_grace();
+                tokio::spawn(async move {
+                    let grace_ms = grace.as_millis() as i64;
+                    loop {
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                        if watchdog_fired.load(Ordering::Relaxed) {
+                            return;
+                        }
+                        if prompt_sent_since_attach.load(Ordering::Relaxed) {
+                            // User sent a new prompt; its real
+                            // PromptRequest will own the next Stopped.
+                            return;
+                        }
+                        let last = last_event_at.load(Ordering::Relaxed);
+                        let now = chrono::Utc::now().timestamp_millis();
+                        if now - last >= grace_ms {
+                            info!(
+                                target: "cockpit.acp",
+                                session = %session_label_for_watchdog,
+                                idle_ms = now - last,
+                                "resume-idle watchdog: synthesizing Stopped for orphaned in-flight turn"
+                            );
+                            watchdog_fired.store(true, Ordering::Relaxed);
+                            let _ = event_tx_for_watchdog
+                                .send(Event::Stopped {
+                                    reason: "reattach_idle".into(),
+                                })
+                                .await;
+                            return;
+                        }
+                    }
+                });
+            }
+
             loop {
-                let cmd = {
-                    let mut rx = cmd_rx.lock().await;
-                    rx.recv().await
-                };
+                let cmd = cmd_rx.recv().await;
                 match cmd {
                     Some(ClientCmd::Prompt(text)) => {
                         // First user prompt after session/load: stop
@@ -1270,34 +2041,163 @@ async fn run_connection_task<W, R>(
                                 "first user prompt after session/load; resuming notification pump"
                             );
                         }
+                        // Stand the resume-idle watchdog down: the new
+                        // prompt's real Stopped will own the next status
+                        // transition, so we no longer need to synthesize
+                        // one for the orphaned prior turn.
+                        prompt_sent_since_attach.store(true, Ordering::Relaxed);
                         info!(target: "cockpit.acp", "sending prompt ({} chars)", text.len());
-                        let _ = connection
+                        // Drive the prompt request concurrently with the
+                        // command channel so out-of-band notifications
+                        // (Cancel, SetMode) can be delivered to the agent
+                        // mid-turn. Per the ACP spec, session/cancel is a
+                        // notification specifically designed to be sent
+                        // while a session/prompt request is in flight; if
+                        // we serialise the loop on the prompt's await, the
+                        // cancel sits idle in the channel and only goes
+                        // out after the turn already finished.
+                        let prompt_fut = connection
                             .send_request(PromptRequest::new(
                                 acp_session_id.clone(),
                                 vec![ContentBlock::Text(TextContent::new(text))],
                             ))
-                            .block_task()
-                            .await?;
+                            .block_task();
+                        tokio::pin!(prompt_fut);
+
+                        let mut shutdown = false;
+                        loop {
+                            tokio::select! {
+                                res = &mut prompt_fut => {
+                                    let _ = res?;
+                                    break;
+                                }
+                                cmd = cmd_rx.recv() => {
+                                    match cmd {
+                                        Some(ClientCmd::Cancel) => {
+                                            info!(
+                                                target: "cockpit.acp",
+                                                "sending session/cancel during in-flight prompt"
+                                            );
+                                            connection.send_notification(
+                                                CancelNotification::new(acp_session_id.clone()),
+                                            )?;
+                                            // Keep awaiting the prompt; the
+                                            // agent should resolve it with
+                                            // StopReason::Cancelled.
+                                        }
+                                        Some(ClientCmd::SetMode(mode_id)) => {
+                                            info!(
+                                                target: "cockpit.acp",
+                                                "sending session/set_mode mode={mode_id} during in-flight prompt"
+                                            );
+                                            // Fire the request and hand the
+                                            // response handling to a detached
+                                            // task. Awaiting it here would
+                                            // freeze this select loop for the
+                                            // duration of the round-trip,
+                                            // defeating the point of polling
+                                            // cmd_rx concurrently; a Cancel
+                                            // arriving while set_mode is in
+                                            // flight would queue. The detached
+                                            // task mirrors the success into the
+                                            // event stream so the UI flips even
+                                            // when the adapter (e.g.
+                                            // claude-agent-acp) treats the
+                                            // response as authoritative and
+                                            // skips the follow-up
+                                            // current_mode_update notification.
+                                            let sent = connection.send_request(
+                                                SetSessionModeRequest::new(
+                                                    acp_session_id.clone(),
+                                                    mode_id.clone(),
+                                                ),
+                                            );
+                                            let tx = event_tx_for_block.clone();
+                                            tokio::spawn(async move {
+                                                match sent.block_task().await {
+                                                    Ok(_) => {
+                                                        let _ = tx
+                                                            .send(Event::CurrentModeChanged {
+                                                                current_mode_id: mode_id,
+                                                            })
+                                                            .await;
+                                                    }
+                                                    Err(e) => {
+                                                        warn!(
+                                                            target: "cockpit.acp",
+                                                            "session/set_mode failed mid-turn: {e}"
+                                                        );
+                                                    }
+                                                }
+                                            });
+                                        }
+                                        Some(ClientCmd::Prompt(_)) => {
+                                            // Client-side prompt queueing is
+                                            // tracked separately in #1031.
+                                            warn!(
+                                                target: "cockpit.acp",
+                                                "received Prompt while one is in flight; dropping (queueing tracked in #1031)"
+                                            );
+                                        }
+                                        Some(ClientCmd::Shutdown) | None => {
+                                            info!(
+                                                target: "cockpit.acp",
+                                                "shutdown received during in-flight prompt; aborting turn"
+                                            );
+                                            shutdown = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        // Always emit a terminal Stopped for this turn before
+                        // leaving the Prompt arm, including the shutdown path.
+                        // Consumers (reducer, persisted status) need a single
+                        // turn-end event per turn or they sit on a stale
+                        // "in flight" state forever.
+                        let reason = if shutdown {
+                            "shutdown"
+                        } else {
+                            "prompt_complete"
+                        };
                         let _ = event_tx_for_block
                             .send(Event::Stopped {
-                                reason: "prompt_complete".into(),
+                                reason: reason.into(),
                             })
                             .await;
+                        if shutdown {
+                            break;
+                        }
                     }
                     Some(ClientCmd::Cancel) => {
-                        info!(target: "cockpit.acp", "sending session/cancel");
+                        info!(target: "cockpit.acp", "sending session/cancel (no prompt in flight)");
                         connection
                             .send_notification(CancelNotification::new(acp_session_id.clone()))?;
                     }
                     Some(ClientCmd::SetMode(mode_id)) => {
                         info!(target: "cockpit.acp", "sending session/set_mode mode={mode_id}");
-                        let _ = connection
-                            .send_request(SetSessionModeRequest::new(
-                                acp_session_id.clone(),
-                                mode_id,
-                            ))
-                            .block_task()
-                            .await?;
+                        // Detached, same shape as the mid-turn path: don't
+                        // freeze the cmd_rx loop on the round-trip.
+                        let sent = connection.send_request(SetSessionModeRequest::new(
+                            acp_session_id.clone(),
+                            mode_id.clone(),
+                        ));
+                        let tx = event_tx_for_block.clone();
+                        tokio::spawn(async move {
+                            match sent.block_task().await {
+                                Ok(_) => {
+                                    let _ = tx
+                                        .send(Event::CurrentModeChanged {
+                                            current_mode_id: mode_id,
+                                        })
+                                        .await;
+                                }
+                                Err(e) => {
+                                    warn!(target: "cockpit.acp", "session/set_mode failed: {e}");
+                                }
+                            }
+                        });
                     }
                     Some(ClientCmd::Shutdown) | None => {
                         info!(target: "cockpit.acp", "shutdown received, exiting connection loop");
@@ -1335,28 +2235,33 @@ async fn run_connection_task<W, R>(
             );
         }
     }
-    let mut guard = child.lock().await;
-    match guard.try_wait() {
-        Ok(Some(status)) => info!(
-            target: "cockpit.acp",
-            session = %session_label_for_log,
-            "agent process already exited: status={status}"
-        ),
-        Ok(None) => info!(
-            target: "cockpit.acp",
-            session = %session_label_for_log,
-            "killing agent process after connection task end"
-        ),
-        Err(e) => warn!(
-            target: "cockpit.acp",
-            session = %session_label_for_log,
-            "try_wait failed before kill: {e}"
-        ),
-    }
-    let _ = guard.kill().await;
-    // Clean up socket file on exit when this transport was socket-based.
-    if let Some(path) = socket_path {
-        let _ = tokio::fs::remove_file(path).await;
+    // In runner-managed mode (child is None) we deliberately don't kill
+    // anything here: the per-worker `aoe __cockpit-runner` shim owns the
+    // agent subprocess and outlives this daemon's connection. The socket
+    // file also stays; the runner cleans it up on its own exit.
+    if let Some(child) = child.as_ref() {
+        let mut guard = child.lock().await;
+        match guard.try_wait() {
+            Ok(Some(status)) => info!(
+                target: "cockpit.acp",
+                session = %session_label_for_log,
+                "agent process already exited: status={status}"
+            ),
+            Ok(None) => info!(
+                target: "cockpit.acp",
+                session = %session_label_for_log,
+                "killing agent process after connection task end"
+            ),
+            Err(e) => warn!(
+                target: "cockpit.acp",
+                session = %session_label_for_log,
+                "try_wait failed before kill: {e}"
+            ),
+        }
+        let _ = guard.kill().await;
+        if let Some(path) = socket_path {
+            let _ = tokio::fs::remove_file(path).await;
+        }
     }
 }
 
@@ -1368,7 +2273,7 @@ async fn run_connection_task<W, R>(
 async fn wait_for_handshake(
     session_label: &str,
     ready_rx: oneshot::Receiver<Result<(), AcpError>>,
-    child: &Arc<Mutex<tokio::process::Child>>,
+    child: Option<&Arc<Mutex<tokio::process::Child>>>,
 ) -> Result<(), AcpError> {
     let timeout = std::time::Duration::from_secs(30);
     match tokio::time::timeout(timeout, ready_rx).await {
@@ -1388,11 +2293,10 @@ async fn wait_for_handshake(
                 "ACP handshake timed out after {}s",
                 timeout.as_secs()
             );
-            // Kill the wedged child so we don't leak a zombie npx
-            // download. The connection task will then unwind and the
-            // ready_tx is already gone, so no event_tx duplicate.
-            let mut guard = child.lock().await;
-            let _ = guard.kill().await;
+            if let Some(child) = child {
+                let mut guard = child.lock().await;
+                let _ = guard.kill().await;
+            }
             Err(AcpError::Spawn(format!(
                 "agent did not complete the ACP initialize handshake within {}s. \
                  Common causes: `npx -y` is still downloading the adapter on first run, \
@@ -1404,10 +2308,12 @@ async fn wait_for_handshake(
     }
 }
 
-async fn collect_child_failure(child: &Arc<Mutex<tokio::process::Child>>) {
-    let mut guard = child.lock().await;
-    if let Ok(Some(status)) = guard.try_wait() {
-        warn!(target: "cockpit.acp", "agent process exited early: status={status}");
+async fn collect_child_failure(child: Option<&Arc<Mutex<tokio::process::Child>>>) {
+    if let Some(child) = child {
+        let mut guard = child.lock().await;
+        if let Ok(Some(status)) = guard.try_wait() {
+            warn!(target: "cockpit.acp", "agent process exited early: status={status}");
+        }
     }
 }
 
@@ -1658,6 +2564,122 @@ mod tests {
     }
 
     #[test]
+    fn parse_plan_steps_extracts_dash_and_numbered_bullets() {
+        let md = "Here's the plan:\n\n- First, **read** the file\n- Then patch it\n1. Run tests\n2. Commit\n\nOther prose.";
+        let steps = parse_plan_steps(md);
+        let titles: Vec<&str> = steps.iter().map(|s| s.title.as_str()).collect();
+        assert_eq!(
+            titles,
+            vec![
+                "First, read the file",
+                "Then patch it",
+                "Run tests",
+                "Commit"
+            ]
+        );
+        for s in &steps {
+            assert!(matches!(s.status, PlanStepStatus::Pending));
+        }
+    }
+
+    #[test]
+    fn parse_plan_steps_returns_empty_when_no_bullets() {
+        assert!(parse_plan_steps("Just a paragraph with no list.").is_empty());
+        assert!(parse_plan_steps("").is_empty());
+    }
+
+    #[test]
+    fn extract_plan_from_switch_mode_handles_missing_plan_field() {
+        let v = serde_json::json!({});
+        assert!(extract_plan_from_switch_mode(&v).is_none());
+        let v = serde_json::json!({ "plan": 42 });
+        assert!(extract_plan_from_switch_mode(&v).is_none());
+    }
+
+    #[test]
+    fn extract_plan_from_switch_mode_builds_plan_when_input_has_bullets() {
+        let v = serde_json::json!({
+            "plan": "- Step one\n- Step two\n- Step three"
+        });
+        let plan = extract_plan_from_switch_mode(&v).expect("plan should parse");
+        assert_eq!(plan.steps.len(), 3);
+        assert_eq!(plan.steps[0].title, "Step one");
+    }
+
+    #[test]
+    fn strip_markdown_emphasis_unwraps_bold_and_italic() {
+        assert_eq!(strip_markdown_emphasis("**bold**"), "bold");
+        assert_eq!(strip_markdown_emphasis("__bold__"), "bold");
+        assert_eq!(strip_markdown_emphasis("*italic*"), "italic");
+        assert_eq!(strip_markdown_emphasis("_italic_"), "italic");
+        assert_eq!(
+            strip_markdown_emphasis("mix of **bold** and *italic*"),
+            "mix of bold and italic"
+        );
+        assert_eq!(strip_markdown_emphasis("plain"), "plain");
+    }
+
+    #[test]
+    fn is_compact_completion_matches_adapter_string() {
+        assert!(is_compact_completion("Compacting completed."));
+        assert!(is_compact_completion("\n\nCompacting completed.\n"));
+        assert!(!is_compact_completion("Compacting..."));
+        assert!(!is_compact_completion("compact done"));
+        assert!(!is_compact_completion(""));
+    }
+
+    #[test]
+    fn resolve_agent_command_returns_none_for_absolute_path() {
+        assert!(resolve_agent_command("/usr/local/bin/claude-agent-acp").is_none());
+        assert!(resolve_agent_command("./relative/path").is_none());
+    }
+
+    #[test]
+    fn resolve_agent_command_returns_none_for_placeholder() {
+        assert!(resolve_agent_command("${aoe_data_dir}/cockpit-worker/dist/aoe-agent").is_none());
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn resolve_agent_command_finds_binary_in_path_env() {
+        // Build a temp dir with a fake binary, point PATH at it.
+        // Tagged `#[serial]` because the test mutates the process-wide
+        // PATH; any concurrent test that reads PATH (e.g. resolves a
+        // real binary) would race.
+        let dir = tempfile::TempDir::new().unwrap();
+        let bin = dir.path().join("aoe-test-resolver-fake");
+        std::fs::write(&bin, "#!/bin/sh\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let prev = std::env::var_os("PATH");
+        let new_path = format!(
+            "{}:{}",
+            dir.path().display(),
+            prev.as_ref()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        );
+        // SAFETY: this test mutates the process-wide PATH. Other PATH
+        // readers in the same test binary would race; `#[serial]` keeps
+        // them apart.
+        unsafe {
+            std::env::set_var("PATH", &new_path);
+        }
+        let resolved = resolve_agent_command("aoe-test-resolver-fake");
+        if let Some(prev) = prev {
+            unsafe {
+                std::env::set_var("PATH", prev);
+            }
+        }
+        let (path, parent) = resolved.expect("binary should resolve from PATH");
+        assert_eq!(path, bin);
+        assert_eq!(parent, dir.path());
+    }
+
+    #[test]
     fn pick_option_id_finds_allow_once() {
         use agent_client_protocol::schema::{PermissionOption, PermissionOptionId};
         let options = vec![
@@ -1735,6 +2757,7 @@ mod tests {
                 tool_call_id,
                 is_error,
                 content,
+                completed_at: _,
             } => {
                 assert_eq!(tool_call_id, "tc-1");
                 assert!(!*is_error);
@@ -1756,8 +2779,21 @@ mod tests {
             ))]);
         let update = ToolCallUpdate::new("tc-2", fields);
         let events = map_update_to_events(SessionUpdate::ToolCallUpdate(update));
-        assert_eq!(events.len(), 1);
+        // InProgress now emits a ToolCallUpdated re-stamping started_at
+        // (#1060 follow-up) plus the streaming ToolCallContent.
+        assert_eq!(events.len(), 2);
         match &events[0] {
+            Event::ToolCallUpdated {
+                tool_call_id,
+                started_at,
+                ..
+            } => {
+                assert_eq!(tool_call_id, "tc-2");
+                assert!(started_at.is_some());
+            }
+            other => panic!("expected ToolCallUpdated, got {other:?}"),
+        }
+        match &events[1] {
             Event::ToolCallContent {
                 tool_call_id,
                 content,
@@ -1766,6 +2802,32 @@ mod tests {
                 assert_eq!(content, "partial output");
             }
             other => panic!("expected ToolCallContent, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn map_tool_call_update_in_progress_restamps_started_at() {
+        use agent_client_protocol::schema::{ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields};
+        let fields = ToolCallUpdateFields::new().status(ToolCallStatus::InProgress);
+        let update = ToolCallUpdate::new("tc-3", fields);
+        let events = map_update_to_events(SessionUpdate::ToolCallUpdate(update));
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            Event::ToolCallUpdated {
+                tool_call_id,
+                started_at,
+                title,
+                args_preview,
+            } => {
+                assert_eq!(tool_call_id, "tc-3");
+                assert!(
+                    started_at.is_some(),
+                    "InProgress must carry a re-stamped started_at"
+                );
+                assert!(title.is_none());
+                assert!(args_preview.is_none());
+            }
+            other => panic!("expected ToolCallUpdated, got {other:?}"),
         }
     }
 

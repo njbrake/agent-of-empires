@@ -117,7 +117,7 @@ export function CockpitRuntime({ sessionId, children }: Props) {
  * message until the next user_prompt or end of log.
  *
  * Tool completion rows (`tool_complete` / `tool_error`) are not their
- * own messages — they update the matching `tool-call` part in place
+ * own messages; they update the matching `tool-call` part in place
  * by setting `result` / `isError`, so the per-tool card renderer can
  * render running → done in one place.
  */
@@ -147,21 +147,29 @@ export function activityToThreadMessages(
     }
 
     if (row.kind === "context_reset") {
-      // session/load failed and the agent fell back to session/new on
-      // an `aoe serve` restart, so the model's context window is empty
-      // even though our UI still replays the prior transcript. Render
-      // as a dedicated assistant bubble so it doesn't run on from any
-      // prior message, and use a blockquote with a ⚠️ prefix so the
-      // custom Markdown blockquote component can style it as an amber
-      // callout (see Markdown.tsx).
+      // Two senders share this row kind:
+      //   - `session/load` fallback after an `aoe serve` restart (model's
+      //     window is empty even though we replay the prior transcript)
+      //   - `/compact` completion: model's window has been replaced by a
+      //     summary while the rendered transcript stays put (#1050)
+      // Both want the same amber-callout shape; only the header differs.
+      // The Rust side sets the reason text; we sniff the compact case
+      // off its leading word so the divider names what actually changed.
       flushAssistant();
+      const isCompact = row.text.startsWith("Conversation compacted");
+      const header = isCompact
+        ? "Conversation compacted"
+        : "Conversation context reset";
+      const body = isCompact
+        ? row.text.replace(/^Conversation compacted\s*[;,—-]?\s*/, "")
+        : row.text;
       messages.push({
         id: `assistant-${row.id}`,
         role: "assistant",
         content: [
           {
             type: "text",
-            text: `> ⚠️ **Conversation context reset** — ${row.text}`,
+            text: `> ⚠️ **${header}**; ${body}`,
           },
         ],
         createdAt: parseDate(row.at),
@@ -182,6 +190,7 @@ export function activityToThreadMessages(
         row.toolCallId ?? row.id.replace(/^done-/, ""),
         row.kind === "tool_error",
         row.text,
+        row.at,
       );
     } else if (row.kind === "thinking") {
       // Thinking is rendered by the global rattle spinner, not the
@@ -189,7 +198,7 @@ export function activityToThreadMessages(
     } else if (row.kind === "empty_output") {
       // Synthesised when the agent finished a turn without emitting any
       // text or tool calls (e.g. interactive-only slash commands like
-      // /usage, /status, /memory in claude-agent-acp — see upstream
+      // /usage, /status, /memory in claude-agent-acp; see upstream
       // issue agentclientprotocol/claude-agent-acp#642). Surface it as
       // a tiny muted notice instead of leaving the assistant bubble
       // empty.
@@ -236,7 +245,7 @@ type DraftPart =
       toolCallId: string;
       toolName: string;
       argsText: string;
-      result?: { content: string };
+      result?: { content: string; endedAt?: string };
       isError?: boolean;
     };
 
@@ -267,6 +276,12 @@ class AssistantBuilder {
     // empty (Claude's bash tool, for example, often emits an empty
     // raw_input on the initial tool_call frame). The `_aoe_title`
     // key is namespaced so it can't collide with real tool args.
+    //
+    // Also smuggle `_aoe_started_at` (the real ToolCall.started_at)
+    // through assistant-ui's tool-call part shape; its primitive
+    // doesn't carry timestamps and CockpitView's fallback would
+    // otherwise mint one fresh per render, breaking the duration
+    // label (#1060).
     let argsObj: Record<string, unknown> = {};
     try {
       const parsed = JSON.parse(tool.args_preview);
@@ -274,9 +289,10 @@ class AssistantBuilder {
         argsObj = parsed as Record<string, unknown>;
       }
     } catch {
-      // args_preview wasn't a JSON object — keep argsObj empty.
+      // args_preview wasn't a JSON object; keep argsObj empty.
     }
     if (tool.name) argsObj._aoe_title = tool.name;
+    if (tool.started_at) argsObj._aoe_started_at = tool.started_at;
     this.parts.push({
       type: "tool-call",
       toolCallId: tool.id,
@@ -285,10 +301,15 @@ class AssistantBuilder {
     });
   }
 
-  completeToolCall(toolCallId: string, isError: boolean, resultText: string) {
+  completeToolCall(
+    toolCallId: string,
+    isError: boolean,
+    resultText: string,
+    endedAt: string,
+  ) {
     for (const part of this.parts) {
       if (part.type === "tool-call" && part.toolCallId === toolCallId) {
-        part.result = { content: resultText };
+        part.result = { content: resultText, endedAt };
         part.isError = isError || undefined;
         return;
       }
@@ -296,17 +317,115 @@ class AssistantBuilder {
   }
 
   build(): ThreadMessageLike {
+    const grouped = collapseToolRuns(this.parts);
     return {
       id: this.id,
       role: "assistant",
       // Cast to bypass assistant-ui's strict ReadonlyJSONObject typing
       // for tool-call args. We don't carry parsed args through this
-      // path — the renderer parses argsText itself — so the loose
+      // path; the renderer parses argsText itself; so the loose
       // shape is safe in practice.
-      content: (this.parts.length
-        ? this.parts
+      content: (grouped.length
+        ? grouped
         : [{ type: "text", text: "" }]) as ThreadMessageLike["content"],
       createdAt: this.createdAt,
     };
   }
+}
+
+function isTodoWriteArgsText(argsText: string): boolean {
+  try {
+    const parsed = JSON.parse(argsText);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      const title = (parsed as Record<string, unknown>)._aoe_title;
+      if (typeof title === "string" && title.startsWith("Update TODOs")) {
+        return true;
+      }
+      const todos = (parsed as Record<string, unknown>).todos;
+      if (Array.isArray(todos)) return true;
+    }
+  } catch {
+    // ignore
+  }
+  return false;
+}
+
+/** Minimum run length that triggers grouping. Two-in-a-row stays inline
+ *  so a quick read-then-edit doesn't fold; three or more is the common
+ *  "silent investigation" shape that benefits from one collapsible
+ *  block (#1057). */
+const TOOL_GROUP_MIN_RUN = 3;
+
+/** Synthetic toolName used for the folded group card. Namespaced with
+ *  the `_aoe_` prefix so it can't collide with a real ACP tool kind. */
+export const TOOL_GROUP_NAME = "_aoe_tool_group";
+
+/** Walk an assistant message's parts and collapse runs of consecutive
+ *  tool-call parts (regardless of kind) into one synthetic group part
+ *  when the run is ≥ TOOL_GROUP_MIN_RUN long. The grouping boundary is
+ *  ANY non-tool-call part (text, callout, etc.); matching the "what
+ *  did the agent do silently before its next sentence?" UX shape. The
+ *  underlying tool-call data is preserved verbatim inside the group's
+ *  argsText payload so the renderer can expand back to the original
+ *  per-tool cards on click. */
+function collapseToolRuns(parts: DraftPart[]): DraftPart[] {
+  const out: DraftPart[] = [];
+  let run: DraftPart[] = [];
+  const flushRun = () => {
+    if (run.length === 0) return;
+    if (run.length < TOOL_GROUP_MIN_RUN) {
+      for (const p of run) out.push(p);
+    } else {
+      // TodoWrite calls aren't silent tool work; they're status
+      // updates the user wants to see one-by-one (#1064). Detect them
+      // via the `_aoe_title` echo we stash in argsText (the adapter
+      // names them "Update TODOs: …") and exempt the group entirely
+      // when any child looks like a TodoWrite. Cheap: argsText is
+      // already parsed JSON, just sniff the prefix.
+      const hasTodoWrite = run.some(
+        (p) => p.type === "tool-call" && isTodoWriteArgsText(p.argsText),
+      );
+      if (hasTodoWrite) {
+        for (const p of run) out.push(p);
+        run = [];
+        return;
+      }
+      const childIds: string[] = [];
+      const children: Array<{
+        toolCallId: string;
+        toolName: string;
+        argsText: string;
+        result?: { content: string };
+        isError?: boolean;
+      }> = [];
+      for (const p of run) {
+        if (p.type !== "tool-call") continue;
+        childIds.push(p.toolCallId);
+        children.push({
+          toolCallId: p.toolCallId,
+          toolName: p.toolName,
+          argsText: p.argsText,
+          result: p.result,
+          isError: p.isError,
+        });
+      }
+      out.push({
+        type: "tool-call",
+        toolCallId: `group-${childIds.join("-")}`,
+        toolName: TOOL_GROUP_NAME,
+        argsText: JSON.stringify({ children }),
+      });
+    }
+    run = [];
+  };
+  for (const part of parts) {
+    if (part.type === "tool-call") {
+      run.push(part);
+    } else {
+      flushRun();
+      out.push(part);
+    }
+  }
+  flushRun();
+  return out;
 }

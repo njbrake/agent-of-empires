@@ -153,7 +153,7 @@ export function useCockpit(sessionId: string | null) {
   // Track lastSeq in a ref so the snapshot fetcher always sees the
   // latest value without re-running the effect when it changes.
   // The ref is updated inside an effect (not during render) to keep
-  // the react-hooks linter happy — fetchReplay only ever runs from
+  // the react-hooks linter happy; fetchReplay only ever runs from
   // an event handler or another effect, so the one-tick lag is fine.
   const lastSeqRef = useRef(0);
   useEffect(() => {
@@ -337,13 +337,13 @@ export function useCockpit(sessionId: string | null) {
       if (statusRef.current !== "open") {
         dispatch({
           kind: "error",
-          message: "Cockpit disconnected — message not sent. Reconnect to retry.",
+          message: "Cockpit disconnected; message not sent. Reconnect to retry.",
         });
         return;
       }
       // Optimistically echo the user's message; the agent reply
       // streams back as session/update events on the WS. If the POST
-      // fails we'll surface a banner and the user can retry — the
+      // fails we'll surface a banner and the user can retry; the
       // optimistic row stays so they see what they tried to send.
       dispatch({ kind: "user_prompt", text });
       try {
@@ -372,6 +372,14 @@ export function useCockpit(sessionId: string | null) {
     [sessionId],
   );
 
+  // Cancels the in-flight agent turn (ACP session/cancel). Must only
+  // fire on an explicit user gesture against a dedicated cancel/stop
+  // affordance; never bind this to the Escape key. Claude Code CLI
+  // hijacks Escape for cancel and accidental presses lose work the
+  // user did not mean to abort; the cockpit deliberately keeps Escape
+  // for closing local UI surfaces (palette, dialogs, popovers) only.
+  // If a future Escape binding is added, route it through
+  // useKeyboardShortcuts.onEscape's local-UI dismissal, not here.
   const cancelPrompt = useCallback(async () => {
     if (!sessionId) return;
     try {

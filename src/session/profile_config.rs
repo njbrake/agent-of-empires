@@ -64,6 +64,8 @@ pub struct CockpitConfigOverride {
     pub replay_bytes: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node_path: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub show_tool_durations: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -505,6 +507,9 @@ pub fn merge_configs(mut global: Config, profile: &ProfileConfig) -> Config {
         }
         if let Some(ref v) = cockpit_override.node_path {
             global.cockpit.node_path = v.clone();
+        }
+        if let Some(v) = cockpit_override.show_tool_durations {
+            global.cockpit.show_tool_durations = v;
         }
     }
 

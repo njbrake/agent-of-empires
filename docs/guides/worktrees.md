@@ -66,6 +66,8 @@ init_submodules = true
 
 `init_submodules = false` skips the `git submodule update --init --recursive` step that runs after `git worktree add` when the checkout contains a `.gitmodules` file. Useful for repos that vendor deep submodule trees (e.g. OpenROAD-flow-scripts, llvm-project, chromium) where every new session would otherwise sit in `Creating…` for minutes while submodules clone. Per-invocation override on the CLI: `aoe add --worktree <branch> --no-submodules`.
 
+On the delete side, aoe runs `git submodule deinit -f --all` before `git worktree remove` for any worktree with `.gitmodules`, so the panic-button `Force` checkbox is not required just because the worktree has submodules. If git still refuses (e.g. a partially-broken submodule), aoe falls back to clearing `<main>/.git/worktrees/<name>/modules/` and pruning the stale entry manually.
+
 ### Template Variables
 
 | Variable | Description |

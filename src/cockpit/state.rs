@@ -229,6 +229,18 @@ pub enum Event {
         /// is empty so cards still convey state.
         #[serde(default)]
         content: String,
+        /// Server-side wall-clock time the completion frame was minted.
+        /// Carried on the event so the frontend reducer can stamp the
+        /// matching `tool_complete` activity row with the REAL
+        /// completion time rather than `new Date()` at replay time;
+        /// without this, page-reload after a long delay made every
+        /// completed tool's duration count from "now", inflating the
+        /// label from seconds to minutes/hours. Events persisted
+        /// before this field landed default to "now" on deserialise
+        /// (serde calls the function), so the durations of pre-fix
+        /// events stay imprecise; new events are accurate end-to-end.
+        #[serde(default = "chrono::Utc::now")]
+        completed_at: DateTime<Utc>,
     },
     /// Streaming tool output. Some agents emit `ToolCallUpdate` notifications
     /// with `status != Completed` but populated `fields.content` to stream
@@ -254,6 +266,16 @@ pub enum Event {
         title: Option<String>,
         #[serde(default)]
         args_preview: Option<String>,
+        /// Re-stamps the tool's start time. Set when the agent reports
+        /// `ToolCallStatus::InProgress`; claude-agent-acp emits the
+        /// initial `tool_call` notification eagerly (often well before
+        /// the underlying command actually starts running), so the
+        /// duration label (#1060) would otherwise count adapter
+        /// scheduling time as part of the tool's runtime. Treating
+        /// "InProgress" as the real start gives an accurate elapsed
+        /// time on completion.
+        #[serde(default)]
+        started_at: Option<DateTime<Utc>>,
     },
     ApprovalRequested {
         approval: Approval,
@@ -297,7 +319,7 @@ pub enum Event {
     /// Full snapshot of the slash commands the agent advertises. Comes
     /// from ACP `SessionUpdate::AvailableCommandsUpdate`. Replaces the
     /// previous list (the agent re-broadcasts the full set whenever it
-    /// changes — e.g. after plugin enable/disable).
+    /// changes; e.g. after plugin enable/disable).
     AvailableCommandsUpdated {
         commands: Vec<AvailableCommand>,
     },
@@ -375,6 +397,7 @@ impl CockpitState {
                 tool_call_id,
                 title,
                 args_preview,
+                started_at,
             } => {
                 if let Some(tool) = self.in_flight_tool.as_mut() {
                     if tool.id == tool_call_id {
@@ -383,6 +406,9 @@ impl CockpitState {
                         }
                         if let Some(a) = args_preview {
                             tool.args_preview = a;
+                        }
+                        if let Some(t) = started_at {
+                            tool.started_at = t;
                         }
                     }
                 }
@@ -517,6 +543,7 @@ mod tests {
             tool_call_id: "tc-1".into(),
             is_error: false,
             content: String::new(),
+            completed_at: Utc::now(),
         })
         .unwrap();
         assert!(s.in_flight_tool.is_none());

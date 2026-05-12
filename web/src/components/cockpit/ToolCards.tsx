@@ -14,7 +14,10 @@ import {
   Copy as CopyIcon,
   FileText,
   Globe,
+  Layers,
+  ListChecks,
   Pencil,
+  Plug,
   Search,
   Sparkles,
   Terminal,
@@ -24,15 +27,49 @@ import {
 import { getHighlighter, langKeyForExt, loadLanguage } from "../../lib/highlighter";
 import { hasAnsi, parseAnsi, type AnsiStyle } from "../../lib/ansi";
 import { parseJsonObject, pickFirst, pickStr } from "../../lib/cockpitArgs";
+import { useCockpitPrefs } from "../../lib/cockpitPrefs";
 import type { ActivityRow, ToolCall } from "../../lib/cockpitTypes";
+import {
+  classifyMcp,
+  humanizeServer,
+  humanizeVerb,
+} from "../../lib/mcpClassify";
+import { reclassifyBash } from "../../lib/toolReclassify";
 
 interface Props {
   tool: ToolCall;
   result?: ActivityRow;
 }
 
+/** Keys CockpitRuntime smuggles through `args_preview` for renderer
+ *  bookkeeping (the ACP title, the real `started_at` for the duration
+ *  label). Excluded from any user-visible input JSON dumps. */
+function isCockpitBookkeepingKey(key: string): boolean {
+  return key === "_aoe_title" || key === "_aoe_started_at";
+}
+
 export function ToolCard({ tool, result }: Props) {
-  switch (tool.kind) {
+  const mcp = classifyMcp(tool);
+  if (mcp.isMcp) {
+    return (
+      <McpToolCard
+        tool={tool}
+        result={result}
+        server={mcp.server}
+        verb={mcp.verb}
+      />
+    );
+  }
+  const skill = classifySkill(tool);
+  if (skill.isSkill) {
+    return <SkillToolCard tool={tool} result={result} skillName={skill.name} />;
+  }
+  const todos = classifyTodoWrite(tool);
+  if (todos.isTodoWrite) {
+    return <TodoUpdateCard tool={tool} result={result} todos={todos.todos} />;
+  }
+  const { kind, provenance } = reclassifyBash(tool);
+  switch (kind) {
     case "execute":
       return <ExecuteToolCard tool={tool} result={result} />;
     case "read":
@@ -42,7 +79,9 @@ export function ToolCard({ tool, result }: Props) {
     case "delete":
       return <DeleteToolCard tool={tool} result={result} />;
     case "search":
-      return <SearchToolCard tool={tool} result={result} />;
+      return (
+        <SearchToolCard tool={tool} result={result} provenance={provenance} />
+      );
     case "fetch":
       return <FetchToolCard tool={tool} result={result} />;
     case "think":
@@ -95,6 +134,36 @@ interface CardChromeProps {
   expanded: boolean;
   onToggle?: () => void;
   body?: React.ReactNode;
+  /** ISO-8601 start timestamp for the underlying tool call. When set
+   *  with `endedAt` (completed call) or alone (in-flight call), the
+   *  header shows a duration label next to the status badge (#1060).
+   *
+   *  Rendering is gated by the `cockpit.show_tool_durations` setting
+   *  (resolved server-side from `[cockpit]` in config.toml, surfaced
+   *  via `ServerAbout.cockpit_show_tool_durations`, consumed here via
+   *  `useCockpitPrefs`). Default on; cross-device because the setting
+   *  lives in the daemon's config file rather than the browser.
+   *
+   *  IMPORTANT; the measurement is imprecise on claude-agent-acp.
+   *  The adapter emits each ACP `tool_call` frame at the wall time
+   *  the model streams its tool_use chunk, which is typically well
+   *  before the Claude Code SDK dispatches the subprocess; it also
+   *  never emits `status: "in_progress"` so we cannot re-stamp
+   *  `started_at` to the real subprocess start. Parallel
+   *  `sleep 1` / `sleep 2` / `sleep 5` therefore render as
+   *  ~3s / ~3.5s / ~6s instead of ~1s / ~2s / ~5s; durations
+   *  include stream-arrival skew rather than just runtime. Once
+   *  upstream gains a trustworthy "subprocess started" signal
+   *  (either a `status: in_progress` frame or a `_meta` flag), the
+   *  existing re-stamp path in `acp_client::map_update_to_events`
+   *  picks it up with no further change here. The setting lets users
+   *  hide the label in the meantime if the inflated numbers are more
+   *  confusing than useful. */
+  startedAt?: string;
+  /** ISO-8601 timestamp from the matching `tool_complete` /
+   *  `tool_error` row. Absent → tool still running, duration ticks
+   *  live. */
+  endedAt?: string;
 }
 
 function CardChrome({
@@ -106,7 +175,10 @@ function CardChrome({
   expanded,
   onToggle,
   body,
+  startedAt,
+  endedAt,
 }: CardChromeProps) {
+  const { showToolDurations } = useCockpitPrefs();
   const Header = onToggle ? "button" : "div";
   return (
     <div className="my-1 overflow-hidden rounded-md border border-surface-700 bg-surface-800/50 text-sm">
@@ -127,6 +199,9 @@ function CardChrome({
           {primary}
         </span>
         {meta}
+        {showToolDurations && startedAt && (
+          <DurationLabel startedAt={startedAt} endedAt={endedAt} />
+        )}
         <StatusBadge status={status} />
         {onToggle && (
           <ChevronDown
@@ -140,6 +215,53 @@ function CardChrome({
       {expanded && body}
     </div>
   );
+}
+
+/** Render `started_at → ended_at` as a human duration. While the tool
+ *  is still running the label ticks once a second so users see the
+ *  elapsed time grow. Tooltip names the known measurement
+ *  imprecision (see `CardChromeProps.startedAt`) so users who notice
+ *  "sleep 1 took 3s" find the explanation in-place. */
+function DurationLabel({
+  startedAt,
+  endedAt,
+}: {
+  startedAt: string;
+  endedAt?: string;
+}) {
+  const running = !endedAt;
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!running) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [running]);
+  const start = Date.parse(startedAt);
+  if (!Number.isFinite(start)) return null;
+  const end = endedAt ? Date.parse(endedAt) : now;
+  if (!Number.isFinite(end)) return null;
+  const ms = Math.max(0, end - start);
+  const text = formatDurationMs(ms);
+  const tooltip = running
+    ? `running ${text}; counts from the agent's first tool_call frame, which can fire before the subprocess actually starts (upstream limitation)`
+    : `${text}; counts from the agent's first tool_call frame, which can fire before the subprocess actually starts (upstream limitation)`;
+  return (
+    <span
+      className="text-[11px] text-text-dim tabular-nums"
+      title={tooltip}
+    >
+      {text}
+    </span>
+  );
+}
+
+export function formatDurationMs(ms: number): string {
+  if (ms < 1000) return `${ms} ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+  const totalSec = Math.floor(ms / 1000);
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  return `${m}m ${s}s`;
 }
 
 /* ── Helpers ─────────────────────────────────────────────────────── */
@@ -181,7 +303,7 @@ function CopyButton({ text }: { text: string }) {
 /** If the input is a single outer markdown code fence (```lang ... ```),
  *  strip the fence and return the inner body plus the fence's language
  *  hint. Tool output emitted by ACP agents (Claude in particular) is
- *  routinely pre-wrapped in fenced blocks like ```console ...``` — left
+ *  routinely pre-wrapped in fenced blocks like ```console ...```; left
  *  un-stripped, the cards render literal backticks above the content. */
 function unwrapMarkdownFence(text: string): {
   text: string;
@@ -213,7 +335,7 @@ function HighlightedBlock({
 
   // ANSI fast path: when the text carries SGR escape sequences (e.g.
   // `gls --color=always`, `git status --color=always`), Shiki's bash
-  // grammar can't handle them — it would either render the literal
+  // grammar can't handle them; it would either render the literal
   // `[01;34m` noise or fail to highlight at all. Render the styled
   // segments directly instead.
   const ansi = hasAnsi(shown);
@@ -234,7 +356,7 @@ function HighlightedBlock({
         });
         setHtml(out);
       } catch {
-        // unknown language — fall back to plain
+        // unknown language; fall back to plain
       }
     })();
     return () => {
@@ -325,6 +447,8 @@ function ExecuteToolCard({ tool, result }: Props) {
   return (
     <CardChrome
       status={status}
+      startedAt={tool.started_at}
+      endedAt={result?.at}
       icon={<Terminal className="h-3.5 w-3.5" />}
       label="bash"
       primary={
@@ -343,7 +467,7 @@ function ExecuteToolCard({ tool, result }: Props) {
               {description}
             </div>
           )}
-          {/* Full command — the chrome's primary slot is single-line
+          {/* Full command; the chrome's primary slot is single-line
               truncated, so we surface the untruncated command here so
               users can read and copy it. Shiki's bash grammar gives
               the same coloring as our markdown code blocks. */}
@@ -383,6 +507,8 @@ function ReadToolCard({ tool, result }: Props) {
   return (
     <CardChrome
       status={status}
+      startedAt={tool.started_at}
+      endedAt={result?.at}
       icon={<FileText className="h-3.5 w-3.5" />}
       label="read"
       primary={path}
@@ -440,6 +566,8 @@ function EditToolCard({ tool, result }: Props) {
   return (
     <CardChrome
       status={status}
+      startedAt={tool.started_at}
+      endedAt={result?.at}
       icon={<Pencil className="h-3.5 w-3.5" />}
       label={verb}
       primary={path}
@@ -466,7 +594,7 @@ function EditToolCard({ tool, result }: Props) {
   );
 }
 
-/** Theme overrides for react-diff-viewer-continued — drag its colors
+/** Theme overrides for react-diff-viewer-continued; drag its colors
  *  toward our zinc/brand palette so the diff doesn't look like it was
  *  pasted in from another app. */
 const DIFF_STYLES = {
@@ -521,6 +649,8 @@ function DeleteToolCard({ tool, result }: Props) {
   return (
     <CardChrome
       status={status}
+      startedAt={tool.started_at}
+      endedAt={result?.at}
       icon={<Trash2 className="h-3.5 w-3.5 text-rose-400" />}
       label="delete"
       primary={path}
@@ -531,12 +661,21 @@ function DeleteToolCard({ tool, result }: Props) {
 
 /* ── search ─────────────────────────────────────────────────────── */
 
-function SearchToolCard({ tool, result }: Props) {
+interface SearchProps extends Props {
+  /** Set to "bash" when the call was a grep/find/rg shell-out that the
+   *  dispatcher reclassified into this card. Surfaced in the label so
+   *  the swap stays transparent ("search · bash"). */
+  provenance?: "bash" | null;
+}
+
+function SearchToolCard({ tool, result, provenance }: SearchProps) {
   const status = statusFor(result);
   const args = parseJsonObject(tool.args_preview);
   const argQuery = pickStr(args, "query", "pattern", "q", "search");
+  const argCommand = pickStr(args, "command");
   const title = pickStr(args, "_aoe_title");
-  const query = pickFirst(argQuery, title, tool.name) ?? "(no query)";
+  const query =
+    pickFirst(argQuery, title, argCommand, tool.name) ?? "(no query)";
   const path = pickStr(args, "path", "directory", "scope");
   const output = result?.text ?? "";
   const lines = output ? output.split("\n").filter(Boolean) : [];
@@ -545,8 +684,10 @@ function SearchToolCard({ tool, result }: Props) {
   return (
     <CardChrome
       status={status}
+      startedAt={tool.started_at}
+      endedAt={result?.at}
       icon={<Search className="h-3.5 w-3.5" />}
-      label="search"
+      label={provenance === "bash" ? "search · bash" : "search"}
       primary={query}
       meta={
         <>
@@ -606,6 +747,8 @@ function FetchToolCard({ tool, result }: Props) {
   return (
     <CardChrome
       status={status}
+      startedAt={tool.started_at}
+      endedAt={result?.at}
       icon={<Globe className="h-3.5 w-3.5" />}
       label="fetch"
       primary={url}
@@ -629,6 +772,407 @@ function ThinkToolCard({ tool }: Props) {
   );
 }
 
+/* ── todowrite ──────────────────────────────────────────────────── */
+
+type TodoStatus = "pending" | "in_progress" | "completed" | "cancelled";
+
+interface TodoItem {
+  content: string;
+  status: TodoStatus;
+}
+
+/** Heuristic for Claude's TodoWrite tool. The adapter ships it as a
+ *  `kind: "think"` tool call with the joined todo list crammed into the
+ *  title (`"Update TODOs: a, b, c"`) and the structured `{todos: [...]}`
+ *  payload in raw_input. We detect via the title prefix and parse the
+ *  args payload to render a proper checklist. See #1064. */
+function classifyTodoWrite(
+  tool: ToolCall,
+): { isTodoWrite: true; todos: TodoItem[] } | { isTodoWrite: false } {
+  const title = tool.name?.trim() ?? "";
+  const looksLikeTodo =
+    title.startsWith("Update TODOs") || title === "TodoWrite";
+  if (!looksLikeTodo) return { isTodoWrite: false };
+  const args = parseJsonObject(tool.args_preview);
+  if (!args) return { isTodoWrite: false };
+  const raw = args.todos;
+  if (!Array.isArray(raw)) return { isTodoWrite: false };
+  const todos: TodoItem[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const obj = entry as Record<string, unknown>;
+    const content = typeof obj.content === "string" ? obj.content : "";
+    if (!content) continue;
+    todos.push({
+      content,
+      status: normaliseTodoStatus(obj.status),
+    });
+  }
+  if (todos.length === 0) return { isTodoWrite: false };
+  return { isTodoWrite: true, todos };
+}
+
+function normaliseTodoStatus(raw: unknown): TodoStatus {
+  const s = typeof raw === "string" ? raw.toLowerCase() : "";
+  if (s === "in_progress" || s === "in-progress" || s === "active") {
+    return "in_progress";
+  }
+  if (s === "completed" || s === "complete" || s === "done") return "completed";
+  if (s === "cancelled" || s === "canceled" || s === "abandoned") {
+    return "cancelled";
+  }
+  return "pending";
+}
+
+interface TodoCardProps extends Props {
+  todos: TodoItem[];
+}
+
+const TODO_GLYPH: Record<TodoStatus, string> = {
+  pending: "☐",
+  in_progress: "▶",
+  completed: "✓",
+  cancelled: "⊘",
+};
+
+const TODO_CLASS: Record<TodoStatus, string> = {
+  pending: "text-text-secondary",
+  in_progress: "text-brand-400",
+  completed: "text-emerald-400 line-through opacity-70",
+  cancelled: "text-text-dim line-through",
+};
+
+function TodoUpdateCard({ tool, result, todos }: TodoCardProps) {
+  const status = statusFor(result);
+  const counts = useMemo(() => {
+    const c = { pending: 0, in_progress: 0, completed: 0, cancelled: 0 };
+    for (const t of todos) c[t.status] += 1;
+    return c;
+  }, [todos]);
+  const [open, setOpen] = useState(todos.length <= 5);
+
+  const breakdown: string[] = [];
+  if (counts.in_progress > 0) breakdown.push(`${counts.in_progress} active`);
+  if (counts.pending > 0) breakdown.push(`${counts.pending} pending`);
+  if (counts.completed > 0) breakdown.push(`${counts.completed} done`);
+  if (counts.cancelled > 0)
+    breakdown.push(`${counts.cancelled} cancelled`);
+
+  return (
+    <CardChrome
+      status={status}
+      icon={<ListChecks className="h-3.5 w-3.5" />}
+      label="todos"
+      primary={
+        <>
+          <span>{todos.length} items</span>
+          {breakdown.length > 0 && (
+            <span className="ml-2 text-text-dim">· {breakdown.join(" · ")}</span>
+          )}
+        </>
+      }
+      expanded={open}
+      onToggle={() => setOpen((v) => !v)}
+      startedAt={tool.started_at}
+      endedAt={result?.at}
+      body={
+        <div className="border-t border-surface-800 bg-surface-950 px-3 py-2">
+          <ul className="flex flex-col gap-1 font-mono text-xs">
+            {todos.map((t, i) => (
+              <li
+                key={`${i}-${t.content}`}
+                className={`flex items-start gap-2 ${TODO_CLASS[t.status]}`}
+              >
+                <span className="select-none w-4 shrink-0 text-center">
+                  {TODO_GLYPH[t.status]}
+                </span>
+                <span className="min-w-0 flex-1 whitespace-pre-wrap break-words">
+                  {t.content}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      }
+    />
+  );
+}
+
+/* ── skill ──────────────────────────────────────────────────────── */
+
+/** Heuristic for Claude's Skill tool, which the adapter routes through
+ *  the generic "Other" arm so it arrives as `kind: "other"` with a bare
+ *  `Skill` title and the skill identifier hidden in `args.skill`. We
+ *  reclassify on (case-insensitive) name + args presence so the cockpit
+ *  shows what skill ran without making the user expand a JSON blob.
+ *  See #1062. */
+function classifySkill(
+  tool: ToolCall,
+): { isSkill: true; name: string } | { isSkill: false } {
+  if (tool.kind !== "other") return { isSkill: false };
+  const title = tool.name?.trim().toLowerCase() ?? "";
+  if (title !== "skill" && title !== "claude-skill") return { isSkill: false };
+  const args = parseJsonObject(tool.args_preview);
+  const name = pickStr(args, "skill", "name", "skill_name") ?? "skill";
+  return { isSkill: true, name };
+}
+
+interface SkillProps extends Props {
+  skillName: string;
+}
+
+function SkillToolCard({ tool, result, skillName }: SkillProps) {
+  const status = statusFor(result);
+  const [open, setOpen] = useState(false);
+  // Memo on the raw string so downstream memos see a stable args reference
+  // and don't recompute every render.
+  const args = useMemo(
+    () => parseJsonObject(tool.args_preview),
+    [tool.args_preview],
+  );
+  const output = result?.text ?? "";
+
+  // Pretty-printed input minus the bookkeeping _aoe_title field so the
+  // user sees the actual skill arguments, not the adapter's title echo.
+  const inputJson = useMemo<string>(() => {
+    if (!args) return tool.args_preview;
+    const rest: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(args)) {
+      if (isCockpitBookkeepingKey(k)) continue;
+      rest[k] = v;
+    }
+    return JSON.stringify(rest, null, 2);
+  }, [args, tool.args_preview]);
+
+  const hasBody = Boolean((args && Object.keys(args).length > 0) || output);
+
+  return (
+    <CardChrome
+      status={status}
+      icon={<Sparkles className="h-3.5 w-3.5" />}
+      label="skill"
+      primary={skillName}
+      expanded={open}
+      onToggle={hasBody ? () => setOpen((v) => !v) : undefined}
+      startedAt={tool.started_at}
+      endedAt={result?.at}
+      body={
+        <>
+          {args && Object.keys(args).filter((k) => !isCockpitBookkeepingKey(k)).length > 0 && (
+            <div className="border-t border-surface-800 bg-surface-950 px-3 py-2">
+              <div className="mb-1 flex items-center justify-between text-[10px] uppercase tracking-wider text-text-dim">
+                <span>input</span>
+                <CopyButton text={inputJson} />
+              </div>
+              <pre className="overflow-x-auto font-mono text-[11px] text-text-muted whitespace-pre-wrap break-all">
+                {inputJson}
+              </pre>
+            </div>
+          )}
+          {output && (
+            <HighlightedBlock text={output} language="markdown" maxLines={16} />
+          )}
+        </>
+      }
+    />
+  );
+}
+
+/* ── tool group ─────────────────────────────────────────────────── */
+
+interface ToolGroupItem {
+  tool: ToolCall;
+  result?: ActivityRow;
+  /** Raw `toolName` from assistant-ui (the ACP kind), used for the
+   *  per-kind tally in the group header. */
+  kind: string;
+}
+
+/** Collapsible block summarising a run of tool calls between agent
+ *  text. The activity log is unchanged; this is presentation only,
+ *  matching how the Claude Code CLI condenses silent investigation
+ *  phases. See #1057. */
+export function ToolGroupCard({ items }: { items: ToolGroupItem[] }) {
+  const [open, setOpen] = useState(false);
+  if (items.length === 0) return null;
+
+  const runningCount = items.filter((i) => !i.result).length;
+  const errorCount = items.filter(
+    (i) => i.result && i.result.kind === "tool_error",
+  ).length;
+  const status: Status =
+    runningCount > 0 ? "running" : errorCount > 0 ? "err" : "ok";
+
+  const breakdown = summariseKinds(items);
+
+  // Group duration spans the earliest start across children → latest
+  // completion. Still-running calls leave `endedAt` undefined so the
+  // duration label ticks live until every child completes.
+  const startedAt = items
+    .map((i) => i.tool.started_at)
+    .sort()
+    .at(0);
+  const allDone = items.every((i) => i.result);
+  const endedAt = allDone
+    ? items
+        .map((i) => i.result!.at)
+        .sort()
+        .at(-1)
+    : undefined;
+
+  return (
+    <CardChrome
+      status={status}
+      startedAt={startedAt}
+      endedAt={endedAt}
+      icon={<Layers className="h-3.5 w-3.5" />}
+      label="actions"
+      primary={
+        <>
+          <span>{items.length} actions</span>
+          {breakdown && (
+            <span className="ml-2 text-text-dim">· {breakdown}</span>
+          )}
+        </>
+      }
+      expanded={open}
+      onToggle={() => setOpen((v) => !v)}
+      body={
+        open && (
+          <div className="border-t border-surface-800 bg-surface-900/30 px-2 py-1">
+            {items.map((item) => (
+              <ToolCard
+                key={item.tool.id}
+                tool={item.tool}
+                result={item.result}
+              />
+            ))}
+          </div>
+        )
+      }
+    />
+  );
+}
+
+function summariseKinds(items: ToolGroupItem[]): string | null {
+  const counts = new Map<string, number>();
+  for (const i of items) {
+    const k = labelForKind(i.kind);
+    counts.set(k, (counts.get(k) ?? 0) + 1);
+  }
+  if (counts.size === 0) return null;
+  const entries = Array.from(counts.entries()).sort((a, b) => b[1] - a[1]);
+  return entries.map(([k, n]) => `${k} ${n}`).join(" · ");
+}
+
+function labelForKind(kind: string): string {
+  switch (kind) {
+    case "execute":
+      return "Bash";
+    case "read":
+      return "Read";
+    case "edit":
+      return "Edit";
+    case "delete":
+      return "Delete";
+    case "search":
+      return "Search";
+    case "fetch":
+      return "Fetch";
+    case "think":
+      return "Think";
+    default:
+      return kind.charAt(0).toUpperCase() + kind.slice(1);
+  }
+}
+
+/* ── mcp ────────────────────────────────────────────────────────── */
+
+interface McpProps extends Props {
+  server: string;
+  verb: string;
+}
+
+function McpToolCard({ tool, result, server, verb }: McpProps) {
+  const status = statusFor(result);
+  const [open, setOpen] = useState(false);
+  // Memo on the raw string so downstream memos see a stable args reference
+  // and don't recompute every render.
+  const args = useMemo(
+    () => parseJsonObject(tool.args_preview),
+    [tool.args_preview],
+  );
+  const output = result?.text ?? "";
+
+  // Pull a short single-field arg preview for the header so the user
+  // can see what the call was about without expanding. Skip the
+  // _aoe_title bookkeeping field; cap length so headers stay readable.
+  const argPreview = useMemo<string | null>(() => {
+    if (!args) return null;
+    for (const [k, v] of Object.entries(args)) {
+      if (isCockpitBookkeepingKey(k)) continue;
+      if (typeof v === "string" && v.length > 0) {
+        const trimmed = v.length > 120 ? `${v.slice(0, 117)}…` : v;
+        return `${k}: ${trimmed}`;
+      }
+    }
+    return null;
+  }, [args]);
+
+  // Pretty-printed input, excluding the bookkeeping _aoe_title field
+  // so the user sees the actual MCP arguments, not the adapter's
+  // forwarded title.
+  const inputJson = useMemo<string>(() => {
+    if (!args) return tool.args_preview;
+    const rest: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(args)) {
+      if (isCockpitBookkeepingKey(k)) continue;
+      rest[k] = v;
+    }
+    return JSON.stringify(rest, null, 2);
+  }, [args, tool.args_preview]);
+
+  const hasBody = Boolean((args && Object.keys(args).length > 0) || output);
+
+  return (
+    <CardChrome
+      status={status}
+      startedAt={tool.started_at}
+      endedAt={result?.at}
+      icon={<Plug className="h-3.5 w-3.5" />}
+      label={`MCP · ${humanizeServer(server)}`}
+      primary={
+        <>
+          {humanizeVerb(verb)}
+          {argPreview && (
+            <span className="ml-2 text-text-dim">· {argPreview}</span>
+          )}
+        </>
+      }
+      expanded={open}
+      onToggle={hasBody ? () => setOpen((v) => !v) : undefined}
+      body={
+        <>
+          {args && Object.keys(args).filter((k) => !isCockpitBookkeepingKey(k)).length > 0 && (
+            <div className="border-t border-surface-800 bg-surface-950 px-3 py-2">
+              <div className="mb-1 flex items-center justify-between text-[10px] uppercase tracking-wider text-text-dim">
+                <span>input</span>
+                <CopyButton text={inputJson} />
+              </div>
+              <pre className="overflow-x-auto font-mono text-[11px] text-text-muted whitespace-pre-wrap break-all">
+                {inputJson}
+              </pre>
+            </div>
+          )}
+          {output && (
+            <HighlightedBlock text={output} language="markdown" maxLines={24} />
+          )}
+        </>
+      }
+    />
+  );
+}
+
 /* ── generic fallback ───────────────────────────────────────────── */
 
 function GenericToolCard({ tool, result }: Props) {
@@ -638,6 +1182,8 @@ function GenericToolCard({ tool, result }: Props) {
   return (
     <CardChrome
       status={status}
+      startedAt={tool.started_at}
+      endedAt={result?.at}
       icon={<Sparkles className="h-3.5 w-3.5" />}
       label={tool.kind || "tool"}
       primary={tool.name}

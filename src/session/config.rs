@@ -77,6 +77,19 @@ pub struct CockpitConfig {
     /// empty, aoe resolves Node via PATH then bundled fallback.
     #[serde(default)]
     pub node_path: String,
+    /// Whether the cockpit web UI shows a per-tool elapsed-time label on
+    /// every tool card. Default true. Honoured by the web client via
+    /// `ServerAbout.cockpit_show_tool_durations` so toggling here flows
+    /// across every device that connects to the same daemon. The
+    /// underlying measurement is currently imprecise on
+    /// claude-agent-acp (no `status: "in_progress"` is emitted, so we
+    /// can't re-stamp `started_at` to the real subprocess start;
+    /// see the comment on `CardChromeProps.startedAt` in
+    /// `web/src/components/cockpit/ToolCards.tsx`); this setting lets
+    /// users hide the label until upstream provides a trustworthy
+    /// "subprocess started" signal.
+    #[serde(default = "default_true")]
+    pub show_tool_durations: bool,
 }
 
 impl Default for CockpitConfig {
@@ -89,6 +102,7 @@ impl Default for CockpitConfig {
             replay_events: default_replay_events(),
             replay_bytes: default_replay_bytes(),
             node_path: String::new(),
+            show_tool_durations: true,
         }
     }
 }
@@ -100,7 +114,12 @@ fn default_max_workers() -> u32 {
     5
 }
 fn default_replay_events() -> u32 {
-    500
+    // 0 = unlimited. The event store's prune already gates on `> 0`
+    // (see `EventStore::record`), so the default flip is end-to-end
+    // safe: a fresh install never truncates history; users who want a
+    // ceiling for disk-space reasons can set a non-zero value in
+    // config.toml or the settings TUI. See #1065.
+    0
 }
 fn default_replay_bytes() -> u64 {
     5_242_880
@@ -252,7 +271,7 @@ pub struct SessionConfig {
     /// (P, R, T, N, D, G) relocate to Ctrl+letter so nothing is lost.
     /// Note: Ctrl+D (diff view) may conflict with terminal EOF in some tmux configs;
     /// if so, rebind tmux's send-prefix or use the `D` key from the help overlay.
-    /// Off by default — existing users keep the legacy single-letter UX.
+    /// Off by default; existing users keep the legacy single-letter UX.
     #[serde(default)]
     pub strict_hotkeys: bool,
 }
@@ -381,13 +400,13 @@ fn default_profile() -> String {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ColorMode {
-    /// Emit 24-bit RGB escapes (\e[38;2;R;G;Bm). Default — best fidelity on
+    /// Emit 24-bit RGB escapes (\e[38;2;R;G;Bm). Default; best fidelity on
     /// modern terminals and SSH sessions that pass RGB correctly.
     #[default]
     Truecolor,
     /// Emit 256-palette escapes (\e[38;5;<idx>m) by converting every theme
     /// Rgb(r,g,b) to the nearest xterm-256 index. Use this when the transport
-    /// (notably some mosh clients) mishandles 24-bit RGB — preview panes in
+    /// (notably some mosh clients) mishandles 24-bit RGB; preview panes in
     /// aoe already use 256-palette via ansi-to-tui, so palette mode renders
     /// chrome through the same escape path and survives the same transports.
     Palette,

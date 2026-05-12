@@ -214,6 +214,8 @@ async fn main() -> Result<()> {
         Some(Commands::Url(args)) => cli::url::run(args),
         #[cfg(feature = "serve")]
         Some(Commands::Cockpit { command }) => cli::cockpit::run(command).await,
+        #[cfg(feature = "serve")]
+        Some(Commands::CockpitRunner(args)) => agent_of_empires::cockpit::runner::run(*args).await,
         None => {
             // Fold the drift notice into the existing startup-warning channel
             // so the TUI surfaces both (debug-log + drift, if both fire) in a

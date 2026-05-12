@@ -141,6 +141,13 @@ pub enum Commands {
         command: CockpitCommands,
     },
 
+    /// Internal: per-cockpit-worker shim spawned by `aoe serve`. Owns the
+    /// agent subprocess and outlives the daemon so workers survive
+    /// `aoe serve --stop`. Hidden from help.
+    #[cfg(feature = "serve")]
+    #[command(name = "__cockpit-runner", hide = true)]
+    CockpitRunner(Box<crate::cockpit::runner::CockpitRunnerArgs>),
+
     /// Uninstall Agent of Empires
     Uninstall(UninstallArgs),
 

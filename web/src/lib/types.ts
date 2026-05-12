@@ -42,6 +42,18 @@ export interface SessionResponse {
    *  hook failures where the worktree was created successfully anyway). Only
    *  populated on the create-session response; absent on subsequent fetches. */
   warnings?: string[];
+  /** Latest plan snapshot summarised for the sidebar. Present only on
+   *  cockpit sessions whose agent has emitted a Plan. See #1061. */
+  plan_summary?: PlanSummary;
+}
+
+export interface PlanSummary {
+  /** First non-completed step's title, truncated server-side. */
+  current_step_title: string | null;
+  /** Count of steps with status `Done`. */
+  completed: number;
+  /** Total step count. */
+  total: number;
 }
 
 export interface WorkspaceRepoSummary {

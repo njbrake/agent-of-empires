@@ -29,6 +29,7 @@ import {
 
 import { useFilesIndex, fuzzyFilter } from "./useFilesIndex";
 import type { CockpitState } from "../../lib/cockpitTypes";
+import { getDraft, setDraft } from "../../lib/cockpitDrafts";
 
 interface Props {
   sessionId: string;
@@ -118,6 +119,46 @@ export function Composer({
     el.style.height = "auto";
     el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
   };
+
+  // Per-session draft persistence: keep an unsent prompt across
+  // sidebar navigation / route changes by mirroring composer text into
+  // localStorage. The CockpitView unmounts when the user switches to
+  // another session, so without this the draft is gone on return.
+  // Keyed by sessionId; cleared when the text goes empty (user deleted
+  // it, or the runtime cleared after a successful send).
+  useEffect(() => {
+    const saved = getDraft(sessionId);
+    if (saved && composerRuntime.getState().text === "") {
+      composerRuntime.setText(saved);
+      // setText doesn't fire the textarea's onInput, so the auto-grow
+      // never runs for the restored value. Resize manually once the DOM
+      // has the seeded text.
+      requestAnimationFrame(() => {
+        const el = taRef.current;
+        if (el) {
+          el.style.height = "auto";
+          el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
+        }
+      });
+    }
+
+    let writeTimer: number | null = null;
+    const flush = () => {
+      writeTimer = null;
+      setDraft(sessionId, composerRuntime.getState().text);
+    };
+    const unsub = composerRuntime.subscribe(() => {
+      if (writeTimer !== null) window.clearTimeout(writeTimer);
+      writeTimer = window.setTimeout(flush, 250);
+    });
+    return () => {
+      unsub();
+      if (writeTimer !== null) {
+        window.clearTimeout(writeTimer);
+        flush();
+      }
+    };
+  }, [composerRuntime, sessionId]);
 
   // wterm's async init() in the right pane focuses its hidden textarea
   // ~200-500ms after mount and steals focus from us. Re-claim a couple
