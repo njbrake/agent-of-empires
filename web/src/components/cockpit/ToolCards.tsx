@@ -40,6 +40,13 @@ interface Props {
   result?: ActivityRow;
 }
 
+/** Keys CockpitRuntime smuggles through `args_preview` for renderer
+ *  bookkeeping (the ACP title, the real `started_at` for the duration
+ *  label). Excluded from any user-visible input JSON dumps. */
+function isCockpitBookkeepingKey(key: string): boolean {
+  return key === "_aoe_title" || key === "_aoe_started_at";
+}
+
 export function ToolCard({ tool, result }: Props) {
   const mcp = classifyMcp(tool);
   if (mcp.isMcp) {
@@ -899,7 +906,7 @@ function SkillToolCard({ tool, result, skillName }: SkillProps) {
     if (!args) return tool.args_preview;
     const rest: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(args)) {
-      if (k === "_aoe_title") continue;
+      if (isCockpitBookkeepingKey(k)) continue;
       rest[k] = v;
     }
     return JSON.stringify(rest, null, 2);
@@ -919,7 +926,7 @@ function SkillToolCard({ tool, result, skillName }: SkillProps) {
       endedAt={result?.at}
       body={
         <>
-          {args && Object.keys(args).filter((k) => k !== "_aoe_title").length > 0 && (
+          {args && Object.keys(args).filter((k) => !isCockpitBookkeepingKey(k)).length > 0 && (
             <div className="border-t border-surface-800 bg-surface-950 px-3 py-2">
               <div className="mb-1 flex items-center justify-between text-[10px] uppercase tracking-wider text-text-dim">
                 <span>input</span>
@@ -1066,7 +1073,7 @@ function McpToolCard({ tool, result, server, verb }: McpProps) {
   const argPreview = useMemo<string | null>(() => {
     if (!args) return null;
     for (const [k, v] of Object.entries(args)) {
-      if (k === "_aoe_title") continue;
+      if (isCockpitBookkeepingKey(k)) continue;
       if (typeof v === "string" && v.length > 0) {
         const trimmed = v.length > 120 ? `${v.slice(0, 117)}…` : v;
         return `${k}: ${trimmed}`;
@@ -1082,7 +1089,7 @@ function McpToolCard({ tool, result, server, verb }: McpProps) {
     if (!args) return tool.args_preview;
     const rest: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(args)) {
-      if (k === "_aoe_title") continue;
+      if (isCockpitBookkeepingKey(k)) continue;
       rest[k] = v;
     }
     return JSON.stringify(rest, null, 2);
@@ -1109,7 +1116,7 @@ function McpToolCard({ tool, result, server, verb }: McpProps) {
       onToggle={hasBody ? () => setOpen((v) => !v) : undefined}
       body={
         <>
-          {args && Object.keys(args).filter((k) => k !== "_aoe_title").length > 0 && (
+          {args && Object.keys(args).filter((k) => !isCockpitBookkeepingKey(k)).length > 0 && (
             <div className="border-t border-surface-800 bg-surface-950 px-3 py-2">
               <div className="mb-1 flex items-center justify-between text-[10px] uppercase tracking-wider text-text-dim">
                 <span>input</span>

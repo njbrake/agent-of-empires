@@ -226,14 +226,19 @@ function AssistantToolCall(props: ToolCallProps) {
   // Reconstruct the ToolCall shape our existing ToolCards.tsx
   // renderer expects. assistant-ui carries `toolName` (we set this to
   // ACP's lowercased ToolKind in CockpitRuntime) plus argsText (the
-  // truncated JSON preview from the agent).
-  const stableAt = toolCallTimestamp(props.toolCallId);
+  // truncated JSON preview from the agent). The real `started_at` and
+  // completion `endedAt` are smuggled through argsText/result by
+  // CockpitRuntime's AssistantBuilder so the duration label (#1060)
+  // reflects actual tool runtime instead of "time between renders".
+  const fallbackAt = toolCallTimestamp(props.toolCallId);
+  const startedAt = pickStartedAt(props.args, props.argsText) ?? fallbackAt;
+  const endedAt = pickEndedAt(props.result) ?? fallbackAt;
   const tool: ToolCall = {
     id: props.toolCallId,
     name: prettifyToolName(props.toolName, props.args),
     kind: props.toolName,
     args_preview: props.argsText ?? safeStringify(props.args ?? null),
-    started_at: stableAt,
+    started_at: startedAt,
   };
   const resultContent =
     props.result &&
@@ -250,17 +255,59 @@ function AssistantToolCall(props: ToolCallProps) {
             : ("tool_complete" as const),
           text: resultContent,
           toolCallId: props.toolCallId,
-          at: stableAt,
+          at: endedAt,
         }
       : undefined;
   return <ToolCard tool={tool} result={result} />;
+}
+
+/** Read the real `_aoe_started_at` ISO timestamp out of the
+ *  tool-call args. Returns null when neither the parsed `args` object
+ *  nor the raw `argsText` carries it — caller falls back to a minted
+ *  client time. */
+function pickStartedAt(
+  args: Record<string, unknown> | undefined,
+  argsText: string | undefined,
+): string | null {
+  if (args && typeof args._aoe_started_at === "string") {
+    return args._aoe_started_at;
+  }
+  if (argsText) {
+    try {
+      const parsed = JSON.parse(argsText);
+      if (
+        parsed &&
+        typeof parsed === "object" &&
+        !Array.isArray(parsed) &&
+        typeof (parsed as Record<string, unknown>)._aoe_started_at === "string"
+      ) {
+        return (parsed as Record<string, string>)._aoe_started_at ?? null;
+      }
+    } catch {
+      // ignore
+    }
+  }
+  return null;
+}
+
+/** Read the smuggled `endedAt` field set by AssistantBuilder.completeToolCall. */
+function pickEndedAt(result: unknown): string | null {
+  if (
+    result &&
+    typeof result === "object" &&
+    "endedAt" in (result as Record<string, unknown>)
+  ) {
+    const v = (result as { endedAt?: unknown }).endedAt;
+    if (typeof v === "string") return v;
+  }
+  return null;
 }
 
 interface GroupChild {
   toolCallId: string;
   toolName: string;
   argsText: string;
-  result?: { content: string };
+  result?: { content: string; endedAt?: string };
   isError?: boolean;
 }
 
@@ -278,7 +325,7 @@ function AssistantToolGroup({ argsText }: { argsText?: string }) {
     }
   }
   const items = children.map((c) => {
-    const stableAt = toolCallTimestamp(c.toolCallId);
+    const fallbackAt = toolCallTimestamp(c.toolCallId);
     let parsedArgs: Record<string, unknown> = {};
     try {
       const p = JSON.parse(c.argsText);
@@ -288,12 +335,14 @@ function AssistantToolGroup({ argsText }: { argsText?: string }) {
     } catch {
       // ignore
     }
+    const startedAt = pickStartedAt(parsedArgs, c.argsText) ?? fallbackAt;
+    const endedAt = pickEndedAt(c.result) ?? fallbackAt;
     const tool: ToolCall = {
       id: c.toolCallId,
       name: prettifyToolName(c.toolName, parsedArgs),
       kind: c.toolName,
       args_preview: c.argsText,
-      started_at: stableAt,
+      started_at: startedAt,
     };
     const result =
       c.result !== undefined
@@ -304,7 +353,7 @@ function AssistantToolGroup({ argsText }: { argsText?: string }) {
               : ("tool_complete" as const),
             text: c.result.content,
             toolCallId: c.toolCallId,
-            at: stableAt,
+            at: endedAt,
           }
         : undefined;
     return { tool, result, kind: c.toolName };

@@ -190,6 +190,7 @@ export function activityToThreadMessages(
         row.toolCallId ?? row.id.replace(/^done-/, ""),
         row.kind === "tool_error",
         row.text,
+        row.at,
       );
     } else if (row.kind === "thinking") {
       // Thinking is rendered by the global rattle spinner, not the
@@ -244,7 +245,7 @@ type DraftPart =
       toolCallId: string;
       toolName: string;
       argsText: string;
-      result?: { content: string };
+      result?: { content: string; endedAt?: string };
       isError?: boolean;
     };
 
@@ -275,6 +276,12 @@ class AssistantBuilder {
     // empty (Claude's bash tool, for example, often emits an empty
     // raw_input on the initial tool_call frame). The `_aoe_title`
     // key is namespaced so it can't collide with real tool args.
+    //
+    // Also smuggle `_aoe_started_at` (the real ToolCall.started_at)
+    // through assistant-ui's tool-call part shape — its primitive
+    // doesn't carry timestamps and CockpitView's fallback would
+    // otherwise mint one fresh per render, breaking the duration
+    // label (#1060).
     let argsObj: Record<string, unknown> = {};
     try {
       const parsed = JSON.parse(tool.args_preview);
@@ -285,6 +292,7 @@ class AssistantBuilder {
       // args_preview wasn't a JSON object — keep argsObj empty.
     }
     if (tool.name) argsObj._aoe_title = tool.name;
+    if (tool.started_at) argsObj._aoe_started_at = tool.started_at;
     this.parts.push({
       type: "tool-call",
       toolCallId: tool.id,
@@ -293,10 +301,15 @@ class AssistantBuilder {
     });
   }
 
-  completeToolCall(toolCallId: string, isError: boolean, resultText: string) {
+  completeToolCall(
+    toolCallId: string,
+    isError: boolean,
+    resultText: string,
+    endedAt: string,
+  ) {
     for (const part of this.parts) {
       if (part.type === "tool-call" && part.toolCallId === toolCallId) {
-        part.result = { content: resultText };
+        part.result = { content: resultText, endedAt };
         part.isError = isError || undefined;
         return;
       }
