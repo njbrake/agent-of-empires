@@ -912,10 +912,21 @@ impl App {
                 self.home
                     .restart_instance_with_size_opts(session_id, size, skip_on_launch)
             {
+                let err_str = e.to_string();
                 self.home
-                    .set_instance_error(session_id, Some(e.to_string()));
+                    .set_instance_error(session_id, Some(err_str.clone()));
                 self.home
                     .set_instance_status(session_id, crate::session::Status::Error);
+                // Surface the failure as a transient toast so the user sees
+                // *something* when Enter on a dead/archived row fails to
+                // restart. Without this, the TUI silently stays on home and
+                // the user reports "nothing happened."
+                let mut msg = format!("restart failed: {err_str}");
+                if msg.len() > 80 {
+                    msg.truncate(77);
+                    msg.push_str("...");
+                }
+                self.update_status = Some(UpdateStatus::transient(msg));
                 return Ok(());
             }
             self.home.set_instance_error(session_id, None);
