@@ -51,6 +51,10 @@ export function ToolCard({ tool, result }: Props) {
       />
     );
   }
+  const skill = classifySkill(tool);
+  if (skill.isSkill) {
+    return <SkillToolCard tool={tool} result={result} skillName={skill.name} />;
+  }
   const { kind, provenance } = reclassifyBash(tool);
   switch (kind) {
     case "execute":
@@ -726,6 +730,81 @@ function ThinkToolCard({ tool }: Props) {
       <Sparkles className="h-3 w-3 text-text-dim" />
       <span>{tool.name || "thinking…"}</span>
     </div>
+  );
+}
+
+/* ── skill ──────────────────────────────────────────────────────── */
+
+/** Heuristic for Claude's Skill tool, which the adapter routes through
+ *  the generic "Other" arm so it arrives as `kind: "other"` with a bare
+ *  `Skill` title and the skill identifier hidden in `args.skill`. We
+ *  reclassify on (case-insensitive) name + args presence so the cockpit
+ *  shows what skill ran without making the user expand a JSON blob.
+ *  See #1062. */
+function classifySkill(
+  tool: ToolCall,
+): { isSkill: true; name: string } | { isSkill: false } {
+  if (tool.kind !== "other") return { isSkill: false };
+  const title = tool.name?.trim().toLowerCase() ?? "";
+  if (title !== "skill" && title !== "claude-skill") return { isSkill: false };
+  const args = parseJsonObject(tool.args_preview);
+  const name = pickStr(args, "skill", "name", "skill_name") ?? "skill";
+  return { isSkill: true, name };
+}
+
+interface SkillProps extends Props {
+  skillName: string;
+}
+
+function SkillToolCard({ tool, result, skillName }: SkillProps) {
+  const status = statusFor(result);
+  const [open, setOpen] = useState(false);
+  const args = parseJsonObject(tool.args_preview);
+  const output = result?.text ?? "";
+
+  // Pretty-printed input minus the bookkeeping _aoe_title field so the
+  // user sees the actual skill arguments, not the adapter's title echo.
+  const inputJson = useMemo<string>(() => {
+    if (!args) return tool.args_preview;
+    const rest: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(args)) {
+      if (k === "_aoe_title") continue;
+      rest[k] = v;
+    }
+    return JSON.stringify(rest, null, 2);
+  }, [args, tool.args_preview]);
+
+  const hasBody = Boolean((args && Object.keys(args).length > 0) || output);
+
+  return (
+    <CardChrome
+      status={status}
+      icon={<Sparkles className="h-3.5 w-3.5" />}
+      label="skill"
+      primary={skillName}
+      expanded={open}
+      onToggle={hasBody ? () => setOpen((v) => !v) : undefined}
+      startedAt={tool.started_at}
+      endedAt={result?.at}
+      body={
+        <>
+          {args && Object.keys(args).filter((k) => k !== "_aoe_title").length > 0 && (
+            <div className="border-t border-surface-800 bg-surface-950 px-3 py-2">
+              <div className="mb-1 flex items-center justify-between text-[10px] uppercase tracking-wider text-text-dim">
+                <span>input</span>
+                <CopyButton text={inputJson} />
+              </div>
+              <pre className="overflow-x-auto font-mono text-[11px] text-text-muted whitespace-pre-wrap break-all">
+                {inputJson}
+              </pre>
+            </div>
+          )}
+          {output && (
+            <HighlightedBlock text={output} language="markdown" maxLines={16} />
+          )}
+        </>
+      }
+    />
   );
 }
 
