@@ -1051,23 +1051,36 @@ impl<S: BroadcastSink> Supervisor<S> {
 
     /// Reap workers whose on-disk registry entry has disappeared while
     /// the in-memory `WorkerHandle` is still installed. This is the
-    /// out-of-band stop signal: `aoe cockpit stop|kill` (a separate
-    /// process from the daemon) deletes the registry entry, then
-    /// SIGTERMs the runner. The daemon's protocol-layer connection task
-    /// blocks on `cmd_rx.recv()` while idle, so socket EOF does NOT
-    /// propagate back into the closure — `event_tx` never drops, the
-    /// drain task never observes inbound closure, and `restart_decision`
-    /// never runs. Without an explicit poll, the UI stays stuck on
-    /// "thinking" with a phantom worker recorded in the supervisor.
+    /// out-of-band stop signal: `aoe cockpit stop|kill|restart` (a
+    /// separate process from the daemon) deletes the registry entry,
+    /// then SIGTERMs the runner. The daemon's protocol-layer connection
+    /// task blocks on `cmd_rx.recv()` while idle, so socket EOF does
+    /// NOT propagate back into the closure — `event_tx` never drops,
+    /// the drain task never observes inbound closure, and
+    /// `restart_decision` never runs. Without an explicit poll, the UI
+    /// stays stuck on "thinking" with a phantom worker recorded in the
+    /// supervisor.
     ///
     /// Called by the reconciler every 2s. For each runner-managed worker
-    /// whose registry entry is gone, publishes `Stopped{reason:
-    /// "user_stopped"}` so the frontend can clear the spinner and offer
-    /// a reconnect button, then tears down the WorkerHandle (sends ACP
-    /// Shutdown so the connection task exits cleanly, aborts the drain
-    /// task). The stdio-only test path is skipped because those handles
-    /// have no registry entry by construction.
-    pub async fn reap_user_stopped(&self) {
+    /// whose registry entry is gone:
+    ///   - if a `.restart` sentinel sits next to the (now-deleted)
+    ///     registry entry, publishes `Stopped { reason:
+    ///     "restart_pending" }` and reports the id back to the caller so
+    ///     the reconciler can clear its `attempted` set and let the next
+    ///     spawn pass run (transcript continuity via the cached
+    ///     `acp_session_id`);
+    ///   - otherwise publishes `Stopped { reason: "user_stopped" }` so
+    ///     the frontend offers a "Reconnect" button and the daemon
+    ///     stays out of the respawn business.
+    ///
+    /// Either way: the WorkerHandle is dropped, ACP Shutdown is sent so
+    /// the connection task exits cleanly, and the drain task is aborted.
+    /// The stdio-only test path is skipped because those handles have
+    /// no registry entry by construction.
+    ///
+    /// Returns the list of restart-pending session ids so the reconciler
+    /// can re-enable auto-spawn for them on the next tick.
+    pub async fn reap_user_stopped(&self) -> Vec<String> {
         // Snapshot candidate session ids without holding the workers lock
         // across the registry read or the publish/teardown — the
         // teardown takes the client lock and we don't want to nest.
@@ -1086,21 +1099,33 @@ impl<S: BroadcastSink> Supervisor<S> {
                 .collect()
         };
 
+        let mut restart_pending: Vec<String> = Vec::new();
         for id in candidates {
             let removed = self.workers.lock().await.remove(&id);
             let Some(handle) = removed else { continue };
+            // Consume the restart marker (if any) and pick the publish
+            // reason. The marker is cleared regardless of which branch
+            // fires so a leaked file (e.g. from a CLI that crashed
+            // between `mark_restart_pending` and `delete`) can't poison
+            // a subsequent user-initiated stop.
+            let is_restart = super::worker_registry::take_restart_marker(&id);
+            let reason = if is_restart {
+                "restart_pending"
+            } else {
+                "user_stopped"
+            };
             info!(
                 target: "cockpit.supervisor",
                 session = %id,
-                "registry entry gone while worker handle live; \
-                 publishing user_stopped and tearing down"
+                reason,
+                "registry entry gone while worker handle live; tearing down"
             );
             let seq = next_seq(&self.next_seqs, &id);
             self.sink.publish(
                 &id,
                 seq,
                 &Event::Stopped {
-                    reason: "user_stopped".into(),
+                    reason: reason.to_string(),
                 },
             );
             // Send ACP Shutdown so the connection task's closure breaks
@@ -1111,7 +1136,11 @@ impl<S: BroadcastSink> Supervisor<S> {
                 let _ = client.shutdown().await;
             }
             handle.drain_task.abort();
+            if is_restart {
+                restart_pending.push(id);
+            }
         }
+        restart_pending
     }
 }
 
@@ -1591,6 +1620,90 @@ mod tests {
             }
             other => panic!("expected Event::Stopped, got {other:?}"),
         }
+    }
+
+    /// `reap_user_stopped` distinguishes `aoe cockpit restart` from `stop`
+    /// via the `.restart` sentinel: the CLI's restart path writes the
+    /// marker BEFORE deleting the registry, and the reaper consumes it
+    /// to (a) publish `restart_pending` instead of `user_stopped`, and
+    /// (b) return the id so the reconciler can clear its `attempted`
+    /// set and let the next 2s tick auto-respawn the worker (transcript
+    /// continuity via the cached `acp_session_id`).
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn reap_user_stopped_reports_restart_pending_when_marker_present() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        unsafe {
+            std::env::set_var("HOME", tmp.path());
+            std::env::set_var("XDG_CONFIG_HOME", tmp.path().join(".config"));
+        }
+        let sink = VecSink::new();
+        let sup = Supervisor::new(sink.clone());
+        let dummy_spec = AgentSpec {
+            command: "/bin/true".into(),
+            args: vec![],
+            description: "test fixture".into(),
+            env_allowlist: None,
+        };
+        let dummy_config = SpawnConfig {
+            spec: dummy_spec,
+            cwd: std::env::temp_dir(),
+            additional_dirs: vec![],
+            provider_env: vec![],
+            socket_path: Some(tmp.path().join("dummy.sock")),
+            stored_acp_session_id: None,
+        };
+        {
+            let mut workers = sup.workers.lock().await;
+            let (client, _tx) = AcpClient::fake_for_test(CockpitSessionId("s-restart".into()));
+            let drain = tokio::spawn(async {});
+            workers.insert(
+                "s-restart".into(),
+                WorkerHandle {
+                    client: Arc::new(Mutex::new(client)),
+                    drain_task: drain,
+                    restart_history: vec![],
+                    spawn_config: Some(dummy_config),
+                },
+            );
+        }
+        // Simulate `aoe cockpit restart`: registry already deleted (no
+        // file at record_path); marker file written before delete.
+        crate::cockpit::worker_registry::mark_restart_pending("s-restart");
+
+        let pending = sup.reap_user_stopped().await;
+
+        assert_eq!(
+            pending,
+            vec!["s-restart".to_string()],
+            "reaper must report the restart-pending session"
+        );
+        assert!(
+            !sup.workers.lock().await.contains_key("s-restart"),
+            "reaper must remove the WorkerHandle on restart too"
+        );
+        let frames = sink.frames.lock().unwrap();
+        let stopped = frames
+            .iter()
+            .find(|(id, _, _)| id == "s-restart")
+            .expect("expected published frame");
+        match &stopped.2 {
+            Event::Stopped { reason } => {
+                assert_eq!(
+                    reason, "restart_pending",
+                    "marker must steer publish reason to restart_pending"
+                );
+            }
+            other => panic!("expected Event::Stopped, got {other:?}"),
+        }
+        // Marker must be consumed so a subsequent stop on the same id
+        // isn't accidentally treated as a restart.
+        let marker_path =
+            crate::cockpit::worker_registry::restart_marker_path("s-restart").unwrap();
+        assert!(
+            !marker_path.exists(),
+            "restart marker must be removed by the reaper"
+        );
     }
 
     /// `reap_user_stopped` must NOT touch stdio-only workers: those have

@@ -130,6 +130,48 @@ pub fn log_path_for(session_id: &str) -> Result<PathBuf> {
     Ok(workers_dir()?.join(format!("{session_id}.log")))
 }
 
+/// Sentinel file `<workers_dir>/<session_id>.restart`. Written by
+/// `aoe cockpit restart` BEFORE the registry delete + SIGTERM so the
+/// daemon's reaper can distinguish a restart-driven teardown from
+/// `aoe cockpit stop|kill` and:
+///   - emit `Stopped { reason: "restart_pending" }` instead of
+///     `user_stopped` so the UI shows a "Restarting…" banner without
+///     the "Reconnect" button (the daemon will respawn shortly);
+///   - signal the reconciler to clear the `attempted` set for this id
+///     so the next 2s tick actually spawns a fresh worker.
+pub fn restart_marker_path(session_id: &str) -> Result<PathBuf> {
+    Ok(workers_dir()?.join(format!("{session_id}.restart")))
+}
+
+/// Best-effort write of an empty restart-pending marker. Called by the
+/// CLI's `aoe cockpit restart` before deleting the registry entry. The
+/// file's existence is the signal; its contents are irrelevant.
+pub fn mark_restart_pending(session_id: &str) {
+    let Ok(path) = restart_marker_path(session_id) else {
+        return;
+    };
+    let _ = std::fs::write(&path, b"");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
+}
+
+/// Returns `true` if the marker existed (and was deleted). Caller uses
+/// the boolean to pick the publish reason; defense-in-depth removes the
+/// file so a leaked marker doesn't poison the next spawn.
+pub fn take_restart_marker(session_id: &str) -> bool {
+    let Ok(path) = restart_marker_path(session_id) else {
+        return false;
+    };
+    match std::fs::remove_file(&path) {
+        Ok(()) => true,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+        Err(_) => false,
+    }
+}
+
 /// Atomic write (temp + rename) with 0600 perms. Avoids the half-written
 /// JSON that a naive `fs::write` would leave if the runner is killed
 /// mid-write — the dial path would then fail to parse and the entry

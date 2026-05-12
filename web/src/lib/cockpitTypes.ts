@@ -222,6 +222,13 @@ export interface CockpitState {
    *  shows a reconnect banner; cleared on the next UserPromptSent or
    *  AcpSessionAssigned (a fresh worker is online). */
   workerStopped: boolean;
+  /** Set true when the daemon publishes `Stopped { reason: "restart_pending" }`,
+   *  meaning `aoe cockpit restart` ran and the reconciler will respawn
+   *  the worker on its next 2s tick with the cached `acp_session_id`
+   *  (transcript continuity). The composer disables itself and a
+   *  transient "Restarting…" banner appears without a reconnect button;
+   *  cleared on AcpSessionAssigned or UserPromptSent. */
+  workerRestarting: boolean;
 }
 
 export interface ActivityRow {
@@ -271,6 +278,7 @@ export function emptyCockpitState(): CockpitState {
     toolOutputs: {},
     turnHasOutput: false,
     workerStopped: false,
+    workerRestarting: false,
   };
 }
 
@@ -467,14 +475,20 @@ export function applyEvent(
     // turn-active flag so the global "working" spinner stops.
     next.inFlightTool = null;
     next.turnActive = false;
-    // The "user_stopped" reason is published by the supervisor's
-    // reap_user_stopped pass when it detects `aoe cockpit stop|kill`
-    // has deleted the worker registry entry. Surface a persistent
-    // "worker stopped" state so the composer disables itself and the
-    // reconnect banner appears — without this, the UI shows status Idle
-    // and the user types into a dead session.
+    // The "user_stopped" / "restart_pending" reasons are published by
+    // the supervisor's reap_user_stopped pass when it detects an
+    // out-of-band CLI teardown. Surface a distinct UI state for each:
+    //   - user_stopped: persistent "Stopped" banner with a Reconnect
+    //     button; the daemon will NOT auto-respawn.
+    //   - restart_pending: transient "Restarting…" banner without a
+    //     reconnect affordance; the reconciler will respawn within ~2s
+    //     and AcpSessionAssigned clears the flag.
     if (event.Stopped.reason === "user_stopped") {
       next.workerStopped = true;
+      next.workerRestarting = false;
+    } else if (event.Stopped.reason === "restart_pending") {
+      next.workerRestarting = true;
+      next.workerStopped = false;
     }
     // Some upstream slash commands (e.g. /usage, /status, /memory in
     // claude-agent-acp) advertise via available_commands_update but
@@ -540,6 +554,7 @@ export function applyEvent(
     // A fresh prompt means the worker is alive again; clear the
     // user_stopped banner without waiting for AcpSessionAssigned.
     next.workerStopped = false;
+    next.workerRestarting = false;
     return next;
   }
   if ("AcpSessionAssigned" in event) {
@@ -556,9 +571,11 @@ export function applyEvent(
     // its own once the respawn completes the handshake.
     next.startupError = null;
     next.lastError = null;
-    // A fresh agent (via POST /cockpit/spawn after `aoe cockpit stop`)
-    // is online; clear the user_stopped banner.
+    // A fresh agent (via POST /cockpit/spawn after `aoe cockpit stop`
+    // or via the reconciler's auto-respawn after `aoe cockpit restart`)
+    // is online; clear both transient worker banners.
     next.workerStopped = false;
+    next.workerRestarting = false;
     return next;
   }
   if ("SessionContextReset" in event) {

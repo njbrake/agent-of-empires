@@ -562,9 +562,13 @@ fn restart(session: &str) -> Result<()> {
     // SIGTERM the runner; the next 2s reconciler tick on `aoe serve`
     // notices the session has no live worker and spawns a fresh one
     // (which calls session/load with the cached acp_session_id).
-    // Delete registry first so the daemon's drain task observes a
-    // user-initiated stop instead of racing the SIGTERM into a crash-
-    // loop respawn.
+    // Write the restart-pending marker BEFORE deleting the registry so
+    // the daemon's reaper can distinguish a restart from `aoe cockpit
+    // stop|kill` and emit `Stopped { reason: "restart_pending" }`
+    // instead of `user_stopped` — the UI then renders a transient
+    // "Restarting…" banner instead of the persistent "Stopped +
+    // Reconnect" affordance.
+    worker_registry::mark_restart_pending(session);
     worker_registry::delete(session).ok();
     #[cfg(unix)]
     if worker_registry::is_pid_alive(record.pid) {

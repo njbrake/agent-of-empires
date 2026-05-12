@@ -1364,13 +1364,21 @@ async fn reconcile_cockpit_workers(
         return;
     }
 
-    // Detect `aoe cockpit stop|kill` (a separate process that deletes the
-    // registry entry + SIGTERMs the runner) and surface it as a typed
-    // Stopped event. The daemon's protocol-layer connection task blocks
-    // on `cmd_rx.recv()` while idle, so socket EOF doesn't propagate to
-    // the drain task on its own — without this poll, the UI stays stuck
-    // on "thinking" and the supervisor keeps a phantom worker.
-    state.cockpit_supervisor.reap_user_stopped().await;
+    // Detect `aoe cockpit stop|kill|restart` (a separate process that
+    // deletes the registry entry + SIGTERMs the runner) and surface it
+    // as a typed Stopped event. The daemon's protocol-layer connection
+    // task blocks on `cmd_rx.recv()` while idle, so socket EOF doesn't
+    // propagate to the drain task on its own — without this poll, the
+    // UI stays stuck on "thinking" and the supervisor keeps a phantom
+    // worker. For the `restart` case, the reaper returns the ids it
+    // marked as `restart_pending`; clear them from `attempted` so the
+    // spawn pass below treats them as fresh and the next 2s tick
+    // reattaches with the cached `acp_session_id` (transcript
+    // continuity).
+    let restart_pending = state.cockpit_supervisor.reap_user_stopped().await;
+    for id in &restart_pending {
+        attempted.remove(id);
+    }
 
     let targets: Vec<_> = {
         let instances = state.instances.read().await;

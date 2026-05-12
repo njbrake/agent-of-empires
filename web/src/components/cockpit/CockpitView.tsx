@@ -83,6 +83,9 @@ function CockpitChrome({
       {state.workerStopped && !state.startupError && (
         <WorkerStoppedBanner sessionId={sessionId} />
       )}
+      {state.workerRestarting && !state.startupError && !state.workerStopped && (
+        <WorkerRestartingBanner />
+      )}
       {state.lastError && (
         <InteractionErrorBanner
           message={state.lastError}
@@ -133,7 +136,7 @@ function CockpitChrome({
           legacyMode={state.mode}
           sessionUsage={state.sessionUsage}
           availableCommands={state.availableCommands}
-          connected={status === "open" && !state.workerStopped}
+          connected={status === "open" && !state.workerStopped && !state.workerRestarting}
         />
       </ThreadPrimitive.Root>
     </div>
@@ -534,6 +537,28 @@ function InteractionErrorBanner({
       >
         Dismiss
       </button>
+    </div>
+  );
+}
+
+function WorkerRestartingBanner() {
+  // `aoe cockpit restart` deletes the registry + writes a sentinel; the
+  // daemon's reaper publishes Stopped{reason:"restart_pending"} and the
+  // reconciler clears its `attempted` set so the next 2s tick spawns a
+  // fresh worker (with the cached acp_session_id for transcript
+  // continuity). AcpSessionAssigned then clears `workerRestarting` and
+  // this banner unmounts. No reconnect button because the daemon is
+  // already handling it.
+  return (
+    <div className="flex items-center gap-2 border-b border-sky-900/60 bg-sky-950/40 px-4 py-2 text-xs text-sky-200">
+      <span
+        className="inline-block h-2 w-2 animate-pulse rounded-full bg-sky-400"
+        aria-hidden
+      />
+      <span>
+        Restarting cockpit worker… the daemon will respawn the agent with
+        your existing transcript shortly.
+      </span>
     </div>
   );
 }
