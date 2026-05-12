@@ -308,6 +308,62 @@ impl EventStore {
         collected
     }
 
+    /// True iff the session has a `UserPromptSent` whose turn never
+    /// terminated (no later `Stopped` or `AgentStartupError`). Used at
+    /// daemon startup to decide whether to synthesize a `Stopped` event
+    /// for a session that was mid-turn when the previous `aoe serve`
+    /// died, and on reattach to arm the resume-idle watchdog.
+    ///
+    /// `Stopped` and `AgentStartupError` are serialized externally-tagged
+    /// (`{"Stopped":{"reason":"..."}}`) so we match on the variant key
+    /// via `json_extract($.Stopped)`.
+    pub fn has_in_flight_turn(&self, session_id: &str) -> bool {
+        let conn = match self.conn.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        let prompt_seq: Option<i64> = match conn
+            .query_row(
+                "SELECT MAX(seq) FROM cockpit_events
+                 WHERE session_id = ?1
+                   AND json_extract(event_json, '$.UserPromptSent') IS NOT NULL",
+                params![session_id],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .optional()
+        {
+            Ok(Some(v)) => v,
+            Ok(None) => None,
+            Err(e) => {
+                warn!(target: "cockpit.event_store", "has_in_flight_turn prompt query {session_id}: {e}");
+                return false;
+            }
+        };
+        let Some(prompt_seq) = prompt_seq else {
+            return false;
+        };
+        let terminator: Option<i64> = match conn
+            .query_row(
+                "SELECT MIN(seq) FROM cockpit_events
+                 WHERE session_id = ?1
+                   AND seq > ?2
+                   AND (json_extract(event_json, '$.Stopped') IS NOT NULL
+                     OR json_extract(event_json, '$.AgentStartupError') IS NOT NULL)",
+                params![session_id, prompt_seq],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .optional()
+        {
+            Ok(Some(v)) => v,
+            Ok(None) => None,
+            Err(e) => {
+                warn!(target: "cockpit.event_store", "has_in_flight_turn terminator query {session_id}: {e}");
+                return false;
+            }
+        };
+        terminator.is_none()
+    }
+
     /// Drop every event for a session. Called when the session is
     /// deleted or its substrate is switched away from cockpit, so the
     /// next cockpit_enable starts fresh from seq=1.
@@ -449,6 +505,112 @@ mod tests {
         let mut listed = store.all_session_seqs();
         listed.sort();
         assert_eq!(listed, vec![("s-1".to_string(), 2), ("s-2".to_string(), 1)]);
+    }
+
+    #[test]
+    fn has_in_flight_turn_empty_store_returns_false() {
+        let (_tmp, store) = open_store(1000);
+        assert!(!store.has_in_flight_turn("s-1"));
+    }
+
+    #[test]
+    fn has_in_flight_turn_true_when_chunks_unterminated() {
+        let (_tmp, store) = open_store(1000);
+        store
+            .record("s-1", 1, &Event::UserPromptSent { text: "go".into() })
+            .unwrap();
+        store
+            .record(
+                "s-1",
+                2,
+                &Event::AgentMessageChunk {
+                    text: "thinking".into(),
+                },
+            )
+            .unwrap();
+        assert!(store.has_in_flight_turn("s-1"));
+    }
+
+    #[test]
+    fn has_in_flight_turn_false_when_stopped_after_prompt() {
+        let (_tmp, store) = open_store(1000);
+        store
+            .record("s-1", 1, &Event::UserPromptSent { text: "go".into() })
+            .unwrap();
+        store
+            .record(
+                "s-1",
+                2,
+                &Event::AgentMessageChunk {
+                    text: "done".into(),
+                },
+            )
+            .unwrap();
+        store
+            .record(
+                "s-1",
+                3,
+                &Event::Stopped {
+                    reason: "prompt_complete".into(),
+                },
+            )
+            .unwrap();
+        assert!(!store.has_in_flight_turn("s-1"));
+    }
+
+    #[test]
+    fn has_in_flight_turn_false_when_agent_startup_error_after_prompt() {
+        let (_tmp, store) = open_store(1000);
+        store
+            .record("s-1", 1, &Event::UserPromptSent { text: "go".into() })
+            .unwrap();
+        store
+            .record(
+                "s-1",
+                2,
+                &Event::AgentStartupError {
+                    message: "boom".into(),
+                },
+            )
+            .unwrap();
+        assert!(!store.has_in_flight_turn("s-1"));
+    }
+
+    #[test]
+    fn has_in_flight_turn_uses_latest_prompt_only() {
+        // First turn completed. Second turn in flight. Should return true.
+        let (_tmp, store) = open_store(1000);
+        store
+            .record(
+                "s-1",
+                1,
+                &Event::UserPromptSent {
+                    text: "first".into(),
+                },
+            )
+            .unwrap();
+        store
+            .record(
+                "s-1",
+                2,
+                &Event::Stopped {
+                    reason: "prompt_complete".into(),
+                },
+            )
+            .unwrap();
+        store
+            .record(
+                "s-1",
+                3,
+                &Event::UserPromptSent {
+                    text: "second".into(),
+                },
+            )
+            .unwrap();
+        store
+            .record("s-1", 4, &Event::AgentMessageChunk { text: "mid".into() })
+            .unwrap();
+        assert!(store.has_in_flight_turn("s-1"));
     }
 
     #[test]

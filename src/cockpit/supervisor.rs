@@ -258,6 +258,32 @@ impl<S: BroadcastSink> Supervisor<S> {
             .publish(session_id, seq, &Event::AgentStartupError { message });
     }
 
+    /// Publish a synthetic `Stopped` event for a session whose turn was
+    /// in flight when the previous `aoe serve` died. Called at startup
+    /// from the reconciler when the on-disk event store shows an
+    /// orphaned `UserPromptSent` (no terminating `Stopped` or
+    /// `AgentStartupError` after it) AND there is no live runner to
+    /// reattach to (which would deliver the Stopped via the resume-idle
+    /// watchdog instead). Without this the UI's "thinking" indicator
+    /// for the dead turn stays on indefinitely after restart.
+    pub fn synthesize_stopped_for_orphan(&self, session_id: &str, reason: &str) {
+        let seq = next_seq(&self.next_seqs, session_id);
+        info!(
+            target: "cockpit.supervisor",
+            session = %session_id,
+            seq,
+            %reason,
+            "publishing synthetic Stopped for orphaned in-flight turn"
+        );
+        self.sink.publish(
+            session_id,
+            seq,
+            &Event::Stopped {
+                reason: reason.to_string(),
+            },
+        );
+    }
+
     /// Publish a UserPromptSent event before forwarding the prompt to
     /// the ACP agent. The replay buffer (and on-disk event store) needs
     /// the user's side of the conversation in the same stream as agent
@@ -883,11 +909,22 @@ impl<S: BroadcastSink> Supervisor<S> {
     /// Reattach to an already-running worker by dialing its existing
     /// runner socket. Used by `reconcile_cockpit_workers` on `aoe serve`
     /// startup before falling back to a fresh spawn.
+    ///
+    /// `in_flight_turn` should be true when the on-disk event store
+    /// shows the session was mid-prompt at the moment the previous
+    /// daemon detached. It arms a watchdog in the connection task that
+    /// emits a synthetic `Event::Stopped { reason: "reattach_idle" }`
+    /// after a quiet window, so the UI's "thinking" indicator clears
+    /// even though the agent's eventual response to the orphaned
+    /// prompt is dropped silently by the underlying transport (its
+    /// request id was issued by the previous daemon's client and is
+    /// unknown to this one).
     pub async fn attach(
         &self,
         session_id: String,
         cwd: PathBuf,
         additional_dirs: Vec<PathBuf>,
+        in_flight_turn: bool,
     ) -> Result<(), SupervisorError> {
         let record = match super::worker_registry::load(&session_id)
             .map_err(|e| SupervisorError::Acp(AcpError::Spawn(format!("registry load: {e}"))))?
@@ -896,6 +933,18 @@ impl<S: BroadcastSink> Supervisor<S> {
             Some(_) | None => {
                 return Err(SupervisorError::UnknownSession(session_id));
             }
+        };
+
+        // Resume requires a known ACP session id (the runner was holding
+        // the agent loaded against it). If the registry doesn't carry
+        // one yet — e.g. the previous daemon crashed before the first
+        // `session/new` response was processed — there's nothing to
+        // resume against; bail so the reconciler falls through to a
+        // fresh spawn.
+        let Some(stored_acp_session_id) = record.stored_acp_session_id.clone() else {
+            return Err(SupervisorError::Acp(AcpError::Spawn(
+                "runner registry has no stored_acp_session_id; need fresh spawn".into(),
+            )));
         };
 
         {
@@ -916,7 +965,8 @@ impl<S: BroadcastSink> Supervisor<S> {
             record.socket_path.clone(),
             cwd,
             additional_dirs,
-            record.stored_acp_session_id.clone(),
+            stored_acp_session_id,
+            in_flight_turn,
             cockpit_session_id,
         )
         .await?;

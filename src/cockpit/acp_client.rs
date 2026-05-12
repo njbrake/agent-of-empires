@@ -94,6 +94,45 @@ enum ClientCmd {
     Shutdown,
 }
 
+/// How the connection task should handle the ACP handshake against the
+/// agent.
+///
+/// `Fresh` is the standard path: send `initialize`, then either
+/// `session/load` (if the agent advertises support AND we have a stored
+/// id) or `session/new`.
+///
+/// `Resume` is used by `AcpClient::attach` on `aoe serve` restart, when
+/// the per-session `aoe __cockpit-runner` shim kept the agent process
+/// alive across the daemon's death. The agent is already initialized
+/// and the session is already in its in-memory map; re-sending
+/// `session/new` would split context onto a new session id (which the
+/// in-flight turn does not address), and re-sending `session/load`
+/// against an agent that advertises `loadSession: false` (e.g. the
+/// bundled `aoe-agent`) would fall through to `session/new` with the
+/// same split-context bug. In `Resume` mode the daemon still sends
+/// `initialize` (idempotent for capabilities, cheap, lets us learn the
+/// agent's caps) but skips both `session/new` and `session/load` and
+/// uses the supplied `acp_session_id` as-is. `in_flight_turn` arms the
+/// resume-idle watchdog described in `run_connection_task`.
+#[derive(Debug, Clone)]
+enum ConnectMode {
+    Fresh {
+        stored_acp_session_id: Option<String>,
+    },
+    Resume {
+        acp_session_id: String,
+        in_flight_turn: bool,
+    },
+}
+
+/// Time without any inbound notification, after a `Resume`-mode attach
+/// with `in_flight_turn = true`, before the watchdog synthesizes a
+/// `Stopped { reason: "reattach_idle" }` event. LLM streams rarely have
+/// intra-turn silence near this duration so the false-positive risk
+/// (UI flips to Idle then back to Streaming on the next chunk) is
+/// bounded.
+const RESUME_IDLE_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// Resolution channel + the option set the agent offered. Stored in the
 /// pending-responders map keyed by the cockpit's server-generated nonce.
 struct PendingResponder {
@@ -168,13 +207,16 @@ impl AcpClient {
         //  - Stdio (in-proc): the legacy direct-spawn path. Retained for
         //    tests where we don't want to depend on `current_exe()` being
         //    a real `aoe` binary, and as a safety valve.
+        let mode = ConnectMode::Fresh {
+            stored_acp_session_id: config.stored_acp_session_id.clone(),
+        };
         if let Some(socket_path) = config.socket_path.clone() {
             spawn_runner_detached(&config, &socket_path, session_id.0.clone())?;
             return Self::connect_via_socket(
                 socket_path,
                 config.cwd,
                 config.additional_dirs,
-                config.stored_acp_session_id,
+                mode,
                 session_id,
                 pending_responders,
                 cmd_tx,
@@ -190,7 +232,7 @@ impl AcpClient {
         Self::start_with_stdio(
             config.cwd,
             config.additional_dirs,
-            config.stored_acp_session_id,
+            mode,
             session_id,
             child,
             pending_responders,
@@ -206,7 +248,7 @@ impl AcpClient {
     async fn start_with_stdio(
         cwd: PathBuf,
         additional_dirs: Vec<PathBuf>,
-        stored_acp_session_id: Option<String>,
+        mode: ConnectMode,
         session_id: CockpitSessionId,
         child: Arc<Mutex<tokio::process::Child>>,
         pending_responders: PendingResponders,
@@ -255,7 +297,7 @@ impl AcpClient {
             pending_for_task,
             resources,
             None,
-            stored_acp_session_id,
+            mode,
             Some(ready_tx),
         ));
 
@@ -281,7 +323,7 @@ impl AcpClient {
         socket_path: PathBuf,
         cwd: PathBuf,
         additional_dirs: Vec<PathBuf>,
-        stored_acp_session_id: Option<String>,
+        mode: ConnectMode,
         session_id: CockpitSessionId,
         pending_responders: PendingResponders,
         cmd_tx: mpsc::Sender<ClientCmd>,
@@ -321,7 +363,7 @@ impl AcpClient {
             pending_for_task,
             resources,
             None,
-            stored_acp_session_id,
+            mode,
             Some(ready_tx),
         ));
 
@@ -338,24 +380,45 @@ impl AcpClient {
 
     /// Reattach to an already-running cockpit worker over its unix
     /// socket. Used by `aoe serve` startup when a registry entry has a
-    /// live PID and an existing socket file — we connect, run the ACP
-    /// handshake (using the cached `stored_acp_session_id` to issue
-    /// `session/load` instead of `session/new`), and resume.
+    /// live PID and an existing socket file — we connect, send only the
+    /// (idempotent) ACP `initialize` request, and reuse the existing
+    /// `stored_acp_session_id` directly. We deliberately do NOT issue
+    /// `session/new` or `session/load`: the agent process is still
+    /// running (the runner kept it alive across `aoe serve --stop`) and
+    /// the session is already loaded in its memory, so re-sending those
+    /// requests would either split context onto a new session id (when
+    /// the agent doesn't advertise `loadSession`) or double-load against
+    /// a busy session.
+    ///
+    /// `in_flight_turn = true` tells the connection task that the
+    /// session was mid-prompt when the previous daemon detached. The
+    /// task arms a watchdog that emits a synthetic
+    /// `Event::Stopped { reason: "reattach_idle" }` after
+    /// `RESUME_IDLE_GRACE` of inbound silence, because the agent's
+    /// eventual response to the orphaned `session/prompt` carries a
+    /// request id this client never issued and is dropped silently by
+    /// the underlying transport, leaving the UI otherwise stuck on
+    /// "thinking".
     pub async fn attach(
         socket_path: PathBuf,
         cwd: PathBuf,
         additional_dirs: Vec<PathBuf>,
-        stored_acp_session_id: Option<String>,
+        stored_acp_session_id: String,
+        in_flight_turn: bool,
         session_id: CockpitSessionId,
     ) -> Result<Self, AcpError> {
         let (cmd_tx, cmd_rx) = mpsc::channel::<ClientCmd>(16);
         let (event_tx, event_rx) = mpsc::channel::<Event>(64);
         let pending_responders: PendingResponders = Arc::new(Mutex::new(HashMap::new()));
+        let mode = ConnectMode::Resume {
+            acp_session_id: stored_acp_session_id,
+            in_flight_turn,
+        };
         Self::connect_via_socket(
             socket_path,
             cwd,
             additional_dirs,
-            stored_acp_session_id,
+            mode,
             session_id,
             pending_responders,
             cmd_tx,
@@ -1148,13 +1211,13 @@ async fn run_connection_task<W, R>(
     pending_responders: PendingResponders,
     resources: SessionResources,
     socket_path: Option<PathBuf>,
-    stored_acp_session_id: Option<String>,
+    mode: ConnectMode,
     ready_tx: Option<oneshot::Sender<Result<(), AcpError>>>,
 ) where
     W: futures_util::AsyncWrite + Send + 'static,
     R: futures_util::AsyncRead + Send + 'static,
 {
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 
     let ready_tx = Arc::new(Mutex::new(ready_tx));
     let ready_for_block = ready_tx.clone();
@@ -1187,6 +1250,21 @@ async fn run_connection_task<W, R>(
     let suppress_for_block = suppress_history_replay.clone();
     let session_label_for_notif = session_label.clone();
 
+    // Watchdog inputs (only consulted when `mode` is `Resume { in_flight_turn: true }`):
+    //   - `last_event_at`: epoch-ms of the last inbound notification.
+    //     Updated by the notification handler below. Initialized to "now"
+    //     so a session that never receives a single notification still
+    //     fires Stopped after RESUME_IDLE_GRACE rather than immediately.
+    //   - `prompt_sent_since_attach`: set when the user issues a prompt
+    //     after attach; the user's real PromptRequest will own the next
+    //     Stopped, so the watchdog must stand down.
+    //   - `watchdog_fired`: ensures we synthesize Stopped at most once.
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let last_event_at = Arc::new(AtomicI64::new(now_ms));
+    let prompt_sent_since_attach = Arc::new(AtomicBool::new(false));
+    let watchdog_fired = Arc::new(AtomicBool::new(false));
+    let last_event_at_for_notif = last_event_at.clone();
+
     let result = Client
         .builder()
         .name("aoe-cockpit")
@@ -1195,7 +1273,10 @@ async fn run_connection_task<W, R>(
                 let event_tx = event_tx_for_notif.clone();
                 let suppress = suppress_for_notif.clone();
                 let session_label = session_label_for_notif.clone();
+                let last_event_at = last_event_at_for_notif.clone();
                 async move {
+                    last_event_at
+                        .store(chrono::Utc::now().timestamp_millis(), Ordering::Relaxed);
                     let suppressing = suppress.load(Ordering::Relaxed);
                     for event in map_update_to_events(notification.update) {
                         // During the post-load replay window, drop only
@@ -1306,6 +1387,10 @@ async fn run_connection_task<W, R>(
                     .read_text_file(true)
                     .write_text_file(true))
                 .terminal(true);
+            // `initialize` is sent in both Fresh and Resume modes.
+            // It's idempotent on every ACP agent we ship against
+            // (aoe-agent, claude-agent-acp) — the response only carries
+            // capability metadata — so re-sending it on attach is safe.
             let init = connection
                 .send_request(
                     InitializeRequest::new(ProtocolVersion::V1)
@@ -1315,136 +1400,227 @@ async fn run_connection_task<W, R>(
                 .await?;
 
             let load_session_capable = init.agent_capabilities.load_session;
+            // Snapshot the watchdog-arming flag before `mode` is moved
+            // into the match below.
+            let arm_resume_watchdog = matches!(
+                &mode,
+                ConnectMode::Resume {
+                    in_flight_turn: true,
+                    ..
+                }
+            );
             info!(
                 target: "cockpit.acp",
                 session = %session_label,
                 load_session_capable,
-                stored_id = ?stored_acp_session_id,
+                ?mode,
                 "initialize handshake complete"
             );
 
-            // Decide whether to resume the prior agent session or create
-            // a fresh one. session/load is only attempted when the agent
-            // advertises support AND we have a stored id to feed it. On
-            // load failure (id GC'd, agent state lost, etc.) we fall
-            // through to session/new and emit SessionContextReset so the
-            // UI can show a notice and clear stale token-usage hints.
-            let mut acp_session_id: Option<SessionId> = None;
-            if load_session_capable {
-                if let Some(stored) = stored_acp_session_id.clone() {
+            let acp_session_id: SessionId = match mode {
+                ConnectMode::Resume {
+                    acp_session_id: stored,
+                    in_flight_turn: _,
+                } => {
+                    // Skip session/new and session/load. The runner kept
+                    // the agent process alive across the daemon restart,
+                    // so the session is still loaded in the agent's
+                    // memory and addressable via its original id. Issuing
+                    // session/load here would either fail (agents that
+                    // advertise loadSession=false) or double-load against
+                    // a still-busy session; issuing session/new would
+                    // split context onto a new id the in-flight turn
+                    // doesn't address.
                     info!(
                         target: "cockpit.acp",
                         session = %session_label,
                         stored_id = %stored,
-                        "resuming session via session/load"
+                        "resume mode: reusing existing acp session id without handshake"
                     );
-                    // Set the flag BEFORE sending the request: claude-agent-acp
-                    // re-emits the prior transcript via session/update
-                    // notifications *during* the load handshake, before the
-                    // LoadSessionRequest response returns. Setting after .await
-                    // would let those notifications leak through to the event
-                    // store and produce duplicate ToolCallStarted rows on the
-                    // next reload (assistant-ui then panics with "Duplicate
-                    // key toolCallId-..."). Cleared on Err below if we fall
-                    // back to session/new, which has no replay payload.
-                    suppress_for_block.store(true, Ordering::Relaxed);
-                    let req = LoadSessionRequest::new(stored.clone(), cwd.clone());
-                    match connection.send_request(req).block_task().await {
-                        Ok(_resp) => {
+                    // Emit AcpSessionAssigned so the frontend reducer
+                    // clears any sticky startupError/lastError from the
+                    // crash. The server-side listener treats a same-id
+                    // Assigned as a no-op, so this doesn't rewrite
+                    // sessions.json.
+                    let _ = event_tx_for_block
+                        .send(Event::AcpSessionAssigned {
+                            acp_session_id: stored.clone(),
+                        })
+                        .await;
+                    SessionId::from(stored)
+                }
+                ConnectMode::Fresh {
+                    stored_acp_session_id,
+                } => {
+                    // Decide whether to resume the prior agent session or create
+                    // a fresh one. session/load is only attempted when the agent
+                    // advertises support AND we have a stored id to feed it. On
+                    // load failure (id GC'd, agent state lost, etc.) we fall
+                    // through to session/new and emit SessionContextReset so the
+                    // UI can show a notice and clear stale token-usage hints.
+                    let mut acp_session_id: Option<SessionId> = None;
+                    if load_session_capable {
+                        if let Some(stored) = stored_acp_session_id.clone() {
                             info!(
                                 target: "cockpit.acp",
                                 session = %session_label,
                                 stored_id = %stored,
-                                "session/load succeeded; suppressing post-load history replay"
+                                "resuming session via session/load"
                             );
-                            // Emit AcpSessionAssigned even on resume so the
-                            // frontend reducer can clear any sticky
-                            // `startupError` / `lastError` from a prior crash
-                            // (e.g. a respawn after the user's prompt hit a
-                            // dead pipe). The server-side listener treats a
-                            // same-id Assigned as a no-op, so this doesn't
-                            // rewrite sessions.json.
-                            let _ = event_tx_for_block
-                                .send(Event::AcpSessionAssigned {
-                                    acp_session_id: stored.clone(),
-                                })
-                                .await;
-                            acp_session_id = Some(SessionId::from(stored));
-                        }
-                        Err(e) => {
-                            warn!(
-                                target: "cockpit.acp",
-                                session = %session_label,
-                                stored_id = %stored,
-                                "session/load failed, falling back to session/new: {e}"
-                            );
-                            suppress_for_block.store(false, Ordering::Relaxed);
-                            let _ = event_tx_for_block
-                                .send(Event::SessionContextReset {
-                                    reason: format!("session/load failed: {e}"),
-                                })
-                                .await;
+                            // Set the flag BEFORE sending the request: claude-agent-acp
+                            // re-emits the prior transcript via session/update
+                            // notifications *during* the load handshake, before the
+                            // LoadSessionRequest response returns. Setting after .await
+                            // would let those notifications leak through to the event
+                            // store and produce duplicate ToolCallStarted rows on the
+                            // next reload (assistant-ui then panics with "Duplicate
+                            // key toolCallId-..."). Cleared on Err below if we fall
+                            // back to session/new, which has no replay payload.
+                            suppress_for_block.store(true, Ordering::Relaxed);
+                            let req = LoadSessionRequest::new(stored.clone(), cwd.clone());
+                            match connection.send_request(req).block_task().await {
+                                Ok(_resp) => {
+                                    info!(
+                                        target: "cockpit.acp",
+                                        session = %session_label,
+                                        stored_id = %stored,
+                                        "session/load succeeded; suppressing post-load history replay"
+                                    );
+                                    // Emit AcpSessionAssigned even on resume so the
+                                    // frontend reducer can clear any sticky
+                                    // `startupError` / `lastError` from a prior crash
+                                    // (e.g. a respawn after the user's prompt hit a
+                                    // dead pipe). The server-side listener treats a
+                                    // same-id Assigned as a no-op, so this doesn't
+                                    // rewrite sessions.json.
+                                    let _ = event_tx_for_block
+                                        .send(Event::AcpSessionAssigned {
+                                            acp_session_id: stored.clone(),
+                                        })
+                                        .await;
+                                    acp_session_id = Some(SessionId::from(stored));
+                                }
+                                Err(e) => {
+                                    warn!(
+                                        target: "cockpit.acp",
+                                        session = %session_label,
+                                        stored_id = %stored,
+                                        "session/load failed, falling back to session/new: {e}"
+                                    );
+                                    suppress_for_block.store(false, Ordering::Relaxed);
+                                    let _ = event_tx_for_block
+                                        .send(Event::SessionContextReset {
+                                            reason: format!("session/load failed: {e}"),
+                                        })
+                                        .await;
+                                }
+                            }
                         }
                     }
+
+                    if let Some(id) = acp_session_id {
+                        id
+                    } else {
+                        info!(
+                            target: "cockpit.acp",
+                            session = %session_label,
+                            "creating fresh session via session/new"
+                        );
+                        let new_session = connection
+                            .send_request(NewSessionRequest::new(cwd))
+                            .block_task()
+                            .await?;
+                        let id = new_session.session_id.clone();
+                        info!(
+                            target: "cockpit.acp",
+                            session = %session_label,
+                            new_id = %id.0,
+                            "session/new succeeded, captured acp_session_id"
+                        );
+
+                        // Surface the agent-advertised modes (if any) so the UI
+                        // can render the actual modes the agent supports rather
+                        // than the hard-coded four. Claude's adapter typically
+                        // ships a mode set with ids like "default" / "plan" /
+                        // "accept_edits" / "bypass_permissions".
+                        if let Some(modes) = &new_session.modes {
+                            let infos: Vec<ModeInfo> = modes
+                                .available_modes
+                                .iter()
+                                .map(|m| ModeInfo {
+                                    id: m.id.0.to_string(),
+                                    name: m.name.clone(),
+                                    description: m.description.clone(),
+                                })
+                                .collect();
+                            let _ = event_tx_for_block
+                                .send(Event::ModesAvailable {
+                                    current_mode_id: modes.current_mode_id.0.to_string(),
+                                    modes: infos,
+                                })
+                                .await;
+                        }
+
+                        // Tell the server-side listener so it can persist the
+                        // new id on Instance.cockpit_acp_session_id.
+                        let _ = event_tx_for_block
+                            .send(Event::AcpSessionAssigned {
+                                acp_session_id: id.0.to_string(),
+                            })
+                            .await;
+
+                        id
+                    }
                 }
-            }
-
-            let acp_session_id = if let Some(id) = acp_session_id {
-                id
-            } else {
-                info!(
-                    target: "cockpit.acp",
-                    session = %session_label,
-                    "creating fresh session via session/new"
-                );
-                let new_session = connection
-                    .send_request(NewSessionRequest::new(cwd))
-                    .block_task()
-                    .await?;
-                let id = new_session.session_id.clone();
-                info!(
-                    target: "cockpit.acp",
-                    session = %session_label,
-                    new_id = %id.0,
-                    "session/new succeeded, captured acp_session_id"
-                );
-
-                // Surface the agent-advertised modes (if any) so the UI
-                // can render the actual modes the agent supports rather
-                // than the hard-coded four. Claude's adapter typically
-                // ships a mode set with ids like "default" / "plan" /
-                // "accept_edits" / "bypass_permissions".
-                if let Some(modes) = &new_session.modes {
-                    let infos: Vec<ModeInfo> = modes
-                        .available_modes
-                        .iter()
-                        .map(|m| ModeInfo {
-                            id: m.id.0.to_string(),
-                            name: m.name.clone(),
-                            description: m.description.clone(),
-                        })
-                        .collect();
-                    let _ = event_tx_for_block
-                        .send(Event::ModesAvailable {
-                            current_mode_id: modes.current_mode_id.0.to_string(),
-                            modes: infos,
-                        })
-                        .await;
-                }
-
-                // Tell the server-side listener so it can persist the
-                // new id on Instance.cockpit_acp_session_id.
-                let _ = event_tx_for_block
-                    .send(Event::AcpSessionAssigned {
-                        acp_session_id: id.0.to_string(),
-                    })
-                    .await;
-
-                id
             };
 
             if let Some(tx) = ready_for_block.lock().await.take() {
                 let _ = tx.send(Ok(()));
+            }
+
+            // Arm the resume-idle watchdog. The agent's response to the
+            // orphaned in-flight `session/prompt` (from the previous
+            // daemon) carries a request id this client never issued and
+            // is dropped silently by the transport. Without this
+            // synthesized Stopped, the UI's "thinking" indicator never
+            // clears until the user manually sends a new prompt.
+            if arm_resume_watchdog {
+                let event_tx_for_watchdog = event_tx_for_block.clone();
+                let last_event_at = last_event_at.clone();
+                let prompt_sent_since_attach = prompt_sent_since_attach.clone();
+                let watchdog_fired = watchdog_fired.clone();
+                let session_label_for_watchdog = session_label.clone();
+                tokio::spawn(async move {
+                    let grace_ms = RESUME_IDLE_GRACE.as_millis() as i64;
+                    loop {
+                        tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                        if watchdog_fired.load(Ordering::Relaxed) {
+                            return;
+                        }
+                        if prompt_sent_since_attach.load(Ordering::Relaxed) {
+                            // User sent a new prompt; its real
+                            // PromptRequest will own the next Stopped.
+                            return;
+                        }
+                        let last = last_event_at.load(Ordering::Relaxed);
+                        let now = chrono::Utc::now().timestamp_millis();
+                        if now - last >= grace_ms {
+                            info!(
+                                target: "cockpit.acp",
+                                session = %session_label_for_watchdog,
+                                idle_ms = now - last,
+                                "resume-idle watchdog: synthesizing Stopped for orphaned in-flight turn"
+                            );
+                            watchdog_fired.store(true, Ordering::Relaxed);
+                            let _ = event_tx_for_watchdog
+                                .send(Event::Stopped {
+                                    reason: "reattach_idle".into(),
+                                })
+                                .await;
+                            return;
+                        }
+                    }
+                });
             }
 
             loop {
@@ -1465,6 +1641,11 @@ async fn run_connection_task<W, R>(
                                 "first user prompt after session/load; resuming notification pump"
                             );
                         }
+                        // Stand the resume-idle watchdog down: the new
+                        // prompt's real Stopped will own the next status
+                        // transition, so we no longer need to synthesize
+                        // one for the orphaned prior turn.
+                        prompt_sent_since_attach.store(true, Ordering::Relaxed);
                         info!(target: "cockpit.acp", "sending prompt ({} chars)", text.len());
                         let _ = connection
                             .send_request(PromptRequest::new(

@@ -1429,6 +1429,13 @@ async fn reconcile_cockpit_workers(
             continue;
         }
 
+        // Snapshot the on-disk "is this session mid-turn?" hint once per
+        // pass. Used to arm the resume-idle watchdog on the attach path,
+        // and to decide whether the fresh-spawn fallback below needs to
+        // publish a synthetic Stopped so the UI doesn't stay stuck on
+        // "thinking" after a daemon crash killed the agent mid-prompt.
+        let in_flight_turn = state.cockpit_event_store.has_in_flight_turn(&id);
+
         // Reattach path: if a previous daemon detached a runner for this
         // session and the runner is still alive, dial its socket instead
         // of spawning a fresh agent. Bounded by the registry probe — no
@@ -1440,7 +1447,7 @@ async fn reconcile_cockpit_workers(
                 let cwd = std::path::PathBuf::from(&project_path);
                 let attach_res = tokio::time::timeout(
                     std::time::Duration::from_secs(3),
-                    supervisor.attach(id.clone(), cwd, vec![]),
+                    supervisor.attach(id.clone(), cwd, vec![], in_flight_turn),
                 )
                 .await;
                 match attach_res {
@@ -1449,6 +1456,7 @@ async fn reconcile_cockpit_workers(
                             target: "cockpit.supervisor",
                             session = %id,
                             pid = record.pid,
+                            in_flight_turn,
                             "reattached to existing cockpit runner"
                         );
                         continue;
@@ -1476,6 +1484,19 @@ async fn reconcile_cockpit_workers(
                 // entry so the next attempt is a clean fresh spawn.
                 crate::cockpit::worker_registry::delete(&id).ok();
             }
+        }
+
+        // Fresh-spawn fallback: we are about to spin up a brand new
+        // agent process. The previous one (if any) was killed before it
+        // could complete the in-flight prompt, so its turn is forever
+        // orphaned. Publish a synthetic Stopped now so the UI doesn't
+        // keep "thinking" after restart — same fix path as on `main`
+        // where there's no runner at all and every cockpit session
+        // takes this branch on restart.
+        if in_flight_turn {
+            state
+                .cockpit_supervisor
+                .synthesize_stopped_for_orphan(&id, "orphaned_at_restart");
         }
 
         // Mark before spawning so the next 2s tick doesn't double-spawn
