@@ -90,12 +90,13 @@ pub async fn reconcile_cockpit_workers(state: &Arc<AppState>, attempted: &mut Ha
     // task blocks on `cmd_rx.recv()` while idle, so socket EOF doesn't
     // propagate to the drain task on its own — without this poll, the
     // UI stays stuck on "thinking" and the supervisor keeps a phantom
-    // worker. For the `restart` case, the reaper returns the ids it
-    // marked as `restart_pending`; clear them from `attempted` so the
-    // spawn pass below treats them as fresh and the next 2s tick
-    // reattaches with the cached `acp_session_id`.
-    let restart_pending = state.cockpit_supervisor.reap_user_stopped().await;
-    for id in &restart_pending {
+    // worker. For the `restart` and `substrate-to-cockpit` cases, the
+    // reaper returns the ids it expects the reconciler to respawn;
+    // clear them from `attempted` so the spawn pass below treats them
+    // as fresh and the next tick reattaches with the cached
+    // `acp_session_id` (transcript continuity).
+    let respawn_pending = state.cockpit_supervisor.reap_user_stopped().await;
+    for id in &respawn_pending {
         attempted.remove(id);
     }
 

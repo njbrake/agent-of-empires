@@ -1239,20 +1239,23 @@ impl<S: BroadcastSink> Supervisor<S> {
                 .collect()
         };
 
-        let mut restart_pending: Vec<String> = Vec::new();
+        let mut respawn_pending: Vec<String> = Vec::new();
         for id in candidates {
             let removed = self.workers.lock().await.remove(&id);
             let Some(handle) = removed else { continue };
-            // Consume the restart marker (if any) and pick the publish
-            // reason. The marker is cleared regardless of which branch
-            // fires so a leaked file (e.g. from a CLI that crashed
-            // between `mark_restart_pending` and `delete`) can't poison
-            // a subsequent user-initiated stop.
-            let is_restart = super::worker_registry::take_restart_marker(&id);
-            let reason = if is_restart {
-                "restart_pending"
-            } else {
-                "user_stopped"
+            // Consume the typed stop intent (if any) and pick the publish
+            // reason. take_stop_intent clears every marker for this id so
+            // a leaked file (e.g. from a CLI that crashed between
+            // mark_stop_intent and delete) can't poison a subsequent
+            // user-initiated stop. Falls back to "user_stopped" when no
+            // marker exists.
+            use super::worker_registry::WorkerStopIntent;
+            let intent = super::worker_registry::take_stop_intent(&id);
+            let (reason, wants_respawn) = match intent {
+                Some(WorkerStopIntent::RestartPending) => ("restart_pending", true),
+                Some(WorkerStopIntent::SubstrateSwitchToTmux) => ("substrate_switch", false),
+                Some(WorkerStopIntent::SubstrateSwitchToCockpit) => ("substrate_switch", true),
+                None => ("user_stopped", false),
             };
             info!(
                 target: "cockpit.supervisor",
@@ -1276,11 +1279,24 @@ impl<S: BroadcastSink> Supervisor<S> {
                 let _ = client.shutdown().await;
             }
             handle.drain_task.abort();
-            if is_restart {
-                restart_pending.push(id);
+            if wants_respawn {
+                respawn_pending.push(id);
             }
         }
-        restart_pending
+        respawn_pending
+    }
+
+    /// Mark a substrate or restart stop intent then tear down the
+    /// worker. Wrapper for callers (e.g. the substrate switch
+    /// coordinator) that want the in-memory `WorkerHandle` cleaned up
+    /// without going through the file-marker + reconciler-tick path.
+    pub async fn shutdown_with_intent(
+        &self,
+        session_id: &str,
+        intent: super::worker_registry::WorkerStopIntent,
+    ) -> Result<(), SupervisorError> {
+        super::worker_registry::mark_stop_intent(session_id, intent);
+        self.shutdown(session_id).await
     }
 }
 
@@ -1898,6 +1914,153 @@ mod tests {
             sink.frames.lock().unwrap().is_empty(),
             "reaper must not publish for stdio workers"
         );
+    }
+
+    /// `reap_user_stopped` must publish `Stopped { reason:
+    /// "substrate_switch" }` when the `SubstrateSwitchToTmux` intent is
+    /// set, and must NOT return the id in the respawn list (the
+    /// substrate is flipping to tmux; the reconciler should not respawn
+    /// a cockpit worker for it).
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn reap_user_stopped_reports_substrate_switch_to_tmux() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        unsafe {
+            std::env::set_var("HOME", tmp.path());
+            std::env::set_var("XDG_CONFIG_HOME", tmp.path().join(".config"));
+        }
+        let sink = VecSink::new();
+        let sup = Supervisor::new(sink.clone());
+        let dummy_spec = AgentSpec {
+            command: "/bin/true".into(),
+            args: vec![],
+            description: "test fixture".into(),
+            env_allowlist: None,
+        };
+        let dummy_config = SpawnConfig {
+            spec: dummy_spec,
+            cwd: std::env::temp_dir(),
+            additional_dirs: vec![],
+            provider_env: vec![],
+            socket_path: Some(tmp.path().join("dummy.sock")),
+            stored_acp_session_id: None,
+        };
+        {
+            let mut workers = sup.workers.lock().await;
+            let (client, _tx) = AcpClient::fake_for_test(CockpitSessionId("s-sw".into()));
+            let drain = tokio::spawn(async {});
+            workers.insert(
+                "s-sw".into(),
+                WorkerHandle {
+                    client: Arc::new(Mutex::new(client)),
+                    drain_task: drain,
+                    restart_history: vec![],
+                    spawn_config: Some(dummy_config),
+                },
+            );
+        }
+        crate::cockpit::worker_registry::mark_stop_intent(
+            "s-sw",
+            crate::cockpit::worker_registry::WorkerStopIntent::SubstrateSwitchToTmux,
+        );
+
+        let respawn = sup.reap_user_stopped().await;
+
+        assert!(
+            respawn.is_empty(),
+            "substrate-to-tmux must NOT be returned for respawn"
+        );
+        assert!(
+            !sup.workers.lock().await.contains_key("s-sw"),
+            "reaper must drop the WorkerHandle"
+        );
+        let frames = sink.frames.lock().unwrap();
+        let stopped = frames
+            .iter()
+            .find(|(id, _, _)| id == "s-sw")
+            .expect("expected published frame");
+        match &stopped.2 {
+            Event::Stopped { reason } => {
+                assert_eq!(reason, "substrate_switch");
+            }
+            other => panic!("expected Event::Stopped, got {other:?}"),
+        }
+    }
+
+    /// `shutdown_with_intent` marks the typed sentinel BEFORE tearing
+    /// down the worker, so a concurrent reconciler tick (or any other
+    /// observer) sees the intent rather than racing into a misclassified
+    /// crash.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn shutdown_with_intent_marks_then_tears_down() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        unsafe {
+            std::env::set_var("HOME", tmp.path());
+            std::env::set_var("XDG_CONFIG_HOME", tmp.path().join(".config"));
+        }
+        let sink = VecSink::new();
+        let sup = Supervisor::new(sink);
+        let dummy_spec = AgentSpec {
+            command: "/bin/true".into(),
+            args: vec![],
+            description: "test fixture".into(),
+            env_allowlist: None,
+        };
+        let dummy_config = SpawnConfig {
+            spec: dummy_spec,
+            cwd: std::env::temp_dir(),
+            additional_dirs: vec![],
+            provider_env: vec![],
+            socket_path: Some(tmp.path().join("dummy.sock")),
+            stored_acp_session_id: None,
+        };
+        {
+            let mut workers = sup.workers.lock().await;
+            let (client, _tx) = AcpClient::fake_for_test(CockpitSessionId("s-int".into()));
+            let drain = tokio::spawn(async {});
+            workers.insert(
+                "s-int".into(),
+                WorkerHandle {
+                    client: Arc::new(Mutex::new(client)),
+                    drain_task: drain,
+                    restart_history: vec![],
+                    spawn_config: Some(dummy_config),
+                },
+            );
+        }
+        // Write a registry file so shutdown() takes the runner-managed
+        // path (not the pending-spawn-cancellation branch). Use a
+        // definitely-dead PID so `terminate_runner_for_session` no-ops
+        // and doesn't SIGTERM the test process.
+        let record = crate::cockpit::worker_registry::WorkerRecord::new(
+            "s-int".into(),
+            2_000_000_000,
+            tmp.path().join("dummy.sock"),
+            "test-agent".into(),
+            std::env::temp_dir(),
+            None,
+            vec![],
+            vec![],
+            None,
+        );
+        crate::cockpit::worker_registry::save(&record).unwrap();
+
+        sup.shutdown_with_intent(
+            "s-int",
+            crate::cockpit::worker_registry::WorkerStopIntent::SubstrateSwitchToTmux,
+        )
+        .await
+        .unwrap();
+
+        assert!(
+            !sup.workers.lock().await.contains_key("s-int"),
+            "shutdown_with_intent must remove the WorkerHandle"
+        );
+        // The intent file is consumed by shutdown's runner-termination
+        // path's reaper successor; but on the in-memory shutdown path,
+        // it's left behind for the next reap tick. Either way the
+        // outcome we care about is the handle removal above.
     }
 
     /// `next_seq` increments per-session and is independent of the
