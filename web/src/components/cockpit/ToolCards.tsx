@@ -15,6 +15,7 @@ import {
   FileText,
   Globe,
   Pencil,
+  Plug,
   Search,
   Sparkles,
   Terminal,
@@ -25,6 +26,11 @@ import { getHighlighter, langKeyForExt, loadLanguage } from "../../lib/highlight
 import { hasAnsi, parseAnsi, type AnsiStyle } from "../../lib/ansi";
 import { parseJsonObject, pickFirst, pickStr } from "../../lib/cockpitArgs";
 import type { ActivityRow, ToolCall } from "../../lib/cockpitTypes";
+import {
+  classifyMcp,
+  humanizeServer,
+  humanizeVerb,
+} from "../../lib/mcpClassify";
 import { reclassifyBash } from "../../lib/toolReclassify";
 
 interface Props {
@@ -33,6 +39,17 @@ interface Props {
 }
 
 export function ToolCard({ tool, result }: Props) {
+  const mcp = classifyMcp(tool);
+  if (mcp.isMcp) {
+    return (
+      <McpToolCard
+        tool={tool}
+        result={result}
+        server={mcp.server}
+        verb={mcp.verb}
+      />
+    );
+  }
   const { kind, provenance } = reclassifyBash(tool);
   switch (kind) {
     case "execute":
@@ -639,6 +656,86 @@ function ThinkToolCard({ tool }: Props) {
       <Sparkles className="h-3 w-3 text-text-dim" />
       <span>{tool.name || "thinking…"}</span>
     </div>
+  );
+}
+
+/* ── mcp ────────────────────────────────────────────────────────── */
+
+interface McpProps extends Props {
+  server: string;
+  verb: string;
+}
+
+function McpToolCard({ tool, result, server, verb }: McpProps) {
+  const status = statusFor(result);
+  const [open, setOpen] = useState(false);
+  const args = parseJsonObject(tool.args_preview);
+  const output = result?.text ?? "";
+
+  // Pull a short single-field arg preview for the header so the user
+  // can see what the call was about without expanding. Skip the
+  // _aoe_title bookkeeping field; cap length so headers stay readable.
+  const argPreview = useMemo<string | null>(() => {
+    if (!args) return null;
+    for (const [k, v] of Object.entries(args)) {
+      if (k === "_aoe_title") continue;
+      if (typeof v === "string" && v.length > 0) {
+        const trimmed = v.length > 120 ? `${v.slice(0, 117)}…` : v;
+        return `${k}: ${trimmed}`;
+      }
+    }
+    return null;
+  }, [args]);
+
+  // Pretty-printed input, excluding the bookkeeping _aoe_title field
+  // so the user sees the actual MCP arguments, not the adapter's
+  // forwarded title.
+  const inputJson = useMemo<string>(() => {
+    if (!args) return tool.args_preview;
+    const rest: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(args)) {
+      if (k === "_aoe_title") continue;
+      rest[k] = v;
+    }
+    return JSON.stringify(rest, null, 2);
+  }, [args, tool.args_preview]);
+
+  const hasBody = Boolean((args && Object.keys(args).length > 0) || output);
+
+  return (
+    <CardChrome
+      status={status}
+      icon={<Plug className="h-3.5 w-3.5" />}
+      label={`MCP · ${humanizeServer(server)}`}
+      primary={
+        <>
+          {humanizeVerb(verb)}
+          {argPreview && (
+            <span className="ml-2 text-text-dim">— {argPreview}</span>
+          )}
+        </>
+      }
+      expanded={open}
+      onToggle={hasBody ? () => setOpen((v) => !v) : undefined}
+      body={
+        <>
+          {args && Object.keys(args).filter((k) => k !== "_aoe_title").length > 0 && (
+            <div className="border-t border-surface-800 bg-surface-950 px-3 py-2">
+              <div className="mb-1 flex items-center justify-between text-[10px] uppercase tracking-wider text-text-dim">
+                <span>input</span>
+                <CopyButton text={inputJson} />
+              </div>
+              <pre className="overflow-x-auto font-mono text-[11px] text-text-muted whitespace-pre-wrap break-all">
+                {inputJson}
+              </pre>
+            </div>
+          )}
+          {output && (
+            <HighlightedBlock text={output} language="markdown" maxLines={24} />
+          )}
+        </>
+      }
+    />
   );
 }
 
