@@ -6,9 +6,8 @@
 //! to tear down. The daemon survives across TUI quits, just like tmux
 //! sessions or the CLI-invoked daemon path.
 //!
-//! Only compiled with the `serve` feature, since the tunnel integration
-//! (and the qrcode crate it needs) lives there.
-#![cfg(feature = "serve")]
+//! Only compiled with the `serve` feature (gated in `src/tui/dialogs/mod.rs`)
+//! since the tunnel integration (and the qrcode crate it needs) lives there.
 
 use std::path::PathBuf;
 use std::sync::Mutex;

@@ -176,6 +176,14 @@ pub fn session_exists_from_cache(name: &str) -> Option<bool> {
     cache.data.as_ref().map(|m| m.contains_key(name))
 }
 
+/// Per-session last-activity epoch seconds from `#{session_activity}`, read
+/// from the cache populated by `refresh_session_cache`. Returns None if the
+/// cache is empty or the session is not present.
+pub fn get_session_activity_from_cache(name: &str) -> Option<i64> {
+    let cache = SESSION_CACHE.read().ok()?;
+    cache.data.as_ref()?.get(name).copied()
+}
+
 pub fn get_current_session_name() -> Option<String> {
     let output = Command::new("tmux")
         .args(["display-message", "-p", "#{session_name}"])

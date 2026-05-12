@@ -4,7 +4,24 @@ use anyhow::{bail, Result};
 use clap::{Args, Subcommand};
 use serde::Serialize;
 
-use crate::session::{GroupTree, Storage};
+use crate::session::{GroupTree, Instance, Storage};
+
+/// Refuse to act on archived sessions. Used by `restart` to honor the
+/// "archived = sunk; do not touch without explicit unarchive" invariant.
+/// Data-proven failure mode: without this guard, cx account-swap teardown
+/// and aoe-restart-all.sh both iterate every live tmux session and call
+/// `aoe session restart $title` for each — archived sessions were being
+/// restarted (and sent a wake-up prompt) despite the user sinking them.
+fn ensure_not_archived(inst: &Instance, identifier: &str) -> Result<()> {
+    if inst.archived_at.is_some() {
+        bail!(
+            "Session '{}' is archived — refusing to restart. Run `aoe session unarchive {}` first.",
+            inst.title,
+            identifier
+        );
+    }
+    Ok(())
+}
 
 #[derive(Subcommand)]
 pub enum SessionCommands {
@@ -32,6 +49,36 @@ pub enum SessionCommands {
     /// Auto-detect current session
     Current(CurrentArgs),
 
+    /// Archive a session (sinks it to the bottom of the Attention sort,
+    /// rendered in italic+dim; remains visible). Default kills the tmux
+    /// pane process so an archived session stops consuming resources;
+    /// pass `--no-kill` to opt out and keep the pane running.
+    Archive(ArchiveArgs),
+
+    /// Unarchive a session (clears archived_at).
+    Unarchive(SessionIdArgs),
+
+    /// Favorite a session. While favorited AND in a "needs help" status
+    /// (Waiting, Error, Idle, Unknown), it pins to the top of the Attention
+    /// sort above all non-favorited peers. Rendered bold + underlined with
+    /// a "* " prefix (ASCII, no emoji — avoids wide-width rendering
+    /// artifacts on narrow iOS terminals). Opposite of archive.
+    Favorite(SessionIdArgs),
+
+    /// Unfavorite a session (clears favorited_at).
+    Unfavorite(SessionIdArgs),
+
+    /// Snooze a session (temporary archive). Sinks it to the bottom of
+    /// the Attention sort and renders it italic+dim with a `z ` prefix
+    /// and a remaining-time readout. Wakes automatically when the timer
+    /// expires. Default duration is the profile's
+    /// `session.snooze_duration_minutes` (default 30); override per-call
+    /// with `--minutes`.
+    Snooze(SnoozeArgs),
+
+    /// Unsnooze a session (clears snoozed_until — wakes it immediately).
+    Unsnooze(SessionIdArgs),
+
     /// Set agent session ID for a session
     SetSessionId(SetSessionIdArgs),
 }
@@ -40,6 +87,17 @@ pub enum SessionCommands {
 pub struct SessionIdArgs {
     /// Session ID or title
     identifier: String,
+}
+
+#[derive(Args)]
+pub struct SnoozeArgs {
+    /// Session ID or title
+    identifier: String,
+
+    /// Override snooze duration in minutes (1-1440). If omitted, uses the
+    /// profile's configured `session.snooze_duration_minutes` (default 30).
+    #[arg(short = 'm', long)]
+    minutes: Option<u64>,
 }
 
 #[derive(Args)]
@@ -132,6 +190,19 @@ pub struct SetSessionIdArgs {
     session_id: String,
 }
 
+#[derive(Args)]
+pub struct ArchiveArgs {
+    /// Session ID or title
+    pub identifier: String,
+    /// Sink-only: skip killing the tmux pane on archive. Default behavior
+    /// is to terminate the agent process (the pane stays as a remain-on-exit
+    /// corpse) so an archived session stops consuming resources. Pass
+    /// `--no-kill` for the rare case where you want the pane to keep
+    /// running while sunk in the Attention sort.
+    #[arg(long)]
+    pub no_kill: bool,
+}
+
 #[derive(Serialize)]
 struct SessionDetails {
     id: String,
@@ -156,8 +227,192 @@ pub async fn run(profile: &str, command: SessionCommands) -> Result<()> {
         SessionCommands::Capture(args) => capture_session(profile, args).await,
         SessionCommands::Rename(args) => rename_session(profile, args).await,
         SessionCommands::Current(args) => current_session(args).await,
+        SessionCommands::Archive(args) => archive_session(profile, args).await,
+        SessionCommands::Unarchive(args) => unarchive_session(profile, args).await,
+        SessionCommands::Favorite(args) => set_session_favorited(profile, args, true).await,
+        SessionCommands::Unfavorite(args) => set_session_favorited(profile, args, false).await,
+        SessionCommands::Snooze(args) => snooze_session(profile, args).await,
+        SessionCommands::Unsnooze(args) => unsnooze_session(profile, args).await,
         SessionCommands::SetSessionId(args) => set_session_id(profile, args).await,
     }
+}
+
+async fn snooze_session(profile: &str, args: SnoozeArgs) -> Result<()> {
+    let storage = Storage::new(profile)?;
+    let (mut instances, groups) = storage.load_with_groups()?;
+
+    let config = crate::session::profile_config::resolve_config(profile)?;
+
+    // `--minutes` overrides the profile default; otherwise use the
+    // configured `snooze_duration_minutes`. Validate either way so the
+    // on-disk config can't sneak in an out-of-range value.
+    let raw_minutes = args
+        .minutes
+        .unwrap_or(config.session.snooze_duration_minutes as u64);
+    crate::session::validate_snooze_duration(raw_minutes).map_err(|e| anyhow::anyhow!("{}", e))?;
+    let minutes = raw_minutes as u32;
+
+    let idx = instances
+        .iter()
+        .position(|i| {
+            i.id == args.identifier
+                || i.id.starts_with(&args.identifier)
+                || i.title == args.identifier
+        })
+        .ok_or_else(|| anyhow::anyhow!("Session not found: {}", args.identifier))?;
+
+    instances[idx].snooze(minutes);
+    let title = instances[idx].title.clone();
+
+    let group_tree = GroupTree::new_with_groups(&instances, &groups);
+    storage.save_with_groups(&instances, &group_tree)?;
+
+    println!("✓ Snoozed for {}m: {}", minutes, title);
+    Ok(())
+}
+
+async fn unsnooze_session(profile: &str, args: SessionIdArgs) -> Result<()> {
+    let storage = Storage::new(profile)?;
+    let (mut instances, groups) = storage.load_with_groups()?;
+
+    let idx = instances
+        .iter()
+        .position(|i| {
+            i.id == args.identifier
+                || i.id.starts_with(&args.identifier)
+                || i.title == args.identifier
+        })
+        .ok_or_else(|| anyhow::anyhow!("Session not found: {}", args.identifier))?;
+
+    instances[idx].unsnooze();
+    let title = instances[idx].title.clone();
+
+    let group_tree = GroupTree::new_with_groups(&instances, &groups);
+    storage.save_with_groups(&instances, &group_tree)?;
+
+    println!("✓ Woke: {}", title);
+    Ok(())
+}
+
+async fn set_session_favorited(profile: &str, args: SessionIdArgs, favorited: bool) -> Result<()> {
+    let storage = Storage::new(profile)?;
+    let (mut instances, groups) = storage.load_with_groups()?;
+
+    let idx = instances
+        .iter()
+        .position(|i| {
+            i.id == args.identifier
+                || i.id.starts_with(&args.identifier)
+                || i.title == args.identifier
+        })
+        .ok_or_else(|| anyhow::anyhow!("Session not found: {}", args.identifier))?;
+
+    if favorited {
+        instances[idx].favorite();
+    } else {
+        instances[idx].unfavorite();
+    }
+    let title = instances[idx].title.clone();
+
+    let group_tree = GroupTree::new_with_groups(&instances, &groups);
+    storage.save_with_groups(&instances, &group_tree)?;
+
+    let verb = if favorited {
+        "Favorited"
+    } else {
+        "Unfavorited"
+    };
+    println!("✓ {} session: {}", verb, title);
+    Ok(())
+}
+
+async fn archive_session(profile: &str, args: ArchiveArgs) -> Result<()> {
+    let storage = Storage::new(profile)?;
+    let (mut instances, groups) = storage.load_with_groups()?;
+
+    let idx = instances
+        .iter()
+        .position(|i| {
+            i.id == args.identifier
+                || i.id.starts_with(&args.identifier)
+                || i.title == args.identifier
+        })
+        .ok_or_else(|| anyhow::anyhow!("Session not found: {}", args.identifier))?;
+
+    let was_archived = instances[idx].is_archived();
+    instances[idx].archive();
+    let title = instances[idx].title.clone();
+    let session_id = instances[idx].id.clone();
+
+    // None → Some transition: kill the tmux pane process so the agent
+    // stops consuming resources. With remain-on-exit on, the pane stays
+    // around as a corpse and `aoe session unarchive` (Piece 2 below) or
+    // `aoe session restart` (Piece 1) will respawn it.
+    //
+    // Already-archived → archive is a no-op for the kill: pane was
+    // already killed on the first archive.
+    if !was_archived && !args.no_kill {
+        let tmux_session = crate::tmux::Session::new(&session_id, &title)?;
+        if tmux_session.exists() {
+            if let Err(e) = tmux_session.kill_pane() {
+                eprintln!(
+                    "Warning: failed to kill pane for archived session '{}': {}",
+                    title, e
+                );
+            }
+        }
+    }
+
+    let group_tree = GroupTree::new_with_groups(&instances, &groups);
+    storage.save_with_groups(&instances, &group_tree)?;
+
+    println!("✓ Archived session: {}", title);
+    Ok(())
+}
+
+async fn unarchive_session(profile: &str, args: SessionIdArgs) -> Result<()> {
+    let storage = Storage::new(profile)?;
+    let (mut instances, groups) = storage.load_with_groups()?;
+
+    let idx = instances
+        .iter()
+        .position(|i| {
+            i.id == args.identifier
+                || i.id.starts_with(&args.identifier)
+                || i.title == args.identifier
+        })
+        .ok_or_else(|| anyhow::anyhow!("Session not found: {}", args.identifier))?;
+
+    let was_archived = instances[idx].is_archived();
+    instances[idx].unarchive();
+    let title = instances[idx].title.clone();
+    let session_id = instances[idx].id.clone();
+    let tool = instances[idx].tool.clone();
+
+    // Some → None transition: respawn the pane and send the resume
+    // message. Mirrors restart_session's pane_dead branch (Piece 1):
+    // the on-archive kill leaves a remain-on-exit corpse, so unarchive
+    // is the inverse — revive it. Cwd recovery uses the same three-step
+    // chain (sidecar → session-name → $HOME).
+    if was_archived {
+        let tmux_session = crate::tmux::Session::new(&session_id, &title)?;
+        if tmux_session.exists() && tmux_session.is_pane_dead() {
+            let cwd = recover_cwd_for_session(&tmux_session, &title);
+            tmux_session.respawn_dead_pane(&cwd, Some("zsh"))?;
+            tmux_session.wait_for_shell_prompt(std::time::Duration::from_secs(5))?;
+            let delay = crate::agents::send_keys_enter_delay(&tool);
+            let resume_msg = "wake up — pick up what you were doing";
+            if let Err(e) = tmux_session.send_keys_with_delay(resume_msg, delay) {
+                eprintln!("Warning: failed to send resume message: {}", e);
+            }
+        }
+    }
+
+    let group_tree = GroupTree::new_with_groups(&instances, &groups);
+    storage.save_with_groups(&instances, &group_tree)?;
+
+    println!("✓ Unarchived session: {}", title);
+    Ok(())
 }
 
 async fn start_session(profile: &str, args: SessionIdArgs) -> Result<()> {
@@ -403,14 +658,103 @@ async fn restart_session(profile: &str, args: SessionIdArgs) -> Result<()> {
     // so restart-time config resolution honors the right profile's overrides.
     instances[idx].source_profile = profile.to_string();
     bail_if_cockpit(&instances[idx], "restart")?;
+    ensure_not_archived(&instances[idx], &args.identifier)?;
+
     instances[idx].restart_with_size(crate::terminal::get_size())?;
     let title = instances[idx].title.clone();
+    let session_id = instances[idx].id.clone();
+    let tool = instances[idx].tool.clone();
+
+    // Wait for the agent CLI to render its prompt before injecting input.
+    // Without this, keystrokes land in the shell before claude/opencode
+    // takes over the TTY and get lost.
+    std::thread::sleep(std::time::Duration::from_millis(2000));
+
+    let tmux_session = crate::tmux::Session::new(&session_id, &title)?;
+    if tmux_session.exists() {
+        // remain-on-exit panes survive their child process and tmux reports
+        // them as existing-but-dead. The naive send-keys path would target a
+        // corpse and silently no-op. Respawn-pane brings the pane back via
+        // zsh; the wake message that follows lands in a live shell.
+        if tmux_session.is_pane_dead() {
+            let cwd = recover_cwd_for_session(&tmux_session, &title);
+            tmux_session.respawn_dead_pane(&cwd, Some("zsh"))?;
+            tmux_session.wait_for_shell_prompt(std::time::Duration::from_secs(5))?;
+        }
+        let delay = crate::agents::send_keys_enter_delay(&tool);
+        let wake_msg = "wake up — pick up what you were doing";
+        match tmux_session.send_keys_with_delay(wake_msg, delay) {
+            Ok(()) => {
+                if let Some(inst) = instances.iter_mut().find(|i| i.id == session_id) {
+                    inst.touch_last_accessed();
+                }
+            }
+            Err(e) => {
+                eprintln!("Warning: failed to send wake-up message: {}", e);
+            }
+        }
+    }
 
     let group_tree = GroupTree::new_with_groups(&instances, &groups);
     storage.save_with_groups(&instances, &group_tree)?;
 
     println!("✓ Restarted session: {}", title);
     Ok(())
+}
+
+/// Recover a usable cwd for a session whose pane was respawned. Mirrors
+/// cx-revive's three-step lookup so the on-revive UX matches whether the
+/// pane was respawned by `cxr` from the shell or `aoe session restart`
+/// from inside aoe.
+///
+/// Order: pane sidecar at /tmp/cx-panes/<pane_id> (cxr's SessionStart
+/// hook writes `<sid> <cfg> <cwd>` per launch) → ~/GitProjects/<project>
+/// derived from the tmux session name (`aoe_<project>_<8hex>`) → $HOME
+/// with a stderr warning. Always returns something usable rather than
+/// erroring, so the respawn keeps making progress on edge cases.
+fn recover_cwd_for_session(tmux_session: &crate::tmux::Session, title: &str) -> String {
+    use std::path::Path;
+
+    if let Some(pane_id) = tmux_session.pane_id() {
+        let sidecar = format!("/tmp/cx-panes/{}", pane_id);
+        if let Ok(content) = std::fs::read_to_string(&sidecar) {
+            if let Some(last) = content.lines().rev().find(|l| !l.trim().is_empty()) {
+                let parts: Vec<&str> = last.splitn(3, ' ').collect();
+                if parts.len() >= 3 {
+                    let cwd = parts[2].trim();
+                    if !cwd.is_empty() && Path::new(cwd).is_dir() {
+                        return cwd.to_string();
+                    }
+                }
+            }
+        }
+    }
+
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/".to_string());
+
+    // session-name fallback: aoe_<project>_<8hex> → ~/GitProjects/<project>
+    let session_name = tmux_session.name();
+    if let Some(rest) = session_name.strip_prefix("aoe_") {
+        if let Some((project, _id)) = rest.rsplit_once('_') {
+            let project_path = format!("{}/GitProjects/{}", home, project);
+            if Path::new(&project_path).is_dir() {
+                return project_path;
+            }
+        }
+    }
+
+    // title-derived fallback (rare: when session_name doesn't parse, e.g.
+    // legacy or hand-renamed sessions).
+    let title_path = format!("{}/GitProjects/{}", home, title);
+    if Path::new(&title_path).is_dir() {
+        return title_path;
+    }
+
+    eprintln!(
+        "Warning: could not recover cwd for session '{}', falling back to $HOME",
+        title
+    );
+    home
 }
 
 async fn attach_session(profile: &str, args: SessionIdArgs) -> Result<()> {
@@ -725,6 +1069,39 @@ async fn set_session_id(profile: &str, args: SetSessionIdArgs) -> Result<()> {
         None => println!("✓ Cleared session ID for '{}'", title),
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ensure_not_archived_allows_live_session() {
+        let inst = Instance::new("forit-Avatics", "/tmp/x");
+        assert!(ensure_not_archived(&inst, "forit-Avatics").is_ok());
+    }
+
+    #[test]
+    fn ensure_not_archived_refuses_archived_session() {
+        let mut inst = Instance::new("forit-Avatics", "/tmp/x");
+        inst.archive();
+        let err = ensure_not_archived(&inst, "forit-Avatics").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("archived"), "expected 'archived' in: {msg}");
+        assert!(msg.contains("forit-Avatics"), "expected title in: {msg}");
+        assert!(
+            msg.contains("unarchive"),
+            "expected recovery hint in: {msg}"
+        );
+    }
+
+    #[test]
+    fn ensure_not_archived_allows_after_unarchive() {
+        let mut inst = Instance::new("forit-Avatics", "/tmp/x");
+        inst.archive();
+        inst.unarchive();
+        assert!(ensure_not_archived(&inst, "forit-Avatics").is_ok());
+    }
 }
 
 #[cfg(test)]

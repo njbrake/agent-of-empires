@@ -175,7 +175,7 @@ impl Theme {
             terminal_active: Color::Rgb(13, 148, 136),
 
             group: Color::Rgb(203, 213, 225),
-            search: Color::Rgb(251, 191, 36),
+            search: Color::Rgb(255, 215, 0),
             accent: Color::Rgb(217, 119, 6),
 
             diff_add: Color::Rgb(34, 197, 94),
@@ -216,10 +216,10 @@ impl Theme {
 
             diff_add: Color::Rgb(0, 255, 180),
             diff_delete: Color::Rgb(255, 100, 80),
-            diff_modified: Color::Rgb(255, 180, 60),
+            diff_modified: Color::Rgb(255, 215, 0),
             diff_header: Color::Rgb(100, 160, 200),
 
-            help_key: Color::Rgb(255, 180, 60),
+            help_key: Color::Rgb(255, 215, 0),
 
             branch: Color::Rgb(100, 160, 200),
             sandbox: Color::Rgb(200, 122, 255),

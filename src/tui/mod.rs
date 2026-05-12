@@ -24,6 +24,18 @@ use ratatui::prelude::*;
 use std::io::{self, IsTerminal, Write};
 
 use crate::migrations;
+
+/// Whether the TUI should request mouse capture (`\e[?1000h` etc.) from the
+/// terminal. Default OFF so iOS Mosh + Termius/Blink users get native
+/// touch-scroll via the terminal app's own scrollback buffer (Mosh doesn't
+/// reliably forward mouse-tracking escape sequences to mobile clients).
+/// Set `AOE_MOUSE_CAPTURE=1` on a desktop terminal to opt into the
+/// preview-pane mouse-wheel scroll feature added in #795.
+pub fn mouse_capture_requested() -> bool {
+    std::env::var("AOE_MOUSE_CAPTURE")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
 use crate::session::get_update_settings;
 use crate::update::check_for_update;
 
@@ -88,14 +100,17 @@ pub async fn run(profile: &str, startup_warning: Option<String>) -> Result<()> {
     }
 
     // Setup terminal
+    // (mouse_capture_requested defined below; see top-of-file pub fn.)
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(
-        stdout,
-        EnterAlternateScreen,
-        EnableBracketedPaste,
-        EnableMouseCapture
-    )?;
+    execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)?;
+    // Mouse capture is opt-in (AOE_MOUSE_CAPTURE=1). When unset, iOS Mosh +
+    // Termius/Blink touch-scroll uses the terminal app's native scrollback
+    // (Mosh doesn't reliably forward mouse-tracking escapes to mobile clients).
+    // Desktop users who want preview-pane wheel scroll set AOE_MOUSE_CAPTURE=1.
+    if mouse_capture_requested() {
+        execute!(stdout, EnableMouseCapture)?;
+    }
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -133,9 +148,11 @@ pub async fn run(profile: &str, startup_warning: Option<String>) -> Result<()> {
     execute!(
         terminal.backend_mut(),
         LeaveAlternateScreen,
-        DisableBracketedPaste,
-        DisableMouseCapture
+        DisableBracketedPaste
     )?;
+    if mouse_capture_requested() {
+        execute!(terminal.backend_mut(), DisableMouseCapture)?;
+    }
     terminal.show_cursor()?;
 
     result

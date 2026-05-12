@@ -15,9 +15,11 @@ use tui_input::Input;
 
 use crate::session::{
     config::{load_config, save_config, GroupByMode, SortOrder},
-    flatten_tree, flatten_tree_all_profiles, resolve_config_or_warn, DefaultTerminalMode, Group,
-    GroupTree, Instance, Item, Storage,
+    flatten_sessions_by_attention, flatten_tree, flatten_tree_all_profiles, resolve_config_or_warn,
+    DefaultTerminalMode, Group, GroupTree, Instance, Item, Storage,
 };
+// Re-export for sibling modules (render, input, tests) that reference `super::ViewMode`.
+pub use crate::session::config::ViewMode;
 use crate::tmux::AvailableTools;
 
 use super::creation_poller::{CreationPoller, CreationRequest};
@@ -27,8 +29,8 @@ use super::dialogs::ServeView;
 use super::dialogs::{
     ChangelogDialog, CommandPaletteDialog, ConfirmDialog, GroupDeleteOptionsDialog,
     HookTrustDialog, HooksInstallDialog, InfoDialog, NewSessionData, NewSessionDialog,
-    NoAgentsDialog, ProfilePickerDialog, ProjectsDialog, RenameDialog, UnifiedDeleteDialog,
-    UpdateConfirmDialog, WelcomeDialog,
+    NoAgentsDialog, ProfilePickerDialog, ProjectsDialog, RenameDialog, SnoozeDurationDialog,
+    UnifiedDeleteDialog, UpdateConfirmDialog, WelcomeDialog,
 };
 use super::diff::DiffView;
 use super::settings::SettingsView;
@@ -60,14 +62,6 @@ fn project_group_name(inst: &Instance) -> String {
 pub(super) struct GroupRenameContext {
     pub(super) old_path: String,
     pub(super) old_profile: String,
-}
-
-/// View mode for the home screen
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum ViewMode {
-    #[default]
-    Agent,
-    Terminal,
 }
 
 /// Terminal mode for sandboxed sessions (container vs host)
@@ -172,6 +166,10 @@ pub struct HomeView {
     pub(super) no_agents_dialog: Option<NoAgentsDialog>,
     pub(super) changelog_dialog: Option<ChangelogDialog>,
     pub(super) info_dialog: Option<InfoDialog>,
+    pub(super) snooze_duration_dialog: Option<SnoozeDurationDialog>,
+    /// Session id the snooze duration picker targets. Set when the dialog
+    /// opens, consumed on submit.
+    pub(super) pending_snooze_session: Option<String>,
     pub(super) profile_picker_dialog: Option<ProfilePickerDialog>,
     pub(super) projects_dialog: Option<ProjectsDialog>,
     pub(super) command_palette: Option<CommandPaletteDialog>,
@@ -181,6 +179,11 @@ pub struct HomeView {
     pub(super) send_message_dialog: Option<super::dialogs::SendMessageDialog>,
     /// Session to receive the message from the send dialog
     pub(super) pending_send_session: Option<String>,
+    /// Pasted text captured at the home view that we couldn't immediately
+    /// route (no session selected, cursor on a group header, etc.). Drained
+    /// into the next compose dialog the user opens, so voice/dictation never
+    /// gets thrown on the floor with a scolding info dialog.
+    pub(super) pending_paste: Option<String>,
     /// Session to attach after the custom instruction warning dialog is dismissed
     pub(super) pending_attach_after_warning: Option<String>,
     /// Session to stop after the confirmation dialog is accepted
@@ -225,6 +228,7 @@ pub struct HomeView {
     pub(super) preview_scroll_offset: u16,
     pub(super) preview_area: Rect,
     pub(super) diff_area: Rect,
+    pub(super) list_area: Rect,
 
     // Terminal mode for sandboxed sessions (per-session, ephemeral)
     pub(super) terminal_modes: HashMap<String, TerminalMode>,
@@ -243,6 +247,12 @@ pub struct HomeView {
     // When true, letter-based action hotkeys require SHIFT (guard against
     // dictation / stray keystrokes triggering destructive actions).
     pub(super) strict_hotkeys: bool,
+
+    // Snooze duration applied when the user toggles snooze on a session.
+    // Snapshotted from `config.session.snooze_duration_minutes` at load/
+    // settings-reload time (same pattern as `strict_hotkeys`) so the hot
+    // path doesn't re-resolve the full config on every keypress.
+    pub(super) snooze_duration_minutes: u32,
 
     // Settings view
     pub(super) settings_view: Option<SettingsView>,
@@ -289,6 +299,14 @@ impl HomeView {
             .map(|i| (i.id.clone(), i.clone()))
             .collect();
 
+        // One-shot sweep of orphaned /tmp/aoe-hooks/<id>/ dirs left behind
+        // by sessions destroyed while the TUI was not running. Per-session
+        // cleanup on destroy is handled by cleanup_hook_status_dir in
+        // src/session/deletion.rs; this is the catch-up pass.
+        let live_ids: std::collections::HashSet<String> =
+            instance_map.keys().cloned().collect();
+        crate::hooks::sweep_orphaned_hook_dirs(&live_ids);
+
         // In unified mode, config comes from "default" profile
         let config_profile = active_profile.as_deref().unwrap_or("default");
         let resolved = resolve_config_or_warn(config_profile);
@@ -298,6 +316,7 @@ impl HomeView {
         };
         let sound_config = resolved.sound.clone();
         let strict_hotkeys = resolved.session.strict_hotkeys;
+        let snooze_duration_minutes = resolved.session.snooze_duration_minutes;
         let idle_decay_window =
             crate::tui::styles::idle_decay_window(resolved.theme.idle_decay_minutes);
         let user_config = load_config().ok().flatten();
@@ -321,6 +340,10 @@ impl HomeView {
             .as_ref()
             .and_then(|c| c.app_state.group_by)
             .unwrap_or(default_group_by);
+        let view_mode = user_config
+            .as_ref()
+            .and_then(|c| c.app_state.default_view_mode)
+            .unwrap_or_default();
 
         let mut view = Self {
             storages,
@@ -333,7 +356,7 @@ impl HomeView {
             selected_session: None,
             selected_group: None,
             selected_group_profile: None,
-            view_mode: ViewMode::default(),
+            view_mode,
             sort_order,
             group_by,
             project_group_collapsed: HashMap::new(),
@@ -352,6 +375,8 @@ impl HomeView {
             no_agents_dialog: None,
             changelog_dialog: None,
             info_dialog: None,
+            snooze_duration_dialog: None,
+            pending_snooze_session: None,
             profile_picker_dialog: None,
             projects_dialog: None,
             command_palette: None,
@@ -360,6 +385,7 @@ impl HomeView {
             update_confirm_dialog: None,
             send_message_dialog: None,
             pending_send_session: None,
+            pending_paste: None,
             pending_attach_after_warning: None,
             pending_stop_session: None,
             pending_force_remove_session: None,
@@ -382,11 +408,13 @@ impl HomeView {
             preview_scroll_offset: 0,
             preview_area: Rect::default(),
             diff_area: Rect::default(),
+            list_area: Rect::default(),
             terminal_modes: HashMap::new(),
             default_terminal_mode,
             sound_config,
             strict_hotkeys,
             idle_decay_window,
+            snooze_duration_minutes,
             settings_view: None,
             settings_close_confirm: false,
             diff_view: None,
@@ -641,26 +669,45 @@ impl HomeView {
                 && s != Status::Stopped
                 && update.status != Status::Stopped
         });
-        if !should_update {
-            return;
-        }
 
-        let new_status = update.status;
-        let new_error = update.last_error;
-        let new_idle_entered_at = update.idle_entered_at;
-        self.mutate_instance(&update.id, |inst| {
-            inst.status = new_status;
-            inst.last_error = new_error;
-            // Propagate the timestamp the polling clone wrote;
-            // see StatusPoller for why this isn't a simple
-            // `inst.idle_entered_at = …` from inside the poll.
-            inst.idle_entered_at = new_idle_entered_at;
-        });
+        let new_last_accessed = update.last_accessed_at;
+        let new_pane_dead = update.pane_dead;
 
-        if let Some(old) = old_status {
-            if old != new_status {
-                crate::sound::play_for_transition(old, new_status, &self.sound_config);
+        if should_update {
+            let new_status = update.status;
+            let new_error = update.last_error;
+            let new_idle_entered_at = update.idle_entered_at;
+            self.mutate_instance(&update.id, |inst| {
+                inst.status = new_status;
+                inst.last_error = new_error;
+                // Propagate the timestamp the polling clone wrote;
+                // see StatusPoller for why this isn't a simple
+                // `inst.idle_entered_at = …` from inside the poll.
+                inst.idle_entered_at = new_idle_entered_at;
+                if new_last_accessed.is_some() {
+                    inst.last_accessed_at = new_last_accessed;
+                }
+                inst.pane_dead_observed = new_pane_dead;
+            });
+
+            if let Some(old) = old_status {
+                if old != new_status {
+                    crate::sound::play_for_transition(old, new_status, &self.sound_config);
+                }
             }
+        } else if new_last_accessed.is_some() {
+            self.mutate_instance(&update.id, |inst| {
+                inst.last_accessed_at = new_last_accessed;
+                inst.pane_dead_observed = new_pane_dead;
+            });
+        } else {
+            // No status change AND no fresh activity stamp. We still
+            // need to refresh pane_dead_observed: a corpse can sit
+            // unchanged for hours and the sort tier should reflect
+            // current reality. Cheap mutate (one bool write).
+            self.mutate_instance(&update.id, |inst| {
+                inst.pane_dead_observed = new_pane_dead;
+            });
         }
     }
 
@@ -1145,6 +1192,7 @@ impl HomeView {
             || self.no_agents_dialog.is_some()
             || self.changelog_dialog.is_some()
             || self.info_dialog.is_some()
+            || self.snooze_duration_dialog.is_some()
             || self.profile_picker_dialog.is_some()
             || self.projects_dialog.is_some()
             || self.command_palette.is_some()
@@ -1212,6 +1260,22 @@ impl HomeView {
     }
 
     pub(super) fn build_flat_items(&self) -> Vec<Item> {
+        // Attention sort is a flat priority view: skip groups entirely so
+        // Waiting/Error rows from different groups can interleave by tier
+        // instead of being walled off behind group headers.
+        if self.sort_order == SortOrder::Attention {
+            let filtered: Vec<Instance> = if let Some(profile) = &self.active_profile {
+                self.instances
+                    .iter()
+                    .filter(|i| i.source_profile == *profile)
+                    .cloned()
+                    .collect()
+            } else {
+                self.instances.clone()
+            };
+            return flatten_sessions_by_attention(&filtered);
+        }
+
         if self.group_by == GroupByMode::Project {
             return self.build_flat_items_by_project();
         }
@@ -1502,6 +1566,36 @@ impl HomeView {
         }
     }
 
+    pub fn sort_order(&self) -> SortOrder {
+        self.sort_order
+    }
+
+    /// Move the cursor to the highest-priority session row, skipping
+    /// `returning_id` if provided. Used after returning from an attach while
+    /// sort_order=Attention: `stamp_last_accessed` bumps the returning session
+    /// to the top of its tier, so picking row 0 blindly would leave the cursor
+    /// on the session the user just handled. Skip it and land on the next
+    /// session that actually needs attention. Falls back to the returning
+    /// session itself if it's the only one in the list.
+    pub fn select_top_attention(&mut self, returning_id: Option<&str>) {
+        let mut fallback: Option<usize> = None;
+        for (idx, item) in self.flat_items.iter().enumerate() {
+            if let Item::Session { id, .. } = item {
+                if returning_id.is_some_and(|r| r == id) {
+                    fallback.get_or_insert(idx);
+                    continue;
+                }
+                self.cursor = idx;
+                self.update_selected();
+                return;
+            }
+        }
+        if let Some(idx) = fallback {
+            self.cursor = idx;
+            self.update_selected();
+        }
+    }
+
     /// Get the terminal mode for a session (uses config default if not set)
     pub fn get_terminal_mode(&self, session_id: &str) -> TerminalMode {
         self.terminal_modes
@@ -1521,6 +1615,7 @@ impl HomeView {
         };
         self.sound_config = config.sound.clone();
         self.strict_hotkeys = config.session.strict_hotkeys;
+        self.snooze_duration_minutes = config.session.snooze_duration_minutes;
         self.idle_decay_window =
             crate::tui::styles::idle_decay_window(config.theme.idle_decay_minutes);
     }

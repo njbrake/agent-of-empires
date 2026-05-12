@@ -36,6 +36,13 @@ struct SessionJson {
     /// Empty for single-repo sessions; populated with one entry per repo
     /// (including the primary) for sessions created with `--repo`/`--project`.
     workspace_repos: Vec<WorkspaceRepoJson>,
+    status: crate::session::Status,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    archived_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    favorited_at: Option<chrono::DateTime<chrono::Utc>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    snoozed_until: Option<chrono::DateTime<chrono::Utc>>,
 }
 
 #[derive(Serialize)]
@@ -120,6 +127,10 @@ pub async fn run(profile: &str, args: ListArgs) -> Result<()> {
                 profile: storage.profile().to_string(),
                 created_at: inst.created_at,
                 workspace_repos: workspace_repos_for(inst),
+                status: inst.status,
+                archived_at: inst.archived_at,
+                favorited_at: inst.favorited_at,
+                snoozed_until: inst.snoozed_until,
             })
             .collect();
         super::output::print_json(&sessions)?;
@@ -163,6 +174,10 @@ async fn run_all_profiles(json: bool) -> Result<()> {
                             profile: profile_name.clone(),
                             created_at: inst.created_at,
                             workspace_repos,
+                            status: inst.status,
+                            archived_at: inst.archived_at,
+                            favorited_at: inst.favorited_at,
+                            snoozed_until: inst.snoozed_until,
                         });
                     }
                 }

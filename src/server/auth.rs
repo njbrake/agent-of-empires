@@ -84,7 +84,7 @@ async fn attach_token_headers(response: &mut Response, state: &AppState) {
     };
     let max_age = state.token_manager.lifetime_secs().await;
     let cookie = build_cookie(&current, state.behind_tunnel, max_age);
-    response.headers_mut().insert(
+    response.headers_mut().append(
         header::SET_COOKIE,
         cookie.parse().expect("cookie format must be valid"),
     );
