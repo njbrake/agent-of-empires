@@ -83,16 +83,12 @@ pub fn perform_deletion(request: &DeletionRequest) -> DeletionResult {
     // Stage 3: container removal. Releases the bind mount on the
     // worktree so the host can finish cleanup without racing in-
     // container processes.
-    if request.delete_sandbox {
+    if request.delete_sandbox && is_sandboxed {
         tracing::debug!(session_id = %request.session_id, stage = "container_remove", "perform_deletion: stage");
-        if let Some(sandbox) = &request.instance.sandbox_info {
-            if sandbox.enabled {
-                let container = DockerContainer::from_session_id(&request.instance.id);
-                if container.exists().unwrap_or(false) {
-                    if let Err(e) = container.remove(true) {
-                        errors.push(format!("Container: {}", e));
-                    }
-                }
+        let container = DockerContainer::from_session_id(&request.instance.id);
+        if container.exists().unwrap_or(false) {
+            if let Err(e) = container.remove(true) {
+                errors.push(format!("Container: {}", e));
             }
         }
     }
@@ -130,6 +126,7 @@ pub fn perform_deletion(request: &DeletionRequest) -> DeletionResult {
                             &main_repo,
                             &request.instance,
                             request.force_delete,
+                            request.delete_sandbox,
                         ) {
                             errors.extend(errs);
                         }
@@ -159,6 +156,7 @@ pub fn perform_deletion(request: &DeletionRequest) -> DeletionResult {
                                     &main_repo,
                                     &request.instance,
                                     request.force_delete,
+                                    request.delete_sandbox,
                                 ) {
                                     errors.extend(
                                         errs.into_iter()
