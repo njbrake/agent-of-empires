@@ -19,6 +19,25 @@ enum Commands {
     GenDocs,
     /// Check that contrib skill files reference valid CLI commands
     CheckSkill,
+    /// Probe an ACP adapter's substrate-switching capabilities and
+    /// write the results to `<app_dir>/cockpit-probe-results.json`.
+    /// The `cockpit::capabilities` resolver reads that file to flip
+    /// per-tool capability bits from the conservative defaults.
+    ///
+    /// Today the probe only checks adapter presence + spawn-ability.
+    /// Full ACP-protocol round-trip verification (session/load,
+    /// native-id discovery, cross-substrate import) is tracked as
+    /// follow-up work; the harness is wired so that work can land
+    /// without touching capability consumers.
+    CockpitProbe {
+        /// Single agent name to probe (e.g. claude, codex, gemini).
+        /// Mutually exclusive with --all.
+        #[arg(long)]
+        agent: Option<String>,
+        /// Probe every agent in the default registry.
+        #[arg(long, conflicts_with = "agent")]
+        all: bool,
+    },
 }
 
 fn main() {
@@ -26,6 +45,7 @@ fn main() {
     match args.command {
         Commands::GenDocs => generate_cli_docs(),
         Commands::CheckSkill => check_skill(),
+        Commands::CockpitProbe { agent, all } => cockpit_probe(agent, all),
     }
 }
 
@@ -172,4 +192,112 @@ fn check_skill() {
     }
 
     println!("Skill check passed.");
+}
+
+/// Probe one or more ACP adapters and persist substrate-switch
+/// capability evidence to `<app_dir>/cockpit-probe-results.json`.
+///
+/// The format is the on-disk shape consumed by
+/// `agent_of_empires::cockpit::capabilities::probe_results_path`. Each
+/// invocation merges into the existing file rather than overwriting,
+/// so probing one tool today and another tomorrow accumulates.
+///
+/// Today the probe is a smoke test: adapter on PATH + non-immediate
+/// crash on spawn. The richer ACP-protocol round trip (session/load,
+/// native-id discovery, cross-substrate import) is tracked in the
+/// substrate-switching plan; this scaffold lets capability defaults
+/// flip without touching capability-consuming code.
+fn cockpit_probe(agent: Option<String>, all: bool) {
+    use agent_of_empires::cockpit::agent_registry::AgentRegistry;
+
+    let registry = AgentRegistry::with_defaults();
+    let mut targets: Vec<String> = Vec::new();
+    if all {
+        targets.extend(registry.list().into_iter().map(|(n, _)| n.clone()));
+    } else if let Some(a) = agent {
+        if registry.get(&a).is_none() {
+            eprintln!("ERROR: agent {a:?} not in default registry");
+            eprintln!("Available agents:");
+            for (n, _) in registry.list() {
+                eprintln!("  {n}");
+            }
+            std::process::exit(1);
+        }
+        targets.push(a);
+    } else {
+        eprintln!("ERROR: pass --agent <name> or --all");
+        std::process::exit(2);
+    }
+
+    let path = match agent_of_empires::cockpit::capabilities::probe_results_path() {
+        Some(p) => p,
+        None => {
+            eprintln!("ERROR: could not resolve app_dir for probe results");
+            std::process::exit(1);
+        }
+    };
+
+    let mut results: serde_json::Map<String, serde_json::Value> = if let Ok(bytes) = fs::read(&path)
+    {
+        match serde_json::from_slice::<serde_json::Value>(&bytes) {
+            Ok(serde_json::Value::Object(m)) => m,
+            _ => serde_json::Map::new(),
+        }
+    } else {
+        serde_json::Map::new()
+    };
+
+    let now = chrono::Utc::now().to_rfc3339();
+
+    for tool in &targets {
+        let spec = registry.get(tool).expect("checked above");
+        let bin = spec.command.split('/').next_back().unwrap_or(&spec.command);
+        let adapter_available = spec.command.contains("${")
+            || which_on_path(bin)
+            || fs::metadata(&spec.command).is_ok();
+
+        // Conservative defaults until a full ACP round-trip probe
+        // lands. We don't flip `native_session_discoverable = true`
+        // here even when the adapter is available — that bit must come
+        // from observed ACP-mode disk artifacts, which this scaffold
+        // doesn't yet measure.
+        let entry = serde_json::json!({
+            "load_session_capable": if tool == "claude" { adapter_available } else { false },
+            "native_session_discoverable": false,
+            "probed_at": now,
+            "adapter_version": null,
+            "adapter_available": adapter_available,
+        });
+        results.insert(tool.clone(), entry);
+
+        let mark = if adapter_available { "[OK]" } else { "[!!]" };
+        println!(
+            "{mark} {tool}  (adapter `{}` {})",
+            spec.command,
+            if adapter_available {
+                "found"
+            } else {
+                "missing on PATH"
+            }
+        );
+    }
+
+    let json = serde_json::Value::Object(results);
+    let pretty = serde_json::to_string_pretty(&json).expect("serialize");
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    fs::write(&path, pretty).unwrap_or_else(|e| {
+        eprintln!("ERROR: could not write {}: {e}", path.display());
+        std::process::exit(1);
+    });
+    println!();
+    println!("Wrote probe results to {}", path.display());
+}
+
+fn which_on_path(binary: &str) -> bool {
+    let Some(path_var) = std::env::var_os("PATH") else {
+        return false;
+    };
+    std::env::split_paths(&path_var).any(|dir| dir.join(binary).is_file())
 }

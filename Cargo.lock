@@ -5261,9 +5261,11 @@ name = "xtask"
 version = "0.1.0"
 dependencies = [
  "agent-of-empires",
+ "chrono",
  "clap",
  "clap-markdown",
  "regex",
+ "serde_json",
 ]
 
 [[package]]
