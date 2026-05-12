@@ -1301,6 +1301,18 @@ fn map_update_to_events(update: SessionUpdate) -> Vec<Event> {
             let raw_args = tc.raw_input.clone().unwrap_or(serde_json::Value::Null);
             let args_preview = preview_args(&raw_args);
             let parent_tool_call_id = parent_tool_use_id_from_meta(&tc.meta);
+            if let Some(parent) = parent_tool_call_id.as_deref() {
+                // Breadcrumb so AOE_ACP_TRACE=1 sessions can verify the
+                // subagent linkage round-trip (parent Task id → child
+                // tool_call id) end-to-end. See #1041 layer C.
+                debug!(
+                    target: "cockpit.acp",
+                    child = %tc.tool_call_id.0,
+                    parent,
+                    kind = %tool_kind_str(&tc.kind),
+                    "subagent child tool_call linked to parent via _meta.claudeCode.parentToolUseId"
+                );
+            }
             let tool_call = ToolCall {
                 id: tc.tool_call_id.0.to_string(),
                 name: tc.title.clone(),

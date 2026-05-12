@@ -16,7 +16,12 @@ The release binary is at `target/release/aoe`.
 cargo run --release            # Run from source
 AGENT_OF_EMPIRES_DEBUG=1 cargo run  # Debug logging (writes to debug.log in app data dir)
 AOE_LOG_LEVEL=trace cargo run        # Pick the log level explicitly
-AOE_ACP_TRACE=1 cargo run            # Plus raw ACP JSON-RPC firehose
+AOE_ACP_TRACE=1 cargo run            # Plus raw ACP JSON-RPC firehose; useful for
+                                     # verifying sub-agent linkage
+                                     # (`_meta.claudeCode.parentToolUseId` round-trip)
+                                     # and other adapter-side _meta fields. Cockpit
+                                     # also logs a `cockpit.acp` debug line whenever
+                                     # it links a child tool call to a parent Task.
 AOE_TERMINAL_TRACE=1 cargo run       # Plus per-message bytes for the web terminal WS (spammy)
 aoe logs                       # View debug.log via lnav/bat/less (auto-detects)
 aoe logs --serve               # View serve.log (daemon stdout/stderr)
