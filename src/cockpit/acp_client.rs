@@ -1141,6 +1141,83 @@ fn transcript_event_kind(event: &Event) -> &'static str {
     }
 }
 
+/// Parse Claude's ExitPlanMode tool input into a structured `Plan`.
+/// Claude ships the plan markdown in `raw_input.plan`; we extract its
+/// bullet- or number-prefixed lines as `PlanStep`s with status=Pending,
+/// matching the ACP `SessionUpdate::Plan` shape so the existing
+/// PlanStrip renderer can consume it.
+///
+/// Returns `None` when the input has no `plan` key, the value isn't a
+/// string, or the string has no recognisable list items — in which case
+/// the generic tool card is still rendered so the user sees the raw
+/// plan text. See #1059 for the upstream gap this works around.
+fn extract_plan_from_switch_mode(raw_input: &serde_json::Value) -> Option<Plan> {
+    let plan_text = raw_input.get("plan")?.as_str()?;
+    let steps = parse_plan_steps(plan_text);
+    if steps.is_empty() {
+        return None;
+    }
+    Some(Plan {
+        plan_id: format!("plan-{}", chrono::Utc::now().timestamp_millis()),
+        version: 1,
+        steps,
+    })
+}
+
+/// Flatten plan markdown into `PlanStep`s. v1 heuristic: every line
+/// starting with `-`, `*`, or `<digit>.` becomes one step. Sub-bullets
+/// flatten into the parent list (PlanEntry has no nesting field in the
+/// ACP spec). Strips bold/italic markers from the step title so the
+/// PlanStrip doesn't render literal `**foo**`.
+fn parse_plan_steps(text: &str) -> Vec<PlanStep> {
+    use std::sync::OnceLock;
+    static BULLET: OnceLock<regex::Regex> = OnceLock::new();
+    let bullet = BULLET.get_or_init(|| {
+        regex::Regex::new(r"^\s*(?:[-*]|\d+\.)\s+(.+?)\s*$")
+            .expect("static plan-step regex must compile")
+    });
+
+    let mut steps = Vec::new();
+    for line in text.lines() {
+        if let Some(caps) = bullet.captures(line) {
+            let raw_title = caps.get(1).map(|m| m.as_str()).unwrap_or("");
+            let title = strip_markdown_emphasis(raw_title);
+            if title.is_empty() {
+                continue;
+            }
+            steps.push(PlanStep {
+                id: format!("step-{}", steps.len()),
+                title,
+                detail: None,
+                status: PlanStepStatus::Pending,
+            });
+        }
+    }
+    steps
+}
+
+fn strip_markdown_emphasis(s: &str) -> String {
+    // Replace **bold**, __bold__, *italic*, _italic_ markers with their
+    // inner text. Keep it permissive — the source is Claude's planning
+    // markdown, which is usually well-formed but occasionally drops a
+    // closing marker.
+    use std::sync::OnceLock;
+    static RE: OnceLock<regex::Regex> = OnceLock::new();
+    let re = RE.get_or_init(|| {
+        regex::Regex::new(r"\*\*(.+?)\*\*|__(.+?)__|\*([^*]+?)\*|_([^_]+?)_")
+            .expect("static emphasis-strip regex must compile")
+    });
+    re.replace_all(s.trim(), |caps: &regex::Captures<'_>| {
+        for i in 1..=4 {
+            if let Some(m) = caps.get(i) {
+                return m.as_str().to_string();
+            }
+        }
+        String::new()
+    })
+    .into_owned()
+}
+
 /// Heuristic detector for the end of a `/compact` cycle. The Claude ACP
 /// adapter emits "Compacting..." while the compaction runs and
 /// "Compacting completed." once the model's context window has been
@@ -1215,6 +1292,17 @@ fn map_update_to_events(update: SessionUpdate) -> Vec<Event> {
             // If the same payload carries diff content, surface it.
             if let Some(diff) = extract_diff_from_locations(&tc.locations) {
                 events.push(Event::DiffEmitted { diff });
+            }
+            // claude-agent-acp routes Claude's built-in ExitPlanMode through
+            // the tool channel (kind=switch_mode, plan markdown in
+            // raw_input.plan) instead of the structured SessionUpdate::Plan
+            // channel. Synthesise a PlanUpdated event so the cockpit's
+            // PlanStrip and the rest of the plan-aware UI light up. See
+            // #1059.
+            if matches!(tc.kind, agent_client_protocol::schema::ToolKind::SwitchMode) {
+                if let Some(plan) = extract_plan_from_switch_mode(&raw_args) {
+                    events.push(Event::PlanUpdated { plan });
+                }
             }
             events
         }
@@ -2386,6 +2474,62 @@ mod tests {
         };
         let result = AcpClient::spawn(config, CockpitSessionId("s-1".into())).await;
         assert!(matches!(result, Err(AcpError::Spawn(_))));
+    }
+
+    #[test]
+    fn parse_plan_steps_extracts_dash_and_numbered_bullets() {
+        let md = "Here's the plan:\n\n- First, **read** the file\n- Then patch it\n1. Run tests\n2. Commit\n\nOther prose.";
+        let steps = parse_plan_steps(md);
+        let titles: Vec<&str> = steps.iter().map(|s| s.title.as_str()).collect();
+        assert_eq!(
+            titles,
+            vec![
+                "First, read the file",
+                "Then patch it",
+                "Run tests",
+                "Commit"
+            ]
+        );
+        for s in &steps {
+            assert!(matches!(s.status, PlanStepStatus::Pending));
+        }
+    }
+
+    #[test]
+    fn parse_plan_steps_returns_empty_when_no_bullets() {
+        assert!(parse_plan_steps("Just a paragraph with no list.").is_empty());
+        assert!(parse_plan_steps("").is_empty());
+    }
+
+    #[test]
+    fn extract_plan_from_switch_mode_handles_missing_plan_field() {
+        let v = serde_json::json!({});
+        assert!(extract_plan_from_switch_mode(&v).is_none());
+        let v = serde_json::json!({ "plan": 42 });
+        assert!(extract_plan_from_switch_mode(&v).is_none());
+    }
+
+    #[test]
+    fn extract_plan_from_switch_mode_builds_plan_when_input_has_bullets() {
+        let v = serde_json::json!({
+            "plan": "- Step one\n- Step two\n- Step three"
+        });
+        let plan = extract_plan_from_switch_mode(&v).expect("plan should parse");
+        assert_eq!(plan.steps.len(), 3);
+        assert_eq!(plan.steps[0].title, "Step one");
+    }
+
+    #[test]
+    fn strip_markdown_emphasis_unwraps_bold_and_italic() {
+        assert_eq!(strip_markdown_emphasis("**bold**"), "bold");
+        assert_eq!(strip_markdown_emphasis("__bold__"), "bold");
+        assert_eq!(strip_markdown_emphasis("*italic*"), "italic");
+        assert_eq!(strip_markdown_emphasis("_italic_"), "italic");
+        assert_eq!(
+            strip_markdown_emphasis("mix of **bold** and *italic*"),
+            "mix of bold and italic"
+        );
+        assert_eq!(strip_markdown_emphasis("plain"), "plain");
     }
 
     #[test]
