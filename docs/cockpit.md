@@ -392,6 +392,12 @@ npm install -g @agentclientprotocol/claude-agent-acp
 
 Then run `claude login` if you haven't already.
 
+### "Failed to start cockpit agent" while the adapter is installed
+
+`aoe serve` captures the launching shell's PATH at startup and keeps it for the daemon's lifetime. If the adapter is installed under a node-version-manager dir (`~/.nvm/versions/node/v<ver>/bin`, `~/.fnm/node-versions/.../installation/bin`, mise/asdf equivalents) and the active node version on the daemon's PATH doesn't match, the spawn fails with `agent spawn failed: No such file or directory`.
+
+The spawn path scans common node-manager bin dirs (nvm, fnm, mise, asdf, Volta, `~/.npm-global/bin`, `~/.local/bin`, `/usr/local/bin`, `/opt/homebrew/bin`) per spawn, so a `nvm use <other-version>` after the daemon started is picked up on the next worker respawn without a daemon restart. If the binary lives somewhere else, either restart `aoe serve` from a shell where `which claude-agent-acp` resolves, or symlink it into one of those dirs.
+
 ### Cockpit feels "stuck" with no events
 
 - Check `aoe cockpit logs --follow` (when the worker supervisor lands)

@@ -579,9 +579,98 @@ fn scrub_stderr_secrets(line: &str) -> std::borrow::Cow<'_, str> {
     re.replace_all(line, "<redacted-secret>")
 }
 
+/// Resolve a bare agent command name to an absolute path, scanning common
+/// node-version-manager bin dirs (nvm, fnm, mise, asdf, Volta) plus the
+/// usual system locations. Returns the absolute binary path and the bin
+/// dir we found it in; the caller prepends that dir to the agent's PATH
+/// so the adapter's own subprocesses (`node`, `npx`) can still resolve.
+///
+/// Re-runs per spawn (no cache) so an `nvm use <other-version>` after the
+/// daemon started picks up immediately without a daemon restart. Returns
+/// None when the command is already a path, contains a `${placeholder}`,
+/// or isn't found anywhere we know to look.
+pub fn resolve_agent_command(command: &str) -> Option<(std::path::PathBuf, std::path::PathBuf)> {
+    if command.contains('/') || command.contains('\\') || command.contains("${") {
+        return None;
+    }
+
+    if let Some(path) = find_in_path_env(command) {
+        let parent = path
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(std::path::PathBuf::new);
+        return Some((path, parent));
+    }
+
+    for dir in node_search_dirs() {
+        let candidate = dir.join(command);
+        if candidate.is_file() {
+            return Some((candidate, dir));
+        }
+    }
+    None
+}
+
+fn find_in_path_env(binary: &str) -> Option<std::path::PathBuf> {
+    let path_var = std::env::var_os("PATH")?;
+    for dir in std::env::split_paths(&path_var) {
+        let candidate = dir.join(binary);
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
+/// Best-effort enumeration of node bin dirs the user is likely to have
+/// the adapter installed into. Order matters only for tie-breaking; the
+/// first hit wins, but in practice each binary only lives in one place.
+fn node_search_dirs() -> Vec<std::path::PathBuf> {
+    let mut out = Vec::new();
+    if let Some(home) = dirs::home_dir() {
+        // nvm: `~/.nvm/versions/node/v<ver>/bin/<binary>`
+        push_subdirs(&mut out, &home.join(".nvm/versions/node"), "bin");
+        // fnm: `~/.fnm/node-versions/v<ver>/installation/bin/<binary>`
+        push_subdirs(
+            &mut out,
+            &home.join(".fnm/node-versions"),
+            "installation/bin",
+        );
+        // mise: `~/.local/share/mise/installs/node/<ver>/bin/<binary>`
+        push_subdirs(
+            &mut out,
+            &home.join(".local/share/mise/installs/node"),
+            "bin",
+        );
+        // asdf: `~/.asdf/installs/nodejs/<ver>/bin/<binary>`
+        push_subdirs(&mut out, &home.join(".asdf/installs/nodejs"), "bin");
+        // Volta + user-scoped npm prefixes
+        out.push(home.join(".volta/bin"));
+        out.push(home.join(".npm-global/bin"));
+        out.push(home.join(".local/bin"));
+        out.push(home.join("bin"));
+    }
+    out.push(std::path::PathBuf::from("/usr/local/bin"));
+    out.push(std::path::PathBuf::from("/opt/homebrew/bin"));
+    out.push(std::path::PathBuf::from("/usr/bin"));
+    out
+}
+
+fn push_subdirs(out: &mut Vec<std::path::PathBuf>, root: &std::path::Path, leaf: &str) {
+    let Ok(entries) = std::fs::read_dir(root) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let bin = entry.path().join(leaf);
+        if bin.is_dir() {
+            out.push(bin);
+        }
+    }
+}
+
 /// Spawn the `aoe __cockpit-runner` shim as a detached process. The
 /// runner owns the agent subprocess and outlives the daemon. We retain
-/// no `Child` handle here — once the runner is up, the daemon talks to
+/// no `Child` handle here; once the runner is up, the daemon talks to
 /// it over the unix socket and the OS keeps the runner alive across
 /// `aoe serve` restarts.
 fn spawn_runner_detached(
@@ -597,6 +686,17 @@ fn spawn_runner_detached(
     if let Some(parent) = log_path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
+
+    // Resolve the agent binary against PATH + known node-manager dirs so
+    // the runner spawns the right binary even when the daemon's frozen
+    // PATH doesn't contain it. See #1048. The resolved bin dir is also
+    // prepended to PATH below so the adapter's own `node`/`npx`
+    // subprocesses land in the same install.
+    let resolved = resolve_agent_command(&config.spec.command);
+    let (spawn_command, extra_path_dir) = match &resolved {
+        Some((abs, dir)) => (abs.to_string_lossy().into_owned(), Some(dir.clone())),
+        None => (config.spec.command.clone(), None),
+    };
 
     let mut cmd = StdCommand::new(&current_exe);
     cmd.arg("__cockpit-runner")
@@ -630,7 +730,10 @@ fn spawn_runner_detached(
         cmd.arg("--stored-acp-session-id").arg(stored);
     }
     cmd.arg("--");
-    cmd.arg(&config.spec.command);
+    // Pass the resolved absolute path (or fall back to the bare command).
+    // The runner spawns whatever it receives, so an absolute path bypasses
+    // any PATH lookup inside the runner.
+    cmd.arg(&spawn_command);
     for a in &config.spec.args {
         cmd.arg(a);
     }
@@ -642,6 +745,17 @@ fn spawn_runner_detached(
     // either process.
     cmd.env_clear();
     apply_env_filter(&mut cmd, config);
+    if let Some(extra) = &extra_path_dir {
+        // Prepend the resolved bin dir to the PATH we just forwarded so
+        // the adapter's own `node`/`npx` lookups land in the same install
+        // as the adapter itself, not whatever node happens to be on the
+        // daemon's frozen PATH.
+        let current = std::env::var("PATH").unwrap_or_default();
+        let extra_s = extra.to_string_lossy();
+        if !std::env::split_paths(&current).any(|p| p == *extra) {
+            cmd.env("PATH", format!("{}:{}", extra_s, current));
+        }
+    }
 
     // Detach: child becomes its own session leader so a SIGTERM/SIGHUP
     // to the aoe daemon's group doesn't cascade. The runner installs its
@@ -671,6 +785,7 @@ fn spawn_runner_detached(
         socket = %socket_path.display(),
         runner = %current_exe.display(),
         agent = %config.spec.command,
+        resolved = %spawn_command,
         "spawning detached cockpit runner"
     );
 
@@ -759,7 +874,17 @@ async fn wait_for_socket(
 }
 
 fn spawn_subprocess(config: &SpawnConfig) -> Result<tokio::process::Child, AcpError> {
-    let mut cmd = tokio::process::Command::new(&config.spec.command);
+    // Resolve bare command names against PATH + known node-manager dirs.
+    // `aoe serve` captures PATH at daemon-launch time and freezes it for
+    // its lifetime; without this, a `nvm use` after launch leaves the
+    // adapter installed but unreachable. See #1048.
+    let resolved = resolve_agent_command(&config.spec.command);
+    let (spawn_command, extra_path_dir) = match &resolved {
+        Some((abs, dir)) => (abs.to_string_lossy().into_owned(), Some(dir.clone())),
+        None => (config.spec.command.clone(), None),
+    };
+
+    let mut cmd = tokio::process::Command::new(&spawn_command);
     cmd.args(&config.spec.args)
         .current_dir(&config.cwd)
         .stdin(Stdio::piped())
@@ -787,7 +912,19 @@ fn spawn_subprocess(config: &SpawnConfig) -> Result<tokio::process::Child, AcpEr
     ];
     let mut forwarded_keys: Vec<&str> = Vec::new();
     for name in always_forward {
-        if let Ok(value) = std::env::var(name) {
+        if let Ok(mut value) = std::env::var(name) {
+            // Prepend the resolved bin dir to PATH so the adapter's own
+            // `node`/`npx` lookups land in the same node install as the
+            // adapter itself, not whatever node happens to be on the
+            // daemon's frozen PATH.
+            if name == "PATH" {
+                if let Some(extra) = &extra_path_dir {
+                    let extra_s = extra.to_string_lossy();
+                    if !std::env::split_paths(&value).any(|p| p == *extra) {
+                        value = format!("{}:{}", extra_s, value);
+                    }
+                }
+            }
             cmd.env(name, value);
             forwarded_keys.push(name);
         }
@@ -829,6 +966,7 @@ fn spawn_subprocess(config: &SpawnConfig) -> Result<tokio::process::Child, AcpEr
     info!(
         target: "cockpit.acp.spawn",
         command = %config.spec.command,
+        resolved = %spawn_command,
         args = ?config.spec.args,
         cwd = %config.cwd.display(),
         transport = if config.socket_path.is_some() { "socket" } else { "stdio" },
@@ -842,9 +980,24 @@ fn spawn_subprocess(config: &SpawnConfig) -> Result<tokio::process::Child, AcpEr
         warn!(
             target: "cockpit.acp.spawn",
             command = %config.spec.command,
+            resolved = %spawn_command,
             "spawn failed: {e}"
         );
-        AcpError::Spawn(e.to_string())
+        // ENOENT on a bare command means we couldn't find the binary on
+        // PATH or in any known node-manager dir. Bubble up a hint instead
+        // of the bare libc message — the daemon's frozen PATH is the
+        // most common cause and the generic message doesn't say so.
+        if e.kind() == std::io::ErrorKind::NotFound && resolved.is_none() {
+            AcpError::Spawn(format!(
+                "{} (binary `{}` not found on the daemon's PATH or in any \
+                 known node-manager bin dir; install it where the daemon \
+                 can see it, or restart `aoe serve` from a shell where \
+                 `which {}` resolves)",
+                e, config.spec.command, config.spec.command
+            ))
+        } else {
+            AcpError::Spawn(e.to_string())
+        }
     })?;
 
     let pid = child.id();
@@ -2186,6 +2339,53 @@ mod tests {
         };
         let result = AcpClient::spawn(config, CockpitSessionId("s-1".into())).await;
         assert!(matches!(result, Err(AcpError::Spawn(_))));
+    }
+
+    #[test]
+    fn resolve_agent_command_returns_none_for_absolute_path() {
+        assert!(resolve_agent_command("/usr/local/bin/claude-agent-acp").is_none());
+        assert!(resolve_agent_command("./relative/path").is_none());
+    }
+
+    #[test]
+    fn resolve_agent_command_returns_none_for_placeholder() {
+        assert!(resolve_agent_command("${aoe_data_dir}/cockpit-worker/dist/aoe-agent").is_none());
+    }
+
+    #[test]
+    fn resolve_agent_command_finds_binary_in_path_env() {
+        // Build a temp dir with a fake binary, point PATH at it.
+        let dir = tempfile::TempDir::new().unwrap();
+        let bin = dir.path().join("aoe-test-resolver-fake");
+        std::fs::write(&bin, "#!/bin/sh\n").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let prev = std::env::var_os("PATH");
+        let new_path = format!(
+            "{}:{}",
+            dir.path().display(),
+            prev.as_ref()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        );
+        // SAFETY: this test mutates the process-wide PATH. Other tests in
+        // this module don't depend on PATH; tagging the test single-thread
+        // would be heavier than the current race surface.
+        unsafe {
+            std::env::set_var("PATH", &new_path);
+        }
+        let resolved = resolve_agent_command("aoe-test-resolver-fake");
+        if let Some(prev) = prev {
+            unsafe {
+                std::env::set_var("PATH", prev);
+            }
+        }
+        let (path, parent) = resolved.expect("binary should resolve from PATH");
+        assert_eq!(path, bin);
+        assert_eq!(parent, dir.path());
     }
 
     #[test]
