@@ -122,6 +122,12 @@ export type CockpitEvent =
         tool_call_id: string;
         title: string | null;
         args_preview: string | null;
+        /** Re-stamped start time when the agent reports the tool's
+         *  status transitioned to InProgress. See acp_client.rs;
+         *  reused so the duration label measures real tool runtime
+         *  rather than adapter scheduling time. Null for non-status
+         *  updates. */
+        started_at?: string | null;
       };
     }
   | { ApprovalRequested: { approval: Approval } }
@@ -377,12 +383,14 @@ export function applyEvent(
     return next;
   }
   if ("ToolCallUpdated" in event) {
-    const { tool_call_id, title, args_preview } = event.ToolCallUpdated;
+    const { tool_call_id, title, args_preview, started_at } =
+      event.ToolCallUpdated;
     if (next.inFlightTool && next.inFlightTool.id === tool_call_id) {
       next.inFlightTool = {
         ...next.inFlightTool,
         name: title ?? next.inFlightTool.name,
         args_preview: args_preview ?? next.inFlightTool.args_preview,
+        started_at: started_at ?? next.inFlightTool.started_at,
       };
     }
     // Walk activity backwards to find the matching tool_start row and
@@ -405,6 +413,7 @@ export function applyEvent(
             ...row.tool,
             name: title ?? row.tool.name,
             args_preview: args_preview ?? row.tool.args_preview,
+            started_at: started_at ?? row.tool.started_at,
           },
         };
       }

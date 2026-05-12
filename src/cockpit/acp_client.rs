@@ -1317,6 +1317,17 @@ fn map_update_to_events(update: SessionUpdate) -> Vec<Event> {
                 Some(agent_client_protocol::schema::ToolCallStatus::Completed)
                     | Some(agent_client_protocol::schema::ToolCallStatus::Failed)
             );
+            // claude-agent-acp emits the initial `tool_call` frame
+            // eagerly, often well before the underlying bash / read /
+            // edit actually starts running. Use `status: InProgress` as
+            // the canonical "running now" signal and re-stamp the
+            // tool's `started_at` so the duration label measures real
+            // tool runtime rather than adapter scheduling overhead.
+            // See #1060.
+            let in_progress = matches!(
+                update.fields.status,
+                Some(agent_client_protocol::schema::ToolCallStatus::InProgress)
+            );
             let content_text = update
                 .fields
                 .content
@@ -1326,11 +1337,16 @@ fn map_update_to_events(update: SessionUpdate) -> Vec<Event> {
             let new_args_preview = update.fields.raw_input.as_ref().map(preview_args);
             let new_title = update.fields.title.clone();
             let mut events: Vec<Event> = Vec::new();
-            if new_title.is_some() || new_args_preview.is_some() {
+            if new_title.is_some() || new_args_preview.is_some() || in_progress {
                 events.push(Event::ToolCallUpdated {
                     tool_call_id: id.clone(),
                     title: new_title,
                     args_preview: new_args_preview,
+                    started_at: if in_progress {
+                        Some(chrono::Utc::now())
+                    } else {
+                        None
+                    },
                 });
             }
             if completed {
@@ -2687,8 +2703,21 @@ mod tests {
             ))]);
         let update = ToolCallUpdate::new("tc-2", fields);
         let events = map_update_to_events(SessionUpdate::ToolCallUpdate(update));
-        assert_eq!(events.len(), 1);
+        // InProgress now emits a ToolCallUpdated re-stamping started_at
+        // (#1060 follow-up) plus the streaming ToolCallContent.
+        assert_eq!(events.len(), 2);
         match &events[0] {
+            Event::ToolCallUpdated {
+                tool_call_id,
+                started_at,
+                ..
+            } => {
+                assert_eq!(tool_call_id, "tc-2");
+                assert!(started_at.is_some());
+            }
+            other => panic!("expected ToolCallUpdated, got {other:?}"),
+        }
+        match &events[1] {
             Event::ToolCallContent {
                 tool_call_id,
                 content,
@@ -2697,6 +2726,32 @@ mod tests {
                 assert_eq!(content, "partial output");
             }
             other => panic!("expected ToolCallContent, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn map_tool_call_update_in_progress_restamps_started_at() {
+        use agent_client_protocol::schema::{ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields};
+        let fields = ToolCallUpdateFields::new().status(ToolCallStatus::InProgress);
+        let update = ToolCallUpdate::new("tc-3", fields);
+        let events = map_update_to_events(SessionUpdate::ToolCallUpdate(update));
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            Event::ToolCallUpdated {
+                tool_call_id,
+                started_at,
+                title,
+                args_preview,
+            } => {
+                assert_eq!(tool_call_id, "tc-3");
+                assert!(
+                    started_at.is_some(),
+                    "InProgress must carry a re-stamped started_at"
+                );
+                assert!(title.is_none());
+                assert!(args_preview.is_none());
+            }
+            other => panic!("expected ToolCallUpdated, got {other:?}"),
         }
     }
 
