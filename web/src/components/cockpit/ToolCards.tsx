@@ -8,7 +8,6 @@
 // header and put output in a syntax-highlighted body.
 
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
-import ReactDiffViewer, { DiffMethod } from "react-diff-viewer-continued";
 import {
   Brain,
   ChevronDown,
@@ -30,7 +29,8 @@ import { hasAnsi, parseAnsi, type AnsiStyle } from "../../lib/ansi";
 import { parseJsonObject, pickFirst, pickStr } from "../../lib/cockpitArgs";
 import { useCockpitPrefs } from "../../lib/cockpitPrefs";
 import type { ActivityRow, ToolCall } from "../../lib/cockpitTypes";
-import { lineDiffCounts } from "../../lib/diffStats";
+import { diffPair } from "../../lib/diffPair";
+import { StringDiff } from "../diff/StringDiff";
 import {
   classifyMcp,
   humanizeServer,
@@ -566,7 +566,7 @@ function EditToolCard({ tool, result }: Props) {
   const verb = oldText ? "edit" : "write";
 
   const { adds, dels } = useMemo(
-    () => lineDiffCounts(oldText, newText),
+    () => diffPair(oldText, newText),
     [oldText, newText],
   );
   const meta = hasDiff && (adds > 0 || dels > 0) && (
@@ -589,16 +589,11 @@ function EditToolCard({ tool, result }: Props) {
       onToggle={hasDiff ? () => setOpen((v) => !v) : undefined}
       body={
         hasDiff && (
-          <div className="cockpit-diff border-t border-surface-800">
-            <ReactDiffViewer
-              oldValue={oldText}
-              newValue={newText}
-              splitView={false}
-              useDarkTheme
-              compareMethod={DiffMethod.WORDS}
-              hideLineNumbers={false}
-              extraLinesSurroundingDiff={0}
-              styles={DIFF_STYLES}
+          <div className="border-t border-surface-800 bg-surface-950">
+            <StringDiff
+              oldText={oldText}
+              newText={newText}
+              filePath={path}
             />
           </div>
         )
@@ -606,50 +601,6 @@ function EditToolCard({ tool, result }: Props) {
     />
   );
 }
-
-/** Theme overrides for react-diff-viewer-continued; drag its colors
- *  toward our zinc/brand palette so the diff doesn't look like it was
- *  pasted in from another app. */
-const DIFF_STYLES = {
-  variables: {
-    dark: {
-      diffViewerBackground: "var(--color-surface-950)",
-      diffViewerColor: "var(--color-text-primary)",
-      addedBackground: "rgba(34, 197, 94, 0.08)",
-      addedColor: "rgb(187, 247, 208)",
-      removedBackground: "rgba(239, 68, 68, 0.08)",
-      removedColor: "rgb(254, 202, 202)",
-      wordAddedBackground: "rgba(34, 197, 94, 0.20)",
-      wordRemovedBackground: "rgba(239, 68, 68, 0.20)",
-      addedGutterBackground: "rgba(34, 197, 94, 0.05)",
-      removedGutterBackground: "rgba(239, 68, 68, 0.05)",
-      gutterBackground: "var(--color-surface-900)",
-      gutterBackgroundDark: "var(--color-surface-900)",
-      highlightBackground: "var(--color-surface-800)",
-      highlightGutterBackground: "var(--color-surface-800)",
-      codeFoldGutterBackground: "var(--color-surface-900)",
-      codeFoldBackground: "var(--color-surface-900)",
-      emptyLineBackground: "var(--color-surface-950)",
-      gutterColor: "var(--color-text-dim)",
-      addedGutterColor: "rgb(187, 247, 208)",
-      removedGutterColor: "rgb(254, 202, 202)",
-      codeFoldContentColor: "var(--color-text-dim)",
-      diffViewerTitleBackground: "var(--color-surface-900)",
-      diffViewerTitleColor: "var(--color-text-secondary)",
-      diffViewerTitleBorderColor: "var(--color-surface-800)",
-    },
-  },
-  contentText: {
-    fontSize: "11px",
-    fontFamily:
-      "'Geist Mono', ui-monospace, 'SFMono-Regular', monospace",
-  },
-  gutter: {
-    fontSize: "10px",
-    minWidth: "32px",
-    padding: "0 6px",
-  },
-} as const;
 
 /* ── delete ─────────────────────────────────────────────────────── */
 

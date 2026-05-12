@@ -3,7 +3,8 @@ import {
   useHighlightedLines,
   type SyntaxToken,
 } from "../../hooks/useHighlightedLines";
-import type { RichDiffHunk, RichDiffLine } from "../../lib/types";
+import type { RichDiffHunk } from "../../lib/types";
+import { DiffLine } from "./DiffLine";
 
 interface Props {
   sessionId: string;
@@ -33,71 +34,6 @@ const STATUS_COLORS: Record<string, string> = {
   untracked: "text-text-muted",
   conflicted: "text-status-waiting",
 };
-
-function DiffLine({
-  line,
-  tokens,
-  highlightPending,
-}: {
-  line: RichDiffLine;
-  tokens?: SyntaxToken[];
-  /** True while Shiki is loading; hides content to avoid a flash of unstyled text. */
-  highlightPending?: boolean;
-}) {
-  let bgClass = "";
-  let textClass = "text-text-secondary";
-  let prefix = " ";
-
-  if (line.type === "add") {
-    bgClass = "bg-status-running/5";
-    textClass = "text-status-running";
-    prefix = "+";
-  } else if (line.type === "delete") {
-    bgClass = "bg-status-error/5";
-    textClass = "text-status-error";
-    prefix = "-";
-  }
-
-  // Strip trailing newline (handles both \n and \r\n) so CRLF files
-  // don't render a stray carriage-return glyph.
-  const content = line.content.replace(/\r?\n$/, "");
-
-  // For add/delete lines, mix the syntax color with reduced opacity so
-  // the diff coloring (green/red) still dominates.
-  const renderContent = () => {
-    if (tokens && tokens.length > 0) {
-      const opacity = line.type === "equal" ? 1 : 0.7;
-      return tokens.map((tok, i) => (
-        <span
-          key={i}
-          style={tok.color ? { color: tok.color, opacity } : { opacity }}
-        >
-          {tok.content}
-        </span>
-      ));
-    }
-    return content || "\u00a0";
-  };
-
-  return (
-    <div className={`flex ${bgClass} hover:brightness-110 transition-[filter] duration-75`}>
-      <span className="shrink-0 w-[50px] text-right pr-2 font-mono text-[11px] text-text-dim select-none border-r border-surface-700/30">
-        {line.old_line_num ?? ""}
-      </span>
-      <span className="shrink-0 w-[50px] text-right pr-2 font-mono text-[11px] text-text-dim select-none border-r border-surface-700/30">
-        {line.new_line_num ?? ""}
-      </span>
-      <span className={`shrink-0 w-4 text-center font-mono text-[12px] ${textClass} select-none`}>
-        {prefix}
-      </span>
-      <span
-        className={`flex-1 font-mono text-[12px] whitespace-pre transition-opacity duration-100${tokens ? "" : ` ${textClass}`}${highlightPending ? " opacity-0" : ""}`}
-      >
-        {renderContent()}
-      </span>
-    </div>
-  );
-}
 
 function HunkView({
   hunk,
