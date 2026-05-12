@@ -23,10 +23,11 @@ fn shortcuts(strict: bool) -> Vec<(&'static str, Vec<(&'static str, &'static str
                 vec![
                     ("j/↓", "Move down"),
                     ("k/↑", "Move up"),
-                    ("h/←", "Collapse group"),
+                    ("←", "Collapse group"),
                     ("l/→", "Expand group"),
-                    ("Home/End", "Go to top / bottom"),
+                    ("Home/End/G", "Go to top / bottom"),
                     ("PgUp/Dn", "Move 10 items up / down"),
+                    ("Shift+↑/↓", "Move 10 items up / down"),
                     ("w", "Next waiting/idle session"),
                 ],
             ),
@@ -40,9 +41,10 @@ fn shortcuts(strict: bool) -> Vec<(&'static str, Vec<(&'static str, &'static str
                     ("D", "Delete session/group"),
                     ("R", "Rename session/group"),
                     ("M", "Send message to agent"),
+                    ("E/F5", "Restart session"),
                     ("Z", "Archive / unarchive"),
                     ("F", "Favorite / unfavorite"),
-                    ("W", "Snooze / wake"),
+                    ("H/W", "Snooze / wake"),
                 ],
             ),
             (
@@ -51,7 +53,7 @@ fn shortcuts(strict: bool) -> Vec<(&'static str, Vec<(&'static str, &'static str
                     ("T", "Toggle Agent/Terminal view"),
                     ("C", "Toggle container/host (sandbox)"),
                     ("Ctrl+D", "Diff view (git changes)"),
-                    ("H/L", "Resize list panel"),
+                    ("</>", "Resize list panel"),
                     ("O", "Cycle sort forward"),
                     ("Ctrl+O", "Cycle sort backward"),
                     ("Ctrl+G", "Toggle group by project"),
@@ -81,10 +83,11 @@ fn shortcuts(strict: bool) -> Vec<(&'static str, Vec<(&'static str, &'static str
                 vec![
                     ("j/↓", "Move down"),
                     ("k/↑", "Move up"),
-                    ("h/←", "Collapse group"),
+                    ("←", "Collapse group"),
                     ("l/→", "Expand group"),
-                    ("Home/End", "Go to top / bottom"),
+                    ("Home/End/G", "Go to top / bottom"),
                     ("PgUp/Dn", "Move 10 items up / down"),
+                    ("Shift+↑/↓", "Move 10 items up / down"),
                     ("w", "Next waiting/idle session"),
                 ],
             ),
@@ -99,9 +102,10 @@ fn shortcuts(strict: bool) -> Vec<(&'static str, Vec<(&'static str, &'static str
                     ("d", "Delete session/group"),
                     ("r", "Rename session/group"),
                     ("m", "Send message to agent"),
+                    ("e/E/F5", "Restart session"),
                     ("z/Z", "Archive / unarchive"),
                     ("f/F", "Favorite / unfavorite"),
-                    ("w/W", "Snooze / wake"),
+                    ("h/H/w/W", "Snooze / wake"),
                     ("Paste", "Capture → compose dialog"),
                 ],
             ),
@@ -111,7 +115,7 @@ fn shortcuts(strict: bool) -> Vec<(&'static str, Vec<(&'static str, &'static str
                     ("t", "Toggle Agent/Terminal view"),
                     ("c", "Toggle container/host (sandbox)"),
                     ("D", "Diff view (git changes)"),
-                    ("H/L", "Resize list panel"),
+                    ("</>", "Resize list panel"),
                     ("o", "Cycle sort forward"),
                     ("Ctrl+o", "Cycle sort backward"),
                     ("g", "Toggle group by project"),
@@ -243,8 +247,10 @@ mod tests {
             assert!(views_section.is_some(), "Views section should exist");
             let (_, keys) = views_section.unwrap();
             assert!(
-                keys.iter().any(|(k, _)| *k == "H/L"),
-                "Views section should contain H/L resize shortcut"
+                keys.iter().any(|(k, _)| *k == "</>"),
+                "Views section should contain </> resize shortcut (was H/L before audit \
+                 found H bound to snooze and L unbound — the real resize bindings are \
+                 < and > per src/tui/home/input.rs:1711)"
             );
         }
     }

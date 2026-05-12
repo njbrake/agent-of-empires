@@ -920,12 +920,6 @@ impl App {
             Action::SetTheme(name) => {
                 self.set_theme(&name);
             }
-            Action::LaunchCxs => {
-                self.launch_cxs(terminal, false)?;
-            }
-            Action::LaunchCxsSingle => {
-                self.launch_cxs(terminal, true)?;
-            }
             Action::SpawnUpdate(method, version) => {
                 if self.update_status_rx.is_some() {
                     self.update_status =
@@ -938,35 +932,6 @@ impl App {
                 self.update_status = Some(UpdateStatus::transient(text));
             }
         }
-        Ok(())
-    }
-
-    fn launch_cxs(
-        &mut self,
-        terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
-        single: bool,
-    ) -> Result<()> {
-        let status = self.with_raw_mode_disabled(terminal, || {
-            let mut cmd = std::process::Command::new("cxs");
-            cmd.env("CXS_NO_TUI", "1");
-            if single {
-                cmd.env("CXS_SINGLE", "1");
-            }
-            cmd.status()
-        })?;
-
-        self.needs_redraw = true;
-        crate::tmux::refresh_session_cache();
-        self.home.reload()?;
-
-        if let Err(e) = status {
-            tracing::warn!("cxs launch returned error: {}", e);
-            self.home.info_dialog = Some(crate::tui::dialogs::InfoDialog::new(
-                "cxs failed",
-                &format!("Could not launch cxs: {}. Is ~/scripts/cxs on PATH?", e),
-            ));
-        }
-
         Ok(())
     }
 
@@ -1252,8 +1217,6 @@ pub enum Action {
     EditFile(PathBuf),
     StopSession(String),
     SetTheme(String),
-    LaunchCxs,
-    LaunchCxsSingle,
     SpawnUpdate(crate::update::install::InstallMethod, String),
     SetTransientStatus(String),
 }

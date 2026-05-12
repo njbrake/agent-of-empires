@@ -686,54 +686,6 @@ impl HomeView {
             }
             KeyCode::Char('q') if !self.strict_hotkeys => return Some(Action::Quit),
             KeyCode::Char('Q') => return Some(Action::Quit),
-            KeyCode::Char('b') if !self.strict_hotkeys => {
-                // Batch-spawn sessions via the external `cxs` script. Drops out
-                // of the TUI, shows the fzf project picker, spawns selections
-                // via aoe add, then returns into the TUI (cxs honors
-                // CXS_NO_TUI=1 to skip the default `exec aoe` at its tail).
-                // See docs/plans/2026-04-19-cx-aoe-master-design.md §9.12.
-                if self.creating_stub_id.is_some() {
-                    self.info_dialog = Some(InfoDialog::new(
-                        "Please Wait",
-                        "A session is already being created. Wait for it to finish or press Ctrl+C to cancel.",
-                    ));
-                } else {
-                    return Some(Action::LaunchCxs);
-                }
-            }
-            KeyCode::Char('B') if self.strict_hotkeys => {
-                if self.creating_stub_id.is_some() {
-                    self.info_dialog = Some(InfoDialog::new(
-                        "Please Wait",
-                        "A session is already being created. Wait for it to finish or press Ctrl+C to cancel.",
-                    ));
-                } else {
-                    return Some(Action::LaunchCxs);
-                }
-            }
-            KeyCode::Char('a') if !self.strict_hotkeys => {
-                // Single-spawn picker via `cxs` with CXS_SINGLE=1. fzf runs
-                // --no-multi so Enter accepts and exits. Peer to `b` (batch).
-                // See docs/plans/2026-04-19-cx-aoe-master-design.md §9.13.
-                if self.creating_stub_id.is_some() {
-                    self.info_dialog = Some(InfoDialog::new(
-                        "Please Wait",
-                        "A session is already being created. Wait for it to finish or press Ctrl+C to cancel.",
-                    ));
-                } else {
-                    return Some(Action::LaunchCxsSingle);
-                }
-            }
-            KeyCode::Char('A') if self.strict_hotkeys => {
-                if self.creating_stub_id.is_some() {
-                    self.info_dialog = Some(InfoDialog::new(
-                        "Please Wait",
-                        "A session is already being created. Wait for it to finish or press Ctrl+C to cancel.",
-                    ));
-                } else {
-                    return Some(Action::LaunchCxsSingle);
-                }
-            }
             // `z` / `Z` — toggle archive on the cursor's selection (session
             // OR group). Mirrors the `a`/`A` non-strict/strict pair pattern.
             // Archived items sink to the bottom of the Attention sort in
