@@ -21,7 +21,7 @@
 > for any session.
 >
 > The data model (`cockpit_mode: bool` per session) is stable; the
-> UI and reliability story are still evolving — see "What's deferred".
+> UI and reliability story are still evolving; see "What's deferred".
 
 Cockpit is aoe's native rendering surface for AI coding agents. Instead
 of viewing the agent through a terminal pane (PTY bytes piped through
@@ -49,7 +49,7 @@ The wizard greys out the cockpit option for tools not in this set.
 | `vibe`     | `vibe-acp` (native, Mistral)                               | Mistral API key; set up via `vibe` first |
 | `pi`       | `pi-acp` (adapter, requires `@mariozechner/pi-coding-agent`) | `pi-acp --terminal-login` for OAuth, or env vars per provider |
 | `aoe-agent`| Bundled multi-provider agent (Vercel AI SDK 6)             | Whatever provider env vars Vercel AI SDK expects |
-| *aider, cursor, copilot, droid, settl, hermes* | not yet wired into the cockpit registry — fall back to terminal mode |
+| *aider, cursor, copilot, droid, settl, hermes* | not yet wired into the cockpit registry; fall back to terminal mode |
 
 The four env vars cockpit always forwards to the agent process are
 `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN`,
@@ -114,13 +114,13 @@ Configured agents:
 [OK] claude-code  (Alias for `claude` (legacy name))
 [!! ] codex  (OpenAI Codex CLI via Zed adapter …)
     install: npm install -g @zed-industries/codex-acp
-[!! ] gemini  (Google Gemini CLI — native ACP via `gemini --acp`)
+[!! ] gemini  (Google Gemini CLI; native ACP via `gemini --acp`)
     install: npm install -g @google/gemini-cli  (then `gemini --acp`)
-[!! ] opencode  (OpenCode (SST) — native ACP via `opencode acp`)
+[!! ] opencode  (OpenCode (SST); native ACP via `opencode acp`)
     install: curl -fsSL https://opencode.ai/install | bash  (then `opencode acp`)
 [!! ] pi  (Hermes coding agent (`pi`) via the pi-acp adapter …)
     install: npm install -g pi-acp  (also requires `npm i -g @mariozechner/pi-coding-agent`)
-[!! ] vibe  (Mistral Vibe — native ACP via the bundled `vibe-acp` binary)
+[!! ] vibe  (Mistral Vibe; native ACP via the bundled `vibe-acp` binary)
     install: follow https://github.com/mistralai/mistral-vibe (ships the `vibe-acp` binary)
 
 Overall: partial
@@ -183,7 +183,7 @@ alone.
 - `--no-cockpit` per session (CLI).
 - `cockpit.enabled = false` in `config.toml` (persistent master). The
   reconciler short-circuits, REST endpoints return 503, and the CLI
-  refuses `--cockpit`. The web settings panel toggles this live —
+  refuses `--cockpit`. The web settings panel toggles this live;
   flipping the switch shuts down running workers within a couple of
   seconds and respawns them when re-enabled, no `aoe serve --stop`
   required.
@@ -297,7 +297,7 @@ Practical implications:
 - **Mid-turn reattach.** When the daemon comes back up against a
   session that was actively streaming a prompt, the new daemon resumes
   the existing ACP session id directly (no `session/new` or
-  `session/load` is sent — the agent process never died, so its in-
+  `session/load` is sent; the agent process never died, so its in-
   memory session is still addressable). The agent's eventual response
   to the orphaned in-flight `session/prompt` is dropped silently by
   the transport because its request id was issued by the previous
@@ -318,7 +318,7 @@ Practical implications:
 Cockpit transcripts survive page reloads, session switches, and
 `aoe serve --stop`/restart cycles. For agents that support session
 restoration (Claude today), the model itself also retains conversation
-context across restarts — so a follow-up like "what did we just
+context across restarts; so a follow-up like "what did we just
 decide?" still works after a daemon restart.
 
 If context restoration fails (e.g., the agent's stored session is no
@@ -430,7 +430,7 @@ context where approvals legitimately take longer.
 agent stderr verbatim to `debug.log` under the app data dir. We scrub
 common API-key prefixes (Anthropic `sk-...`, GitHub `ghp_...`, AWS
 `AKIA...`, `Bearer <token>`, etc.) before they hit disk, but the scrub
-is best-effort — a hand-rolled secret with no recognisable shape will
+is best-effort; a hand-rolled secret with no recognisable shape will
 pass through. Before attaching `debug.log` to a bug report, skim it
 for anything that looks like a credential, and replace it with
 `<redacted>` if needed.

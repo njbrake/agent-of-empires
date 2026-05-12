@@ -263,7 +263,7 @@ function AssistantToolCall(props: ToolCallProps) {
 
 /** Read the real `_aoe_started_at` ISO timestamp out of the
  *  tool-call args. Returns null when neither the parsed `args` object
- *  nor the raw `argsText` carries it — caller falls back to a minted
+ *  nor the raw `argsText` carries it; caller falls back to a minted
  *  client time. */
 function pickStartedAt(
   args: Record<string, unknown> | undefined,
@@ -320,7 +320,7 @@ function AssistantToolGroup({ argsText }: { argsText?: string }) {
         children = parsed.children as GroupChild[];
       }
     } catch {
-      // Malformed payload — fall through to an empty group rather than
+      // Malformed payload; fall through to an empty group rather than
       // crashing the assistant-ui render.
     }
   }
@@ -507,7 +507,7 @@ function PlanStrip({ plan, mode }: PlanStripProps) {
       >
         <ListChecks className="h-3.5 w-3.5 shrink-0 text-text-dim" />
         <span className="truncate text-text-primary">
-          {current?.title ?? (allDone ? "all steps complete" : "—")}
+          {current?.title ?? (allDone ? "all steps complete" : "…")}
         </span>
         {plan && (
           <span className="ml-auto flex items-center gap-2">
@@ -845,7 +845,7 @@ function StartupErrorBanner({
             and restart <code className="rounded bg-rose-900/60 px-1">aoe serve</code>,
             or free a slot by deleting an existing cockpit session
             or switching one to the tmux substrate. Reinstalling the adapter
-            won't help — the adapter is fine, the cap is the limit.
+            won't help; the adapter is fine, the cap is the limit.
           </>
         ) : (
           <>

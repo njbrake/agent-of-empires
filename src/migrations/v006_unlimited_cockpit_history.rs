@@ -6,7 +6,7 @@
 //! "keep everything"; users coming from a v005-seeded install would
 //! otherwise stay capped at 500. This migration rewrites that specific
 //! seeded value (500) to 0 so upgraders pick up the new default. Any
-//! user who has explicitly set a different cap is left alone — only the
+//! user who has explicitly set a different cap is left alone; only the
 //! exact v005 seed value triggers the rewrite.
 
 use anyhow::Result;

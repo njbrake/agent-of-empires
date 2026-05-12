@@ -126,9 +126,19 @@ function PlanProgressMini({
       ? Math.min(100, Math.round((summary.completed / summary.total) * 100))
       : 0;
   const title = summary.current_step_title ?? "plan in progress";
+  const ariaLabel = summary.current_step_title
+    ? `Plan progress: ${summary.completed} of ${summary.total} steps; current step ${summary.current_step_title}`
+    : `Plan progress: ${summary.completed} of ${summary.total} steps`;
   return (
     <div className="mt-1 flex items-center gap-2" title={title}>
-      <div className="h-1 flex-1 rounded-full bg-surface-800 overflow-hidden">
+      <div
+        role="progressbar"
+        aria-valuenow={summary.completed}
+        aria-valuemin={0}
+        aria-valuemax={summary.total}
+        aria-label={ariaLabel}
+        className="h-1 flex-1 rounded-full bg-surface-800 overflow-hidden"
+      >
         <div
           className="h-full bg-brand-400 transition-all"
           style={{ width: `${pct}%` }}

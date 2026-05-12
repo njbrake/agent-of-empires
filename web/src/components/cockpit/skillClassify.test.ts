@@ -1,4 +1,4 @@
-// Sanity check for the Skill heuristic — exercises the same regex
+// Sanity check for the Skill heuristic; exercises the same regex
 // shape as classifySkill via a direct ToolCard render-side dispatch
 // pre-check. Kept as a black-box test to avoid exporting the
 // classifier (which would force a refactor for one consumer).

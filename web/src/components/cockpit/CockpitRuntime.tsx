@@ -117,7 +117,7 @@ export function CockpitRuntime({ sessionId, children }: Props) {
  * message until the next user_prompt or end of log.
  *
  * Tool completion rows (`tool_complete` / `tool_error`) are not their
- * own messages — they update the matching `tool-call` part in place
+ * own messages; they update the matching `tool-call` part in place
  * by setting `result` / `isError`, so the per-tool card renderer can
  * render running → done in one place.
  */
@@ -161,7 +161,7 @@ export function activityToThreadMessages(
         ? "Conversation compacted"
         : "Conversation context reset";
       const body = isCompact
-        ? row.text.replace(/^Conversation compacted\s*[—-]?\s*/, "")
+        ? row.text.replace(/^Conversation compacted\s*[;,—-]?\s*/, "")
         : row.text;
       messages.push({
         id: `assistant-${row.id}`,
@@ -169,7 +169,7 @@ export function activityToThreadMessages(
         content: [
           {
             type: "text",
-            text: `> ⚠️ **${header}** — ${body}`,
+            text: `> ⚠️ **${header}**; ${body}`,
           },
         ],
         createdAt: parseDate(row.at),
@@ -198,7 +198,7 @@ export function activityToThreadMessages(
     } else if (row.kind === "empty_output") {
       // Synthesised when the agent finished a turn without emitting any
       // text or tool calls (e.g. interactive-only slash commands like
-      // /usage, /status, /memory in claude-agent-acp — see upstream
+      // /usage, /status, /memory in claude-agent-acp; see upstream
       // issue agentclientprotocol/claude-agent-acp#642). Surface it as
       // a tiny muted notice instead of leaving the assistant bubble
       // empty.
@@ -278,7 +278,7 @@ class AssistantBuilder {
     // key is namespaced so it can't collide with real tool args.
     //
     // Also smuggle `_aoe_started_at` (the real ToolCall.started_at)
-    // through assistant-ui's tool-call part shape — its primitive
+    // through assistant-ui's tool-call part shape; its primitive
     // doesn't carry timestamps and CockpitView's fallback would
     // otherwise mint one fresh per render, breaking the duration
     // label (#1060).
@@ -289,7 +289,7 @@ class AssistantBuilder {
         argsObj = parsed as Record<string, unknown>;
       }
     } catch {
-      // args_preview wasn't a JSON object — keep argsObj empty.
+      // args_preview wasn't a JSON object; keep argsObj empty.
     }
     if (tool.name) argsObj._aoe_title = tool.name;
     if (tool.started_at) argsObj._aoe_started_at = tool.started_at;
@@ -323,7 +323,7 @@ class AssistantBuilder {
       role: "assistant",
       // Cast to bypass assistant-ui's strict ReadonlyJSONObject typing
       // for tool-call args. We don't carry parsed args through this
-      // path — the renderer parses argsText itself — so the loose
+      // path; the renderer parses argsText itself; so the loose
       // shape is safe in practice.
       content: (grouped.length
         ? grouped
@@ -363,7 +363,7 @@ export const TOOL_GROUP_NAME = "_aoe_tool_group";
 /** Walk an assistant message's parts and collapse runs of consecutive
  *  tool-call parts (regardless of kind) into one synthetic group part
  *  when the run is ≥ TOOL_GROUP_MIN_RUN long. The grouping boundary is
- *  ANY non-tool-call part (text, callout, etc.) — matching the "what
+ *  ANY non-tool-call part (text, callout, etc.); matching the "what
  *  did the agent do silently before its next sentence?" UX shape. The
  *  underlying tool-call data is preserved verbatim inside the group's
  *  argsText payload so the renderer can expand back to the original
@@ -376,7 +376,7 @@ function collapseToolRuns(parts: DraftPart[]): DraftPart[] {
     if (run.length < TOOL_GROUP_MIN_RUN) {
       for (const p of run) out.push(p);
     } else {
-      // TodoWrite calls aren't silent tool work — they're status
+      // TodoWrite calls aren't silent tool work; they're status
       // updates the user wants to see one-by-one (#1064). Detect them
       // via the `_aoe_title` echo we stash in argsText (the adapter
       // names them "Update TODOs: …") and exempt the group entirely

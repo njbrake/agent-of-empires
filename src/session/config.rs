@@ -83,7 +83,7 @@ pub struct CockpitConfig {
     /// across every device that connects to the same daemon. The
     /// underlying measurement is currently imprecise on
     /// claude-agent-acp (no `status: "in_progress"` is emitted, so we
-    /// can't re-stamp `started_at` to the real subprocess start —
+    /// can't re-stamp `started_at` to the real subprocess start;
     /// see the comment on `CardChromeProps.startedAt` in
     /// `web/src/components/cockpit/ToolCards.tsx`); this setting lets
     /// users hide the label until upstream provides a trustworthy
@@ -271,7 +271,7 @@ pub struct SessionConfig {
     /// (P, R, T, N, D, G) relocate to Ctrl+letter so nothing is lost.
     /// Note: Ctrl+D (diff view) may conflict with terminal EOF in some tmux configs;
     /// if so, rebind tmux's send-prefix or use the `D` key from the help overlay.
-    /// Off by default — existing users keep the legacy single-letter UX.
+    /// Off by default; existing users keep the legacy single-letter UX.
     #[serde(default)]
     pub strict_hotkeys: bool,
 }
@@ -400,13 +400,13 @@ fn default_profile() -> String {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ColorMode {
-    /// Emit 24-bit RGB escapes (\e[38;2;R;G;Bm). Default — best fidelity on
+    /// Emit 24-bit RGB escapes (\e[38;2;R;G;Bm). Default; best fidelity on
     /// modern terminals and SSH sessions that pass RGB correctly.
     #[default]
     Truecolor,
     /// Emit 256-palette escapes (\e[38;5;<idx>m) by converting every theme
     /// Rgb(r,g,b) to the nearest xterm-256 index. Use this when the transport
-    /// (notably some mosh clients) mishandles 24-bit RGB — preview panes in
+    /// (notably some mosh clients) mishandles 24-bit RGB; preview panes in
     /// aoe already use 256-palette via ansi-to-tui, so palette mode renders
     /// chrome through the same escape path and survives the same transports.
     Palette,

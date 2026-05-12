@@ -133,6 +133,11 @@ enum ConnectMode {
 /// bounded.
 const RESUME_IDLE_GRACE_DEFAULT: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// Monotonic counter appended to synthetic tool-call IDs so two events
+/// minted within the same millisecond don't collide on the
+/// `(session_id, tool_id)` keys used by the cockpit event store.
+static SYNTHETIC_TOOL_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// Read the resume-idle grace. In debug builds, honors
 /// `AOE_RESUME_IDLE_GRACE_MS` so integration tests can short-circuit
 /// the default 10s without making real failures racy. Values below
@@ -333,7 +338,7 @@ impl AcpClient {
     /// post-spawn "wait for runner to bind, then dial" path AND by the
     /// `Self::attach` reattach path on `aoe serve` startup. The runner
     /// owns the agent subprocess so this constructor returns an
-    /// `AcpClient` with `_child = None` — dropping the client does not
+    /// `AcpClient` with `_child = None`; dropping the client does not
     /// terminate the worker.
     #[allow(clippy::too_many_arguments)]
     async fn connect_via_socket(
@@ -397,7 +402,7 @@ impl AcpClient {
 
     /// Reattach to an already-running cockpit worker over its unix
     /// socket. Used by `aoe serve` startup when a registry entry has a
-    /// live PID and an existing socket file — we connect, send only the
+    /// live PID and an existing socket file; we connect, send only the
     /// (idempotent) ACP `initialize` request, and reuse the existing
     /// `stored_acp_session_id` directly. We deliberately do NOT issue
     /// `session/new` or `session/load`: the agent process is still
@@ -527,7 +532,7 @@ impl AcpClient {
 }
 
 /// Reject `provider_env` request entries whose key would either escape
-/// the agent sandbox (PATH, HOME, etc. — `always_forward` already wires
+/// the agent sandbox (PATH, HOME, etc.; `always_forward` already wires
 /// those from the operator's environment) or hijack the dynamic linker
 /// (LD_PRELOAD, DYLD_INSERT_LIBRARIES, etc.) to run arbitrary code in
 /// the child. Provider auth keys (`ANTHROPIC_API_KEY`, etc.) are
@@ -561,12 +566,12 @@ fn provider_env_denyreason(key: &str) -> Option<&'static str> {
 }
 
 /// Scrub well-known secret patterns from agent stderr before it lands in
-/// `debug.log`. Conservative — only redacts strings that unambiguously
+/// `debug.log`. Conservative; only redacts strings that unambiguously
 /// signal a secret via prefix (Anthropic `sk-`, GitHub `ghp_`,
 /// `Bearer <token>`, etc.). Catches the common case where an adapter
 /// prints "auth failed: api_key=sk-ant-..."; will not catch a hand-rolled
 /// secret with no recognisable shape. Users sharing logs in bug reports
-/// should still scan them — see docs/cockpit.md#sharing-debug-logs.
+/// should still scan them; see docs/cockpit.md#sharing-debug-logs.
 fn scrub_stderr_secrets(line: &str) -> std::borrow::Cow<'_, str> {
     use std::sync::OnceLock;
     static RE: OnceLock<regex::Regex> = OnceLock::new();
@@ -985,7 +990,7 @@ fn spawn_subprocess(config: &SpawnConfig) -> Result<tokio::process::Child, AcpEr
         );
         // ENOENT on a bare command means we couldn't find the binary on
         // PATH or in any known node-manager dir. Bubble up a hint instead
-        // of the bare libc message — the daemon's frozen PATH is the
+        // of the bare libc message; the daemon's frozen PATH is the
         // most common cause and the generic message doesn't say so.
         if e.kind() == std::io::ErrorKind::NotFound && resolved.is_none() {
             AcpError::Spawn(format!(
@@ -1148,7 +1153,7 @@ fn transcript_event_kind(event: &Event) -> &'static str {
 /// PlanStrip renderer can consume it.
 ///
 /// Returns `None` when the input has no `plan` key, the value isn't a
-/// string, or the string has no recognisable list items — in which case
+/// string, or the string has no recognisable list items; in which case
 /// the generic tool card is still rendered so the user sees the raw
 /// plan text. See #1059 for the upstream gap this works around.
 fn extract_plan_from_switch_mode(raw_input: &serde_json::Value) -> Option<Plan> {
@@ -1198,7 +1203,7 @@ fn parse_plan_steps(text: &str) -> Vec<PlanStep> {
 
 fn strip_markdown_emphasis(s: &str) -> String {
     // Replace **bold**, __bold__, *italic*, _italic_ markers with their
-    // inner text. Keep it permissive — the source is Claude's planning
+    // inner text. Keep it permissive; the source is Claude's planning
     // markdown, which is usually well-formed but occasionally drops a
     // closing marker.
     use std::sync::OnceLock;
@@ -1221,10 +1226,10 @@ fn strip_markdown_emphasis(s: &str) -> String {
 /// Heuristic detector for the end of a `/compact` cycle. The Claude ACP
 /// adapter emits "Compacting..." while the compaction runs and
 /// "Compacting completed." once the model's context window has been
-/// replaced by a summary — both as plain `agent_message_chunk`s with no
+/// replaced by a summary; both as plain `agent_message_chunk`s with no
 /// `_meta` flag (see #1050 for the upstream gap). String-matching on
 /// the completion message is fragile to localisation but the wrong-firing
-/// failure mode (an extra "context reset" divider) is harmless — it can
+/// failure mode (an extra "context reset" divider) is harmless; it can
 /// never destroy transcript data.
 fn is_compact_completion(text: &str) -> bool {
     text.contains("Compacting completed.")
@@ -1238,7 +1243,7 @@ fn map_update_to_events(update: SessionUpdate) -> Vec<Event> {
         SessionUpdate::AgentMessageChunk(chunk) => match chunk.content {
             ContentBlock::Text(text) => {
                 // /compact emits a plain text chunk ("Compacting completed.")
-                // and a usage_update with used=0 — no typed signal. Detect
+                // and a usage_update with used=0; no typed signal. Detect
                 // the literal string the adapter uses and append a typed
                 // SessionContextReset event so the cockpit can render a
                 // divider, otherwise the silent context replacement leaves
@@ -1249,7 +1254,7 @@ fn map_update_to_events(update: SessionUpdate) -> Vec<Event> {
                 }];
                 if is_compact_completion(&text.text) {
                     events.push(Event::SessionContextReset {
-                        reason: "Conversation compacted — earlier turns above \
+                        reason: "Conversation compacted; earlier turns above \
                                  are summarised in the model's context."
                             .into(),
                     });
@@ -1258,7 +1263,7 @@ fn map_update_to_events(update: SessionUpdate) -> Vec<Event> {
                     // is gone from its perspective. The cockpit plan strip
                     // (PlanStrip + sidebar PlanProgressMini) lives in our
                     // own event log though, so without this clear it keeps
-                    // showing a plan Claude no longer remembers — the user
+                    // showing a plan Claude no longer remembers; the user
                     // then asks "resolve the first task" and Claude
                     // responds "no task list." Emit an empty PlanUpdated
                     // so the UI matches the model's actual context.
@@ -1372,16 +1377,21 @@ fn map_update_to_events(update: SessionUpdate) -> Vec<Event> {
             // TodoWrite through the structured `SessionUpdate::Plan`
             // channel (not the tool channel), so without this synthesis
             // the cockpit's PlanStrip + sidebar light up but no tool
-            // card ever renders — the user sees a plan appear "from
+            // card ever renders; the user sees a plan appear "from
             // nowhere" and has no per-update record of which calls
             // produced which states. Emit a ToolCallStarted /
             // ToolCallCompleted pair shaped to match what the
             // TodoUpdateCard classifier in ToolCards.tsx expects
             // (`name = "TodoWrite"`, `args.todos = [...]`), one per
             // adapter update.
+            // Append a session-local monotonic counter so two plan updates
+            // arriving in the same millisecond don't share a synthetic ID
+            // (which would collide in the cockpit_events row keys and
+            // render as a single card instead of two).
             let ts_ms = chrono::Utc::now().timestamp_millis();
-            let plan_id = format!("plan-{ts_ms}");
-            let tool_id = format!("todo-{ts_ms}");
+            let seq = SYNTHETIC_TOOL_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let plan_id = format!("plan-{ts_ms}-{seq}");
+            let tool_id = format!("todo-{ts_ms}-{seq}");
             let todos_json: Vec<serde_json::Value> = p
                 .entries
                 .iter()
@@ -1553,7 +1563,7 @@ fn preview_args(raw: &serde_json::Value) -> String {
 }
 
 /// Concat the textual portion of a tool call's `content` array. Drops
-/// non-text content blocks (images, resources, embedded terminals) — the
+/// non-text content blocks (images, resources, embedded terminals); the
 /// per-tool renderer fall-back path only knows how to display text. Diffs
 /// are surfaced separately via `extract_diff_from_locations` (and could
 /// later be picked up here too via `ToolCallContent::Diff`).
@@ -1622,7 +1632,7 @@ async fn run_connection_task<W, R>(
     // historical assistant turn replayed as agent_message_chunk
     // events). Our SQLite event store already has those events from
     // the original run, so passing them through would double the
-    // transcript on the next reload — every prior assistant bubble
+    // transcript on the next reload; every prior assistant bubble
     // appears once from disk replay, then again from the agent's
     // history dump. Suppress agent-side notifications during the
     // window between session/load success and the first user prompt;
@@ -1666,7 +1676,7 @@ async fn run_connection_task<W, R>(
                         // visible transcript (assistant chunks, tool
                         // calls, plans, etc.). Ambient state events
                         // (mode/usage/available_commands) and lifecycle
-                        // events (stopped, errors) must pass through —
+                        // events (stopped, errors) must pass through;
                         // otherwise the composer footer and pickers
                         // stay stale until the user types something.
                         if suppressing && is_transcript_event(&event) {
@@ -1771,8 +1781,8 @@ async fn run_connection_task<W, R>(
                 .terminal(true);
             // `initialize` is sent in both Fresh and Resume modes.
             // It's idempotent on every ACP agent we ship against
-            // (aoe-agent, claude-agent-acp) — the response only carries
-            // capability metadata — so re-sending it on attach is safe.
+            // (aoe-agent, claude-agent-acp); the response only carries
+            // capability metadata; so re-sending it on attach is safe.
             let init = connection
                 .send_request(
                     InitializeRequest::new(ProtocolVersion::V1)
@@ -2086,7 +2096,7 @@ async fn run_connection_task<W, R>(
                                             // freeze this select loop for the
                                             // duration of the round-trip,
                                             // defeating the point of polling
-                                            // cmd_rx concurrently — a Cancel
+                                            // cmd_rx concurrently; a Cancel
                                             // arriving while set_mode is in
                                             // flight would queue. The detached
                                             // task mirrors the success into the
@@ -2228,7 +2238,7 @@ async fn run_connection_task<W, R>(
     // In runner-managed mode (child is None) we deliberately don't kill
     // anything here: the per-worker `aoe __cockpit-runner` shim owns the
     // agent subprocess and outlives this daemon's connection. The socket
-    // file also stays — the runner cleans it up on its own exit.
+    // file also stays; the runner cleans it up on its own exit.
     if let Some(child) = child.as_ref() {
         let mut guard = child.lock().await;
         match guard.try_wait() {
@@ -2630,8 +2640,12 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn resolve_agent_command_finds_binary_in_path_env() {
         // Build a temp dir with a fake binary, point PATH at it.
+        // Tagged `#[serial]` because the test mutates the process-wide
+        // PATH; any concurrent test that reads PATH (e.g. resolves a
+        // real binary) would race.
         let dir = tempfile::TempDir::new().unwrap();
         let bin = dir.path().join("aoe-test-resolver-fake");
         std::fs::write(&bin, "#!/bin/sh\n").unwrap();
@@ -2648,9 +2662,9 @@ mod tests {
                 .map(|p| p.to_string_lossy().into_owned())
                 .unwrap_or_default()
         );
-        // SAFETY: this test mutates the process-wide PATH. Other tests in
-        // this module don't depend on PATH; tagging the test single-thread
-        // would be heavier than the current race surface.
+        // SAFETY: this test mutates the process-wide PATH. Other PATH
+        // readers in the same test binary would race; `#[serial]` keeps
+        // them apart.
         unsafe {
             std::env::set_var("PATH", &new_path);
         }

@@ -395,7 +395,7 @@ fn build_cockpit_fields(
         SettingField {
             key: FieldKey::CockpitShowToolDurations,
             label: "Show tool-call durations",
-            description: "Render an elapsed-time label on every cockpit tool card. Cross-device via config.toml. Note: the underlying measurement is currently imprecise on claude-agent-acp (no `status: in_progress` signal) — durations include stream-arrival skew. Defaults to on; turn off if the inflated numbers are more confusing than useful.",
+            description: "Render an elapsed-time label on every cockpit tool card. Cross-device via config.toml. Note: the underlying measurement is currently imprecise on claude-agent-acp (no `status: in_progress` signal); durations include stream-arrival skew. Defaults to on; turn off if the inflated numbers are more confusing than useful.",
             value: FieldValue::Bool(show_tool_durations),
             category: SettingsCategory::Cockpit,
             has_override: std_override,

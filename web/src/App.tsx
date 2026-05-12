@@ -450,7 +450,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
         onDiff: () => toggleDiff(),
         // Escape closes local UI surfaces only (dialogs, palette,
         // wizard, settings, help, file viewer). Never wire this to
-        // cockpit.cancelPrompt — Claude Code CLI does that and stray
+        // cockpit.cancelPrompt; Claude Code CLI does that and stray
         // Escape presses kill in-flight turns the user didn't mean to
         // abort. Cancel/stop must stay behind an explicit gesture
         // (the assistant-ui Stop button in the composer).

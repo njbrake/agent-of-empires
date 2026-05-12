@@ -67,7 +67,7 @@ export interface SessionUsage {
 export interface AvailableCommand {
   name: string;
   description: string;
-  /** True when ACP reported an `Unstructured` input spec — i.e. the
+  /** True when ACP reported an `Unstructured` input spec; i.e. the
    *  command takes free-form arguments after the name. The composer
    *  inserts a trailing space and leaves the cursor in place when
    *  this is true so the user can keep typing. */
@@ -104,7 +104,7 @@ export type CockpitEvent =
         content: string;
         /** Server-side ISO-8601 wall clock at which the completion
          *  was minted. Used to stamp the activity row's `at` so the
-         *  duration label survives page reload — without it, the
+         *  duration label survives page reload; without it, the
          *  reducer would assign `new Date()` at replay time and the
          *  measured duration would count from "now". Optional for
          *  backward compatibility with events persisted before this
@@ -514,7 +514,7 @@ export function applyEvent(
     }
     // Some upstream slash commands (e.g. /usage, /status, /memory in
     // claude-agent-acp) advertise via available_commands_update but
-    // produce no agent_message_chunk and no tool calls when invoked —
+    // produce no agent_message_chunk and no tool calls when invoked;
     // see https://github.com/agentclientprotocol/claude-agent-acp/issues/642.
     // Detect that case and append a notice row. The `turnHasOutput`
     // flag is flipped by every output-producing handler and reset by
@@ -542,7 +542,7 @@ export function applyEvent(
     // dispatched a moment ago: find the OLDEST matching un-promoted
     // user_prompt with the same text and promote it to the
     // authoritative seq-based id. Walking oldest-first matters when
-    // the user submits the same text twice in quick succession — the
+    // the user submits the same text twice in quick succession; the
     // first server echo must promote the first optimistic row, not
     // the second, so the seq order matches the submission order.
     const matchIdx = next.activity.findIndex(
@@ -570,7 +570,7 @@ export function applyEvent(
     next.startupError = null;
     next.lastError = null;
     next.turnActive = true;
-    // New turn — reset the no-output detector so Stopped fires the
+    // New turn; reset the no-output detector so Stopped fires the
     // empty-output notice if the agent produces nothing.
     next.turnHasOutput = false;
     // A fresh prompt means the worker is alive again; clear the
@@ -601,7 +601,7 @@ export function applyEvent(
     return next;
   }
   if ("SessionContextReset" in event) {
-    // session/load failed and the agent fell back to session/new — its
+    // session/load failed and the agent fell back to session/new; its
     // context window is empty. Clear the now-stale token-usage hint so
     // the composer footer doesn't keep showing the previous run's
     // "75k / 200k" until the next UsageUpdate arrives.
@@ -611,7 +611,7 @@ export function applyEvent(
     // session/load failing on the next spawn is expected, not an
     // incident the user needs to know about. Events arrive in seq
     // order, so checking `activity` here captures "any prompt with a
-    // lower seq than this reset" — later prompts won't retroactively
+    // lower seq than this reset"; later prompts won't retroactively
     // surface the suppressed row.
     const hasPriorPrompt = next.activity.some((r) => r.kind === "user_prompt");
     if (!hasPriorPrompt) {

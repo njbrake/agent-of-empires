@@ -395,7 +395,7 @@ pub struct ServerAbout {
     /// `PATCH /api/cockpit/master`.
     pub cockpit_master_enabled: bool,
     /// Whether the server process has `AOE_EXPERIMENTAL_COCKPIT=1` set.
-    /// Read-only from the web — flipping requires restarting `aoe serve`
+    /// Read-only from the web; flipping requires restarting `aoe serve`
     /// with the env var set.
     pub cockpit_env_enabled: bool,
     /// Resolved value of `cockpit.show_tool_durations` from the active

@@ -144,14 +144,14 @@ interface CardChromeProps {
    *  `useCockpitPrefs`). Default on; cross-device because the setting
    *  lives in the daemon's config file rather than the browser.
    *
-   *  IMPORTANT — the measurement is imprecise on claude-agent-acp.
+   *  IMPORTANT; the measurement is imprecise on claude-agent-acp.
    *  The adapter emits each ACP `tool_call` frame at the wall time
    *  the model streams its tool_use chunk, which is typically well
    *  before the Claude Code SDK dispatches the subprocess; it also
    *  never emits `status: "in_progress"` so we cannot re-stamp
    *  `started_at` to the real subprocess start. Parallel
    *  `sleep 1` / `sleep 2` / `sleep 5` therefore render as
-   *  ~3s / ~3.5s / ~6s instead of ~1s / ~2s / ~5s — durations
+   *  ~3s / ~3.5s / ~6s instead of ~1s / ~2s / ~5s; durations
    *  include stream-arrival skew rather than just runtime. Once
    *  upstream gains a trustworthy "subprocess started" signal
    *  (either a `status: in_progress` frame or a `_meta` flag), the
@@ -243,11 +243,11 @@ function DurationLabel({
   const ms = Math.max(0, end - start);
   const text = formatDurationMs(ms);
   const tooltip = running
-    ? `running ${text} — counts from the agent's first tool_call frame, which can fire before the subprocess actually starts (upstream limitation)`
-    : `${text} — counts from the agent's first tool_call frame, which can fire before the subprocess actually starts (upstream limitation)`;
+    ? `running ${text}; counts from the agent's first tool_call frame, which can fire before the subprocess actually starts (upstream limitation)`
+    : `${text}; counts from the agent's first tool_call frame, which can fire before the subprocess actually starts (upstream limitation)`;
   return (
     <span
-      className="hidden md:inline text-[11px] text-text-dim tabular-nums"
+      className="text-[11px] text-text-dim tabular-nums"
       title={tooltip}
     >
       {text}
@@ -303,7 +303,7 @@ function CopyButton({ text }: { text: string }) {
 /** If the input is a single outer markdown code fence (```lang ... ```),
  *  strip the fence and return the inner body plus the fence's language
  *  hint. Tool output emitted by ACP agents (Claude in particular) is
- *  routinely pre-wrapped in fenced blocks like ```console ...``` — left
+ *  routinely pre-wrapped in fenced blocks like ```console ...```; left
  *  un-stripped, the cards render literal backticks above the content. */
 function unwrapMarkdownFence(text: string): {
   text: string;
@@ -335,7 +335,7 @@ function HighlightedBlock({
 
   // ANSI fast path: when the text carries SGR escape sequences (e.g.
   // `gls --color=always`, `git status --color=always`), Shiki's bash
-  // grammar can't handle them — it would either render the literal
+  // grammar can't handle them; it would either render the literal
   // `[01;34m` noise or fail to highlight at all. Render the styled
   // segments directly instead.
   const ansi = hasAnsi(shown);
@@ -356,7 +356,7 @@ function HighlightedBlock({
         });
         setHtml(out);
       } catch {
-        // unknown language — fall back to plain
+        // unknown language; fall back to plain
       }
     })();
     return () => {
@@ -467,7 +467,7 @@ function ExecuteToolCard({ tool, result }: Props) {
               {description}
             </div>
           )}
-          {/* Full command — the chrome's primary slot is single-line
+          {/* Full command; the chrome's primary slot is single-line
               truncated, so we surface the untruncated command here so
               users can read and copy it. Shiki's bash grammar gives
               the same coloring as our markdown code blocks. */}
@@ -594,7 +594,7 @@ function EditToolCard({ tool, result }: Props) {
   );
 }
 
-/** Theme overrides for react-diff-viewer-continued — drag its colors
+/** Theme overrides for react-diff-viewer-continued; drag its colors
  *  toward our zinc/brand palette so the diff doesn't look like it was
  *  pasted in from another app. */
 const DIFF_STYLES = {
@@ -867,7 +867,7 @@ function TodoUpdateCard({ tool, result, todos }: TodoCardProps) {
         <>
           <span>{todos.length} items</span>
           {breakdown.length > 0 && (
-            <span className="ml-2 text-text-dim">— {breakdown.join(" · ")}</span>
+            <span className="ml-2 text-text-dim">· {breakdown.join(" · ")}</span>
           )}
         </>
       }
@@ -924,7 +924,12 @@ interface SkillProps extends Props {
 function SkillToolCard({ tool, result, skillName }: SkillProps) {
   const status = statusFor(result);
   const [open, setOpen] = useState(false);
-  const args = parseJsonObject(tool.args_preview);
+  // Memo on the raw string so downstream memos see a stable args reference
+  // and don't recompute every render.
+  const args = useMemo(
+    () => parseJsonObject(tool.args_preview),
+    [tool.args_preview],
+  );
   const output = result?.text ?? "";
 
   // Pretty-printed input minus the bookkeeping _aoe_title field so the
@@ -984,7 +989,7 @@ interface ToolGroupItem {
 }
 
 /** Collapsible block summarising a run of tool calls between agent
- *  text. The activity log is unchanged — this is presentation only,
+ *  text. The activity log is unchanged; this is presentation only,
  *  matching how the Claude Code CLI condenses silent investigation
  *  phases. See #1057. */
 export function ToolGroupCard({ items }: { items: ToolGroupItem[] }) {
@@ -1026,7 +1031,7 @@ export function ToolGroupCard({ items }: { items: ToolGroupItem[] }) {
         <>
           <span>{items.length} actions</span>
           {breakdown && (
-            <span className="ml-2 text-text-dim">— {breakdown}</span>
+            <span className="ml-2 text-text-dim">· {breakdown}</span>
           )}
         </>
       }
@@ -1091,7 +1096,12 @@ interface McpProps extends Props {
 function McpToolCard({ tool, result, server, verb }: McpProps) {
   const status = statusFor(result);
   const [open, setOpen] = useState(false);
-  const args = parseJsonObject(tool.args_preview);
+  // Memo on the raw string so downstream memos see a stable args reference
+  // and don't recompute every render.
+  const args = useMemo(
+    () => parseJsonObject(tool.args_preview),
+    [tool.args_preview],
+  );
   const output = result?.text ?? "";
 
   // Pull a short single-field arg preview for the header so the user
@@ -1135,7 +1145,7 @@ function McpToolCard({ tool, result, server, verb }: McpProps) {
         <>
           {humanizeVerb(verb)}
           {argPreview && (
-            <span className="ml-2 text-text-dim">— {argPreview}</span>
+            <span className="ml-2 text-text-dim">· {argPreview}</span>
           )}
         </>
       }

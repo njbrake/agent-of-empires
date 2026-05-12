@@ -289,7 +289,7 @@ pub fn enrich_worktree_remove_error(stderr: &str, worktree_path: &Path) -> Strin
 
 /// Returns true if a `git worktree remove` stderr indicates the failure was
 /// caused by initialised submodules. Git refuses to remove a worktree whose
-/// checkout still has live submodule entries, even with `--force` — submodule
+/// checkout still has live submodule entries, even with `--force`; submodule
 /// state lives under `.git/worktrees/<name>/modules/` and orphaning it would
 /// corrupt the main repo.
 pub fn is_submodule_blocker(error: &str) -> bool {
@@ -301,8 +301,8 @@ pub fn is_submodule_blocker(error: &str) -> bool {
 /// will let the worktree go. Best-effort and idempotent: a no-op when the
 /// worktree has no `.gitmodules`, no initialised submodules, or git itself
 /// isn't reachable. The `-f` on `submodule deinit` is "force-deinit modified
-/// submodules" — distinct from aoe's worktree-level `force`, which means
-/// "discard uncommitted/untracked files in the worktree itself" — so applying
+/// submodules"; distinct from aoe's worktree-level `force`, which means
+/// "discard uncommitted/untracked files in the worktree itself"; so applying
 /// it here doesn't conflate the two semantics.
 pub fn deinit_submodules_if_present(worktree_path: &Path) {
     if !worktree_path.join(".gitmodules").exists() {
@@ -514,7 +514,7 @@ pub fn remove_managed_worktree(
             errors.push(format!("Worktree: {}", e));
         }
     } else {
-        // Submodules are a normal repo state, not a destructive override —
+        // Submodules are a normal repo state, not a destructive override;
         // `git worktree remove` refuses to delete a worktree with live
         // submodules even with --force, so deinit them ourselves before
         // asking git to remove the checkout. No-op when the worktree has no

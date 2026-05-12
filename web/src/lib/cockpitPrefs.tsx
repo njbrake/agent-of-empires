@@ -17,7 +17,7 @@ import { createContext, useContext, type ReactNode } from "react";
 export interface CockpitPrefs {
   /** Resolved `cockpit.show_tool_durations` from the active profile.
    *  When true, tool-card headers display a per-call elapsed-time
-   *  label. Imprecise on claude-agent-acp today — see
+   *  label. Imprecise on claude-agent-acp today; see
    *  `CardChromeProps.startedAt` in ToolCards.tsx for the upstream
    *  limitation. */
   showToolDurations: boolean;

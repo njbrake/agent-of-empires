@@ -549,7 +549,7 @@ export function SettingsView({
 
             {offline && (
               <div className="text-sm text-status-error bg-status-error/10 rounded-lg p-3">
-                {OFFLINE_TITLE} — toggles will not save while disconnected.
+                {OFFLINE_TITLE}; toggles will not save while disconnected.
               </div>
             )}
             <fieldset
@@ -682,7 +682,7 @@ function CockpitSettings({
             Persists to <code>config.toml</code> as{" "}
             <code>cockpit.show_tool_durations</code>; cross-device. Renders the elapsed-time label on every
             cockpit tool card. The underlying measurement is currently imprecise on{" "}
-            <code>claude-agent-acp</code> (no <code>status: in_progress</code> signal) — durations include
+            <code>claude-agent-acp</code> (no <code>status: in_progress</code> signal); durations include
             stream-arrival skew rather than just runtime, so for example a parallel{" "}
             <code>sleep 1</code> can read as ~3 s. Turn off if the inflated numbers are more confusing than
             useful.
@@ -690,6 +690,8 @@ function CockpitSettings({
         </div>
         <button
           type="button"
+          aria-pressed={showToolDurations}
+          aria-label="Show tool-call durations"
           onClick={async () => {
             const next = !showToolDurations;
             onSaveField("cockpit", "show_tool_durations", next);

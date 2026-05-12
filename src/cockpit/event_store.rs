@@ -109,7 +109,7 @@ impl EventStore {
     }
 
     /// Append one event. Idempotent on duplicate (session_id, seq) thanks
-    /// to the primary key — re-publishing the same seq is a no-op.
+    /// to the primary key; re-publishing the same seq is a no-op.
     /// Returns Err when the event was *not* persisted, so the caller can
     /// surface the gap (e.g. publish a `Lagged` frame on the broadcast
     /// channel) instead of letting the on-disk log silently fall behind
@@ -136,7 +136,7 @@ impl EventStore {
             // Logged at trace because the cause is usually a benign retry
             // (publish_user_prompt + replay drain re-publishing) rather
             // than a bug, but we still want a breadcrumb. Per-event lines
-            // are too noisy to live at debug — they bury the lifecycle
+            // are too noisy to live at debug; they bury the lifecycle
             // signal in debug.log during an active turn.
             trace!(
                 target: "cockpit.event_store",
@@ -163,7 +163,7 @@ impl EventStore {
         // Snapshot events (the slash-command list, mode list, ACP session
         // id) are exempt from pruning: the agent only emits them once per
         // session lifecycle, near the start of the seq range, so a long
-        // session blows past the cap and evicts them — leaving the
+        // session blows past the cap and evicts them; leaving the
         // composer's `/` palette and the mode picker empty on reconnect.
         // See #1049. The `event_json NOT LIKE` clauses match the
         // externally-tagged JSON discriminant for each pinned variant.
@@ -194,7 +194,7 @@ impl EventStore {
                     );
                 }
                 Err(e) => {
-                    // Prune failure isn't fatal — the row is recorded,
+                    // Prune failure isn't fatal; the row is recorded,
                     // we just exceed the cap until the next prune
                     // succeeds. Log + swallow so callers don't have to
                     // distinguish "record failed" from "trim failed".

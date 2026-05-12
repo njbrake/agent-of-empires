@@ -232,7 +232,7 @@ pub enum Event {
         /// Server-side wall-clock time the completion frame was minted.
         /// Carried on the event so the frontend reducer can stamp the
         /// matching `tool_complete` activity row with the REAL
-        /// completion time rather than `new Date()` at replay time —
+        /// completion time rather than `new Date()` at replay time;
         /// without this, page-reload after a long delay made every
         /// completed tool's duration count from "now", inflating the
         /// label from seconds to minutes/hours. Events persisted
@@ -267,7 +267,7 @@ pub enum Event {
         #[serde(default)]
         args_preview: Option<String>,
         /// Re-stamps the tool's start time. Set when the agent reports
-        /// `ToolCallStatus::InProgress` — claude-agent-acp emits the
+        /// `ToolCallStatus::InProgress`; claude-agent-acp emits the
         /// initial `tool_call` notification eagerly (often well before
         /// the underlying command actually starts running), so the
         /// duration label (#1060) would otherwise count adapter
@@ -319,7 +319,7 @@ pub enum Event {
     /// Full snapshot of the slash commands the agent advertises. Comes
     /// from ACP `SessionUpdate::AvailableCommandsUpdate`. Replaces the
     /// previous list (the agent re-broadcasts the full set whenever it
-    /// changes — e.g. after plugin enable/disable).
+    /// changes; e.g. after plugin enable/disable).
     AvailableCommandsUpdated {
         commands: Vec<AvailableCommand>,
     },

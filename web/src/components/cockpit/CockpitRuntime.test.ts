@@ -41,7 +41,7 @@ function messageRow(text: string, id = "m1"): ActivityRow {
   };
 }
 
-describe("activityToThreadMessages — tool-call grouping (#1057)", () => {
+describe("activityToThreadMessages; tool-call grouping (#1057)", () => {
   it("folds a run of ≥3 consecutive tool calls into one group", () => {
     const messages = activityToThreadMessages(
       [
