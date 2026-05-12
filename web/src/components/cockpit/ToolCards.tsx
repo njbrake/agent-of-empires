@@ -30,6 +30,7 @@ import { hasAnsi, parseAnsi, type AnsiStyle } from "../../lib/ansi";
 import { parseJsonObject, pickFirst, pickStr } from "../../lib/cockpitArgs";
 import { useCockpitPrefs } from "../../lib/cockpitPrefs";
 import type { ActivityRow, ToolCall } from "../../lib/cockpitTypes";
+import { lineDiffCounts } from "../../lib/diffStats";
 import {
   classifyMcp,
   humanizeServer,
@@ -564,9 +565,11 @@ function EditToolCard({ tool, result }: Props) {
   const hasDiff = oldText !== "" || newText !== "";
   const verb = oldText ? "edit" : "write";
 
-  const adds = newText ? newText.split("\n").length : 0;
-  const dels = oldText ? oldText.split("\n").length : 0;
-  const meta = hasDiff && (
+  const { adds, dels } = useMemo(
+    () => lineDiffCounts(oldText, newText),
+    [oldText, newText],
+  );
+  const meta = hasDiff && (adds > 0 || dels > 0) && (
     <span className="hidden md:inline text-[11px]">
       <span className="text-emerald-400">+{adds}</span>{" "}
       <span className="text-rose-400">−{dels}</span>
