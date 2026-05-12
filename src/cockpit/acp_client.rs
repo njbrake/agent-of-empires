@@ -1402,20 +1402,17 @@ fn map_update_to_events(update: SessionUpdate) -> Vec<Event> {
                 .as_ref()
                 .map(|blocks| extract_tool_content_text(blocks))
                 .unwrap_or_default();
-            // claude-agent-acp rides Bash output on
-            // `_meta.terminal_output: { terminal_id, data }` (codex-acp
-            // convention) when the client has advertised the matching
-            // capability. It does NOT populate `fields.content` for
-            // these updates, so we have to look at `_meta` to pick them
-            // up. Older adapters serialised the chunk as a bare string;
-            // accept both shapes. See #1075.
-            let terminal_chunk = update.meta.as_ref().and_then(|m| {
-                let v = m.get("terminal_output")?;
-                if let Some(s) = v.as_str() {
-                    return Some(s.to_owned());
-                }
-                v.get("data").and_then(|d| d.as_str()).map(|s| s.to_owned())
-            });
+            // claude-agent-acp rides per-chunk Bash output on
+            // `_meta.terminal_output: "<chunk>"` (codex-acp convention)
+            // when the client has advertised the matching capability.
+            // It does NOT populate `fields.content` for these chunks,
+            // so we have to look at `_meta` to pick them up. See #1075.
+            let terminal_chunk = update
+                .meta
+                .as_ref()
+                .and_then(|m| m.get("terminal_output"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_owned());
             let new_args_preview = update.fields.raw_input.as_ref().map(preview_args);
             let new_title = update.fields.title.clone();
             let mut events: Vec<Event> = Vec::new();
