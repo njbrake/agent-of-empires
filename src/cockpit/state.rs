@@ -64,6 +64,13 @@ pub struct ToolCall {
     /// 16 KB cap applied at ingest, control chars stripped.
     pub args_preview: String,
     pub started_at: DateTime<Utc>,
+    /// When the agent launches a sub-agent (Claude's Task tool) the
+    /// adapter rides `_meta.claudeCode.parentToolUseId` along on the
+    /// child tool calls. We thread it through here so the cockpit can
+    /// render sub-tasks under their parent Task instead of as a flat
+    /// stream. None for top-level tool calls. See #1041.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_tool_call_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -533,6 +540,7 @@ mod tests {
             kind: "read".into(),
             args_preview: "{\"path\":\"x\"}".into(),
             started_at: Utc::now(),
+            parent_tool_call_id: None,
         };
         s.apply_event(Event::ToolCallStarted {
             tool_call: tc.clone(),

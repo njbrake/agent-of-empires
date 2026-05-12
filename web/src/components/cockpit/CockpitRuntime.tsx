@@ -293,6 +293,9 @@ class AssistantBuilder {
     }
     if (tool.name) argsObj._aoe_title = tool.name;
     if (tool.started_at) argsObj._aoe_started_at = tool.started_at;
+    if (tool.parent_tool_call_id) {
+      argsObj._aoe_parent_tool_call_id = tool.parent_tool_call_id;
+    }
     this.parts.push({
       type: "tool-call",
       toolCallId: tool.id,

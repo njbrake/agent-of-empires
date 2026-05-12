@@ -130,6 +130,34 @@ describe("activityToThreadMessages; tool-call grouping (#1057)", () => {
     expect(toolParts).toHaveLength(4);
   });
 
+  it("smuggles parent_tool_call_id through args_preview as _aoe_parent_tool_call_id (#1041)", () => {
+    const childTool: ToolCall = {
+      id: "ch-1",
+      name: "Read",
+      kind: "read",
+      args_preview: JSON.stringify({ path: "/tmp/x" }),
+      started_at: "2026-05-12T00:00:00Z",
+      parent_tool_call_id: "task-parent-1",
+    };
+    const row: ActivityRow = {
+      id: "start-ch-1",
+      kind: "tool_start",
+      text: "Read",
+      toolCallId: "ch-1",
+      tool: childTool,
+      at: "2026-05-12T00:00:00Z",
+    };
+    const messages = activityToThreadMessages([userRow("go"), row], false);
+    const assistant = messages.find((m) => m.role === "assistant")!;
+    const parts = assistant.content as Array<{
+      type: string;
+      argsText?: string;
+    }>;
+    const child = parts.find((p) => p.type === "tool-call")!;
+    const parsed = JSON.parse(child.argsText!);
+    expect(parsed._aoe_parent_tool_call_id).toBe("task-parent-1");
+  });
+
   it("does not group across user-prompt boundaries (separate messages)", () => {
     const messages = activityToThreadMessages(
       [

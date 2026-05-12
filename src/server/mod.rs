@@ -1967,6 +1967,7 @@ mod tests {
             kind: "execute".into(),
             args_preview: "{}".into(),
             started_at: chrono::Utc::now(),
+            parent_tool_call_id: None,
         };
         assert_eq!(
             derive_cockpit_status(&Event::UserPromptSent { text: "hi".into() }),

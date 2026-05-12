@@ -1235,6 +1235,23 @@ fn is_compact_completion(text: &str) -> bool {
     text.contains("Compacting completed.")
 }
 
+/// Extract a sub-agent parent tool-call id from an ACP `_meta` blob.
+///
+/// claude-agent-acp tags child tool calls launched by Claude's `Task`
+/// tool with `_meta.claudeCode.parentToolUseId` pointing at the parent
+/// Task's `tool_call_id`. Other adapters may grow their own keys
+/// later; this helper only knows about the `claudeCode` namespace for
+/// now. See #1041.
+fn parent_tool_use_id_from_meta(
+    meta: &Option<agent_client_protocol::schema::Meta>,
+) -> Option<String> {
+    meta.as_ref()
+        .and_then(|m| m.get("claudeCode"))
+        .and_then(|cc| cc.get("parentToolUseId"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_owned())
+}
+
 /// Map an ACP `SessionUpdate` to the cockpit's typed `Event`. Variants we
 /// don't yet handle pass through as `RawAgentUpdate` so UI clients can at
 /// least see them; we'll narrow these as the schema stabilises.
@@ -1283,12 +1300,14 @@ fn map_update_to_events(update: SessionUpdate) -> Vec<Event> {
         SessionUpdate::ToolCall(tc) => {
             let raw_args = tc.raw_input.clone().unwrap_or(serde_json::Value::Null);
             let args_preview = preview_args(&raw_args);
+            let parent_tool_call_id = parent_tool_use_id_from_meta(&tc.meta);
             let tool_call = ToolCall {
                 id: tc.tool_call_id.0.to_string(),
                 name: tc.title.clone(),
                 kind: tool_kind_str(&tc.kind),
                 args_preview: args_preview.clone(),
                 started_at: chrono::Utc::now(),
+                parent_tool_call_id,
             };
             let mut events = vec![Event::ToolCallStarted { tool_call }];
             if is_destructive(&tc.title, &args_preview) {
@@ -1423,6 +1442,7 @@ fn map_update_to_events(update: SessionUpdate) -> Vec<Event> {
                         kind: "think".to_string(),
                         args_preview,
                         started_at: now,
+                        parent_tool_call_id: None,
                     },
                 },
                 Event::PlanUpdated {
@@ -2483,6 +2503,7 @@ async fn handle_permission_request(
             .unwrap_or_else(|| "other".into()),
         args_preview,
         started_at: chrono::Utc::now(),
+        parent_tool_call_id: parent_tool_use_id_from_meta(&request.tool_call.meta),
     };
     let approval = build_approval(tool_call);
     let nonce = approval.nonce.clone();
@@ -2561,6 +2582,74 @@ mod tests {
         };
         let result = AcpClient::spawn(config, CockpitSessionId("s-1".into())).await;
         assert!(matches!(result, Err(AcpError::Spawn(_))));
+    }
+
+    #[test]
+    fn parent_tool_use_id_from_meta_reads_claudecode_namespace() {
+        let mut meta = serde_json::Map::new();
+        meta.insert(
+            "claudeCode".to_string(),
+            serde_json::json!({ "parentToolUseId": "tc-parent-7" }),
+        );
+        assert_eq!(
+            parent_tool_use_id_from_meta(&Some(meta)),
+            Some("tc-parent-7".to_string())
+        );
+    }
+
+    #[test]
+    fn parent_tool_use_id_from_meta_returns_none_for_unrelated_keys() {
+        let mut meta = serde_json::Map::new();
+        meta.insert("terminalExit".to_string(), serde_json::json!({ "code": 0 }));
+        assert!(parent_tool_use_id_from_meta(&Some(meta)).is_none());
+    }
+
+    #[test]
+    fn parent_tool_use_id_from_meta_returns_none_for_none_meta() {
+        assert!(parent_tool_use_id_from_meta(&None).is_none());
+    }
+
+    #[test]
+    fn parent_tool_use_id_from_meta_returns_none_when_value_not_a_string() {
+        let mut meta = serde_json::Map::new();
+        meta.insert(
+            "claudeCode".to_string(),
+            serde_json::json!({ "parentToolUseId": 42 }),
+        );
+        assert!(parent_tool_use_id_from_meta(&Some(meta)).is_none());
+    }
+
+    #[test]
+    fn map_update_to_events_threads_parent_tool_call_id() {
+        use agent_client_protocol::schema::{SessionUpdate, ToolCall as AcpToolCall};
+        let mut meta = serde_json::Map::new();
+        meta.insert(
+            "claudeCode".to_string(),
+            serde_json::json!({ "parentToolUseId": "tc-task-1" }),
+        );
+        let mut tc = AcpToolCall::new("tc-child-1", "Read");
+        tc.raw_input = Some(serde_json::json!({"path": "x"}));
+        tc.meta = Some(meta);
+        let events = map_update_to_events(SessionUpdate::ToolCall(tc));
+        let started = events.iter().find_map(|e| match e {
+            Event::ToolCallStarted { tool_call } => Some(tool_call),
+            _ => None,
+        });
+        let started = started.expect("ToolCallStarted emitted");
+        assert_eq!(started.parent_tool_call_id.as_deref(), Some("tc-task-1"),);
+    }
+
+    #[test]
+    fn map_update_to_events_leaves_parent_none_when_meta_missing() {
+        use agent_client_protocol::schema::{SessionUpdate, ToolCall as AcpToolCall};
+        let mut tc = AcpToolCall::new("tc-1", "Read");
+        tc.raw_input = Some(serde_json::json!({"path": "x"}));
+        let events = map_update_to_events(SessionUpdate::ToolCall(tc));
+        let started = events.iter().find_map(|e| match e {
+            Event::ToolCallStarted { tool_call } => Some(tool_call),
+            _ => None,
+        });
+        assert!(started.unwrap().parent_tool_call_id.is_none());
     }
 
     #[test]

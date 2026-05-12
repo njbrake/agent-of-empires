@@ -36,6 +36,12 @@ export interface ToolCall {
   kind: string;
   args_preview: string;
   started_at: string; // ISO-8601 from chrono
+  /** When the agent launches a sub-agent (Claude's Task tool), the
+   *  adapter rides `_meta.claudeCode.parentToolUseId` along on the
+   *  child tool calls. Threaded through here so the cockpit can group
+   *  sub-tools under their parent Task. Undefined for top-level
+   *  calls. See #1041. */
+  parent_tool_call_id?: string;
 }
 
 export interface DiffPreview {

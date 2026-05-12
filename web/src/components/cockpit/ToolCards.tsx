@@ -7,7 +7,13 @@
 // surface the key fields (path, command, query) inline in the card
 // header and put output in a syntax-highlighted body.
 
-import { useEffect, useMemo, useState, type CSSProperties } from "react";
+import {
+  useEffect,
+  useMemo,
+  useState,
+  type CSSProperties,
+  type ReactNode,
+} from "react";
 import {
   Brain,
   ChevronDown,
@@ -50,12 +56,33 @@ interface Props {
 
 /** Keys CockpitRuntime smuggles through `args_preview` for renderer
  *  bookkeeping (the ACP title, the real `started_at` for the duration
- *  label). Excluded from any user-visible input JSON dumps. */
+ *  label, the sub-agent parent tool-call id). Excluded from any
+ *  user-visible input JSON dumps. */
 function isCockpitBookkeepingKey(key: string): boolean {
-  return key === "_aoe_title" || key === "_aoe_started_at";
+  return (
+    key === "_aoe_title" ||
+    key === "_aoe_started_at" ||
+    key === "_aoe_parent_tool_call_id"
+  );
+}
+
+/** Read the smuggled `_aoe_parent_tool_call_id` from a tool's
+ *  args_preview. Present when the tool is a Claude sub-agent (Task)
+ *  child; falsy on top-level tools. See #1041. */
+function hasSubagentParent(tool: ToolCall): boolean {
+  const args = parseJsonObject(tool.args_preview);
+  return Boolean(pickStr(args, "_aoe_parent_tool_call_id"));
 }
 
 export function ToolCard({ tool, result }: Props) {
+  const card = renderToolCard(tool, result);
+  if (hasSubagentParent(tool)) {
+    return <SubagentChildWrap>{card}</SubagentChildWrap>;
+  }
+  return card;
+}
+
+function renderToolCard(tool: ToolCall, result?: ActivityRow) {
   const memory = classifyMemory(tool);
   if (memory.isMemory) {
     return <MemoryCard tool={tool} result={result} hit={memory} />;
@@ -100,6 +127,22 @@ export function ToolCard({ tool, result }: Props) {
     default:
       return <GenericToolCard tool={tool} result={result} />;
   }
+}
+
+/** Indented wrap that marks a tool card as a sub-agent (Claude Task)
+ *  child. Keeps the activity feed flat (no tree restructuring yet,
+ *  see #1041 layer B) but gives the user a scannable cue that the
+ *  call belongs to a sub-task. */
+function SubagentChildWrap({ children }: { children: ReactNode }) {
+  return (
+    <div className="border-l-2 border-accent-600/60 pl-2 ml-1">
+      <div className="mb-0.5 inline-flex items-center gap-1 text-[10px] uppercase tracking-wider text-accent-600">
+        <span>↳</span>
+        <span>subagent</span>
+      </div>
+      {children}
+    </div>
+  );
 }
 
 /* ── Shared header bits ──────────────────────────────────────────── */
