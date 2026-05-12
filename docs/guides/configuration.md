@@ -209,17 +209,6 @@ notify_in_cli = true
 | `check_interval_hours` | `24` | Hours between update checks |
 | `notify_in_cli` | `true` | Show update notifications in CLI output |
 
-## Claude
-
-```toml
-[claude]
-config_dir = "~/.claude"
-```
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `config_dir` | (none) | Custom Claude Code config directory. Supports `~/` prefix. |
-
 ## Profiles
 
 Profiles provide separate workspaces with their own sessions and groups. Each profile can override any of the settings above.

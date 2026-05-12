@@ -134,12 +134,17 @@ pub async fn run(profile: &str, args: RemoveArgs) -> Result<()> {
 
                 match GitWorktree::new(main_repo.clone()) {
                     Ok(git_wt) => {
+                        // --keep-container means the sandbox fallback
+                        // must not surprise-tear-down the container to
+                        // free a permission-bound worktree.
+                        let allow_container_removal = !args.keep_container;
                         match remove_managed_worktree(
                             &git_wt,
                             &worktree_path,
                             &main_repo,
                             &inst,
                             args.force,
+                            allow_container_removal,
                         ) {
                             Ok(()) => {
                                 worktree_removed = true;
