@@ -1948,6 +1948,73 @@ mod tests {
         }
     }
 
+    /// Capacity must count detached (registry-only) workers, not just
+    /// in-memory ones. Issue #1037 called this out explicitly: a fresh
+    /// daemon spawn must not race the reconciler and over-spawn while
+    /// it's still attaching to live runners. Without this, two
+    /// consecutive `aoe serve` invocations could push the worker count
+    /// past `max_concurrent_workers`.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn capacity_counts_detached_registry_entries() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        // SAFETY: serialised by `#[serial]`; isolating HOME keeps this
+        // test's registry writes away from the developer's real
+        // dev-mode entries (and any other tests in this file).
+        unsafe {
+            std::env::set_var("HOME", tmp.path());
+            std::env::set_var("XDG_CONFIG_HOME", tmp.path().join(".config"));
+        }
+        let sink = VecSink::new();
+        let sup = Supervisor::with_capacity(sink, 1);
+
+        // No in-memory workers. Just a single registry entry that
+        // `is_record_live` will accept: PID = current process (so
+        // pid_alive is true) and a real file at the socket path (so
+        // socket_exists is true).
+        let registry_dir = crate::cockpit::worker_registry::workers_dir().unwrap();
+        let socket_path = registry_dir.join("detached-1.sock");
+        std::fs::write(&socket_path, b"").unwrap();
+        let record = crate::cockpit::worker_registry::WorkerRecord::new(
+            "detached-1".into(),
+            std::process::id(),
+            socket_path,
+            "claude-code".into(),
+            std::env::temp_dir(),
+            None,
+            vec![],
+            vec![],
+            None,
+        );
+        crate::cockpit::worker_registry::save(&record).unwrap();
+
+        // Pre-condition: registry entry must be live for the capacity
+        // path to count it. If this fails, the test setup is wrong.
+        assert!(
+            crate::cockpit::worker_registry::is_record_live(&record),
+            "registry record must be live for the capacity path to count it"
+        );
+
+        let result = sup
+            .spawn(SpawnRequest {
+                session_id: "fresh".into(),
+                agent: "claude-code".into(),
+                cwd: std::env::temp_dir(),
+                additional_dirs: vec![],
+                provider_env: vec![],
+                model: None,
+                stored_acp_session_id: None,
+            })
+            .await;
+        match result {
+            Err(SupervisorError::CapacityFull { current, limit }) => {
+                assert_eq!(current, 1, "detached registry entry must count");
+                assert_eq!(limit, 1);
+            }
+            other => panic!("expected CapacityFull, got {other:?}"),
+        }
+    }
+
     /// `forget_session` drops the seq counter so the next conversation
     /// (e.g. cockpit_disable → cockpit_enable) starts fresh from seq=1.
     #[tokio::test]

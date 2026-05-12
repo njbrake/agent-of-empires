@@ -50,14 +50,24 @@ fn shim_path() -> PathBuf {
 /// awareness. Accepts exactly one connection per call so we don't have
 /// to coordinate listener lifetime with the test's drain logic.
 ///
+/// If `preseed_session_id` is `Some`, the shim pre-creates that session
+/// id so `AcpClient::attach` (Resume mode) can immediately send prompts
+/// without going through `session/new`.
+///
 /// Returns the listener path; the bridge task is detached.
-async fn spawn_shim_socket_bridge() -> (PathBuf, tempfile::TempDir) {
+async fn spawn_shim_socket_bridge_with_preseed(
+    preseed_session_id: Option<&str>,
+) -> (PathBuf, tempfile::TempDir) {
     let shim = shim_path();
     let temp = tempfile::tempdir().unwrap();
     let socket_path = temp.path().join("runner.sock");
 
-    let mut shim_proc = Command::new("node")
-        .arg(&shim)
+    let mut cmd = Command::new("node");
+    cmd.arg(&shim);
+    if let Some(id) = preseed_session_id {
+        cmd.env("SHIM_PRESEED_SESSION_ID", id);
+    }
+    let mut shim_proc = cmd
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
@@ -87,6 +97,10 @@ async fn spawn_shim_socket_bridge() -> (PathBuf, tempfile::TempDir) {
     });
 
     (socket_path, temp)
+}
+
+async fn spawn_shim_socket_bridge() -> (PathBuf, tempfile::TempDir) {
+    spawn_shim_socket_bridge_with_preseed(None).await
 }
 
 async fn drain_for_stopped_reason(client: &mut AcpClient, deadline: Instant) -> Option<String> {
@@ -174,4 +188,71 @@ async fn attach_idle_session_does_not_synthesize_stopped() {
         stopped.is_none(),
         "watchdog must stay disarmed when in_flight_turn=false; got Stopped reason={stopped:?}"
     );
+}
+
+/// End-to-end socket transport: attach to the runner-style bridge,
+/// send a prompt, and confirm the shim's response round-trips back as
+/// `AgentMessageChunk` + `Stopped` events. This replaces the
+/// `shim_agent_round_trips_via_unix_socket` test deleted in the
+/// worker-persistence redesign. It does NOT exercise the production
+/// `spawn_runner_detached` path (which requires a built `aoe` binary
+/// with the `__cockpit-runner` subcommand registered, and so belongs
+/// in `tests/e2e/`); it does exercise everything downstream:
+/// `AcpClient` socket connection, ACP `initialize` handshake,
+/// `session/prompt` round-trip, and event mapping.
+#[tokio::test]
+async fn socket_transport_round_trips_prompt_via_attach() {
+    if !node_available() {
+        eprintln!("skipping: node not on PATH");
+        return;
+    }
+    if !shim_path().exists() {
+        eprintln!("skipping: shim missing");
+        return;
+    }
+
+    let preseed = "preseed-roundtrip-session";
+    let (socket_path, _tmp) = spawn_shim_socket_bridge_with_preseed(Some(preseed)).await;
+
+    let mut client = AcpClient::attach(
+        socket_path,
+        std::env::temp_dir(),
+        vec![],
+        preseed.into(),
+        false, // not in flight; this is a fresh round-trip
+        CockpitSessionId("roundtrip".into()),
+    )
+    .await
+    .expect("attach to bridge");
+
+    client
+        .send_prompt("hello over socket")
+        .await
+        .expect("send_prompt");
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut saw_received = false;
+    let mut saw_stopped = false;
+    while Instant::now() < deadline && !(saw_received && saw_stopped) {
+        match tokio::time::timeout(Duration::from_millis(200), client.next_event()).await {
+            Ok(Some(Event::AgentMessageChunk { text })) => {
+                if text.contains("received: hello over socket") {
+                    saw_received = true;
+                }
+            }
+            Ok(Some(Event::Stopped { .. })) => {
+                saw_stopped = true;
+            }
+            Ok(Some(_)) => continue,
+            Ok(None) => break,
+            Err(_) => continue,
+        }
+    }
+    let _ = client.shutdown().await;
+
+    assert!(
+        saw_received,
+        "shim should echo received: hello over socket via the socket transport"
+    );
+    assert!(saw_stopped, "shim should emit Stopped at end of turn");
 }
