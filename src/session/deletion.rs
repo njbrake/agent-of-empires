@@ -456,20 +456,30 @@ mod tests {
             }
         }
 
-        fn run_with_capture<F: FnOnce()>(f: F) -> Vec<String> {
+        fn run_with_capture<F: Fn()>(f: F) -> Vec<String> {
             let stages = Arc::new(Mutex::new(Vec::new()));
             let layer = StageRecorder {
                 stages: Arc::clone(&stages),
             };
             let subscriber = tracing_subscriber::registry().with(layer);
             with_default(subscriber, || {
-                // Tracing caches callsite interest globally on first hit.
-                // If a parallel test in this binary executed
-                // `perform_deletion` before us with no subscriber (e.g.
-                // the on-disk e2e tests below), the `stage` callsites
-                // got cached as never-interesting and our subscriber
-                // would never see them. Force a re-evaluation while
-                // our subscriber is the active default.
+                // Tracing's per-callsite `Interest` is cached globally on first
+                // hit. `rebuild_interest_cache()` only re-evaluates callsites
+                // that are *already* registered, so any stage callsite not yet
+                // hit at this point can still lose a registration race to a
+                // parallel test running `perform_deletion` without a subscriber
+                // (the sibling tests at lines 335/354/372 do exactly this).
+                // If they win, the callsite is cached as `Interest::never()`
+                // and our subscriber never sees that one event, while the
+                // other stages still come through. The fix is a two-pass run:
+                //   1. Warmup pass: invoke f() once while we're the default,
+                //      forcing the callsites to register under our subscriber
+                //      (or be re-evaluated to Always if already registered).
+                //   2. Clear captured stages, rebuild interest cache to fix up
+                //      anything that lost a race during warmup, then run f()
+                //      again as the measured pass.
+                f();
+                stages.lock().unwrap().clear();
                 tracing::callsite::rebuild_interest_cache();
                 f();
             });
