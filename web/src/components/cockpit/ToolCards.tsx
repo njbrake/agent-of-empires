@@ -10,6 +10,7 @@
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import ReactDiffViewer, { DiffMethod } from "react-diff-viewer-continued";
 import {
+  Brain,
   ChevronDown,
   Copy as CopyIcon,
   FileText,
@@ -34,6 +35,11 @@ import {
   humanizeServer,
   humanizeVerb,
 } from "../../lib/mcpClassify";
+import {
+  classifyMemory,
+  parseMemoryFrontmatter,
+  type MemoryHit,
+} from "../../lib/memoryClassify";
 import { reclassifyBash } from "../../lib/toolReclassify";
 
 interface Props {
@@ -49,6 +55,10 @@ function isCockpitBookkeepingKey(key: string): boolean {
 }
 
 export function ToolCard({ tool, result }: Props) {
+  const memory = classifyMemory(tool);
+  if (memory.isMemory) {
+    return <MemoryCard tool={tool} result={result} hit={memory} />;
+  }
   const mcp = classifyMcp(tool);
   if (mcp.isMcp) {
     return (
@@ -1168,6 +1178,108 @@ function McpToolCard({ tool, result, server, verb }: McpProps) {
             <HighlightedBlock text={output} language="markdown" maxLines={24} />
           )}
         </>
+      }
+    />
+  );
+}
+
+/* ── memory ─────────────────────────────────────────────────────── */
+
+interface MemoryCardProps extends Props {
+  hit: MemoryHit;
+}
+
+/** Dedicated card for Claude's memory-system file ops. Memory lives
+ *  under `~/.claude/projects/<slug>/memory/*.md` and the agent touches
+ *  it via plain Read/Edit/Write, so the upstream tool kind is the same
+ *  as any other file op. We branch on the path predicate in
+ *  classifyMemory and render here. See issue #1071. */
+function MemoryCard({ tool, result, hit }: MemoryCardProps) {
+  const status = statusFor(result);
+  const [open, setOpen] = useState(false);
+
+  const args = useMemo(
+    () => parseJsonObject(tool.args_preview),
+    [tool.args_preview],
+  );
+
+  const content = useMemo<string>(() => {
+    if (hit.verb === "recalled") return result?.text ?? "";
+    const fromArgs =
+      pickStr(args, "new_string", "newString", "new_str", "content") ?? "";
+    return fromArgs;
+  }, [hit.verb, args, result?.text]);
+
+  const parsed = useMemo(
+    () => (content ? parseMemoryFrontmatter(content) : null),
+    [content],
+  );
+
+  const verbLabel = hit.isIndex && hit.verb === "recalled"
+    ? "read index"
+    : hit.verb;
+  const headerLabel = hit.isIndex ? "Memory index" : "Memory";
+
+  const meta = parsed?.type && (
+    <span className="hidden md:inline text-[11px] text-text-dim">
+      {parsed.type}
+    </span>
+  );
+
+  const hasBody = Boolean(content);
+
+  return (
+    <CardChrome
+      status={status}
+      startedAt={tool.started_at}
+      endedAt={result?.at}
+      icon={<Brain className="h-3.5 w-3.5" />}
+      label={headerLabel}
+      primary={
+        <>
+          <span>{verbLabel}</span>
+          <span className="ml-2 text-text-dim">· {hit.basename}</span>
+        </>
+      }
+      meta={meta}
+      expanded={open}
+      onToggle={hasBody ? () => setOpen((v) => !v) : undefined}
+      body={
+        hasBody && parsed ? (
+          <div className="border-t border-surface-800 bg-surface-950">
+            {(parsed.name || parsed.description || parsed.type) && (
+              <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 px-3 py-2 text-[11px]">
+                {parsed.name && (
+                  <>
+                    <dt className="text-text-dim">name</dt>
+                    <dd className="text-text-secondary">{parsed.name}</dd>
+                  </>
+                )}
+                {parsed.type && (
+                  <>
+                    <dt className="text-text-dim">type</dt>
+                    <dd className="text-text-secondary">{parsed.type}</dd>
+                  </>
+                )}
+                {parsed.description && (
+                  <>
+                    <dt className="text-text-dim">description</dt>
+                    <dd className="text-text-secondary">
+                      {parsed.description}
+                    </dd>
+                  </>
+                )}
+              </dl>
+            )}
+            {parsed.body && (
+              <HighlightedBlock
+                text={parsed.body}
+                language="markdown"
+                maxLines={24}
+              />
+            )}
+          </div>
+        ) : null
       }
     />
   );
