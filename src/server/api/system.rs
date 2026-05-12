@@ -413,6 +413,12 @@ pub struct ServerAbout {
     /// spawns/attaches the reconciler runs on `aoe serve` cold start.
     /// Surfaced so the settings UI shows the current value. See #1088.
     pub cockpit_max_concurrent_resumes: u32,
+    /// Per-tool substrate switching capability matrix. Lets the web
+    /// substrate-switch button decide whether to enable, disable, or
+    /// label the action based on what the underlying agent can
+    /// actually preserve across a flip. Replaces the hardcoded
+    /// `ACP_CAPABLE_TOOLS` set in `web/src/lib/acpCapableTools.ts`.
+    pub substrate_capabilities: Vec<crate::cockpit::capabilities::ToolCapabilities>,
 }
 
 pub async fn get_about(State(state): State<Arc<AppState>>) -> Json<ServerAbout> {
@@ -427,6 +433,7 @@ pub async fn get_about(State(state): State<Arc<AppState>>) -> Json<ServerAbout> 
     let cockpit_show_tool_durations = cockpit_cfg.show_tool_durations;
     let cockpit_queue_drain_mode = cockpit_cfg.queue_drain_mode.as_str().to_string();
     let cockpit_max_concurrent_resumes = cockpit_cfg.max_concurrent_resumes;
+    let substrate_capabilities = crate::cockpit::capabilities::resolve_all();
     Json(ServerAbout {
         version: env!("CARGO_PKG_VERSION").to_string(),
         auth_required,
@@ -440,6 +447,7 @@ pub async fn get_about(State(state): State<Arc<AppState>>) -> Json<ServerAbout> 
         cockpit_show_tool_durations,
         cockpit_queue_drain_mode,
         cockpit_max_concurrent_resumes,
+        substrate_capabilities,
     })
 }
 
