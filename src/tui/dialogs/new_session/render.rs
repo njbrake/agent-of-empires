@@ -433,9 +433,9 @@ impl NewSessionDialog {
                 }
                 hint_spans.push(Span::styled("C-←/M-b", Style::default().fg(theme.hint)));
                 hint_spans.push(Span::raw(" prev seg  "));
-                hint_spans.push(Span::styled("Home/C-a", Style::default().fg(theme.hint)));
+                hint_spans.push(Span::styled("Home/Ctrl+A", Style::default().fg(theme.hint)));
                 hint_spans.push(Span::raw(" start  "));
-                hint_spans.push(Span::styled("C-p", Style::default().fg(theme.hint)));
+                hint_spans.push(Span::styled("Ctrl+P", Style::default().fg(theme.hint)));
                 hint_spans.push(Span::raw(" browse  "));
             }
             if self.focused_field == group_field && !self.existing_groups.is_empty() {
@@ -443,15 +443,15 @@ impl NewSessionDialog {
                     hint_spans.push(Span::styled("→", Style::default().fg(theme.hint)));
                     hint_spans.push(Span::raw(" accept  "));
                 }
-                hint_spans.push(Span::styled("C-p", Style::default().fg(theme.hint)));
+                hint_spans.push(Span::styled("Ctrl+P", Style::default().fg(theme.hint)));
                 hint_spans.push(Span::raw(" groups  "));
             }
             if self.focused_field == tool_field {
-                hint_spans.push(Span::styled("C-p", Style::default().fg(theme.hint)));
+                hint_spans.push(Span::styled("Ctrl+P", Style::default().fg(theme.hint)));
                 hint_spans.push(Span::raw(" configure  "));
             }
             if self.focused_field == worktree_field && self.worktree_enabled {
-                hint_spans.push(Span::styled("C-p", Style::default().fg(theme.hint)));
+                hint_spans.push(Span::styled("Ctrl+P", Style::default().fg(theme.hint)));
                 hint_spans.push(Span::raw(" configure  "));
             }
             hint_spans.push(Span::styled("Enter", Style::default().fg(theme.hint)));
@@ -875,7 +875,7 @@ impl NewSessionDialog {
             Span::raw(" next  "),
             Span::styled("Space", Style::default().fg(theme.hint)),
             Span::raw(" toggle  "),
-            Span::styled("C-p", Style::default().fg(theme.hint)),
+            Span::styled("Ctrl+P", Style::default().fg(theme.hint)),
             Span::raw(" branches  "),
             Span::styled("Enter", Style::default().fg(theme.hint)),
             Span::raw(" done  "),
@@ -888,7 +888,7 @@ impl NewSessionDialog {
                 Span::raw(" next  "),
                 Span::styled("Enter", Style::default().fg(theme.hint)),
                 Span::raw(" edit repos  "),
-                Span::styled("C-r", Style::default().fg(theme.hint)),
+                Span::styled("Ctrl+R", Style::default().fg(theme.hint)),
                 Span::raw(" pick project  "),
                 Span::styled("Esc", Style::default().fg(theme.hint)),
                 Span::raw(" back"),
