@@ -2,7 +2,12 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
 import { Pencil } from "lucide-react";
-import type { Workspace, RepoGroup, SessionStatus } from "../lib/types";
+import type {
+  RepoGroup,
+  SessionResponse,
+  SessionStatus,
+  Workspace,
+} from "../lib/types";
 import { MULTI_REPO_GROUP_ID } from "../hooks/useRepoGroups";
 import {
   STATUS_DOT_CLASS,
@@ -104,6 +109,36 @@ function loadSavedWidth(): number {
     // ignore
   }
   return DEFAULT_WIDTH;
+}
+
+/** One-line sidebar affordance showing plan progress for cockpit
+ *  sessions that have emitted a Plan. Quiet by default (renders only
+ *  when `summary.total > 0`); mirrors the top-of-cockpit PlanStrip's
+ *  visual language so the sidebar and main view stay consistent. See
+ *  #1061. */
+function PlanProgressMini({
+  summary,
+}: {
+  summary: NonNullable<SessionResponse["plan_summary"]>;
+}) {
+  const pct =
+    summary.total > 0
+      ? Math.min(100, Math.round((summary.completed / summary.total) * 100))
+      : 0;
+  const title = summary.current_step_title ?? "plan in progress";
+  return (
+    <div className="mt-1 flex items-center gap-2" title={title}>
+      <div className="h-1 flex-1 rounded-full bg-surface-800 overflow-hidden">
+        <div
+          className="h-full bg-brand-400 transition-all"
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+      <span className="text-[10px] font-mono tabular-nums text-text-dim shrink-0">
+        {summary.completed}/{summary.total}
+      </span>
+    </div>
+  );
 }
 
 function isPlainLeftClick(event: React.MouseEvent<HTMLAnchorElement>): boolean {
@@ -364,6 +399,9 @@ const SessionRow = memo(function SessionRow({
               <span className="block text-[11px] font-mono text-text-dim truncate" title={subtitle}>
                 {subtitle}
               </span>
+            )}
+            {firstSession?.plan_summary && firstSession.plan_summary.total > 0 && (
+              <PlanProgressMini summary={firstSession.plan_summary} />
             )}
             {firstSession && (firstSession.workspace_repos?.length ?? 0) > 1 && (
               <span

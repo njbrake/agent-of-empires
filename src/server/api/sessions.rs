@@ -67,6 +67,23 @@ pub struct SessionResponse {
     /// and is not persisted to the instance.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<String>,
+    /// Latest plan snapshot summarised for the sidebar. Present only on
+    /// cockpit sessions whose agent has emitted a Plan (directly via
+    /// ACP `SessionUpdate::Plan` or indirectly via the ExitPlanMode
+    /// bridge in `acp_client::map_update_to_events`). See #1061.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub plan_summary: Option<PlanSummary>,
+}
+
+#[derive(Serialize, Clone, Debug)]
+pub struct PlanSummary {
+    /// First non-completed step's title, truncated to ~80 chars so the
+    /// sidebar row doesn't overflow.
+    pub current_step_title: Option<String>,
+    /// Count of `PlanEntryStatus::Done` steps.
+    pub completed: u32,
+    /// Total step count.
+    pub total: u32,
 }
 
 #[derive(Serialize, Clone)]
@@ -91,6 +108,17 @@ impl SessionResponse {
     /// request via `crate::claude_settings::read_tui_fullscreen()`); it
     /// surfaces on the response only when the session's agent is Claude.
     pub fn from_instance(inst: &Instance, claude_fullscreen: bool) -> Self {
+        Self::from_instance_with_plan(inst, claude_fullscreen, None)
+    }
+
+    /// Build a response with the per-session plan snapshot. Called from
+    /// the REST sessions endpoint after a single bulk read of the
+    /// cockpit event store; see #1061.
+    pub fn from_instance_with_plan(
+        inst: &Instance,
+        claude_fullscreen: bool,
+        plan_summary: Option<PlanSummary>,
+    ) -> Self {
         Self {
             id: inst.id.clone(),
             title: inst.title.clone(),
@@ -142,8 +170,41 @@ impl SessionResponse {
                 })
                 .unwrap_or_default(),
             warnings: Vec::new(),
+            plan_summary,
         }
     }
+}
+
+/// Project a stored `Plan` into the lightweight `PlanSummary` shape the
+/// sidebar consumes. Current step is the first non-Done entry; counts
+/// reflect the persisted step state from the agent's last PlanUpdated.
+fn plan_summary_from_plan(plan: crate::cockpit::state::Plan) -> PlanSummary {
+    use crate::cockpit::state::PlanStepStatus;
+    let total = plan.steps.len() as u32;
+    let completed = plan
+        .steps
+        .iter()
+        .filter(|s| matches!(s.status, PlanStepStatus::Done))
+        .count() as u32;
+    let current_step_title = plan
+        .steps
+        .iter()
+        .find(|s| !matches!(s.status, PlanStepStatus::Done))
+        .map(|s| truncate_title(&s.title, 80));
+    PlanSummary {
+        current_step_title,
+        completed,
+        total,
+    }
+}
+
+fn truncate_title(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    let mut out: String = s.chars().take(max.saturating_sub(1)).collect();
+    out.push('…');
+    out
 }
 
 pub async fn list_sessions(State(state): State<Arc<AppState>>) -> Json<Vec<SessionResponse>> {
@@ -151,7 +212,17 @@ pub async fn list_sessions(State(state): State<Arc<AppState>>) -> Json<Vec<Sessi
     let claude_fullscreen = crate::claude_settings::read_tui_fullscreen();
     let mut sessions: Vec<SessionResponse> = instances
         .iter()
-        .map(|inst| SessionResponse::from_instance(inst, claude_fullscreen))
+        .map(|inst| {
+            let plan_summary = if inst.cockpit_mode {
+                state
+                    .cockpit_event_store
+                    .latest_plan(&inst.id)
+                    .map(plan_summary_from_plan)
+            } else {
+                None
+            };
+            SessionResponse::from_instance_with_plan(inst, claude_fullscreen, plan_summary)
+        })
         .collect();
 
     // Resolve per-profile cleanup defaults with a TTL cache on AppState

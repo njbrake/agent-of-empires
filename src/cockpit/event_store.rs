@@ -53,7 +53,7 @@ use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 use tracing::{debug, trace, warn};
 
-use super::state::Event;
+use super::state::{Event, Plan};
 
 /// SQLite-backed cockpit event log. One row per (session_id, seq).
 pub struct EventStore {
@@ -255,6 +255,36 @@ impl EventStore {
             "replayed events"
         );
         out
+    }
+
+    /// Return the latest `Event::PlanUpdated` stored for `session_id`,
+    /// if any. Used by the REST sessions endpoint to surface
+    /// plan-progress chrome (current step / completed / total) on the
+    /// sidebar without subscribing to the cockpit WS for every session.
+    /// See #1061.
+    pub fn latest_plan(&self, session_id: &str) -> Option<Plan> {
+        let conn = match self.conn.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        let json: String = conn
+            .query_row(
+                "SELECT event_json FROM cockpit_events
+                 WHERE session_id = ?1
+                   AND event_json LIKE '{\"PlanUpdated\":%'
+                 ORDER BY seq DESC LIMIT 1",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .ok()
+            .flatten()?;
+        let event: Event = serde_json::from_str(&json).ok()?;
+        if let Event::PlanUpdated { plan } = event {
+            Some(plan)
+        } else {
+            None
+        }
     }
 
     /// Return the highest seq stored for `session_id`, or 0 if none.
@@ -486,6 +516,60 @@ mod tests {
         } else {
             panic!("expected UserPromptSent");
         }
+    }
+
+    #[test]
+    fn latest_plan_returns_most_recent_plan_event() {
+        use super::super::state::{Plan, PlanStep, PlanStepStatus};
+        let (_tmp, store) = open_store(1000);
+        let plan_v1 = Plan {
+            plan_id: "p-1".into(),
+            version: 1,
+            steps: vec![PlanStep {
+                id: "s-1".into(),
+                title: "Step one".into(),
+                detail: None,
+                status: PlanStepStatus::Pending,
+            }],
+        };
+        let plan_v2 = Plan {
+            plan_id: "p-2".into(),
+            version: 2,
+            steps: vec![
+                PlanStep {
+                    id: "s-1".into(),
+                    title: "Step one".into(),
+                    detail: None,
+                    status: PlanStepStatus::Done,
+                },
+                PlanStep {
+                    id: "s-2".into(),
+                    title: "Step two".into(),
+                    detail: None,
+                    status: PlanStepStatus::Pending,
+                },
+            ],
+        };
+        store
+            .record("s-1", 1, &Event::PlanUpdated { plan: plan_v1 })
+            .unwrap();
+        store.record("s-1", 2, &Event::ThinkingStarted).unwrap();
+        store
+            .record("s-1", 3, &Event::PlanUpdated { plan: plan_v2 })
+            .unwrap();
+        let latest = store.latest_plan("s-1").expect("plan present");
+        assert_eq!(latest.steps.len(), 2);
+        assert!(matches!(
+            latest.steps[0].status,
+            crate::cockpit::state::PlanStepStatus::Done
+        ));
+    }
+
+    #[test]
+    fn latest_plan_returns_none_when_no_plan_event() {
+        let (_tmp, store) = open_store(1000);
+        store.record("s-1", 1, &Event::ThinkingStarted).unwrap();
+        assert!(store.latest_plan("s-1").is_none());
     }
 
     #[test]

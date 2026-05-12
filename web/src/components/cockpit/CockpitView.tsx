@@ -434,10 +434,20 @@ function PlanStrip({ plan, mode }: PlanStripProps) {
   // The mode picker now lives in the composer footer.
   if (!plan && mode === "Default") return null;
 
-  const current = plan?.steps.find((s) => s.status === "InProgress");
+  // Pick the active step: prefer an explicit `InProgress` (Claude's
+  // ExitPlanMode bridge sets this), otherwise fall back to the first
+  // non-Done / non-Cancelled step (TodoWrite-produced plans typically
+  // arrive with all entries Pending). Mirrors the server-side
+  // `plan_summary_from_plan` logic so the strip and sidebar agree.
+  const current =
+    plan?.steps.find((s) => s.status === "InProgress") ??
+    plan?.steps.find(
+      (s) => s.status !== "Done" && s.status !== "Cancelled",
+    );
   const completed = plan?.steps.filter((s) => s.status === "Done").length ?? 0;
   const totalSteps = plan?.steps.length ?? 0;
   const pct = totalSteps > 0 ? Math.round((completed / totalSteps) * 100) : 0;
+  const allDone = totalSteps > 0 && completed === totalSteps;
 
   return (
     <div className="border-b border-surface-800 bg-surface-900/95 backdrop-blur">
@@ -448,7 +458,7 @@ function PlanStrip({ plan, mode }: PlanStripProps) {
       >
         <ListChecks className="h-3.5 w-3.5 shrink-0 text-text-dim" />
         <span className="truncate text-text-primary">
-          {current?.title ?? (plan ? "all steps complete" : "—")}
+          {current?.title ?? (allDone ? "all steps complete" : "—")}
         </span>
         {plan && (
           <span className="ml-auto flex items-center gap-2">
