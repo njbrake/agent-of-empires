@@ -7,8 +7,9 @@
 import type { ToolCall } from "./cockpitTypes";
 import { parseJsonObject, pickStr } from "./cockpitArgs";
 
-// Command starts with a known read-only search binary.
-const SEARCH_BIN = /^\s*(?:rg|grep|egrep|fgrep|ack|ag|find|fd)\b/;
+// Command starts with a known read-only search binary. `ripgrep` covers
+// the long form that some users still type out of habit.
+const SEARCH_BIN = /^\s*(?:ripgrep|rg|grep|egrep|fgrep|ack|ag|find|fd)\b/;
 
 // Anything that turns the call into something other than a pure read:
 // pipes, command chaining, file redirects, or destructive find flags.

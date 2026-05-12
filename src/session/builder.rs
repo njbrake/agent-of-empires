@@ -642,18 +642,23 @@ fn git_sanitize_branch_name(s: &str) -> String {
     }
     // Disallowed multi-char sequences: ".." and "@{".
     let mut out = out.replace("..", "-").replace("@{", "-");
-    // Trim trailing chars git rejects (".lock" suffix, lone '/', '.', '-').
-    if let Some(stripped) = out.strip_suffix(".lock") {
-        out = stripped.to_string();
-    }
+    // Strip the ".lock" suffix from every slash-separated component, not
+    // just the last one — git-check-ref-format(1) rejects any component
+    // ending in ".lock" (e.g. `foo.lock/bar` is just as invalid as
+    // `foo.lock`).
+    out = out
+        .split('/')
+        .map(|seg| seg.strip_suffix(".lock").unwrap_or(seg))
+        .collect::<Vec<_>>()
+        .join("/");
     while matches!(out.chars().last(), Some('-' | '.' | '/')) {
         out.pop();
     }
-    // Trim leading chars git rejects ('.', '-', '/').
     while matches!(out.chars().next(), Some('-' | '.' | '/')) {
         out.remove(0);
     }
-    if out.is_empty() {
+    // A lone '@' is also rejected by git as a complete ref name.
+    if out.is_empty() || out == "@" {
         "session".to_string()
     } else {
         out
@@ -832,6 +837,25 @@ mod tests {
         assert_eq!(git_sanitize_branch_name("foo/"), "foo");
         assert_eq!(git_sanitize_branch_name("foo.lock"), "foo");
         assert_eq!(git_sanitize_branch_name(""), "session");
+    }
+
+    #[test]
+    fn test_git_sanitize_branch_name_strips_interior_lock_suffix() {
+        // git-check-ref-format rejects ANY slash-separated component ending
+        // in ".lock", not just the trailing one.
+        assert_eq!(git_sanitize_branch_name("foo.lock/bar"), "foo/bar");
+        assert_eq!(
+            git_sanitize_branch_name("feat/release.lock/v2"),
+            "feat/release/v2"
+        );
+    }
+
+    #[test]
+    fn test_git_sanitize_branch_name_rejects_bare_at_sign() {
+        // git-check-ref-format also rejects the single character "@" as a
+        // complete ref name — fall back to "session" rather than producing
+        // a name libgit2 will refuse.
+        assert_eq!(git_sanitize_branch_name("@"), "session");
     }
 
     #[test]

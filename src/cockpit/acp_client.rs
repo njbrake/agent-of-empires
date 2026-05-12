@@ -1715,37 +1715,46 @@ async fn run_connection_task<W, R>(
                                                 target: "cockpit.acp",
                                                 "sending session/set_mode mode={mode_id} during in-flight prompt"
                                             );
-                                            match connection
-                                                .send_request(SetSessionModeRequest::new(
+                                            // Fire the request and hand the
+                                            // response handling to a detached
+                                            // task. Awaiting it here would
+                                            // freeze this select loop for the
+                                            // duration of the round-trip,
+                                            // defeating the point of polling
+                                            // cmd_rx concurrently — a Cancel
+                                            // arriving while set_mode is in
+                                            // flight would queue. The detached
+                                            // task mirrors the success into the
+                                            // event stream so the UI flips even
+                                            // when the adapter (e.g.
+                                            // claude-agent-acp) treats the
+                                            // response as authoritative and
+                                            // skips the follow-up
+                                            // current_mode_update notification.
+                                            let sent = connection.send_request(
+                                                SetSessionModeRequest::new(
                                                     acp_session_id.clone(),
                                                     mode_id.clone(),
-                                                ))
-                                                .block_task()
-                                                .await
-                                            {
-                                                Ok(_) => {
-                                                    // Mirror the success into the event
-                                                    // stream so the UI flips even when the
-                                                    // adapter (e.g. claude-agent-acp)
-                                                    // treats the request response as
-                                                    // authoritative and skips the follow-up
-                                                    // current_mode_update notification.
-                                                    // Adapters that DO emit the notification
-                                                    // just push the same id again, which the
-                                                    // reducer applies idempotently.
-                                                    let _ = event_tx_for_block
-                                                        .send(Event::CurrentModeChanged {
-                                                            current_mode_id: mode_id,
-                                                        })
-                                                        .await;
+                                                ),
+                                            );
+                                            let tx = event_tx_for_block.clone();
+                                            tokio::spawn(async move {
+                                                match sent.block_task().await {
+                                                    Ok(_) => {
+                                                        let _ = tx
+                                                            .send(Event::CurrentModeChanged {
+                                                                current_mode_id: mode_id,
+                                                            })
+                                                            .await;
+                                                    }
+                                                    Err(e) => {
+                                                        warn!(
+                                                            target: "cockpit.acp",
+                                                            "session/set_mode failed mid-turn: {e}"
+                                                        );
+                                                    }
                                                 }
-                                                Err(e) => {
-                                                    warn!(
-                                                        target: "cockpit.acp",
-                                                        "session/set_mode failed mid-turn: {e}"
-                                                    );
-                                                }
-                                            }
+                                            });
                                         }
                                         Some(ClientCmd::Prompt(_)) => {
                                             // Client-side prompt queueing is
@@ -1767,14 +1776,24 @@ async fn run_connection_task<W, R>(
                                 }
                             }
                         }
+                        // Always emit a terminal Stopped for this turn before
+                        // leaving the Prompt arm, including the shutdown path.
+                        // Consumers (reducer, persisted status) need a single
+                        // turn-end event per turn or they sit on a stale
+                        // "in flight" state forever.
+                        let reason = if shutdown {
+                            "shutdown"
+                        } else {
+                            "prompt_complete"
+                        };
+                        let _ = event_tx_for_block
+                            .send(Event::Stopped {
+                                reason: reason.into(),
+                            })
+                            .await;
                         if shutdown {
                             break;
                         }
-                        let _ = event_tx_for_block
-                            .send(Event::Stopped {
-                                reason: "prompt_complete".into(),
-                            })
-                            .await;
                     }
                     Some(ClientCmd::Cancel) => {
                         info!(target: "cockpit.acp", "sending session/cancel (no prompt in flight)");
@@ -1783,25 +1802,27 @@ async fn run_connection_task<W, R>(
                     }
                     Some(ClientCmd::SetMode(mode_id)) => {
                         info!(target: "cockpit.acp", "sending session/set_mode mode={mode_id}");
-                        match connection
-                            .send_request(SetSessionModeRequest::new(
-                                acp_session_id.clone(),
-                                mode_id.clone(),
-                            ))
-                            .block_task()
-                            .await
-                        {
-                            Ok(_) => {
-                                let _ = event_tx_for_block
-                                    .send(Event::CurrentModeChanged {
-                                        current_mode_id: mode_id,
-                                    })
-                                    .await;
+                        // Detached, same shape as the mid-turn path: don't
+                        // freeze the cmd_rx loop on the round-trip.
+                        let sent = connection.send_request(SetSessionModeRequest::new(
+                            acp_session_id.clone(),
+                            mode_id.clone(),
+                        ));
+                        let tx = event_tx_for_block.clone();
+                        tokio::spawn(async move {
+                            match sent.block_task().await {
+                                Ok(_) => {
+                                    let _ = tx
+                                        .send(Event::CurrentModeChanged {
+                                            current_mode_id: mode_id,
+                                        })
+                                        .await;
+                                }
+                                Err(e) => {
+                                    warn!(target: "cockpit.acp", "session/set_mode failed: {e}");
+                                }
                             }
-                            Err(e) => {
-                                warn!(target: "cockpit.acp", "session/set_mode failed: {e}");
-                            }
-                        }
+                        });
                     }
                     Some(ClientCmd::Shutdown) | None => {
                         info!(target: "cockpit.acp", "shutdown received, exiting connection loop");
