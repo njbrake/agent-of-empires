@@ -6,7 +6,7 @@ import { MobileTerminalToolbar } from "./MobileTerminalToolbar";
 import { BackToLiveButton } from "./BackToLiveButton";
 import { KeyboardFab } from "./KeyboardFab";
 import { ensureTerminal } from "../lib/api";
-import type { RichDiffFile, SessionResponse } from "../lib/types";
+import type { RepoBase, RichDiffFile, SessionResponse } from "../lib/types";
 import {
   FOCUS_TERMINAL_EVENT,
   consumePendingTerminalFocus,
@@ -37,11 +37,12 @@ interface Props {
   session: SessionResponse | null;
   sessionId: string | null;
   files: RichDiffFile[];
-  baseBranch: string;
+  perRepoBases: RepoBase[];
   warning: string | null;
   filesLoading: boolean;
   selectedFilePath: string | null;
-  onSelectFile: (path: string) => void;
+  selectedRepoName: string | undefined;
+  onSelectFile: (path: string, repoName?: string) => void;
 }
 
 type ShellMode = "host" | "container";
@@ -265,10 +266,11 @@ export function RightPanel({
   session,
   sessionId,
   files,
-  baseBranch,
+  perRepoBases,
   warning,
   filesLoading,
   selectedFilePath,
+  selectedRepoName,
   onSelectFile,
 }: Props) {
   const [shellMode, setShellMode] = useState<ShellMode>("host");
@@ -360,9 +362,10 @@ export function RightPanel({
       >
         <DiffFileList
           files={files}
-          baseBranch={baseBranch}
+          perRepoBases={perRepoBases}
           warning={warning}
           selectedPath={selectedFilePath}
+          selectedRepoName={selectedRepoName}
           loading={filesLoading}
           onSelectFile={onSelectFile}
         />

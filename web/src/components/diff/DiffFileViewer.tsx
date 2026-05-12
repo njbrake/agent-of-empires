@@ -9,6 +9,10 @@ import { DiffLine } from "./DiffLine";
 interface Props {
   sessionId: string;
   filePath: string;
+  /** Workspace repo name; passed through to the diff endpoint so the
+   *  file is resolved against the correct repo when the session is a
+   *  multi-repo workspace. Omit for single-repo sessions. See #1047. */
+  repoName?: string;
   /** Triggers a re-fetch when the file list changes. */
   revision?: number;
   /** Called when the user wants to return to the terminal view. */
@@ -66,9 +70,19 @@ function HunkView({
   );
 }
 
-// TODO: remove this line - test change for diff viewer dogfooding
-export function DiffFileViewer({ sessionId, filePath, revision, onClose }: Props) {
-  const { diff, loading, error } = useFileDiff(sessionId, filePath, revision);
+export function DiffFileViewer({
+  sessionId,
+  filePath,
+  repoName,
+  revision,
+  onClose,
+}: Props) {
+  const { diff, loading, error } = useFileDiff(
+    sessionId,
+    filePath,
+    repoName,
+    revision,
+  );
   const { tokens: tokenGrid, loading: highlightLoading } = useHighlightedLines(
     diff?.hunks ?? [],
     diff?.file.path ?? filePath,

@@ -121,12 +121,28 @@ export interface RichDiffFile {
     | "conflicted";
   additions: number;
   deletions: number;
+  /** Workspace repo this file belongs to. Omitted for single-repo
+   *  (non-workspace) sessions. The sidebar groups entries by this
+   *  field to disambiguate path collisions across repos. See #1047. */
+  repo_name?: string;
+}
+
+/** One repo's base branch in a (possibly multi-repo) session. */
+export interface RepoBase {
+  /** Omitted for single-repo sessions. */
+  repo_name?: string;
+  base_branch: string;
 }
 
 /** Response from /api/sessions/{id}/diff/files */
 export interface RichDiffFilesResponse {
   files: RichDiffFile[];
-  base_branch: string;
+  /** One entry per repo whose diff was computed. Single-repo sessions
+   *  get a one-element array with `repo_name` omitted; workspace
+   *  sessions get one entry per workspace member with each repo's
+   *  default branch. Replaces the previous top-level `base_branch`
+   *  since workspace members can have different defaults. */
+  per_repo_bases: RepoBase[];
   warning: string | null;
 }
 

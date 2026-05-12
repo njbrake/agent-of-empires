@@ -1,12 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getSessionDiffFiles } from "../lib/api";
-import type { RichDiffFile } from "../lib/types";
+import type { RepoBase, RichDiffFile } from "../lib/types";
 
 const POLL_INTERVAL = 10_000;
 
 interface UseDiffFilesResult {
   files: RichDiffFile[];
-  baseBranch: string;
+  /** One entry per repo whose diff was computed. Single-repo sessions
+   *  get a one-element array; workspace sessions get one entry per
+   *  workspace member with each repo's default branch. See #1047. */
+  perRepoBases: RepoBase[];
   warning: string | null;
   loading: boolean;
   /** Monotonically increasing revision counter; bumps when the file list changes. */
@@ -19,7 +22,9 @@ export function useDiffFiles(
   enabled: boolean,
 ): UseDiffFilesResult {
   const [files, setFiles] = useState<RichDiffFile[]>([]);
-  const [baseBranch, setBaseBranch] = useState("main");
+  const [perRepoBases, setPerRepoBases] = useState<RepoBase[]>([
+    { base_branch: "main" },
+  ]);
   const [warning, setWarning] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [revision, setRevision] = useState(0);
@@ -39,7 +44,7 @@ export function useDiffFiles(
       if (fingerprint !== lastFingerprintRef.current) {
         lastFingerprintRef.current = fingerprint;
         setFiles(resp.files);
-        setBaseBranch(resp.base_branch);
+        setPerRepoBases(resp.per_repo_bases);
         setWarning(resp.warning ?? null);
         setRevision((r) => r + 1);
       }
@@ -76,5 +81,12 @@ export function useDiffFiles(
     };
   }, [enabled, sessionId, fetchFiles]);
 
-  return { files, baseBranch, warning, loading, revision, refresh: fetchFiles };
+  return {
+    files,
+    perRepoBases,
+    warning,
+    loading,
+    revision,
+    refresh: fetchFiles,
+  };
 }

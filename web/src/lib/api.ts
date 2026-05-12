@@ -94,9 +94,12 @@ export function getSessionDiffFiles(
 export function getSessionFileDiff(
   id: string,
   filePath: string,
+  repoName?: string,
 ): Promise<RichFileDiffResponse | null> {
+  const params = new URLSearchParams({ path: filePath });
+  if (repoName) params.set("repo", repoName);
   return fetchJson<RichFileDiffResponse>(
-    `/api/sessions/${id}/diff/file?path=${encodeURIComponent(filePath)}`,
+    `/api/sessions/${id}/diff/file?${params.toString()}`,
   );
 }
 
