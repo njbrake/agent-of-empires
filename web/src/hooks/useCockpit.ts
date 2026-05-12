@@ -372,6 +372,14 @@ export function useCockpit(sessionId: string | null) {
     [sessionId],
   );
 
+  // Cancels the in-flight agent turn (ACP session/cancel). Must only
+  // fire on an explicit user gesture against a dedicated cancel/stop
+  // affordance — never bind this to the Escape key. Claude Code CLI
+  // hijacks Escape for cancel and accidental presses lose work the
+  // user did not mean to abort; the cockpit deliberately keeps Escape
+  // for closing local UI surfaces (palette, dialogs, popovers) only.
+  // If a future Escape binding is added, route it through
+  // useKeyboardShortcuts.onEscape's local-UI dismissal, not here.
   const cancelPrompt = useCallback(async () => {
     if (!sessionId) return;
     try {
