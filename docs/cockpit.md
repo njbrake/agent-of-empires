@@ -281,6 +281,26 @@ Practical implications:
   notification lines so per-stream chunks emitted while the daemon was
   down get replayed on reattach. Permission requests issued while
   detached block the agent's turn until reattach.
+- **Mid-turn reattach.** When the daemon comes back up against a
+  session that was actively streaming a prompt, the new daemon resumes
+  the existing ACP session id directly (no `session/new` or
+  `session/load` is sent — the agent process never died, so its in-
+  memory session is still addressable). The agent's eventual response
+  to the orphaned in-flight `session/prompt` is dropped silently by
+  the transport because its request id was issued by the previous
+  daemon; to keep the UI from staying stuck on "thinking" forever,
+  the daemon arms a resume-idle watchdog that emits a synthetic
+  `Stopped { reason: "reattach_idle" }` event after 10s of inbound
+  silence. If you'd like to tune that grace (or shorten it for
+  integration tests), set `AOE_RESUME_IDLE_GRACE_MS` before launching
+  `aoe serve`. Sessions that the runner cannot reattach to (dead PID,
+  missing socket, etc.) fall through to a fresh spawn; if the on-disk
+  event log shows that fresh spawn's session was mid-prompt at the
+  moment the daemon died, the reconciler publishes a
+  `Stopped { reason: "orphaned_at_restart" }` event before the new
+  agent starts so the UI clears immediately. The same path covers the
+  `main`-branch case where there is no runner at all and every cockpit
+  session takes the fresh-spawn branch on restart.
 
 ## Conversation persistence
 
