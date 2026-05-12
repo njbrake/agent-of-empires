@@ -1367,22 +1367,68 @@ fn map_update_to_events(update: SessionUpdate) -> Vec<Event> {
             events
         }
         SessionUpdate::Plan(p) => {
-            let plan = Plan {
-                plan_id: format!("plan-{}", chrono::Utc::now().timestamp_millis()),
-                version: 1,
-                steps: p
-                    .entries
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, e)| PlanStep {
-                        id: format!("step-{i}"),
-                        title: e.content,
-                        detail: None,
-                        status: map_plan_status(e.status),
+            // Build the structured plan + a synthetic TodoWrite tool call
+            // from the same entries. claude-agent-acp routes Claude's
+            // TodoWrite through the structured `SessionUpdate::Plan`
+            // channel (not the tool channel), so without this synthesis
+            // the cockpit's PlanStrip + sidebar light up but no tool
+            // card ever renders — the user sees a plan appear "from
+            // nowhere" and has no per-update record of which calls
+            // produced which states. Emit a ToolCallStarted /
+            // ToolCallCompleted pair shaped to match what the
+            // TodoUpdateCard classifier in ToolCards.tsx expects
+            // (`name = "TodoWrite"`, `args.todos = [...]`), one per
+            // adapter update.
+            let ts_ms = chrono::Utc::now().timestamp_millis();
+            let plan_id = format!("plan-{ts_ms}");
+            let tool_id = format!("todo-{ts_ms}");
+            let todos_json: Vec<serde_json::Value> = p
+                .entries
+                .iter()
+                .map(|e| {
+                    serde_json::json!({
+                        "content": e.content,
+                        "status": plan_status_to_str(&e.status),
                     })
-                    .collect(),
-            };
-            vec![Event::PlanUpdated { plan }]
+                })
+                .collect();
+            let args_preview = serde_json::json!({ "todos": todos_json }).to_string();
+            let steps: Vec<PlanStep> = p
+                .entries
+                .into_iter()
+                .enumerate()
+                .map(|(i, e)| PlanStep {
+                    id: format!("step-{i}"),
+                    title: e.content,
+                    detail: None,
+                    status: map_plan_status(e.status),
+                })
+                .collect();
+            let now = chrono::Utc::now();
+            vec![
+                Event::ToolCallStarted {
+                    tool_call: ToolCall {
+                        id: tool_id.clone(),
+                        name: "TodoWrite".to_string(),
+                        kind: "think".to_string(),
+                        args_preview,
+                        started_at: now,
+                    },
+                },
+                Event::PlanUpdated {
+                    plan: Plan {
+                        plan_id,
+                        version: 1,
+                        steps,
+                    },
+                },
+                Event::ToolCallCompleted {
+                    tool_call_id: tool_id,
+                    is_error: false,
+                    content: String::new(),
+                    completed_at: now,
+                },
+            ]
         }
         SessionUpdate::CurrentModeUpdate(mode_update) => {
             let id = mode_update.current_mode_id.0.to_string();
@@ -1447,6 +1493,20 @@ fn map_plan_status(status: agent_client_protocol::schema::PlanEntryStatus) -> Pl
         PlanEntryStatus::Completed => PlanStepStatus::Done,
         // The schema is non-exhaustive; treat unknown variants as Pending.
         _ => PlanStepStatus::Pending,
+    }
+}
+
+/// Lowercase string form of a PlanEntryStatus for the synthetic
+/// TodoWrite args payload. Matches the values
+/// `web/src/components/cockpit/ToolCards.tsx::normaliseTodoStatus`
+/// accepts so the TodoUpdateCard renders the right glyph.
+fn plan_status_to_str(status: &agent_client_protocol::schema::PlanEntryStatus) -> &'static str {
+    use agent_client_protocol::schema::PlanEntryStatus;
+    match status {
+        PlanEntryStatus::Pending => "pending",
+        PlanEntryStatus::InProgress => "in_progress",
+        PlanEntryStatus::Completed => "completed",
+        _ => "pending",
     }
 }
 
