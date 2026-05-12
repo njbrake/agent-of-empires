@@ -131,7 +131,20 @@ enum ConnectMode {
 /// intra-turn silence near this duration so the false-positive risk
 /// (UI flips to Idle then back to Streaming on the next chunk) is
 /// bounded.
-const RESUME_IDLE_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
+const RESUME_IDLE_GRACE_DEFAULT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Read the resume-idle grace, honoring the `AOE_RESUME_IDLE_GRACE_MS`
+/// env var so integration tests can short-circuit the default 10s
+/// without making real failures racy. Values below 100ms are clamped
+/// up so a typo can't disable the watchdog effectively.
+fn resume_idle_grace() -> std::time::Duration {
+    if let Ok(raw) = std::env::var("AOE_RESUME_IDLE_GRACE_MS") {
+        if let Ok(ms) = raw.parse::<u64>() {
+            return std::time::Duration::from_millis(ms.max(100));
+        }
+    }
+    RESUME_IDLE_GRACE_DEFAULT
+}
 
 /// Resolution channel + the option set the agent offered. Stored in the
 /// pending-responders map keyed by the cockpit's server-generated nonce.
@@ -1590,8 +1603,9 @@ async fn run_connection_task<W, R>(
                 let prompt_sent_since_attach = prompt_sent_since_attach.clone();
                 let watchdog_fired = watchdog_fired.clone();
                 let session_label_for_watchdog = session_label.clone();
+                let grace = resume_idle_grace();
                 tokio::spawn(async move {
-                    let grace_ms = RESUME_IDLE_GRACE.as_millis() as i64;
+                    let grace_ms = grace.as_millis() as i64;
                     loop {
                         tokio::time::sleep(std::time::Duration::from_millis(500)).await;
                         if watchdog_fired.load(Ordering::Relaxed) {
