@@ -304,6 +304,7 @@ class AssistantBuilder {
   }
 
   build(): ThreadMessageLike {
+    const grouped = collapseToolRuns(this.parts);
     return {
       id: this.id,
       role: "assistant",
@@ -311,10 +312,76 @@ class AssistantBuilder {
       // for tool-call args. We don't carry parsed args through this
       // path — the renderer parses argsText itself — so the loose
       // shape is safe in practice.
-      content: (this.parts.length
-        ? this.parts
+      content: (grouped.length
+        ? grouped
         : [{ type: "text", text: "" }]) as ThreadMessageLike["content"],
       createdAt: this.createdAt,
     };
   }
+}
+
+/** Minimum run length that triggers grouping. Two-in-a-row stays inline
+ *  so a quick read-then-edit doesn't fold; three or more is the common
+ *  "silent investigation" shape that benefits from one collapsible
+ *  block (#1057). */
+const TOOL_GROUP_MIN_RUN = 3;
+
+/** Synthetic toolName used for the folded group card. Namespaced with
+ *  the `_aoe_` prefix so it can't collide with a real ACP tool kind. */
+export const TOOL_GROUP_NAME = "_aoe_tool_group";
+
+/** Walk an assistant message's parts and collapse runs of consecutive
+ *  tool-call parts (regardless of kind) into one synthetic group part
+ *  when the run is ≥ TOOL_GROUP_MIN_RUN long. The grouping boundary is
+ *  ANY non-tool-call part (text, callout, etc.) — matching the "what
+ *  did the agent do silently before its next sentence?" UX shape. The
+ *  underlying tool-call data is preserved verbatim inside the group's
+ *  argsText payload so the renderer can expand back to the original
+ *  per-tool cards on click. */
+function collapseToolRuns(parts: DraftPart[]): DraftPart[] {
+  const out: DraftPart[] = [];
+  let run: DraftPart[] = [];
+  const flushRun = () => {
+    if (run.length === 0) return;
+    if (run.length < TOOL_GROUP_MIN_RUN) {
+      for (const p of run) out.push(p);
+    } else {
+      const childIds: string[] = [];
+      const children: Array<{
+        toolCallId: string;
+        toolName: string;
+        argsText: string;
+        result?: { content: string };
+        isError?: boolean;
+      }> = [];
+      for (const p of run) {
+        if (p.type !== "tool-call") continue;
+        childIds.push(p.toolCallId);
+        children.push({
+          toolCallId: p.toolCallId,
+          toolName: p.toolName,
+          argsText: p.argsText,
+          result: p.result,
+          isError: p.isError,
+        });
+      }
+      out.push({
+        type: "tool-call",
+        toolCallId: `group-${childIds.join("-")}`,
+        toolName: TOOL_GROUP_NAME,
+        argsText: JSON.stringify({ children }),
+      });
+    }
+    run = [];
+  };
+  for (const part of parts) {
+    if (part.type === "tool-call") {
+      run.push(part);
+    } else {
+      flushRun();
+      out.push(part);
+    }
+  }
+  flushRun();
+  return out;
 }

@@ -14,6 +14,7 @@ import {
   Copy as CopyIcon,
   FileText,
   Globe,
+  Layers,
   Pencil,
   Plug,
   Search,
@@ -657,6 +658,97 @@ function ThinkToolCard({ tool }: Props) {
       <span>{tool.name || "thinking…"}</span>
     </div>
   );
+}
+
+/* ── tool group ─────────────────────────────────────────────────── */
+
+interface ToolGroupItem {
+  tool: ToolCall;
+  result?: ActivityRow;
+  /** Raw `toolName` from assistant-ui (the ACP kind), used for the
+   *  per-kind tally in the group header. */
+  kind: string;
+}
+
+/** Collapsible block summarising a run of tool calls between agent
+ *  text. The activity log is unchanged — this is presentation only,
+ *  matching how the Claude Code CLI condenses silent investigation
+ *  phases. See #1057. */
+export function ToolGroupCard({ items }: { items: ToolGroupItem[] }) {
+  const [open, setOpen] = useState(false);
+  if (items.length === 0) return null;
+
+  const runningCount = items.filter((i) => !i.result).length;
+  const errorCount = items.filter(
+    (i) => i.result && i.result.kind === "tool_error",
+  ).length;
+  const status: Status =
+    runningCount > 0 ? "running" : errorCount > 0 ? "err" : "ok";
+
+  const breakdown = summariseKinds(items);
+
+  return (
+    <CardChrome
+      status={status}
+      icon={<Layers className="h-3.5 w-3.5" />}
+      label="actions"
+      primary={
+        <>
+          <span>{items.length} actions</span>
+          {breakdown && (
+            <span className="ml-2 text-text-dim">— {breakdown}</span>
+          )}
+        </>
+      }
+      expanded={open}
+      onToggle={() => setOpen((v) => !v)}
+      body={
+        open && (
+          <div className="border-t border-surface-800 bg-surface-900/30 px-2 py-1">
+            {items.map((item) => (
+              <ToolCard
+                key={item.tool.id}
+                tool={item.tool}
+                result={item.result}
+              />
+            ))}
+          </div>
+        )
+      }
+    />
+  );
+}
+
+function summariseKinds(items: ToolGroupItem[]): string | null {
+  const counts = new Map<string, number>();
+  for (const i of items) {
+    const k = labelForKind(i.kind);
+    counts.set(k, (counts.get(k) ?? 0) + 1);
+  }
+  if (counts.size === 0) return null;
+  const entries = Array.from(counts.entries()).sort((a, b) => b[1] - a[1]);
+  return entries.map(([k, n]) => `${k} ${n}`).join(" · ");
+}
+
+function labelForKind(kind: string): string {
+  switch (kind) {
+    case "execute":
+      return "Bash";
+    case "read":
+      return "Read";
+    case "edit":
+      return "Edit";
+    case "delete":
+      return "Delete";
+    case "search":
+      return "Search";
+    case "fetch":
+      return "Fetch";
+    case "think":
+      return "Think";
+    default:
+      return kind.charAt(0).toUpperCase() + kind.slice(1);
+  }
 }
 
 /* ── mcp ────────────────────────────────────────────────────────── */

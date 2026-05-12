@@ -21,10 +21,10 @@ import {
 import { ChevronDown, ListChecks } from "lucide-react";
 
 import { ApprovalCard } from "./ApprovalCard";
-import { CockpitRuntime, type CockpitContext } from "./CockpitRuntime";
+import { CockpitRuntime, TOOL_GROUP_NAME, type CockpitContext } from "./CockpitRuntime";
 import { Composer } from "./Composer";
 import { Markdown } from "./Markdown";
-import { ToolCard } from "./ToolCards";
+import { ToolCard, ToolGroupCard } from "./ToolCards";
 import {
   SPINNER_FRAMES,
   SPINNER_INTERVAL_MS,
@@ -214,6 +214,15 @@ function toolCallTimestamp(id: string): string {
 }
 
 function AssistantToolCall(props: ToolCallProps) {
+  // Synthetic group-of-tool-calls part. CockpitRuntime's build pass
+  // folds runs of ≥3 consecutive tool-call parts (between agent text)
+  // into one collapsible block (#1057). The children payload carries
+  // the original per-tool parts verbatim so the group card can render
+  // each one with its normal per-kind card on expand.
+  if (props.toolName === TOOL_GROUP_NAME) {
+    return <AssistantToolGroup argsText={props.argsText} />;
+  }
+
   // Reconstruct the ToolCall shape our existing ToolCards.tsx
   // renderer expects. assistant-ui carries `toolName` (we set this to
   // ACP's lowercased ToolKind in CockpitRuntime) plus argsText (the
@@ -245,6 +254,62 @@ function AssistantToolCall(props: ToolCallProps) {
         }
       : undefined;
   return <ToolCard tool={tool} result={result} />;
+}
+
+interface GroupChild {
+  toolCallId: string;
+  toolName: string;
+  argsText: string;
+  result?: { content: string };
+  isError?: boolean;
+}
+
+function AssistantToolGroup({ argsText }: { argsText?: string }) {
+  let children: GroupChild[] = [];
+  if (argsText) {
+    try {
+      const parsed = JSON.parse(argsText);
+      if (parsed && Array.isArray(parsed.children)) {
+        children = parsed.children as GroupChild[];
+      }
+    } catch {
+      // Malformed payload — fall through to an empty group rather than
+      // crashing the assistant-ui render.
+    }
+  }
+  const items = children.map((c) => {
+    const stableAt = toolCallTimestamp(c.toolCallId);
+    let parsedArgs: Record<string, unknown> = {};
+    try {
+      const p = JSON.parse(c.argsText);
+      if (p && typeof p === "object" && !Array.isArray(p)) {
+        parsedArgs = p as Record<string, unknown>;
+      }
+    } catch {
+      // ignore
+    }
+    const tool: ToolCall = {
+      id: c.toolCallId,
+      name: prettifyToolName(c.toolName, parsedArgs),
+      kind: c.toolName,
+      args_preview: c.argsText,
+      started_at: stableAt,
+    };
+    const result =
+      c.result !== undefined
+        ? {
+            id: `done-${c.toolCallId}`,
+            kind: c.isError
+              ? ("tool_error" as const)
+              : ("tool_complete" as const),
+            text: c.result.content,
+            toolCallId: c.toolCallId,
+            at: stableAt,
+          }
+        : undefined;
+    return { tool, result, kind: c.toolName };
+  });
+  return <ToolGroupCard items={items} />;
 }
 
 function prettifyToolName(
