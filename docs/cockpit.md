@@ -255,9 +255,18 @@ Tools without ACP support continue to work exactly as they do today
 
 ## Worker persistence across `aoe serve` restart
 
+> **Behavior change (cockpit-only).** Prior releases tore down every
+> cockpit ACP worker on `aoe serve --stop` (and any other daemon
+> shutdown). As of this release, the daemon detaches without killing
+> the runner: in-flight turns survive `aoe serve --stop`, `aoe update`,
+> daemon crashes, and host suspend/wake. To actually terminate
+> workers, use `aoe cockpit stop <session>` or `aoe cockpit stop --all`
+> (graceful), or `aoe cockpit kill <session>` (force). tmux-based
+> (non-cockpit) sessions are unaffected.
+
 Cockpit workers run as detached `aoe __cockpit-runner` processes that
 outlive the daemon. `aoe serve --stop` drops the daemon's connection
-to each worker but does **not** terminate the runner — the agent
+to each worker but does **not** terminate the runner: the agent
 keeps running, in-flight turns continue, and a subsequent `aoe serve`
 reattaches via the worker's unix socket.
 
@@ -291,9 +300,7 @@ Practical implications:
   daemon; to keep the UI from staying stuck on "thinking" forever,
   the daemon arms a resume-idle watchdog that emits a synthetic
   `Stopped { reason: "reattach_idle" }` event after 10s of inbound
-  silence. If you'd like to tune that grace (or shorten it for
-  integration tests), set `AOE_RESUME_IDLE_GRACE_MS` before launching
-  `aoe serve`. Sessions that the runner cannot reattach to (dead PID,
+  silence. Sessions that the runner cannot reattach to (dead PID,
   missing socket, etc.) fall through to a fresh spawn; if the on-disk
   event log shows that fresh spawn's session was mid-prompt at the
   moment the daemon died, the reconciler publishes a

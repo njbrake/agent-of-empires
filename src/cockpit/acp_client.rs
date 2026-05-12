@@ -133,11 +133,15 @@ enum ConnectMode {
 /// bounded.
 const RESUME_IDLE_GRACE_DEFAULT: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// Read the resume-idle grace, honoring the `AOE_RESUME_IDLE_GRACE_MS`
-/// env var so integration tests can short-circuit the default 10s
-/// without making real failures racy. Values below 100ms are clamped
-/// up so a typo can't disable the watchdog effectively.
+/// Read the resume-idle grace. In debug builds, honors
+/// `AOE_RESUME_IDLE_GRACE_MS` so integration tests can short-circuit
+/// the default 10s without making real failures racy. Values below
+/// 100ms are clamped up so a typo can't effectively disable the
+/// watchdog. Release builds always use `RESUME_IDLE_GRACE_DEFAULT`
+/// so a misconfigured env var can't surface false-positive Stopped
+/// events to real users.
 fn resume_idle_grace() -> std::time::Duration {
+    #[cfg(debug_assertions)]
     if let Ok(raw) = std::env::var("AOE_RESUME_IDLE_GRACE_MS") {
         if let Ok(ms) = raw.parse::<u64>() {
             return std::time::Duration::from_millis(ms.max(100));
@@ -1435,15 +1439,25 @@ async fn run_connection_task<W, R>(
                     acp_session_id: stored,
                     in_flight_turn: _,
                 } => {
-                    // Skip session/new and session/load. The runner kept
-                    // the agent process alive across the daemon restart,
-                    // so the session is still loaded in the agent's
-                    // memory and addressable via its original id. Issuing
-                    // session/load here would either fail (agents that
-                    // advertise loadSession=false) or double-load against
-                    // a still-busy session; issuing session/new would
-                    // split context onto a new id the in-flight turn
-                    // doesn't address.
+                    // INVARIANT: Resume mode MUST NOT send `session/new`
+                    // or `session/load`. This is the load-bearing trick
+                    // that makes mid-turn continuity work across
+                    // `aoe serve --stop` + `aoe serve`. Do not "fix" it
+                    // by adding either call here.
+                    //
+                    // Why: the runner kept the agent process alive
+                    // across the daemon restart, so the ACP session is
+                    // still loaded in the agent's memory and addressable
+                    // via its original id. `session/load` would either
+                    // fail (agents that advertise loadSession=false) or
+                    // double-load against a still-busy session and
+                    // replay the entire transcript at the user.
+                    // `session/new` would split context onto a new id
+                    // the in-flight `session/prompt` doesn't address,
+                    // silently orphaning the turn the user is waiting
+                    // on. See issue #1037 and the
+                    // `tests/cockpit_midturn_resume.rs` integration
+                    // coverage.
                     info!(
                         target: "cockpit.acp",
                         session = %session_label,

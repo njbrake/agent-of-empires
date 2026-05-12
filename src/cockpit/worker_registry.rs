@@ -327,6 +327,17 @@ pub fn update_stored_acp_session_id(session_id: &str, acp_id: Option<&str>) {
 /// only if both the PID is alive AND the socket file still exists; a
 /// stale entry where the runner died before deleting its files would
 /// otherwise let attach hang on a missing socket.
+///
+/// Defense-in-depth for PID reuse: it's possible (though rare) for a
+/// runner to die uncleanly, leave the socket file behind, and have its
+/// PID immediately recycled by an unrelated process. The (pid_alive +
+/// socket_exists) pair survives that case in almost all scenarios
+/// because the unrelated process is exceedingly unlikely to be
+/// listening on the same socket path. As a third layer, the daemon's
+/// attach handshake (`AcpClient::attach` -> `initialize`) rejects any
+/// peer that doesn't speak ACP within the 3s reconciler timeout, so a
+/// truly unlucky PID/socket collision still falls back to a fresh
+/// spawn rather than wedging the session.
 pub fn is_record_live(rec: &WorkerRecord) -> bool {
     rec.runner_version == RUNNER_VERSION && is_pid_alive(rec.pid) && socket_exists(&rec.socket_path)
 }

@@ -1401,8 +1401,16 @@ async fn reconcile_cockpit_workers(
     let live: std::collections::HashSet<&String> = targets.iter().map(|t| &t.0).collect();
     attempted.retain(|id| live.contains(id));
 
+    // ORDERING INVARIANT: this orphan sweep MUST run before the
+    // spawn-with-capacity-check loop below. The capacity check counts
+    // both in-memory workers AND on-disk registry entries (so a fresh
+    // daemon can't race the reconciler and over-spawn). If the sweep
+    // ran after, dead-PID entries from a previous unclean shutdown
+    // would still count toward `max_concurrent_workers` and could
+    // block legitimate spawns until the next tick. Do not reorder.
+    //
     // Sweep registry entries whose session no longer exists (deleted
-    // while serve was down) — SIGTERM the orphan runner so the user
+    // while serve was down) and SIGTERM the orphan runner so the user
     // doesn't see a phantom in `aoe cockpit ps`. Only runs against
     // entries that aren't currently in our `workers` map.
     if let Ok(records) = crate::cockpit::worker_registry::list() {

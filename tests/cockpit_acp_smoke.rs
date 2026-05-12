@@ -391,6 +391,10 @@ async fn shim_agent_round_trips_terminal() {
 // the runner now binds the socket and the daemon connects, which the
 // test cannot exercise without a real `aoe __cockpit-runner` binary on
 // PATH (the test process's `current_exe()` is the test runner, not
-// `aoe`). End-to-end coverage for the new transport lives in
-// `tests/e2e/` against a built `aoe` binary; the stdio round-trip
-// tests above still validate the ACP handshake + event mapping.
+// `aoe`). The downstream socket transport (ACP handshake, prompt
+// round-trip, event mapping after the runner has bound the socket)
+// is covered in `tests/cockpit_midturn_resume.rs` via a byte-proxy
+// bridge that mimics what `__cockpit-runner` does in production.
+// End-to-end coverage of the spawn path itself still wants a real
+// `aoe` binary; that test belongs in `tests/e2e/` and is tracked as
+// follow-up work.

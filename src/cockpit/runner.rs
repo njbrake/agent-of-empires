@@ -24,6 +24,22 @@
 //! Logging: the runner appends to
 //! `<app_dir>/cockpit-workers/<session_id>.log` so `aoe cockpit logs
 //! --session <id> --follow` can tail it independently of `serve.log`.
+//!
+//! ## Why a shim and not "let the agent bind the socket"
+//!
+//! Issue #1037's Proposal A suggested patching ACP agents to listen on
+//! a unix socket directly, with the daemon connecting in. That works
+//! for cooperating agents (`aoe-agent` already honors `AOE_ACP_SOCKET`)
+//! but the third-party agents we proxy (`claude-agent-acp`, etc.)
+//! only speak stdio today. This shim bridges stdio-only agents into
+//! the socket-mode lifecycle without requiring upstream changes.
+//!
+//! Treat the shim as a deprecation path, not a permanent layer:
+//! agents that gain native socket-mode transport in the future can
+//! bypass `aoe __cockpit-runner` entirely and have the daemon connect
+//! to them directly. The wire protocol is just newline-delimited
+//! JSON-RPC (ACP), no shim-specific framing, so collapsing this
+//! process is purely an agent-side change.
 
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
