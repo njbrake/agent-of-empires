@@ -27,6 +27,7 @@ import {
 import { getHighlighter, langKeyForExt, loadLanguage } from "../../lib/highlighter";
 import { hasAnsi, parseAnsi, type AnsiStyle } from "../../lib/ansi";
 import { parseJsonObject, pickFirst, pickStr } from "../../lib/cockpitArgs";
+import { useCockpitPrefs } from "../../lib/cockpitPrefs";
 import type { ActivityRow, ToolCall } from "../../lib/cockpitTypes";
 import {
   classifyMcp,
@@ -135,8 +136,29 @@ interface CardChromeProps {
   body?: React.ReactNode;
   /** ISO-8601 start timestamp for the underlying tool call. When set
    *  with `endedAt` (completed call) or alone (in-flight call), the
-   *  header shows a duration label next to the status badge. See
-   *  #1060. */
+   *  header shows a duration label next to the status badge (#1060).
+   *
+   *  Rendering is gated by the `cockpit.show_tool_durations` setting
+   *  (resolved server-side from `[cockpit]` in config.toml, surfaced
+   *  via `ServerAbout.cockpit_show_tool_durations`, consumed here via
+   *  `useCockpitPrefs`). Default on; cross-device because the setting
+   *  lives in the daemon's config file rather than the browser.
+   *
+   *  IMPORTANT — the measurement is imprecise on claude-agent-acp.
+   *  The adapter emits each ACP `tool_call` frame at the wall time
+   *  the model streams its tool_use chunk, which is typically well
+   *  before the Claude Code SDK dispatches the subprocess; it also
+   *  never emits `status: "in_progress"` so we cannot re-stamp
+   *  `started_at` to the real subprocess start. Parallel
+   *  `sleep 1` / `sleep 2` / `sleep 5` therefore render as
+   *  ~3s / ~3.5s / ~6s instead of ~1s / ~2s / ~5s — durations
+   *  include stream-arrival skew rather than just runtime. Once
+   *  upstream gains a trustworthy "subprocess started" signal
+   *  (either a `status: in_progress` frame or a `_meta` flag), the
+   *  existing re-stamp path in `acp_client::map_update_to_events`
+   *  picks it up with no further change here. The setting lets users
+   *  hide the label in the meantime if the inflated numbers are more
+   *  confusing than useful. */
   startedAt?: string;
   /** ISO-8601 timestamp from the matching `tool_complete` /
    *  `tool_error` row. Absent → tool still running, duration ticks
@@ -156,6 +178,7 @@ function CardChrome({
   startedAt,
   endedAt,
 }: CardChromeProps) {
+  const { showToolDurations } = useCockpitPrefs();
   const Header = onToggle ? "button" : "div";
   return (
     <div className="my-1 overflow-hidden rounded-md border border-surface-700 bg-surface-800/50 text-sm">
@@ -176,7 +199,7 @@ function CardChrome({
           {primary}
         </span>
         {meta}
-        {startedAt && (
+        {showToolDurations && startedAt && (
           <DurationLabel startedAt={startedAt} endedAt={endedAt} />
         )}
         <StatusBadge status={status} />
@@ -196,8 +219,9 @@ function CardChrome({
 
 /** Render `started_at → ended_at` as a human duration. While the tool
  *  is still running the label ticks once a second so users see the
- *  elapsed time grow. Capped at three significant pieces ("1m 12s") so
- *  the header stays compact. */
+ *  elapsed time grow. Tooltip names the known measurement
+ *  imprecision (see `CardChromeProps.startedAt`) so users who notice
+ *  "sleep 1 took 3s" find the explanation in-place. */
 function DurationLabel({
   startedAt,
   endedAt,
@@ -218,10 +242,13 @@ function DurationLabel({
   if (!Number.isFinite(end)) return null;
   const ms = Math.max(0, end - start);
   const text = formatDurationMs(ms);
+  const tooltip = running
+    ? `running ${text} — counts from the agent's first tool_call frame, which can fire before the subprocess actually starts (upstream limitation)`
+    : `${text} — counts from the agent's first tool_call frame, which can fire before the subprocess actually starts (upstream limitation)`;
   return (
     <span
       className="hidden md:inline text-[11px] text-text-dim tabular-nums"
-      title={running ? `running ${text}` : text}
+      title={tooltip}
     >
       {text}
     </span>

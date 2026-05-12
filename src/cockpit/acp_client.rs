@@ -1354,6 +1354,7 @@ fn map_update_to_events(update: SessionUpdate) -> Vec<Event> {
                     tool_call_id: id,
                     is_error,
                     content: content_text,
+                    completed_at: chrono::Utc::now(),
                 });
             } else if !content_text.is_empty() {
                 events.push(Event::ToolCallContent {
@@ -2682,6 +2683,7 @@ mod tests {
                 tool_call_id,
                 is_error,
                 content,
+                completed_at: _,
             } => {
                 assert_eq!(tool_call_id, "tc-1");
                 assert!(!*is_error);

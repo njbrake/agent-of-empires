@@ -15,6 +15,7 @@ import {
 import type { ProfileInfo } from "../lib/types";
 import {
   ListField,
+  NumberField,
   SelectField,
   TextField,
   ToggleField,
@@ -449,13 +450,17 @@ export function SettingsView({
         return <SecuritySettings />;
       case "devices":
         return <ConnectedDevices />;
-      case "cockpit":
+      case "cockpit": {
+        const cockpit = (settings?.cockpit ?? {}) as Record<string, unknown>;
         return (
           <CockpitSettings
             serverAbout={serverAbout}
             onRefresh={onServerAboutRefresh}
+            cockpit={cockpit}
+            onSaveField={saveSubField}
           />
         );
+      }
     }
   };
 
@@ -563,15 +568,25 @@ export function SettingsView({
 function CockpitSettings({
   serverAbout,
   onRefresh,
+  cockpit,
+  onSaveField,
 }: {
   serverAbout: ServerAbout | null;
   onRefresh: () => Promise<void> | void;
+  cockpit: Record<string, unknown>;
+  onSaveField: (section: string, field: string, value: unknown) => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const envEnabled = !!serverAbout?.cockpit_env_enabled;
   const masterEnabled = !!serverAbout?.cockpit_master_enabled;
   const effective = envEnabled && masterEnabled;
+  // Local mirror so the toggle reflects optimistically while the
+  // backend save + /api/about re-fetch propagate.
+  const showToolDurations =
+    typeof cockpit.show_tool_durations === "boolean"
+      ? (cockpit.show_tool_durations as boolean)
+      : (serverAbout?.cockpit_show_tool_durations ?? true);
 
   const onToggle = async (next: boolean) => {
     setBusy(true);
@@ -629,6 +644,64 @@ function CockpitSettings({
           } ${busy ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}`}
         >
           {masterEnabled ? "Enabled" : "Disabled"}
+        </button>
+      </div>
+
+      <div className="border-t border-surface-800 pt-3">
+        <NumberField
+          label="History cap (events)"
+          description="Per-session retention cap on cockpit events. 0 = unlimited (default); set a non-zero value to bound disk usage on long-running sessions. Persists to config.toml as cockpit.replay_events; cross-device."
+          value={
+            typeof cockpit.replay_events === "number"
+              ? (cockpit.replay_events as number)
+              : 0
+          }
+          min={0}
+          onChange={(v) => onSaveField("cockpit", "replay_events", v)}
+        />
+      </div>
+
+      <div className="border-t border-surface-800 pt-3">
+        <NumberField
+          label="Replay buffer bytes"
+          description="Per-session byte cap on the in-memory replay buffer. Persists to config.toml as cockpit.replay_bytes; cross-device."
+          value={
+            typeof cockpit.replay_bytes === "number"
+              ? (cockpit.replay_bytes as number)
+              : 0
+          }
+          min={0}
+          onChange={(v) => onSaveField("cockpit", "replay_bytes", v)}
+        />
+      </div>
+
+      <div className="flex items-start justify-between gap-3 py-1 border-t border-surface-800 pt-3">
+        <div>
+          <div className="text-sm text-text-bright">Show tool-call durations</div>
+          <div className="text-xs text-text-dim mt-0.5">
+            Persists to <code>config.toml</code> as{" "}
+            <code>cockpit.show_tool_durations</code>; cross-device. Renders the elapsed-time label on every
+            cockpit tool card. The underlying measurement is currently imprecise on{" "}
+            <code>claude-agent-acp</code> (no <code>status: in_progress</code> signal) — durations include
+            stream-arrival skew rather than just runtime, so for example a parallel{" "}
+            <code>sleep 1</code> can read as ~3 s. Turn off if the inflated numbers are more confusing than
+            useful.
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={async () => {
+            const next = !showToolDurations;
+            onSaveField("cockpit", "show_tool_durations", next);
+            await onRefresh();
+          }}
+          className={`shrink-0 rounded px-3 py-1 text-xs font-medium transition-colors cursor-pointer ${
+            showToolDurations
+              ? "bg-brand-500 text-white hover:bg-brand-400"
+              : "bg-surface-700 text-text-secondary hover:bg-surface-600"
+          }`}
+        >
+          {showToolDurations ? "Visible" : "Hidden"}
         </button>
       </div>
 

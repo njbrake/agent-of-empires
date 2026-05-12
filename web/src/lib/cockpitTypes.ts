@@ -102,6 +102,14 @@ export type CockpitEvent =
          *  ACP `ToolCallUpdate.fields.content`. Empty when the agent
          *  emitted no content blocks on completion. */
         content: string;
+        /** Server-side ISO-8601 wall clock at which the completion
+         *  was minted. Used to stamp the activity row's `at` so the
+         *  duration label survives page reload — without it, the
+         *  reducer would assign `new Date()` at replay time and the
+         *  measured duration would count from "now". Optional for
+         *  backward compatibility with events persisted before this
+         *  field landed. */
+        completed_at?: string;
       };
     }
   | {
@@ -347,7 +355,8 @@ export function applyEvent(
     return next;
   }
   if ("ToolCallCompleted" in event) {
-    const { tool_call_id, is_error, content } = event.ToolCallCompleted;
+    const { tool_call_id, is_error, content, completed_at } =
+      event.ToolCallCompleted;
     if (next.inFlightTool && next.inFlightTool.id === tool_call_id) {
       next.inFlightTool = null;
     }
@@ -368,12 +377,16 @@ export function applyEvent(
       void _drop;
       next.toolOutputs = rest;
     }
+    // Use the server-side completion timestamp when present so the
+    // duration label survives page reload. Events persisted before
+    // `completed_at` landed fall back to "now" (same bug as before for
+    // those specific rows only).
     next.activity = pushActivity(next.activity, {
       id: `done-${tool_call_id}`,
       kind: is_error ? "tool_error" : "tool_complete",
       text,
       toolCallId: tool_call_id,
-      at: new Date().toISOString(),
+      at: completed_at ?? new Date().toISOString(),
     });
     return next;
   }

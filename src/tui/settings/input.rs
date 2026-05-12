@@ -819,6 +819,11 @@ impl SettingsView {
                     c.node_path = None;
                 }
             }
+            FieldKey::CockpitShowToolDurations => {
+                if let Some(c) = config.cockpit.as_mut() {
+                    c.show_tool_durations = None;
+                }
+            }
         }
 
         // Sync repo_config when in Repo scope

@@ -117,6 +117,7 @@ pub enum FieldKey {
     CockpitReplayEvents,
     CockpitReplayBytes,
     CockpitNodePath,
+    CockpitShowToolDurations,
 }
 
 /// Resolve a field value from global config and optional profile override.
@@ -321,6 +322,11 @@ fn build_cockpit_fields(
         global.cockpit.node_path.clone(),
         p.and_then(|c| c.node_path.clone()),
     );
+    let (show_tool_durations, std_override) = resolve_value(
+        scope,
+        global.cockpit.show_tool_durations,
+        p.and_then(|c| c.show_tool_durations),
+    );
 
     vec![
         SettingField {
@@ -384,6 +390,15 @@ fn build_cockpit_fields(
             value: FieldValue::Text(node_path),
             category: SettingsCategory::Cockpit,
             has_override: np_override,
+            inherited_display: None,
+        },
+        SettingField {
+            key: FieldKey::CockpitShowToolDurations,
+            label: "Show tool-call durations",
+            description: "Render an elapsed-time label on every cockpit tool card. Cross-device via config.toml. Note: the underlying measurement is currently imprecise on claude-agent-acp (no `status: in_progress` signal) — durations include stream-arrival skew. Defaults to on; turn off if the inflated numbers are more confusing than useful.",
+            value: FieldValue::Bool(show_tool_durations),
+            category: SettingsCategory::Cockpit,
+            has_override: std_override,
             inherited_display: None,
         },
     ]
@@ -1762,6 +1777,9 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
             config.cockpit.replay_bytes = (*v).max(1024)
         }
         (FieldKey::CockpitNodePath, FieldValue::Text(v)) => config.cockpit.node_path = v.clone(),
+        (FieldKey::CockpitShowToolDurations, FieldValue::Bool(v)) => {
+            config.cockpit.show_tool_durations = *v
+        }
         _ => {}
     }
 }
@@ -2077,6 +2095,11 @@ fn apply_field_to_profile(field: &SettingField, _global: &Config, config: &mut P
         }
         (FieldKey::CockpitNodePath, FieldValue::Text(v)) => {
             set_profile_override(v.clone(), &mut config.cockpit, |s, val| s.node_path = val);
+        }
+        (FieldKey::CockpitShowToolDurations, FieldValue::Bool(v)) => {
+            set_profile_override(*v, &mut config.cockpit, |s, val| {
+                s.show_tool_durations = val
+            });
         }
         _ => {}
     }

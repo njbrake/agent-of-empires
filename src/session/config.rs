@@ -77,6 +77,19 @@ pub struct CockpitConfig {
     /// empty, aoe resolves Node via PATH then bundled fallback.
     #[serde(default)]
     pub node_path: String,
+    /// Whether the cockpit web UI shows a per-tool elapsed-time label on
+    /// every tool card. Default true. Honoured by the web client via
+    /// `ServerAbout.cockpit_show_tool_durations` so toggling here flows
+    /// across every device that connects to the same daemon. The
+    /// underlying measurement is currently imprecise on
+    /// claude-agent-acp (no `status: "in_progress"` is emitted, so we
+    /// can't re-stamp `started_at` to the real subprocess start —
+    /// see the comment on `CardChromeProps.startedAt` in
+    /// `web/src/components/cockpit/ToolCards.tsx`); this setting lets
+    /// users hide the label until upstream provides a trustworthy
+    /// "subprocess started" signal.
+    #[serde(default = "default_true")]
+    pub show_tool_durations: bool,
 }
 
 impl Default for CockpitConfig {
@@ -89,6 +102,7 @@ impl Default for CockpitConfig {
             replay_events: default_replay_events(),
             replay_bytes: default_replay_bytes(),
             node_path: String::new(),
+            show_tool_durations: true,
         }
     }
 }

@@ -229,6 +229,18 @@ pub enum Event {
         /// is empty so cards still convey state.
         #[serde(default)]
         content: String,
+        /// Server-side wall-clock time the completion frame was minted.
+        /// Carried on the event so the frontend reducer can stamp the
+        /// matching `tool_complete` activity row with the REAL
+        /// completion time rather than `new Date()` at replay time —
+        /// without this, page-reload after a long delay made every
+        /// completed tool's duration count from "now", inflating the
+        /// label from seconds to minutes/hours. Events persisted
+        /// before this field landed default to "now" on deserialise
+        /// (serde calls the function), so the durations of pre-fix
+        /// events stay imprecise; new events are accurate end-to-end.
+        #[serde(default = "chrono::Utc::now")]
+        completed_at: DateTime<Utc>,
     },
     /// Streaming tool output. Some agents emit `ToolCallUpdate` notifications
     /// with `status != Completed` but populated `fields.content` to stream
@@ -531,6 +543,7 @@ mod tests {
             tool_call_id: "tc-1".into(),
             is_error: false,
             content: String::new(),
+            completed_at: Utc::now(),
         })
         .unwrap();
         assert!(s.in_flight_tool.is_none());

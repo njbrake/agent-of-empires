@@ -165,6 +165,7 @@ max_concurrent_workers = 5
 replay_events = 0  # 0 = unlimited history; set a positive value to cap per-session rows
 replay_bytes = 5_242_880
 node_path = ""
+show_tool_durations = true  # per-tool elapsed-time label in the web UI
 ```
 
 `enabled = false` is a master kill switch; cockpit refuses to spawn

@@ -243,6 +243,10 @@ export interface ServerAbout {
   /** Whether the server process has AOE_EXPERIMENTAL_COCKPIT=1 set.
    *  Read-only; flipping requires restarting `aoe serve`. */
   cockpit_env_enabled: boolean;
+  /** Resolved `cockpit.show_tool_durations` from the active profile's
+   *  config. Drives the per-tool elapsed-time label in the cockpit
+   *  web UI; cross-device since it lives in config.toml. */
+  cockpit_show_tool_durations: boolean;
 }
 
 export async function setCockpitMaster(
