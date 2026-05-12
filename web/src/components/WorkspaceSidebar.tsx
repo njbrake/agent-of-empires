@@ -1,6 +1,7 @@
-import { memo, useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
+import { Pencil } from "lucide-react";
 import type { Workspace, RepoGroup, SessionStatus } from "../lib/types";
 import { MULTI_REPO_GROUP_ID } from "../hooks/useRepoGroups";
 import {
@@ -11,6 +12,7 @@ import {
 import { useIdleDecayWindowMs } from "../lib/idleDecay";
 import { renameSession, setSessionNotifications } from "../lib/api";
 import { useServerDown, OFFLINE_TITLE } from "../lib/connectionState";
+import { useHasDraftForSessions } from "../lib/cockpitDrafts";
 import { StatusGlyph } from "./StatusGlyph";
 import { OwnerAvatar } from "./OwnerAvatar";
 
@@ -166,6 +168,15 @@ const SessionRow = memo(function SessionRow({
     firstSession?.notify_on_idle,
     firstSession?.notify_on_error,
   );
+  // Surface an unsent cockpit-composer draft on this workspace's row.
+  // Drafts live in localStorage under `cockpit:draft:<session_id>`; we
+  // check every session id in the workspace so multi-session rows
+  // (rare today) still light up if any of them has pending text.
+  const sessionIds = useMemo(
+    () => workspace.sessions.map((s) => s.id),
+    [workspace.sessions],
+  );
+  const hasDraft = useHasDraftForSessions(sessionIds);
 
   const setNotifyPreset = async (preset: NotifyPreset) => {
     setContextMenu(null);
@@ -337,8 +348,17 @@ const SessionRow = memo(function SessionRow({
             />
           </span>
           <div className="min-w-0 flex-1">
-            <span className={`block text-[13px] md:text-[14px] truncate ${isSessionActive({ status: sessionStatus, idle_entered_at: idleEnteredAt }, idleDecayWindowMs) ? textClass : isActive ? "text-text-primary" : "text-text-secondary"}`} title={label}>
-              {label}
+            <span className={`flex items-center gap-1.5 text-[13px] md:text-[14px] ${isSessionActive({ status: sessionStatus, idle_entered_at: idleEnteredAt }, idleDecayWindowMs) ? textClass : isActive ? "text-text-primary" : "text-text-secondary"}`}>
+              <span className="truncate" title={label}>{label}</span>
+              {hasDraft && (
+                <span
+                  title="Unsent draft"
+                  aria-label="Unsent draft"
+                  className="inline-flex shrink-0"
+                >
+                  <Pencil className="h-3 w-3 text-amber-400/90" />
+                </span>
+              )}
             </span>
             {subtitle && (
               <span className="block text-[11px] font-mono text-text-dim truncate" title={subtitle}>

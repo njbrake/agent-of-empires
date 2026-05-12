@@ -29,6 +29,7 @@ import {
 
 import { useFilesIndex, fuzzyFilter } from "./useFilesIndex";
 import type { CockpitState } from "../../lib/cockpitTypes";
+import { getDraft, setDraft } from "../../lib/cockpitDrafts";
 
 interface Props {
   sessionId: string;
@@ -126,40 +127,25 @@ export function Composer({
   // Keyed by sessionId; cleared when the text goes empty (user deleted
   // it, or the runtime cleared after a successful send).
   useEffect(() => {
-    const key = `cockpit:draft:${sessionId}`;
-    try {
-      const saved = localStorage.getItem(key);
-      if (saved && composerRuntime.getState().text === "") {
-        composerRuntime.setText(saved);
-        // setText doesn't fire the textarea's onInput, so the auto-grow
-        // never runs for the restored value. Resize manually once the DOM
-        // has the seeded text.
-        requestAnimationFrame(() => {
-          const el = taRef.current;
-          if (el) {
-            el.style.height = "auto";
-            el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
-          }
-        });
-      }
-    } catch {
-      // localStorage may throw in private-mode / over-quota scenarios.
-      // Draft persistence is best-effort, never block the composer.
+    const saved = getDraft(sessionId);
+    if (saved && composerRuntime.getState().text === "") {
+      composerRuntime.setText(saved);
+      // setText doesn't fire the textarea's onInput, so the auto-grow
+      // never runs for the restored value. Resize manually once the DOM
+      // has the seeded text.
+      requestAnimationFrame(() => {
+        const el = taRef.current;
+        if (el) {
+          el.style.height = "auto";
+          el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
+        }
+      });
     }
 
     let writeTimer: number | null = null;
     const flush = () => {
       writeTimer = null;
-      try {
-        const text = composerRuntime.getState().text;
-        if (text.length === 0) {
-          localStorage.removeItem(key);
-        } else {
-          localStorage.setItem(key, text);
-        }
-      } catch {
-        /* ignore */
-      }
+      setDraft(sessionId, composerRuntime.getState().text);
     };
     const unsub = composerRuntime.subscribe(() => {
       if (writeTimer !== null) window.clearTimeout(writeTimer);
