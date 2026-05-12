@@ -407,6 +407,21 @@ mod tests {
         }
 
         impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for StageRecorder {
+            fn register_callsite(
+                &self,
+                _meta: &'static tracing::Metadata<'static>,
+            ) -> tracing::subscriber::Interest {
+                tracing::subscriber::Interest::always()
+            }
+
+            fn enabled(&self, _meta: &tracing::Metadata<'_>, _ctx: Context<'_, S>) -> bool {
+                true
+            }
+
+            fn max_level_hint(&self) -> Option<tracing::level_filters::LevelFilter> {
+                Some(tracing::level_filters::LevelFilter::TRACE)
+            }
+
             fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
                 struct V {
                     msg: Option<String>,
@@ -449,7 +464,17 @@ mod tests {
                 stages: Arc::clone(&stages),
             };
             let subscriber = tracing_subscriber::registry().with(layer);
-            with_default(subscriber, f);
+            with_default(subscriber, || {
+                // Tracing caches callsite interest globally on first hit.
+                // If a parallel test in this binary executed
+                // `perform_deletion` before us with no subscriber (e.g.
+                // the on-disk e2e tests below), the `stage` callsites
+                // got cached as never-interesting and our subscriber
+                // would never see them. Force a re-evaluation while
+                // our subscriber is the active default.
+                tracing::callsite::rebuild_interest_cache();
+                f();
+            });
             let g = stages.lock().unwrap();
             g.clone()
         }
