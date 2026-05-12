@@ -181,6 +181,10 @@ pub fn restart_marker_path(session_id: &str) -> Result<PathBuf> {
 /// Best-effort write of an empty restart-pending marker. Called by the
 /// CLI's `aoe cockpit restart` before deleting the registry entry. The
 /// file's existence is the signal; its contents are irrelevant.
+///
+/// Preserves the legacy `<id>.restart` path so existing readers
+/// (`take_restart_marker`) keep working. New callers should prefer
+/// `mark_stop_intent` directly.
 pub fn mark_restart_pending(session_id: &str) {
     let Ok(path) = restart_marker_path(session_id) else {
         return;
@@ -205,6 +209,107 @@ pub fn take_restart_marker(session_id: &str) -> bool {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
         Err(_) => false,
     }
+}
+
+/// Reason a runner is being torn down, written as a zero-byte sentinel
+/// file in `<workers_dir>/<session_id>.intent.<suffix>` BEFORE the
+/// registry entry is deleted + SIGTERM is sent. The daemon's reaper
+/// consumes it via `take_stop_intent` and maps it to a `Stopped` event
+/// reason for the UI.
+///
+/// Zero-byte sentinels are atomic at the VFS layer: no parse failure
+/// mode, no schema evolution concerns. The variant is encoded in the
+/// filename suffix so the reaper can distinguish reasons with a single
+/// `remove_file` per candidate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkerStopIntent {
+    /// `aoe cockpit restart` — daemon will respawn next tick (transcript
+    /// continuity via the cached `stored_acp_session_id`).
+    RestartPending,
+    /// Substrate switch from cockpit to tmux. Daemon publishes
+    /// `Stopped { reason: "substrate_switch" }`; the next session-list
+    /// poll picks up `cockpit_mode = false` and swaps the view.
+    SubstrateSwitchToTmux,
+    /// Substrate switch from tmux to cockpit. Used when a TUI/CLI
+    /// caller flips `cockpit_mode = true` and wants the reconciler to
+    /// re-enable spawn attempts for this id on the next tick.
+    SubstrateSwitchToCockpit,
+}
+
+impl WorkerStopIntent {
+    fn filename_suffix(self) -> &'static str {
+        match self {
+            Self::RestartPending => "intent.restart",
+            Self::SubstrateSwitchToTmux => "intent.substrate-to-tmux",
+            Self::SubstrateSwitchToCockpit => "intent.substrate-to-cockpit",
+        }
+    }
+
+    /// Stable order so the reaper resolves multi-intent collisions
+    /// deterministically. Restart wins because it implies immediate
+    /// respawn; substrate-to-cockpit also wants respawn; substrate-to-
+    /// tmux is terminal for the worker. If two markers exist for the
+    /// same session, that's a CLI-script bug and we pick the
+    /// higher-priority one.
+    fn priority_order() -> &'static [Self] {
+        &[
+            Self::RestartPending,
+            Self::SubstrateSwitchToCockpit,
+            Self::SubstrateSwitchToTmux,
+        ]
+    }
+}
+
+fn intent_path(session_id: &str, intent: WorkerStopIntent) -> Result<PathBuf> {
+    validate_session_id(session_id)?;
+    Ok(workers_dir()?.join(format!("{session_id}.{}", intent.filename_suffix())))
+}
+
+/// Best-effort zero-byte marker write. Mirrors `mark_restart_pending`
+/// but typed: the suffix encodes the reason. 0600 perms so the marker
+/// can't be enumerated by other users on a shared host.
+pub fn mark_stop_intent(session_id: &str, intent: WorkerStopIntent) {
+    let Ok(path) = intent_path(session_id, intent) else {
+        return;
+    };
+    let _ = std::fs::write(&path, b"");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
+}
+
+/// Consume a stop intent, returning the first variant whose marker
+/// exists (in priority order) and atomically deleting it. Defensively
+/// clears any lower-priority markers for the same session in the same
+/// call so a CLI bug leaving multiple markers doesn't poison the next
+/// teardown.
+///
+/// Backwards compat: if no `.intent.*` marker exists but the legacy
+/// `<id>.restart` file does, treats it as `RestartPending` and consumes
+/// it. Lets existing callers of `mark_restart_pending` keep working
+/// while this typed API rolls out.
+pub fn take_stop_intent(session_id: &str) -> Option<WorkerStopIntent> {
+    let mut found: Option<WorkerStopIntent> = None;
+    for intent in WorkerStopIntent::priority_order() {
+        let Ok(path) = intent_path(session_id, *intent) else {
+            continue;
+        };
+        match std::fs::remove_file(&path) {
+            Ok(()) => {
+                if found.is_none() {
+                    found = Some(*intent);
+                }
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => {}
+        }
+    }
+    if found.is_none() && take_restart_marker(session_id) {
+        found = Some(WorkerStopIntent::RestartPending);
+    }
+    found
 }
 
 /// Atomic write (temp + rename) with 0600 perms. Avoids the half-written
@@ -583,5 +688,52 @@ mod tests {
         assert!(socket_path_for("foo/bar").is_err());
         assert!(log_path_for("").is_err());
         assert!(restart_marker_path(".hidden").is_err());
+    }
+
+    #[test]
+    #[serial]
+    fn stop_intent_roundtrip() {
+        with_temp_home(|| {
+            mark_stop_intent("s1", WorkerStopIntent::SubstrateSwitchToTmux);
+            assert_eq!(
+                take_stop_intent("s1"),
+                Some(WorkerStopIntent::SubstrateSwitchToTmux)
+            );
+            assert_eq!(take_stop_intent("s1"), None);
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn stop_intent_priority_order() {
+        with_temp_home(|| {
+            // Multiple markers set for one session; take_stop_intent must
+            // pick the highest-priority one and clear the rest.
+            mark_stop_intent("s1", WorkerStopIntent::SubstrateSwitchToTmux);
+            mark_stop_intent("s1", WorkerStopIntent::RestartPending);
+            assert_eq!(
+                take_stop_intent("s1"),
+                Some(WorkerStopIntent::RestartPending)
+            );
+            assert_eq!(take_stop_intent("s1"), None);
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn legacy_restart_marker_compat() {
+        with_temp_home(|| {
+            // Existing `mark_restart_pending` writes the legacy
+            // `<id>.restart` file; `take_stop_intent` must consume it.
+            mark_restart_pending("legacy");
+            assert_eq!(
+                take_stop_intent("legacy"),
+                Some(WorkerStopIntent::RestartPending)
+            );
+            // And the legacy take_restart_marker keeps working for the
+            // legacy path it was paired with.
+            mark_restart_pending("legacy2");
+            assert!(take_restart_marker("legacy2"));
+        });
     }
 }
