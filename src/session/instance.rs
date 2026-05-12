@@ -1496,6 +1496,17 @@ impl Instance {
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
 
+        // Reset a stuck Error status so the post-restart status reflects the
+        // fresh pane, not a stale "tmux session is gone" message captured
+        // before this restart.
+        if self.status == Status::Error {
+            self.status = Status::Idle;
+            self.last_error = None;
+            self.last_error_check = None;
+        }
+
+        self.try_recover_transcript();
+
         self.start_with_size_opts(size, skip_on_launch)
     }
 
@@ -1577,6 +1588,43 @@ impl Instance {
                 return;
             }
             std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+    }
+
+    /// Best-effort: rescue a Claude transcript that has gone missing or
+    /// oversized so `--resume <sid>` survives the restart instead of
+    /// thrashing on autocompact or failing outright. Only applies to Claude
+    /// sessions with a known `agent_session_id` running on the host (not
+    /// inside a sandboxed container, where the transcript lives in the
+    /// container's filesystem and is recovered separately on next launch).
+    fn try_recover_transcript(&mut self) {
+        if self.tool != "claude" || self.is_sandboxed() {
+            return;
+        }
+        let sid = match self.agent_session_id.as_deref() {
+            Some(s) if !s.is_empty() => s.to_string(),
+            _ => return,
+        };
+        match crate::session::recovery::recover_transcript_for_sid(&sid, &self.project_path) {
+            Ok(crate::session::recovery::RecoveryOutcome::NoArchiveFreshLaunch) => {
+                tracing::warn!(
+                    "restart '{}': transcript missing and no archive for sid {}; \
+                     clearing session id so claude launches fresh instead of failing on --resume",
+                    self.title,
+                    sid
+                );
+                self.agent_session_id = None;
+            }
+            Ok(outcome) => {
+                tracing::debug!("restart '{}': recovery outcome={:?}", self.title, outcome);
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "restart '{}': transcript recovery failed (continuing anyway): {}",
+                    self.title,
+                    e
+                );
+            }
         }
     }
 
