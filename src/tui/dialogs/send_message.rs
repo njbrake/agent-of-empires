@@ -12,6 +12,10 @@ use crate::tui::styles::Theme;
 pub struct SendMessageDialog {
     session_title: String,
     text_area: TextArea<'static>,
+    /// True for one keystroke after a successful Ctrl+U or Ctrl+K kill,
+    /// so the footer shows the "Ctrl+P restore deleted text" hint and
+    /// Ctrl+P pastes from the textarea's yank buffer. Any other key clears it.
+    restore_armed: bool,
 }
 
 impl SendMessageDialog {
@@ -22,6 +26,7 @@ impl SendMessageDialog {
         Self {
             session_title: session_title.to_string(),
             text_area,
+            restore_armed: false,
         }
     }
 
@@ -30,8 +35,30 @@ impl SendMessageDialog {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> DialogResult<String> {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+
+        // Ctrl+P restores the last kill (from Ctrl+U or Ctrl+K) only while armed.
+        // Otherwise it falls through to the textarea's default (cursor up).
+        if ctrl && matches!(key.code, KeyCode::Char('p')) && self.restore_armed {
+            self.text_area.paste();
+            self.restore_armed = false;
+            return DialogResult::Continue;
+        }
+
         match key.code {
             KeyCode::Esc => DialogResult::Cancel,
+            // Ctrl+U: delete from cursor to start of line. The deleted slice goes
+            // into the textarea's yank buffer; Ctrl+P pastes it back.
+            KeyCode::Char('u') if ctrl => {
+                self.restore_armed = self.text_area.delete_line_by_head();
+                DialogResult::Continue
+            }
+            // Ctrl+K: delete from cursor to end of line. The textarea has this
+            // by default, but we intercept so we can arm the restore hint.
+            KeyCode::Char('k') if ctrl => {
+                self.restore_armed = self.text_area.delete_line_by_end();
+                DialogResult::Continue
+            }
             // Shift+Enter inserts a newline.
             // Most terminals send Shift+Enter as ESC + CR (\x1b\r), which crossterm
             // decodes as Alt+Enter, so we accept both ALT and SHIFT modifiers.
@@ -39,6 +66,7 @@ impl SendMessageDialog {
                 if key.modifiers.contains(KeyModifiers::SHIFT)
                     || key.modifiers.contains(KeyModifiers::ALT) =>
             {
+                self.restore_armed = false;
                 self.text_area.insert_newline();
                 DialogResult::Continue
             }
@@ -52,6 +80,7 @@ impl SendMessageDialog {
                 }
             }
             _ => {
+                self.restore_armed = false;
                 self.text_area.input(key);
                 DialogResult::Continue
             }
@@ -59,6 +88,7 @@ impl SendMessageDialog {
     }
 
     pub fn handle_paste(&mut self, text: &str) {
+        self.restore_armed = false;
         self.text_area.insert_str(text);
     }
 
@@ -73,7 +103,7 @@ impl SendMessageDialog {
 
         frame.render_widget(Clear, dialog_area);
 
-        let block = Block::default()
+        let mut block = Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(theme.accent))
@@ -88,6 +118,16 @@ impl SendMessageDialog {
                 ])
                 .right_aligned(),
             );
+
+        if self.restore_armed {
+            block = block.title_bottom(
+                Line::from(vec![
+                    Span::styled(" Ctrl+P", Style::default().fg(theme.accent)),
+                    Span::styled(" restore deleted text ", Style::default().fg(theme.dimmed)),
+                ])
+                .left_aligned(),
+            );
+        }
 
         let inner = block.inner(dialog_area);
         frame.render_widget(block, dialog_area);
@@ -114,6 +154,10 @@ mod tests {
 
     fn alt_key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::ALT)
+    }
+
+    fn ctrl_key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::CONTROL)
     }
 
     #[test]
@@ -208,5 +252,134 @@ mod tests {
         dialog.handle_key(key(KeyCode::Char(' ')));
         dialog.handle_paste("world");
         assert_eq!(dialog.get_text(), "hi world");
+    }
+
+    #[test]
+    fn test_ctrl_u_deletes_to_start_of_line() {
+        let mut dialog = SendMessageDialog::new("Test Session");
+        dialog.handle_key(key(KeyCode::Char('h')));
+        dialog.handle_key(key(KeyCode::Char('i')));
+        // Cursor sits at end after typing, so Ctrl+U kills the whole line.
+        let result = dialog.handle_key(ctrl_key(KeyCode::Char('u')));
+        assert!(matches!(result, DialogResult::Continue));
+        assert_eq!(dialog.get_text(), "");
+        assert!(dialog.restore_armed);
+    }
+
+    #[test]
+    fn test_ctrl_u_partial_delete() {
+        let mut dialog = SendMessageDialog::new("Test Session");
+        dialog.handle_key(key(KeyCode::Char('a')));
+        dialog.handle_key(key(KeyCode::Char('b')));
+        dialog.handle_key(key(KeyCode::Char('c')));
+        dialog.handle_key(key(KeyCode::Left));
+        // Cursor between 'b' and 'c'. Ctrl+U deletes "ab".
+        dialog.handle_key(ctrl_key(KeyCode::Char('u')));
+        assert_eq!(dialog.get_text(), "c");
+        assert!(dialog.restore_armed);
+    }
+
+    #[test]
+    fn test_ctrl_k_deletes_to_end_of_line() {
+        let mut dialog = SendMessageDialog::new("Test Session");
+        dialog.handle_key(key(KeyCode::Char('a')));
+        dialog.handle_key(key(KeyCode::Char('b')));
+        dialog.handle_key(key(KeyCode::Char('c')));
+        dialog.handle_key(key(KeyCode::Home));
+        let result = dialog.handle_key(ctrl_key(KeyCode::Char('k')));
+        assert!(matches!(result, DialogResult::Continue));
+        assert_eq!(dialog.get_text(), "");
+        assert!(dialog.restore_armed);
+    }
+
+    #[test]
+    fn test_ctrl_k_partial_delete() {
+        let mut dialog = SendMessageDialog::new("Test Session");
+        dialog.handle_key(key(KeyCode::Char('a')));
+        dialog.handle_key(key(KeyCode::Char('b')));
+        dialog.handle_key(key(KeyCode::Char('c')));
+        dialog.handle_key(key(KeyCode::Left));
+        // Cursor between 'b' and 'c'. Ctrl+K deletes "c".
+        dialog.handle_key(ctrl_key(KeyCode::Char('k')));
+        assert_eq!(dialog.get_text(), "ab");
+        assert!(dialog.restore_armed);
+    }
+
+    #[test]
+    fn test_ctrl_u_on_empty_does_not_arm_restore() {
+        let mut dialog = SendMessageDialog::new("Test Session");
+        dialog.handle_key(ctrl_key(KeyCode::Char('u')));
+        assert!(!dialog.restore_armed);
+    }
+
+    #[test]
+    fn test_ctrl_k_at_end_of_input_does_not_arm() {
+        let mut dialog = SendMessageDialog::new("Test Session");
+        dialog.handle_key(key(KeyCode::Char('a')));
+        // Cursor at end of single line, no newline after, so nothing to kill.
+        dialog.handle_key(ctrl_key(KeyCode::Char('k')));
+        assert_eq!(dialog.get_text(), "a");
+        assert!(!dialog.restore_armed);
+    }
+
+    #[test]
+    fn test_ctrl_p_restores_after_ctrl_u() {
+        let mut dialog = SendMessageDialog::new("Test Session");
+        dialog.handle_key(key(KeyCode::Char('h')));
+        dialog.handle_key(key(KeyCode::Char('i')));
+        dialog.handle_key(ctrl_key(KeyCode::Char('u')));
+        assert_eq!(dialog.get_text(), "");
+        dialog.handle_key(ctrl_key(KeyCode::Char('p')));
+        assert_eq!(dialog.get_text(), "hi");
+        assert!(!dialog.restore_armed);
+    }
+
+    #[test]
+    fn test_ctrl_p_restores_after_ctrl_k() {
+        let mut dialog = SendMessageDialog::new("Test Session");
+        dialog.handle_key(key(KeyCode::Char('a')));
+        dialog.handle_key(key(KeyCode::Char('b')));
+        dialog.handle_key(key(KeyCode::Home));
+        dialog.handle_key(ctrl_key(KeyCode::Char('k')));
+        assert_eq!(dialog.get_text(), "");
+        dialog.handle_key(ctrl_key(KeyCode::Char('p')));
+        assert_eq!(dialog.get_text(), "ab");
+        assert!(!dialog.restore_armed);
+    }
+
+    #[test]
+    fn test_ctrl_p_without_arm_passes_through() {
+        // No kill has happened, so Ctrl+P should not be intercepted.
+        // The textarea's default Ctrl+P (cursor up) takes over; on single-line
+        // input that's effectively a no-op but it must not corrupt text/state.
+        let mut dialog = SendMessageDialog::new("Test Session");
+        dialog.handle_key(key(KeyCode::Char('h')));
+        dialog.handle_key(ctrl_key(KeyCode::Char('p')));
+        assert_eq!(dialog.get_text(), "h");
+        assert!(!dialog.restore_armed);
+    }
+
+    #[test]
+    fn test_typing_disarms_restore() {
+        let mut dialog = SendMessageDialog::new("Test Session");
+        dialog.handle_key(key(KeyCode::Char('x')));
+        dialog.handle_key(ctrl_key(KeyCode::Char('u')));
+        assert!(dialog.restore_armed);
+        dialog.handle_key(key(KeyCode::Char('y')));
+        assert!(!dialog.restore_armed);
+        // Subsequent Ctrl+P no longer restores.
+        dialog.handle_key(ctrl_key(KeyCode::Char('p')));
+        assert_eq!(dialog.get_text(), "y");
+    }
+
+    #[test]
+    fn test_paste_disarms_restore() {
+        let mut dialog = SendMessageDialog::new("Test Session");
+        dialog.handle_key(key(KeyCode::Char('x')));
+        dialog.handle_key(ctrl_key(KeyCode::Char('u')));
+        assert!(dialog.restore_armed);
+        dialog.handle_paste("pasted");
+        assert!(!dialog.restore_armed);
+        assert_eq!(dialog.get_text(), "pasted");
     }
 }
