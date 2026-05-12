@@ -20,7 +20,7 @@ const MUTATING = /[|;&]|>{1,2}|<(?!=)|-delete\b|-exec\b|--exec\b/;
 export interface Reclassified {
   /** Effective tool kind to dispatch to (may differ from tool.kind). */
   kind: string;
-  /** Origin of the call when reclassified — used to surface "search · bash"
+  /** Origin of the call when reclassified; used to surface "search · bash"
    *  on the card so the swap stays transparent. Null when not reclassified. */
   provenance: "bash" | null;
 }

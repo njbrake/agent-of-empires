@@ -92,7 +92,7 @@ export function subscribeDrafts(
 // not on every cockpit draft write anywhere in the app.
 export function useHasDraftForSessions(sessionIds: readonly string[]): boolean {
   // Stable join key so getSnapshot returns the same primitive across
-  // renders unless the relevant drafts actually change — otherwise
+  // renders unless the relevant drafts actually change; otherwise
   // useSyncExternalStore would tear under React 18's strict checks.
   const ids = sessionIds.join("|");
   const subscribe = useMemo(() => {

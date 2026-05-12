@@ -58,7 +58,7 @@ describe("slugifyBranch", () => {
     );
   });
 
-  it("replaces forward slashes — git allows them but the slug stays kebab", () => {
+  it("replaces forward slashes; git allows them but the slug stays kebab", () => {
     expect(slugifyBranch("feat/auth.refactor")).toBe("feat-auth-refactor");
   });
 

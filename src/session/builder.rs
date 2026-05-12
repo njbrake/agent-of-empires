@@ -643,7 +643,7 @@ fn git_sanitize_branch_name(s: &str) -> String {
     // Disallowed multi-char sequences: ".." and "@{".
     let mut out = out.replace("..", "-").replace("@{", "-");
     // Strip the ".lock" suffix from every slash-separated component, not
-    // just the last one — git-check-ref-format(1) rejects any component
+    // just the last one; git-check-ref-format(1) rejects any component
     // ending in ".lock" (e.g. `foo.lock/bar` is just as invalid as
     // `foo.lock`).
     out = out
@@ -853,7 +853,7 @@ mod tests {
     #[test]
     fn test_git_sanitize_branch_name_rejects_bare_at_sign() {
         // git-check-ref-format also rejects the single character "@" as a
-        // complete ref name — fall back to "session" rather than producing
+        // complete ref name; fall back to "session" rather than producing
         // a name libgit2 will refuse.
         assert_eq!(git_sanitize_branch_name("@"), "session");
     }
