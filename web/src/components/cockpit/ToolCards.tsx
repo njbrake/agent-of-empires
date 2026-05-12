@@ -117,6 +117,15 @@ interface CardChromeProps {
   expanded: boolean;
   onToggle?: () => void;
   body?: React.ReactNode;
+  /** ISO-8601 start timestamp for the underlying tool call. When set
+   *  with `endedAt` (completed call) or alone (in-flight call), the
+   *  header shows a duration label next to the status badge. See
+   *  #1060. */
+  startedAt?: string;
+  /** ISO-8601 timestamp from the matching `tool_complete` /
+   *  `tool_error` row. Absent → tool still running, duration ticks
+   *  live. */
+  endedAt?: string;
 }
 
 function CardChrome({
@@ -128,6 +137,8 @@ function CardChrome({
   expanded,
   onToggle,
   body,
+  startedAt,
+  endedAt,
 }: CardChromeProps) {
   const Header = onToggle ? "button" : "div";
   return (
@@ -149,6 +160,9 @@ function CardChrome({
           {primary}
         </span>
         {meta}
+        {startedAt && (
+          <DurationLabel startedAt={startedAt} endedAt={endedAt} />
+        )}
         <StatusBadge status={status} />
         {onToggle && (
           <ChevronDown
@@ -162,6 +176,49 @@ function CardChrome({
       {expanded && body}
     </div>
   );
+}
+
+/** Render `started_at → ended_at` as a human duration. While the tool
+ *  is still running the label ticks once a second so users see the
+ *  elapsed time grow. Capped at three significant pieces ("1m 12s") so
+ *  the header stays compact. */
+function DurationLabel({
+  startedAt,
+  endedAt,
+}: {
+  startedAt: string;
+  endedAt?: string;
+}) {
+  const running = !endedAt;
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!running) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [running]);
+  const start = Date.parse(startedAt);
+  if (!Number.isFinite(start)) return null;
+  const end = endedAt ? Date.parse(endedAt) : now;
+  if (!Number.isFinite(end)) return null;
+  const ms = Math.max(0, end - start);
+  const text = formatDurationMs(ms);
+  return (
+    <span
+      className="hidden md:inline text-[11px] text-text-dim tabular-nums"
+      title={running ? `running ${text}` : text}
+    >
+      {text}
+    </span>
+  );
+}
+
+export function formatDurationMs(ms: number): string {
+  if (ms < 1000) return `${ms} ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`;
+  const totalSec = Math.floor(ms / 1000);
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  return `${m}m ${s}s`;
 }
 
 /* ── Helpers ─────────────────────────────────────────────────────── */
@@ -347,6 +404,8 @@ function ExecuteToolCard({ tool, result }: Props) {
   return (
     <CardChrome
       status={status}
+      startedAt={tool.started_at}
+      endedAt={result?.at}
       icon={<Terminal className="h-3.5 w-3.5" />}
       label="bash"
       primary={
@@ -405,6 +464,8 @@ function ReadToolCard({ tool, result }: Props) {
   return (
     <CardChrome
       status={status}
+      startedAt={tool.started_at}
+      endedAt={result?.at}
       icon={<FileText className="h-3.5 w-3.5" />}
       label="read"
       primary={path}
@@ -462,6 +523,8 @@ function EditToolCard({ tool, result }: Props) {
   return (
     <CardChrome
       status={status}
+      startedAt={tool.started_at}
+      endedAt={result?.at}
       icon={<Pencil className="h-3.5 w-3.5" />}
       label={verb}
       primary={path}
@@ -543,6 +606,8 @@ function DeleteToolCard({ tool, result }: Props) {
   return (
     <CardChrome
       status={status}
+      startedAt={tool.started_at}
+      endedAt={result?.at}
       icon={<Trash2 className="h-3.5 w-3.5 text-rose-400" />}
       label="delete"
       primary={path}
@@ -576,6 +641,8 @@ function SearchToolCard({ tool, result, provenance }: SearchProps) {
   return (
     <CardChrome
       status={status}
+      startedAt={tool.started_at}
+      endedAt={result?.at}
       icon={<Search className="h-3.5 w-3.5" />}
       label={provenance === "bash" ? "search · bash" : "search"}
       primary={query}
@@ -637,6 +704,8 @@ function FetchToolCard({ tool, result }: Props) {
   return (
     <CardChrome
       status={status}
+      startedAt={tool.started_at}
+      endedAt={result?.at}
       icon={<Globe className="h-3.5 w-3.5" />}
       label="fetch"
       primary={url}
@@ -687,9 +756,26 @@ export function ToolGroupCard({ items }: { items: ToolGroupItem[] }) {
 
   const breakdown = summariseKinds(items);
 
+  // Group duration spans the earliest start across children → latest
+  // completion. Still-running calls leave `endedAt` undefined so the
+  // duration label ticks live until every child completes.
+  const startedAt = items
+    .map((i) => i.tool.started_at)
+    .sort()
+    .at(0);
+  const allDone = items.every((i) => i.result);
+  const endedAt = allDone
+    ? items
+        .map((i) => i.result!.at)
+        .sort()
+        .at(-1)
+    : undefined;
+
   return (
     <CardChrome
       status={status}
+      startedAt={startedAt}
+      endedAt={endedAt}
       icon={<Layers className="h-3.5 w-3.5" />}
       label="actions"
       primary={
@@ -797,6 +883,8 @@ function McpToolCard({ tool, result, server, verb }: McpProps) {
   return (
     <CardChrome
       status={status}
+      startedAt={tool.started_at}
+      endedAt={result?.at}
       icon={<Plug className="h-3.5 w-3.5" />}
       label={`MCP · ${humanizeServer(server)}`}
       primary={
@@ -840,6 +928,8 @@ function GenericToolCard({ tool, result }: Props) {
   return (
     <CardChrome
       status={status}
+      startedAt={tool.started_at}
+      endedAt={result?.at}
       icon={<Sparkles className="h-3.5 w-3.5" />}
       label={tool.kind || "tool"}
       primary={tool.name}
