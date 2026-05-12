@@ -497,6 +497,17 @@ function collapseToolRuns(parts: DraftPart[]): DraftPart[] {
         run = [];
         return;
       }
+      // Subagent cards are already their own collapsible block (one card
+      // per Task). Folding N parallel Tasks into a single generic group
+      // card hides the parallelism the user dispatched. See #1041.
+      const hasSubagent = run.some(
+        (p) => p.type === "tool-call" && p.toolName === SUBAGENT_TASK_NAME,
+      );
+      if (hasSubagent) {
+        for (const p of run) out.push(p);
+        run = [];
+        return;
+      }
       const childIds: string[] = [];
       const children: Array<{
         toolCallId: string;
