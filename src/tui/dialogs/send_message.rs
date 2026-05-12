@@ -32,7 +32,12 @@ impl SendMessageDialog {
     }
 
     fn get_text(&self) -> String {
-        self.text_area.lines().join("\n")
+        // ratatui_textarea preserves embedded CRs from voice/dictation paste
+        // (iOS speech often emits lone \r as a sentence break). Sending raw \r
+        // through to claude-code causes the agent to submit prematurely or
+        // receive garbled input — normalize before submit.
+        let joined = self.text_area.lines().join("\n");
+        joined.replace("\r\n", "\n").replace('\r', "\n")
     }
 
     /// Run a kill operation and arm the restore hint only if it actually wrote
@@ -119,6 +124,24 @@ impl SendMessageDialog {
     pub fn handle_paste(&mut self, text: &str) {
         self.restore_armed = false;
         self.text_area.insert_str(text);
+    }
+
+    /// Mirror of the height calculation inside `render` so the regression
+    /// test for tiny viewports (iPhone portrait + soft keyboard) can assert
+    /// the dialog never exceeds `area.height`. Keep in lockstep with `render`.
+    #[cfg(test)]
+    fn dialog_area_height(&self, area: Rect) -> u16 {
+        let content_lines = self.text_area.lines().len() as u16;
+        (content_lines + 2).clamp(3, 12).min(area.height.max(3))
+    }
+
+    /// Test-only accessor for the composed text (newline-joined lines).
+    /// Mirrors `get_text` minus the CR normalization so paste-routing
+    /// tests can assert that embedded newlines from voice/dictation
+    /// survive the trip into the dialog.
+    #[cfg(test)]
+    pub(crate) fn composed_text(&self) -> String {
+        self.text_area.lines().join("\n")
     }
 
     pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
@@ -519,5 +542,48 @@ mod tests {
         assert!(dialog.restore_armed);
         dialog.handle_key(ctrl_key(KeyCode::Char('p')));
         assert_eq!(dialog.get_text(), "a\nbcd");
+    }
+
+    #[test]
+    fn dialog_height_respects_tiny_viewport() {
+        // Regression: pre-0ddbcad, .min(area.height.max(3)) forced a 3-row
+        // floor even when viewport had < 3 rows (iPhone portrait + soft keyboard).
+        // The dialog overflowed off-screen.
+        use ratatui::layout::Rect;
+
+        let dialog = SendMessageDialog::new("test session");
+
+        // viewport is 2 rows (representative iPhone portrait + soft keyboard)
+        let tiny_area = Rect {
+            x: 0,
+            y: 0,
+            width: 80,
+            height: 2,
+        };
+        let computed_height = dialog.dialog_area_height(tiny_area);
+
+        assert!(
+            computed_height <= tiny_area.height,
+            "dialog height ({}) must not exceed viewport ({})",
+            computed_height,
+            tiny_area.height
+        );
+
+        // Sanity: also holds at height=1 and height=0.
+        for h in [0u16, 1, 2, 3] {
+            let area = Rect {
+                x: 0,
+                y: 0,
+                width: 80,
+                height: h,
+            };
+            let computed = dialog.dialog_area_height(area);
+            assert!(
+                computed <= h,
+                "dialog height ({}) must not exceed viewport ({})",
+                computed,
+                h
+            );
+        }
     }
 }

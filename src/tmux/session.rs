@@ -1,7 +1,8 @@
 //! tmux session management
 
 use anyhow::{bail, Result};
-use std::process::Command;
+use std::io::Write;
+use std::process::{Command, Stdio};
 
 use super::{
     refresh_session_cache, session_exists_from_cache,
@@ -15,6 +16,34 @@ use crate::cli::truncate_id;
 use crate::process;
 use crate::session::config::should_apply_tmux_clipboard;
 use crate::session::Status;
+
+/// Default size when no controlling-terminal size is supplied at session
+/// creation (HTTP API path). tmux defaults `new-session -d` to 80x24, which
+/// combined with per-session `window-size latest` causes iOS Mosh portrait
+/// clients (~50x24 with on-screen keyboard up) to wedge sessions at that
+/// size after detach. Comfortable headless default; any narrower client
+/// shrinks via `latest` on attach.
+const DEFAULT_HEADLESS_SIZE: (u16, u16) = (240, 80);
+
+/// Minimum width/height below which we treat the reported terminal size
+/// as a wedge sentinel (pipe contexts return Some((80, 24)) from
+/// crossterm; iOS Mosh portrait reports ~50x24) and substitute
+/// DEFAULT_HEADLESS_SIZE. Real attached terminals are virtually always
+/// at least 120x40; anything smaller is almost certainly a non-TTY
+/// shell or a phone client, neither of which wants creation pinned at
+/// the reported wedge dims.
+const MIN_REAL_TERMINAL_SIZE: (u16, u16) = (120, 40);
+
+/// Resolves the size we should pass to `tmux new-session -x/-y`. None or
+/// any size below MIN_REAL_TERMINAL_SIZE is treated as a wedge and
+/// substituted with DEFAULT_HEADLESS_SIZE. Extracted so the threshold
+/// logic is testable without a tmux fixture.
+fn effective_creation_size(size: Option<(u16, u16)>) -> (u16, u16) {
+    match size {
+        Some((w, h)) if w >= MIN_REAL_TERMINAL_SIZE.0 && h >= MIN_REAL_TERMINAL_SIZE.1 => (w, h),
+        _ => DEFAULT_HEADLESS_SIZE,
+    }
+}
 
 pub struct Session {
     name: String,
@@ -69,7 +98,8 @@ impl Session {
             return Ok(());
         }
 
-        let mut args = build_create_args(&self.name, working_dir, command, size);
+        let effective_size = Some(effective_creation_size(size));
+        let mut args = build_create_args(&self.name, working_dir, command, effective_size);
         append_remain_on_exit_args(&mut args, &self.name);
         append_pane_base_index_args(&mut args, &self.name);
         append_mouse_on_args(&mut args, &self.name);
@@ -105,6 +135,123 @@ impl Session {
 
     pub fn is_pane_running_shell(&self) -> bool {
         is_pane_running_shell(&self.name)
+    }
+
+    /// When `remain-on-exit on` is set, a pane whose process has exited
+    /// stays around as a "dead" pane and the tmux session remains. The
+    /// normal restart flow (kill-session + new-session) is correct for
+    /// that case, but when the caller wants to revive the pane in place
+    /// without tearing down the session, respawn-pane is the right tool.
+    ///
+    /// Returns `Ok(true)` if the first window's pane was dead and was
+    /// respawned with `command` (using `working_dir` as the cwd). Returns
+    /// `Ok(false)` if the pane is alive (no action taken) or the session
+    /// does not exist. Returns `Err` if tmux respawn-pane fails.
+    pub fn respawn_dead_pane(&self, working_dir: &str, command: Option<&str>) -> Result<bool> {
+        if !self.exists() {
+            return Ok(false);
+        }
+        if !self.is_pane_dead() {
+            return Ok(false);
+        }
+
+        // `^.0` targets the first window's first pane regardless of
+        // base-index (matches is_pane_dead/capture_pane targeting). The
+        // `-k` flag forces respawn even though the pane has a remembered
+        // exit status; without it tmux refuses to respawn dead panes.
+        let target = format!("{}:^.0", self.name);
+        let mut args: Vec<String> = vec![
+            "respawn-pane".to_string(),
+            "-k".to_string(),
+            "-t".to_string(),
+            target,
+            "-c".to_string(),
+            working_dir.to_string(),
+        ];
+        if let Some(cmd) = command {
+            args.push(cmd.to_string());
+        }
+
+        let output = Command::new("tmux").args(&args).output()?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!("Failed to respawn dead pane: {}", stderr);
+        }
+
+        super::refresh_session_cache();
+        Ok(true)
+    }
+
+    /// Return the tmux pane id for the first window's first pane (e.g. "%158"),
+    /// or None if the session is gone or tmux refuses. Used by lifecycle
+    /// helpers that need to address the pane directly (e.g. cx-panes sidecar
+    /// lookup) rather than via session-name.
+    pub fn pane_id(&self) -> Option<String> {
+        let target = format!("{}:^.0", self.name);
+        let output = Command::new("tmux")
+            .args(["display-message", "-t", &target, "-p", "#{pane_id}"])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let id = String::from_utf8(output.stdout).ok()?.trim().to_string();
+        if id.is_empty() {
+            None
+        } else {
+            Some(id)
+        }
+    }
+
+    /// Poll capture-pane every 500ms until the last visible line ends with a
+    /// shell prompt char (`$`, `%`, or `>`) or `timeout` elapses. Used after
+    /// respawn-pane to wait for zsh to render its prompt before injecting
+    /// keys (without this, keystrokes race the shell startup and get lost).
+    pub fn wait_for_shell_prompt(&self, timeout: std::time::Duration) -> Result<()> {
+        let start = std::time::Instant::now();
+        let target = format!("{}:^.0", self.name);
+        while start.elapsed() < timeout {
+            let output = Command::new("tmux")
+                .args(["capture-pane", "-t", &target, "-p", "-S", "-3"])
+                .output();
+            if let Ok(out) = output {
+                if out.status.success() {
+                    let content = String::from_utf8_lossy(&out.stdout);
+                    if let Some(last) = content.lines().rev().find(|l| !l.trim().is_empty()) {
+                        let trimmed = last.trim_end();
+                        if matches!(trimmed.chars().last(), Some('$') | Some('%') | Some('>')) {
+                            return Ok(());
+                        }
+                    }
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(500));
+        }
+        bail!(
+            "Timed out waiting for shell prompt on session {} after {:?}",
+            self.name,
+            timeout
+        );
+    }
+
+    /// Kill the agent process inside the pane WITHOUT tearing down the
+    /// tmux session. With `remain-on-exit on` (which AoE always sets), the
+    /// pane survives as a "Pane is dead" corpse, ready to be respawned by
+    /// `respawn_dead_pane()`. Used by archive=kill: stops the agent from
+    /// consuming resources while the row sits sunk in the Attention sort.
+    /// Idempotent: no-op if the session doesn't exist or has no pane pid.
+    pub fn kill_pane(&self) -> Result<()> {
+        if !self.exists() {
+            return Ok(());
+        }
+        if let Some(pane_pid) = self.get_pane_pid() {
+            process::kill_process_tree(pane_pid);
+        }
+        // Don't refresh the session cache here — the tmux session itself
+        // is unchanged; only the pane process is gone. Status_poller will
+        // pick up pane_dead on its next tick.
+        Ok(())
     }
 
     pub fn kill(&self) -> Result<()> {
@@ -304,16 +451,34 @@ impl Session {
         }
 
         let target = format!("{}:^.0", self.name);
+        let byte_len = text.len();
+        let line_count = text.lines().count();
+        let max_line = text.lines().map(str::len).max().unwrap_or(0);
 
-        let lines: Vec<&str> = text.lines().collect();
-        for (i, line) in lines.iter().enumerate() {
+        // Long messages and embedded-newline messages go through the tmux
+        // paste-buffer path (load-buffer over stdin → paste-buffer with
+        // bracketed-paste markers). The per-line `send-keys -l` path hits
+        // ARG_MAX for very large payloads and produces brittle Shift+Enter
+        // sequences for newlines; bracketed paste is what the receiving
+        // agent (claude-code in raw mode) is designed to ingest.
+        const PASTE_BYTE_THRESHOLD: usize = 2048;
+        let use_paste_buffer = byte_len >= PASTE_BYTE_THRESHOLD || text.contains('\n');
+
+        tracing::debug!(
+            "send_keys_with_delay: bytes={} lines={} max_line={} use_paste_buffer={} target={}",
+            byte_len,
+            line_count,
+            max_line,
+            use_paste_buffer,
+            target
+        );
+
+        if use_paste_buffer {
+            Self::send_via_paste_buffer(&target, text)?;
+        } else {
             // `--` ends option parsing so lines beginning with `-` (markdown
             // bullets, CLI flags in prompts) are not misread as tmux flags.
-            Self::tmux_send(&target, &["-l", "--", line])?;
-            if i < lines.len() - 1 {
-                // ESC + CR: what terminals send for Shift+Enter (inserts newline)
-                Self::tmux_send(&target, &["-H", "1b", "0d"])?;
-            }
+            Self::tmux_send(&target, &["-l", "--", text])?;
         }
 
         if enter_delay_ms > 0 {
@@ -322,6 +487,39 @@ impl Session {
 
         // Enter to submit
         Self::tmux_send(&target, &["Enter"])?;
+
+        Ok(())
+    }
+
+    /// Deliver `text` to `target` via tmux's load-buffer + paste-buffer.
+    /// Uses a process-id-scoped buffer name so concurrent senders don't
+    /// clobber each other. `-p` enables bracketed-paste markers when the
+    /// receiving pane has DECSET 2004 set (claude-code does); `-d` deletes
+    /// the buffer after the paste. Avoids ARG_MAX on long voice/dictation
+    /// pastes that the per-line send-keys path can't handle.
+    fn send_via_paste_buffer(target: &str, text: &str) -> Result<()> {
+        let buf_name = format!("aoe-send-{}", std::process::id());
+
+        let mut child = Command::new("tmux")
+            .args(["load-buffer", "-b", &buf_name, "-"])
+            .stdin(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin.write_all(text.as_bytes())?;
+        }
+        let status = child.wait()?;
+        if !status.success() {
+            bail!("tmux load-buffer failed (status={:?})", status.code());
+        }
+
+        let output = Command::new("tmux")
+            .args(["paste-buffer", "-d", "-p", "-b", &buf_name, "-t", target])
+            .output()?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!("tmux paste-buffer failed: {}", stderr);
+        }
 
         Ok(())
     }
@@ -928,6 +1126,141 @@ mod tests {
 
         // Command should be last
         assert_eq!(args.last().unwrap(), "claude");
+    }
+
+    #[test]
+    fn test_effective_creation_size_substitutes_default_for_wedge_inputs() {
+        // None → default (HTTP API path).
+        assert_eq!(effective_creation_size(None), DEFAULT_HEADLESS_SIZE);
+        // Pipe wedge: crossterm reports Some((80, 24)) on non-TTY stdin/stdout.
+        assert_eq!(
+            effective_creation_size(Some((80, 24))),
+            DEFAULT_HEADLESS_SIZE
+        );
+        // iOS Mosh portrait wedge.
+        assert_eq!(
+            effective_creation_size(Some((50, 24))),
+            DEFAULT_HEADLESS_SIZE
+        );
+        // Just below threshold on either axis still substitutes.
+        assert_eq!(
+            effective_creation_size(Some((119, 40))),
+            DEFAULT_HEADLESS_SIZE
+        );
+        assert_eq!(
+            effective_creation_size(Some((120, 39))),
+            DEFAULT_HEADLESS_SIZE
+        );
+    }
+
+    #[test]
+    fn test_effective_creation_size_passes_through_real_terminals() {
+        // At threshold — kept as reported.
+        assert_eq!(effective_creation_size(Some((120, 40))), (120, 40));
+        // Typical desktop terminal — kept.
+        assert_eq!(effective_creation_size(Some((180, 50))), (180, 50));
+        // Large terminal — kept.
+        assert_eq!(effective_creation_size(Some((300, 100))), (300, 100));
+    }
+
+    /// Regression test for dead-pane restart bug: a session whose pane has
+    /// died (remain-on-exit kept the session) must be revivable via
+    /// respawn_dead_pane without tearing down the tmux session.
+    #[test]
+    #[serial_test::serial]
+    fn test_respawn_dead_pane_revives_dead_pane() {
+        if !tmux_available() {
+            eprintln!("Skipping test: tmux not available");
+            return;
+        }
+
+        let session_name = format!("aoe_test_respawn_{}", std::process::id());
+
+        // Start a session with a command that exits immediately and
+        // remain-on-exit set, so we end up with a dead pane. Pin
+        // pane-base-index 0 to match what aoe does in production --
+        // without this, users with `pane-base-index 1` in their
+        // tmux.conf cause the `^.0` target to miss.
+        let output = Command::new("tmux")
+            .args([
+                "new-session",
+                "-d",
+                "-s",
+                &session_name,
+                "-x",
+                "80",
+                "-y",
+                "24",
+                "true",
+                ";",
+                "set-option",
+                "-p",
+                "-t",
+                &session_name,
+                "remain-on-exit",
+                "on",
+                ";",
+                "set-option",
+                "-t",
+                &session_name,
+                "pane-base-index",
+                "0",
+            ])
+            .output()
+            .expect("tmux new-session");
+        assert!(output.status.success());
+
+        // Wait for the command to exit.
+        std::thread::sleep(std::time::Duration::from_millis(500));
+
+        let session = Session::from_name(&session_name);
+        // Refresh cache so exists() check is fresh.
+        super::refresh_session_cache();
+
+        assert!(session.exists(), "Session should exist via remain-on-exit");
+        assert!(session.is_pane_dead(), "Pane should be dead after `true`");
+
+        // Respawn into a long-running command so the pane is alive again.
+        let respawned = session
+            .respawn_dead_pane("/tmp", Some("sleep 30"))
+            .expect("respawn_dead_pane should succeed");
+        assert!(respawned, "respawn_dead_pane should report it acted");
+
+        // Pane should be alive now, session still exists.
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        assert!(session.exists(), "Session should still exist after respawn");
+        assert!(
+            !session.is_pane_dead(),
+            "Pane should be alive after respawn"
+        );
+
+        // Calling again on a live pane should return Ok(false).
+        let respawned_again = session
+            .respawn_dead_pane("/tmp", Some("sleep 30"))
+            .expect("respawn_dead_pane on live pane should not error");
+        assert!(
+            !respawned_again,
+            "respawn_dead_pane should report no-op on live pane"
+        );
+
+        // Clean up
+        let _ = Command::new("tmux")
+            .args(["kill-session", "-t", &session_name])
+            .output();
+    }
+
+    /// respawn_dead_pane on a non-existent session is a safe no-op.
+    #[test]
+    #[serial_test::serial]
+    fn test_respawn_dead_pane_no_session() {
+        let session = Session::from_name("aoe_test_nonexistent_session_xyz");
+        let result = session
+            .respawn_dead_pane("/tmp", Some("zsh"))
+            .expect("respawn_dead_pane should not error on missing session");
+        assert!(
+            !result,
+            "respawn_dead_pane should return false for missing session"
+        );
     }
 
     #[test]

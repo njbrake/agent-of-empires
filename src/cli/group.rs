@@ -20,6 +20,14 @@ pub enum GroupCommands {
 
     /// Move session to group
     Move(GroupMoveArgs),
+
+    /// Archive a group (sinks it + child sessions to the bottom of the
+    /// Attention sort, rendered in italic+dim; remains visible).
+    Archive(GroupNameArgs),
+
+    /// Unarchive a group (clears archived_at on the group and all child
+    /// sessions).
+    Unarchive(GroupNameArgs),
 }
 
 #[derive(Args)]
@@ -58,6 +66,12 @@ pub struct GroupMoveArgs {
     group: String,
 }
 
+#[derive(Args)]
+pub struct GroupNameArgs {
+    /// Group name (path)
+    name: String,
+}
+
 #[derive(Serialize)]
 struct GroupInfo {
     name: String,
@@ -72,7 +86,51 @@ pub async fn run(profile: &str, command: GroupCommands) -> Result<()> {
         GroupCommands::Create(args) => create_group(profile, args).await,
         GroupCommands::Delete(args) => delete_group(profile, args).await,
         GroupCommands::Move(args) => move_session(profile, args).await,
+        GroupCommands::Archive(args) => set_group_archived(profile, args, true).await,
+        GroupCommands::Unarchive(args) => set_group_archived(profile, args, false).await,
     }
+}
+
+async fn set_group_archived(profile: &str, args: GroupNameArgs, archived: bool) -> Result<()> {
+    let storage = Storage::new(profile)?;
+    let (mut instances, groups) = storage.load_with_groups()?;
+
+    let mut group_tree = GroupTree::new_with_groups(&instances, &groups);
+
+    let name = args.name.trim();
+    if !group_tree.group_exists(name) {
+        bail!("Group not found: {}", name);
+    }
+
+    group_tree.set_archived(name, archived);
+
+    // Cascade to all child instances (direct + nested)
+    let prefix = format!("{}/", name);
+    let now = if archived {
+        Some(chrono::Utc::now())
+    } else {
+        None
+    };
+    let mut cascaded = 0usize;
+    for inst in &mut instances {
+        if inst.group_path == name || inst.group_path.starts_with(&prefix) {
+            inst.archived_at = now;
+            cascaded += 1;
+        }
+    }
+
+    storage.save_with_groups(&instances, &group_tree)?;
+
+    let verb = if archived { "Archived" } else { "Unarchived" };
+    println!(
+        "✓ {} group: {} ({} session{})",
+        verb,
+        name,
+        cascaded,
+        if cascaded == 1 { "" } else { "s" }
+    );
+
+    Ok(())
 }
 
 async fn list_groups(profile: &str, args: GroupListArgs) -> Result<()> {

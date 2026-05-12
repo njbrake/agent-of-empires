@@ -111,6 +111,17 @@ pub async fn run(args: UninstallArgs) -> Result<()> {
             if profiles_dir.is_dir() {
                 if let Ok(entries) = fs::read_dir(&profiles_dir) {
                     for entry in entries.flatten() {
+                        // Skip symlinks. cs/cxa creates aliases like
+                        // `forit-work -> default`; without this skip, the
+                        // alias's sessions.json (same file via the symlink)
+                        // gets counted again and the user sees an inflated
+                        // "Found N sessions to delete" prompt during
+                        // uninstall.
+                        if let Ok(ft) = entry.file_type() {
+                            if ft.is_symlink() {
+                                continue;
+                            }
+                        }
                         if entry.path().is_dir() {
                             profile_count += 1;
                             let sessions_file = entry.path().join("sessions.json");

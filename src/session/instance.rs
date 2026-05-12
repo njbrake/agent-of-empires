@@ -165,6 +165,31 @@ pub struct Instance {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idle_entered_at: Option<DateTime<Utc>>,
 
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived_at: Option<DateTime<Utc>>,
+
+    /// Favorite marker — sibling of archive. When set AND the session is in
+    /// a "needs help" status (Waiting, Error, Idle, Unknown), the session
+    /// pre-empts all non-favorited peers in the same status tier, pinning it
+    /// to the top of the Attention sort. In Running / Stopped / transient
+    /// statuses the flag is visible (⭐ glyph + bold) but does NOT re-rank
+    /// — live work isn't interrupted by a decoration. Opposite of archive.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub favorited_at: Option<DateTime<Utc>>,
+
+    /// Snooze marker — "temporary archive." When `snoozed_until` is in the
+    /// future, the session sorts to tier 99 alongside archived rows and
+    /// renders italic+dim with a `z ` prefix plus a remaining-time readout
+    /// in the age column. When the timestamp falls into the past, the
+    /// `is_snoozed()` predicate returns false and the row naturally rejoins
+    /// the active attention sort (the stale timestamp stays on disk until
+    /// the next mutation rewrites it — harmless). Mutually compatible with
+    /// `favorited_at`: a snoozed favorite keeps its star when it wakes up.
+    /// Archive wins over snooze (archiving a snoozed session clears nothing
+    /// but renders as archive since is_archived() is checked first).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snoozed_until: Option<DateTime<Utc>>,
+
     // Git worktree integration
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_info: Option<WorktreeInfo>,
@@ -242,6 +267,16 @@ pub struct Instance {
     pub last_error: Option<String>,
     #[serde(skip)]
     pub session_id_poller: Option<Arc<Mutex<SessionPoller>>>,
+
+    /// Cached `is_pane_dead()` reading from the most recent status_poller
+    /// tick. Lets the Attention comparator treat dead-pane rows as sunk
+    /// (tier 99) without re-querying tmux on every sort. Field name avoids
+    /// `pane_dead` to prevent shadowing `tmux::Session::is_pane_dead()` at
+    /// call sites that take both. Refreshed by status_poller; not persisted
+    /// (clears to false on TUI restart, which is correct — a fresh poll
+    /// will re-set it within one tick if the pane is genuinely dead).
+    #[serde(skip)]
+    pub pane_dead_observed: bool,
 }
 
 /// Append yolo-mode flags or environment variables to a launch command.
@@ -405,6 +440,9 @@ impl Instance {
             created_at: Utc::now(),
             last_accessed_at: None,
             idle_entered_at: None,
+            archived_at: None,
+            favorited_at: None,
+            snoozed_until: None,
             worktree_info: None,
             workspace_info: None,
             sandbox_info: None,
@@ -426,14 +464,125 @@ impl Instance {
             last_start_time: None,
             last_error: None,
             session_id_poller: None,
+            pane_dead_observed: false,
         }
     }
 
-    /// Stamp `last_accessed_at` to the current time. Call this on
-    /// user-initiated interactions (attach, send keys, etc.) so the
-    /// timestamp reflects actual activity, not just status transitions.
+    /// Stamp `last_accessed_at` to the current time AND wake the session
+    /// from any sink state. Call this on user-initiated interactions
+    /// (attach, send keys, etc.) — every existing call site already does.
+    ///
+    /// Auto-unarchive/unsnooze: sending a message or attaching is the user
+    /// explicitly saying "I care about this now." Leaving `archived_at` or
+    /// `snoozed_until` set after such interaction is incoherent — the row
+    /// would render italic+dim at tier 99 even while live traffic flows.
+    /// User rule (2026-04-23): "messaging should unarchive."
+    ///
+    /// `favorited_at` is preserved: fav is a positive "care more" signal,
+    /// orthogonal to the sink states. A favorited session that was snoozed
+    /// stays favorited when the user wakes it.
     pub fn touch_last_accessed(&mut self) {
         self.last_accessed_at = Some(Utc::now());
+        self.archived_at = None;
+        self.snoozed_until = None;
+    }
+
+    /// Mark the session archived. Archived sessions sink to the bottom of
+    /// the Attention sort and render in italic+dim style, but remain
+    /// visible. Auto-cleared by the attention-signal hook on Waiting/Error.
+    ///
+    /// Mutual exclusion with `favorite`: archiving clears `favorited_at`.
+    /// Archive is the strongest dismiss; keeping a stale favorite pin on a
+    /// row the user just sunk produces contradictory "pinned + dismissed"
+    /// state. The user's explicit rule: "archived removes fav."
+    pub fn archive(&mut self) {
+        self.archived_at = Some(Utc::now());
+        self.favorited_at = None;
+    }
+
+    pub fn unarchive(&mut self) {
+        self.archived_at = None;
+    }
+
+    pub fn is_archived(&self) -> bool {
+        self.archived_at.is_some()
+    }
+
+    /// Mark the session favorite. Sibling of `archive` — opposite semantics.
+    /// Pinning logic lives in `attention_session_key`: favorite is a
+    /// within-tier pin (top of its respective category), not a cross-tier
+    /// promoter. A favorited Running stays in the Running bucket but sorts
+    /// above non-favorited Running peers.
+    ///
+    /// Mutual exclusion with the sink states: favoriting clears `archived_at`
+    /// AND `snoozed_until`. Favorite's whole purpose is "surface this row";
+    /// leaving either sink-state flag set would force the row to tier 99 and
+    /// the favorite bias would be suppressed — user presses `f` and sees
+    /// nothing change. The user's explicit rule: "marking as favorite
+    /// unarchives," extended to snooze because snooze shares tier 99 and
+    /// shares the burial outcome.
+    pub fn favorite(&mut self) {
+        self.favorited_at = Some(Utc::now());
+        self.archived_at = None;
+        self.snoozed_until = None;
+    }
+
+    pub fn unfavorite(&mut self) {
+        self.favorited_at = None;
+    }
+
+    pub fn is_favorited(&self) -> bool {
+        self.favorited_at.is_some()
+    }
+
+    /// Read the agent-raised urgent flag from `attention.json`. Sourced
+    /// on-demand from `/tmp/aoe-hooks/{id}/attention.json` so it picks up
+    /// changes the running agent makes (via the `attention-urgent` script)
+    /// without an Instance state mutation. Suppressed for archived/snoozed
+    /// rows so a sunk session can't claw its way back to the top.
+    pub fn is_urgent(&self) -> bool {
+        if self.is_archived() || self.is_snoozed() {
+            return false;
+        }
+        crate::hooks::read_hook_urgent(&self.id)
+    }
+
+    /// Temporarily defer this session for `minutes` — sets `snoozed_until`
+    /// to `Utc::now() + minutes`. Behaves like a timed archive: the row
+    /// sinks to tier 99, renders italic+dim with a `z ` prefix, and shows
+    /// remaining time in the age column. When the timestamp expires the
+    /// row rejoins the active attention sort automatically (next render
+    /// tick) — no timer task needed. Resolution of `minutes` happens at
+    /// snooze time, not render time, so changing the config default mid-
+    /// snooze does NOT extend currently-sleeping rows.
+    pub fn snooze(&mut self, minutes: u32) {
+        self.snoozed_until = Some(Utc::now() + chrono::Duration::minutes(minutes as i64));
+    }
+
+    pub fn unsnooze(&mut self) {
+        self.snoozed_until = None;
+    }
+
+    /// True if `snoozed_until` is set AND in the future. Expired snoozes
+    /// return false so the row naturally rejoins the main sort on the next
+    /// render — the stale timestamp stays on disk until the next mutation
+    /// rewrites the session (harmless; `snoozed_until` is always compared
+    /// against `Utc::now()`).
+    pub fn is_snoozed(&self) -> bool {
+        self.snoozed_until.map(|t| t > Utc::now()).unwrap_or(false)
+    }
+
+    /// Remaining snooze duration as a `chrono::Duration`, or `None` if the
+    /// session isn't snoozed (or the timestamp has already expired).
+    pub fn snooze_remaining(&self) -> Option<chrono::Duration> {
+        self.snoozed_until.and_then(|t| {
+            let delta = t - Utc::now();
+            if delta > chrono::Duration::zero() {
+                Some(delta)
+            } else {
+                None
+            }
+        })
     }
 
     /// Time elapsed since this session most recently transitioned into
@@ -1391,7 +1540,43 @@ impl Instance {
         let session = self.tmux_session()?;
 
         if session.exists() {
+            // Dead-pane case: `remain-on-exit on` keeps the tmux session
+            // alive after the agent process exits, leaving a frozen pane.
+            // The vanilla kill-session + new-session flow can race against
+            // the 2-second session cache (kill_process_tree on a defunct
+            // pid stalls on macOS, and the subsequent kill-session can
+            // run while start's exists() check still sees the cached
+            // entry), leaving the dead pane in place — this is the bug
+            // users hit when `e/E/F5` "doesn't restart anything".
+            //
+            // For dead panes we take the cx-restart path: respawn the
+            // pane in place into a shell, preserving the tmux session
+            // (so attached clients stay attached and tmux env stays
+            // intact). The kill below then sees a live pane and tears
+            // it down cleanly, and start_with_size_opts recreates the
+            // session with the agent command. The respawn step
+            // unblocks the kill path that was hanging on the dead pid.
+            if session.is_pane_dead() {
+                tracing::info!(
+                    "restart: pane dead for session {} (remain-on-exit), \
+                     respawning shell before recreate",
+                    session.name()
+                );
+                if let Err(e) = session.respawn_dead_pane(&self.project_path, Some("zsh")) {
+                    tracing::warn!(
+                        "respawn_dead_pane failed for {}: {} -- falling back to kill+start",
+                        session.name(),
+                        e
+                    );
+                }
+            }
             session.kill()?;
+            // Force the session cache to drop any stale "exists=true"
+            // entry from the 2-second window so start_with_size_opts
+            // sees the post-kill state immediately. kill() already
+            // refreshes, but an explicit refresh here is defensive
+            // against future caching changes.
+            crate::tmux::refresh_session_cache();
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
 

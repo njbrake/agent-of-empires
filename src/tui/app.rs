@@ -87,6 +87,37 @@ pub fn check_version_change() -> Result<Option<String>> {
 }
 
 impl App {
+    /// Is this key event a candidate for paste-burst accumulation?
+    /// Printable ASCII Char or Enter, with no modifiers (or shift only).
+    /// Burst detection ignores Ctrl/Alt-modified chords because those
+    /// are genuine intentional shortcuts and never come from a paste-burst.
+    /// Enter is included so embedded CR/LF inside a Mosh-stripped paste
+    /// (voice/dictation often inserts sentence-break newlines) gets
+    /// captured into the burst as \n instead of breaking it in two and
+    /// firing Submit/select on the deferred Enter.
+    fn is_burst_candidate(key: &KeyEvent) -> bool {
+        let mods = key.modifiers;
+        let mods_ok = mods.is_empty() || mods == KeyModifiers::SHIFT;
+        if !mods_ok {
+            return false;
+        }
+        match key.code {
+            KeyCode::Char(c) => c == ' ' || c.is_ascii_graphic(),
+            KeyCode::Enter => true,
+            _ => false,
+        }
+    }
+
+    /// Translate a burst-candidate key event back to its text byte for the
+    /// accumulated burst string. Char yields the char; Enter yields '\n'.
+    fn burst_char_for(key: &KeyEvent) -> Option<char> {
+        match key.code {
+            KeyCode::Char(c) => Some(c),
+            KeyCode::Enter => Some('\n'),
+            _ => None,
+        }
+    }
+
     pub fn new(
         profile: &str,
         available_tools: AvailableTools,
@@ -146,7 +177,9 @@ impl App {
             update_status_rx: None,
             update_bar_dismissed: false,
             event_stream: Some(EventStream::new()),
-            mouse_captured: true,
+            // Initial state matches whatever `tui::run` did at startup —
+            // capture is enabled iff AOE_MOUSE_CAPTURE=1.
+            mouse_captured: crate::tui::mouse_capture_requested(),
         })
     }
 
@@ -161,6 +194,13 @@ impl App {
         &mut self,
         terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
     ) -> Result<()> {
+        // Mouse capture is opt-in (AOE_MOUSE_CAPTURE=1). Without the env, we
+        // never enable xterm mouse tracking — iOS Mosh + Termius/Blink rely
+        // on the terminal app's native scrollback for touch-scroll, and Mosh
+        // doesn't reliably forward mouse-tracking escapes to mobile clients.
+        if !crate::tui::mouse_capture_requested() {
+            return Ok(());
+        }
         let desired = !self.home.wants_text_selection();
         if desired == self.mouse_captured {
             return Ok(());
@@ -190,9 +230,11 @@ impl App {
             terminal.backend_mut(),
             crossterm::terminal::LeaveAlternateScreen,
             DisableBracketedPaste,
-            DisableMouseCapture,
             crossterm::cursor::Show
         )?;
+        if crate::tui::mouse_capture_requested() {
+            crossterm::execute!(terminal.backend_mut(), DisableMouseCapture)?;
+        }
         self.mouse_captured = false;
         std::io::Write::flush(terminal.backend_mut())?;
 
@@ -216,7 +258,8 @@ impl App {
         )?;
         // Defer mouse-capture restore to sync_mouse_capture so we don't
         // briefly enable it only to disable again when the user returned
-        // to the serve view.
+        // to the serve view. sync_mouse_capture itself respects the
+        // AOE_MOUSE_CAPTURE env gate.
         self.sync_mouse_capture(terminal)?;
         std::io::Write::flush(terminal.backend_mut())?;
 
@@ -261,16 +304,21 @@ impl App {
     }
 
     pub fn set_theme(&mut self, name: &str) {
-        let palette_mode = load_config()
-            .ok()
-            .flatten()
-            .map(|c| {
-                matches!(
-                    c.theme.color_mode,
-                    crate::session::config::ColorMode::Palette
-                )
-            })
-            .unwrap_or(false);
+        // Honor the saved color_mode (Palette vs Truecolor). If we don't, a
+        // SetTheme dispatched from the Settings view preview/apply flow will
+        // re-load the theme with raw RGB colors — "breaking the coloration"
+        // on terminals that were working with the user's palette preference
+        // (Termius/mosh edge cases, 8-bit-only TTYs, etc.).
+        let palette_mode = crate::session::resolve_config(
+            self.home.active_profile.as_deref().unwrap_or("default"),
+        )
+        .map(|c| {
+            matches!(
+                c.theme.color_mode,
+                crate::session::config::ColorMode::Palette
+            )
+        })
+        .unwrap_or(false);
         self.theme = crate::tui::styles::load_theme_with_mode(name, palette_mode);
         self.needs_redraw = true;
     }
@@ -366,6 +414,74 @@ impl App {
                 event = self.event_stream.as_mut().expect("event_stream missing").next() => {
                     match event {
                         Some(Ok(Event::Key(key))) => {
+                            // Paste-burst detector — VoiceInk + Mosh ergonomics.
+                            // Mosh strips bracketed-paste markers (\e[200~ / \e[201~),
+                            // so pasted dictation arrives as a stream of individual
+                            // KeyEvents that fire destructive shortcuts (Q=quit,
+                            // N=new, B=cxs spawn, etc.). Look-ahead-poll the event
+                            // stream with a 5ms inter-key timeout: if 3+ printable
+                            // chars accumulate, route through handle_paste instead
+                            // of dispatching individually. Below the burst threshold
+                            // we replay the captured chars as individual key events.
+                            if Self::is_burst_candidate(&key) {
+                                let first_char = match Self::burst_char_for(&key) {
+                                    Some(c) => c,
+                                    None => unreachable!(),
+                                };
+                                let mut burst_str = String::new();
+                                burst_str.push(first_char);
+                                let mut burst_keys: Vec<KeyEvent> = vec![key];
+                                let mut deferred: Option<Event> = None;
+                                loop {
+                                    let next = tokio::time::timeout(
+                                        Duration::from_millis(5),
+                                        self.event_stream.as_mut().expect("event_stream missing").next(),
+                                    ).await;
+                                    match next {
+                                        Ok(Some(Ok(Event::Key(k)))) if Self::is_burst_candidate(&k) => {
+                                            if let Some(c) = Self::burst_char_for(&k) {
+                                                burst_str.push(c);
+                                                burst_keys.push(k);
+                                            }
+                                        }
+                                        Ok(Some(Ok(other))) => {
+                                            deferred = Some(other);
+                                            break;
+                                        }
+                                        _ => break,
+                                    }
+                                }
+                                if burst_keys.len() >= 3 {
+                                    tracing::debug!(
+                                        "paste-burst: routed {} chars via handle_paste (chars={:?})",
+                                        burst_str.len(), burst_str
+                                    );
+                                    self.home.handle_paste(&burst_str);
+                                } else {
+                                    for k in burst_keys {
+                                        self.handle_key(k, terminal).await?;
+                                        if self.should_quit { break; }
+                                    }
+                                }
+                                if !self.should_quit {
+                                    if let Some(evt) = deferred {
+                                        match evt {
+                                            Event::Key(k) => { self.handle_key(k, terminal).await?; }
+                                            Event::Paste(text) => { self.home.handle_paste(&text); }
+                                            Event::Resize(_, _) => { terminal.autoresize()?; self.needs_redraw = true; }
+                                            _ => {}
+                                        }
+                                    }
+                                }
+                                if !self.needs_redraw {
+                                    terminal.draw(|f| self.render(f))?;
+                                }
+                                if self.should_quit {
+                                    break;
+                                }
+                                continue;
+                            }
+
                             self.handle_key(key, terminal).await?;
                             self.sync_mouse_capture(terminal)?;
 
@@ -383,18 +499,25 @@ impl App {
                             continue;
                         }
                         Some(Ok(Event::Mouse(mouse))) => {
-                            let hit_scroll_target = if self.home.is_diff_open() {
-                                self.home.hit_diff(mouse.column, mouse.row)
-                            } else if self.home.has_selected_session() {
-                                self.home.hit_preview(mouse.column, mouse.row)
-                            } else {
-                                false
-                            };
+                            let hit_list = self.home.hit_list(mouse.column, mouse.row);
+                            let hit_preview = self.home.hit_preview(mouse.column, mouse.row);
+                            let hit_diff = self.home.is_diff_open()
+                                && self.home.hit_diff(mouse.column, mouse.row);
+                            tracing::debug!(
+                                "mouse evt: kind={:?} col={} row={} hit_list={} hit_preview={} hit_diff={}",
+                                mouse.kind, mouse.column, mouse.row, hit_list, hit_preview, hit_diff
+                            );
+                            let hit_scroll_target = hit_diff || hit_list || hit_preview;
                             let handled = match mouse.kind {
-                                MouseEventKind::ScrollUp if hit_scroll_target => self.home.handle_scroll_up(),
-                                MouseEventKind::ScrollDown if hit_scroll_target => self.home.handle_scroll_down(),
+                                MouseEventKind::ScrollUp if hit_scroll_target => {
+                                    self.home.handle_scroll_up(mouse.column, mouse.row)
+                                }
+                                MouseEventKind::ScrollDown if hit_scroll_target => {
+                                    self.home.handle_scroll_down(mouse.column, mouse.row)
+                                }
                                 _ => false,
                             };
+                            tracing::debug!("mouse evt handled={}", handled);
                             if handled {
                                 terminal.draw(|f| self.render(f))?;
                             }
@@ -416,6 +539,7 @@ impl App {
                             // (responsive::dialog_width, STACKED_BREAKPOINT,
                             // etc.) re-evaluates; ratatui's draw() autoresizes
                             // internally before rendering.
+                            terminal.autoresize()?;
                             terminal.draw(|f| self.render(f))?;
                             continue;
                         }
@@ -717,10 +841,12 @@ impl App {
                 return Ok(());
             }
             (KeyCode::Char('q'), _) if !self.home.has_dialog() => {
-                if self.home.is_creation_pending() {
-                    self.home.show_quit_during_creation_confirm();
-                    return Ok(());
-                }
+                // Aggressive quit. Ctrl-B D is the safe-detach path that bounces
+                // back to the shell without killing anything; `q` is the explicit
+                // "close aoe now" button. Even if a session creation is still in
+                // flight, cleanup_pending_creation() on shutdown cancels the hook
+                // and clears orphaned stubs (orphans are also swept on next
+                // launch — see home/mod.rs:820). No confirmation prompt.
                 self.should_quit = true;
                 return Ok(());
             }
@@ -794,6 +920,12 @@ impl App {
             Action::SetTheme(name) => {
                 self.set_theme(&name);
             }
+            Action::LaunchCxs => {
+                self.launch_cxs(terminal, false)?;
+            }
+            Action::LaunchCxsSingle => {
+                self.launch_cxs(terminal, true)?;
+            }
             Action::SpawnUpdate(method, version) => {
                 if self.update_status_rx.is_some() {
                     self.update_status =
@@ -806,6 +938,35 @@ impl App {
                 self.update_status = Some(UpdateStatus::transient(text));
             }
         }
+        Ok(())
+    }
+
+    fn launch_cxs(
+        &mut self,
+        terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+        single: bool,
+    ) -> Result<()> {
+        let status = self.with_raw_mode_disabled(terminal, || {
+            let mut cmd = std::process::Command::new("cxs");
+            cmd.env("CXS_NO_TUI", "1");
+            if single {
+                cmd.env("CXS_SINGLE", "1");
+            }
+            cmd.status()
+        })?;
+
+        self.needs_redraw = true;
+        crate::tmux::refresh_session_cache();
+        self.home.reload()?;
+
+        if let Err(e) = status {
+            tracing::warn!("cxs launch returned error: {}", e);
+            self.home.info_dialog = Some(crate::tui::dialogs::InfoDialog::new(
+                "cxs failed",
+                &format!("Could not launch cxs: {}. Is ~/scripts/cxs on PATH?", e),
+            ));
+        }
+
         Ok(())
     }
 
@@ -931,7 +1092,22 @@ impl App {
         crate::tmux::refresh_session_cache();
         self.home.reload()?;
         self.home.stamp_last_accessed(session_id);
-        self.home.select_session_by_id(session_id);
+        // Persist so the attach-return bump survives aoe restart. Same
+        // reasoning as the send-message path in home/input.rs: without a
+        // save() here the aging signal collapses back to startup timestamps
+        // on next launch.
+        if let Err(e) = self.home.save() {
+            tracing::error!("Failed to save after attach-return: {}", e);
+        }
+        // In Attention sort, jump cursor to the top-attention row instead of
+        // pinning it to the session we just came from — that session has
+        // typically been bumped down a tier (Waiting → Running) and the next
+        // item needing attention is now at row 0.
+        if self.home.sort_order() == crate::session::config::SortOrder::Attention {
+            self.home.select_top_attention(Some(session_id));
+        } else {
+            self.home.select_session_by_id(session_id);
+        }
 
         if let Err(e) = attach_result {
             tracing::warn!("tmux attach returned error: {}", e);
@@ -997,7 +1173,11 @@ impl App {
         self.needs_redraw = true;
         crate::tmux::refresh_session_cache();
         self.home.reload()?;
-        self.home.select_session_by_id(session_id);
+        if self.home.sort_order() == crate::session::config::SortOrder::Attention {
+            self.home.select_top_attention(Some(session_id));
+        } else {
+            self.home.select_session_by_id(session_id);
+        }
 
         if let Err(e) = attach_result {
             tracing::warn!("tmux terminal attach returned error: {}", e);
@@ -1072,6 +1252,8 @@ pub enum Action {
     EditFile(PathBuf),
     StopSession(String),
     SetTheme(String),
+    LaunchCxs,
+    LaunchCxsSingle,
     SpawnUpdate(crate::update::install::InstallMethod, String),
     SetTransientStatus(String),
 }

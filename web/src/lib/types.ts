@@ -31,6 +31,12 @@ export interface SessionResponse {
   /** True when this session uses ACP cockpit rendering instead of a
    *  tmux-backed PTY. Absent on builds without the cockpit feature. */
   cockpit_mode?: boolean;
+  /** Attention-sort overlay flags. RFC3339 timestamps when set, null
+   *  otherwise. `snoozed_until` may be a stale past timestamp — always
+   *  compare with `Date.now()` before treating the session as snoozed. */
+  archived_at: string | null;
+  favorited_at: string | null;
+  snoozed_until: string | null;
   /** True when this is a Claude Code session AND the user has enabled
    *  Claude's fullscreen renderer (`tui: "fullscreen"` in
    *  ~/.claude/settings.json). The mobile rendering path uses this to

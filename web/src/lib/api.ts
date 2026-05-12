@@ -542,6 +542,36 @@ export async function setSessionNotifications(
   }
 }
 
+/** Update the attention overlay on a session — archive, favorite, or
+ *  snooze (and their inverses). `minutes` only applies to `snooze`;
+ *  the server falls back to the profile default when omitted. */
+export type AttentionAction =
+  | "archive"
+  | "unarchive"
+  | "favorite"
+  | "unfavorite"
+  | "snooze"
+  | "unsnooze";
+
+export async function setSessionAttention(
+  id: string,
+  action: AttentionAction,
+  minutes?: number,
+): Promise<boolean> {
+  try {
+    const body: { action: AttentionAction; minutes?: number } = { action };
+    if (typeof minutes === "number") body.minutes = minutes;
+    const res = await fetch(`/api/sessions/${id}/attention`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
 export interface DeleteSessionOptions {
   delete_worktree?: boolean;
   delete_branch?: boolean;

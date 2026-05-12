@@ -951,6 +951,10 @@ fn build_router(state: Arc<AppState>) -> Router {
             "/api/sessions/{id}/notifications",
             patch(api::update_session_notifications),
         )
+        .route(
+            "/api/sessions/{id}/attention",
+            patch(api::update_session_attention),
+        )
         .route("/api/sessions/{id}/terminal", post(api::ensure_terminal))
         .route(
             "/api/sessions/{id}/container-terminal",
