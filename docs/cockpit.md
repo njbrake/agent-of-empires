@@ -162,7 +162,7 @@ default_agent = "aoe-agent"
 approval_timeout_secs = 300
 destructive_require_double_confirm = true
 max_concurrent_workers = 5
-replay_events = 500
+replay_events = 0  # 0 = unlimited history; set a positive value to cap per-session rows
 replay_bytes = 5_242_880
 node_path = ""
 ```
@@ -172,7 +172,10 @@ even if a session has `--cockpit`. `default_for_claude = true` makes
 new Claude sessions cockpit-mode by default on mobile clients.
 
 Migration v005 seeds these defaults on upgrade so the section already
-exists if you came from 1.4.x.
+exists if you came from 1.4.x. Migration v006 then flips the v005-seeded
+`replay_events = 500` to `0` so upgraders pick up the new unlimited
+default; any user who has explicitly chosen a different cap is left
+alone.
 
 ## Disabling / escape hatches
 

@@ -361,8 +361,8 @@ fn build_cockpit_fields(
         },
         SettingField {
             key: FieldKey::CockpitReplayEvents,
-            label: "Replay buffer events",
-            description: "Maximum number of cockpit events kept in the per-session replay buffer.",
+            label: "History cap (events)",
+            description: "Per-session retention cap on cockpit events. 0 = unlimited (default); set a non-zero value to bound disk usage on long-running sessions.",
             value: FieldValue::Number(u64::from(replay_events)),
             category: SettingsCategory::Cockpit,
             has_override: re_override,
@@ -1754,7 +1754,9 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
             config.cockpit.max_concurrent_workers = (*v).max(1) as u32
         }
         (FieldKey::CockpitReplayEvents, FieldValue::Number(v)) => {
-            config.cockpit.replay_events = (*v).max(1) as u32
+            // 0 = unlimited history; clamp non-zero values to u32 range.
+            // See #1065.
+            config.cockpit.replay_events = (*v).min(u32::MAX as u64) as u32
         }
         (FieldKey::CockpitReplayBytes, FieldValue::Number(v)) => {
             config.cockpit.replay_bytes = (*v).max(1024)
@@ -2061,9 +2063,12 @@ fn apply_field_to_profile(field: &SettingField, _global: &Config, config: &mut P
             });
         }
         (FieldKey::CockpitReplayEvents, FieldValue::Number(v)) => {
-            set_profile_override((*v).max(1) as u32, &mut config.cockpit, |s, val| {
-                s.replay_events = val
-            });
+            // 0 = unlimited; #1065.
+            set_profile_override(
+                (*v).min(u32::MAX as u64) as u32,
+                &mut config.cockpit,
+                |s, val| s.replay_events = val,
+            );
         }
         (FieldKey::CockpitReplayBytes, FieldValue::Number(v)) => {
             set_profile_override((*v).max(1024), &mut config.cockpit, |s, val| {

@@ -100,7 +100,12 @@ fn default_max_workers() -> u32 {
     5
 }
 fn default_replay_events() -> u32 {
-    500
+    // 0 = unlimited. The event store's prune already gates on `> 0`
+    // (see `EventStore::record`), so the default flip is end-to-end
+    // safe: a fresh install never truncates history; users who want a
+    // ceiling for disk-space reasons can set a non-zero value in
+    // config.toml or the settings TUI. See #1065.
+    0
 }
 fn default_replay_bytes() -> u64 {
     5_242_880
