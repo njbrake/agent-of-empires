@@ -1,0 +1,473 @@
+//! `aoe __cockpit-runner` — the per-worker shim that owns the agent
+//! subprocess and outlives `aoe serve`.
+//!
+//! Invoked by `Supervisor::spawn` as a detached child via `setsid` so its
+//! process group is independent of the daemon's. The runner:
+//!
+//! 1. Writes a registry entry at
+//!    `<app_dir>/cockpit-workers/<session_id>.json` with its PID, socket
+//!    path, and agent metadata.
+//! 2. Spawns the configured ACP agent as a child over stdio.
+//! 3. Binds a Unix listener at `<app_dir>/cockpit-workers/<session_id>.sock`
+//!    and accepts connections in a loop, proxying bytes between the
+//!    currently-connected aoe daemon and the agent's stdio.
+//! 4. Buffers agent → daemon traffic (line-oriented ndjson) in a ring
+//!    buffer while no daemon is attached, so the next reattach replays
+//!    the gap.
+//! 5. On agent exit or SIGTERM/SIGINT: deletes the registry file and
+//!    socket, then exits.
+//!
+//! The daemon disconnects the unix socket on `detach_all` without
+//! signalling the runner; the runner just sees a closed connection and
+//! goes back to accepting.
+//!
+//! Logging: the runner appends to
+//! `<app_dir>/cockpit-workers/<session_id>.log` so `aoe cockpit logs
+//! --session <id> --follow` can tail it independently of `serve.log`.
+
+use std::collections::VecDeque;
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use std::sync::Arc;
+use std::time::Duration;
+
+use anyhow::{anyhow, Context, Result};
+use clap::Args;
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tokio::net::{UnixListener, UnixStream};
+use tokio::process::{Child, Command};
+use tokio::sync::Mutex;
+use tracing::{debug, info, warn};
+
+use super::worker_registry::{self, WorkerRecord};
+
+/// Cap on agent → daemon notification lines stored while detached.
+/// Each entry is at most one ndjson line (a few KB). Past this, oldest
+/// entries are dropped — the daemon-side event_store still has them.
+const NOTIFICATION_BUFFER_LINES: usize = 256;
+
+/// Pipe-read buffer for the agent's stdout. 64KB matches the default
+/// pipe size on macOS/Linux.
+const STDOUT_READ_BUF: usize = 64 * 1024;
+
+#[derive(Args, Debug, Clone)]
+pub struct CockpitRunnerArgs {
+    #[arg(long)]
+    pub socket: PathBuf,
+    #[arg(long)]
+    pub session_id: String,
+    #[arg(long)]
+    pub agent_name: String,
+    #[arg(long)]
+    pub cwd: PathBuf,
+    #[arg(long)]
+    pub model: Option<String>,
+    #[arg(long, value_delimiter = ',')]
+    pub additional_dirs: Vec<PathBuf>,
+    /// Comma-separated keys of provider_env passed through at spawn.
+    /// Recorded in the registry so `aoe cockpit ps` can show what
+    /// auth-shape the session uses without re-reading the daemon.
+    #[arg(long, value_delimiter = ',', default_value = "")]
+    pub provider_env_keys: Vec<String>,
+    /// Cached ACP session id, written by the daemon and read on
+    /// reattach. The runner doesn't itself use this field — it surfaces
+    /// in the registry for the daemon's restart path.
+    #[arg(long)]
+    pub stored_acp_session_id: Option<String>,
+    /// Agent program + args after `--`.
+    #[arg(last = true, required = true)]
+    pub agent_argv: Vec<String>,
+}
+
+/// Entry point dispatched from `main.rs`.
+pub async fn run(args: CockpitRunnerArgs) -> Result<()> {
+    init_runner_logging(&args.session_id)?;
+
+    info!(
+        target: "cockpit.runner",
+        session = %args.session_id,
+        socket = %args.socket.display(),
+        agent = %args.agent_name,
+        "cockpit runner starting"
+    );
+
+    // Bind the socket BEFORE spawning the agent so the daemon's
+    // post-spawn connect doesn't race the listener creation.
+    if args.socket.exists() {
+        let _ = std::fs::remove_file(&args.socket);
+    }
+    if let Some(parent) = args.socket.parent() {
+        std::fs::create_dir_all(parent)
+            .with_context(|| format!("creating socket dir {}", parent.display()))?;
+    }
+    let listener = UnixListener::bind(&args.socket)
+        .with_context(|| format!("bind {}", args.socket.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&args.socket, std::fs::Permissions::from_mode(0o600));
+    }
+
+    let (mut agent_child, agent_stdin, agent_stdout, agent_stderr) =
+        spawn_agent(&args).with_context(|| format!("spawning agent {:?}", args.agent_argv))?;
+
+    let our_pid = std::process::id();
+    let record = WorkerRecord::new(
+        args.session_id.clone(),
+        our_pid,
+        args.socket.clone(),
+        args.agent_name.clone(),
+        args.cwd.clone(),
+        args.model.clone(),
+        args.additional_dirs.clone(),
+        args.provider_env_keys.clone(),
+        args.stored_acp_session_id.clone(),
+    );
+    worker_registry::save(&record).context("writing registry record")?;
+
+    // Drain agent stderr into the per-session log file. Without this the
+    // child blocks once the stderr pipe fills (~64KB on Linux), looking
+    // like a wedged handshake.
+    if let Some(stderr) = agent_stderr {
+        let label = args.session_id.clone();
+        tokio::spawn(async move {
+            let mut reader = BufReader::new(stderr).lines();
+            while let Ok(Some(line)) = reader.next_line().await {
+                debug!(target: "cockpit.runner.agent.stderr", session = %label, "{line}");
+            }
+        });
+    }
+
+    let shared = Arc::new(RunnerShared::new());
+
+    // Fan-out task: reads agent stdout and either forwards to the
+    // currently-attached daemon or buffers in the ring. Single owner of
+    // the read half of the agent's stdout pipe.
+    let agent_stdout_task = tokio::spawn(fanout_agent_stdout(
+        agent_stdout,
+        Arc::clone(&shared),
+        args.session_id.clone(),
+    ));
+
+    // Wrap agent stdin in a tokio Mutex so the accept loop can hand it
+    // to one connection at a time. Wrapping (not splitting) keeps stdin
+    // alive across reconnects — closing it would cause aoe-agent to
+    // `process.exit(0)`.
+    let agent_stdin = Arc::new(Mutex::new(agent_stdin));
+
+    // Signal handling: SIGTERM/SIGINT → kill agent, cleanup, exit.
+    let shutdown_signal = wait_for_shutdown();
+
+    let session_id = args.session_id.clone();
+    let accept_session_id = session_id.clone();
+    let accept_shared = Arc::clone(&shared);
+    let accept_loop = async move {
+        loop {
+            match listener.accept().await {
+                Ok((stream, _addr)) => {
+                    info!(
+                        target: "cockpit.runner",
+                        session = %accept_session_id,
+                        "daemon connected"
+                    );
+                    worker_registry::mark_attached(&accept_session_id);
+                    handle_connection(
+                        stream,
+                        Arc::clone(&accept_shared),
+                        Arc::clone(&agent_stdin),
+                        accept_session_id.clone(),
+                    )
+                    .await;
+                    info!(
+                        target: "cockpit.runner",
+                        session = %accept_session_id,
+                        "daemon disconnected; runner stays alive"
+                    );
+                    worker_registry::mark_detached(&accept_session_id);
+                }
+                Err(e) => {
+                    warn!(target: "cockpit.runner", "accept error: {e}");
+                    tokio::time::sleep(Duration::from_millis(100)).await;
+                }
+            }
+        }
+    };
+
+    // Wait for: agent exit, signal, or accept loop death (latter is
+    // unreachable but kept for symmetry).
+    tokio::select! {
+        status = agent_child.wait() => {
+            match status {
+                Ok(s) => info!(
+                    target: "cockpit.runner",
+                    session = %session_id,
+                    status = ?s,
+                    "agent exited; runner shutting down"
+                ),
+                Err(e) => warn!(
+                    target: "cockpit.runner",
+                    session = %session_id,
+                    "agent wait error: {e}"
+                ),
+            }
+        }
+        _ = shutdown_signal => {
+            info!(
+                target: "cockpit.runner",
+                session = %session_id,
+                "shutdown signal received; terminating agent"
+            );
+            let _ = agent_child.start_kill();
+            let _ = agent_child.wait().await;
+        }
+        _ = accept_loop => {
+            warn!(target: "cockpit.runner", session = %session_id, "accept loop exited unexpectedly");
+        }
+    }
+
+    agent_stdout_task.abort();
+    worker_registry::delete(&session_id).ok();
+    Ok(())
+}
+
+/// State the accept loop and the agent-stdout fanout share. The active
+/// connection is the daemon's write-half of the socket; only one daemon
+/// is attached at a time.
+struct RunnerShared {
+    /// The currently-attached daemon's send-side of the unix socket. The
+    /// fanout task writes agent → daemon notifications here when set.
+    active_outbound: Mutex<Option<tokio::net::unix::OwnedWriteHalf>>,
+    /// Ring of agent → daemon ndjson lines that arrived while no daemon
+    /// was attached. Drained into the next attached daemon's outbound.
+    pending: Mutex<VecDeque<Vec<u8>>>,
+}
+
+impl RunnerShared {
+    fn new() -> Self {
+        Self {
+            active_outbound: Mutex::new(None),
+            pending: Mutex::new(VecDeque::with_capacity(NOTIFICATION_BUFFER_LINES)),
+        }
+    }
+
+    /// Forward a line to the daemon if attached; else buffer. Returns
+    /// whether forwarding happened (false → buffered).
+    async fn deliver_line(&self, line: &[u8]) -> bool {
+        let mut guard = self.active_outbound.lock().await;
+        if let Some(out) = guard.as_mut() {
+            if out.write_all(line).await.is_ok() && out.flush().await.is_ok() {
+                return true;
+            }
+            // Write failure: daemon side closed. Drop the writer and
+            // buffer this line for the next attach.
+            *guard = None;
+        }
+        drop(guard);
+        let mut pending = self.pending.lock().await;
+        while pending.len() >= NOTIFICATION_BUFFER_LINES {
+            pending.pop_front();
+        }
+        pending.push_back(line.to_vec());
+        false
+    }
+
+    /// Install the daemon's outbound write half. First drains the
+    /// pending ring into it so the reattaching daemon sees the gap's
+    /// notifications.
+    async fn install_outbound(
+        &self,
+        mut out: tokio::net::unix::OwnedWriteHalf,
+    ) -> Option<tokio::net::unix::OwnedWriteHalf> {
+        let mut pending = self.pending.lock().await;
+        while let Some(line) = pending.pop_front() {
+            if out.write_all(&line).await.is_err() || out.flush().await.is_err() {
+                // Drain failed mid-way — push the remaining lines back
+                // and surface the write half as unusable.
+                pending.push_front(line);
+                return None;
+            }
+        }
+        drop(pending);
+        let mut guard = self.active_outbound.lock().await;
+        let prev = guard.take();
+        *guard = Some(out);
+        prev
+    }
+
+    async fn clear_outbound(&self) {
+        let mut guard = self.active_outbound.lock().await;
+        *guard = None;
+    }
+}
+
+/// Read agent stdout line-by-line (ndjson) and either forward to the
+/// daemon or buffer.
+async fn fanout_agent_stdout(
+    stdout: tokio::process::ChildStdout,
+    shared: Arc<RunnerShared>,
+    session_id: String,
+) {
+    let mut reader = BufReader::with_capacity(STDOUT_READ_BUF, stdout);
+    let mut line = Vec::with_capacity(4096);
+    loop {
+        line.clear();
+        // read_until preserves the trailing newline, which ndjson
+        // consumers (the daemon's ACP transport) need.
+        match reader.read_until(b'\n', &mut line).await {
+            Ok(0) => {
+                debug!(target: "cockpit.runner", session = %session_id, "agent stdout EOF");
+                break;
+            }
+            Ok(_) => {
+                shared.deliver_line(&line).await;
+            }
+            Err(e) => {
+                warn!(target: "cockpit.runner", session = %session_id, "stdout read error: {e}");
+                break;
+            }
+        }
+    }
+}
+
+/// Handle one daemon connection: install its write half, then pump
+/// inbound bytes (daemon → agent stdin) until the socket closes.
+async fn handle_connection(
+    stream: UnixStream,
+    shared: Arc<RunnerShared>,
+    agent_stdin: Arc<Mutex<tokio::process::ChildStdin>>,
+    session_id: String,
+) {
+    let (read_half, write_half) = stream.into_split();
+    let prev = shared.install_outbound(write_half).await;
+    if prev.is_some() {
+        debug!(
+            target: "cockpit.runner",
+            session = %session_id,
+            "evicting prior daemon outbound (concurrent attach)"
+        );
+    }
+
+    let mut read_half = read_half;
+    let mut buf = [0u8; STDOUT_READ_BUF];
+    loop {
+        match read_half.read(&mut buf).await {
+            Ok(0) => break, // EOF: daemon closed the connection.
+            Ok(n) => {
+                let mut stdin = agent_stdin.lock().await;
+                if stdin.write_all(&buf[..n]).await.is_err() || stdin.flush().await.is_err() {
+                    warn!(
+                        target: "cockpit.runner",
+                        session = %session_id,
+                        "agent stdin write failed; agent likely exited"
+                    );
+                    break;
+                }
+            }
+            Err(e) => {
+                warn!(target: "cockpit.runner", session = %session_id, "daemon read error: {e}");
+                break;
+            }
+        }
+    }
+    shared.clear_outbound().await;
+}
+
+fn spawn_agent(
+    args: &CockpitRunnerArgs,
+) -> Result<(
+    Child,
+    tokio::process::ChildStdin,
+    tokio::process::ChildStdout,
+    Option<tokio::process::ChildStderr>,
+)> {
+    let mut argv = args.agent_argv.iter();
+    let program = argv
+        .next()
+        .ok_or_else(|| anyhow!("agent_argv empty; expected `-- <command> [args...]`"))?;
+    let mut cmd = Command::new(program);
+    for a in argv {
+        cmd.arg(a);
+    }
+    cmd.current_dir(&args.cwd)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    // Inherit env from the runner's launching daemon (env is already
+    // filtered at the daemon-side spawn site in acp_client.rs).
+    let mut child = cmd.spawn().with_context(|| format!("spawning {program}"))?;
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| anyhow!("agent has no stdin"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| anyhow!("agent has no stdout"))?;
+    let stderr = child.stderr.take();
+    Ok((child, stdin, stdout, stderr))
+}
+
+#[cfg(unix)]
+async fn wait_for_shutdown() {
+    use tokio::signal::unix::{signal, SignalKind};
+    let mut sigterm = signal(SignalKind::terminate()).ok();
+    let mut sigint = signal(SignalKind::interrupt()).ok();
+    tokio::select! {
+        _ = async {
+            match sigterm.as_mut() {
+                Some(s) => { s.recv().await; }
+                None => std::future::pending().await,
+            }
+        } => {}
+        _ = async {
+            match sigint.as_mut() {
+                Some(s) => { s.recv().await; }
+                None => std::future::pending().await,
+            }
+        } => {}
+    }
+}
+
+#[cfg(not(unix))]
+async fn wait_for_shutdown() {
+    let _ = tokio::signal::ctrl_c().await;
+}
+
+fn init_runner_logging(session_id: &str) -> Result<()> {
+    let log_path = worker_registry::log_path_for(session_id)?;
+    open_log_file(&log_path)?;
+    // tracing-subscriber may already be initialised by main; try_init
+    // silently no-ops in that case. If we're a fresh process (we are,
+    // when invoked as `aoe __cockpit-runner`), this wires the file
+    // writer so runner logs go to the per-session log file.
+    if let Ok(file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+    {
+        tracing_subscriber::fmt()
+            .with_env_filter("cockpit=info,agent_of_empires=info")
+            .with_writer(std::sync::Mutex::new(file))
+            .with_ansi(false)
+            .try_init()
+            .ok();
+    }
+    Ok(())
+}
+
+fn open_log_file(path: &Path) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    let f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .with_context(|| format!("opening runner log {}", path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = f.set_permissions(std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
+}

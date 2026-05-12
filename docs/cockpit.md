@@ -253,6 +253,35 @@ affordance. Both are tracked as deferred work below.
 Tools without ACP support continue to work exactly as they do today
 (tmux + PTY); cockpit is additive, not a replacement.
 
+## Worker persistence across `aoe serve` restart
+
+Cockpit workers run as detached `aoe __cockpit-runner` processes that
+outlive the daemon. `aoe serve --stop` drops the daemon's connection
+to each worker but does **not** terminate the runner — the agent
+keeps running, in-flight turns continue, and a subsequent `aoe serve`
+reattaches via the worker's unix socket.
+
+Each runner registers itself at
+`<app_dir>/cockpit-workers/<session_id>.json` with its PID, socket
+path, and cached ACP session id. The same directory holds the
+per-session `.sock` (unix socket) and `.log` (runner stderr drain)
+files. `aoe cockpit ps` lists running workers.
+
+Practical implications:
+
+- `aoe update` followed by `aoe serve --stop` + `aoe serve` keeps
+  every cockpit agent's in-flight turn alive.
+- Closing the laptop or restarting the host with `aoe serve` running:
+  the daemon dies on suspend, but the runner continues. On wake the
+  next `aoe serve` reattaches.
+- To actually terminate a worker, run `aoe cockpit stop <session>` or
+  `aoe cockpit stop --all`. To force-kill, `aoe cockpit kill <session>`.
+- During the detach window (between `aoe serve --stop` and the next
+  `aoe serve`), the runner buffers up to 256 agent → daemon
+  notification lines so per-stream chunks emitted while the daemon was
+  down get replayed on reattach. Permission requests issued while
+  detached block the agent's turn until reattach.
+
 ## Conversation persistence
 
 Cockpit transcripts survive page reloads, session switches, and
@@ -374,13 +403,13 @@ for anything that looks like a credential, and replace it with
 ```
 aoe cockpit doctor [--json] [--fix]
 aoe cockpit agents
+aoe cockpit ps [--json]
+aoe cockpit stop <session>            # graceful: SIGTERM the runner
+aoe cockpit stop --all
+aoe cockpit kill <session>            # immediate: SIGKILL the runner
 aoe cockpit logs [--session <id>] [--follow]
-aoe cockpit restart <session>
+aoe cockpit restart <session>         # stop + let daemon respawn
 ```
-
-`logs` and `restart` are reserved for the worker supervisor wiring
-(landing in a follow-up release); they print a clear "not yet
-available" message today so scripts can check the surface stably.
 
 ## What's deferred
 

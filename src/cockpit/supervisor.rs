@@ -327,9 +327,24 @@ impl<S: BroadcastSink> Supervisor<S> {
             if workers.contains_key(&session_id) {
                 return Err(SupervisorError::AlreadyRunning(session_id));
             }
-            if workers.len() >= self.max_concurrent_workers as usize {
+            // Capacity check counts both running (in-memory) and
+            // detached (on-disk-only) workers, so a fresh `aoe serve`
+            // can't race the reconciler and over-spawn while attaches
+            // are still in flight.
+            let registry_count = super::worker_registry::list()
+                .map(|recs| {
+                    recs.into_iter()
+                        .filter(|r| {
+                            super::worker_registry::is_record_live(r)
+                                && !workers.contains_key(&r.session_id)
+                        })
+                        .count()
+                })
+                .unwrap_or(0);
+            let combined = workers.len() + registry_count;
+            if combined >= self.max_concurrent_workers as usize {
                 return Err(SupervisorError::CapacityFull {
-                    current: workers.len(),
+                    current: combined,
                     limit: self.max_concurrent_workers,
                 });
             }
@@ -366,12 +381,19 @@ impl<S: BroadcastSink> Supervisor<S> {
             env.push(("AOE_AGENT_MODEL".into(), model));
         }
 
+        // Every cockpit worker runs through `aoe __cockpit-runner` so it
+        // survives `aoe serve --stop`. The runner binds the socket path
+        // computed here and the daemon dials it.
+        let socket_path = super::worker_registry::socket_path_for(&session_id).map_err(|e| {
+            SupervisorError::Acp(AcpError::Spawn(format!("worker socket path: {e}")))
+        })?;
+
         let config = SpawnConfig {
             spec,
             cwd,
             additional_dirs,
             provider_env: env,
-            socket_path: None,
+            socket_path: Some(socket_path),
             stored_acp_session_id: stored_acp_session_id.clone(),
         };
 
@@ -477,6 +499,13 @@ impl<S: BroadcastSink> Supervisor<S> {
                                     cfg.stored_acp_session_id = Some(acp_session_id.clone());
                                 }
                             }
+                            // Mirror into the on-disk registry so a fresh
+                            // `aoe serve` after a daemon restart issues
+                            // `session/load` instead of `session/new`.
+                            super::worker_registry::update_stored_acp_session_id(
+                                &session_id,
+                                Some(acp_session_id),
+                            );
                         }
                         Event::SessionContextReset { reason } => {
                             let mut guard = workers.lock().await;
@@ -491,6 +520,7 @@ impl<S: BroadcastSink> Supervisor<S> {
                                     cfg.stored_acp_session_id = None;
                                 }
                             }
+                            super::worker_registry::update_stored_acp_session_id(&session_id, None);
                         }
                         _ => {}
                     }
@@ -743,6 +773,23 @@ impl<S: BroadcastSink> Supervisor<S> {
                 let _ = client.shutdown().await;
             }
             handle.drain_task.abort();
+            // SIGTERM the runner (if there is one) so the agent
+            // subprocess dies; the runner cleans up its own files but
+            // we also delete the registry entry here to handle the
+            // case where the runner is wedged.
+            terminate_runner_for_session(session_id);
+            return Ok(());
+        }
+        // No in-memory worker, but there may still be a detached
+        // runner in the registry (e.g. a previous daemon detached and
+        // shutdown is called against the disk-only entry).
+        if super::worker_registry::load(session_id)
+            .ok()
+            .flatten()
+            .is_some()
+        {
+            drop(workers);
+            terminate_runner_for_session(session_id);
             return Ok(());
         }
         if pending_has_it {
@@ -766,8 +813,19 @@ impl<S: BroadcastSink> Supervisor<S> {
         Err(SupervisorError::UnknownSession(session_id.into()))
     }
 
-    /// Shutdown every worker. Called on aoe serve shutdown.
+    /// Shutdown every worker. Called when the user explicitly terminates
+    /// all cockpit workers (e.g. `aoe cockpit stop --all`) — sends ACP
+    /// shutdown to each connected client, aborts the drain task, AND
+    /// signals every per-session `aoe __cockpit-runner` so the agent
+    /// subprocess dies. For the everyday `aoe serve --stop` flow, use
+    /// `detach_all` instead so workers outlive the daemon.
     pub async fn shutdown_all(&self) {
+        let registry_pids: Vec<(String, u32)> = super::worker_registry::list()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|r| (r.session_id, r.pid))
+            .collect();
+
         let mut workers = self.workers.lock().await;
         for (id, handle) in workers.drain() {
             debug!(target: "cockpit.supervisor", session = %id, "shutting down");
@@ -777,6 +835,125 @@ impl<S: BroadcastSink> Supervisor<S> {
             }
             handle.drain_task.abort();
         }
+        drop(workers);
+
+        // SIGTERM every runner we knew about, so detached agents that
+        // outlived a previous daemon are also taken down by an explicit
+        // "kill them all" request.
+        #[cfg(unix)]
+        for (session_id, pid) in registry_pids {
+            use nix::sys::signal::{kill, Signal};
+            use nix::unistd::Pid;
+            let _ = kill(Pid::from_raw(pid as i32), Signal::SIGTERM);
+            super::worker_registry::delete(&session_id).ok();
+        }
+        #[cfg(not(unix))]
+        let _ = registry_pids;
+    }
+
+    /// Drop the daemon-side handle to every worker without killing the
+    /// runner or its agent. Used on `aoe serve` graceful shutdown so the
+    /// agents keep running and the next `aoe serve` reattaches.
+    ///
+    /// Concretely: closes the unix-socket connection (via `client
+    /// .shutdown()` which sends `ClientCmd::Shutdown` to the connection
+    /// task), aborts the drain task, and writes `detached_at` into each
+    /// registry entry. The runner observes EOF on its socket read,
+    /// clears its active outbound, and goes back to accepting.
+    pub async fn detach_all(&self) {
+        let mut workers = self.workers.lock().await;
+        let ids: Vec<String> = workers.keys().cloned().collect();
+        info!(
+            target: "cockpit.supervisor",
+            count = ids.len(),
+            "detaching cockpit workers; they continue running. \
+             Use `aoe cockpit stop` to terminate."
+        );
+        for (id, handle) in workers.drain() {
+            debug!(target: "cockpit.supervisor", session = %id, "detaching");
+            {
+                let client = handle.client.lock().await;
+                let _ = client.shutdown().await;
+            }
+            handle.drain_task.abort();
+            super::worker_registry::mark_detached(&id);
+        }
+    }
+
+    /// Reattach to an already-running worker by dialing its existing
+    /// runner socket. Used by `reconcile_cockpit_workers` on `aoe serve`
+    /// startup before falling back to a fresh spawn.
+    pub async fn attach(
+        &self,
+        session_id: String,
+        cwd: PathBuf,
+        additional_dirs: Vec<PathBuf>,
+    ) -> Result<(), SupervisorError> {
+        let record = match super::worker_registry::load(&session_id)
+            .map_err(|e| SupervisorError::Acp(AcpError::Spawn(format!("registry load: {e}"))))?
+        {
+            Some(r) if super::worker_registry::is_record_live(&r) => r,
+            Some(_) | None => {
+                return Err(SupervisorError::UnknownSession(session_id));
+            }
+        };
+
+        {
+            let workers = self.workers.lock().await;
+            if workers.contains_key(&session_id) {
+                return Err(SupervisorError::AlreadyRunning(session_id));
+            }
+            if workers.len() >= self.max_concurrent_workers as usize {
+                return Err(SupervisorError::CapacityFull {
+                    current: workers.len(),
+                    limit: self.max_concurrent_workers,
+                });
+            }
+        }
+
+        let cockpit_session_id = CockpitSessionId(session_id.clone());
+        let mut client = AcpClient::attach(
+            record.socket_path.clone(),
+            cwd,
+            additional_dirs,
+            record.stored_acp_session_id.clone(),
+            cockpit_session_id,
+        )
+        .await?;
+        super::worker_registry::mark_attached(&session_id);
+
+        let inbound = client
+            .take_inbound()
+            .expect("freshly attached AcpClient always has inbound receiver");
+        let client = Arc::new(Mutex::new(client));
+        let mut workers = self.workers.lock().await;
+        if workers.contains_key(&session_id) {
+            drop(workers);
+            drop(client);
+            return Err(SupervisorError::AlreadyRunning(session_id));
+        }
+        let drain_task = self.start_drain_task(session_id.clone(), inbound);
+        workers.insert(
+            session_id.clone(),
+            WorkerHandle {
+                client,
+                drain_task,
+                restart_history: vec![],
+                // No respawn config — if the worker dies, the drain
+                // task will see EOF and we'll let the reconciler spawn
+                // a fresh runner on the next tick rather than auto-
+                // respawning from this in-memory state.
+                spawn_config: None,
+            },
+        );
+        info!(
+            target: "cockpit.supervisor",
+            session = %session_id,
+            socket = %record.socket_path.display(),
+            pid = record.pid,
+            "reattached to existing cockpit worker"
+        );
+        Ok(())
     }
 
     /// Whether this session has a running cockpit worker, or a
@@ -796,6 +973,23 @@ impl<S: BroadcastSink> Supervisor<S> {
     pub async fn count(&self) -> usize {
         self.workers.lock().await.len()
     }
+}
+
+/// SIGTERM the per-session runner if its registry entry has a live PID,
+/// then delete the entry. Used by `shutdown` and `shutdown_all` to take
+/// down detached workers explicitly.
+fn terminate_runner_for_session(session_id: &str) {
+    if let Ok(Some(record)) = super::worker_registry::load(session_id) {
+        #[cfg(unix)]
+        if super::worker_registry::is_pid_alive(record.pid) {
+            use nix::sys::signal::{kill, Signal};
+            use nix::unistd::Pid;
+            let _ = kill(Pid::from_raw(record.pid as i32), Signal::SIGTERM);
+        }
+        #[cfg(not(unix))]
+        let _ = record;
+    }
+    super::worker_registry::delete(session_id).ok();
 }
 
 enum RestartDecision {

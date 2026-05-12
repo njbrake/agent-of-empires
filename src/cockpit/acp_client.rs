@@ -159,62 +159,47 @@ impl AcpClient {
         let (event_tx, event_rx) = mpsc::channel::<Event>(64);
         let pending_responders: PendingResponders = Arc::new(Mutex::new(HashMap::new()));
 
-        // Choose transport: if a socket path is set, bind a listener
-        // first, then spawn the agent with AOE_ACP_SOCKET pointing at
-        // it. Otherwise fall back to stdio over the child's stdin/out.
-        let socket_listener = if let Some(socket_path) = &config.socket_path {
-            // Remove any stale socket so bind succeeds.
-            let _ = tokio::fs::remove_file(socket_path).await;
-            if let Some(parent) = socket_path.parent() {
-                tokio::fs::create_dir_all(parent)
-                    .await
-                    .map_err(|e| AcpError::Spawn(format!("socket parent: {e}")))?;
-            }
-            let listener = tokio::net::UnixListener::bind(socket_path)
-                .map_err(|e| AcpError::Spawn(format!("bind unix socket: {e}")))?;
-            Some(listener)
-        } else {
-            None
-        };
+        // Two transports:
+        //  - Socket (runner-mediated): for every cockpit session in
+        //    production. Spawn `aoe __cockpit-runner` detached via
+        //    `setsid`; the runner binds the unix socket, spawns the
+        //    agent over stdio, and survives `aoe serve --stop`. The
+        //    daemon then dials the socket and runs the ACP handshake.
+        //  - Stdio (in-proc): the legacy direct-spawn path. Retained for
+        //    tests where we don't want to depend on `current_exe()` being
+        //    a real `aoe` binary, and as a safety valve.
+        if let Some(socket_path) = config.socket_path.clone() {
+            spawn_runner_detached(&config, &socket_path, session_id.0.clone())?;
+            return Self::connect_via_socket(
+                socket_path,
+                config.cwd,
+                config.additional_dirs,
+                config.stored_acp_session_id,
+                session_id,
+                pending_responders,
+                cmd_tx,
+                cmd_rx,
+                event_tx,
+                event_rx,
+            )
+            .await;
+        }
 
         let child = spawn_subprocess(&config)?;
         let child = Arc::new(Mutex::new(child));
-
-        match socket_listener {
-            None => {
-                Self::start_with_stdio(
-                    config.cwd,
-                    config.additional_dirs,
-                    config.stored_acp_session_id,
-                    session_id,
-                    child,
-                    pending_responders,
-                    cmd_tx,
-                    cmd_rx,
-                    event_tx,
-                    event_rx,
-                )
-                .await
-            }
-            Some(listener) => {
-                let socket_path = config.socket_path.clone();
-                Self::start_with_socket(
-                    config.cwd,
-                    config.additional_dirs,
-                    config.stored_acp_session_id,
-                    session_id,
-                    child,
-                    pending_responders,
-                    cmd_tx,
-                    cmd_rx,
-                    event_tx,
-                    event_rx,
-                    listener,
-                    socket_path,
-                )
-                .await
-            }
-        }
+        Self::start_with_stdio(
+            config.cwd,
+            config.additional_dirs,
+            config.stored_acp_session_id,
+            session_id,
+            child,
+            pending_responders,
+            cmd_tx,
+            cmd_rx,
+            event_tx,
+            event_rx,
+        )
+        .await
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -266,7 +251,7 @@ impl AcpClient {
             cmd_rx,
             cwd,
             session_label.clone(),
-            child_for_task,
+            Some(child_for_task),
             pending_for_task,
             resources,
             None,
@@ -274,7 +259,7 @@ impl AcpClient {
             Some(ready_tx),
         ));
 
-        wait_for_handshake(&session_label, ready_rx, &child).await?;
+        wait_for_handshake(&session_label, ready_rx, Some(&child)).await?;
 
         Ok(Self {
             session_id,
@@ -285,28 +270,30 @@ impl AcpClient {
         })
     }
 
+    /// Connect to a per-session runner over its unix socket. Used by the
+    /// post-spawn "wait for runner to bind, then dial" path AND by the
+    /// `Self::attach` reattach path on `aoe serve` startup. The runner
+    /// owns the agent subprocess so this constructor returns an
+    /// `AcpClient` with `_child = None` — dropping the client does not
+    /// terminate the worker.
     #[allow(clippy::too_many_arguments)]
-    async fn start_with_socket(
+    async fn connect_via_socket(
+        socket_path: PathBuf,
         cwd: PathBuf,
         additional_dirs: Vec<PathBuf>,
         stored_acp_session_id: Option<String>,
         session_id: CockpitSessionId,
-        child: Arc<Mutex<tokio::process::Child>>,
         pending_responders: PendingResponders,
         cmd_tx: mpsc::Sender<ClientCmd>,
         cmd_rx: mpsc::Receiver<ClientCmd>,
         event_tx: mpsc::Sender<Event>,
         event_rx: mpsc::Receiver<Event>,
-        listener: tokio::net::UnixListener,
-        socket_path: Option<PathBuf>,
     ) -> Result<Self, AcpError> {
-        // Wait for the agent to connect. Bound the wait so a wedged
-        // agent doesn't park spawn() forever.
-        let accept = tokio::time::timeout(std::time::Duration::from_secs(10), listener.accept())
-            .await
-            .map_err(|_| AcpError::Spawn("agent did not connect to socket within 10s".into()))?
-            .map_err(|e| AcpError::Spawn(format!("accept: {e}")))?;
-        let (stream, _addr) = accept;
+        // Poll for the runner to finish binding the socket. The runner
+        // binds before it spawns the agent so this is usually fast (a
+        // few ms) but bound the wait so a wedged runner returns a typed
+        // error instead of parking the supervisor.
+        let stream = wait_for_socket(&socket_path, std::time::Duration::from_secs(10)).await?;
         let (read_half, write_half) = stream.into_split();
         let transport = ByteStreams::new(write_half.compat_write(), read_half.compat());
 
@@ -320,7 +307,6 @@ impl AcpClient {
         };
 
         let session_label = session_id.0.clone();
-        let child_for_task = child.clone();
         let pending_for_task = pending_responders.clone();
 
         let (ready_tx, ready_rx) = oneshot::channel::<Result<(), AcpError>>();
@@ -331,23 +317,53 @@ impl AcpClient {
             cmd_rx,
             cwd,
             session_label.clone(),
-            child_for_task,
+            None,
             pending_for_task,
             resources,
-            socket_path,
+            None,
             stored_acp_session_id,
             Some(ready_tx),
         ));
 
-        wait_for_handshake(&session_label, ready_rx, &child).await?;
+        wait_for_handshake(&session_label, ready_rx, None).await?;
 
         Ok(Self {
             session_id,
             inbound: Some(event_rx),
             cmd_tx: Some(cmd_tx),
             pending_responders,
-            _child: Some(child),
+            _child: None,
         })
+    }
+
+    /// Reattach to an already-running cockpit worker over its unix
+    /// socket. Used by `aoe serve` startup when a registry entry has a
+    /// live PID and an existing socket file — we connect, run the ACP
+    /// handshake (using the cached `stored_acp_session_id` to issue
+    /// `session/load` instead of `session/new`), and resume.
+    pub async fn attach(
+        socket_path: PathBuf,
+        cwd: PathBuf,
+        additional_dirs: Vec<PathBuf>,
+        stored_acp_session_id: Option<String>,
+        session_id: CockpitSessionId,
+    ) -> Result<Self, AcpError> {
+        let (cmd_tx, cmd_rx) = mpsc::channel::<ClientCmd>(16);
+        let (event_tx, event_rx) = mpsc::channel::<Event>(64);
+        let pending_responders: PendingResponders = Arc::new(Mutex::new(HashMap::new()));
+        Self::connect_via_socket(
+            socket_path,
+            cwd,
+            additional_dirs,
+            stored_acp_session_id,
+            session_id,
+            pending_responders,
+            cmd_tx,
+            cmd_rx,
+            event_tx,
+            event_rx,
+        )
+        .await
     }
 
     /// Send a user message to the agent (ACP `session/prompt`).
@@ -481,6 +497,185 @@ fn scrub_stderr_secrets(line: &str) -> std::borrow::Cow<'_, str> {
         .expect("static secret-scrub regex must compile")
     });
     re.replace_all(line, "<redacted-secret>")
+}
+
+/// Spawn the `aoe __cockpit-runner` shim as a detached process. The
+/// runner owns the agent subprocess and outlives the daemon. We retain
+/// no `Child` handle here — once the runner is up, the daemon talks to
+/// it over the unix socket and the OS keeps the runner alive across
+/// `aoe serve` restarts.
+fn spawn_runner_detached(
+    config: &SpawnConfig,
+    socket_path: &std::path::Path,
+    session_id: String,
+) -> Result<(), AcpError> {
+    use std::process::Command as StdCommand;
+    let current_exe =
+        std::env::current_exe().map_err(|e| AcpError::Spawn(format!("current_exe: {e}")))?;
+    let log_path = crate::cockpit::worker_registry::log_path_for(&session_id)
+        .map_err(|e| AcpError::Spawn(format!("log path: {e}")))?;
+    if let Some(parent) = log_path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+
+    let mut cmd = StdCommand::new(&current_exe);
+    cmd.arg("__cockpit-runner")
+        .arg("--socket")
+        .arg(socket_path)
+        .arg("--session-id")
+        .arg(&session_id)
+        .arg("--agent-name")
+        .arg(&config.spec.command)
+        .arg("--cwd")
+        .arg(&config.cwd);
+    if !config.additional_dirs.is_empty() {
+        cmd.arg("--additional-dirs").arg(
+            config
+                .additional_dirs
+                .iter()
+                .map(|p| p.to_string_lossy().into_owned())
+                .collect::<Vec<_>>()
+                .join(","),
+        );
+    }
+    let provider_keys: Vec<&str> = config
+        .provider_env
+        .iter()
+        .map(|(k, _)| k.as_str())
+        .collect();
+    if !provider_keys.is_empty() {
+        cmd.arg("--provider-env-keys").arg(provider_keys.join(","));
+    }
+    if let Some(stored) = &config.stored_acp_session_id {
+        cmd.arg("--stored-acp-session-id").arg(stored);
+    }
+    cmd.arg("--");
+    cmd.arg(&config.spec.command);
+    for a in &config.spec.args {
+        cmd.arg(a);
+    }
+
+    // Env: apply the same allowlist + provider_env filtering that the
+    // legacy in-proc path does, then hand the cleaned env to the runner.
+    // The runner inherits this env when it spawns the agent (no second
+    // filter pass needed). AOE_TOKEN is stripped here so it never reaches
+    // either process.
+    cmd.env_clear();
+    apply_env_filter(&mut cmd, config);
+
+    // Detach: child becomes its own session leader so a SIGTERM/SIGHUP
+    // to the aoe daemon's group doesn't cascade. The runner installs its
+    // own signal handlers.
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        unsafe {
+            cmd.pre_exec(|| {
+                nix::unistd::setsid().map_err(std::io::Error::other)?;
+                Ok(())
+            });
+        }
+    }
+
+    // Redirect stdio: the runner writes its own log file. Inheriting our
+    // stdio would (a) pollute serve.log with the per-session noise and
+    // (b) keep a pipe open to the daemon, which then closes when we die,
+    // making the runner observe EOF on its own stdin/stdout.
+    cmd.stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+
+    info!(
+        target: "cockpit.acp.spawn",
+        session = %session_id,
+        socket = %socket_path.display(),
+        runner = %current_exe.display(),
+        agent = %config.spec.command,
+        "spawning detached cockpit runner"
+    );
+
+    cmd.spawn().map_err(|e| {
+        warn!(
+            target: "cockpit.acp.spawn",
+            session = %session_id,
+            "runner spawn failed: {e}"
+        );
+        AcpError::Spawn(format!("spawn runner: {e}"))
+    })?;
+    // Drop the std::process::Child here. std::process::Command doesn't
+    // wait on drop, so the runner stays alive. setsid + nohup-equivalent
+    // make this an actual detach.
+    Ok(())
+}
+
+/// Apply the env_clear + allowlist + provider_env filtering used by both
+/// the detached-runner path and the in-proc stdio path. Pulled out so
+/// the two spawn sites share the same security posture.
+fn apply_env_filter(cmd: &mut std::process::Command, config: &SpawnConfig) {
+    const ALWAYS_FORWARD: &[&str] = &[
+        "PATH",
+        "HOME",
+        "LANG",
+        "LC_ALL",
+        "TERM",
+        "USER",
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "CLAUDE_CONFIG_DIR",
+    ];
+    for name in ALWAYS_FORWARD {
+        if let Ok(value) = std::env::var(name) {
+            cmd.env(name, value);
+        }
+    }
+    if let Some(extra_allowlist) = &config.spec.env_allowlist {
+        for name in extra_allowlist {
+            if name == "AOE_TOKEN" {
+                continue;
+            }
+            if let Ok(value) = std::env::var(name) {
+                cmd.env(name, value);
+            }
+        }
+    }
+    for (key, value) in &config.provider_env {
+        if provider_env_denyreason(key).is_some() {
+            continue;
+        }
+        cmd.env(key, value);
+    }
+}
+
+/// Poll the socket file's existence with `connect()` until a deadline.
+/// Used by `connect_via_socket` to wait for the runner to finish binding
+/// before the daemon dials in.
+async fn wait_for_socket(
+    path: &std::path::Path,
+    deadline: std::time::Duration,
+) -> Result<tokio::net::UnixStream, AcpError> {
+    let started = std::time::Instant::now();
+    let mut delay_ms = 20_u64;
+    loop {
+        if path.exists() {
+            match tokio::net::UnixStream::connect(path).await {
+                Ok(s) => return Ok(s),
+                Err(e) if matches!(e.kind(), std::io::ErrorKind::ConnectionRefused) => {
+                    // Listener not yet ready; back off and retry.
+                }
+                Err(e) => return Err(AcpError::Spawn(format!("connect {}: {e}", path.display()))),
+            }
+        }
+        if started.elapsed() >= deadline {
+            return Err(AcpError::Spawn(format!(
+                "runner socket {} did not appear within {}s",
+                path.display(),
+                deadline.as_secs()
+            )));
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(delay_ms)).await;
+        delay_ms = (delay_ms * 2).min(200);
+    }
 }
 
 fn spawn_subprocess(config: &SpawnConfig) -> Result<tokio::process::Child, AcpError> {
@@ -949,7 +1144,7 @@ async fn run_connection_task<W, R>(
     cmd_rx: mpsc::Receiver<ClientCmd>,
     cwd: PathBuf,
     session_label: String,
-    child: Arc<Mutex<tokio::process::Child>>,
+    child: Option<Arc<Mutex<tokio::process::Child>>>,
     pending_responders: PendingResponders,
     resources: SessionResources,
     socket_path: Option<PathBuf>,
@@ -1335,28 +1530,33 @@ async fn run_connection_task<W, R>(
             );
         }
     }
-    let mut guard = child.lock().await;
-    match guard.try_wait() {
-        Ok(Some(status)) => info!(
-            target: "cockpit.acp",
-            session = %session_label_for_log,
-            "agent process already exited: status={status}"
-        ),
-        Ok(None) => info!(
-            target: "cockpit.acp",
-            session = %session_label_for_log,
-            "killing agent process after connection task end"
-        ),
-        Err(e) => warn!(
-            target: "cockpit.acp",
-            session = %session_label_for_log,
-            "try_wait failed before kill: {e}"
-        ),
-    }
-    let _ = guard.kill().await;
-    // Clean up socket file on exit when this transport was socket-based.
-    if let Some(path) = socket_path {
-        let _ = tokio::fs::remove_file(path).await;
+    // In runner-managed mode (child is None) we deliberately don't kill
+    // anything here: the per-worker `aoe __cockpit-runner` shim owns the
+    // agent subprocess and outlives this daemon's connection. The socket
+    // file also stays — the runner cleans it up on its own exit.
+    if let Some(child) = child.as_ref() {
+        let mut guard = child.lock().await;
+        match guard.try_wait() {
+            Ok(Some(status)) => info!(
+                target: "cockpit.acp",
+                session = %session_label_for_log,
+                "agent process already exited: status={status}"
+            ),
+            Ok(None) => info!(
+                target: "cockpit.acp",
+                session = %session_label_for_log,
+                "killing agent process after connection task end"
+            ),
+            Err(e) => warn!(
+                target: "cockpit.acp",
+                session = %session_label_for_log,
+                "try_wait failed before kill: {e}"
+            ),
+        }
+        let _ = guard.kill().await;
+        if let Some(path) = socket_path {
+            let _ = tokio::fs::remove_file(path).await;
+        }
     }
 }
 
@@ -1368,7 +1568,7 @@ async fn run_connection_task<W, R>(
 async fn wait_for_handshake(
     session_label: &str,
     ready_rx: oneshot::Receiver<Result<(), AcpError>>,
-    child: &Arc<Mutex<tokio::process::Child>>,
+    child: Option<&Arc<Mutex<tokio::process::Child>>>,
 ) -> Result<(), AcpError> {
     let timeout = std::time::Duration::from_secs(30);
     match tokio::time::timeout(timeout, ready_rx).await {
@@ -1388,11 +1588,10 @@ async fn wait_for_handshake(
                 "ACP handshake timed out after {}s",
                 timeout.as_secs()
             );
-            // Kill the wedged child so we don't leak a zombie npx
-            // download. The connection task will then unwind and the
-            // ready_tx is already gone, so no event_tx duplicate.
-            let mut guard = child.lock().await;
-            let _ = guard.kill().await;
+            if let Some(child) = child {
+                let mut guard = child.lock().await;
+                let _ = guard.kill().await;
+            }
             Err(AcpError::Spawn(format!(
                 "agent did not complete the ACP initialize handshake within {}s. \
                  Common causes: `npx -y` is still downloading the adapter on first run, \
@@ -1404,10 +1603,12 @@ async fn wait_for_handshake(
     }
 }
 
-async fn collect_child_failure(child: &Arc<Mutex<tokio::process::Child>>) {
-    let mut guard = child.lock().await;
-    if let Ok(Some(status)) = guard.try_wait() {
-        warn!(target: "cockpit.acp", "agent process exited early: status={status}");
+async fn collect_child_failure(child: Option<&Arc<Mutex<tokio::process::Child>>>) {
+    if let Some(child) = child {
+        let mut guard = child.lock().await;
+        if let Ok(Some(status)) = guard.try_wait() {
+            warn!(target: "cockpit.acp", "agent process exited early: status={status}");
+        }
     }
 }
 

@@ -1,0 +1,443 @@
+//! On-disk registry of detached cockpit worker processes.
+//!
+//! Each running cockpit worker has a JSON file at
+//! `<app_dir>/cockpit-workers/<session_id>.json` describing how to dial it
+//! and who owns the process. The directory is the source of truth across
+//! `aoe serve` restarts: when serve starts, it scans the directory, dials
+//! every live worker, and only spawns a fresh worker for sessions that
+//! have no registry entry (or a dead one).
+//!
+//! The worker process itself (the `aoe __cockpit-runner` shim) writes the
+//! file on startup and removes it on graceful exit; `Supervisor::shutdown`
+//! and the stale-sweep on serve startup remove it for crashed runners.
+//!
+//! File mode is 0600 because `provider_env_keys` and `socket_path` may
+//! leak metadata about which agents/providers a user runs.
+//!
+//! Layout note: the runner *and* the daemon both write to entries
+//! (runner: `pid`/`started_at` on boot; daemon:
+//! `last_attached_at`/`detached_at` on attach/detach). We accept the
+//! single-writer-per-field convention rather than locking: contention
+//! windows are narrow and tearing a single field across an unclean
+//! restart at worst causes a re-attach instead of a clean attach.
+
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
+use tracing::{debug, warn};
+
+/// Bump when the on-disk schema changes incompatibly. Older entries with
+/// a smaller `runner_version` are swept on startup instead of dialed.
+pub const RUNNER_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkerRecord {
+    pub runner_version: u32,
+    pub session_id: String,
+    /// PID of the `aoe __cockpit-runner` process. Used by the stale-sweep
+    /// to decide whether the registry entry corresponds to a live owner.
+    pub pid: u32,
+    pub socket_path: PathBuf,
+    pub agent_name: String,
+    pub cwd: PathBuf,
+    pub model: Option<String>,
+    pub additional_dirs: Vec<PathBuf>,
+    /// Keys (not values) of provider_env passed through at spawn. Lets
+    /// the reconciler observe which provider auth was configured for the
+    /// session without re-reading every entry on every tick.
+    pub provider_env_keys: Vec<String>,
+    /// Cached ACP session id assigned by the agent on first `session/new`.
+    /// On reattach, the daemon sends `session/load <stored_acp_session_id>`
+    /// to resume the agent-side transcript.
+    pub stored_acp_session_id: Option<String>,
+    pub started_at: u64,
+    pub last_attached_at: Option<u64>,
+    pub detached_at: Option<u64>,
+}
+
+impl WorkerRecord {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        session_id: String,
+        pid: u32,
+        socket_path: PathBuf,
+        agent_name: String,
+        cwd: PathBuf,
+        model: Option<String>,
+        additional_dirs: Vec<PathBuf>,
+        provider_env_keys: Vec<String>,
+        stored_acp_session_id: Option<String>,
+    ) -> Self {
+        Self {
+            runner_version: RUNNER_VERSION,
+            session_id,
+            pid,
+            socket_path,
+            agent_name,
+            cwd,
+            model,
+            additional_dirs,
+            provider_env_keys,
+            stored_acp_session_id,
+            started_at: now_secs(),
+            last_attached_at: None,
+            detached_at: None,
+        }
+    }
+}
+
+fn now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
+/// Directory holding worker JSON files, log files, and the per-session
+/// unix sockets. Auto-created on first access.
+pub fn workers_dir() -> Result<PathBuf> {
+    let dir = crate::session::get_app_dir()?.join("cockpit-workers");
+    if !dir.exists() {
+        std::fs::create_dir_all(&dir)
+            .with_context(|| format!("creating cockpit workers dir at {}", dir.display()))?;
+        // Owner-only on the directory itself so other users on a shared
+        // host can't enumerate session ids.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+        }
+    }
+    Ok(dir)
+}
+
+/// `<workers_dir>/<session_id>.json`.
+pub fn record_path(session_id: &str) -> Result<PathBuf> {
+    Ok(workers_dir()?.join(format!("{session_id}.json")))
+}
+
+/// `<workers_dir>/<session_id>.sock`. Caller computes this once and threads
+/// the same path into both the runner spawn and the daemon connect.
+pub fn socket_path_for(session_id: &str) -> Result<PathBuf> {
+    Ok(workers_dir()?.join(format!("{session_id}.sock")))
+}
+
+/// `<workers_dir>/<session_id>.log` — runner-side stderr drain consumed by
+/// `aoe cockpit logs --session <id>`.
+pub fn log_path_for(session_id: &str) -> Result<PathBuf> {
+    Ok(workers_dir()?.join(format!("{session_id}.log")))
+}
+
+/// Atomic write (temp + rename) with 0600 perms. Avoids the half-written
+/// JSON that a naive `fs::write` would leave if the runner is killed
+/// mid-write — the dial path would then fail to parse and the entry
+/// would be swept.
+pub fn save(record: &WorkerRecord) -> Result<()> {
+    let dir = workers_dir()?;
+    let final_path = dir.join(format!("{}.json", record.session_id));
+    let tmp_path = dir.join(format!("{}.json.tmp", record.session_id));
+    let bytes = serde_json::to_vec_pretty(record).context("serializing worker record")?;
+    std::fs::write(&tmp_path, &bytes)
+        .with_context(|| format!("writing tmp record at {}", tmp_path.display()))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o600));
+    }
+    std::fs::rename(&tmp_path, &final_path)
+        .with_context(|| format!("renaming tmp record to {}", final_path.display()))?;
+    Ok(())
+}
+
+pub fn load(session_id: &str) -> Result<Option<WorkerRecord>> {
+    let path = record_path(session_id)?;
+    if !path.exists() {
+        return Ok(None);
+    }
+    let bytes = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
+    match serde_json::from_slice::<WorkerRecord>(&bytes) {
+        Ok(record) => Ok(Some(record)),
+        Err(e) => {
+            warn!(
+                target: "cockpit.registry",
+                path = %path.display(),
+                "failed to parse worker record: {e}; treating as missing"
+            );
+            Ok(None)
+        }
+    }
+}
+
+pub fn list() -> Result<Vec<WorkerRecord>> {
+    let dir = workers_dir()?;
+    let mut out = Vec::new();
+    let read = match std::fs::read_dir(&dir) {
+        Ok(r) => r,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(out),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", dir.display())),
+    };
+    for entry in read.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("json") {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(&path) else {
+            continue;
+        };
+        match serde_json::from_slice::<WorkerRecord>(&bytes) {
+            Ok(rec) => out.push(rec),
+            Err(e) => {
+                warn!(
+                    target: "cockpit.registry",
+                    path = %path.display(),
+                    "skipping unparseable worker record: {e}"
+                );
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Remove the JSON entry and the unix socket file (if present). The
+/// `.log` file is intentionally left behind so the user can read it
+/// after the worker exits.
+pub fn delete(session_id: &str) -> Result<()> {
+    if let Ok(p) = record_path(session_id) {
+        let _ = std::fs::remove_file(&p);
+    }
+    if let Ok(p) = socket_path_for(session_id) {
+        let _ = std::fs::remove_file(&p);
+    }
+    Ok(())
+}
+
+/// Probe whether `pid` is still alive. On Unix: `kill(pid, 0)` returns
+/// `Ok(())` for live and `Err(ESRCH)` for dead. Other errors (EPERM,
+/// etc.) mean the process exists but we lack permission to signal it —
+/// still alive.
+#[cfg(unix)]
+pub fn is_pid_alive(pid: u32) -> bool {
+    use nix::errno::Errno;
+    use nix::sys::signal::kill;
+    use nix::unistd::Pid;
+    match kill(Pid::from_raw(pid as i32), None) {
+        Ok(()) => true,
+        Err(Errno::ESRCH) => false,
+        Err(_) => true,
+    }
+}
+
+#[cfg(not(unix))]
+pub fn is_pid_alive(_pid: u32) -> bool {
+    false
+}
+
+/// Update the `last_attached_at` field in place. Best-effort: any I/O
+/// error is logged and swallowed because attach itself has already
+/// succeeded; the timestamp is purely for observability.
+pub fn mark_attached(session_id: &str) {
+    if let Ok(Some(mut rec)) = load(session_id) {
+        rec.last_attached_at = Some(now_secs());
+        rec.detached_at = None;
+        if let Err(e) = save(&rec) {
+            debug!(
+                target: "cockpit.registry",
+                session = %session_id,
+                "failed to update last_attached_at: {e}"
+            );
+        }
+    }
+}
+
+pub fn mark_detached(session_id: &str) {
+    if let Ok(Some(mut rec)) = load(session_id) {
+        rec.detached_at = Some(now_secs());
+        if let Err(e) = save(&rec) {
+            debug!(
+                target: "cockpit.registry",
+                session = %session_id,
+                "failed to update detached_at: {e}"
+            );
+        }
+    }
+}
+
+/// Update only `stored_acp_session_id` in place. Called by the
+/// supervisor when the drain task observes an `AcpSessionAssigned`
+/// event, so a fresh `aoe serve` knows to call `session/load` instead
+/// of `session/new` on reattach.
+pub fn update_stored_acp_session_id(session_id: &str, acp_id: Option<&str>) {
+    if let Ok(Some(mut rec)) = load(session_id) {
+        rec.stored_acp_session_id = acp_id.map(|s| s.to_string());
+        if let Err(e) = save(&rec) {
+            debug!(
+                target: "cockpit.registry",
+                session = %session_id,
+                "failed to update stored_acp_session_id: {e}"
+            );
+        }
+    }
+}
+
+/// Probe the recorded socket path. A worker registry entry is "live"
+/// only if both the PID is alive AND the socket file still exists; a
+/// stale entry where the runner died before deleting its files would
+/// otherwise let attach hang on a missing socket.
+pub fn is_record_live(rec: &WorkerRecord) -> bool {
+    rec.runner_version == RUNNER_VERSION && is_pid_alive(rec.pid) && socket_exists(&rec.socket_path)
+}
+
+fn socket_exists(path: &Path) -> bool {
+    match std::fs::metadata(path) {
+        Ok(_) => true,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => false,
+        Err(_) => true,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serial_test::serial;
+    use tempfile::TempDir;
+
+    fn with_temp_home<F: FnOnce()>(f: F) {
+        let tmp = TempDir::new().unwrap();
+        let original = std::env::var_os("HOME");
+        let original_xdg = std::env::var_os("XDG_CONFIG_HOME");
+        // SAFETY: tests are serialized via `#[serial]`; the env mutation
+        // window is bounded to this closure and restored on exit.
+        unsafe {
+            std::env::set_var("HOME", tmp.path());
+            std::env::set_var("XDG_CONFIG_HOME", tmp.path().join(".config"));
+        }
+        f();
+        unsafe {
+            if let Some(v) = original {
+                std::env::set_var("HOME", v);
+            } else {
+                std::env::remove_var("HOME");
+            }
+            if let Some(v) = original_xdg {
+                std::env::set_var("XDG_CONFIG_HOME", v);
+            } else {
+                std::env::remove_var("XDG_CONFIG_HOME");
+            }
+        }
+    }
+
+    #[test]
+    #[serial]
+    fn roundtrip_save_load() {
+        with_temp_home(|| {
+            let rec = WorkerRecord::new(
+                "sess-abc".into(),
+                42,
+                PathBuf::from("/tmp/sock"),
+                "claude".into(),
+                PathBuf::from("/repo"),
+                Some("claude-opus-4-7".into()),
+                vec![],
+                vec!["ANTHROPIC_API_KEY".into()],
+                None,
+            );
+            save(&rec).unwrap();
+            let loaded = load("sess-abc").unwrap().unwrap();
+            assert_eq!(loaded.session_id, "sess-abc");
+            assert_eq!(loaded.pid, 42);
+            assert_eq!(loaded.runner_version, RUNNER_VERSION);
+            assert_eq!(loaded.agent_name, "claude");
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn list_filters_non_json_and_unparseable() {
+        with_temp_home(|| {
+            let dir = workers_dir().unwrap();
+            std::fs::write(dir.join("not-json.json"), b"this isn't json").unwrap();
+            std::fs::write(dir.join("ignored.txt"), b"{}").unwrap();
+            let rec = WorkerRecord::new(
+                "live".into(),
+                1,
+                PathBuf::from("/tmp/sock-live"),
+                "aoe-agent".into(),
+                PathBuf::from("/repo"),
+                None,
+                vec![],
+                vec![],
+                None,
+            );
+            save(&rec).unwrap();
+            let all = list().unwrap();
+            assert_eq!(all.len(), 1);
+            assert_eq!(all[0].session_id, "live");
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn delete_removes_json_and_socket() {
+        with_temp_home(|| {
+            let dir = workers_dir().unwrap();
+            let sock = dir.join("sess.sock");
+            std::fs::write(&sock, b"").unwrap();
+            let rec = WorkerRecord::new(
+                "sess".into(),
+                1,
+                sock.clone(),
+                "aoe-agent".into(),
+                PathBuf::from("/repo"),
+                None,
+                vec![],
+                vec![],
+                None,
+            );
+            save(&rec).unwrap();
+            assert!(record_path("sess").unwrap().exists());
+            assert!(sock.exists());
+            delete("sess").unwrap();
+            assert!(!record_path("sess").unwrap().exists());
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn mark_attached_clears_detached() {
+        with_temp_home(|| {
+            let mut rec = WorkerRecord::new(
+                "x".into(),
+                1,
+                PathBuf::from("/tmp/x.sock"),
+                "aoe-agent".into(),
+                PathBuf::from("/repo"),
+                None,
+                vec![],
+                vec![],
+                None,
+            );
+            rec.detached_at = Some(100);
+            save(&rec).unwrap();
+            mark_attached("x");
+            let after = load("x").unwrap().unwrap();
+            assert!(after.last_attached_at.is_some());
+            assert!(after.detached_at.is_none());
+        });
+    }
+
+    #[test]
+    fn is_pid_alive_self() {
+        let pid = std::process::id();
+        assert!(is_pid_alive(pid));
+    }
+
+    #[test]
+    fn is_pid_alive_unlikely_pid() {
+        // PID 0 is the kernel scheduler / swapper; kill(0, 0) targets the
+        // *process group*, not a real process. Use a very high value that
+        // won't realistically be allocated.
+        assert!(!is_pid_alive(2_000_000_000));
+    }
+}

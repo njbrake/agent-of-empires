@@ -907,9 +907,12 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
     .with_graceful_shutdown(shutdown_signal)
     .await?;
 
-    // Tear down every cockpit ACP worker so the spawned `claude-agent-acp`
-    // wrappers (and their SDK children) don't outlive the daemon.
-    cockpit_supervisor.shutdown_all().await;
+    // Detach (but do NOT kill) every cockpit ACP worker. The per-session
+    // `aoe __cockpit-runner` shims outlive this daemon: a fresh
+    // `aoe serve` reattaches via the reconciler on startup, so in-flight
+    // turns survive `aoe serve --stop`. To actually terminate workers,
+    // use `aoe cockpit stop [--all]`.
+    cockpit_supervisor.detach_all().await;
 
     // Clean up tunnel (cancels health monitor, then sends SIGTERM to cloudflared)
     if let Some(handle) = tunnel_handle {
@@ -1382,6 +1385,38 @@ async fn reconcile_cockpit_workers(
     let live: std::collections::HashSet<&String> = targets.iter().map(|t| &t.0).collect();
     attempted.retain(|id| live.contains(id));
 
+    // Sweep registry entries whose session no longer exists (deleted
+    // while serve was down) — SIGTERM the orphan runner so the user
+    // doesn't see a phantom in `aoe cockpit ps`. Only runs against
+    // entries that aren't currently in our `workers` map.
+    if let Ok(records) = crate::cockpit::worker_registry::list() {
+        for record in records {
+            if live.contains(&record.session_id) {
+                continue;
+            }
+            if state
+                .cockpit_supervisor
+                .is_running(&record.session_id)
+                .await
+            {
+                continue;
+            }
+            tracing::info!(
+                target: "cockpit.supervisor",
+                session = %record.session_id,
+                pid = record.pid,
+                "sweeping orphan worker (no matching session on disk)"
+            );
+            #[cfg(unix)]
+            if crate::cockpit::worker_registry::is_pid_alive(record.pid) {
+                use nix::sys::signal::{kill, Signal};
+                use nix::unistd::Pid;
+                let _ = kill(Pid::from_raw(record.pid as i32), Signal::SIGTERM);
+            }
+            crate::cockpit::worker_registry::delete(&record.session_id).ok();
+        }
+    }
+
     for (id, tool, agent_override, model, project_path, stored_acp_session_id) in targets {
         if attempted.contains(&id) {
             continue;
@@ -1393,6 +1428,56 @@ async fn reconcile_cockpit_workers(
             attempted.insert(id);
             continue;
         }
+
+        // Reattach path: if a previous daemon detached a runner for this
+        // session and the runner is still alive, dial its socket instead
+        // of spawning a fresh agent. Bounded by the registry probe — no
+        // network IO unless we have a live PID + socket on disk.
+        if let Ok(Some(record)) = crate::cockpit::worker_registry::load(&id) {
+            if crate::cockpit::worker_registry::is_record_live(&record) {
+                attempted.insert(id.clone());
+                let supervisor = state.cockpit_supervisor.clone();
+                let cwd = std::path::PathBuf::from(&project_path);
+                let attach_res = tokio::time::timeout(
+                    std::time::Duration::from_secs(3),
+                    supervisor.attach(id.clone(), cwd, vec![]),
+                )
+                .await;
+                match attach_res {
+                    Ok(Ok(())) => {
+                        tracing::info!(
+                            target: "cockpit.supervisor",
+                            session = %id,
+                            pid = record.pid,
+                            "reattached to existing cockpit runner"
+                        );
+                        continue;
+                    }
+                    Ok(Err(e)) => {
+                        tracing::warn!(
+                            target: "cockpit.supervisor",
+                            session = %id,
+                            "attach failed; falling back to fresh spawn: {e}"
+                        );
+                        crate::cockpit::worker_registry::delete(&id).ok();
+                    }
+                    Err(_) => {
+                        tracing::warn!(
+                            target: "cockpit.supervisor",
+                            session = %id,
+                            "attach timed out after 3s; falling back to fresh spawn"
+                        );
+                        crate::cockpit::worker_registry::delete(&id).ok();
+                        attempted.remove(&id);
+                    }
+                }
+            } else {
+                // Dead PID or missing socket: sweep the orphan registry
+                // entry so the next attempt is a clean fresh spawn.
+                crate::cockpit::worker_registry::delete(&id).ok();
+            }
+        }
+
         // Mark before spawning so the next 2s tick doesn't double-spawn
         // while AcpClient::spawn is still negotiating with the agent.
         attempted.insert(id.clone());

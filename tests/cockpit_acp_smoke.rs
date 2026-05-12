@@ -386,69 +386,11 @@ async fn shim_agent_round_trips_terminal() {
     );
 }
 
-/// Socket-transport round-trip: aoe creates a unix socket, exports
-/// AOE_ACP_SOCKET, the shim connects to it, the same prompt round-trip
-/// works end-to-end. Validates the path used by sandboxed cockpit
-/// sessions where the agent runs inside a container with a mounted
-/// socket instead of inherited stdio.
-#[tokio::test]
-async fn shim_agent_round_trips_via_unix_socket() {
-    if !node_available() {
-        eprintln!("skipping: node not on PATH");
-        return;
-    }
-    let shim = shim_path();
-    if !shim.exists() {
-        return;
-    }
-    let temp = tempfile::tempdir().expect("tempdir");
-    let cwd = temp.path().to_path_buf();
-    let socket_path = temp.path().join("acp.sock");
-    let config = SpawnConfig {
-        spec: AgentSpec {
-            command: "node".into(),
-            args: vec![shim.to_string_lossy().to_string()],
-            description: "test shim (socket)".into(),
-            env_allowlist: None,
-        },
-        cwd: cwd.clone(),
-        additional_dirs: vec![],
-        provider_env: vec![],
-        socket_path: Some(socket_path.clone()),
-        stored_acp_session_id: None,
-    };
-
-    let mut client = AcpClient::spawn(config, CockpitSessionId("sock".into()))
-        .await
-        .expect("spawn shim");
-
-    client
-        .send_prompt("hello over socket")
-        .await
-        .expect("send_prompt");
-
-    let mut events: Vec<Event> = Vec::new();
-    let drain_deadline = std::time::Instant::now() + Duration::from_secs(15);
-    while std::time::Instant::now() < drain_deadline {
-        match tokio::time::timeout(Duration::from_millis(500), client.next_event()).await {
-            Ok(Some(event)) => {
-                let stopped = matches!(event, Event::Stopped { .. });
-                events.push(event);
-                if stopped {
-                    break;
-                }
-            }
-            Ok(None) | Err(_) => continue,
-        }
-    }
-    let _ = client.shutdown().await;
-
-    let saw_received = events.iter().any(|e| match e {
-        Event::AgentMessageChunk { text } => text.contains("received: hello over socket"),
-        _ => false,
-    });
-    assert!(
-        saw_received,
-        "shim should echo received: hello over socket via the socket transport; got {events:?}"
-    );
-}
+// NOTE: the previous "aoe-binds, agent-connects" socket-transport test
+// has been removed. In the worker-persistence redesign (issue #1037),
+// the runner now binds the socket and the daemon connects, which the
+// test cannot exercise without a real `aoe __cockpit-runner` binary on
+// PATH (the test process's `current_exe()` is the test runner, not
+// `aoe`). End-to-end coverage for the new transport lives in
+// `tests/e2e/` against a built `aoe` binary; the stdio round-trip
+// tests above still validate the ACP handshake + event mapping.
