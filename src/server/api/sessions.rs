@@ -1946,6 +1946,124 @@ mod tests {
         );
         assert!(ok.is_ok(), "expected Ok, got {:?}", ok);
     }
+
+    #[test]
+    fn truncate_title_returns_unchanged_under_limit() {
+        assert_eq!(truncate_title("hello", 10), "hello");
+    }
+
+    #[test]
+    fn truncate_title_returns_unchanged_at_exact_limit() {
+        assert_eq!(truncate_title("hello", 5), "hello");
+    }
+
+    #[test]
+    fn truncate_title_appends_ellipsis_when_over_limit() {
+        let out = truncate_title("abcdefghij", 5);
+        assert_eq!(out, "abcd…");
+        assert_eq!(out.chars().count(), 5);
+    }
+
+    #[test]
+    fn truncate_title_counts_characters_not_bytes() {
+        // Multi-byte input: each ☃ is 3 bytes, 1 char. Truncating to 3
+        // chars must split on character boundary, not byte offset.
+        let out = truncate_title("☃☃☃☃☃", 3);
+        assert_eq!(out, "☃☃…");
+        assert_eq!(out.chars().count(), 3);
+    }
+
+    fn step(
+        id: &str,
+        title: &str,
+        status: crate::cockpit::state::PlanStepStatus,
+    ) -> crate::cockpit::state::PlanStep {
+        crate::cockpit::state::PlanStep {
+            id: id.into(),
+            title: title.into(),
+            detail: None,
+            status,
+        }
+    }
+
+    #[test]
+    fn plan_summary_counts_done_steps_only() {
+        use crate::cockpit::state::PlanStepStatus::*;
+        let plan = crate::cockpit::state::Plan {
+            plan_id: "p1".into(),
+            version: 1,
+            steps: vec![
+                step("a", "alpha", Done),
+                step("b", "beta", Done),
+                step("c", "gamma", InProgress),
+                step("d", "delta", Pending),
+            ],
+        };
+        let s = plan_summary_from_plan(plan);
+        assert_eq!(s.total, 4);
+        assert_eq!(s.completed, 2);
+        assert_eq!(s.current_step_title.as_deref(), Some("gamma"));
+    }
+
+    #[test]
+    fn plan_summary_current_step_skips_done_picks_first_non_done() {
+        use crate::cockpit::state::PlanStepStatus::*;
+        // First non-Done is the first Pending; InProgress later doesn't
+        // override (matches the helper's `find(..)` semantics).
+        let plan = crate::cockpit::state::Plan {
+            plan_id: "p1".into(),
+            version: 1,
+            steps: vec![
+                step("a", "alpha", Done),
+                step("b", "beta", Pending),
+                step("c", "gamma", InProgress),
+            ],
+        };
+        let s = plan_summary_from_plan(plan);
+        assert_eq!(s.current_step_title.as_deref(), Some("beta"));
+    }
+
+    #[test]
+    fn plan_summary_none_when_all_done() {
+        use crate::cockpit::state::PlanStepStatus::*;
+        let plan = crate::cockpit::state::Plan {
+            plan_id: "p1".into(),
+            version: 1,
+            steps: vec![step("a", "alpha", Done), step("b", "beta", Done)],
+        };
+        let s = plan_summary_from_plan(plan);
+        assert_eq!(s.completed, 2);
+        assert_eq!(s.total, 2);
+        assert!(s.current_step_title.is_none());
+    }
+
+    #[test]
+    fn plan_summary_truncates_long_current_step_title() {
+        use crate::cockpit::state::PlanStepStatus::*;
+        let long_title: String = "x".repeat(120);
+        let plan = crate::cockpit::state::Plan {
+            plan_id: "p1".into(),
+            version: 1,
+            steps: vec![step("a", &long_title, Pending)],
+        };
+        let s = plan_summary_from_plan(plan);
+        let t = s.current_step_title.unwrap();
+        assert_eq!(t.chars().count(), 80);
+        assert!(t.ends_with('…'));
+    }
+
+    #[test]
+    fn plan_summary_empty_steps_yields_zero_total() {
+        let plan = crate::cockpit::state::Plan {
+            plan_id: "p1".into(),
+            version: 1,
+            steps: vec![],
+        };
+        let s = plan_summary_from_plan(plan);
+        assert_eq!(s.total, 0);
+        assert_eq!(s.completed, 0);
+        assert!(s.current_step_title.is_none());
+    }
 }
 
 // ============================================================================

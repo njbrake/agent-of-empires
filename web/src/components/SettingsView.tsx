@@ -549,7 +549,7 @@ export function SettingsView({
 
             {offline && (
               <div className="text-sm text-status-error bg-status-error/10 rounded-lg p-3">
-                {OFFLINE_TITLE}; toggles will not save while disconnected.
+                {OFFLINE_TITLE}: toggles will not save while disconnected.
               </div>
             )}
             <fieldset

@@ -630,6 +630,49 @@ mod tests {
     }
 
     #[test]
+    fn snapshot_event_json_discriminators_match_prune_clauses() {
+        // The retention prune query in `Self::record` excludes four event
+        // variants via `WHERE event_json NOT LIKE '{"<Variant>":%'`. If the
+        // `Event` enum is ever refactored to a different serde shape
+        // (`#[serde(tag = "...")]`, a rename, or another adjacency), the
+        // LIKE strings silently stop matching and snapshot pinning quietly
+        // breaks. Pin the discriminator at the JSON level so any such
+        // refactor trips this test instead of going unnoticed.
+        let cases: &[(Event, &str)] = &[
+            (
+                Event::AvailableCommandsUpdated { commands: vec![] },
+                "{\"AvailableCommandsUpdated\":",
+            ),
+            (
+                Event::ModesAvailable {
+                    current_mode_id: "default".into(),
+                    modes: vec![],
+                },
+                "{\"ModesAvailable\":",
+            ),
+            (
+                Event::CurrentModeChanged {
+                    current_mode_id: "default".into(),
+                },
+                "{\"CurrentModeChanged\":",
+            ),
+            (
+                Event::AcpSessionAssigned {
+                    acp_session_id: "acp-xyz".into(),
+                },
+                "{\"AcpSessionAssigned\":",
+            ),
+        ];
+        for (event, expected_prefix) in cases {
+            let json = serde_json::to_string(event).unwrap();
+            assert!(
+                json.starts_with(expected_prefix),
+                "snapshot variant serialised as {json}, expected to start with {expected_prefix}"
+            );
+        }
+    }
+
+    #[test]
     fn retention_cap_drops_oldest() {
         let (_tmp, store) = open_store(3);
         for i in 1..=5 {
