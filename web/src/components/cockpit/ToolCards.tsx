@@ -25,6 +25,7 @@ import { getHighlighter, langKeyForExt, loadLanguage } from "../../lib/highlight
 import { hasAnsi, parseAnsi, type AnsiStyle } from "../../lib/ansi";
 import { parseJsonObject, pickFirst, pickStr } from "../../lib/cockpitArgs";
 import type { ActivityRow, ToolCall } from "../../lib/cockpitTypes";
+import { reclassifyBash } from "../../lib/toolReclassify";
 
 interface Props {
   tool: ToolCall;
@@ -32,7 +33,8 @@ interface Props {
 }
 
 export function ToolCard({ tool, result }: Props) {
-  switch (tool.kind) {
+  const { kind, provenance } = reclassifyBash(tool);
+  switch (kind) {
     case "execute":
       return <ExecuteToolCard tool={tool} result={result} />;
     case "read":
@@ -42,7 +44,9 @@ export function ToolCard({ tool, result }: Props) {
     case "delete":
       return <DeleteToolCard tool={tool} result={result} />;
     case "search":
-      return <SearchToolCard tool={tool} result={result} />;
+      return (
+        <SearchToolCard tool={tool} result={result} provenance={provenance} />
+      );
     case "fetch":
       return <FetchToolCard tool={tool} result={result} />;
     case "think":
@@ -531,12 +535,21 @@ function DeleteToolCard({ tool, result }: Props) {
 
 /* ── search ─────────────────────────────────────────────────────── */
 
-function SearchToolCard({ tool, result }: Props) {
+interface SearchProps extends Props {
+  /** Set to "bash" when the call was a grep/find/rg shell-out that the
+   *  dispatcher reclassified into this card. Surfaced in the label so
+   *  the swap stays transparent ("search · bash"). */
+  provenance?: "bash" | null;
+}
+
+function SearchToolCard({ tool, result, provenance }: SearchProps) {
   const status = statusFor(result);
   const args = parseJsonObject(tool.args_preview);
   const argQuery = pickStr(args, "query", "pattern", "q", "search");
+  const argCommand = pickStr(args, "command");
   const title = pickStr(args, "_aoe_title");
-  const query = pickFirst(argQuery, title, tool.name) ?? "(no query)";
+  const query =
+    pickFirst(argQuery, title, argCommand, tool.name) ?? "(no query)";
   const path = pickStr(args, "path", "directory", "scope");
   const output = result?.text ?? "";
   const lines = output ? output.split("\n").filter(Boolean) : [];
@@ -546,7 +559,7 @@ function SearchToolCard({ tool, result }: Props) {
     <CardChrome
       status={status}
       icon={<Search className="h-3.5 w-3.5" />}
-      label="search"
+      label={provenance === "bash" ? "search · bash" : "search"}
       primary={query}
       meta={
         <>
