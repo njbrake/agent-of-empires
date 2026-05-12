@@ -1141,13 +1141,60 @@ fn transcript_event_kind(event: &Event) -> &'static str {
     }
 }
 
+/// Heuristic detector for the end of a `/compact` cycle. The Claude ACP
+/// adapter emits "Compacting..." while the compaction runs and
+/// "Compacting completed." once the model's context window has been
+/// replaced by a summary — both as plain `agent_message_chunk`s with no
+/// `_meta` flag (see #1050 for the upstream gap). String-matching on
+/// the completion message is fragile to localisation but the wrong-firing
+/// failure mode (an extra "context reset" divider) is harmless — it can
+/// never destroy transcript data.
+fn is_compact_completion(text: &str) -> bool {
+    text.contains("Compacting completed.")
+}
+
 /// Map an ACP `SessionUpdate` to the cockpit's typed `Event`. Variants we
 /// don't yet handle pass through as `RawAgentUpdate` so UI clients can at
 /// least see them; we'll narrow these as the schema stabilises.
 fn map_update_to_events(update: SessionUpdate) -> Vec<Event> {
     match update {
         SessionUpdate::AgentMessageChunk(chunk) => match chunk.content {
-            ContentBlock::Text(text) => vec![Event::AgentMessageChunk { text: text.text }],
+            ContentBlock::Text(text) => {
+                // /compact emits a plain text chunk ("Compacting completed.")
+                // and a usage_update with used=0 — no typed signal. Detect
+                // the literal string the adapter uses and append a typed
+                // SessionContextReset event so the cockpit can render a
+                // divider, otherwise the silent context replacement leaves
+                // the chat looking unchanged while the model's view has
+                // been swapped out underneath the user. See #1050.
+                let mut events = vec![Event::AgentMessageChunk {
+                    text: text.text.clone(),
+                }];
+                if is_compact_completion(&text.text) {
+                    events.push(Event::SessionContextReset {
+                        reason: "Conversation compacted — earlier turns above \
+                                 are summarised in the model's context."
+                            .into(),
+                    });
+                    // /compact wipes the model's tool-state alongside the
+                    // chat history, so any TodoWrite plan it was tracking
+                    // is gone from its perspective. The cockpit plan strip
+                    // (PlanStrip + sidebar PlanProgressMini) lives in our
+                    // own event log though, so without this clear it keeps
+                    // showing a plan Claude no longer remembers — the user
+                    // then asks "resolve the first task" and Claude
+                    // responds "no task list." Emit an empty PlanUpdated
+                    // so the UI matches the model's actual context.
+                    events.push(Event::PlanUpdated {
+                        plan: Plan {
+                            plan_id: format!("plan-{}", chrono::Utc::now().timestamp_millis()),
+                            version: 1,
+                            steps: Vec::new(),
+                        },
+                    });
+                }
+                events
+            }
             other => vec![raw_event(&other)],
         },
         SessionUpdate::AgentThoughtChunk(_) => vec![Event::ThinkingStarted],
@@ -2339,6 +2386,15 @@ mod tests {
         };
         let result = AcpClient::spawn(config, CockpitSessionId("s-1".into())).await;
         assert!(matches!(result, Err(AcpError::Spawn(_))));
+    }
+
+    #[test]
+    fn is_compact_completion_matches_adapter_string() {
+        assert!(is_compact_completion("Compacting completed."));
+        assert!(is_compact_completion("\n\nCompacting completed.\n"));
+        assert!(!is_compact_completion("Compacting..."));
+        assert!(!is_compact_completion("compact done"));
+        assert!(!is_compact_completion(""));
     }
 
     #[test]
