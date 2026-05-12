@@ -21,6 +21,14 @@ class ShimAgent {
   constructor(connection) {
     this.connection = connection;
     this.sessions = new Map();
+    // SHIM_PRESEED_SESSION_ID lets a test attach to the shim via the
+    // socket transport with `ConnectMode::Resume` (which skips
+    // `session/new`) and still get a working `prompt`. Without it,
+    // the shim's prompt handler rejects unknown session ids.
+    const preseed = process.env.SHIM_PRESEED_SESSION_ID;
+    if (preseed) {
+      this.sessions.set(preseed, {});
+    }
   }
 
   async initialize(params) {

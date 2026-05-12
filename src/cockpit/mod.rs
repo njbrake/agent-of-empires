@@ -19,9 +19,11 @@ pub mod event_store;
 pub mod fs_handler;
 pub mod node;
 pub mod permissions;
+pub mod runner;
 pub mod state;
 pub mod supervisor;
 pub mod terminal_handler;
+pub mod worker_registry;
 
 pub use agent_registry::{AgentRegistry, AgentSpec};
 pub use approvals::{Approval, ApprovalDecision, Nonce};

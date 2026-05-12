@@ -1,8 +1,8 @@
 //! Repository-level configuration (`.agent-of-empires/config.toml`)
 //!
 //! Allows repos to define hooks and override session/sandbox/worktree settings.
-//! Settings that are personal/global (theme, updates, tmux, claude config_dir) are
-//! intentionally not overridable at the repo level.
+//! Settings that are personal/global (theme, updates, tmux) are intentionally
+//! not overridable at the repo level.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};

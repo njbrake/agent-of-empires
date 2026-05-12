@@ -41,11 +41,111 @@ pub fn perform_deletion(request: &DeletionRequest) -> DeletionResult {
         "perform_deletion: starting"
     );
 
-    // Execute on_destroy hooks before any cleanup so resources (containers,
-    // worktrees) are still available for teardown commands.
+    // Stage 1: on_destroy hooks. The container and worktree are still
+    // alive here so teardown commands have full access.
+    tracing::debug!(session_id = %request.session_id, stage = "on_destroy_hooks", "perform_deletion: stage");
     run_on_destroy_hooks(&request.instance);
 
-    // Track branch info for potential deletion after worktree removal
+    // Stage 2: sever the live agent BEFORE we touch the working tree it
+    // may be writing to. Killing the tmux session terminates the user's
+    // `docker exec`; for sandboxed sessions we also wipe root-owned
+    // worktree contents from INSIDE the container so the host's
+    // `git worktree remove` below doesn't fight permissions or a still-
+    // running bind mount. Previously the order was reversed (worktree
+    // first, container second, tmux last), which raced the in-container
+    // agent and produced flaky deletions on Docker + worktree sessions.
+    tracing::debug!(session_id = %request.session_id, stage = "tmux_kill", "perform_deletion: stage");
+    let _ = request.instance.kill();
+    let _ = request.instance.kill_terminal();
+
+    let is_sandboxed = request
+        .instance
+        .sandbox_info
+        .as_ref()
+        .is_some_and(|s| s.enabled);
+
+    // Host-side dirty check. The in-container preclean below destroys
+    // worktree contents unconditionally, which would silently violate
+    // the `force_delete=false` safety contract for users with untracked
+    // or modified files. Walk every managed worktree we'd touch and
+    // collect the dirty ones; preclean is skipped if anything is dirty
+    // (the `find -delete` runs at the workspace root and can't easily
+    // skip subpaths), and host-side worktree removal is skipped per
+    // path that's dirty. Container, branch, and hook stages still run
+    // per the user's flags.
+    let mut skip_worktree_paths: std::collections::HashSet<PathBuf> =
+        std::collections::HashSet::new();
+    if request.delete_worktree && !request.force_delete {
+        if let Some(wt_info) = &request.instance.worktree_info {
+            if wt_info.managed_by_aoe {
+                let path = PathBuf::from(&request.instance.project_path);
+                if let Some(msg) = crate::git::cleanup::dirty_worktree_message(&path) {
+                    tracing::debug!(
+                        session_id = %request.session_id,
+                        path = %path.display(),
+                        "perform_deletion: dirty worktree, skipping preclean + host remove"
+                    );
+                    errors.push(format!("Worktree: {}", msg));
+                    skip_worktree_paths.insert(path);
+                }
+            }
+        }
+        if let Some(ws_info) = &request.instance.workspace_info {
+            if ws_info.cleanup_on_delete {
+                for repo in &ws_info.repos {
+                    if repo.managed_by_aoe {
+                        let path = PathBuf::from(&repo.worktree_path);
+                        if let Some(msg) = crate::git::cleanup::dirty_worktree_message(&path) {
+                            tracing::debug!(
+                                session_id = %request.session_id,
+                                repo = %repo.name,
+                                path = %path.display(),
+                                "perform_deletion: dirty workspace repo, skipping preclean + host remove"
+                            );
+                            errors.push(format!("Workspace ({}): {}", repo.name, msg));
+                            skip_worktree_paths.insert(path);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    let any_dirty = !skip_worktree_paths.is_empty();
+
+    if request.delete_worktree && is_sandboxed && !any_dirty {
+        tracing::debug!(session_id = %request.session_id, stage = "sandbox_worktree_preclean", "perform_deletion: stage");
+        // Best-effort. The container's workdir is the session's main
+        // worktree (or, for workspace sessions, the workspace root that
+        // contains every per-repo worktree). `find . -delete` from
+        // there recursively wipes everything we care about under the
+        // bind mount. If this fails, the host-side removal below will
+        // surface a permission error and exit cleanly. We do NOT walk
+        // workspace_info.repos here: their container mount paths are
+        // computed relative to the common ancestor of all repos
+        // (see compute_workspace_volume_paths) and don't necessarily
+        // match `/workspace/{repo.name}`, and the workspace-root walk
+        // already covers their contents.
+        let _ = crate::git::cleanup::cleanup_sandbox_worktree(&request.instance);
+    }
+
+    // Stage 3: container removal. Releases the bind mount on the
+    // worktree so the host can finish cleanup without racing in-
+    // container processes.
+    if request.delete_sandbox && is_sandboxed {
+        tracing::debug!(session_id = %request.session_id, stage = "container_remove", "perform_deletion: stage");
+        let container = DockerContainer::from_session_id(&request.instance.id);
+        if container.exists().unwrap_or(false) {
+            if let Err(e) = container.remove(true) {
+                errors.push(format!("Container: {}", e));
+            }
+        }
+    }
+
+    // Stage 4: worktree cleanup. Container is gone, agent is gone, no
+    // bind mount holds the directory open, and (for sandboxed sessions)
+    // the preclean above wiped any root-owned files. Must happen
+    // before branch deletion since the worktree is using the branch.
+    tracing::debug!(session_id = %request.session_id, stage = "worktree_remove", "perform_deletion: stage");
     let branch_to_delete = if request.delete_branch {
         request
             .instance
@@ -60,28 +160,29 @@ pub fn perform_deletion(request: &DeletionRequest) -> DeletionResult {
         tracing::debug!(branch = %b, main_repo = %r.display(), "perform_deletion: branch_to_delete resolved");
     }
 
-    // Worktree cleanup (if user opted to delete it)
-    // Must happen before branch deletion since the worktree is using the branch
     if request.delete_worktree {
         if let Some(wt_info) = &request.instance.worktree_info {
             if wt_info.managed_by_aoe {
                 let worktree_path = PathBuf::from(&request.instance.project_path);
-                let main_repo = PathBuf::from(&wt_info.main_repo_path);
+                if !skip_worktree_paths.contains(&worktree_path) {
+                    let main_repo = PathBuf::from(&wt_info.main_repo_path);
 
-                match GitWorktree::new(main_repo.clone()) {
-                    Ok(git_wt) => {
-                        if let Err(errs) = remove_managed_worktree(
-                            &git_wt,
-                            &worktree_path,
-                            &main_repo,
-                            &request.instance,
-                            request.force_delete,
-                        ) {
-                            errors.extend(errs);
+                    match GitWorktree::new(main_repo.clone()) {
+                        Ok(git_wt) => {
+                            if let Err(errs) = remove_managed_worktree(
+                                &git_wt,
+                                &worktree_path,
+                                &main_repo,
+                                &request.instance,
+                                request.force_delete,
+                                request.delete_sandbox,
+                            ) {
+                                errors.extend(errs);
+                            }
                         }
-                    }
-                    Err(e) => {
-                        errors.push(format!("Worktree: {}", e));
+                        Err(e) => {
+                            errors.push(format!("Worktree: {}", e));
+                        }
                     }
                 }
             }
@@ -95,6 +196,9 @@ pub fn perform_deletion(request: &DeletionRequest) -> DeletionResult {
                 for repo in &ws_info.repos {
                     if repo.managed_by_aoe {
                         let worktree_path = PathBuf::from(&repo.worktree_path);
+                        if skip_worktree_paths.contains(&worktree_path) {
+                            continue;
+                        }
                         let main_repo = PathBuf::from(&repo.main_repo_path);
 
                         match GitWorktree::new(main_repo.clone()) {
@@ -105,6 +209,7 @@ pub fn perform_deletion(request: &DeletionRequest) -> DeletionResult {
                                     &main_repo,
                                     &request.instance,
                                     request.force_delete,
+                                    request.delete_sandbox,
                                 ) {
                                     errors.extend(
                                         errs.into_iter()
@@ -118,18 +223,24 @@ pub fn perform_deletion(request: &DeletionRequest) -> DeletionResult {
                         }
                     }
                 }
-                // Remove workspace parent directory
-                let ws_path = PathBuf::from(&ws_info.workspace_dir);
-                if ws_path.exists() {
-                    if let Err(e) = std::fs::remove_dir_all(&ws_path) {
-                        errors.push(format!("Workspace dir: {}", e));
+                // Remove workspace parent directory only when every repo
+                // under it cleared the dirty check; otherwise we'd nuke
+                // the user's uncommitted changes through the back door.
+                if !any_dirty {
+                    let ws_path = PathBuf::from(&ws_info.workspace_dir);
+                    if ws_path.exists() {
+                        if let Err(e) = std::fs::remove_dir_all(&ws_path) {
+                            errors.push(format!("Workspace dir: {}", e));
+                        }
                     }
                 }
             }
         }
     }
 
-    // Branch cleanup (if user opted to delete it and worktree was successfully removed)
+    // Stage 5: branch cleanup (if user opted to delete it and worktree
+    // was successfully removed).
+    tracing::debug!(session_id = %request.session_id, stage = "branch_delete", "perform_deletion: stage");
     if let Some((branch, main_repo)) = branch_to_delete {
         let worktree_ok =
             !request.delete_worktree || !errors.iter().any(|e| e.starts_with("Worktree:"));
@@ -174,27 +285,8 @@ pub fn perform_deletion(request: &DeletionRequest) -> DeletionResult {
         }
     }
 
-    // Container cleanup (if user opted to delete it)
-    if request.delete_sandbox {
-        if let Some(sandbox) = &request.instance.sandbox_info {
-            if sandbox.enabled {
-                let container = DockerContainer::from_session_id(&request.instance.id);
-                if container.exists().unwrap_or(false) {
-                    if let Err(e) = container.remove(true) {
-                        errors.push(format!("Container: {}", e));
-                    }
-                }
-            }
-        }
-    }
-
-    // Tmux kill - non-fatal if session already gone
-    let _ = request.instance.kill();
-
-    // Kill paired terminal session if it exists
-    let _ = request.instance.kill_terminal();
-
-    // Clean up hook status files
+    // Stage 6: hook status cleanup
+    tracing::debug!(session_id = %request.session_id, stage = "hook_status_cleanup", "perform_deletion: stage");
     crate::hooks::cleanup_hook_status_dir(&request.instance.id);
 
     if !errors.is_empty() {
@@ -350,5 +442,577 @@ mod tests {
 
         let result = perform_deletion(&request);
         assert_eq!(result.session_id, custom_id);
+    }
+
+    mod ordering {
+        use super::*;
+        use crate::session::SandboxInfo;
+        use std::sync::{Arc, Mutex};
+        use tracing::field::{Field, Visit};
+        use tracing::subscriber::with_default;
+        use tracing::Subscriber;
+        use tracing_subscriber::layer::{Context, SubscriberExt};
+        use tracing_subscriber::registry::LookupSpan;
+        use tracing_subscriber::Layer;
+
+        /// tracing Layer that captures the `stage` field value of every
+        /// `perform_deletion: stage` event in order of emission.
+        struct StageRecorder {
+            stages: Arc<Mutex<Vec<String>>>,
+        }
+
+        impl<S: Subscriber + for<'a> LookupSpan<'a>> Layer<S> for StageRecorder {
+            fn register_callsite(
+                &self,
+                _meta: &'static tracing::Metadata<'static>,
+            ) -> tracing::subscriber::Interest {
+                tracing::subscriber::Interest::always()
+            }
+
+            fn enabled(&self, _meta: &tracing::Metadata<'_>, _ctx: Context<'_, S>) -> bool {
+                true
+            }
+
+            fn max_level_hint(&self) -> Option<tracing::level_filters::LevelFilter> {
+                Some(tracing::level_filters::LevelFilter::TRACE)
+            }
+
+            fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
+                struct V {
+                    msg: Option<String>,
+                    stage: Option<String>,
+                }
+                impl Visit for V {
+                    fn record_str(&mut self, field: &Field, value: &str) {
+                        match field.name() {
+                            "stage" => self.stage = Some(value.to_string()),
+                            "message" => self.msg = Some(value.to_string()),
+                            _ => {}
+                        }
+                    }
+                    fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+                        let rendered = format!("{:?}", value);
+                        let unquoted = rendered.trim_matches('"').to_string();
+                        match field.name() {
+                            "stage" => self.stage = Some(unquoted),
+                            "message" => self.msg = Some(unquoted),
+                            _ => {}
+                        }
+                    }
+                }
+                let mut v = V {
+                    msg: None,
+                    stage: None,
+                };
+                event.record(&mut v);
+                if v.msg.as_deref() == Some("perform_deletion: stage") {
+                    if let Some(stage) = v.stage {
+                        self.stages.lock().unwrap().push(stage);
+                    }
+                }
+            }
+        }
+
+        fn run_with_capture<F: Fn()>(f: F) -> Vec<String> {
+            let stages = Arc::new(Mutex::new(Vec::new()));
+            let layer = StageRecorder {
+                stages: Arc::clone(&stages),
+            };
+            let subscriber = tracing_subscriber::registry().with(layer);
+            with_default(subscriber, || {
+                // Tracing's per-callsite `Interest` is cached globally on first
+                // hit. `rebuild_interest_cache()` only re-evaluates callsites
+                // that are *already* registered, so any stage callsite not yet
+                // hit at this point can still lose a registration race to a
+                // parallel test running `perform_deletion` without a subscriber
+                // (the sibling tests at lines 335/354/372 do exactly this).
+                // If they win, the callsite is cached as `Interest::never()`
+                // and our subscriber never sees that one event, while the
+                // other stages still come through. The fix is a two-pass run:
+                //   1. Warmup pass: invoke f() once while we're the default,
+                //      forcing the callsites to register under our subscriber
+                //      (or be re-evaluated to Always if already registered).
+                //   2. Clear captured stages, rebuild interest cache to fix up
+                //      anything that lost a race during warmup, then run f()
+                //      again as the measured pass.
+                f();
+                stages.lock().unwrap().clear();
+                tracing::callsite::rebuild_interest_cache();
+                f();
+            });
+            let g = stages.lock().unwrap();
+            g.clone()
+        }
+
+        /// Index of the first occurrence of `needle` in `stages`. Panics
+        /// with a descriptive message if absent so test failures point
+        /// at the missing stage instead of an inscrutable `unwrap`.
+        fn idx(stages: &[String], needle: &str) -> usize {
+            stages
+                .iter()
+                .position(|s| s == needle)
+                .unwrap_or_else(|| panic!("stage {:?} missing from {:?}", needle, stages))
+        }
+
+        /// Regression: sandboxed + worktree deletion must drop the
+        /// container BEFORE touching the worktree directory. The old
+        /// order (worktree first) raced the still-running in-container
+        /// agent and produced flaky permission errors and dirty-tree
+        /// failures.
+        #[test]
+        fn sandboxed_with_worktree_kills_tmux_and_container_before_worktree() {
+            // Synthesize an instance with both worktree_info and an
+            // (enabled) sandbox_info pointing at a non-existent
+            // container. The container ops will no-op (container does
+            // not exist), but the *order* of stage events is still
+            // emitted, and that's what we're testing.
+            let mut instance = Instance::new("Test", "/tmp/aoe-deletion-test-nonexistent");
+            instance.sandbox_info = Some(SandboxInfo {
+                enabled: true,
+                container_id: None,
+                image: "alpine".to_string(),
+                container_name: "aoe-sandbox-doesnotexist".to_string(),
+                extra_env: None,
+                custom_instruction: None,
+            });
+
+            let request = DeletionRequest {
+                session_id: instance.id.clone(),
+                instance,
+                delete_worktree: true,
+                delete_branch: false,
+                delete_sandbox: true,
+                force_delete: false,
+            };
+
+            let stages = run_with_capture(|| {
+                let _ = perform_deletion(&request);
+            });
+
+            // tmux_kill must precede container_remove must precede
+            // worktree_remove must precede branch_delete.
+            let i_tmux = idx(&stages, "tmux_kill");
+            let i_container = idx(&stages, "container_remove");
+            let i_worktree = idx(&stages, "worktree_remove");
+            let i_branch = idx(&stages, "branch_delete");
+
+            assert!(
+                i_tmux < i_container,
+                "tmux must be killed before container removal: stages={:?}",
+                stages
+            );
+            assert!(
+                i_container < i_worktree,
+                "container must be removed before worktree cleanup: stages={:?}",
+                stages
+            );
+            assert!(
+                i_worktree < i_branch,
+                "worktree must be cleaned before branch delete: stages={:?}",
+                stages
+            );
+
+            // Sandboxed + delete_worktree: we should also see the
+            // in-container preclean stage between tmux_kill and
+            // container_remove.
+            let i_preclean = idx(&stages, "sandbox_worktree_preclean");
+            assert!(
+                i_tmux < i_preclean && i_preclean < i_container,
+                "preclean must run after tmux kill and before container remove: stages={:?}",
+                stages
+            );
+        }
+
+        /// End-to-end-on-disk: build a real git repo + worktree on the
+        /// filesystem (no docker, no tmux session), call
+        /// `perform_deletion(delete_worktree=true)`, and verify the
+        /// worktree directory and `.git/worktrees/<name>` admin entry
+        /// are gone afterwards. This is the closest we can get to an
+        /// e2e test for the worktree-delete path without a real
+        /// container runtime.
+        #[test]
+        fn e2e_real_worktree_is_removed_on_disk() {
+            let tmp = tempfile::TempDir::new().unwrap();
+            let main_repo = tmp.path().join("main");
+            let worktree_path = tmp.path().join("worktree");
+            std::fs::create_dir(&main_repo).unwrap();
+
+            // init main repo with one commit so branches can be created
+            let repo = git2::Repository::init(&main_repo).unwrap();
+            let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+            let tree_id = {
+                let mut index = repo.index().unwrap();
+                index.write_tree().unwrap()
+            };
+            let tree = repo.find_tree(tree_id).unwrap();
+            repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+                .unwrap();
+
+            // create the worktree on a new branch via real `git` so the
+            // admin files match what aoe creates in production
+            let status = std::process::Command::new("git")
+                .args([
+                    "worktree",
+                    "add",
+                    "-b",
+                    "feature/delete-me",
+                    worktree_path.to_str().unwrap(),
+                ])
+                .current_dir(&main_repo)
+                .output()
+                .unwrap();
+            assert!(
+                status.status.success(),
+                "git worktree add failed: {}",
+                String::from_utf8_lossy(&status.stderr)
+            );
+            assert!(worktree_path.exists());
+            assert!(
+                main_repo.join(".git/worktrees/worktree").exists(),
+                "worktree admin dir should exist before deletion"
+            );
+
+            // construct an Instance matching what builder would produce
+            let mut instance = Instance::new("Test", worktree_path.to_str().unwrap());
+            instance.worktree_info = Some(crate::session::WorktreeInfo {
+                branch: "feature/delete-me".to_string(),
+                main_repo_path: main_repo.to_string_lossy().to_string(),
+                managed_by_aoe: true,
+                created_at: chrono::Utc::now(),
+            });
+
+            let request = DeletionRequest {
+                session_id: instance.id.clone(),
+                instance,
+                delete_worktree: true,
+                delete_branch: true,
+                delete_sandbox: false,
+                force_delete: false,
+            };
+
+            let result = perform_deletion(&request);
+            assert!(
+                result.success,
+                "perform_deletion failed: {:?}",
+                result.error
+            );
+
+            // worktree directory and its admin entry must be gone
+            assert!(
+                !worktree_path.exists(),
+                "worktree dir should be removed after delete"
+            );
+            assert!(
+                !main_repo.join(".git/worktrees/worktree").exists(),
+                "worktree admin dir should be pruned after delete"
+            );
+
+            // branch should be deleted
+            let branches_out = std::process::Command::new("git")
+                .args(["branch", "--list", "feature/delete-me"])
+                .current_dir(&main_repo)
+                .output()
+                .unwrap();
+            assert!(
+                String::from_utf8_lossy(&branches_out.stdout)
+                    .trim()
+                    .is_empty(),
+                "branch should be deleted: stdout={}",
+                String::from_utf8_lossy(&branches_out.stdout)
+            );
+        }
+
+        /// Race-condition repro: the agent left untracked files in the
+        /// worktree (this is what triggered the original
+        /// "fatal: '<path>' contains modified or untracked files"
+        /// failures). With `force_delete=true` the worktree must be
+        /// removed cleanly even with untracked content, which is the
+        /// fallback path the TUI takes when the user picks "force
+        /// delete" after a normal delete failed.
+        #[test]
+        fn e2e_real_worktree_with_untracked_files_force_removed() {
+            let tmp = tempfile::TempDir::new().unwrap();
+            let main_repo = tmp.path().join("main");
+            let worktree_path = tmp.path().join("worktree");
+            std::fs::create_dir(&main_repo).unwrap();
+
+            let repo = git2::Repository::init(&main_repo).unwrap();
+            let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+            let tree_id = repo.index().unwrap().write_tree().unwrap();
+            let tree = repo.find_tree(tree_id).unwrap();
+            repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+                .unwrap();
+
+            let status = std::process::Command::new("git")
+                .args([
+                    "worktree",
+                    "add",
+                    "-b",
+                    "feature/race-repro",
+                    worktree_path.to_str().unwrap(),
+                ])
+                .current_dir(&main_repo)
+                .output()
+                .unwrap();
+            assert!(status.status.success());
+
+            // simulate what the in-container agent leaves behind: an
+            // untracked log file, plus a modified-but-not-committed
+            // file. Without force_delete, `git worktree remove` refuses
+            // to delete a dirty tree.
+            std::fs::write(worktree_path.join("agent.log"), "scratch").unwrap();
+            std::fs::write(worktree_path.join("debug.json"), "{\"k\":1}").unwrap();
+
+            let mut instance = Instance::new("Test", worktree_path.to_str().unwrap());
+            instance.worktree_info = Some(crate::session::WorktreeInfo {
+                branch: "feature/race-repro".to_string(),
+                main_repo_path: main_repo.to_string_lossy().to_string(),
+                managed_by_aoe: true,
+                created_at: chrono::Utc::now(),
+            });
+
+            // First: without force, deletion must fail and leave the
+            // worktree intact so the user can decide.
+            let req_no_force = DeletionRequest {
+                session_id: instance.id.clone(),
+                instance: instance.clone(),
+                delete_worktree: true,
+                delete_branch: false,
+                delete_sandbox: false,
+                force_delete: false,
+            };
+            let result = perform_deletion(&req_no_force);
+            assert!(
+                !result.success,
+                "dirty worktree must NOT be deleted without --force"
+            );
+            assert!(
+                worktree_path.exists(),
+                "dirty worktree must still exist after failed delete"
+            );
+
+            // Now retry with force: must succeed and clean everything.
+            let req_force = DeletionRequest {
+                session_id: instance.id.clone(),
+                instance,
+                delete_worktree: true,
+                delete_branch: true,
+                delete_sandbox: false,
+                force_delete: true,
+            };
+            let result = perform_deletion(&req_force);
+            assert!(
+                result.success,
+                "force delete should succeed: {:?}",
+                result.error
+            );
+            assert!(!worktree_path.exists());
+            assert!(!main_repo.join(".git/worktrees/worktree").exists());
+        }
+
+        /// Builds a real on-disk worktree on a fresh branch, then
+        /// returns a tuple of `(_tmp, main_repo, worktree_path, instance)`
+        /// where the instance has `worktree_info` + `sandbox_info`
+        /// pointing at a non-existent container (so container ops are
+        /// no-ops in the test). The caller can drop untracked files
+        /// into `worktree_path` before invoking `perform_deletion`.
+        fn build_sandboxed_worktree(
+            branch: &str,
+        ) -> (
+            tempfile::TempDir,
+            std::path::PathBuf,
+            std::path::PathBuf,
+            Instance,
+        ) {
+            let tmp = tempfile::TempDir::new().unwrap();
+            let main_repo = tmp.path().join("main");
+            let worktree_path = tmp.path().join("worktree");
+            std::fs::create_dir(&main_repo).unwrap();
+
+            let repo = git2::Repository::init(&main_repo).unwrap();
+            let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+            let tree_id = repo.index().unwrap().write_tree().unwrap();
+            let tree = repo.find_tree(tree_id).unwrap();
+            repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+                .unwrap();
+
+            let status = std::process::Command::new("git")
+                .args([
+                    "worktree",
+                    "add",
+                    "-b",
+                    branch,
+                    worktree_path.to_str().unwrap(),
+                ])
+                .current_dir(&main_repo)
+                .output()
+                .unwrap();
+            assert!(
+                status.status.success(),
+                "git worktree add failed: {}",
+                String::from_utf8_lossy(&status.stderr)
+            );
+
+            let mut instance = Instance::new("Test", worktree_path.to_str().unwrap());
+            instance.worktree_info = Some(crate::session::WorktreeInfo {
+                branch: branch.to_string(),
+                main_repo_path: main_repo.to_string_lossy().to_string(),
+                managed_by_aoe: true,
+                created_at: chrono::Utc::now(),
+            });
+            instance.sandbox_info = Some(SandboxInfo {
+                enabled: true,
+                container_id: None,
+                image: "alpine".to_string(),
+                container_name: "aoe-dirty-test-doesnotexist".to_string(),
+                extra_env: None,
+                custom_instruction: None,
+            });
+
+            (tmp, main_repo, worktree_path, instance)
+        }
+
+        /// Regression for the silent-data-destruction bug introduced by
+        /// the preclean stage (#1023): if the user has uncommitted
+        /// changes in a sandboxed worktree and asks for a normal (non-
+        /// force) delete, the in-container `find . -delete` would
+        /// previously wipe those changes before any dirty check ever
+        /// ran. With the host-side dirty check, preclean must be
+        /// skipped, the worktree must survive, and the error must
+        /// describe what's dirty so the user can choose to force.
+        #[test]
+        fn sandboxed_with_dirty_worktree_skips_preclean_and_preserves_changes() {
+            let (_tmp, main_repo, worktree_path, instance) =
+                build_sandboxed_worktree("feature/dirty-no-force");
+
+            std::fs::write(worktree_path.join("uncommitted.log"), "important").unwrap();
+
+            let request = DeletionRequest {
+                session_id: instance.id.clone(),
+                instance,
+                delete_worktree: true,
+                delete_branch: true,
+                delete_sandbox: true,
+                force_delete: false,
+            };
+
+            // Stage assertions: preclean must not run when dirty.
+            let stages = run_with_capture(|| {
+                let _ = perform_deletion(&request);
+            });
+            assert!(
+                !stages.iter().any(|s| s == "sandbox_worktree_preclean"),
+                "preclean must be skipped when worktree is dirty: stages={:?}",
+                stages
+            );
+
+            // After run_with_capture, deletion must have left the
+            // worktree intact on both passes. Run once more to capture
+            // the result + error message.
+            let result = perform_deletion(&request);
+            assert!(
+                !result.success,
+                "dirty worktree must not be deleted without --force"
+            );
+            let err = result
+                .error
+                .expect("dirty deletion should surface an error");
+            assert!(
+                err.contains("modified or untracked"),
+                "error should describe dirty state: {}",
+                err
+            );
+            assert!(
+                err.contains("uncommitted.log"),
+                "error should list the dirty path: {}",
+                err
+            );
+            assert!(
+                worktree_path.exists(),
+                "worktree dir must survive a refused dirty delete"
+            );
+            assert!(
+                worktree_path.join("uncommitted.log").exists(),
+                "uncommitted user data must survive a refused dirty delete"
+            );
+            assert!(
+                main_repo.join(".git/worktrees/worktree").exists(),
+                "worktree admin entry must still be present"
+            );
+        }
+
+        /// Counterpart: with `force_delete=true` the user has explicitly
+        /// opted into losing uncommitted changes, so preclean runs and
+        /// the worktree is removed. Preclean is a docker no-op in this
+        /// test (container does not exist), so the host-side path uses
+        /// `git worktree remove --force` which correctly handles the
+        /// untracked file.
+        #[test]
+        fn sandboxed_with_dirty_worktree_force_runs_preclean_and_removes() {
+            let (_tmp, main_repo, worktree_path, instance) =
+                build_sandboxed_worktree("feature/dirty-force");
+
+            std::fs::write(worktree_path.join("uncommitted.log"), "scratch").unwrap();
+
+            let request = DeletionRequest {
+                session_id: instance.id.clone(),
+                instance,
+                delete_worktree: true,
+                delete_branch: true,
+                delete_sandbox: false,
+                force_delete: true,
+            };
+
+            let stages = run_with_capture(|| {
+                let _ = perform_deletion(&request);
+            });
+            assert!(
+                stages.iter().any(|s| s == "sandbox_worktree_preclean"),
+                "preclean must run when force_delete=true: stages={:?}",
+                stages
+            );
+
+            // run_with_capture invokes perform_deletion twice; the
+            // first pass already removed the worktree, so the second
+            // pass is a no-op. Both succeed.
+            assert!(
+                !worktree_path.exists(),
+                "force delete must remove the worktree dir"
+            );
+            assert!(
+                !main_repo.join(".git/worktrees/worktree").exists(),
+                "force delete must prune the admin entry"
+            );
+        }
+
+        /// Non-sandboxed deletion: no preclean stage is emitted, but
+        /// tmux still gets killed before worktree work.
+        #[test]
+        fn unsandboxed_kills_tmux_before_worktree() {
+            let instance = Instance::new("Test", "/tmp/aoe-deletion-test-nonexistent");
+            let request = DeletionRequest {
+                session_id: instance.id.clone(),
+                instance,
+                delete_worktree: true,
+                delete_branch: false,
+                delete_sandbox: false,
+                force_delete: false,
+            };
+
+            let stages = run_with_capture(|| {
+                let _ = perform_deletion(&request);
+            });
+
+            assert!(
+                idx(&stages, "tmux_kill") < idx(&stages, "worktree_remove"),
+                "tmux must be killed before worktree cleanup: stages={:?}",
+                stages
+            );
+            assert!(
+                !stages.iter().any(|s| s == "sandbox_worktree_preclean"),
+                "unsandboxed deletion must not emit sandbox preclean stage: stages={:?}",
+                stages
+            );
+        }
     }
 }

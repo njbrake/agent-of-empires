@@ -57,6 +57,9 @@ This document contains the help content for the `aoe` command-line program.
 * [`aoe cockpit`↴](#aoe-cockpit)
 * [`aoe cockpit doctor`↴](#aoe-cockpit-doctor)
 * [`aoe cockpit agents`↴](#aoe-cockpit-agents)
+* [`aoe cockpit ps`↴](#aoe-cockpit-ps)
+* [`aoe cockpit stop`↴](#aoe-cockpit-stop)
+* [`aoe cockpit kill`↴](#aoe-cockpit-kill)
 * [`aoe cockpit logs`↴](#aoe-cockpit-logs)
 * [`aoe cockpit restart`↴](#aoe-cockpit-restart)
 * [`aoe uninstall`↴](#aoe-uninstall)
@@ -819,8 +822,11 @@ Cockpit (ACP-based native agent rendering) management
 
 * `doctor` — Verify the cockpit can start: Node runtime, configured agents, provider auth (claude login)
 * `agents` — List configured cockpit agents (claude-code, aoe-agent, etc.)
-* `logs` — Tail the worker stderr for a running cockpit session. Requires `aoe serve` to be running and is deferred until the worker supervisor lands
-* `restart` — Restart a wedged cockpit worker. Reserved for the supervisor slice
+* `ps` — List running cockpit workers (detached or attached)
+* `stop` — Gracefully stop a cockpit worker (SIGTERM the runner, agent receives stdin EOF). Sessions can be reattached on the next `aoe serve` only if they are still alive afterward; `stop` destroys the worker
+* `kill` — SIGKILL a worker immediately (use when `stop` doesn't take)
+* `logs` — Tail the runner's log file for a cockpit session
+* `restart` — Restart a wedged cockpit worker: stop the existing runner, then let the daemon's reconciler spawn a fresh one on the next tick
 
 
 
@@ -845,9 +851,52 @@ List configured cockpit agents (claude-code, aoe-agent, etc.)
 
 
 
+## `aoe cockpit ps`
+
+List running cockpit workers (detached or attached)
+
+**Usage:** `aoe cockpit ps [OPTIONS]`
+
+###### **Options:**
+
+* `--json` — Emit machine-readable JSON instead of a table
+
+
+
+## `aoe cockpit stop`
+
+Gracefully stop a cockpit worker (SIGTERM the runner, agent receives stdin EOF). Sessions can be reattached on the next `aoe serve` only if they are still alive afterward; `stop` destroys the worker
+
+**Usage:** `aoe cockpit stop [OPTIONS] [SESSION]`
+
+###### **Arguments:**
+
+* `<SESSION>` — Session id to stop. Mutually exclusive with `--all`
+
+###### **Options:**
+
+* `--all` — Stop every running cockpit worker
+* `--timeout-secs <TIMEOUT_SECS>` — Seconds to wait after SIGTERM before escalating to SIGKILL
+
+  Default value: `5`
+
+
+
+## `aoe cockpit kill`
+
+SIGKILL a worker immediately (use when `stop` doesn't take)
+
+**Usage:** `aoe cockpit kill <SESSION>`
+
+###### **Arguments:**
+
+* `<SESSION>` — Session id to kill
+
+
+
 ## `aoe cockpit logs`
 
-Tail the worker stderr for a running cockpit session. Requires `aoe serve` to be running and is deferred until the worker supervisor lands
+Tail the runner's log file for a cockpit session
 
 **Usage:** `aoe cockpit logs [OPTIONS]`
 
@@ -860,7 +909,7 @@ Tail the worker stderr for a running cockpit session. Requires `aoe serve` to be
 
 ## `aoe cockpit restart`
 
-Restart a wedged cockpit worker. Reserved for the supervisor slice
+Restart a wedged cockpit worker: stop the existing runner, then let the daemon's reconciler spawn a fresh one on the next tick
 
 **Usage:** `aoe cockpit restart <SESSION>`
 

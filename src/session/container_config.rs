@@ -186,7 +186,7 @@ const AGENT_CONFIG_MOUNTS: &[AgentConfigMount] = &[
         container_suffix: ".pi",
         skip_entries: &["sandbox"],
         seed_files: &[],
-        copy_dirs: &[],
+        copy_dirs: &["agent"],
         keychain_credential: None,
         home_seed_files: &[],
         preserve_files: &[],

@@ -17,9 +17,6 @@ pub struct Config {
     pub theme: ThemeConfig,
 
     #[serde(default)]
-    pub claude: ClaudeConfig,
-
-    #[serde(default)]
     pub updates: UpdatesConfig,
 
     #[serde(default)]
@@ -433,12 +430,6 @@ fn default_idle_decay_minutes() -> u64 {
     0
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-pub struct ClaudeConfig {
-    #[serde(default)]
-    pub config_dir: Option<String>,
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdatesConfig {
     #[serde(default = "default_true")]
@@ -826,18 +817,6 @@ pub fn get_update_settings() -> UpdatesConfig {
     Config::load_or_warn().updates
 }
 
-pub fn get_claude_config_dir() -> Option<PathBuf> {
-    let config = Config::load_or_warn();
-    config.claude.config_dir.map(|s| {
-        if let Some(stripped) = s.strip_prefix("~/") {
-            if let Some(home) = dirs::home_dir() {
-                return home.join(stripped);
-            }
-        }
-        PathBuf::from(s)
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1160,20 +1139,6 @@ mod tests {
         assert_eq!(sb.extra_volumes, vec!["/data:/data:ro"]);
         assert_eq!(sb.volume_ignores, vec!["node_modules"]);
         assert_eq!(sb.port_mappings, vec!["3000:3000"]);
-    }
-
-    // Tests for ClaudeConfig
-    #[test]
-    fn test_claude_config_default() {
-        let cc = ClaudeConfig::default();
-        assert!(cc.config_dir.is_none());
-    }
-
-    #[test]
-    fn test_claude_config_deserialize() {
-        let toml = r#"config_dir = "/custom/claude""#;
-        let cc: ClaudeConfig = toml::from_str(toml).unwrap();
-        assert_eq!(cc.config_dir, Some("/custom/claude".to_string()));
     }
 
     // Tests for AppStateConfig

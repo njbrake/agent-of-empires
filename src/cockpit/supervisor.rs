@@ -258,6 +258,32 @@ impl<S: BroadcastSink> Supervisor<S> {
             .publish(session_id, seq, &Event::AgentStartupError { message });
     }
 
+    /// Publish a synthetic `Stopped` event for a session whose turn was
+    /// in flight when the previous `aoe serve` died. Called at startup
+    /// from the reconciler when the on-disk event store shows an
+    /// orphaned `UserPromptSent` (no terminating `Stopped` or
+    /// `AgentStartupError` after it) AND there is no live runner to
+    /// reattach to (which would deliver the Stopped via the resume-idle
+    /// watchdog instead). Without this the UI's "thinking" indicator
+    /// for the dead turn stays on indefinitely after restart.
+    pub fn synthesize_stopped_for_orphan(&self, session_id: &str, reason: &str) {
+        let seq = next_seq(&self.next_seqs, session_id);
+        info!(
+            target: "cockpit.supervisor",
+            session = %session_id,
+            seq,
+            %reason,
+            "publishing synthetic Stopped for orphaned in-flight turn"
+        );
+        self.sink.publish(
+            session_id,
+            seq,
+            &Event::Stopped {
+                reason: reason.to_string(),
+            },
+        );
+    }
+
     /// Publish a UserPromptSent event before forwarding the prompt to
     /// the ACP agent. The replay buffer (and on-disk event store) needs
     /// the user's side of the conversation in the same stream as agent
@@ -327,9 +353,24 @@ impl<S: BroadcastSink> Supervisor<S> {
             if workers.contains_key(&session_id) {
                 return Err(SupervisorError::AlreadyRunning(session_id));
             }
-            if workers.len() >= self.max_concurrent_workers as usize {
+            // Capacity check counts both running (in-memory) and
+            // detached (on-disk-only) workers, so a fresh `aoe serve`
+            // can't race the reconciler and over-spawn while attaches
+            // are still in flight.
+            let registry_count = super::worker_registry::list()
+                .map(|recs| {
+                    recs.into_iter()
+                        .filter(|r| {
+                            super::worker_registry::is_record_live(r)
+                                && !workers.contains_key(&r.session_id)
+                        })
+                        .count()
+                })
+                .unwrap_or(0);
+            let combined = workers.len() + registry_count;
+            if combined >= self.max_concurrent_workers as usize {
                 return Err(SupervisorError::CapacityFull {
-                    current: workers.len(),
+                    current: combined,
                     limit: self.max_concurrent_workers,
                 });
             }
@@ -366,12 +407,19 @@ impl<S: BroadcastSink> Supervisor<S> {
             env.push(("AOE_AGENT_MODEL".into(), model));
         }
 
+        // Every cockpit worker runs through `aoe __cockpit-runner` so it
+        // survives `aoe serve --stop`. The runner binds the socket path
+        // computed here and the daemon dials it.
+        let socket_path = super::worker_registry::socket_path_for(&session_id).map_err(|e| {
+            SupervisorError::Acp(AcpError::Spawn(format!("worker socket path: {e}")))
+        })?;
+
         let config = SpawnConfig {
             spec,
             cwd,
             additional_dirs,
             provider_env: env,
-            socket_path: None,
+            socket_path: Some(socket_path),
             stored_acp_session_id: stored_acp_session_id.clone(),
         };
 
@@ -477,6 +525,13 @@ impl<S: BroadcastSink> Supervisor<S> {
                                     cfg.stored_acp_session_id = Some(acp_session_id.clone());
                                 }
                             }
+                            // Mirror into the on-disk registry so a fresh
+                            // `aoe serve` after a daemon restart issues
+                            // `session/load` instead of `session/new`.
+                            super::worker_registry::update_stored_acp_session_id(
+                                &session_id,
+                                Some(acp_session_id),
+                            );
                         }
                         Event::SessionContextReset { reason } => {
                             let mut guard = workers.lock().await;
@@ -491,6 +546,7 @@ impl<S: BroadcastSink> Supervisor<S> {
                                     cfg.stored_acp_session_id = None;
                                 }
                             }
+                            super::worker_registry::update_stored_acp_session_id(&session_id, None);
                         }
                         _ => {}
                     }
@@ -561,6 +617,31 @@ impl<S: BroadcastSink> Supervisor<S> {
                         RestartDecision::Gone => {
                             // The worker entry was removed (shutdown / delete).
                             // Exit quietly.
+                            return;
+                        }
+                        RestartDecision::UserStopped => {
+                            info!(
+                                target: "cockpit.supervisor",
+                                session = %session_id,
+                                "worker registry deleted by user (`aoe cockpit stop|kill`); \
+                                 dropping WorkerHandle without respawn"
+                            );
+                            // Emit a Stopped so the UI clears any
+                            // "thinking" indicator the user might have
+                            // been staring at when they ran `aoe cockpit
+                            // stop`. The reconciler will spawn a fresh
+                            // worker on its next tick if the session is
+                            // still cockpit_mode.
+                            let seq = next_seq(&next_seqs, &session_id);
+                            sink.publish(
+                                &session_id,
+                                seq,
+                                &Event::Stopped {
+                                    reason: "user_stopped".into(),
+                                },
+                            );
+                            let mut guard = workers.lock().await;
+                            guard.remove(&session_id);
                             return;
                         }
                     };
@@ -743,6 +824,23 @@ impl<S: BroadcastSink> Supervisor<S> {
                 let _ = client.shutdown().await;
             }
             handle.drain_task.abort();
+            // SIGTERM the runner (if there is one) so the agent
+            // subprocess dies; the runner cleans up its own files but
+            // we also delete the registry entry here to handle the
+            // case where the runner is wedged.
+            terminate_runner_for_session(session_id);
+            return Ok(());
+        }
+        // No in-memory worker, but there may still be a detached
+        // runner in the registry (e.g. a previous daemon detached and
+        // shutdown is called against the disk-only entry).
+        if super::worker_registry::load(session_id)
+            .ok()
+            .flatten()
+            .is_some()
+        {
+            drop(workers);
+            terminate_runner_for_session(session_id);
             return Ok(());
         }
         if pending_has_it {
@@ -766,8 +864,19 @@ impl<S: BroadcastSink> Supervisor<S> {
         Err(SupervisorError::UnknownSession(session_id.into()))
     }
 
-    /// Shutdown every worker. Called on aoe serve shutdown.
+    /// Shutdown every worker. Called when the user explicitly terminates
+    /// all cockpit workers (e.g. `aoe cockpit stop --all`) — sends ACP
+    /// shutdown to each connected client, aborts the drain task, AND
+    /// signals every per-session `aoe __cockpit-runner` so the agent
+    /// subprocess dies. For the everyday `aoe serve --stop` flow, use
+    /// `detach_all` instead so workers outlive the daemon.
     pub async fn shutdown_all(&self) {
+        let registry_pids: Vec<(String, u32)> = super::worker_registry::list()
+            .unwrap_or_default()
+            .into_iter()
+            .map(|r| (r.session_id, r.pid))
+            .collect();
+
         let mut workers = self.workers.lock().await;
         for (id, handle) in workers.drain() {
             debug!(target: "cockpit.supervisor", session = %id, "shutting down");
@@ -777,6 +886,149 @@ impl<S: BroadcastSink> Supervisor<S> {
             }
             handle.drain_task.abort();
         }
+        drop(workers);
+
+        // SIGTERM every runner we knew about, so detached agents that
+        // outlived a previous daemon are also taken down by an explicit
+        // "kill them all" request.
+        #[cfg(unix)]
+        for (session_id, pid) in registry_pids {
+            use nix::sys::signal::{kill, Signal};
+            use nix::unistd::Pid;
+            let _ = kill(Pid::from_raw(pid as i32), Signal::SIGTERM);
+            super::worker_registry::delete(&session_id).ok();
+        }
+        #[cfg(not(unix))]
+        let _ = registry_pids;
+    }
+
+    /// Drop the daemon-side handle to every worker without killing the
+    /// runner or its agent. Used on `aoe serve` graceful shutdown so the
+    /// agents keep running and the next `aoe serve` reattaches.
+    ///
+    /// Concretely: closes the unix-socket connection (via `client
+    /// .shutdown()` which sends `ClientCmd::Shutdown` to the connection
+    /// task), aborts the drain task, and writes `detached_at` into each
+    /// registry entry. The runner observes EOF on its socket read,
+    /// clears its active outbound, and goes back to accepting.
+    pub async fn detach_all(&self) {
+        let mut workers = self.workers.lock().await;
+        let ids: Vec<String> = workers.keys().cloned().collect();
+        info!(
+            target: "cockpit.supervisor",
+            count = ids.len(),
+            "detaching cockpit workers; they continue running. \
+             Use `aoe cockpit stop` to terminate."
+        );
+        for (id, handle) in workers.drain() {
+            debug!(target: "cockpit.supervisor", session = %id, "detaching");
+            {
+                let client = handle.client.lock().await;
+                let _ = client.shutdown().await;
+            }
+            handle.drain_task.abort();
+            super::worker_registry::mark_detached(&id);
+        }
+    }
+
+    /// Reattach to an already-running worker by dialing its existing
+    /// runner socket. Used by `reconcile_cockpit_workers` on `aoe serve`
+    /// startup before falling back to a fresh spawn.
+    ///
+    /// `in_flight_turn` should be true when the on-disk event store
+    /// shows the session was mid-prompt at the moment the previous
+    /// daemon detached. It arms a watchdog in the connection task that
+    /// emits a synthetic `Event::Stopped { reason: "reattach_idle" }`
+    /// after a quiet window, so the UI's "thinking" indicator clears
+    /// even though the agent's eventual response to the orphaned
+    /// prompt is dropped silently by the underlying transport (its
+    /// request id was issued by the previous daemon's client and is
+    /// unknown to this one).
+    pub async fn attach(
+        &self,
+        session_id: String,
+        cwd: PathBuf,
+        additional_dirs: Vec<PathBuf>,
+        in_flight_turn: bool,
+    ) -> Result<(), SupervisorError> {
+        let record = match super::worker_registry::load(&session_id)
+            .map_err(|e| SupervisorError::Acp(AcpError::Spawn(format!("registry load: {e}"))))?
+        {
+            Some(r) if super::worker_registry::is_record_live(&r) => r,
+            Some(_) | None => {
+                return Err(SupervisorError::UnknownSession(session_id));
+            }
+        };
+
+        // Resume requires a known ACP session id (the runner was holding
+        // the agent loaded against it). If the registry doesn't carry
+        // one yet — e.g. the previous daemon crashed before the first
+        // `session/new` response was processed — there's nothing to
+        // resume against; bail so the reconciler falls through to a
+        // fresh spawn.
+        let Some(stored_acp_session_id) = record.stored_acp_session_id.clone() else {
+            return Err(SupervisorError::Acp(AcpError::Spawn(
+                "runner registry has no stored_acp_session_id; need fresh spawn".into(),
+            )));
+        };
+
+        {
+            let workers = self.workers.lock().await;
+            if workers.contains_key(&session_id) {
+                return Err(SupervisorError::AlreadyRunning(session_id));
+            }
+            if workers.len() >= self.max_concurrent_workers as usize {
+                return Err(SupervisorError::CapacityFull {
+                    current: workers.len(),
+                    limit: self.max_concurrent_workers,
+                });
+            }
+        }
+
+        let cockpit_session_id = CockpitSessionId(session_id.clone());
+        let mut client = AcpClient::attach(
+            record.socket_path.clone(),
+            cwd,
+            additional_dirs,
+            stored_acp_session_id,
+            in_flight_turn,
+            cockpit_session_id,
+        )
+        .await?;
+        super::worker_registry::mark_attached(&session_id);
+
+        let inbound = client
+            .take_inbound()
+            .expect("freshly attached AcpClient always has inbound receiver");
+        let client = Arc::new(Mutex::new(client));
+        let mut workers = self.workers.lock().await;
+        if workers.contains_key(&session_id) {
+            drop(workers);
+            drop(client);
+            return Err(SupervisorError::AlreadyRunning(session_id));
+        }
+        let drain_task = self.start_drain_task(session_id.clone(), inbound);
+        workers.insert(
+            session_id.clone(),
+            WorkerHandle {
+                client,
+                drain_task,
+                restart_history: vec![],
+                // No respawn config — if the worker dies, the drain
+                // task will see EOF and we'll let the reconciler spawn
+                // a fresh runner on the next tick rather than auto-
+                // respawning from this in-memory state.
+                spawn_config: None,
+            },
+        );
+        info!(
+            target: "cockpit.supervisor",
+            session = %session_id,
+            socket = %record.socket_path.display(),
+            pid = record.pid,
+            "reattached to existing cockpit worker"
+        );
+        Ok(())
     }
 
     /// Whether this session has a running cockpit worker, or a
@@ -796,8 +1048,120 @@ impl<S: BroadcastSink> Supervisor<S> {
     pub async fn count(&self) -> usize {
         self.workers.lock().await.len()
     }
+
+    /// Reap workers whose on-disk registry entry has disappeared while
+    /// the in-memory `WorkerHandle` is still installed. This is the
+    /// out-of-band stop signal: `aoe cockpit stop|kill|restart` (a
+    /// separate process from the daemon) deletes the registry entry,
+    /// then SIGTERMs the runner. The daemon's protocol-layer connection
+    /// task blocks on `cmd_rx.recv()` while idle, so socket EOF does
+    /// NOT propagate back into the closure — `event_tx` never drops,
+    /// the drain task never observes inbound closure, and
+    /// `restart_decision` never runs. Without an explicit poll, the UI
+    /// stays stuck on "thinking" with a phantom worker recorded in the
+    /// supervisor.
+    ///
+    /// Called by the reconciler every 2s. For each runner-managed worker
+    /// whose registry entry is gone:
+    ///   - if a `.restart` sentinel sits next to the (now-deleted)
+    ///     registry entry, publishes `Stopped { reason:
+    ///     "restart_pending" }` and reports the id back to the caller so
+    ///     the reconciler can clear its `attempted` set and let the next
+    ///     spawn pass run (transcript continuity via the cached
+    ///     `acp_session_id`);
+    ///   - otherwise publishes `Stopped { reason: "user_stopped" }` so
+    ///     the frontend offers a "Reconnect" button and the daemon
+    ///     stays out of the respawn business.
+    ///
+    /// Either way: the WorkerHandle is dropped, ACP Shutdown is sent so
+    /// the connection task exits cleanly, and the drain task is aborted.
+    /// The stdio-only test path is skipped because those handles have
+    /// no registry entry by construction.
+    ///
+    /// Returns the list of restart-pending session ids so the reconciler
+    /// can re-enable auto-spawn for them on the next tick.
+    pub async fn reap_user_stopped(&self) -> Vec<String> {
+        // Snapshot candidate session ids without holding the workers lock
+        // across the registry read or the publish/teardown — the
+        // teardown takes the client lock and we don't want to nest.
+        let candidates: Vec<String> = {
+            let workers = self.workers.lock().await;
+            workers
+                .iter()
+                .filter(|(_, h)| {
+                    h.spawn_config
+                        .as_ref()
+                        .map(|c| c.socket_path.is_some())
+                        .unwrap_or(false)
+                })
+                .map(|(id, _)| id.clone())
+                .filter(|id| matches!(super::worker_registry::load(id), Ok(None)))
+                .collect()
+        };
+
+        let mut restart_pending: Vec<String> = Vec::new();
+        for id in candidates {
+            let removed = self.workers.lock().await.remove(&id);
+            let Some(handle) = removed else { continue };
+            // Consume the restart marker (if any) and pick the publish
+            // reason. The marker is cleared regardless of which branch
+            // fires so a leaked file (e.g. from a CLI that crashed
+            // between `mark_restart_pending` and `delete`) can't poison
+            // a subsequent user-initiated stop.
+            let is_restart = super::worker_registry::take_restart_marker(&id);
+            let reason = if is_restart {
+                "restart_pending"
+            } else {
+                "user_stopped"
+            };
+            info!(
+                target: "cockpit.supervisor",
+                session = %id,
+                reason,
+                "registry entry gone while worker handle live; tearing down"
+            );
+            let seq = next_seq(&self.next_seqs, &id);
+            self.sink.publish(
+                &id,
+                seq,
+                &Event::Stopped {
+                    reason: reason.to_string(),
+                },
+            );
+            // Send ACP Shutdown so the connection task's closure breaks
+            // out of its cmd_rx loop and the underlying transport closes
+            // cleanly (avoids a leaked socket fd until the daemon dies).
+            {
+                let client = handle.client.lock().await;
+                let _ = client.shutdown().await;
+            }
+            handle.drain_task.abort();
+            if is_restart {
+                restart_pending.push(id);
+            }
+        }
+        restart_pending
+    }
 }
 
+/// SIGTERM the per-session runner if its registry entry has a live PID,
+/// then delete the entry. Used by `shutdown` and `shutdown_all` to take
+/// down detached workers explicitly.
+fn terminate_runner_for_session(session_id: &str) {
+    if let Ok(Some(record)) = super::worker_registry::load(session_id) {
+        #[cfg(unix)]
+        if super::worker_registry::is_pid_alive(record.pid) {
+            use nix::sys::signal::{kill, Signal};
+            use nix::unistd::Pid;
+            let _ = kill(Pid::from_raw(record.pid as i32), Signal::SIGTERM);
+        }
+        #[cfg(not(unix))]
+        let _ = record;
+    }
+    super::worker_registry::delete(session_id).ok();
+}
+
+#[derive(Debug)]
 enum RestartDecision {
     // Boxed because `SpawnConfig` is significantly larger than the
     // unit variants — clippy::large_enum_variant flags the size
@@ -807,6 +1171,13 @@ enum RestartDecision {
     BudgetBurned,
     /// The worker entry was removed (e.g. shutdown).
     Gone,
+    /// The on-disk worker registry entry for this session was deleted
+    /// while the in-memory WorkerHandle still exists. Signals that the
+    /// user (or a peer process) explicitly stopped this worker via
+    /// `aoe cockpit stop|kill`. The drain task removes the WorkerHandle
+    /// and emits a soft `Stopped` event instead of burning the restart
+    /// budget with respawns of an agent the user just terminated.
+    UserStopped,
 }
 
 async fn restart_decision(
@@ -822,6 +1193,36 @@ async fn restart_decision(
         );
         return RestartDecision::Gone;
     };
+    // Registry-deletion signal: if the on-disk record for this session
+    // was removed but we still hold a WorkerHandle, the user terminated
+    // the runner externally (`aoe cockpit stop|kill`). Don't respawn —
+    // the reconciler will handle a fresh spawn on its next tick if the
+    // session is still `cockpit_mode = true`. Returning `UserStopped`
+    // both skips the respawn budget bookkeeping and lets the drain task
+    // emit a non-crash `Stopped` so the UI clears any "thinking" state
+    // instead of showing the budget-burned red banner.
+    //
+    // Only consult the registry for runner-mediated workers (those have
+    // a `socket_path` in their cached spawn_config). The in-proc stdio
+    // path used by legacy tests has no registry entry by construction,
+    // so the "gone" check would always fire and break unrelated test
+    // fixtures.
+    let runner_managed = handle
+        .spawn_config
+        .as_ref()
+        .map(|c| c.socket_path.is_some())
+        .unwrap_or(false);
+    if runner_managed {
+        let registry_gone = matches!(super::worker_registry::load(session_id), Ok(None));
+        if registry_gone {
+            debug!(
+                target: "cockpit.supervisor",
+                session = %session_id,
+                "restart_decision: registry entry gone, treating as user-initiated stop"
+            );
+            return RestartDecision::UserStopped;
+        }
+    }
     let now = Instant::now();
     let window_start = now - RESTART_WINDOW;
     let pre_count = handle.restart_history.len();
@@ -1077,6 +1478,288 @@ mod tests {
         assert!(matches!(decision, RestartDecision::BudgetBurned));
     }
 
+    /// Regression: `aoe cockpit stop|kill` deletes the registry entry,
+    /// then SIGTERMs the runner. The daemon's drain task sees socket EOF
+    /// and consults `restart_decision`. With the registry entry gone but
+    /// the in-memory `WorkerHandle` still installed, `restart_decision`
+    /// must return `UserStopped` so the drain task drops the handle and
+    /// emits a soft `Stopped` event — NOT `Respawn` (which would race
+    /// the SIGTERM and crash-loop until the budget burned) and NOT
+    /// `BudgetBurned` (which would surface the scary red banner the
+    /// user originally hit).
+    ///
+    /// The gate is "spawn_config.socket_path is Some" (runner-managed)
+    /// + registry entry absent; we explicitly populate `socket_path`
+    /// here so the production code path fires.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn restart_decision_returns_user_stopped_when_registry_deleted() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        // SAFETY: serialised by `#[serial]`; the test fixture restores
+        // env on the next serial test by reassignment. `get_app_dir`
+        // also creates the dir on first call, so an isolated HOME
+        // guarantees an isolated registry root.
+        unsafe {
+            std::env::set_var("HOME", tmp.path());
+            std::env::set_var("XDG_CONFIG_HOME", tmp.path().join(".config"));
+        }
+        let sink = VecSink::new();
+        let sup = Supervisor::new(sink);
+        let dummy_spec = AgentSpec {
+            command: "/bin/true".into(),
+            args: vec![],
+            description: "test fixture".into(),
+            env_allowlist: None,
+        };
+        let dummy_config = SpawnConfig {
+            spec: dummy_spec,
+            cwd: std::env::temp_dir(),
+            additional_dirs: vec![],
+            provider_env: vec![],
+            socket_path: Some(tmp.path().join("dummy.sock")),
+            stored_acp_session_id: None,
+        };
+        {
+            let mut workers = sup.workers.lock().await;
+            let (client, _tx) = AcpClient::fake_for_test(CockpitSessionId("s-stop".into()));
+            let drain = tokio::spawn(async {});
+            workers.insert(
+                "s-stop".into(),
+                WorkerHandle {
+                    client: Arc::new(Mutex::new(client)),
+                    drain_task: drain,
+                    restart_history: vec![],
+                    spawn_config: Some(dummy_config),
+                },
+            );
+        }
+        // No registry entry for "s-stop" — production code reads this
+        // as a user-initiated stop signal.
+        let decision = restart_decision(&sup.workers, "s-stop").await;
+        assert!(
+            matches!(decision, RestartDecision::UserStopped),
+            "expected UserStopped when registry entry is absent, got {decision:?}"
+        );
+    }
+
+    /// `reap_user_stopped` is the polling fallback that catches the
+    /// `aoe cockpit stop|kill` case the drain task cannot detect on its
+    /// own (idle connection task blocks on `cmd_rx.recv()`, so socket
+    /// EOF never propagates back). When a runner-managed worker's
+    /// registry entry vanishes, the reaper must:
+    ///   1. Publish a `Stopped { reason: "user_stopped" }` so the UI
+    ///      clears its spinner and shows the reconnect banner.
+    ///   2. Remove the WorkerHandle so the next reconcile_cockpit_workers
+    ///      tick won't see a phantom worker and skip the auto-spawn path.
+    ///
+    /// We don't assert anything about the drain task's abort here because
+    /// the fixture installs a no-op JoinHandle; the production drain task
+    /// holds the client clone and exits when its inbound channel closes
+    /// (which happens after `client.shutdown()` propagates Shutdown to
+    /// the connection task). Covered indirectly by the
+    /// `restart_decision_returns_user_stopped_when_registry_deleted`
+    /// regression.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn reap_user_stopped_emits_event_and_drops_handle() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        // SAFETY: serialised by `#[serial]`. Isolating HOME keeps this
+        // test's worker_registry lookups away from the developer's real
+        // dev-mode entries.
+        unsafe {
+            std::env::set_var("HOME", tmp.path());
+            std::env::set_var("XDG_CONFIG_HOME", tmp.path().join(".config"));
+        }
+        let sink = VecSink::new();
+        let sup = Supervisor::new(sink.clone());
+        let dummy_spec = AgentSpec {
+            command: "/bin/true".into(),
+            args: vec![],
+            description: "test fixture".into(),
+            env_allowlist: None,
+        };
+        let dummy_config = SpawnConfig {
+            spec: dummy_spec,
+            cwd: std::env::temp_dir(),
+            additional_dirs: vec![],
+            provider_env: vec![],
+            socket_path: Some(tmp.path().join("dummy.sock")),
+            stored_acp_session_id: None,
+        };
+        {
+            let mut workers = sup.workers.lock().await;
+            let (client, _tx) = AcpClient::fake_for_test(CockpitSessionId("s-reap".into()));
+            let drain = tokio::spawn(async {});
+            workers.insert(
+                "s-reap".into(),
+                WorkerHandle {
+                    client: Arc::new(Mutex::new(client)),
+                    drain_task: drain,
+                    restart_history: vec![],
+                    spawn_config: Some(dummy_config),
+                },
+            );
+        }
+        // No registry entry → reaper treats this as user-initiated stop.
+        sup.reap_user_stopped().await;
+
+        // WorkerHandle dropped.
+        assert!(
+            !sup.workers.lock().await.contains_key("s-reap"),
+            "reaper must remove the WorkerHandle"
+        );
+        // Stopped event published with the correct reason.
+        let frames = sink.frames.lock().unwrap();
+        let stopped = frames
+            .iter()
+            .find(|(id, _, _)| id == "s-reap")
+            .expect("expected a published frame for s-reap");
+        match &stopped.2 {
+            Event::Stopped { reason } => {
+                assert_eq!(reason, "user_stopped", "wrong stop reason");
+            }
+            other => panic!("expected Event::Stopped, got {other:?}"),
+        }
+    }
+
+    /// `reap_user_stopped` distinguishes `aoe cockpit restart` from `stop`
+    /// via the `.restart` sentinel: the CLI's restart path writes the
+    /// marker BEFORE deleting the registry, and the reaper consumes it
+    /// to (a) publish `restart_pending` instead of `user_stopped`, and
+    /// (b) return the id so the reconciler can clear its `attempted`
+    /// set and let the next 2s tick auto-respawn the worker (transcript
+    /// continuity via the cached `acp_session_id`).
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn reap_user_stopped_reports_restart_pending_when_marker_present() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        unsafe {
+            std::env::set_var("HOME", tmp.path());
+            std::env::set_var("XDG_CONFIG_HOME", tmp.path().join(".config"));
+        }
+        let sink = VecSink::new();
+        let sup = Supervisor::new(sink.clone());
+        let dummy_spec = AgentSpec {
+            command: "/bin/true".into(),
+            args: vec![],
+            description: "test fixture".into(),
+            env_allowlist: None,
+        };
+        let dummy_config = SpawnConfig {
+            spec: dummy_spec,
+            cwd: std::env::temp_dir(),
+            additional_dirs: vec![],
+            provider_env: vec![],
+            socket_path: Some(tmp.path().join("dummy.sock")),
+            stored_acp_session_id: None,
+        };
+        {
+            let mut workers = sup.workers.lock().await;
+            let (client, _tx) = AcpClient::fake_for_test(CockpitSessionId("s-restart".into()));
+            let drain = tokio::spawn(async {});
+            workers.insert(
+                "s-restart".into(),
+                WorkerHandle {
+                    client: Arc::new(Mutex::new(client)),
+                    drain_task: drain,
+                    restart_history: vec![],
+                    spawn_config: Some(dummy_config),
+                },
+            );
+        }
+        // Simulate `aoe cockpit restart`: registry already deleted (no
+        // file at record_path); marker file written before delete.
+        crate::cockpit::worker_registry::mark_restart_pending("s-restart");
+
+        let pending = sup.reap_user_stopped().await;
+
+        assert_eq!(
+            pending,
+            vec!["s-restart".to_string()],
+            "reaper must report the restart-pending session"
+        );
+        assert!(
+            !sup.workers.lock().await.contains_key("s-restart"),
+            "reaper must remove the WorkerHandle on restart too"
+        );
+        let frames = sink.frames.lock().unwrap();
+        let stopped = frames
+            .iter()
+            .find(|(id, _, _)| id == "s-restart")
+            .expect("expected published frame");
+        match &stopped.2 {
+            Event::Stopped { reason } => {
+                assert_eq!(
+                    reason, "restart_pending",
+                    "marker must steer publish reason to restart_pending"
+                );
+            }
+            other => panic!("expected Event::Stopped, got {other:?}"),
+        }
+        // Marker must be consumed so a subsequent stop on the same id
+        // isn't accidentally treated as a restart.
+        let marker_path =
+            crate::cockpit::worker_registry::restart_marker_path("s-restart").unwrap();
+        assert!(
+            !marker_path.exists(),
+            "restart marker must be removed by the reaper"
+        );
+    }
+
+    /// `reap_user_stopped` must NOT touch stdio-only workers: those have
+    /// no registry entry by construction (the runner-managed socket path
+    /// isn't set on `SpawnConfig`), so the registry-gone check would
+    /// always fire and tear down every legacy test fixture.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn reap_user_stopped_skips_stdio_workers() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        unsafe {
+            std::env::set_var("HOME", tmp.path());
+            std::env::set_var("XDG_CONFIG_HOME", tmp.path().join(".config"));
+        }
+        let sink = VecSink::new();
+        let sup = Supervisor::new(sink.clone());
+        let dummy_spec = AgentSpec {
+            command: "/bin/true".into(),
+            args: vec![],
+            description: "test fixture".into(),
+            env_allowlist: None,
+        };
+        // No socket_path → not runner-managed → reaper skips.
+        let dummy_config = SpawnConfig {
+            spec: dummy_spec,
+            cwd: std::env::temp_dir(),
+            additional_dirs: vec![],
+            provider_env: vec![],
+            socket_path: None,
+            stored_acp_session_id: None,
+        };
+        {
+            let mut workers = sup.workers.lock().await;
+            let (client, _tx) = AcpClient::fake_for_test(CockpitSessionId("s-stdio".into()));
+            let drain = tokio::spawn(async {});
+            workers.insert(
+                "s-stdio".into(),
+                WorkerHandle {
+                    client: Arc::new(Mutex::new(client)),
+                    drain_task: drain,
+                    restart_history: vec![],
+                    spawn_config: Some(dummy_config),
+                },
+            );
+        }
+        sup.reap_user_stopped().await;
+        assert!(
+            sup.workers.lock().await.contains_key("s-stdio"),
+            "stdio worker must survive the reaper"
+        );
+        assert!(
+            sink.frames.lock().unwrap().is_empty(),
+            "reaper must not publish for stdio workers"
+        );
+    }
+
     /// `next_seq` increments per-session and is independent of the
     /// `workers` map (so `publish_startup_error` and the drain task
     /// share a counter even though the former runs while no
@@ -1218,7 +1901,16 @@ mod tests {
     /// worker. The error must include `current` and `limit` so the
     /// REST surface can return a useful 503 body.
     #[tokio::test]
+    #[serial_test::serial]
     async fn capacity_full_returns_after_limit() {
+        // Isolate HOME so registry entries from the developer's real
+        // dev profile (or other tests) don't bleed into the spawn
+        // path's combined-count check.
+        let tmp = tempfile::TempDir::new().unwrap();
+        unsafe {
+            std::env::set_var("HOME", tmp.path());
+            std::env::set_var("XDG_CONFIG_HOME", tmp.path().join(".config"));
+        }
         let sink = VecSink::new();
         let sup = Supervisor::with_capacity(sink, 1);
         // Pre-load one fake worker so the cap is full.
@@ -1250,6 +1942,73 @@ mod tests {
         match result {
             Err(SupervisorError::CapacityFull { current, limit }) => {
                 assert_eq!(current, 1);
+                assert_eq!(limit, 1);
+            }
+            other => panic!("expected CapacityFull, got {other:?}"),
+        }
+    }
+
+    /// Capacity must count detached (registry-only) workers, not just
+    /// in-memory ones. Issue #1037 called this out explicitly: a fresh
+    /// daemon spawn must not race the reconciler and over-spawn while
+    /// it's still attaching to live runners. Without this, two
+    /// consecutive `aoe serve` invocations could push the worker count
+    /// past `max_concurrent_workers`.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn capacity_counts_detached_registry_entries() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        // SAFETY: serialised by `#[serial]`; isolating HOME keeps this
+        // test's registry writes away from the developer's real
+        // dev-mode entries (and any other tests in this file).
+        unsafe {
+            std::env::set_var("HOME", tmp.path());
+            std::env::set_var("XDG_CONFIG_HOME", tmp.path().join(".config"));
+        }
+        let sink = VecSink::new();
+        let sup = Supervisor::with_capacity(sink, 1);
+
+        // No in-memory workers. Just a single registry entry that
+        // `is_record_live` will accept: PID = current process (so
+        // pid_alive is true) and a real file at the socket path (so
+        // socket_exists is true).
+        let registry_dir = crate::cockpit::worker_registry::workers_dir().unwrap();
+        let socket_path = registry_dir.join("detached-1.sock");
+        std::fs::write(&socket_path, b"").unwrap();
+        let record = crate::cockpit::worker_registry::WorkerRecord::new(
+            "detached-1".into(),
+            std::process::id(),
+            socket_path,
+            "claude-code".into(),
+            std::env::temp_dir(),
+            None,
+            vec![],
+            vec![],
+            None,
+        );
+        crate::cockpit::worker_registry::save(&record).unwrap();
+
+        // Pre-condition: registry entry must be live for the capacity
+        // path to count it. If this fails, the test setup is wrong.
+        assert!(
+            crate::cockpit::worker_registry::is_record_live(&record),
+            "registry record must be live for the capacity path to count it"
+        );
+
+        let result = sup
+            .spawn(SpawnRequest {
+                session_id: "fresh".into(),
+                agent: "claude-code".into(),
+                cwd: std::env::temp_dir(),
+                additional_dirs: vec![],
+                provider_env: vec![],
+                model: None,
+                stored_acp_session_id: None,
+            })
+            .await;
+        match result {
+            Err(SupervisorError::CapacityFull { current, limit }) => {
+                assert_eq!(current, 1, "detached registry entry must count");
                 assert_eq!(limit, 1);
             }
             other => panic!("expected CapacityFull, got {other:?}"),

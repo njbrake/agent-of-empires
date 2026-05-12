@@ -19,10 +19,9 @@ mod storage;
 pub use crate::sound::{SoundConfig, SoundConfigOverride};
 pub(crate) use capture::is_valid_session_id;
 pub use config::{
-    get_claude_config_dir, get_update_settings, load_config, save_config, ClaudeConfig, Config,
-    ContainerRuntimeName, DefaultTerminalMode, GroupByMode, SandboxConfig, SessionConfig,
-    ThemeConfig, TmuxClipboardMode, TmuxMouseMode, TmuxStatusBarMode, UpdatesConfig,
-    WorktreeConfig,
+    get_update_settings, load_config, save_config, Config, ContainerRuntimeName,
+    DefaultTerminalMode, GroupByMode, SandboxConfig, SessionConfig, ThemeConfig, TmuxClipboardMode,
+    TmuxMouseMode, TmuxStatusBarMode, UpdatesConfig, WorktreeConfig,
 };
 pub(crate) use environment::user_shell;
 pub use environment::validate_env_entry;
@@ -32,10 +31,10 @@ pub use instance::{
 };
 pub use profile_config::{
     load_profile_config, merge_configs, resolve_config, resolve_config_or_warn,
-    save_profile_config, validate_check_interval, validate_memory_limit, validate_path_exists,
-    validate_volume_format, ClaudeConfigOverride, CockpitConfigOverride, HooksConfigOverride,
-    ProfileConfig, SandboxConfigOverride, SessionConfigOverride, ThemeConfigOverride,
-    TmuxConfigOverride, UpdatesConfigOverride, WorktreeConfigOverride,
+    save_profile_config, validate_check_interval, validate_memory_limit, validate_volume_format,
+    CockpitConfigOverride, HooksConfigOverride, ProfileConfig, SandboxConfigOverride,
+    SessionConfigOverride, ThemeConfigOverride, TmuxConfigOverride, UpdatesConfigOverride,
+    WorktreeConfigOverride,
 };
 pub use projects::{Project, ProjectScope};
 pub use repo_config::{

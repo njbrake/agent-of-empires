@@ -207,6 +207,48 @@ fn describe_status(status: git2::Status) -> &'static str {
     }
 }
 
+/// Build a "worktree is dirty" error message for the host-side dirty check
+/// in `perform_deletion`. Returns `None` if the worktree has no uncommitted
+/// changes. The message is formatted the same way as
+/// `enrich_worktree_remove_error`: a short lead line followed by a capped
+/// list of dirty paths.
+///
+/// Used to gate the destructive in-container preclean for sandboxed
+/// sessions: the preclean's `find . -delete` wipes the worktree
+/// unconditionally, which silently violates the `force_delete=false`
+/// contract for users with untracked files. The caller checks this
+/// before running preclean, surfaces the message as a deletion error,
+/// and skips both preclean and host-side worktree removal for that
+/// path.
+pub fn dirty_worktree_message(worktree_path: &Path) -> Option<String> {
+    let dirty = list_dirty_files(worktree_path);
+    if dirty.is_empty() {
+        return None;
+    }
+    let total = dirty.len();
+    let mut out = String::with_capacity(96 + total * 32);
+    out.push_str("contains modified or untracked files, use --force to delete");
+    out.push('\n');
+    out.push('\n');
+    out.push_str(&format!(
+        "Uncommitted changes ({}; force delete will discard these):",
+        total
+    ));
+    for entry in dirty.iter().take(MAX_DIRTY_FILES_LISTED) {
+        out.push('\n');
+        out.push_str("  ");
+        out.push_str(entry);
+    }
+    if total > MAX_DIRTY_FILES_LISTED {
+        out.push('\n');
+        out.push_str(&format!(
+            "  ... and {} more",
+            total - MAX_DIRTY_FILES_LISTED
+        ));
+    }
+    Some(out)
+}
+
 /// Build an enriched error message for a failed worktree removal. When the
 /// failure is caused by uncommitted/untracked files, list the offending paths
 /// (capped at `MAX_DIRTY_FILES_LISTED`) so the user can decide whether
@@ -281,6 +323,16 @@ pub fn cleanup_sandbox_worktree(instance: &Instance) -> bool {
 /// - `.git` file present: uses `git worktree remove`, falls back to
 ///   container cleanup for sandboxed sessions with permission errors
 ///
+/// `allow_container_removal` controls whether the sandbox fallback is
+/// permitted to force-remove the container as part of its recovery.
+/// Set to `true` when the caller has already requested container
+/// deletion (or is about to), and `false` when the caller wants to
+/// preserve the container (e.g. `aoe remove --keep-container` or
+/// `delete_worktree=true, delete_sandbox=false`). When `false` and
+/// the fallback is the only way to make progress, the worktree
+/// removal fails with the original permission error instead of
+/// quietly tearing down the container behind the user's back.
+///
 /// Returns `Ok(())` if the worktree was successfully removed, or
 /// `Err(errors)` with error messages on failure.
 pub fn remove_managed_worktree(
@@ -289,6 +341,7 @@ pub fn remove_managed_worktree(
     main_repo: &Path,
     instance: &Instance,
     force: bool,
+    allow_container_removal: bool,
 ) -> Result<(), Vec<String>> {
     let mut errors = Vec::new();
     let has_dot_git = worktree_path.join(".git").exists();
@@ -298,6 +351,7 @@ pub fn remove_managed_worktree(
         has_dot_git,
         is_sandboxed = instance.is_sandboxed(),
         force,
+        allow_container_removal,
         "worktree cleanup starting"
     );
 
@@ -306,14 +360,38 @@ pub fn remove_managed_worktree(
     if !has_dot_git {
         // .git is missing (manual deletion or other issue).
         // Remove the dir ourselves and prune stale references.
-        match remove_worktree_dir(worktree_path, main_repo, force) {
+        //
+        // For sandboxed sessions, missing `.git` almost always means the
+        // in-container preclean (`find . -delete`) wiped the worktree
+        // along with `.git` itself. The only remaining content on the
+        // host is mount-point cruft from anonymous volumes (empty
+        // `target/`, `node_modules/`, `.venv/` dirs created by Docker
+        // as anchors for `-v /workspace/<repo>/target` style mounts).
+        // Strict `remove_dir` then fails with ENOTEMPTY ("Directory not
+        // empty (os error 66)" on macOS); escalate to `remove_dir_all`
+        // so the leftover empty mount-point dirs are cleaned up. The
+        // host-side dirty check in `perform_deletion` guarantees we
+        // only reach this code path when the user opted in to losing
+        // any uncommitted changes (via `force_delete=true`) or the
+        // worktree was clean.
+        //
+        // For non-sandboxed sessions, missing `.git` typically means
+        // the user did something manual; keep strict behavior gated on
+        // the explicit `force` flag.
+        let effective_force = force || instance.is_sandboxed();
+        match remove_worktree_dir(worktree_path, main_repo, effective_force) {
             Ok(()) => {
                 worktree_removed = true;
             }
             Err(e) => {
                 tracing::debug!(error = %e, kind = ?e.kind(), "remove_worktree_dir failed (no .git)");
                 if is_permission_error(&e.to_string())
-                    && try_sandbox_dir_cleanup(worktree_path, main_repo, instance)
+                    && try_sandbox_dir_cleanup(
+                        worktree_path,
+                        main_repo,
+                        instance,
+                        allow_container_removal,
+                    )
                 {
                     worktree_removed = true;
                 } else {
@@ -340,7 +418,12 @@ pub fn remove_managed_worktree(
                 // git worktree remove won't work afterward. Fall back to
                 // removing the directory and pruning stale references.
                 if is_permission_error(&err_str)
-                    && try_sandbox_dir_cleanup(worktree_path, main_repo, instance)
+                    && try_sandbox_dir_cleanup(
+                        worktree_path,
+                        main_repo,
+                        instance,
+                        allow_container_removal,
+                    )
                 {
                     worktree_removed = true;
                     if let Err(e2) = git_wt.prune_worktrees() {
@@ -378,8 +461,23 @@ pub fn remove_managed_worktree(
 /// 1. Runs `find . -mindepth 1 -delete` inside the container
 /// 2. Force-removes the container to release the bind mount
 /// 3. Retries directory removal (with VirtioFS delay handling)
-fn try_sandbox_dir_cleanup(worktree_path: &Path, main_repo: &Path, instance: &Instance) -> bool {
+///
+/// Step 2 is gated on `allow_container_removal`: when the caller
+/// opted out of container deletion, we refuse to nuke the container
+/// just to free a permission-bound worktree. In that case the caller
+/// sees the original Worktree permission error and can decide what
+/// to do.
+fn try_sandbox_dir_cleanup(
+    worktree_path: &Path,
+    main_repo: &Path,
+    instance: &Instance,
+    allow_container_removal: bool,
+) -> bool {
     if !instance.is_sandboxed() {
+        return false;
+    }
+    if !allow_container_removal {
+        tracing::debug!("sandbox fallback skipped: caller forbade container removal");
         return false;
     }
 
@@ -429,6 +527,192 @@ mod tests {
         let result = remove_worktree_dir(&wt, &main, false);
         assert!(result.is_ok());
         assert!(!wt.exists());
+    }
+
+    /// `try_sandbox_dir_cleanup` must respect `allow_container_removal=false`
+    /// by returning early without touching the container, even when the
+    /// instance is sandboxed and the worktree would otherwise be a
+    /// fallback candidate. We can't easily test the docker-side branch
+    /// without a real container runtime, but we CAN guarantee the
+    /// early-return: a non-sandboxed instance should also return false,
+    /// and a sandboxed instance with `allow_container_removal=false`
+    /// should not even attempt to invoke `cleanup_sandbox_worktree`.
+    /// This regression test is checked via a side effect: we point the
+    /// instance at a non-existent worktree path, so the only way the
+    /// function could reach the post-cleanup `remove_worktree_dir` call
+    /// is if it bypassed the early-return. If the flag is honored,
+    /// the function returns false immediately.
+    #[test]
+    fn test_try_sandbox_dir_cleanup_respects_allow_container_removal_false() {
+        use crate::session::{Instance, SandboxInfo};
+        let mut instance = Instance::new("Test", "/tmp/aoe-cleanup-test-nonexistent");
+        instance.sandbox_info = Some(SandboxInfo {
+            enabled: true,
+            container_id: None,
+            image: "alpine".to_string(),
+            container_name: "aoe-sandbox-doesnotexist".to_string(),
+            extra_env: None,
+            custom_instruction: None,
+        });
+
+        let worktree = std::path::PathBuf::from("/tmp/aoe-cleanup-test-nonexistent");
+        let main_repo = std::path::PathBuf::from("/tmp/aoe-cleanup-test-main-nonexistent");
+
+        // With allow_container_removal=false, must return false without
+        // touching anything.
+        let result = try_sandbox_dir_cleanup(&worktree, &main_repo, &instance, false);
+        assert!(
+            !result,
+            "sandbox fallback must bail when allow_container_removal=false"
+        );
+    }
+
+    /// Anonymous-volume mount-point cruft: when a sandboxed session's
+    /// in-container preclean (`find . -delete`) runs, the bind mount on
+    /// the host loses its real contents (including `.git`) but Docker
+    /// leaves the anonymous-volume mount-point directories behind as
+    /// empty `target/`, `node_modules/`, `.venv/` dirs. Strict
+    /// `remove_dir` then fails with ENOTEMPTY ("Directory not empty
+    /// (os error 66)" on macOS) even though the user opted into
+    /// destroying the worktree. `remove_managed_worktree` must escalate
+    /// to `remove_dir_all` for sandboxed instances in this case.
+    #[test]
+    fn test_remove_managed_worktree_sandboxed_clears_mount_point_cruft() {
+        use crate::session::{Instance, SandboxInfo};
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let main_repo = tmp.path().join("main");
+        let worktree_path = tmp.path().join("worktree");
+        std::fs::create_dir(&main_repo).unwrap();
+
+        let repo = git2::Repository::init(&main_repo).unwrap();
+        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+        let tree_id = repo.index().unwrap().write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
+
+        let status = std::process::Command::new("git")
+            .args([
+                "worktree",
+                "add",
+                "-b",
+                "feature/cruft",
+                worktree_path.to_str().unwrap(),
+            ])
+            .current_dir(&main_repo)
+            .output()
+            .unwrap();
+        assert!(
+            status.status.success(),
+            "git worktree add failed: {}",
+            String::from_utf8_lossy(&status.stderr)
+        );
+
+        // Simulate post-preclean state: `.git` was wiped along with
+        // everything else, only the anonymous-volume mount-point dirs
+        // remain on the host as empty directories.
+        std::fs::remove_file(worktree_path.join(".git")).unwrap();
+        std::fs::create_dir(worktree_path.join("target")).unwrap();
+        std::fs::create_dir(worktree_path.join("node_modules")).unwrap();
+        std::fs::create_dir(worktree_path.join(".venv")).unwrap();
+
+        let mut instance = Instance::new("Test", worktree_path.to_str().unwrap());
+        instance.sandbox_info = Some(SandboxInfo {
+            enabled: true,
+            container_id: None,
+            image: "alpine".to_string(),
+            container_name: "aoe-cruft-doesnotexist".to_string(),
+            extra_env: None,
+            custom_instruction: None,
+        });
+
+        let git_wt = GitWorktree::new(main_repo.clone()).unwrap();
+        let result = remove_managed_worktree(
+            &git_wt,
+            &worktree_path,
+            &main_repo,
+            &instance,
+            false, // force = false; sandboxed escalation must kick in
+            true,  // allow_container_removal (not exercised here)
+        );
+
+        assert!(
+            result.is_ok(),
+            "sandboxed removal must clear mount-point cruft: {:?}",
+            result
+        );
+        assert!(
+            !worktree_path.exists(),
+            "worktree dir should be gone after sandboxed cleanup"
+        );
+    }
+
+    /// Counterpart: non-sandboxed sessions with a missing `.git` get
+    /// the strict behavior. A leftover non-empty dir there usually
+    /// means the user did something manual (moved files in, partial
+    /// recovery), and silently nuking it would be a regression.
+    #[test]
+    fn test_remove_managed_worktree_non_sandboxed_preserves_strict_dir_check() {
+        use crate::session::Instance;
+
+        let tmp = tempfile::TempDir::new().unwrap();
+        let main_repo = tmp.path().join("main");
+        let worktree_path = tmp.path().join("worktree");
+        std::fs::create_dir(&main_repo).unwrap();
+
+        let repo = git2::Repository::init(&main_repo).unwrap();
+        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+        let tree_id = repo.index().unwrap().write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
+
+        let status = std::process::Command::new("git")
+            .args([
+                "worktree",
+                "add",
+                "-b",
+                "feature/no-sandbox-cruft",
+                worktree_path.to_str().unwrap(),
+            ])
+            .current_dir(&main_repo)
+            .output()
+            .unwrap();
+        assert!(status.status.success());
+
+        std::fs::remove_file(worktree_path.join(".git")).unwrap();
+        std::fs::create_dir(worktree_path.join("target")).unwrap();
+
+        // No sandbox_info: instance.is_sandboxed() is false.
+        let instance = Instance::new("Test", worktree_path.to_str().unwrap());
+
+        let git_wt = GitWorktree::new(main_repo.clone()).unwrap();
+        let result =
+            remove_managed_worktree(&git_wt, &worktree_path, &main_repo, &instance, false, false);
+
+        assert!(
+            result.is_err(),
+            "non-sandboxed removal must NOT silently force-clear leftover dirs"
+        );
+        assert!(
+            worktree_path.exists(),
+            "worktree dir should still exist after strict failure"
+        );
+    }
+
+    #[test]
+    fn test_try_sandbox_dir_cleanup_returns_false_for_non_sandboxed() {
+        use crate::session::Instance;
+        let instance = Instance::new("Test", "/tmp/aoe-cleanup-test-nonexistent");
+        // No sandbox_info set.
+        let worktree = std::path::PathBuf::from("/tmp/aoe-cleanup-test-nonexistent");
+        let main_repo = std::path::PathBuf::from("/tmp/aoe-cleanup-test-main-nonexistent");
+
+        // Even with allow_container_removal=true, a non-sandboxed
+        // instance must early-return.
+        let result = try_sandbox_dir_cleanup(&worktree, &main_repo, &instance, true);
+        assert!(!result);
     }
 
     #[test]
@@ -503,6 +787,39 @@ mod tests {
     fn test_list_dirty_files_returns_empty_for_non_repo() {
         let dir = tempfile::TempDir::new().unwrap();
         assert!(list_dirty_files(dir.path()).is_empty());
+    }
+
+    #[test]
+    fn test_dirty_worktree_message_some_when_untracked() {
+        let (_dir, repo_path) = init_repo_with_commit();
+        std::fs::write(repo_path.join("scratch.log"), "data").unwrap();
+
+        let msg =
+            dirty_worktree_message(&repo_path).expect("dirty worktree should produce message");
+        assert!(
+            msg.contains("modified or untracked files"),
+            "message should describe dirty state: {}",
+            msg
+        );
+        assert!(
+            msg.contains("--force"),
+            "message should mention --force: {}",
+            msg
+        );
+        assert!(
+            msg.contains("scratch.log"),
+            "message should list the dirty path: {}",
+            msg
+        );
+    }
+
+    #[test]
+    fn test_dirty_worktree_message_none_when_clean() {
+        let (_dir, repo_path) = init_repo_with_commit();
+        assert!(
+            dirty_worktree_message(&repo_path).is_none(),
+            "clean worktree should produce no message"
+        );
     }
 
     #[test]
