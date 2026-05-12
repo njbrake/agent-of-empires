@@ -113,20 +113,54 @@ pub fn workers_dir() -> Result<PathBuf> {
     Ok(dir)
 }
 
+/// Defense-in-depth check on a session_id before it's interpolated into
+/// any `<workers_dir>/<session_id>.<ext>` path. Production session_ids
+/// come from `Uuid::new_v4()` so they satisfy this trivially, but the
+/// `aoe __cockpit-runner` subcommand accepts `--session-id` as a CLI
+/// arg, and we don't want a user invoking the runner with
+/// `--session-id "../../foo"` to write registry/socket/log files
+/// outside the dedicated worker directory. Not a privilege escalation
+/// (same UID), but a basic input-validation gap worth closing.
+///
+/// Accepts: alphanumeric, `-`, `_`. Rejects: empty, `/`, `\`, `.` (so
+/// `..` and leading-dot hidden files are both out), null bytes, and
+/// anything longer than 128 bytes (UUIDs are 36; this leaves room for
+/// prefixed test ids without permitting arbitrarily-long inputs).
+pub fn validate_session_id(session_id: &str) -> Result<()> {
+    if session_id.is_empty() {
+        anyhow::bail!("session_id must not be empty");
+    }
+    if session_id.len() > 128 {
+        anyhow::bail!("session_id too long ({} bytes, max 128)", session_id.len());
+    }
+    if !session_id
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
+        anyhow::bail!(
+            "session_id contains disallowed characters: must be ASCII alphanumeric, '-', or '_'"
+        );
+    }
+    Ok(())
+}
+
 /// `<workers_dir>/<session_id>.json`.
 pub fn record_path(session_id: &str) -> Result<PathBuf> {
+    validate_session_id(session_id)?;
     Ok(workers_dir()?.join(format!("{session_id}.json")))
 }
 
 /// `<workers_dir>/<session_id>.sock`. Caller computes this once and threads
 /// the same path into both the runner spawn and the daemon connect.
 pub fn socket_path_for(session_id: &str) -> Result<PathBuf> {
+    validate_session_id(session_id)?;
     Ok(workers_dir()?.join(format!("{session_id}.sock")))
 }
 
-/// `<workers_dir>/<session_id>.log` — runner-side stderr drain consumed by
-/// `aoe cockpit logs --session <id>`.
+/// `<workers_dir>/<session_id>.log` is the runner-side stderr drain
+/// consumed by `aoe cockpit logs --session <id>`.
 pub fn log_path_for(session_id: &str) -> Result<PathBuf> {
+    validate_session_id(session_id)?;
     Ok(workers_dir()?.join(format!("{session_id}.log")))
 }
 
@@ -140,6 +174,7 @@ pub fn log_path_for(session_id: &str) -> Result<PathBuf> {
 ///   - signal the reconciler to clear the `attempted` set for this id
 ///     so the next 2s tick actually spawns a fresh worker.
 pub fn restart_marker_path(session_id: &str) -> Result<PathBuf> {
+    validate_session_id(session_id)?;
     Ok(workers_dir()?.join(format!("{session_id}.restart")))
 }
 
@@ -492,5 +527,61 @@ mod tests {
         // *process group*, not a real process. Use a very high value that
         // won't realistically be allocated.
         assert!(!is_pid_alive(2_000_000_000));
+    }
+
+    #[test]
+    fn validate_session_id_accepts_uuids_and_test_ids() {
+        // Production format: UUID v4 with hyphens.
+        assert!(
+            validate_session_id("550e8400-e29b-41d4-a716-446655440000").is_ok(),
+            "must accept UUID v4 (the production session_id shape)"
+        );
+        // Test-prefixed ids with underscores and digits.
+        assert!(validate_session_id("test_session_42").is_ok());
+        assert!(validate_session_id("a").is_ok());
+        assert!(validate_session_id("Z-0").is_ok());
+    }
+
+    #[test]
+    fn validate_session_id_rejects_path_traversal_and_separators() {
+        // The whole point of this check: don't let a CLI invocation of
+        // `aoe __cockpit-runner --session-id "<evil>"` write files
+        // outside the workers dir.
+        for bad in [
+            "",
+            "..",
+            "../../etc/passwd",
+            "foo/bar",
+            "foo\\bar",
+            ".hidden",
+            "with space",
+            "with\0null",
+            "trailing.",
+            "good-then/../bad",
+        ] {
+            assert!(
+                validate_session_id(bad).is_err(),
+                "expected rejection for {bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn validate_session_id_rejects_overlong() {
+        let long = "a".repeat(129);
+        assert!(validate_session_id(&long).is_err());
+        let ok = "a".repeat(128);
+        assert!(validate_session_id(&ok).is_ok());
+    }
+
+    #[test]
+    fn path_builders_propagate_validation_error() {
+        // Defense-in-depth: even if some future caller forgets to
+        // validate at the trust boundary, the path builders themselves
+        // catch a bad id.
+        assert!(record_path("../escape").is_err());
+        assert!(socket_path_for("foo/bar").is_err());
+        assert!(log_path_for("").is_err());
+        assert!(restart_marker_path(".hidden").is_err());
     }
 }

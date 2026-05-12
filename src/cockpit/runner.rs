@@ -97,6 +97,15 @@ pub struct CockpitRunnerArgs {
 
 /// Entry point dispatched from `main.rs`.
 pub async fn run(args: CockpitRunnerArgs) -> Result<()> {
+    // `aoe __cockpit-runner` is a hidden subcommand, but a curious
+    // user can still invoke it directly. The session_id flows into
+    // path construction for the registry/socket/log files; validate
+    // it up front so a malicious `--session-id "../../foo"` can't
+    // write files outside the workers dir. Production callers pass
+    // UUIDs which pass trivially. This is a defensive check, not the
+    // only one: `worker_registry::{record_path, socket_path_for,
+    // log_path_for, restart_marker_path}` all re-validate.
+    worker_registry::validate_session_id(&args.session_id).context("invalid --session-id")?;
     init_runner_logging(&args.session_id)?;
 
     info!(
