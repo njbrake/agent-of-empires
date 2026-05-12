@@ -260,6 +260,18 @@ pub enum Event {
         tool_call_id: String,
         content: String,
     },
+    /// Incremental chunk of streaming terminal output for an Execute
+    /// tool call. claude-agent-acp emits these as `tool_call_update`
+    /// notifications carrying `_meta.terminal_output: "<chunk>"` while
+    /// a Bash command is running, when the client has advertised the
+    /// `_meta.terminal_output: true` capability (gated by
+    /// `cockpit.terminal_output_streaming`). The frontend reducer
+    /// APPENDS each chunk to `toolOutputs[tool_call_id]` so the
+    /// Execute card can render the partial buffer live. See #1075.
+    ToolCallStreamChunk {
+        tool_call_id: String,
+        chunk: String,
+    },
     /// Late-arriving title or raw_input for a tool call. Some agents
     /// (Claude's claude-agent-acp among them) emit the initial
     /// `tool_call` notification with an empty `raw_input` and only fill
@@ -400,6 +412,7 @@ impl CockpitState {
                 }
             }
             Event::ToolCallContent { .. } => {}
+            Event::ToolCallStreamChunk { .. } => {}
             Event::ToolCallUpdated {
                 tool_call_id,
                 title,

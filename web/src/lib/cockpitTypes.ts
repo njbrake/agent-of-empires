@@ -127,6 +127,16 @@ export type CockpitEvent =
       ToolCallContent: { tool_call_id: string; content: string };
     }
   | {
+      /** Incremental chunk of streaming terminal output. claude-agent-acp
+       *  emits these as `tool_call_update` notifications carrying
+       *  `_meta.terminal_output: "<chunk>"` while a Bash command is
+       *  running, gated by the `cockpit.terminal_output_streaming`
+       *  setting. The reducer APPENDS each chunk to
+       *  `toolOutputs[tool_call_id]` so the Execute card can render the
+       *  partial buffer live. See #1075. */
+      ToolCallStreamChunk: { tool_call_id: string; chunk: string };
+    }
+  | {
       /** Late-arriving inputs/title for an already-started tool call.
        *  Claude's claude-agent-acp emits the initial tool_call with an
        *  empty `raw_input` and only fills in the actual command in a
@@ -399,6 +409,18 @@ export function applyEvent(
   if ("ToolCallContent" in event) {
     const { tool_call_id, content } = event.ToolCallContent;
     next.toolOutputs = { ...next.toolOutputs, [tool_call_id]: content };
+    return next;
+  }
+  if ("ToolCallStreamChunk" in event) {
+    const { tool_call_id, chunk } = event.ToolCallStreamChunk;
+    // Append (not replace) so consecutive chunks accumulate. The cap
+    // in `[cockpit] terminal_output_max_bytes` is enforced server-side
+    // before the chunks reach us, so the buffer here stays bounded.
+    const prev = next.toolOutputs[tool_call_id] ?? "";
+    next.toolOutputs = {
+      ...next.toolOutputs,
+      [tool_call_id]: prev + chunk,
+    };
     return next;
   }
   if ("ToolCallUpdated" in event) {

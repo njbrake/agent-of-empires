@@ -118,6 +118,8 @@ pub enum FieldKey {
     CockpitReplayBytes,
     CockpitNodePath,
     CockpitShowToolDurations,
+    CockpitTerminalOutputStreaming,
+    CockpitTerminalOutputMaxBytes,
 }
 
 /// Resolve a field value from global config and optional profile override.
@@ -327,6 +329,16 @@ fn build_cockpit_fields(
         global.cockpit.show_tool_durations,
         p.and_then(|c| c.show_tool_durations),
     );
+    let (terminal_streaming, ts_override) = resolve_value(
+        scope,
+        global.cockpit.terminal_output_streaming,
+        p.and_then(|c| c.terminal_output_streaming),
+    );
+    let (terminal_max_bytes, tmb_override) = resolve_value(
+        scope,
+        global.cockpit.terminal_output_max_bytes,
+        p.and_then(|c| c.terminal_output_max_bytes),
+    );
 
     vec![
         SettingField {
@@ -399,6 +411,24 @@ fn build_cockpit_fields(
             value: FieldValue::Bool(show_tool_durations),
             category: SettingsCategory::Cockpit,
             has_override: std_override,
+            inherited_display: None,
+        },
+        SettingField {
+            key: FieldKey::CockpitTerminalOutputStreaming,
+            label: "Stream terminal output live",
+            description: "Stream Bash / Execute tool output as it's produced (default). When off, output is buffered until the command exits, matching the pre-#1075 behaviour. Off saves a bit of bandwidth and battery on mobile at the cost of no live feedback during long-running commands.",
+            value: FieldValue::Bool(terminal_streaming),
+            category: SettingsCategory::Cockpit,
+            has_override: ts_override,
+            inherited_display: None,
+        },
+        SettingField {
+            key: FieldKey::CockpitTerminalOutputMaxBytes,
+            label: "Terminal output max bytes",
+            description: "Soft cap on the live partial-output buffer per Execute tool card. Past this size the head is dropped (with a truncation marker) so the renderer doesn't balloon on commands that spew megabytes. The full transcript still survives in the event store. Default 262144 (256 KiB). See #1075.",
+            value: FieldValue::Number(terminal_max_bytes),
+            category: SettingsCategory::Cockpit,
+            has_override: tmb_override,
             inherited_display: None,
         },
     ]
@@ -1780,6 +1810,15 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
         (FieldKey::CockpitShowToolDurations, FieldValue::Bool(v)) => {
             config.cockpit.show_tool_durations = *v
         }
+        (FieldKey::CockpitTerminalOutputStreaming, FieldValue::Bool(v)) => {
+            config.cockpit.terminal_output_streaming = *v
+        }
+        (FieldKey::CockpitTerminalOutputMaxBytes, FieldValue::Number(v)) => {
+            // 16 KiB floor so a misconfigured value can't render the
+            // partial-output view useless. No upper bound; users on
+            // beefy hardware can keep multi-MB partials if they want.
+            config.cockpit.terminal_output_max_bytes = (*v).max(16 * 1024)
+        }
         _ => {}
     }
 }
@@ -2099,6 +2138,16 @@ fn apply_field_to_profile(field: &SettingField, _global: &Config, config: &mut P
         (FieldKey::CockpitShowToolDurations, FieldValue::Bool(v)) => {
             set_profile_override(*v, &mut config.cockpit, |s, val| {
                 s.show_tool_durations = val
+            });
+        }
+        (FieldKey::CockpitTerminalOutputStreaming, FieldValue::Bool(v)) => {
+            set_profile_override(*v, &mut config.cockpit, |s, val| {
+                s.terminal_output_streaming = val
+            });
+        }
+        (FieldKey::CockpitTerminalOutputMaxBytes, FieldValue::Number(v)) => {
+            set_profile_override((*v).max(16 * 1024), &mut config.cockpit, |s, val| {
+                s.terminal_output_max_bytes = val
             });
         }
         _ => {}

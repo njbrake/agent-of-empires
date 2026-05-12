@@ -247,6 +247,16 @@ export interface ServerAbout {
    *  config. Drives the per-tool elapsed-time label in the cockpit
    *  web UI; cross-device since it lives in config.toml. */
   cockpit_show_tool_durations: boolean;
+  /** Resolved `cockpit.terminal_output_streaming` from the active
+   *  profile's config. When true, the server advertises the
+   *  `_meta.terminal_output` capability and the cockpit renders
+   *  Bash / Execute output live; when false, output buffers until the
+   *  command exits. See #1075. */
+  cockpit_terminal_output_streaming: boolean;
+  /** Resolved `cockpit.terminal_output_max_bytes`. Soft cap on the
+   *  in-memory partial-output buffer per Execute card; renderer drops
+   *  the head past this size with a truncation marker. */
+  cockpit_terminal_output_max_bytes: number;
 }
 
 export async function setCockpitMaster(

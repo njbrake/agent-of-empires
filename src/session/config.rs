@@ -90,6 +90,23 @@ pub struct CockpitConfig {
     /// "subprocess started" signal.
     #[serde(default = "default_true")]
     pub show_tool_durations: bool,
+    /// Stream `Bash`/Execute tool output live as it's produced rather
+    /// than buffering until the command exits. When true, aoe
+    /// advertises the `_meta.terminal_output` ACP capability so
+    /// claude-agent-acp emits `tool_call_update` chunks during the
+    /// run; when false, the adapter falls back to a single
+    /// completion-time output dump (the pre-#1075 behaviour). Off
+    /// suits low-bandwidth / battery-sensitive clients. See #1075.
+    #[serde(default = "default_true")]
+    pub terminal_output_streaming: bool,
+    /// Soft cap on in-memory terminal output kept per Execute tool
+    /// card while streaming. The head is dropped (with a "…truncated"
+    /// marker) once a single command's accumulated output exceeds
+    /// this value, so a `cargo build` spewing megabytes doesn't
+    /// balloon renderer memory. The full transcript still survives
+    /// in the event store. See #1075 layer E.
+    #[serde(default = "default_terminal_output_max_bytes")]
+    pub terminal_output_max_bytes: u64,
 }
 
 impl Default for CockpitConfig {
@@ -103,6 +120,8 @@ impl Default for CockpitConfig {
             replay_bytes: default_replay_bytes(),
             node_path: String::new(),
             show_tool_durations: true,
+            terminal_output_streaming: true,
+            terminal_output_max_bytes: default_terminal_output_max_bytes(),
         }
     }
 }
@@ -123,6 +142,13 @@ fn default_replay_events() -> u32 {
 }
 fn default_replay_bytes() -> u64 {
     5_242_880
+}
+fn default_terminal_output_max_bytes() -> u64 {
+    // 256 KiB; covers ~98% of single-command outputs (cargo build,
+    // pytest, npm install) without inflating renderer memory when the
+    // agent runs a script that spews binary data. Tunable via
+    // [cockpit] terminal_output_max_bytes.
+    256 * 1024
 }
 
 /// Session list sort order

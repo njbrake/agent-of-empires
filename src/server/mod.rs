@@ -525,11 +525,14 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
             on_approval,
             event_store: cockpit_event_store.clone(),
         });
-        let supervisor =
-            std::sync::Arc::new(crate::cockpit::supervisor::Supervisor::with_capacity(
+        let supervisor = std::sync::Arc::new(
+            crate::cockpit::supervisor::Supervisor::with_capacity(
                 sink,
                 config.cockpit.max_concurrent_workers,
-            ));
+            )
+            .with_terminal_streaming(config.cockpit.terminal_output_streaming)
+            .with_terminal_max_bytes(config.cockpit.terminal_output_max_bytes),
+        );
         // Seed the seq counter from disk so fresh publishes don't
         // collide with restored history. Without this, after a
         // restart the first publish would be seq=1 — duplicate of

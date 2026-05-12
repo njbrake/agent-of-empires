@@ -27,6 +27,7 @@ import {
   TOOL_GROUP_NAME,
   type CockpitContext,
 } from "./CockpitRuntime";
+import { ToolPartialsProvider } from "../../lib/toolPartials";
 import { Composer } from "./Composer";
 import { Markdown } from "./Markdown";
 import { SubagentCard, ToolCard, ToolGroupCard } from "./ToolCards";
@@ -98,6 +99,7 @@ function CockpitChrome({
         />
       )}
 
+      <ToolPartialsProvider partials={state.toolOutputs}>
       <ThreadPrimitive.Root className="flex flex-1 flex-col min-h-0">
         <ThreadPrimitive.Viewport
           autoScroll
@@ -144,6 +146,7 @@ function CockpitChrome({
           connected={status === "open" && !state.workerStopped && !state.workerRestarting}
         />
       </ThreadPrimitive.Root>
+      </ToolPartialsProvider>
     </div>
   );
 }

@@ -402,6 +402,17 @@ pub struct ServerAbout {
     /// profile's config. Drives the per-tool elapsed-time label in the
     /// web UI; cross-device since it lives in config.toml.
     pub cockpit_show_tool_durations: bool,
+    /// Resolved value of `cockpit.terminal_output_streaming` from the
+    /// active profile's config. When true, aoe advertises the
+    /// `_meta.terminal_output` ACP capability so claude-agent-acp
+    /// streams Bash output chunks live during a command; when false,
+    /// the adapter buffers until exit. See #1075.
+    pub cockpit_terminal_output_streaming: bool,
+    /// Resolved value of `cockpit.terminal_output_max_bytes` from the
+    /// active profile's config. Soft cap on the live partial-output
+    /// buffer per Execute tool card; the renderer drops the head once
+    /// the in-memory buffer exceeds this size. See #1075 layer E.
+    pub cockpit_terminal_output_max_bytes: u64,
 }
 
 pub async fn get_about(State(state): State<Arc<AppState>>) -> Json<ServerAbout> {
@@ -411,10 +422,10 @@ pub async fn get_about(State(state): State<Arc<AppState>>) -> Json<ServerAbout> 
         .load(std::sync::atomic::Ordering::Relaxed);
     let cockpit_env_enabled = crate::cockpit::experimental_enabled();
     let experimental_cockpit = cockpit_master_enabled && cockpit_env_enabled;
-    let cockpit_show_tool_durations =
-        crate::session::profile_config::resolve_config_or_warn(&state.profile)
-            .cockpit
-            .show_tool_durations;
+    let merged = crate::session::profile_config::resolve_config_or_warn(&state.profile);
+    let cockpit_show_tool_durations = merged.cockpit.show_tool_durations;
+    let cockpit_terminal_output_streaming = merged.cockpit.terminal_output_streaming;
+    let cockpit_terminal_output_max_bytes = merged.cockpit.terminal_output_max_bytes;
     Json(ServerAbout {
         version: env!("CARGO_PKG_VERSION").to_string(),
         auth_required,
@@ -426,6 +437,8 @@ pub async fn get_about(State(state): State<Arc<AppState>>) -> Json<ServerAbout> 
         cockpit_master_enabled,
         cockpit_env_enabled,
         cockpit_show_tool_durations,
+        cockpit_terminal_output_streaming,
+        cockpit_terminal_output_max_bytes,
     })
 }
 

@@ -135,6 +135,19 @@ pub struct Supervisor<S: BroadcastSink> {
     /// Tests use `Supervisor::new` (effectively unbounded); production
     /// uses `Supervisor::with_capacity`.
     max_concurrent_workers: u32,
+    /// Whether new cockpit workers should advertise the
+    /// `_meta.terminal_output: true` ACP capability so claude-agent-acp
+    /// streams Bash output chunks live. Snapshotted from
+    /// `[cockpit] terminal_output_streaming`; defaults to true so
+    /// tests that use `Supervisor::new` keep the streaming on. Toggle
+    /// via `with_terminal_streaming(bool)` from the production
+    /// constructor in `aoe serve`. See #1075.
+    terminal_output_streaming: bool,
+    /// Soft cap on the per-terminal partial-output buffer.
+    /// Snapshotted from `[cockpit] terminal_output_max_bytes`; floored
+    /// to `MIN_MAX_BYTES` in `TerminalManager::with_max_bytes`. See
+    /// #1075 layer E.
+    terminal_output_max_bytes: u64,
 }
 
 /// RAII guard: ensures a session_id is removed from `pending_spawns`
@@ -199,7 +212,29 @@ impl<S: BroadcastSink> Supervisor<S> {
             pending_spawns: Arc::new(Mutex::new(HashSet::new())),
             cancelled_spawns: Arc::new(Mutex::new(HashSet::new())),
             max_concurrent_workers,
+            terminal_output_streaming: true,
+            terminal_output_max_bytes: 256 * 1024,
         }
+    }
+
+    /// Override the default `terminal_output_streaming = true`. Used
+    /// by the `aoe serve` boot path so the resolved
+    /// `[cockpit] terminal_output_streaming` setting reaches every
+    /// new worker without restarting the daemon. See #1075.
+    #[must_use]
+    pub fn with_terminal_streaming(mut self, streaming: bool) -> Self {
+        self.terminal_output_streaming = streaming;
+        self
+    }
+
+    /// Override the default per-terminal output cap. Production
+    /// callers pass the resolved `[cockpit] terminal_output_max_bytes`
+    /// from config so the cap respects the user's setting. See #1075
+    /// layer E.
+    #[must_use]
+    pub fn with_terminal_max_bytes(mut self, max_bytes: u64) -> Self {
+        self.terminal_output_max_bytes = max_bytes;
+        self
     }
 
     /// Resolve the agent spec from the registry. Surfaces UnknownAgent
@@ -421,6 +456,8 @@ impl<S: BroadcastSink> Supervisor<S> {
             provider_env: env,
             socket_path: Some(socket_path),
             stored_acp_session_id: stored_acp_session_id.clone(),
+            terminal_output_streaming: self.terminal_output_streaming,
+            terminal_output_max_bytes: self.terminal_output_max_bytes,
         };
 
         debug!(
@@ -993,6 +1030,8 @@ impl<S: BroadcastSink> Supervisor<S> {
             stored_acp_session_id,
             in_flight_turn,
             cockpit_session_id,
+            self.terminal_output_streaming,
+            self.terminal_output_max_bytes,
         )
         .await?;
         super::worker_registry::mark_attached(&session_id);
@@ -1450,6 +1489,8 @@ mod tests {
             provider_env: vec![],
             socket_path: None,
             stored_acp_session_id: None,
+            terminal_output_streaming: true,
+            terminal_output_max_bytes: 256 * 1024,
         };
         {
             let mut workers = sup.workers.lock().await;
@@ -1518,6 +1559,8 @@ mod tests {
             provider_env: vec![],
             socket_path: Some(tmp.path().join("dummy.sock")),
             stored_acp_session_id: None,
+            terminal_output_streaming: true,
+            terminal_output_max_bytes: 256 * 1024,
         };
         {
             let mut workers = sup.workers.lock().await;
@@ -1585,6 +1628,8 @@ mod tests {
             provider_env: vec![],
             socket_path: Some(tmp.path().join("dummy.sock")),
             stored_acp_session_id: None,
+            terminal_output_streaming: true,
+            terminal_output_max_bytes: 256 * 1024,
         };
         {
             let mut workers = sup.workers.lock().await;
@@ -1652,6 +1697,8 @@ mod tests {
             provider_env: vec![],
             socket_path: Some(tmp.path().join("dummy.sock")),
             stored_acp_session_id: None,
+            terminal_output_streaming: true,
+            terminal_output_max_bytes: 256 * 1024,
         };
         {
             let mut workers = sup.workers.lock().await;
@@ -1734,6 +1781,8 @@ mod tests {
             provider_env: vec![],
             socket_path: None,
             stored_acp_session_id: None,
+            terminal_output_streaming: true,
+            terminal_output_max_bytes: 256 * 1024,
         };
         {
             let mut workers = sup.workers.lock().await;

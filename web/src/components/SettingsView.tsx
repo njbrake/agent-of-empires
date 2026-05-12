@@ -587,6 +587,14 @@ function CockpitSettings({
     typeof cockpit.show_tool_durations === "boolean"
       ? (cockpit.show_tool_durations as boolean)
       : (serverAbout?.cockpit_show_tool_durations ?? true);
+  const terminalStreaming =
+    typeof cockpit.terminal_output_streaming === "boolean"
+      ? (cockpit.terminal_output_streaming as boolean)
+      : (serverAbout?.cockpit_terminal_output_streaming ?? true);
+  const terminalMaxBytes =
+    typeof cockpit.terminal_output_max_bytes === "number"
+      ? (cockpit.terminal_output_max_bytes as number)
+      : (serverAbout?.cockpit_terminal_output_max_bytes ?? 262144);
 
   const onToggle = async (next: boolean) => {
     setBusy(true);
@@ -705,6 +713,46 @@ function CockpitSettings({
         >
           {showToolDurations ? "Visible" : "Hidden"}
         </button>
+      </div>
+
+      <div className="flex items-start justify-between gap-3 py-1 border-t border-surface-800 pt-3">
+        <div>
+          <div className="text-sm text-text-bright">Stream terminal output live</div>
+          <div className="text-xs text-text-dim mt-0.5">
+            Persists to <code>config.toml</code> as{" "}
+            <code>cockpit.terminal_output_streaming</code>; cross-device. When on, aoe advertises
+            the <code>_meta.terminal_output</code> ACP capability so claude-agent-acp streams
+            Bash output chunks live while the command runs. Off restores the pre-#1075 buffer-on-exit
+            behaviour, useful on low-bandwidth or battery-sensitive clients.
+          </div>
+        </div>
+        <button
+          type="button"
+          aria-pressed={terminalStreaming}
+          aria-label="Stream terminal output live"
+          onClick={async () => {
+            const next = !terminalStreaming;
+            onSaveField("cockpit", "terminal_output_streaming", next);
+            await onRefresh();
+          }}
+          className={`shrink-0 rounded px-3 py-1 text-xs font-medium transition-colors cursor-pointer ${
+            terminalStreaming
+              ? "bg-brand-500 text-white hover:bg-brand-400"
+              : "bg-surface-700 text-text-secondary hover:bg-surface-600"
+          }`}
+        >
+          {terminalStreaming ? "Live" : "Buffered"}
+        </button>
+      </div>
+
+      <div className="border-t border-surface-800 pt-3">
+        <NumberField
+          label="Terminal output max bytes"
+          description="Soft cap on the live partial-output buffer per Execute tool card. Past this size the head is dropped with a truncation marker; the full transcript still survives in the event store. Persists to config.toml as cockpit.terminal_output_max_bytes; cross-device. Default 262144 (256 KiB)."
+          value={terminalMaxBytes}
+          min={16 * 1024}
+          onChange={(v) => onSaveField("cockpit", "terminal_output_max_bytes", v)}
+        />
       </div>
 
       {error && <div className="text-xs text-rose-400">{error}</div>}
