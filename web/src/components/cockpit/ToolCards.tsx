@@ -74,9 +74,16 @@ function hasSubagentParent(tool: ToolCall): boolean {
   return Boolean(pickStr(args, "_aoe_parent_tool_call_id"));
 }
 
-export function ToolCard({ tool, result }: Props) {
+interface ToolCardProps extends Props {
+  /** True when rendered inside a SubagentCard body so the dispatcher
+   *  doesn't re-wrap the child in the indented "↳ subagent" frame
+   *  (the SubagentCard's own border already conveys the linkage). */
+  nested?: boolean;
+}
+
+export function ToolCard({ tool, result, nested }: ToolCardProps) {
   const card = renderToolCard(tool, result);
-  if (hasSubagentParent(tool)) {
+  if (!nested && hasSubagentParent(tool)) {
     return <SubagentChildWrap>{card}</SubagentChildWrap>;
   }
   return card;
@@ -1054,6 +1061,105 @@ export function ToolGroupCard({ items }: { items: ToolGroupItem[] }) {
                 result={item.result}
               />
             ))}
+          </div>
+        )
+      }
+    />
+  );
+}
+
+/* ── subagent ───────────────────────────────────────────────────── */
+
+interface SubagentChildItem {
+  tool: ToolCall;
+  result?: ActivityRow;
+}
+
+interface SubagentProps {
+  tool: ToolCall;
+  result?: ActivityRow;
+  children: SubagentChildItem[];
+}
+
+/** Card for a Claude sub-agent (Task) and its child tool calls. The
+ *  parent Task shows in the header; the body lists the children using
+ *  the same ToolCard dispatch as top-level calls (with `nested=true`
+ *  so the indented "↳ subagent" wrap doesn't double up). See #1041. */
+export function SubagentCard({ tool, result, children }: SubagentProps) {
+  const [open, setOpen] = useState(false);
+
+  const args = useMemo(
+    () => parseJsonObject(tool.args_preview),
+    [tool.args_preview],
+  );
+  const description =
+    pickStr(args, "description", "_aoe_title") ?? tool.name ?? "Subagent task";
+
+  const runningChildren = children.filter((c) => !c.result).length;
+  const errorChildren = children.filter(
+    (c) => c.result && c.result.kind === "tool_error",
+  ).length;
+  const parentDone = result !== undefined;
+  const status: Status =
+    !parentDone || runningChildren > 0
+      ? "running"
+      : errorChildren > 0
+        ? "err"
+        : "ok";
+
+  // Span the earliest started_at across the parent and any children
+  // (children typically start slightly after the parent) and the
+  // latest completion. Mirrors ToolGroupCard so the duration label
+  // reflects total subagent runtime.
+  const startedAt = [tool.started_at, ...children.map((c) => c.tool.started_at)]
+    .sort()
+    .at(0);
+  const allDone =
+    parentDone && children.every((c) => c.result !== undefined);
+  const endedAt = allDone
+    ? [
+        result?.at ?? null,
+        ...children.map((c) => c.result?.at ?? null),
+      ]
+        .filter((v): v is string => v !== null)
+        .sort()
+        .at(-1)
+    : undefined;
+
+  return (
+    <CardChrome
+      status={status}
+      startedAt={startedAt}
+      endedAt={endedAt}
+      icon={<Sparkles className="h-3.5 w-3.5" />}
+      label="subagent"
+      primary={
+        <>
+          <span className="truncate">{description}</span>
+          <span className="ml-2 text-text-dim">
+            · {children.length} {children.length === 1 ? "tool" : "tools"}
+          </span>
+        </>
+      }
+      expanded={open}
+      onToggle={() => setOpen((v) => !v)}
+      body={
+        open && (
+          <div className="border-t border-surface-800 bg-surface-900/30 px-2 py-1">
+            {children.length === 0 ? (
+              <div className="px-2 py-1 text-[11px] text-text-dim">
+                No tool calls recorded yet.
+              </div>
+            ) : (
+              children.map((c) => (
+                <ToolCard
+                  key={c.tool.id}
+                  tool={c.tool}
+                  result={c.result}
+                  nested
+                />
+              ))
+            )}
           </div>
         )
       }

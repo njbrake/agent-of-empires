@@ -21,10 +21,15 @@ import {
 import { ChevronDown, ListChecks } from "lucide-react";
 
 import { ApprovalCard } from "./ApprovalCard";
-import { CockpitRuntime, TOOL_GROUP_NAME, type CockpitContext } from "./CockpitRuntime";
+import {
+  CockpitRuntime,
+  SUBAGENT_TASK_NAME,
+  TOOL_GROUP_NAME,
+  type CockpitContext,
+} from "./CockpitRuntime";
 import { Composer } from "./Composer";
 import { Markdown } from "./Markdown";
-import { ToolCard, ToolGroupCard } from "./ToolCards";
+import { SubagentCard, ToolCard, ToolGroupCard } from "./ToolCards";
 import {
   SPINNER_FRAMES,
   SPINNER_INTERVAL_MS,
@@ -223,6 +228,10 @@ function AssistantToolCall(props: ToolCallProps) {
     return <AssistantToolGroup argsText={props.argsText} />;
   }
 
+  if (props.toolName === SUBAGENT_TASK_NAME) {
+    return <AssistantSubagentTask argsText={props.argsText} />;
+  }
+
   // Reconstruct the ToolCall shape our existing ToolCards.tsx
   // renderer expects. assistant-ui carries `toolName` (we set this to
   // ACP's lowercased ToolKind in CockpitRuntime) plus argsText (the
@@ -359,6 +368,79 @@ function AssistantToolGroup({ argsText }: { argsText?: string }) {
     return { tool, result, kind: c.toolName };
   });
   return <ToolGroupCard items={items} />;
+}
+
+interface SubagentPayload {
+  parent: GroupChild;
+  children: GroupChild[];
+}
+
+/** Reconstructs the parent Task tool plus its sub-agent children from
+ *  the synthetic `_aoe_subagent_task` part CockpitRuntime emits, then
+ *  hands them to SubagentCard. See #1041 layer B. */
+function AssistantSubagentTask({ argsText }: { argsText?: string }) {
+  let payload: SubagentPayload | null = null;
+  if (argsText) {
+    try {
+      const parsed = JSON.parse(argsText);
+      if (
+        parsed &&
+        typeof parsed === "object" &&
+        parsed.parent &&
+        Array.isArray(parsed.children)
+      ) {
+        payload = parsed as SubagentPayload;
+      }
+    } catch {
+      // Malformed; render nothing rather than crashing.
+    }
+  }
+  if (!payload) return null;
+
+  const reconstruct = (c: GroupChild) => {
+    const fallbackAt = toolCallTimestamp(c.toolCallId);
+    let parsedArgs: Record<string, unknown> = {};
+    try {
+      const p = JSON.parse(c.argsText);
+      if (p && typeof p === "object" && !Array.isArray(p)) {
+        parsedArgs = p as Record<string, unknown>;
+      }
+    } catch {
+      // ignore
+    }
+    const startedAt = pickStartedAt(parsedArgs, c.argsText) ?? fallbackAt;
+    const endedAt = pickEndedAt(c.result) ?? fallbackAt;
+    const tool: ToolCall = {
+      id: c.toolCallId,
+      name: prettifyToolName(c.toolName, parsedArgs),
+      kind: c.toolName,
+      args_preview: c.argsText,
+      started_at: startedAt,
+    };
+    const result =
+      c.result !== undefined
+        ? {
+            id: `done-${c.toolCallId}`,
+            kind: c.isError
+              ? ("tool_error" as const)
+              : ("tool_complete" as const),
+            text: c.result.content,
+            toolCallId: c.toolCallId,
+            at: endedAt,
+          }
+        : undefined;
+    return { tool, result };
+  };
+
+  const parent = reconstruct(payload.parent);
+  const children = payload.children.map(reconstruct);
+  return (
+    <SubagentCard
+      tool={parent.tool}
+      result={parent.result}
+      children={children}
+    />
+  );
 }
 
 function prettifyToolName(
