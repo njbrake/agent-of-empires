@@ -320,6 +320,23 @@ class AssistantBuilder {
   }
 }
 
+function isTodoWriteArgsText(argsText: string): boolean {
+  try {
+    const parsed = JSON.parse(argsText);
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      const title = (parsed as Record<string, unknown>)._aoe_title;
+      if (typeof title === "string" && title.startsWith("Update TODOs")) {
+        return true;
+      }
+      const todos = (parsed as Record<string, unknown>).todos;
+      if (Array.isArray(todos)) return true;
+    }
+  } catch {
+    // ignore
+  }
+  return false;
+}
+
 /** Minimum run length that triggers grouping. Two-in-a-row stays inline
  *  so a quick read-then-edit doesn't fold; three or more is the common
  *  "silent investigation" shape that benefits from one collapsible
@@ -346,6 +363,20 @@ function collapseToolRuns(parts: DraftPart[]): DraftPart[] {
     if (run.length < TOOL_GROUP_MIN_RUN) {
       for (const p of run) out.push(p);
     } else {
+      // TodoWrite calls aren't silent tool work — they're status
+      // updates the user wants to see one-by-one (#1064). Detect them
+      // via the `_aoe_title` echo we stash in argsText (the adapter
+      // names them "Update TODOs: …") and exempt the group entirely
+      // when any child looks like a TodoWrite. Cheap: argsText is
+      // already parsed JSON, just sniff the prefix.
+      const hasTodoWrite = run.some(
+        (p) => p.type === "tool-call" && isTodoWriteArgsText(p.argsText),
+      );
+      if (hasTodoWrite) {
+        for (const p of run) out.push(p);
+        run = [];
+        return;
+      }
       const childIds: string[] = [];
       const children: Array<{
         toolCallId: string;

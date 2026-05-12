@@ -15,6 +15,7 @@ import {
   FileText,
   Globe,
   Layers,
+  ListChecks,
   Pencil,
   Plug,
   Search,
@@ -54,6 +55,10 @@ export function ToolCard({ tool, result }: Props) {
   const skill = classifySkill(tool);
   if (skill.isSkill) {
     return <SkillToolCard tool={tool} result={result} skillName={skill.name} />;
+  }
+  const todos = classifyTodoWrite(tool);
+  if (todos.isTodoWrite) {
+    return <TodoUpdateCard tool={tool} result={result} todos={todos.todos} />;
   }
   const { kind, provenance } = reclassifyBash(tool);
   switch (kind) {
@@ -730,6 +735,132 @@ function ThinkToolCard({ tool }: Props) {
       <Sparkles className="h-3 w-3 text-text-dim" />
       <span>{tool.name || "thinking…"}</span>
     </div>
+  );
+}
+
+/* ── todowrite ──────────────────────────────────────────────────── */
+
+type TodoStatus = "pending" | "in_progress" | "completed" | "cancelled";
+
+interface TodoItem {
+  content: string;
+  status: TodoStatus;
+}
+
+/** Heuristic for Claude's TodoWrite tool. The adapter ships it as a
+ *  `kind: "think"` tool call with the joined todo list crammed into the
+ *  title (`"Update TODOs: a, b, c"`) and the structured `{todos: [...]}`
+ *  payload in raw_input. We detect via the title prefix and parse the
+ *  args payload to render a proper checklist. See #1064. */
+function classifyTodoWrite(
+  tool: ToolCall,
+): { isTodoWrite: true; todos: TodoItem[] } | { isTodoWrite: false } {
+  const title = tool.name?.trim() ?? "";
+  const looksLikeTodo =
+    title.startsWith("Update TODOs") || title === "TodoWrite";
+  if (!looksLikeTodo) return { isTodoWrite: false };
+  const args = parseJsonObject(tool.args_preview);
+  if (!args) return { isTodoWrite: false };
+  const raw = args.todos;
+  if (!Array.isArray(raw)) return { isTodoWrite: false };
+  const todos: TodoItem[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const obj = entry as Record<string, unknown>;
+    const content = typeof obj.content === "string" ? obj.content : "";
+    if (!content) continue;
+    todos.push({
+      content,
+      status: normaliseTodoStatus(obj.status),
+    });
+  }
+  if (todos.length === 0) return { isTodoWrite: false };
+  return { isTodoWrite: true, todos };
+}
+
+function normaliseTodoStatus(raw: unknown): TodoStatus {
+  const s = typeof raw === "string" ? raw.toLowerCase() : "";
+  if (s === "in_progress" || s === "in-progress" || s === "active") {
+    return "in_progress";
+  }
+  if (s === "completed" || s === "complete" || s === "done") return "completed";
+  if (s === "cancelled" || s === "canceled" || s === "abandoned") {
+    return "cancelled";
+  }
+  return "pending";
+}
+
+interface TodoCardProps extends Props {
+  todos: TodoItem[];
+}
+
+const TODO_GLYPH: Record<TodoStatus, string> = {
+  pending: "☐",
+  in_progress: "▶",
+  completed: "✓",
+  cancelled: "⊘",
+};
+
+const TODO_CLASS: Record<TodoStatus, string> = {
+  pending: "text-text-secondary",
+  in_progress: "text-brand-400",
+  completed: "text-emerald-400 line-through opacity-70",
+  cancelled: "text-text-dim line-through",
+};
+
+function TodoUpdateCard({ tool, result, todos }: TodoCardProps) {
+  const status = statusFor(result);
+  const counts = useMemo(() => {
+    const c = { pending: 0, in_progress: 0, completed: 0, cancelled: 0 };
+    for (const t of todos) c[t.status] += 1;
+    return c;
+  }, [todos]);
+  const [open, setOpen] = useState(todos.length <= 5);
+
+  const breakdown: string[] = [];
+  if (counts.in_progress > 0) breakdown.push(`${counts.in_progress} active`);
+  if (counts.pending > 0) breakdown.push(`${counts.pending} pending`);
+  if (counts.completed > 0) breakdown.push(`${counts.completed} done`);
+  if (counts.cancelled > 0)
+    breakdown.push(`${counts.cancelled} cancelled`);
+
+  return (
+    <CardChrome
+      status={status}
+      icon={<ListChecks className="h-3.5 w-3.5" />}
+      label="todos"
+      primary={
+        <>
+          <span>{todos.length} items</span>
+          {breakdown.length > 0 && (
+            <span className="ml-2 text-text-dim">— {breakdown.join(" · ")}</span>
+          )}
+        </>
+      }
+      expanded={open}
+      onToggle={() => setOpen((v) => !v)}
+      startedAt={tool.started_at}
+      endedAt={result?.at}
+      body={
+        <div className="border-t border-surface-800 bg-surface-950 px-3 py-2">
+          <ul className="flex flex-col gap-1 font-mono text-xs">
+            {todos.map((t, i) => (
+              <li
+                key={`${i}-${t.content}`}
+                className={`flex items-start gap-2 ${TODO_CLASS[t.status]}`}
+              >
+                <span className="select-none w-4 shrink-0 text-center">
+                  {TODO_GLYPH[t.status]}
+                </span>
+                <span className="min-w-0 flex-1 whitespace-pre-wrap break-words">
+                  {t.content}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      }
+    />
   );
 }
 

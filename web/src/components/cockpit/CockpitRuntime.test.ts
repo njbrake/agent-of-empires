@@ -95,6 +95,41 @@ describe("activityToThreadMessages — tool-call grouping (#1057)", () => {
     expect(groups).toHaveLength(2);
   });
 
+  it("exempts TodoWrite calls from folding (#1064)", () => {
+    const todoTool: ToolCall = {
+      id: "td-1",
+      name: "Update TODOs: a, b",
+      kind: "think",
+      args_preview: JSON.stringify({
+        todos: [
+          { content: "a", status: "pending" },
+          { content: "b", status: "in_progress" },
+        ],
+      }),
+      started_at: "2026-05-12T00:00:00Z",
+    };
+    const todoRow: ActivityRow = {
+      id: "start-td-1",
+      kind: "tool_start",
+      text: "Update TODOs",
+      toolCallId: "td-1",
+      tool: todoTool,
+      at: "2026-05-12T00:00:00Z",
+    };
+    const messages = activityToThreadMessages(
+      [userRow("go"), toolStart("a"), toolStart("b"), todoRow, toolStart("c")],
+      false,
+    );
+    const assistant = messages.find((m) => m.role === "assistant")!;
+    const parts = (assistant.content as Array<{ type: string; toolName?: string }>);
+    const groups = parts.filter(
+      (p) => p.type === "tool-call" && p.toolName === TOOL_GROUP_NAME,
+    );
+    expect(groups).toHaveLength(0);
+    const toolParts = parts.filter((p) => p.type === "tool-call");
+    expect(toolParts).toHaveLength(4);
+  });
+
   it("does not group across user-prompt boundaries (separate messages)", () => {
     const messages = activityToThreadMessages(
       [
