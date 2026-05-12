@@ -431,8 +431,16 @@ async fn stop(session: Option<String>, all: bool, timeout_secs: u64) -> Result<(
         return Ok(());
     }
     for record in &targets {
-        signal_and_wait(record, timeout_secs).await;
+        // Delete the registry entry BEFORE SIGTERM. The running daemon
+        // (if any) uses the registry-gone signal in `restart_decision`
+        // to distinguish a user-initiated stop from a crash; without
+        // this ordering, the daemon's drain task sees socket EOF first,
+        // observes the registry still present, and respawns the runner
+        // — which immediately gets killed by our SIGTERM, racing into a
+        // crash loop that burns the restart budget and surfaces the
+        // "ACP agent crashed more than N times" banner.
         worker_registry::delete(&record.session_id).ok();
+        signal_and_wait(record, timeout_secs).await;
         println!(
             "Stopped cockpit worker for {} (PID {}).",
             record.session_id, record.pid
@@ -446,13 +454,16 @@ fn kill_now(session: &str) -> Result<()> {
     let Some(record) = worker_registry::load(session)? else {
         anyhow::bail!("No cockpit worker registry entry for session {session}");
     };
+    // Delete registry before SIGKILL for the same race reason described
+    // on `stop`: the running daemon's drain task uses the registry-gone
+    // signal to skip respawn on user-initiated termination.
+    worker_registry::delete(session).ok();
     #[cfg(unix)]
     if worker_registry::is_pid_alive(record.pid) {
         use nix::sys::signal::{kill, Signal};
         use nix::unistd::Pid;
         let _ = kill(Pid::from_raw(record.pid as i32), Signal::SIGKILL);
     }
-    worker_registry::delete(session).ok();
     println!(
         "Killed cockpit worker for {} (PID {}).",
         session, record.pid
@@ -551,13 +562,16 @@ fn restart(session: &str) -> Result<()> {
     // SIGTERM the runner; the next 2s reconciler tick on `aoe serve`
     // notices the session has no live worker and spawns a fresh one
     // (which calls session/load with the cached acp_session_id).
+    // Delete registry first so the daemon's drain task observes a
+    // user-initiated stop instead of racing the SIGTERM into a crash-
+    // loop respawn.
+    worker_registry::delete(session).ok();
     #[cfg(unix)]
     if worker_registry::is_pid_alive(record.pid) {
         use nix::sys::signal::{kill, Signal};
         use nix::unistd::Pid;
         let _ = kill(Pid::from_raw(record.pid as i32), Signal::SIGTERM);
     }
-    worker_registry::delete(session).ok();
     println!(
         "Stopped runner for {} (PID {}). `aoe serve` will respawn on its next reconciler tick.",
         session, record.pid

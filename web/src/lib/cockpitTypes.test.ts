@@ -535,3 +535,66 @@ describe("applyEvent / Stopped empty-output fallback", () => {
     expect(state.activity.find((r) => r.kind === "empty_output")).toBeUndefined();
   });
 });
+
+describe("applyEvent / Stopped user_stopped", () => {
+  it("sets workerStopped on reason=user_stopped and clears turnActive", () => {
+    let state = applyEvent(emptyCockpitState(), {
+      session_id: "s-1",
+      seq: 1,
+      event: { UserPromptSent: { text: "long task" } },
+    });
+    expect(state.turnActive).toBe(true);
+    expect(state.workerStopped).toBe(false);
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 2,
+      event: { Stopped: { reason: "user_stopped" } },
+    });
+    expect(state.workerStopped).toBe(true);
+    expect(state.turnActive).toBe(false);
+  });
+
+  it("does NOT set workerStopped on reason=prompt_complete", () => {
+    let state = applyEvent(emptyCockpitState(), {
+      session_id: "s-1",
+      seq: 1,
+      event: { UserPromptSent: { text: "hi" } },
+    });
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 2,
+      event: { Stopped: { reason: "prompt_complete" } },
+    });
+    expect(state.workerStopped).toBe(false);
+  });
+
+  it("clears workerStopped on the next UserPromptSent", () => {
+    let state = applyEvent(emptyCockpitState(), {
+      session_id: "s-1",
+      seq: 1,
+      event: { Stopped: { reason: "user_stopped" } },
+    });
+    expect(state.workerStopped).toBe(true);
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 2,
+      event: { UserPromptSent: { text: "back online" } },
+    });
+    expect(state.workerStopped).toBe(false);
+  });
+
+  it("clears workerStopped on AcpSessionAssigned (manual reconnect succeeded)", () => {
+    let state = applyEvent(emptyCockpitState(), {
+      session_id: "s-1",
+      seq: 1,
+      event: { Stopped: { reason: "user_stopped" } },
+    });
+    expect(state.workerStopped).toBe(true);
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 2,
+      event: { AcpSessionAssigned: { acp_session_id: "abc-123" } },
+    });
+    expect(state.workerStopped).toBe(false);
+  });
+});

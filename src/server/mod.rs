@@ -1364,6 +1364,14 @@ async fn reconcile_cockpit_workers(
         return;
     }
 
+    // Detect `aoe cockpit stop|kill` (a separate process that deletes the
+    // registry entry + SIGTERMs the runner) and surface it as a typed
+    // Stopped event. The daemon's protocol-layer connection task blocks
+    // on `cmd_rx.recv()` while idle, so socket EOF doesn't propagate to
+    // the drain task on its own — without this poll, the UI stays stuck
+    // on "thinking" and the supervisor keeps a phantom worker.
+    state.cockpit_supervisor.reap_user_stopped().await;
+
     let targets: Vec<_> = {
         let instances = state.instances.read().await;
         instances

@@ -216,6 +216,12 @@ export interface CockpitState {
    *  handler to detect "no-op turn" without walking the full
    *  activity array. */
   turnHasOutput: boolean;
+  /** Set true when the daemon publishes `Stopped { reason: "user_stopped" }`,
+   *  meaning `aoe cockpit stop|kill` (or an equivalent external
+   *  teardown) terminated the runner. The composer disables itself and
+   *  shows a reconnect banner; cleared on the next UserPromptSent or
+   *  AcpSessionAssigned (a fresh worker is online). */
+  workerStopped: boolean;
 }
 
 export interface ActivityRow {
@@ -264,6 +270,7 @@ export function emptyCockpitState(): CockpitState {
     availableCommands: [],
     toolOutputs: {},
     turnHasOutput: false,
+    workerStopped: false,
   };
 }
 
@@ -460,6 +467,15 @@ export function applyEvent(
     // turn-active flag so the global "working" spinner stops.
     next.inFlightTool = null;
     next.turnActive = false;
+    // The "user_stopped" reason is published by the supervisor's
+    // reap_user_stopped pass when it detects `aoe cockpit stop|kill`
+    // has deleted the worker registry entry. Surface a persistent
+    // "worker stopped" state so the composer disables itself and the
+    // reconnect banner appears — without this, the UI shows status Idle
+    // and the user types into a dead session.
+    if (event.Stopped.reason === "user_stopped") {
+      next.workerStopped = true;
+    }
     // Some upstream slash commands (e.g. /usage, /status, /memory in
     // claude-agent-acp) advertise via available_commands_update but
     // produce no agent_message_chunk and no tool calls when invoked —
@@ -521,6 +537,9 @@ export function applyEvent(
     // New turn — reset the no-output detector so Stopped fires the
     // empty-output notice if the agent produces nothing.
     next.turnHasOutput = false;
+    // A fresh prompt means the worker is alive again; clear the
+    // user_stopped banner without waiting for AcpSessionAssigned.
+    next.workerStopped = false;
     return next;
   }
   if ("AcpSessionAssigned" in event) {
@@ -537,6 +556,9 @@ export function applyEvent(
     // its own once the respawn completes the handshake.
     next.startupError = null;
     next.lastError = null;
+    // A fresh agent (via POST /cockpit/spawn after `aoe cockpit stop`)
+    // is online; clear the user_stopped banner.
+    next.workerStopped = false;
     return next;
   }
   if ("SessionContextReset" in event) {

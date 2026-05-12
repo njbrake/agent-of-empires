@@ -80,6 +80,9 @@ function CockpitChrome({
       {state.startupError && (
         <StartupErrorBanner sessionId={sessionId} message={state.startupError} />
       )}
+      {state.workerStopped && !state.startupError && (
+        <WorkerStoppedBanner sessionId={sessionId} />
+      )}
       {state.lastError && (
         <InteractionErrorBanner
           message={state.lastError}
@@ -130,7 +133,7 @@ function CockpitChrome({
           legacyMode={state.mode}
           sessionUsage={state.sessionUsage}
           availableCommands={state.availableCommands}
-          connected={status === "open"}
+          connected={status === "open" && !state.workerStopped}
         />
       </ThreadPrimitive.Root>
     </div>
@@ -531,6 +534,75 @@ function InteractionErrorBanner({
       >
         Dismiss
       </button>
+    </div>
+  );
+}
+
+function WorkerStoppedBanner({ sessionId }: { sessionId: string }) {
+  const [retryState, setRetryState] = useState<
+    "idle" | "retrying" | "ok" | "failed"
+  >("idle");
+  const [retryError, setRetryError] = useState<string | null>(null);
+
+  const handleReconnect = async () => {
+    setRetryState("retrying");
+    setRetryError(null);
+    try {
+      const res = await fetch(
+        `/api/sessions/${encodeURIComponent(sessionId)}/cockpit/spawn`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({}),
+        },
+      );
+      if (res.ok) {
+        // The next AcpSessionAssigned (or UserPromptSent) clears
+        // workerStopped on the reducer side and this banner unmounts.
+        setRetryState("ok");
+      } else {
+        const detail = (await res.text().catch(() => "")).slice(0, 200);
+        setRetryState("failed");
+        setRetryError(`Server returned ${res.status}. ${detail}`.trim());
+      }
+    } catch (e) {
+      setRetryState("failed");
+      setRetryError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  return (
+    <div className="border-b border-amber-900/60 bg-amber-950/40 px-4 py-3 text-amber-200">
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex-1 min-w-0">
+          <div className="text-sm font-medium">Cockpit worker stopped</div>
+          <div className="mt-1 text-xs text-amber-100/90">
+            The agent was terminated via{" "}
+            <code className="rounded bg-amber-900/60 px-1">aoe cockpit stop</code>{" "}
+            or an equivalent external teardown. New prompts are disabled until
+            you reconnect.
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={handleReconnect}
+          disabled={retryState === "retrying"}
+          className="shrink-0 rounded-md border border-amber-800/60 bg-amber-900/40 px-3 py-1 text-xs font-medium text-amber-100 hover:bg-amber-900/60 disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          {retryState === "retrying" ? "Reconnecting…" : "Reconnect"}
+        </button>
+      </div>
+      {retryState === "ok" && (
+        <div className="mt-2 text-xs text-emerald-200/90">
+          Spawn requested. The composer will re-enable when the agent is back
+          online.
+        </div>
+      )}
+      {retryState === "failed" && retryError && (
+        <div className="mt-2 text-xs text-amber-100/90">
+          Reconnect failed: {retryError}
+        </div>
+      )}
     </div>
   );
 }
