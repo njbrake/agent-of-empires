@@ -51,7 +51,7 @@ use std::sync::Mutex;
 
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
-use tracing::{debug, warn};
+use tracing::{debug, trace, warn};
 
 use super::state::Event;
 
@@ -133,10 +133,12 @@ impl EventStore {
             .with_context(|| format!("insert {session_id}@{seq}"))?;
         if inserted == 0 {
             // Primary-key collision: same (session_id, seq) seen before.
-            // Logged at debug because the cause is usually a benign retry
+            // Logged at trace because the cause is usually a benign retry
             // (publish_user_prompt + replay drain re-publishing) rather
-            // than a bug, but we still want a breadcrumb.
-            debug!(
+            // than a bug, but we still want a breadcrumb. Per-event lines
+            // are too noisy to live at debug — they bury the lifecycle
+            // signal in debug.log during an active turn.
+            trace!(
                 target: "cockpit.event_store",
                 session = %session_id,
                 seq,
@@ -144,7 +146,7 @@ impl EventStore {
                 "skipped duplicate event (already on disk)"
             );
         } else {
-            debug!(
+            trace!(
                 target: "cockpit.event_store",
                 session = %session_id,
                 seq,
@@ -171,7 +173,7 @@ impl EventStore {
             ) {
                 Ok(0) => {}
                 Ok(pruned) => {
-                    debug!(
+                    trace!(
                         target: "cockpit.event_store",
                         session = %session_id,
                         pruned,
@@ -233,7 +235,7 @@ impl EventStore {
                 Err(e) => warn!(target: "cockpit.event_store", "row error: {e}"),
             }
         }
-        debug!(
+        trace!(
             target: "cockpit.event_store",
             session = %session_id,
             since,
@@ -262,7 +264,7 @@ impl EventStore {
             Ok(Some(Some(max))) => max as u64,
             _ => 0,
         };
-        debug!(
+        trace!(
             target: "cockpit.event_store",
             session = %session_id,
             highest_seq = max,
