@@ -13,17 +13,17 @@ describe("applyBranchOverride", () => {
     });
   });
 
-  it("resets an empty branch back to the title-derived default", () => {
+  it("honors an explicit clear and marks the field dirty so the title mirror stops", () => {
     expect(applyBranchOverride("session-title", "")).toEqual({
-      worktreeBranch: "session-title",
-      worktreeBranchDirty: false,
+      worktreeBranch: "",
+      worktreeBranchDirty: true,
     });
   });
 
   it("keeps both fields empty when there is no title to fall back to", () => {
     expect(applyBranchOverride("", "")).toEqual({
       worktreeBranch: "",
-      worktreeBranchDirty: false,
+      worktreeBranchDirty: true,
     });
   });
 });

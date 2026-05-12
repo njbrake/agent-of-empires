@@ -1,14 +1,11 @@
-export function applyBranchOverride(title: string, worktreeBranch: string): {
+export function applyBranchOverride(_title: string, worktreeBranch: string): {
   worktreeBranch: string;
   worktreeBranchDirty: boolean;
 } {
-  if (worktreeBranch === "") {
-    return {
-      worktreeBranch: title,
-      worktreeBranchDirty: false,
-    };
-  }
-
+  // Any direct edit on the branch field — including clearing it — marks it
+  // dirty so the title→branch mirror stops overwriting the user's input on
+  // the next keystroke. Empty is a valid UI state; the submit path falls
+  // back to the title via getSubmittedBranch.
   return {
     worktreeBranch,
     worktreeBranchDirty: true,
