@@ -159,6 +159,14 @@ impl EventStore {
         // (the subquery returns 0 rows). We do it on every insert rather
         // than periodically so the upper bound on per-session disk usage
         // is strict rather than amortised.
+        //
+        // Snapshot events (the slash-command list, mode list, ACP session
+        // id) are exempt from pruning: the agent only emits them once per
+        // session lifecycle, near the start of the seq range, so a long
+        // session blows past the cap and evicts them — leaving the
+        // composer's `/` palette and the mode picker empty on reconnect.
+        // See #1049. The `event_json NOT LIKE` clauses match the
+        // externally-tagged JSON discriminant for each pinned variant.
         if self.max_events_per_session > 0 {
             match conn.execute(
                 "DELETE FROM cockpit_events
@@ -168,7 +176,11 @@ impl EventStore {
                      WHERE session_id = ?1
                      ORDER BY seq DESC
                      LIMIT 1 OFFSET ?2
-                   )",
+                   )
+                   AND event_json NOT LIKE '{\"AvailableCommandsUpdated\":%'
+                   AND event_json NOT LIKE '{\"ModesAvailable\":%'
+                   AND event_json NOT LIKE '{\"CurrentModeChanged\":%'
+                   AND event_json NOT LIKE '{\"AcpSessionAssigned\":%'",
                 params![session_id, self.max_events_per_session as i64],
             ) {
                 Ok(0) => {}
@@ -474,6 +486,63 @@ mod tests {
         } else {
             panic!("expected UserPromptSent");
         }
+    }
+
+    #[test]
+    fn snapshot_events_survive_retention_prune() {
+        // Mirrors #1049: a long session blew past max_events_per_session
+        // and evicted the early `AvailableCommandsUpdated` row, leaving
+        // the `/` palette empty on reconnect. Snapshot kinds are pinned
+        // so they outlive the prune even when the rest of the seq tail
+        // gets dropped.
+        let (_tmp, store) = open_store(3);
+        store
+            .record(
+                "s-1",
+                1,
+                &Event::AvailableCommandsUpdated { commands: vec![] },
+            )
+            .unwrap();
+        store
+            .record(
+                "s-1",
+                2,
+                &Event::ModesAvailable {
+                    current_mode_id: "default".into(),
+                    modes: vec![],
+                },
+            )
+            .unwrap();
+        store
+            .record(
+                "s-1",
+                3,
+                &Event::AcpSessionAssigned {
+                    acp_session_id: "acp-xyz".into(),
+                },
+            )
+            .unwrap();
+        // Push enough transcript events to blow past the cap several
+        // times. With the old prune, seqs 1-3 would all be evicted.
+        for i in 4..=20 {
+            store.record("s-1", i, &Event::ThinkingStarted).unwrap();
+        }
+        let replay = store.replay_from("s-1", 0);
+        let seqs: Vec<u64> = replay.iter().map(|(s, _)| *s).collect();
+        // The three snapshot rows survive. The most recent 3 transcript
+        // events also remain.
+        assert!(
+            seqs.contains(&1),
+            "AvailableCommandsUpdated dropped: {seqs:?}"
+        );
+        assert!(seqs.contains(&2), "ModesAvailable dropped: {seqs:?}");
+        assert!(seqs.contains(&3), "AcpSessionAssigned dropped: {seqs:?}");
+        assert!(seqs.contains(&20), "newest event dropped: {seqs:?}");
+        // Older transcript-only events (4 through 17) are pruned.
+        assert!(
+            !seqs.contains(&5),
+            "stale transcript event leaked: {seqs:?}"
+        );
     }
 
     #[test]
