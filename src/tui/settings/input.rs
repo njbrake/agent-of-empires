@@ -824,16 +824,6 @@ impl SettingsView {
                     c.show_tool_durations = None;
                 }
             }
-            FieldKey::CockpitTerminalOutputStreaming => {
-                if let Some(c) = config.cockpit.as_mut() {
-                    c.terminal_output_streaming = None;
-                }
-            }
-            FieldKey::CockpitTerminalOutputMaxBytes => {
-                if let Some(c) = config.cockpit.as_mut() {
-                    c.terminal_output_max_bytes = None;
-                }
-            }
         }
 
         // Sync repo_config when in Repo scope

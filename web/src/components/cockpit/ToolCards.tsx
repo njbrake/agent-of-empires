@@ -36,7 +36,6 @@ import { parseJsonObject, pickFirst, pickStr } from "../../lib/cockpitArgs";
 import { useCockpitPrefs } from "../../lib/cockpitPrefs";
 import type { ActivityRow, ToolCall } from "../../lib/cockpitTypes";
 import { diffPair } from "../../lib/diffPair";
-import { useToolPartialOutput } from "../../lib/toolPartials";
 import { StringDiff } from "../diff/StringDiff";
 import {
   classifyMcp,
@@ -496,28 +495,13 @@ function ExecuteToolCard({ tool, result }: Props) {
   const title = pickStr(args, "_aoe_title");
   const command = pickFirst(argCommand, title, tool.name) ?? "(no command)";
   const description = pickStr(args, "description");
-  // Live partial output streamed via `tool_call_update` chunks while
-  // the command is still running (gated by
-  // `cockpit.terminal_output_streaming`). Falls back to the result's
-  // text once the call completes. See #1075.
-  const partial = useToolPartialOutput(tool.id);
-  const finalOutput = result?.text ?? "";
-  const output = finalOutput || partial;
-  const isStreaming = !result && partial.length > 0;
-  // Expanded by default while streaming so the user actually sees the
-  // live output without an extra click. Once the call finishes we
-  // leave the open state as the user last toggled it.
+  const output = result?.text ?? "";
   const [open, setOpen] = useState(false);
-  const expanded = open || isStreaming;
 
   const meta =
     output && status !== "running" ? (
       <span className="hidden md:inline text-[11px] text-text-dim">
         {unwrapMarkdownFence(output).text.split("\n").length} lines
-      </span>
-    ) : isStreaming ? (
-      <span className="hidden md:inline text-[11px] text-brand-400">
-        streaming
       </span>
     ) : undefined;
 
@@ -535,7 +519,7 @@ function ExecuteToolCard({ tool, result }: Props) {
         </>
       }
       meta={meta}
-      expanded={expanded}
+      expanded={open}
       onToggle={() => setOpen((v) => !v)}
       body={
         <>

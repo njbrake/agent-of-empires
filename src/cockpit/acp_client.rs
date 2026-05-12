@@ -84,18 +84,6 @@ pub struct SpawnConfig {
     /// load failure the task falls back to `session/new` and emits a
     /// `SessionContextReset` event.
     pub stored_acp_session_id: Option<String>,
-    /// When true, aoe advertises `_meta.terminal_output: true` in
-    /// `ClientCapabilities` so claude-agent-acp streams Bash output
-    /// chunks live during a command via per-`tool_call_update`
-    /// notifications. When false, the adapter falls back to a single
-    /// completion-time output dump. Resolved from
-    /// `cockpit.terminal_output_streaming` at spawn time. See #1075.
-    pub terminal_output_streaming: bool,
-    /// Soft cap on the per-terminal `stdout + stderr` buffer. Older
-    /// bytes are dropped from the head once the cap is exceeded.
-    /// Resolved from `cockpit.terminal_output_max_bytes`. See #1075
-    /// layer E.
-    pub terminal_output_max_bytes: u64,
 }
 
 /// Commands sent from `AcpClient` methods to the background connection task.
@@ -257,14 +245,10 @@ impl AcpClient {
                 cmd_rx,
                 event_tx,
                 event_rx,
-                config.terminal_output_streaming,
-                config.terminal_output_max_bytes,
             )
             .await;
         }
 
-        let terminal_output_streaming = config.terminal_output_streaming;
-        let terminal_output_max_bytes = config.terminal_output_max_bytes;
         let child = spawn_subprocess(&config)?;
         let child = Arc::new(Mutex::new(child));
         Self::start_with_stdio(
@@ -278,8 +262,6 @@ impl AcpClient {
             cmd_rx,
             event_tx,
             event_rx,
-            terminal_output_streaming,
-            terminal_output_max_bytes,
         )
         .await
     }
@@ -296,8 +278,6 @@ impl AcpClient {
         cmd_rx: mpsc::Receiver<ClientCmd>,
         event_tx: mpsc::Sender<Event>,
         event_rx: mpsc::Receiver<Event>,
-        terminal_output_streaming: bool,
-        terminal_output_max_bytes: u64,
     ) -> Result<Self, AcpError> {
         let (stdin, stdout) = {
             let mut guard = child.lock().await;
@@ -322,7 +302,7 @@ impl AcpClient {
         roots.extend(additional_dirs);
         let resources = SessionResources {
             fs_policy: Arc::new(FsPolicy::new(roots)),
-            terminals: TerminalManager::with_max_bytes(terminal_output_max_bytes as usize),
+            terminals: TerminalManager::new(),
             cwd: cwd.clone(),
             label: session_label.clone(),
         };
@@ -341,7 +321,6 @@ impl AcpClient {
             None,
             mode,
             Some(ready_tx),
-            terminal_output_streaming,
         ));
 
         wait_for_handshake(&session_label, ready_rx, Some(&child)).await?;
@@ -362,7 +341,6 @@ impl AcpClient {
     /// `AcpClient` with `_child = None`; dropping the client does not
     /// terminate the worker.
     #[allow(clippy::too_many_arguments)]
-    #[allow(clippy::too_many_arguments)]
     async fn connect_via_socket(
         socket_path: PathBuf,
         cwd: PathBuf,
@@ -374,8 +352,6 @@ impl AcpClient {
         cmd_rx: mpsc::Receiver<ClientCmd>,
         event_tx: mpsc::Sender<Event>,
         event_rx: mpsc::Receiver<Event>,
-        terminal_output_streaming: bool,
-        terminal_output_max_bytes: u64,
     ) -> Result<Self, AcpError> {
         // Poll for the runner to finish binding the socket. The runner
         // binds before it spawns the agent so this is usually fast (a
@@ -389,7 +365,7 @@ impl AcpClient {
         roots.extend(additional_dirs);
         let resources = SessionResources {
             fs_policy: Arc::new(FsPolicy::new(roots)),
-            terminals: TerminalManager::with_max_bytes(terminal_output_max_bytes as usize),
+            terminals: TerminalManager::new(),
             cwd: cwd.clone(),
             label: session_id.0.clone(),
         };
@@ -411,7 +387,6 @@ impl AcpClient {
             None,
             mode,
             Some(ready_tx),
-            terminal_output_streaming,
         ));
 
         wait_for_handshake(&session_label, ready_rx, None).await?;
@@ -446,7 +421,6 @@ impl AcpClient {
     /// request id this client never issued and is dropped silently by
     /// the underlying transport, leaving the UI otherwise stuck on
     /// "thinking".
-    #[allow(clippy::too_many_arguments)]
     pub async fn attach(
         socket_path: PathBuf,
         cwd: PathBuf,
@@ -454,8 +428,6 @@ impl AcpClient {
         stored_acp_session_id: String,
         in_flight_turn: bool,
         session_id: CockpitSessionId,
-        terminal_output_streaming: bool,
-        terminal_output_max_bytes: u64,
     ) -> Result<Self, AcpError> {
         let (cmd_tx, cmd_rx) = mpsc::channel::<ClientCmd>(16);
         let (event_tx, event_rx) = mpsc::channel::<Event>(64);
@@ -475,8 +447,6 @@ impl AcpClient {
             cmd_rx,
             event_tx,
             event_rx,
-            terminal_output_streaming,
-            terminal_output_max_bytes,
         )
         .await
     }
@@ -1140,7 +1110,6 @@ fn is_transcript_event(event: &Event) -> bool {
             | Event::ToolCallStarted { .. }
             | Event::ToolCallCompleted { .. }
             | Event::ToolCallContent { .. }
-            | Event::ToolCallStreamChunk { .. }
             | Event::ToolCallUpdated { .. }
             | Event::DiffEmitted { .. }
             | Event::PlanUpdated { .. }
@@ -1163,7 +1132,6 @@ fn transcript_event_kind(event: &Event) -> &'static str {
         Event::ToolCallStarted { .. } => "tool_call_started",
         Event::ToolCallCompleted { .. } => "tool_call_completed",
         Event::ToolCallContent { .. } => "tool_call_content",
-        Event::ToolCallStreamChunk { .. } => "tool_call_stream_chunk",
         Event::ToolCallUpdated { .. } => "tool_call_updated",
         Event::DiffEmitted { .. } => "diff_emitted",
         Event::PlanUpdated { .. } => "plan_updated",
@@ -1402,17 +1370,6 @@ fn map_update_to_events(update: SessionUpdate) -> Vec<Event> {
                 .as_ref()
                 .map(|blocks| extract_tool_content_text(blocks))
                 .unwrap_or_default();
-            // claude-agent-acp rides per-chunk Bash output on
-            // `_meta.terminal_output: "<chunk>"` (codex-acp convention)
-            // when the client has advertised the matching capability.
-            // It does NOT populate `fields.content` for these chunks,
-            // so we have to look at `_meta` to pick them up. See #1075.
-            let terminal_chunk = update
-                .meta
-                .as_ref()
-                .and_then(|m| m.get("terminal_output"))
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_owned());
             let new_args_preview = update.fields.raw_input.as_ref().map(preview_args);
             let new_title = update.fields.title.clone();
             let mut events: Vec<Event> = Vec::new();
@@ -1427,14 +1384,6 @@ fn map_update_to_events(update: SessionUpdate) -> Vec<Event> {
                         None
                     },
                 });
-            }
-            if let Some(chunk) = terminal_chunk {
-                if !chunk.is_empty() {
-                    events.push(Event::ToolCallStreamChunk {
-                        tool_call_id: id.clone(),
-                        chunk,
-                    });
-                }
             }
             if completed {
                 events.push(Event::ToolCallCompleted {
@@ -1688,10 +1637,6 @@ async fn run_connection_task<W, R>(
     socket_path: Option<PathBuf>,
     mode: ConnectMode,
     ready_tx: Option<oneshot::Sender<Result<(), AcpError>>>,
-    // terminal_output_streaming: advertise `_meta.terminal_output: true`
-    // in ClientCapabilities so claude-agent-acp streams Bash output
-    // chunks live via per-tool_call_update notifications. See #1075.
-    terminal_output_streaming: bool,
 ) where
     W: futures_util::AsyncWrite + Send + 'static,
     R: futures_util::AsyncRead + Send + 'static,
@@ -1861,24 +1806,11 @@ async fn run_connection_task<W, R>(
         )
         .connect_with(transport, |connection: ConnectionTo<Agent>| async move {
             info!(target: "cockpit.acp", session = %session_label, "initializing ACP agent");
-            let mut capabilities = ClientCapabilities::new()
+            let capabilities = ClientCapabilities::new()
                 .fs(FileSystemCapabilities::new()
                     .read_text_file(true)
                     .write_text_file(true))
                 .terminal(true);
-            if terminal_output_streaming {
-                // codex-acp-style streaming convention honored by
-                // claude-agent-acp: when `_meta.terminal_output: true`
-                // is on, the adapter splits terminal lifecycle into
-                // `tool_call` (terminal_info) → `tool_call_update`
-                // (terminal_output, per chunk) → `tool_call_update`
-                // (terminal_exit). Without it the adapter buffers
-                // everything to a single completion-time dump. See
-                // #1075.
-                let mut meta = serde_json::Map::new();
-                meta.insert("terminal_output".into(), serde_json::Value::Bool(true));
-                capabilities = capabilities.meta(meta);
-            }
             // `initialize` is sent in both Fresh and Resume modes.
             // It's idempotent on every ACP agent we ship against
             // (aoe-agent, claude-agent-acp); the response only carries
@@ -2499,27 +2431,9 @@ async fn handle_terminal_output(
 ) -> agent_client_protocol::Result<()> {
     match res.terminals.output(request.terminal_id.0.as_ref()).await {
         Ok(out) => {
-            // Surface head truncation (from the `terminal_output_max_bytes`
-            // cap) as a leading marker so polling adapters and the
-            // cockpit Execute card render "[...truncated N bytes...]"
-            // instead of silently losing the head of long outputs. See
-            // #1075 layer E.
-            let mut combined = if out.truncated_head_bytes > 0 {
-                format!("[…truncated {} bytes…]\n", out.truncated_head_bytes,)
-            } else {
-                String::new()
-            };
-            combined.push_str(&out.stdout);
-            combined.push_str(&out.stderr);
-            // `truncated` here means "more output is coming". While the
-            // child is alive (exit_code = None) we report truncated so
-            // the adapter knows to keep polling / streaming. Once the
-            // child has exited the buffer is the final transcript; the
-            // head may still have been dropped by the byte cap, but
-            // from the agent's perspective the call is complete.
-            let truncated = out.exit_code.is_none();
+            let combined = format!("{}{}", out.stdout, out.stderr);
             responder.respond(
-                TerminalOutputResponse::new(combined, truncated)
+                TerminalOutputResponse::new(combined, false)
                     .exit_status(build_exit_status(out.exit_code)),
             )
         }
@@ -2534,11 +2448,10 @@ async fn handle_wait_for_terminal_exit(
     responder: Responder<WaitForTerminalExitResponse>,
     res: SessionResources,
 ) -> agent_client_protocol::Result<()> {
-    match res
-        .terminals
-        .wait_for_exit(request.terminal_id.0.as_ref())
-        .await
-    {
+    // For our one-shot terminal model, the command has already finished by
+    // the time `create_and_run` returns. So `output()` immediately yields
+    // the captured exit status.
+    match res.terminals.output(request.terminal_id.0.as_ref()).await {
         Ok(out) => responder.respond(WaitForTerminalExitResponse::new(build_exit_status(
             out.exit_code,
         ))),
@@ -2549,16 +2462,12 @@ async fn handle_wait_for_terminal_exit(
 }
 
 async fn handle_kill_terminal(
-    request: KillTerminalRequest,
+    _request: KillTerminalRequest,
     responder: Responder<KillTerminalResponse>,
-    res: SessionResources,
+    _res: SessionResources,
 ) -> agent_client_protocol::Result<()> {
-    match res.terminals.kill(request.terminal_id.0.as_ref()).await {
-        Ok(()) => responder.respond(KillTerminalResponse::new()),
-        Err(e) => {
-            responder.respond_with_error(agent_client_protocol::util::internal_error(e.to_string()))
-        }
-    }
+    // One-shot terminals are already finished; kill is a no-op.
+    responder.respond(KillTerminalResponse::new())
 }
 
 async fn handle_release_terminal(
@@ -2682,8 +2591,6 @@ mod tests {
             provider_env: vec![],
             socket_path: None,
             stored_acp_session_id: None,
-            terminal_output_streaming: true,
-            terminal_output_max_bytes: 256 * 1024,
         };
         let result = AcpClient::spawn(config, CockpitSessionId("s-1".into())).await;
         assert!(matches!(result, Err(AcpError::Spawn(_))));
