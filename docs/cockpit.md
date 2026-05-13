@@ -412,6 +412,15 @@ Then run `claude login` if you haven't already.
 
 The spawn path scans common node-manager bin dirs (nvm, fnm, mise, asdf, Volta, `~/.npm-global/bin`, `~/.local/bin`, `/usr/local/bin`, `/opt/homebrew/bin`) per spawn, so a `nvm use <other-version>` after the daemon started is picked up on the next worker respawn without a daemon restart. If the binary lives somewhere else, either restart `aoe serve` from a shell where `which claude-agent-acp` resolves, or symlink it into one of those dirs.
 
+### "Project path no longer exists" banner
+
+The session's working directory was renamed, moved, or deleted out from under `aoe serve`. The most common trigger is a `git worktree move` or a manual `mv` on a worktree dir the session was bound to. The cockpit pre-flights `project_path` before spawning, so this fails fast with a typed banner instead of a generic ENOENT (which is indistinguishable on POSIX from "the adapter is missing"). Two ways to recover:
+
+1. **Restore the directory at the path the banner shows** (e.g. `git worktree move <new> <old>`, or recreate the dir), then click **Retry** on the banner. Cockpit transcript continuity is preserved.
+2. **Stop `aoe serve`**, edit `project_path` for this session in `~/.agent-of-empires/profiles/<profile>/sessions.json` to point at the new location, then start `aoe serve` again. If the worktree's branch was also renamed, update `worktree_info.branch` in the same file. Cockpit history + `cockpit_acp_session_id` are preserved; the conversation resumes against the new path.
+
+Reinstalling the adapter does not help here; the adapter is fine, the cwd is gone.
+
 ### Cockpit feels "stuck" with no events
 
 - Check `aoe cockpit logs --follow` (when the worker supervisor lands)

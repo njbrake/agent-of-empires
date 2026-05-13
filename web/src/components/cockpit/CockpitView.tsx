@@ -903,6 +903,15 @@ function StartupErrorBanner({
 }) {
   const isAuth = /authentic|login|api[_ -]?key/i.test(message);
   const isCapacity = /capacity full|max_concurrent_workers/i.test(message);
+  // Match the exact `Display` of `AcpError::ProjectPathMissing`.
+  // Capture the path so the banner can echo it back to the user; the
+  // path lets them spot whether a rename or a delete is the cause and
+  // jump straight to the right fix. See #1089.
+  const projectPathMissingMatch = /project path no longer exists:\s*(\S.*)$/im.exec(
+    message,
+  );
+  const isProjectPathMissing = projectPathMissingMatch !== null;
+  const missingPath = projectPathMissingMatch?.[1]?.trim() ?? null;
   const [retryState, setRetryState] = useState<
     "idle" | "retrying" | "ok" | "failed"
   >("idle");
@@ -984,6 +993,36 @@ function StartupErrorBanner({
             or free a slot by deleting an existing cockpit session
             or switching one to the tmux substrate. Reinstalling the adapter
             won't help; the adapter is fine, the cap is the limit.
+          </>
+        ) : isProjectPathMissing ? (
+          <>
+            The session's working directory no longer exists on disk:
+            {missingPath && (
+              <pre className="mt-1 whitespace-pre-wrap break-all rounded bg-rose-900/40 p-2 text-xs">
+                {missingPath}
+              </pre>
+            )}
+            Reinstalling the adapter won't help; the adapter is fine, the cwd
+            is gone. Two paths forward:
+            <ol className="mt-1 list-decimal space-y-0.5 pl-5">
+              <li>
+                Restore the directory at the path above (e.g.{" "}
+                <code className="rounded bg-rose-900/60 px-1">git worktree move</code>{" "}
+                it back, or recreate it), then click <strong>Retry</strong>.
+              </li>
+              <li>
+                Stop <code className="rounded bg-rose-900/60 px-1">aoe serve</code>,
+                edit{" "}
+                <code className="rounded bg-rose-900/60 px-1">project_path</code>{" "}
+                for this session in{" "}
+                <code className="rounded bg-rose-900/60 px-1">
+                  ~/.agent-of-empires/profiles/&lt;profile&gt;/sessions.json
+                </code>
+                {" "}to point at the new location, then start{" "}
+                <code className="rounded bg-rose-900/60 px-1">aoe serve</code>{" "}
+                again.
+              </li>
+            </ol>
           </>
         ) : (
           <>

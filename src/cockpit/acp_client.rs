@@ -47,6 +47,14 @@ use super::terminal_handler::TerminalManager;
 pub enum AcpError {
     #[error("agent spawn failed: {0}")]
     Spawn(String),
+    /// The session's working directory does not exist on disk. Distinct
+    /// from a generic spawn ENOENT (which on POSIX is indistinguishable
+    /// at the libc level between missing binary, missing interpreter, and
+    /// missing cwd). Surfaced as its own variant so the UI can render a
+    /// targeted remediation banner instead of the default "install the
+    /// adapter" copy. See issue #1089.
+    #[error("project path no longer exists: {path}")]
+    ProjectPathMissing { path: PathBuf },
     #[error("transport error: {0}")]
     Transport(String),
     #[error("protocol violation: {0}")]
@@ -59,6 +67,32 @@ pub enum AcpError {
     UnknownNonce,
     #[error("agent did not offer a {0:?} option")]
     NoMatchingOption(ApprovalDecision),
+}
+
+impl AcpError {
+    /// Inspect a `std::io::Error` returned by `Command::spawn` against
+    /// the spawn site's cwd + (resolved) command. POSIX returns ENOENT
+    /// for both "binary not on PATH" and "cwd does not exist", so the
+    /// disambiguation has to happen via filesystem stat. Stats only on
+    /// the ENOENT branch to keep the hot path free.
+    ///
+    /// Belt-and-suspenders for the cwd-missing case: the supervisor
+    /// pre-flights `cwd.exists()` before spawning, but the directory
+    /// can race-disappear between pre-flight and exec. Without this
+    /// classifier the bare ENOENT bubbles up as a generic spawn error
+    /// and the UI lands on the wrong remediation banner. See #1089.
+    pub fn classify_spawn_error(
+        err: std::io::Error,
+        cwd: &std::path::Path,
+        spawn_command: &str,
+    ) -> Self {
+        if err.kind() == std::io::ErrorKind::NotFound && !cwd.exists() {
+            return AcpError::ProjectPathMissing {
+                path: cwd.to_path_buf(),
+            };
+        }
+        AcpError::Spawn(format!("{err} (command `{spawn_command}`)"))
+    }
 }
 
 /// Configuration for spawning an ACP agent.
@@ -216,6 +250,18 @@ impl AcpClient {
         config: SpawnConfig,
         session_id: CockpitSessionId,
     ) -> Result<Self, AcpError> {
+        // Pre-flight: if the session's project_path was renamed or moved
+        // externally (e.g. `git worktree move` or a plain `mv`), the
+        // agent process's `current_dir` will ENOENT at exec time. POSIX
+        // surfaces that as the same `os error 2` as a missing binary,
+        // so without the pre-flight the UI lands on the wrong "install
+        // the adapter" remediation. Fail fast with a typed variant so
+        // the supervisor can route to a targeted banner. See #1089.
+        if !config.cwd.exists() {
+            return Err(AcpError::ProjectPathMissing {
+                path: config.cwd.clone(),
+            });
+        }
         let (cmd_tx, cmd_rx) = mpsc::channel::<ClientCmd>(16);
         let (event_tx, event_rx) = mpsc::channel::<Event>(64);
         let pending_responders: PendingResponders = Arc::new(Mutex::new(HashMap::new()));
@@ -988,11 +1034,16 @@ fn spawn_subprocess(config: &SpawnConfig) -> Result<tokio::process::Child, AcpEr
             resolved = %spawn_command,
             "spawn failed: {e}"
         );
-        // ENOENT on a bare command means we couldn't find the binary on
-        // PATH or in any known node-manager dir. Bubble up a hint instead
-        // of the bare libc message; the daemon's frozen PATH is the
-        // most common cause and the generic message doesn't say so.
-        if e.kind() == std::io::ErrorKind::NotFound && resolved.is_none() {
+        // POSIX ENOENT on `Command::spawn` is ambiguous: missing binary,
+        // missing cwd, or missing interpreter all surface as the same
+        // libc error. Order matters here:
+        //   1. cwd missing → ProjectPathMissing (so the UI renders the
+        //      "restore or rebind project_path" banner, not the
+        //      install-adapter copy). See #1089.
+        //   2. bare-command ENOENT with no PATH resolution → enriched
+        //      Spawn message hinting at the frozen-PATH cause. See #1048.
+        //   3. fallback → generic Spawn classification.
+        if e.kind() == std::io::ErrorKind::NotFound && config.cwd.exists() && resolved.is_none() {
             AcpError::Spawn(format!(
                 "{} (binary `{}` not found on the daemon's PATH or in any \
                  known node-manager bin dir; install it where the daemon \
@@ -1001,7 +1052,7 @@ fn spawn_subprocess(config: &SpawnConfig) -> Result<tokio::process::Child, AcpEr
                 e, config.spec.command, config.spec.command
             ))
         } else {
-            AcpError::Spawn(e.to_string())
+            AcpError::classify_spawn_error(e, &config.cwd, &spawn_command)
         }
     })?;
 
@@ -2594,6 +2645,78 @@ mod tests {
         };
         let result = AcpClient::spawn(config, CockpitSessionId("s-1".into())).await;
         assert!(matches!(result, Err(AcpError::Spawn(_))));
+    }
+
+    /// Pre-flight cwd check: when `project_path` was renamed out from
+    /// under the session, the supervisor's spawn fails with a typed
+    /// `ProjectPathMissing` instead of a bare ENOENT-mapped `Spawn`.
+    /// See #1089.
+    #[tokio::test]
+    async fn spawn_returns_project_path_missing_when_cwd_does_not_exist() {
+        let missing =
+            std::env::temp_dir().join(format!("aoe-test-missing-cwd-{}", std::process::id()));
+        // Ensure the path truly does not exist.
+        let _ = std::fs::remove_dir_all(&missing);
+        let config = SpawnConfig {
+            spec: AgentSpec {
+                command: "/bin/true".into(),
+                args: vec![],
+                description: "test".into(),
+                env_allowlist: None,
+            },
+            cwd: missing.clone(),
+            additional_dirs: vec![],
+            provider_env: vec![],
+            socket_path: None,
+            stored_acp_session_id: None,
+        };
+        let result = AcpClient::spawn(config, CockpitSessionId("s-1".into())).await;
+        match result {
+            Err(AcpError::ProjectPathMissing { path }) => assert_eq!(path, missing),
+            Err(other) => panic!("expected ProjectPathMissing, got {other:?}"),
+            Ok(_) => panic!("expected ProjectPathMissing, got Ok"),
+        }
+    }
+
+    /// Belt-and-suspenders: even if the pre-flight raced (cwd vanishes
+    /// between `cwd.exists()` and `Command::spawn`), the classifier turns
+    /// the raw ENOENT into `ProjectPathMissing` rather than the generic
+    /// install-the-adapter message.
+    #[test]
+    fn classify_spawn_error_routes_missing_cwd_to_project_path_missing() {
+        let missing =
+            std::env::temp_dir().join(format!("aoe-test-classify-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&missing);
+        let io_err = std::io::Error::from(std::io::ErrorKind::NotFound);
+        match AcpError::classify_spawn_error(io_err, &missing, "/bin/true") {
+            AcpError::ProjectPathMissing { path } => assert_eq!(path, missing),
+            other => panic!("expected ProjectPathMissing, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_spawn_error_keeps_spawn_when_cwd_exists() {
+        let cwd = std::env::temp_dir();
+        let io_err = std::io::Error::from(std::io::ErrorKind::NotFound);
+        match AcpError::classify_spawn_error(io_err, &cwd, "/nonexistent/bin/foo") {
+            AcpError::Spawn(msg) => {
+                assert!(
+                    msg.contains("/nonexistent/bin/foo"),
+                    "spawn message should echo command: {msg}"
+                );
+            }
+            other => panic!("expected Spawn, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_spawn_error_passes_through_non_enoent() {
+        let cwd = std::env::temp_dir();
+        let io_err = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        match AcpError::classify_spawn_error(io_err, &cwd, "/bin/true") {
+            AcpError::Spawn(_) => {}
+            other => panic!("expected Spawn for non-ENOENT, got {other:?}"),
+        }
     }
 
     #[test]
