@@ -180,7 +180,7 @@ function CockpitChrome({
   }, []);
   return (
     <div className="flex h-full flex-col bg-surface-900 text-text-primary">
-      <PlanStrip plan={state.plan} mode={state.mode} />
+      <PlanStrip plan={state.plan} />
 
       {(status !== "open" || state.lagged || state.rateLimit) && (
         <SystemNotices
@@ -817,14 +817,16 @@ function WorkingSpinner({
 
 interface PlanStripProps {
   plan: Plan | null;
-  mode: CockpitState["mode"];
 }
 
-function PlanStrip({ plan, mode }: PlanStripProps) {
+function PlanStrip({ plan }: PlanStripProps) {
   const [expanded, setExpanded] = useState(false);
-  // Hide entirely on the most common case: no plan, default mode.
-  // The mode picker now lives in the composer footer.
-  if (!plan && mode === "Default") return null;
+  // Hide entirely when there are no steps to show. The mode picker
+  // now lives in the composer footer, so the strip only earns its
+  // pixels when there's a plan with at least one step. An agent that
+  // emits an empty `plan.steps` array otherwise leaves a clickable
+  // banner reading "0/0" with nothing under the disclosure.
+  if (!plan || plan.steps.length === 0) return null;
 
   // Pick the active step: prefer an explicit `InProgress` (Claude's
   // ExitPlanMode bridge sets this), otherwise fall back to the first
@@ -832,14 +834,12 @@ function PlanStrip({ plan, mode }: PlanStripProps) {
   // arrive with all entries Pending). Mirrors the server-side
   // `plan_summary_from_plan` logic so the strip and sidebar agree.
   const current =
-    plan?.steps.find((s) => s.status === "InProgress") ??
-    plan?.steps.find(
-      (s) => s.status !== "Done" && s.status !== "Cancelled",
-    );
-  const completed = plan?.steps.filter((s) => s.status === "Done").length ?? 0;
-  const totalSteps = plan?.steps.length ?? 0;
-  const pct = totalSteps > 0 ? Math.round((completed / totalSteps) * 100) : 0;
-  const allDone = totalSteps > 0 && completed === totalSteps;
+    plan.steps.find((s) => s.status === "InProgress") ??
+    plan.steps.find((s) => s.status !== "Done" && s.status !== "Cancelled");
+  const completed = plan.steps.filter((s) => s.status === "Done").length;
+  const totalSteps = plan.steps.length;
+  const pct = Math.round((completed / totalSteps) * 100);
+  const allDone = completed === totalSteps;
 
   return (
     <div className="border-b border-surface-800 bg-surface-900/95 backdrop-blur">
@@ -852,28 +852,26 @@ function PlanStrip({ plan, mode }: PlanStripProps) {
         <span className="truncate text-text-primary">
           {current?.title ?? (allDone ? "all steps complete" : "…")}
         </span>
-        {plan && (
-          <span className="ml-auto flex items-center gap-2">
-            <span className="text-[11px] tabular-nums text-text-dim">
-              {completed}/{totalSteps}
-            </span>
-            <span className="hidden sm:block h-1 w-16 overflow-hidden rounded-full bg-surface-800">
-              <span
-                className="block h-full bg-brand-500 transition-[width] duration-300"
-                style={{ width: `${pct}%` }}
-              />
-            </span>
-            <ChevronDown
-              className={[
-                "h-3.5 w-3.5 text-text-dim transition-transform",
-                expanded ? "rotate-180" : "",
-              ].join(" ")}
+        <span className="ml-auto flex items-center gap-2">
+          <span className="text-[11px] tabular-nums text-text-dim">
+            {completed}/{totalSteps}
+          </span>
+          <span className="hidden sm:block h-1 w-16 overflow-hidden rounded-full bg-surface-800">
+            <span
+              className="block h-full bg-brand-500 transition-[width] duration-300"
+              style={{ width: `${pct}%` }}
             />
           </span>
-        )}
+          <ChevronDown
+            className={[
+              "h-3.5 w-3.5 text-text-dim transition-transform",
+              expanded ? "rotate-180" : "",
+            ].join(" ")}
+          />
+        </span>
       </button>
 
-      {expanded && plan && (
+      {expanded && (
         <div className="max-h-64 overflow-y-auto border-t border-surface-800 px-4 py-2 text-sm">
           <ul className="space-y-1">
             {plan.steps.map((step) => (
