@@ -687,6 +687,18 @@ function ClearedTurnsBanner({
   );
 }
 
+/** Render a "Xm Ys" / "Ys" elapsed-time string for the
+ *  WorkingSpinner's "waiting on model" badge. Seconds-only under one
+ *  minute, minutes + seconds otherwise. Single-digit seconds zero-pad
+ *  in the minute case so "1m 09s" doesn't visually jump to "1m 10s"
+ *  width-wise during the live tick. */
+function formatElapsed(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const rem = seconds % 60;
+  return `${minutes}m ${rem.toString().padStart(2, "0")}s`;
+}
+
 /* ── Working spinner (rattle) ────────────────────────────────────── */
 
 function WorkingSpinner({
@@ -745,8 +757,18 @@ function WorkingSpinner({
     : tool
       ? "tool"
       : "working";
-  const label = chooseVerb(state, seed, tool);
-  const showForceEnd = stalledSecs >= forceEndTurnThresholdSecs;
+  // Swap the rattle verb for an explicit "waiting on model" badge
+  // with a live elapsed counter once the inactivity gap is clearly
+  // longer than normal TTFT. The user can then distinguish "model
+  // is taking a while" from "everything is wedged" without watching
+  // logs. Threshold reuses the force-end-turn config so users who
+  // want a more sensitive signal lower one knob and get both. See
+  // #1112.
+  const showStalled = stalledSecs >= forceEndTurnThresholdSecs;
+  const label = showStalled
+    ? `Waiting on model… ${formatElapsed(stalledSecs)}`
+    : chooseVerb(state, seed, tool);
+  const showForceEnd = showStalled;
 
   return (
     <div className="flex flex-col gap-2 text-sm italic text-text-muted">
