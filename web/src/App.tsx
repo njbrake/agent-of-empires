@@ -36,10 +36,10 @@ import { TopBar } from "./components/TopBar";
 import { ContentSplit } from "./components/ContentSplit";
 import { TerminalView } from "./components/TerminalView";
 // Lazy-load the cockpit surface so non-cockpit users never download
-// the @assistant-ui/react, shiki, and react-diff-viewer dependency
-// tree. Cuts ~hundreds of KB off the cold-start bundle for the
-// (currently default) tmux-only flow. The Suspense fallback below
-// covers the brief load while the chunk arrives.
+// the @assistant-ui/react, shiki, and in-house StringDiff/DiffLine
+// dependency tree. Cuts ~hundreds of KB off the cold-start bundle
+// for the (currently default) tmux-only flow. The Suspense fallback
+// below covers the brief load while the chunk arrives.
 const CockpitView = lazy(() =>
   import("./components/cockpit/CockpitView").then((m) => ({
     default: m.CockpitView,
