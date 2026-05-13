@@ -1408,7 +1408,8 @@ impl Instance {
                      respawning shell before recreate",
                     session.name()
                 );
-                if let Err(e) = session.respawn_dead_pane(&self.project_path, Some("zsh")) {
+                let shell = super::environment::user_shell();
+                if let Err(e) = session.respawn_dead_pane(&self.project_path, Some(&shell)) {
                     tracing::warn!(
                         "respawn_dead_pane failed for {}: {} -- falling back to kill+start",
                         session.name(),
@@ -1417,11 +1418,6 @@ impl Instance {
                 }
             }
             session.kill()?;
-            // Force the session cache to drop any stale "exists=true"
-            // entry so start_with_size_opts sees the post-kill state
-            // immediately. kill() already refreshes, but an explicit
-            // refresh here is defensive against future caching changes.
-            crate::tmux::refresh_session_cache();
             std::thread::sleep(std::time::Duration::from_millis(100));
         }
 
