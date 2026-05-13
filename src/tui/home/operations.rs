@@ -570,4 +570,37 @@ impl HomeView {
             title
         )))
     }
+
+    /// Toggle the favorite flag on the cursor's session. Favorited rows
+    /// pin above non-favorited peers within the same status tier in the
+    /// Attention sort, and render with bold + underline plus a leading
+    /// `* ` glyph (see `render.rs`).
+    ///
+    /// Favorite is orthogonal to archive and snooze: it survives an
+    /// unsnooze (the star is the user's persistent "care more" signal),
+    /// but archiving clears it because archive is the strongest dismiss
+    /// signal and a stale star on a buried row is just visual noise.
+    /// Mutual exclusion lives in `Instance::archive()`, not here.
+    pub(super) fn toggle_favorite_at_cursor(&mut self) -> anyhow::Result<Option<String>> {
+        let Some(id) = self.selected_session.clone() else {
+            return Ok(None);
+        };
+        let (is_fav, title) = {
+            let inst = self.instances.iter().find(|i| i.id == id);
+            match inst {
+                Some(i) => (i.is_favorited(), i.title.clone()),
+                None => return Ok(None),
+            }
+        };
+        if is_fav {
+            self.mutate_instance(&id, |inst| inst.unfavorite());
+            self.save()?;
+            self.flat_items = self.build_flat_items();
+            return Ok(Some(format!("Unfavorited: {}", title)));
+        }
+        self.mutate_instance(&id, |inst| inst.favorite());
+        self.save()?;
+        self.flat_items = self.build_flat_items();
+        Ok(Some(format!("Favorited: {}", title)))
+    }
 }
