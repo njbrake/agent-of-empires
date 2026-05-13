@@ -66,16 +66,21 @@ describe("parseToolError", () => {
     const raw =
       "Preamble note\n<tool_use_error>File does not exist.</tool_use_error>";
     expect(parseToolError(raw)).toEqual({
-      body: "File does not exist.\n\nPreamble note",
+      body: "File does not exist.",
       tag: "tool_use_error",
     });
   });
 
-  it("strips the wrapper when prose follows it", () => {
+  it("strips trailing empty code fences glued onto the wrapper", () => {
+    // Observed in the wild: claude-agent-acp emits a second
+    // ContentBlock::Text containing an empty markdown code fence after
+    // the wrapper. `extract_tool_content_text` joins blocks with `\n`,
+    // so the body used to render an empty `` ``` ``` `` below the
+    // unwrapped error. Drop adapter formatting noise entirely.
     const raw =
-      "<tool_use_error>File does not exist.</tool_use_error>\ntrailing context";
+      "<tool_use_error>File does not exist.</tool_use_error>\n```\n```";
     expect(parseToolError(raw)).toEqual({
-      body: "File does not exist.\n\ntrailing context",
+      body: "File does not exist.",
       tag: "tool_use_error",
     });
   });
