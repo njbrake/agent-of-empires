@@ -1485,6 +1485,20 @@ fn map_update_to_events(update: SessionUpdate) -> Vec<Event> {
             } else if events.is_empty() {
                 events.push(raw_event(&update));
             }
+            // claude-agent-acp emits the initial `tool_call` frame for
+            // ScheduleWakeup with empty `raw_input`; the actual
+            // `delaySeconds` lands on a subsequent `ToolCallUpdate`. The
+            // emit path in the `ToolCall` branch above therefore never
+            // sees real args and `wakeup_event_from_raw` returns None,
+            // so re-check here when the update carries both the title
+            // and a populated raw_input. See #1091.
+            if matches!(update.fields.title.as_deref(), Some("ScheduleWakeup")) {
+                if let Some(raw) = update.fields.raw_input.as_ref() {
+                    if let Some(event) = wakeup_event_from_raw(raw) {
+                        events.push(event);
+                    }
+                }
+            }
             events
         }
         SessionUpdate::Plan(p) => {
@@ -3087,6 +3101,65 @@ mod tests {
             }
             other => panic!("expected ToolCallUpdated, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn map_tool_call_update_emits_wakeup_when_title_and_raw_input_land_in_update() {
+        // claude-agent-acp sends the initial `ToolCall` for ScheduleWakeup
+        // with `raw_input = {}`; the real `delaySeconds` arrives on a
+        // follow-up `ToolCallUpdate` that carries both `title` and
+        // `raw_input`. The initial-path emit therefore returns `None`
+        // from `wakeup_event_from_raw`, and the update-path must pick up
+        // the slack so `Event::WakeupScheduled` lands in the store
+        // (sidebar `⏰ in Nm` chip + cockpit "Asleep until…" banner
+        // depend on it). Regression for #1091.
+        use agent_client_protocol::schema::{ToolCallUpdate, ToolCallUpdateFields};
+        let fields = ToolCallUpdateFields::new()
+            .title("ScheduleWakeup".to_string())
+            .raw_input(serde_json::json!({
+                "delaySeconds": 600,
+                "prompt": "Wake-up fired. Confirm.",
+                "reason": "Test 10-minute wake-up card countdown",
+            }));
+        let update = ToolCallUpdate::new("toolu_test", fields);
+        let events = map_update_to_events(SessionUpdate::ToolCallUpdate(update));
+        let wakeup = events
+            .iter()
+            .find(|e| matches!(e, Event::WakeupScheduled { .. }))
+            .expect(
+                "ToolCallUpdate with title=ScheduleWakeup + delaySeconds must emit WakeupScheduled",
+            );
+        match wakeup {
+            Event::WakeupScheduled { at, reason } => {
+                let delta = (*at - chrono::Utc::now()).num_seconds();
+                assert!(
+                    (590..=610).contains(&delta),
+                    "wakeup `at` should be ~600s in the future, got {delta}s",
+                );
+                assert_eq!(
+                    reason.as_deref(),
+                    Some("Test 10-minute wake-up card countdown"),
+                );
+            }
+            other => panic!("expected WakeupScheduled, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn map_tool_call_update_skips_wakeup_when_raw_input_missing() {
+        // Title-only update (the initial frame's mirror, before
+        // raw_input arrives) must NOT emit a WakeupScheduled — otherwise
+        // we'd publish a "wakeup at epoch zero" placeholder.
+        use agent_client_protocol::schema::{ToolCallUpdate, ToolCallUpdateFields};
+        let fields = ToolCallUpdateFields::new().title("ScheduleWakeup".to_string());
+        let update = ToolCallUpdate::new("toolu_test", fields);
+        let events = map_update_to_events(SessionUpdate::ToolCallUpdate(update));
+        assert!(
+            !events
+                .iter()
+                .any(|e| matches!(e, Event::WakeupScheduled { .. })),
+            "no WakeupScheduled should fire without delaySeconds",
+        );
     }
 
     #[test]
