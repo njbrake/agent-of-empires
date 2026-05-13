@@ -17,14 +17,27 @@ export interface ParsedToolError {
   tag: string | null;
 }
 
-const WRAPPER_RE = /^\s*<([a-zA-Z_][a-zA-Z0-9_-]*)>([\s\S]*)<\/\1>\s*$/;
+// Non-anchored: claude-agent-acp sometimes joins multiple
+// `ContentBlock::Text` entries with `\n` before the wrapper, or appends
+// trailing prose, so an `^…$` regex misses the common shape and the
+// wrapper leaks into the rendered body. Match the FIRST wrapper anywhere
+// in the text and treat its inner contents as the body; any prose
+// outside the wrapper is appended below the wrapper body (rare in
+// practice, but lossless when it does happen). Non-greedy `*?` so we
+// stop at the first matching close tag, not the last one.
+const WRAPPER_RE = /<([a-zA-Z_][a-zA-Z0-9_-]*)>([\s\S]*?)<\/\1>/;
 
 export function parseToolError(text: string | undefined | null): ParsedToolError {
   const raw = (text ?? "").trim();
   if (!raw) return { body: "", tag: null };
-  const m = raw.match(WRAPPER_RE);
+  const m = WRAPPER_RE.exec(raw);
   if (m && m[1] && m[2] !== undefined) {
-    return { body: m[2].trim(), tag: m[1] };
+    const inner = m[2].trim();
+    const before = raw.slice(0, m.index).trim();
+    const after = raw.slice(m.index + m[0].length).trim();
+    const extra = [before, after].filter((s) => s.length > 0).join("\n");
+    const body = extra ? `${inner}\n\n${extra}` : inner;
+    return { body, tag: m[1] };
   }
   return { body: raw, tag: null };
 }

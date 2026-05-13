@@ -57,6 +57,40 @@ describe("parseToolError", () => {
     expect(parsed.tag).toBe("tool_use_error");
     expect(parsed.body).toBe("line one\nline two\nline three");
   });
+
+  it("strips the wrapper when prose precedes it", () => {
+    // claude-agent-acp sometimes joins multiple ContentBlock::Text
+    // entries with `\n` before the wrapper; the anchored regex used to
+    // miss this and leak `<tool_use_error>…</tool_use_error>` into the
+    // rendered body. See follow-up to #1090.
+    const raw =
+      "Preamble note\n<tool_use_error>File does not exist.</tool_use_error>";
+    expect(parseToolError(raw)).toEqual({
+      body: "File does not exist.\n\nPreamble note",
+      tag: "tool_use_error",
+    });
+  });
+
+  it("strips the wrapper when prose follows it", () => {
+    const raw =
+      "<tool_use_error>File does not exist.</tool_use_error>\ntrailing context";
+    expect(parseToolError(raw)).toEqual({
+      body: "File does not exist.\n\ntrailing context",
+      tag: "tool_use_error",
+    });
+  });
+
+  it("strips the wrapper from a long path-bearing message", () => {
+    // Regression for the reported case: a `Read` of a missing file
+    // returns this exact shape from claude-agent-acp.
+    const raw =
+      "<tool_use_error>File does not exist. Note: your current working directory is /Users/seluj78/aoe/dev-agent-of-empires-worktrees/test31.</tool_use_error>";
+    const parsed = parseToolError(raw);
+    expect(parsed.tag).toBe("tool_use_error");
+    expect(parsed.body).toBe(
+      "File does not exist. Note: your current working directory is /Users/seluj78/aoe/dev-agent-of-empires-worktrees/test31.",
+    );
+  });
 });
 
 describe("describeToolErrorTag", () => {
