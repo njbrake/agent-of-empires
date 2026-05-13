@@ -179,9 +179,22 @@ export type ConnectionStatus =
   | "closed"
   | "error";
 
-export function useCockpit(sessionId: string | null) {
+export function useCockpit(
+  sessionId: string | null,
+  /** Live cockpit worker lifecycle from `SessionResponse.cockpit_worker_state`.
+   *  When not `"running"`, the drain effect parks queued prompts so they
+   *  don't dispatch into a worker that isn't online yet. Defaults to
+   *  `"running"` so non-cockpit / pre-#1088 call sites keep working. */
+  workerState: "absent" | "resuming" | "running" = "running",
+) {
   const [state, dispatch] = useReducer(reducer, sessionId, initialState);
   const [status, setStatus] = useState<ConnectionStatus>("connecting");
+  // Mirror the worker state into a ref so the drain effect always sees
+  // the latest value without re-running on every poll.
+  const workerStateRef = useRef(workerState);
+  useEffect(() => {
+    workerStateRef.current = workerState;
+  }, [workerState]);
   // Drain mode is sourced from the daemon's resolved `[cockpit]` config
   // and republished via `CockpitPrefsProvider` (App.tsx). Held in a ref
   // so the drain effect's pop logic always sees the latest value
@@ -449,6 +462,14 @@ export function useCockpit(sessionId: string | null) {
         dispatch({ kind: "enqueue_prompt", text });
         return;
       }
+      // Worker still resuming (e.g. cold-start parallel reconciler
+      // hasn't reached this session yet). Queue locally rather than
+      // POSTing into a worker that isn't online; the drain effect
+      // fires once `workerState` transitions to `"running"`. See #1088.
+      if (workerStateRef.current !== "running") {
+        dispatch({ kind: "enqueue_prompt", text });
+        return;
+      }
       await dispatchPromptNow(text);
     },
     [sessionId, state.turnActive, dispatchPromptNow],
@@ -471,6 +492,11 @@ export function useCockpit(sessionId: string | null) {
     if (!sessionId) return;
     if (state.turnActive) return;
     if (state.workerStopped || state.workerRestarting) return;
+    // Worker still mid-resume from a daemon cold start (or it never
+    // came online). Park queued prompts so they don't POST into a
+    // worker that's not online yet; the next REST poll flips
+    // workerState to "running" and re-runs this effect. See #1088.
+    if (workerStateRef.current !== "running") return;
     if (state.queuedPrompts.length === 0) return;
     drainingRef.current = true;
     if (drainModeRef.current === "combined") {
@@ -488,6 +514,7 @@ export function useCockpit(sessionId: string | null) {
     }
   }, [
     sessionId,
+    workerState,
     state.turnActive,
     state.workerStopped,
     state.workerRestarting,

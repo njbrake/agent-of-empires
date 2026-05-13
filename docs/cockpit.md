@@ -162,11 +162,21 @@ default_agent = "aoe-agent"
 approval_timeout_secs = 300
 destructive_require_double_confirm = true
 max_concurrent_workers = 5
+max_concurrent_resumes = 4  # cap on parallel cold-start spawns/attaches (#1088)
 replay_events = 0  # 0 = unlimited history; set a positive value to cap per-session rows
 replay_bytes = 5_242_880
 node_path = ""
 show_tool_durations = true  # per-tool elapsed-time label in the web UI
+queue_drain_mode = "combined"  # how the composer drains client-side queued prompts: "combined" | "serial" (#1031)
 ```
+
+`max_concurrent_resumes` bounds how many cockpit workers the reconciler
+spawns/attaches in parallel on `aoe serve` cold start. Default 4 keeps
+Node.js bootup memory bounded for laptops/Pis; raise on beefier hosts.
+Clamped at runtime by `min(this, max_concurrent_workers).max(1)`. The
+supervisor's per-agent install gate serialises only the first spawn of
+each agent per daemon lifetime, so the claude-agent-acp lazy-install
+race is safe even at high parallelism (#1088).
 
 `enabled = false` is a master kill switch; cockpit refuses to spawn
 even if a session has `--cockpit`. `default_for_claude = true` makes

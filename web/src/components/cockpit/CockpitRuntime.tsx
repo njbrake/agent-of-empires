@@ -43,6 +43,10 @@ import type {
 
 interface Props {
   sessionId: string;
+  /** Live cockpit worker lifecycle pulled from `SessionResponse.cockpit_worker_state`.
+   *  Threaded through to `useCockpit` so the drain effect parks queued
+   *  prompts while the reconciler is mid-resume. See #1088. */
+  cockpitWorkerState?: "absent" | "resuming" | "running";
   children: (ctx: CockpitContext) => ReactNode;
 }
 
@@ -66,8 +70,12 @@ export interface CockpitContext {
  * cockpit state + actions for things assistant-ui doesn't own
  * (approvals, plan strip, system notices).
  */
-export function CockpitRuntime({ sessionId, children }: Props) {
-  const cockpit = useCockpit(sessionId);
+export function CockpitRuntime({
+  sessionId,
+  cockpitWorkerState = "running",
+  children,
+}: Props) {
+  const cockpit = useCockpit(sessionId, cockpitWorkerState);
   // Memoise the activity → ThreadMessageLike conversion. The function
   // walks the entire activity array, allocates a new AssistantBuilder
   // per turn, and produces brand-new message objects. Without

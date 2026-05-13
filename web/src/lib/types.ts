@@ -31,6 +31,12 @@ export interface SessionResponse {
   /** True when this session uses ACP cockpit rendering instead of a
    *  tmux-backed PTY. Absent on builds without the cockpit feature. */
   cockpit_mode?: boolean;
+  /** Live cockpit worker lifecycle. `absent` for tmux sessions or
+   *  cockpit sessions whose worker has not been spawned yet; `resuming`
+   *  while the reconciler is mid-spawn or mid-attach; `running` once
+   *  the supervisor holds a live worker. Drives the sidebar `Resuming…`
+   *  chip and the per-session banner in the cockpit view. See #1088. */
+  cockpit_worker_state?: CockpitWorkerState;
   /** True when this is a Claude Code session AND the user has enabled
    *  Claude's fullscreen renderer (`tui: "fullscreen"` in
    *  ~/.claude/settings.json). The mobile rendering path uses this to
@@ -268,3 +274,7 @@ export interface CreateSessionRequest {
    *  web-created sessions; the wizard may override. */
   cockpit_mode?: boolean;
 }
+
+/** Live cockpit worker lifecycle, mirrored from
+ *  `crate::cockpit::supervisor::CockpitWorkerState`. See #1088. */
+export type CockpitWorkerState = "absent" | "resuming" | "running";

@@ -404,6 +404,17 @@ const SessionRow = memo(function SessionRow({
                   <Pencil className="h-3 w-3 text-amber-400/90" />
                 </span>
               )}
+              {firstSession?.cockpit_mode &&
+                firstSession.cockpit_worker_state === "resuming" && (
+                  <span
+                    title="Cockpit worker is resuming"
+                    aria-label="Resuming"
+                    className="inline-flex shrink-0 items-center gap-0.5 rounded border border-amber-700/40 bg-amber-950/30 px-1 py-0 text-[10px] font-medium text-amber-300"
+                  >
+                    <span className="inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-amber-400/80" />
+                    Resuming
+                  </span>
+                )}
             </span>
             {subtitle && (
               <span className="block text-[11px] font-mono text-text-dim truncate" title={subtitle}>

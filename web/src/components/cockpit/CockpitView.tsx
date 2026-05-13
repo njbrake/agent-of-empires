@@ -47,6 +47,10 @@ import type {
 
 interface Props {
   sessionId: string;
+  /** Cockpit worker lifecycle pulled from `SessionResponse.cockpit_worker_state`
+   *  (REST-poll-driven, ~3s cadence). Drives the `WorkerResumingBanner`
+   *  while the reconciler is mid-spawn/attach. See #1088. */
+  cockpitWorkerState: "absent" | "resuming" | "running";
 }
 
 const STARTER_PROMPTS = [
@@ -55,16 +59,26 @@ const STARTER_PROMPTS = [
   "What does the build pipeline do?",
 ];
 
-export function CockpitView({ sessionId }: Props) {
+export function CockpitView({ sessionId, cockpitWorkerState }: Props) {
   return (
-    <CockpitRuntime sessionId={sessionId}>
-      {(ctx) => <CockpitChrome sessionId={sessionId} {...ctx} />}
+    <CockpitRuntime
+      sessionId={sessionId}
+      cockpitWorkerState={cockpitWorkerState}
+    >
+      {(ctx) => (
+        <CockpitChrome
+          sessionId={sessionId}
+          cockpitWorkerState={cockpitWorkerState}
+          {...ctx}
+        />
+      )}
     </CockpitRuntime>
   );
 }
 
 function CockpitChrome({
   sessionId,
+  cockpitWorkerState,
   state,
   status,
   resolveApproval,
@@ -73,7 +87,10 @@ function CockpitChrome({
   removeQueuedPrompt,
   editQueuedPrompt,
   clearQueue,
-}: CockpitContext & { sessionId: string }) {
+}: CockpitContext & {
+  sessionId: string;
+  cockpitWorkerState: "absent" | "resuming" | "running";
+}) {
   return (
     <div className="flex h-full flex-col bg-surface-900 text-text-primary">
       <PlanStrip plan={state.plan} mode={state.mode} />
@@ -95,6 +112,10 @@ function CockpitChrome({
       {state.workerRestarting && !state.startupError && !state.workerStopped && (
         <WorkerRestartingBanner />
       )}
+      {cockpitWorkerState === "resuming" &&
+        !state.startupError &&
+        !state.workerStopped &&
+        !state.workerRestarting && <WorkerResumingBanner />}
       {state.lastError && (
         <InteractionErrorBanner
           message={state.lastError}
@@ -778,6 +799,27 @@ function WorkerRestartingBanner() {
       <span>
         Restarting cockpit worker… the daemon will respawn the agent with
         your existing transcript shortly.
+      </span>
+    </div>
+  );
+}
+
+function WorkerResumingBanner() {
+  // Shown while `SessionResponse.cockpit_worker_state === "resuming"`:
+  // the reconciler is mid-spawn or mid-attach. The cached transcript
+  // stays scrollable and the composer keeps queuing prompts; the banner
+  // clears as soon as the next session-list poll sees the worker in
+  // `running` state (typically within a few hundred ms of completion).
+  // See #1088.
+  return (
+    <div className="flex items-center gap-2 border-b border-amber-900/60 bg-amber-950/40 px-4 py-2 text-xs text-amber-200">
+      <span
+        className="inline-block h-2 w-2 animate-pulse rounded-full bg-amber-400"
+        aria-hidden
+      />
+      <span>
+        Resuming cockpit worker… cached transcript still available. Queued
+        prompts will send once the agent is back online.
       </span>
     </div>
   );

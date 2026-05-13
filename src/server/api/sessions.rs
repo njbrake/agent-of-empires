@@ -51,6 +51,14 @@ pub struct SessionResponse {
     /// between the cockpit panels and the terminal view.
     #[cfg(feature = "serve")]
     pub cockpit_mode: bool,
+    /// Live cockpit worker lifecycle. `absent` for tmux sessions or
+    /// cockpit sessions whose worker has not been spawned/attached
+    /// yet; `resuming` while the reconciler is mid-spawn or mid-attach;
+    /// `running` once the supervisor holds a live worker. Drives the
+    /// sidebar `Resuming…` chip and the per-session banner in the
+    /// cockpit view. See #1088.
+    #[cfg(feature = "serve")]
+    pub cockpit_worker_state: crate::cockpit::supervisor::CockpitWorkerState,
     /// True when the session is a Claude Code session AND the user has
     /// enabled Claude's fullscreen renderer (`tui: "fullscreen"` in
     /// `~/.claude/settings.json`). The web client uses this to skip
@@ -108,7 +116,13 @@ impl SessionResponse {
     /// request via `crate::claude_settings::read_tui_fullscreen()`); it
     /// surfaces on the response only when the session's agent is Claude.
     pub fn from_instance(inst: &Instance, claude_fullscreen: bool) -> Self {
-        Self::from_instance_with_plan(inst, claude_fullscreen, None)
+        Self::from_instance_with_plan(
+            inst,
+            claude_fullscreen,
+            None,
+            #[cfg(feature = "serve")]
+            crate::cockpit::supervisor::CockpitWorkerState::Absent,
+        )
     }
 
     /// Build a response with the per-session plan snapshot. Called from
@@ -118,6 +132,8 @@ impl SessionResponse {
         inst: &Instance,
         claude_fullscreen: bool,
         plan_summary: Option<PlanSummary>,
+        #[cfg(feature = "serve")]
+        cockpit_worker_state: crate::cockpit::supervisor::CockpitWorkerState,
     ) -> Self {
         Self {
             id: inst.id.clone(),
@@ -154,6 +170,8 @@ impl SessionResponse {
             notify_on_error: inst.notify_on_error,
             #[cfg(feature = "serve")]
             cockpit_mode: inst.cockpit_mode,
+            #[cfg(feature = "serve")]
+            cockpit_worker_state,
             claude_fullscreen: claude_fullscreen && inst.tool == "claude",
             workspace_repos: inst
                 .workspace_info
@@ -210,6 +228,10 @@ fn truncate_title(s: &str, max: usize) -> String {
 pub async fn list_sessions(State(state): State<Arc<AppState>>) -> Json<Vec<SessionResponse>> {
     let instances = state.instances.read().await;
     let claude_fullscreen = crate::claude_settings::read_tui_fullscreen();
+    // Snapshot the supervisor's worker lifecycle map once per request
+    // rather than locking it per row. See #1088.
+    #[cfg(feature = "serve")]
+    let worker_states = state.cockpit_supervisor.worker_states_snapshot().await;
     let mut sessions: Vec<SessionResponse> = instances
         .iter()
         .map(|inst| {
@@ -221,7 +243,18 @@ pub async fn list_sessions(State(state): State<Arc<AppState>>) -> Json<Vec<Sessi
             } else {
                 None
             };
-            SessionResponse::from_instance_with_plan(inst, claude_fullscreen, plan_summary)
+            #[cfg(feature = "serve")]
+            let cockpit_worker_state = worker_states
+                .get(&inst.id)
+                .copied()
+                .unwrap_or(crate::cockpit::supervisor::CockpitWorkerState::Absent);
+            SessionResponse::from_instance_with_plan(
+                inst,
+                claude_fullscreen,
+                plan_summary,
+                #[cfg(feature = "serve")]
+                cockpit_worker_state,
+            )
         })
         .collect();
 
