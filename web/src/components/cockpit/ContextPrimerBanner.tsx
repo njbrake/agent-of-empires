@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { fetchContextPrimer } from "../../lib/api";
 
 /**
@@ -21,25 +21,39 @@ export function ContextPrimerBanner({
 }: Props) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [dismissed, setDismissed] = useState(false);
+  // Keyed on the reset seq so a new context-reset re-arms the
+  // affordance instead of inheriting the previous one's dismissed
+  // state.
+  const [dismissedSeq, setDismissedSeq] = useState<number | null>(null);
 
-  if (!available || dismissed) return null;
+  useEffect(() => {
+    // Reset transient state whenever a new reset incident lands.
+    setError(null);
+    setLoading(false);
+  }, [available?.resetSeq]);
+
+  if (!available || dismissedSeq === available.resetSeq) return null;
 
   const handleClick = async () => {
     setLoading(true);
     setError(null);
-    const resp = await fetchContextPrimer(sessionId, available.resetSeq);
-    setLoading(false);
-    if (!resp || !resp.primer) {
-      setError(
-        resp
-          ? "No prior transcript available to recap."
-          : "Failed to fetch primer.",
-      );
-      return;
+    try {
+      const resp = await fetchContextPrimer(sessionId, available.resetSeq);
+      if (!resp || !resp.primer) {
+        setError(
+          resp
+            ? "No prior transcript available to recap."
+            : "Failed to fetch primer.",
+        );
+        return;
+      }
+      onInsertPrimer(resp.primer);
+      setDismissedSeq(available.resetSeq);
+    } catch {
+      setError("Network error fetching primer.");
+    } finally {
+      setLoading(false);
     }
-    onInsertPrimer(resp.primer);
-    setDismissed(true);
   };
 
   return (
@@ -71,7 +85,7 @@ export function ContextPrimerBanner({
       </button>
       <button
         type="button"
-        onClick={() => setDismissed(true)}
+        onClick={() => setDismissedSeq(available.resetSeq)}
         aria-label="Dismiss context-reset banner"
         className="shrink-0 px-1 text-amber-300/70 hover:text-amber-100 cursor-pointer"
       >

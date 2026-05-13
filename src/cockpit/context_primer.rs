@@ -216,6 +216,20 @@ pub fn build_context_primer(events: &[(u64, Event)], opts: PrimerOptions) -> Con
                     pending,
                     plan.steps.len()
                 ));
+                // Include the step titles so the model knows what the
+                // plan actually was, not just the bucket counts.
+                // Truncate per-step so a huge plan can't monopolise the
+                // budget. See review feedback on #1004.
+                for step in &plan.steps {
+                    let marker = match step.status {
+                        super::state::PlanStepStatus::Done => "[x]",
+                        super::state::PlanStepStatus::InProgress => "[~]",
+                        super::state::PlanStepStatus::Pending => "[ ]",
+                        super::state::PlanStepStatus::Cancelled => "[/]",
+                    };
+                    let title = clip_chars(step.title.trim(), 120);
+                    turn.plan_lines.push(format!("  {} {}", marker, title));
+                }
                 turn.event_count += 1;
                 included_event_count += 1;
             }
@@ -275,25 +289,60 @@ pub fn build_context_primer(events: &[(u64, Event)], opts: PrimerOptions) -> Con
 
     let header = render_primer_header();
     let footer = render_primer_footer();
-    let fixed_overhead = header.len() + footer.len();
+    let transcript_heading = "## Transcript\n\n";
+    let truncation_notice = "_Older transcript entries were omitted to fit the primer budget._\n\n";
+    // Reserve space for every fixed-shape string we will write before
+    // and after the variable turn bodies, including the truncation
+    // notice (assume it MAY be needed, so its slot is reserved up
+    // front; if no truncation happens we just don't write it and the
+    // headroom turns into slack). The exact `### Turn N\n\n` header
+    // length depends on the digit count, so it's accounted for
+    // per-iteration below.
+    let fixed_overhead =
+        header.len() + transcript_heading.len() + truncation_notice.len() + footer.len();
 
-    let body_budget = opts.max_chars.saturating_sub(fixed_overhead);
+    if fixed_overhead >= opts.max_chars {
+        // Budget too small to fit even the chrome. Emit a stub that
+        // still ends with the "Current request" footer (we never want
+        // to drop the user-visible "send me a prompt" cue), then
+        // hard-cap. The pre-allocation below is bounded by max_chars,
+        // so the result always satisfies len <= max_chars.
+        let mut text = String::with_capacity(opts.max_chars);
+        text.push_str(&header);
+        if text.chars().count() < opts.max_chars {
+            text.push_str(&footer);
+        }
+        if text.chars().count() > opts.max_chars {
+            text = clip_chars(&text, opts.max_chars);
+        }
+        return ContextPrimer {
+            text,
+            included_event_count,
+            included_turn_count: 0,
+            truncated: true,
+            max_chars: opts.max_chars,
+        };
+    }
+
+    let body_budget = opts.max_chars - fixed_overhead;
 
     // Walk newest first, accumulate complete turns until adding the
-    // next-oldest would exceed budget.
+    // next-oldest would exceed budget. Each turn carries its own
+    // `### Turn N\n\n` header; we conservatively reserve 20 chars for
+    // that (covers any plausible 1-3 digit turn count).
     let mut accepted_rev: Vec<String> = Vec::new();
     let mut accepted_chars: usize = 0;
-    let mut turn_header_len_estimate = 16usize; // "### Turn NN\n\n"
+    let turn_header_reserve = 20usize;
     let mut older_dropped = false;
     let mut newest_truncated = false;
 
     for (i, body) in bodies.iter().enumerate().rev() {
-        let estimated = body.len() + turn_header_len_estimate;
+        let estimated = body.len() + turn_header_reserve;
         if accepted_rev.is_empty() && estimated > body_budget {
             // Newest turn alone overflows. Truncate within the turn.
-            let truncated_body =
-                truncate_turn_body(body, body_budget.saturating_sub(turn_header_len_estimate));
-            accepted_chars += truncated_body.len() + turn_header_len_estimate;
+            let inner_budget = body_budget.saturating_sub(turn_header_reserve);
+            let truncated_body = truncate_turn_body(body, inner_budget);
+            accepted_chars += truncated_body.len() + turn_header_reserve;
             accepted_rev.push(truncated_body);
             newest_truncated = true;
             if i > 0 {
@@ -307,7 +356,6 @@ pub fn build_context_primer(events: &[(u64, Event)], opts: PrimerOptions) -> Con
         }
         accepted_chars += estimated;
         accepted_rev.push(body.clone());
-        turn_header_len_estimate = turn_header_len_estimate.max(20);
     }
 
     // accepted_rev holds bodies newest-first; reverse for chronological.
@@ -315,23 +363,26 @@ pub fn build_context_primer(events: &[(u64, Event)], opts: PrimerOptions) -> Con
     let truncated = older_dropped || newest_truncated || start_index > 0;
     let included_turn_count = accepted_rev.len();
 
-    let mut text = String::with_capacity(opts.max_chars.min(accepted_chars + fixed_overhead));
+    let mut text = String::with_capacity(fixed_overhead + accepted_chars);
     text.push_str(&header);
     if truncated {
-        text.push_str("_Older transcript entries were omitted to fit the primer budget._\n\n");
+        text.push_str(truncation_notice);
     }
-    text.push_str("## Transcript\n\n");
-    let total_in_primer = accepted_rev.len();
+    text.push_str(transcript_heading);
     for (i, body) in accepted_rev.iter().enumerate() {
-        let number = total_in_primer - i; // newest gets highest number? No, we want chronological: oldest = 1.
-                                          // Recompute: accepted_rev is chronological (we reversed). So
-                                          // first entry is the oldest of the kept turns.
-        let _ = number;
         text.push_str(&format!("### Turn {}\n\n", i + 1));
         text.push_str(body);
         text.push('\n');
     }
     text.push_str(&footer);
+
+    // Final hard cap: the per-turn estimate is conservative but a
+    // pathological combination of long titles + many tool lines can
+    // still push us a few chars over. Clip safely on a char boundary
+    // so callers can rely on `len(primer) <= max_chars`.
+    if text.chars().count() > opts.max_chars {
+        text = clip_chars(&text, opts.max_chars);
+    }
 
     ContextPrimer {
         text,
@@ -408,17 +459,16 @@ fn render_turn_body(turn: &Turn) -> String {
 }
 
 fn clip_assistant_text(s: &str) -> String {
-    if s.chars().count() <= MAX_ASSISTANT_TAIL_CHARS {
+    let total_chars = s.chars().count();
+    if total_chars <= MAX_ASSISTANT_TAIL_CHARS {
         return s.to_string();
     }
-    // Keep the tail (most recent assistant output is what continues the
-    // conversation); prepend an elision marker.
-    let bytes_skip = s.len().saturating_sub(MAX_ASSISTANT_TAIL_CHARS);
-    let mut idx = bytes_skip;
-    while idx < s.len() && !s.is_char_boundary(idx) {
-        idx += 1;
-    }
-    format!("[...earlier assistant text omitted]\n{}", &s[idx..])
+    // Keep the tail (most recent assistant output is what continues
+    // the conversation); prepend an elision marker. Skip by chars so
+    // multi-byte UTF-8 boundaries are respected.
+    let skip = total_chars - MAX_ASSISTANT_TAIL_CHARS;
+    let tail: String = s.chars().skip(skip).collect();
+    format!("[...earlier assistant text omitted]\n{}", tail)
 }
 
 fn render_tool_line(tool: &ToolSummary) -> String {
@@ -429,12 +479,12 @@ fn render_tool_line(tool: &ToolSummary) -> String {
     };
 
     let descriptor = describe_tool(&tool.name, &tool.kind, &tool.args_preview);
-    let mut combined = format!("{}{}", descriptor, status_suffix);
-    if combined.len() > MAX_TOOL_SUMMARY_CHARS {
-        combined.truncate(MAX_TOOL_SUMMARY_CHARS - 3);
-        combined.push_str("...");
+    let combined = format!("{}{}", descriptor, status_suffix);
+    if combined.chars().count() > MAX_TOOL_SUMMARY_CHARS {
+        clip_chars(&combined, MAX_TOOL_SUMMARY_CHARS - 3)
+    } else {
+        combined
     }
-    combined
 }
 
 fn describe_tool(name: &str, kind: &str, args_preview: &str) -> String {
@@ -524,16 +574,38 @@ fn scalar_to_string(value: &serde_json::Value) -> Option<String> {
             let trimmed = s.trim();
             if trimmed.is_empty() {
                 None
-            } else if trimmed.len() > 200 {
-                Some(format!("{}...", &trimmed[..200]))
             } else {
-                Some(trimmed.to_string())
+                Some(clip_chars(trimmed, 200))
             }
         }
         serde_json::Value::Number(n) => Some(n.to_string()),
         serde_json::Value::Bool(b) => Some(b.to_string()),
         _ => None,
     }
+}
+
+/// UTF-8-safe clip to at most `max` characters total. Appends `...`
+/// when clipped, but only when there's room (max >= 3 and the marker
+/// fits). Used everywhere we need to bound a user/agent-supplied
+/// string by length without risking a panic on a multi-byte boundary
+/// (which `String::truncate` and direct `&s[..n]` slicing both can).
+/// Guarantees: output char count <= `max`.
+fn clip_chars(s: &str, max: usize) -> String {
+    if max == 0 {
+        return String::new();
+    }
+    let total = s.chars().count();
+    if total <= max {
+        return s.to_string();
+    }
+    // Reserve 3 chars for the marker when there's room; otherwise just
+    // take up to `max` chars with no marker so we stay within the cap.
+    let marker = "...";
+    if max <= marker.len() {
+        return s.chars().take(max).collect();
+    }
+    let head: String = s.chars().take(max - marker.len()).collect();
+    format!("{}{}", head, marker)
 }
 
 fn truncate_turn_body(body: &str, budget: usize) -> String {
@@ -836,9 +908,10 @@ mod tests {
         let primer = build_context_primer(&events, PrimerOptions::default());
         assert!(primer.truncated, "primer should be marked truncated");
         assert!(
-            primer.text.len() <= DEFAULT_MAX_PRIMER_CHARS + 256,
-            "primer len {} should fit under cap (+rounding)",
-            primer.text.len()
+            primer.text.chars().count() <= DEFAULT_MAX_PRIMER_CHARS,
+            "primer char count {} must fit under cap {}",
+            primer.text.chars().count(),
+            DEFAULT_MAX_PRIMER_CHARS,
         );
         // Newest turn must be present (turn 29).
         assert!(primer.text.contains("user prompt #29"));
@@ -863,7 +936,11 @@ mod tests {
         };
         let primer = build_context_primer(&events, opts);
         assert!(primer.truncated);
-        assert!(primer.text.len() <= 4_000 + 256);
+        assert!(
+            primer.text.chars().count() <= 4_000,
+            "primer char count {} must fit under 4000 cap",
+            primer.text.chars().count(),
+        );
         assert!(primer.text.contains("# Prior cockpit context"));
         assert!(primer.text.contains("## Current request"));
     }
@@ -885,6 +962,84 @@ mod tests {
         // An early line should be dropped.
         assert!(!primer.text.contains("line 0\n"));
         assert!(primer.text.contains("[...earlier assistant text omitted]"));
+    }
+
+    #[test]
+    fn tiny_max_chars_does_not_panic_and_respects_cap() {
+        // Pathological budget smaller than the chrome alone. Builder
+        // must not panic and must keep `text.len() <= max_chars`.
+        let events = vec![
+            user_event(1, "hi"),
+            assistant_event(2, "ok"),
+            stopped_event(3),
+        ];
+        for max in [0usize, 1, 16, 64, 200] {
+            let opts = PrimerOptions {
+                max_chars: max,
+                ..PrimerOptions::default()
+            };
+            let primer = build_context_primer(&events, opts);
+            assert!(
+                primer.text.chars().count() <= max,
+                "max_chars={} produced {} chars",
+                max,
+                primer.text.chars().count(),
+            );
+        }
+    }
+
+    #[test]
+    fn handles_non_ascii_assistant_text_without_panicking() {
+        // Each emoji takes 4 UTF-8 bytes; a naive byte-based slice
+        // around `MAX_ASSISTANT_TAIL_CHARS` would land in the middle
+        // of one and panic on `&s[idx..]`. Exercise that path with a
+        // string of 4-byte emoji to force a multi-byte boundary.
+        let unit = "🦀"; // 4 bytes
+        let total_chars = MAX_ASSISTANT_TAIL_CHARS + 100;
+        let mut text = String::with_capacity(total_chars * 4);
+        for _ in 0..total_chars {
+            text.push_str(unit);
+        }
+        let events = vec![
+            user_event(1, "go"),
+            assistant_event(2, &text),
+            stopped_event(3),
+        ];
+        let primer = build_context_primer(&events, PrimerOptions::default());
+        // Must succeed (no panic) and include the elision marker.
+        assert!(primer.text.contains("earlier assistant text omitted"));
+    }
+
+    #[test]
+    fn plan_step_titles_appear_in_primer() {
+        let plan = Plan {
+            plan_id: "p".into(),
+            version: 1,
+            steps: vec![
+                PlanStep {
+                    id: "1".into(),
+                    title: "investigate failure mode".into(),
+                    detail: None,
+                    status: PlanStepStatus::Done,
+                },
+                PlanStep {
+                    id: "2".into(),
+                    title: "wire up endpoint".into(),
+                    detail: None,
+                    status: PlanStepStatus::InProgress,
+                },
+            ],
+        };
+        let events = vec![
+            user_event(1, "plan it"),
+            (2, Event::PlanUpdated { plan }),
+            stopped_event(3),
+        ];
+        let primer = build_context_primer(&events, PrimerOptions::default());
+        assert!(primer.text.contains("investigate failure mode"));
+        assert!(primer.text.contains("wire up endpoint"));
+        assert!(primer.text.contains("[x]"));
+        assert!(primer.text.contains("[~]"));
     }
 
     #[test]

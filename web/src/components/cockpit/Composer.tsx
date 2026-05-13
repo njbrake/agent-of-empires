@@ -140,10 +140,13 @@ export function Composer({
   // payload (after the user clicked "Resume with prior context" on the
   // banner), replace the composer text with the primer + focus the
   // textarea + position the cursor at the end. Keyed on `id` so the
-  // effect re-fires for repeat insertions. See #1004.
+  // effect re-fires for repeat insertions, but not for unrelated
+  // parent re-renders that recreate the wrapping object. See #1004.
+  const primerId = primerPrefill?.id ?? null;
+  const primerText = primerPrefill?.text ?? null;
   useEffect(() => {
-    if (!primerPrefill) return;
-    composerRuntime.setText(primerPrefill.text);
+    if (!primerId || primerText == null) return;
+    composerRuntime.setText(primerText);
     requestAnimationFrame(() => {
       const el = taRef.current;
       if (!el) return;
@@ -157,7 +160,11 @@ export function Composer({
       el.style.height = "auto";
       el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
     });
-  }, [composerRuntime, primerPrefill]);
+    // primerText is intentionally a captured snapshot read via the
+    // ref above; we don't want this effect to re-fire on a text-only
+    // change (only id changes count as a new prefill action).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [composerRuntime, primerId]);
 
   // Auto-grow the textarea up to ~6 visible lines.
   const onInput = (e: React.FormEvent<HTMLTextAreaElement>) => {
