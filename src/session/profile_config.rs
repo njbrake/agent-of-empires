@@ -66,6 +66,8 @@ pub struct CockpitConfigOverride {
     pub node_path: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub show_tool_durations: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queue_drain_mode: Option<crate::session::config::QueueDrainMode>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -510,6 +512,9 @@ pub fn merge_configs(mut global: Config, profile: &ProfileConfig) -> Config {
         }
         if let Some(v) = cockpit_override.show_tool_durations {
             global.cockpit.show_tool_durations = v;
+        }
+        if let Some(v) = cockpit_override.queue_drain_mode {
+            global.cockpit.queue_drain_mode = v;
         }
     }
 

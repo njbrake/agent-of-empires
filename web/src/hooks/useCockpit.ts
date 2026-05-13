@@ -16,6 +16,7 @@ import {
   type CockpitState,
   type QueuedPrompt,
 } from "../lib/cockpitTypes";
+import { useCockpitPrefs } from "../lib/cockpitPrefs";
 import { getToken } from "../lib/token";
 
 export type Action =
@@ -94,6 +95,17 @@ export function cockpitHookReducer(
   return reducer(state, action);
 }
 
+/** Build the single combined prompt fired when
+ *  `cockpit.queue_drain_mode = combined` and the agent transitions to
+ *  idle with a non-empty queue. Joins every queued entry's text with a
+ *  blank line so the agent sees them as one batch follow-up. Extracted
+ *  for testability; consumed by the drain effect below. See #1031. */
+export function combineQueuedPrompts(
+  queue: ReadonlyArray<QueuedPrompt>,
+): string {
+  return queue.map((q) => q.text).join("\n\n");
+}
+
 function reducer(state: CockpitState, action: Action): CockpitState {
   if (action.kind === "frame") {
     return applyEvent(state, action.frame);
@@ -170,6 +182,15 @@ export type ConnectionStatus =
 export function useCockpit(sessionId: string | null) {
   const [state, dispatch] = useReducer(reducer, sessionId, initialState);
   const [status, setStatus] = useState<ConnectionStatus>("connecting");
+  // Drain mode is sourced from the daemon's resolved `[cockpit]` config
+  // and republished via `CockpitPrefsProvider` (App.tsx). Held in a ref
+  // so the drain effect's pop logic always sees the latest value
+  // without re-running the effect on every toggle. See #1031.
+  const { queueDrainMode } = useCockpitPrefs();
+  const drainModeRef = useRef(queueDrainMode);
+  useEffect(() => {
+    drainModeRef.current = queueDrainMode;
+  }, [queueDrainMode]);
   // Mirror status into a ref so sendPrompt's stable callback can short
   // circuit when the WS is closed without re-creating the callback on
   // every status flip (which would invalidate downstream memoised
@@ -433,25 +454,38 @@ export function useCockpit(sessionId: string | null) {
     [sessionId, state.turnActive, dispatchPromptNow],
   );
 
-  // Drain effect: when the agent transitions to idle and the queue
-  // has a head, pop it and dispatch. Guarded by `drainingRef` so a
-  // re-render between dequeue dispatch and the next state tick doesn't
-  // fire the head twice. Skipped while a worker-stopped / restarting
-  // banner is showing; a fresh `AcpSessionAssigned` (which clears both
-  // flags) re-runs this effect and drains then.
+  // Drain effect: when the agent transitions to idle and the queue is
+  // non-empty, dispatch follow-ups per `cockpit.queue_drain_mode`:
+  //   - combined (default): join every queued entry with `\n\n` and
+  //     fire one prompt; the agent's single response covers the batch.
+  //   - serial: pop the head only; the next Stopped re-runs this effect
+  //     and fires the following entry. One response per entry.
+  // Guarded by `drainingRef` so a re-render between the dequeue
+  // dispatch and the next state tick doesn't fire the same head twice.
+  // Skipped while a worker-stopped / restarting banner is showing; a
+  // fresh `AcpSessionAssigned` (which clears both flags) re-runs this
+  // effect and drains then. See #1031.
   const drainingRef = useRef(false);
   useEffect(() => {
     if (drainingRef.current) return;
     if (!sessionId) return;
     if (state.turnActive) return;
     if (state.workerStopped || state.workerRestarting) return;
-    const head = state.queuedPrompts[0];
-    if (!head) return;
+    if (state.queuedPrompts.length === 0) return;
     drainingRef.current = true;
-    dispatch({ kind: "dequeue_prompt", id: head.id });
-    void dispatchPromptNow(head.text).finally(() => {
-      drainingRef.current = false;
-    });
+    if (drainModeRef.current === "combined") {
+      const combined = combineQueuedPrompts(state.queuedPrompts);
+      dispatch({ kind: "clear_queue" });
+      void dispatchPromptNow(combined).finally(() => {
+        drainingRef.current = false;
+      });
+    } else {
+      const head = state.queuedPrompts[0]!;
+      dispatch({ kind: "dequeue_prompt", id: head.id });
+      void dispatchPromptNow(head.text).finally(() => {
+        drainingRef.current = false;
+      });
+    }
   }, [
     sessionId,
     state.turnActive,

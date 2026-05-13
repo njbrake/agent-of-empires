@@ -8,8 +8,8 @@
 
 import { describe, expect, it, vi } from "vitest";
 
-import { emptyCockpitState } from "../lib/cockpitTypes";
-import { cockpitHookReducer } from "./useCockpit";
+import { emptyCockpitState, type QueuedPrompt } from "../lib/cockpitTypes";
+import { cockpitHookReducer, combineQueuedPrompts } from "./useCockpit";
 
 describe("cockpitHookReducer / queue actions", () => {
   it("emptyCockpitState starts with an empty queue", () => {
@@ -126,5 +126,38 @@ describe("cockpitHookReducer / queue actions", () => {
     expect(next.activity).toEqual(base.activity);
     expect(next.turnActive).toBe(true);
     expect(next.queuedPrompts[0]?.text).toBe("queued follow-up");
+  });
+});
+
+describe("combineQueuedPrompts (combined drain mode)", () => {
+  const mk = (id: string, text: string): QueuedPrompt => ({
+    id,
+    text,
+    queuedAt: "2026-01-01T00:00:00.000Z",
+  });
+
+  it("joins entries with a blank line", () => {
+    const out = combineQueuedPrompts([
+      mk("a", "first"),
+      mk("b", "second"),
+      mk("c", "third"),
+    ]);
+    expect(out).toBe("first\n\nsecond\n\nthird");
+  });
+
+  it("preserves intra-entry newlines unchanged", () => {
+    const out = combineQueuedPrompts([
+      mk("a", "line 1\nline 2"),
+      mk("b", "after"),
+    ]);
+    expect(out).toBe("line 1\nline 2\n\nafter");
+  });
+
+  it("returns an empty string for an empty queue", () => {
+    expect(combineQueuedPrompts([])).toBe("");
+  });
+
+  it("returns a single entry unchanged for a one-item queue", () => {
+    expect(combineQueuedPrompts([mk("a", "only one")])).toBe("only one");
   });
 });

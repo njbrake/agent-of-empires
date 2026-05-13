@@ -250,6 +250,12 @@ export interface ServerAbout {
    *  config. Drives the per-tool elapsed-time label in the cockpit
    *  web UI; cross-device since it lives in config.toml. */
   cockpit_show_tool_durations: boolean;
+  /** Resolved `cockpit.queue_drain_mode` from the active profile's
+   *  config. Selects how the composer drains client-side queued
+   *  follow-up prompts on Stopped: `combined` (default) joins them
+   *  with blank lines into a single prompt; `serial` fires one entry
+   *  at a time. See #1031. */
+  cockpit_queue_drain_mode: "combined" | "serial";
 }
 
 export async function setCockpitMaster(

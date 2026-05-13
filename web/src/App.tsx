@@ -627,8 +627,12 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
   const cockpitPrefs = useMemo(
     () => ({
       showToolDurations: serverAbout?.cockpit_show_tool_durations ?? true,
+      queueDrainMode: serverAbout?.cockpit_queue_drain_mode ?? "combined",
     }),
-    [serverAbout?.cockpit_show_tool_durations],
+    [
+      serverAbout?.cockpit_show_tool_durations,
+      serverAbout?.cockpit_queue_drain_mode,
+    ],
   );
 
   return (

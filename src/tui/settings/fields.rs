@@ -118,6 +118,7 @@ pub enum FieldKey {
     CockpitReplayBytes,
     CockpitNodePath,
     CockpitShowToolDurations,
+    CockpitQueueDrainMode,
 }
 
 /// Resolve a field value from global config and optional profile override.
@@ -327,6 +328,11 @@ fn build_cockpit_fields(
         global.cockpit.show_tool_durations,
         p.and_then(|c| c.show_tool_durations),
     );
+    let (queue_drain_mode, qdm_override) = resolve_value(
+        scope,
+        global.cockpit.queue_drain_mode,
+        p.and_then(|c| c.queue_drain_mode),
+    );
 
     vec![
         SettingField {
@@ -399,6 +405,21 @@ fn build_cockpit_fields(
             value: FieldValue::Bool(show_tool_durations),
             category: SettingsCategory::Cockpit,
             has_override: std_override,
+            inherited_display: None,
+        },
+        SettingField {
+            key: FieldKey::CockpitQueueDrainMode,
+            label: "Queue drain mode",
+            description: "How the web composer dispatches follow-up prompts queued while the agent was busy. Combined (default) joins every queued entry with a blank line and sends them as a single prompt on the next Stopped; one response covers the whole batch. Serial fires one entry at a time; each gets its own response. See #1031.",
+            value: FieldValue::Select {
+                selected: match queue_drain_mode {
+                    crate::session::config::QueueDrainMode::Combined => 0,
+                    crate::session::config::QueueDrainMode::Serial => 1,
+                },
+                options: vec!["combined".to_string(), "serial".to_string()],
+            },
+            category: SettingsCategory::Cockpit,
+            has_override: qdm_override,
             inherited_display: None,
         },
     ]
@@ -1780,6 +1801,13 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
         (FieldKey::CockpitShowToolDurations, FieldValue::Bool(v)) => {
             config.cockpit.show_tool_durations = *v
         }
+        (FieldKey::CockpitQueueDrainMode, FieldValue::Select { selected, options }) => {
+            if let Some(name) = options.get(*selected) {
+                if let Some(mode) = crate::session::config::QueueDrainMode::parse(name) {
+                    config.cockpit.queue_drain_mode = mode;
+                }
+            }
+        }
         _ => {}
     }
 }
@@ -2100,6 +2128,15 @@ fn apply_field_to_profile(field: &SettingField, _global: &Config, config: &mut P
             set_profile_override(*v, &mut config.cockpit, |s, val| {
                 s.show_tool_durations = val
             });
+        }
+        (FieldKey::CockpitQueueDrainMode, FieldValue::Select { selected, options }) => {
+            if let Some(name) = options.get(*selected) {
+                if let Some(mode) = crate::session::config::QueueDrainMode::parse(name) {
+                    set_profile_override(mode, &mut config.cockpit, |s, val| {
+                        s.queue_drain_mode = val
+                    });
+                }
+            }
         }
         _ => {}
     }
