@@ -1263,37 +1263,58 @@ impl<S: BroadcastSink> Supervisor<S> {
         );
         drop(workers);
 
-        // Approvals that were on screen when the previous daemon died
-        // are now dead nonces: the responder oneshot was parked in the
-        // old daemon's `pending_responders` map and dropped with the
-        // process. Without this sweep, clicking allow/deny in the UI
-        // races the new daemon's empty map and 404s, leaving the agent
-        // wedged on the original JSON-RPC request id. Emit a synthetic
-        // `ApprovalResolved { decision: Cancelled }` per dead nonce so
-        // the frontend reducer drops the card. The agent-side wedge
-        // (parked request_permission) is unblocked separately by the
-        // runner's outstanding-request cancellation on detach.
-        let stale_nonces = self.sink.unresolved_approval_nonces(&session_id);
-        if !stale_nonces.is_empty() {
-            info!(
-                target: "cockpit.supervisor",
-                session = %session_id,
-                stale = stale_nonces.len(),
-                "cancelling approvals orphaned by daemon restart"
-            );
-            for nonce in stale_nonces {
-                let seq = next_seq(&self.next_seqs, &session_id);
-                self.sink.publish(
-                    &session_id,
-                    seq,
-                    &Event::ApprovalResolved {
-                        nonce,
-                        decision: ApprovalDecision::Cancelled,
-                    },
-                );
-            }
-        }
+        self.cancel_orphaned_approvals(&session_id);
         Ok(())
+    }
+
+    /// Cancel approvals that were on screen when the previous daemon
+    /// died. The responder oneshot was parked in the old daemon's
+    /// `pending_responders` map and dropped with the process. Without
+    /// this sweep, clicking allow/deny in the UI races the new daemon's
+    /// empty map and 404s, leaving the agent wedged on the original
+    /// JSON-RPC request id. Emit a synthetic `ApprovalResolved {
+    /// decision: Cancelled }` per dead nonce so the frontend reducer
+    /// drops the card, then a single synthetic `Stopped { reason:
+    /// "approval_cancelled_on_restart" }` so the sidebar dot flips to
+    /// Idle and the in-cockpit "Working" spinner clears (the turn the
+    /// approval was parked on is over; the agent was unblocked by a
+    /// synthetic Cancelled response when the previous daemon died).
+    /// The reason string is distinct so it does NOT trip the
+    /// "Stopped" / "Restarting…" banners (those gate on
+    /// reason="user_stopped" / "restart_pending"). The agent-side
+    /// wedge (parked `session/request_permission`) is unblocked
+    /// separately by the runner's outstanding-request cancellation on
+    /// detach. No-op when there are no stale nonces.
+    fn cancel_orphaned_approvals(&self, session_id: &str) {
+        let stale_nonces = self.sink.unresolved_approval_nonces(session_id);
+        if stale_nonces.is_empty() {
+            return;
+        }
+        info!(
+            target: "cockpit.supervisor",
+            session = %session_id,
+            stale = stale_nonces.len(),
+            "cancelling approvals orphaned by daemon restart"
+        );
+        for nonce in stale_nonces {
+            let seq = next_seq(&self.next_seqs, session_id);
+            self.sink.publish(
+                session_id,
+                seq,
+                &Event::ApprovalResolved {
+                    nonce,
+                    decision: ApprovalDecision::Cancelled,
+                },
+            );
+        }
+        let seq = next_seq(&self.next_seqs, session_id);
+        self.sink.publish(
+            session_id,
+            seq,
+            &Event::Stopped {
+                reason: "approval_cancelled_on_restart".to_string(),
+            },
+        );
     }
 
     /// Whether this session has a running cockpit worker, or a resume
@@ -1625,12 +1646,21 @@ mod tests {
     struct VecSink {
         frames: std::sync::Mutex<Vec<(String, u64, Event)>>,
         approvals: std::sync::Mutex<Vec<(String, String, bool)>>,
+        stale_nonces: std::sync::Mutex<Vec<Nonce>>,
     }
     impl VecSink {
         fn new() -> Arc<Self> {
             Arc::new(Self {
                 frames: std::sync::Mutex::new(Vec::new()),
                 approvals: std::sync::Mutex::new(Vec::new()),
+                stale_nonces: std::sync::Mutex::new(Vec::new()),
+            })
+        }
+        fn with_stale_nonces(nonces: Vec<Nonce>) -> Arc<Self> {
+            Arc::new(Self {
+                frames: std::sync::Mutex::new(Vec::new()),
+                approvals: std::sync::Mutex::new(Vec::new()),
+                stale_nonces: std::sync::Mutex::new(nonces),
             })
         }
     }
@@ -1647,6 +1677,9 @@ mod tests {
                 title.to_string(),
                 destructive,
             ));
+        }
+        fn unresolved_approval_nonces(&self, _session_id: &str) -> Vec<Nonce> {
+            self.stale_nonces.lock().unwrap().clone()
         }
     }
 
@@ -2706,5 +2739,70 @@ mod tests {
             }
             other => panic!("unexpected error path: {other:?}"),
         }
+    }
+
+    /// Orphaned-approval sweep must publish one `ApprovalResolved {
+    /// decision: Cancelled }` per stale nonce AND a terminal
+    /// `Stopped { reason: "approval_cancelled_on_restart" }`. Without
+    /// the Stopped, the latest status-affecting event in the store
+    /// stays at the pre-restart `ApprovalRequested` / `UserPromptSent`,
+    /// so the sidebar dot keeps spinning green and the in-cockpit
+    /// "Working" rattle keeps running until the next user prompt.
+    /// The reason string must be distinct from "user_stopped" /
+    /// "restart_pending" so the WorkerStoppedBanner / WorkerRestarting
+    /// banners do not fire.
+    #[tokio::test]
+    async fn cancel_orphaned_approvals_publishes_resolved_and_stopped() {
+        let sink =
+            VecSink::with_stale_nonces(vec![Nonce("nonce-a".into()), Nonce("nonce-b".into())]);
+        let sup = Supervisor::new(sink.clone());
+        sup.cancel_orphaned_approvals("s-attach");
+        let frames = sink.frames.lock().unwrap().clone();
+        assert_eq!(
+            frames.len(),
+            3,
+            "expected 2 ApprovalResolved + 1 Stopped, got {frames:?}"
+        );
+        match &frames[0].2 {
+            Event::ApprovalResolved { nonce, decision } => {
+                assert_eq!(nonce.0, "nonce-a");
+                assert!(matches!(decision, ApprovalDecision::Cancelled));
+            }
+            other => panic!("frame 0: expected ApprovalResolved, got {other:?}"),
+        }
+        match &frames[1].2 {
+            Event::ApprovalResolved { nonce, decision } => {
+                assert_eq!(nonce.0, "nonce-b");
+                assert!(matches!(decision, ApprovalDecision::Cancelled));
+            }
+            other => panic!("frame 1: expected ApprovalResolved, got {other:?}"),
+        }
+        match &frames[2].2 {
+            Event::Stopped { reason } => {
+                assert_eq!(reason, "approval_cancelled_on_restart");
+            }
+            other => panic!("frame 2: expected Stopped, got {other:?}"),
+        }
+        // Seqs must be strictly monotonic per session.
+        assert!(
+            frames[0].1 < frames[1].1 && frames[1].1 < frames[2].1,
+            "seqs must be monotonic, got {:?}",
+            frames.iter().map(|f| f.1).collect::<Vec<_>>()
+        );
+    }
+
+    /// Empty stale-nonce list must be a no-op: do NOT publish a stray
+    /// Stopped, because the session may have been mid-turn with no
+    /// pending approvals and a real Stopped is still expected from the
+    /// agent. Publishing here would clobber the in-flight spinner.
+    #[tokio::test]
+    async fn cancel_orphaned_approvals_noop_when_empty() {
+        let sink = VecSink::new();
+        let sup = Supervisor::new(sink.clone());
+        sup.cancel_orphaned_approvals("s-attach");
+        assert!(
+            sink.frames.lock().unwrap().is_empty(),
+            "no nonces means no published frames"
+        );
     }
 }
