@@ -1,0 +1,308 @@
+//! Three-pane render of a cockpit session: transcript / status banner /
+//! composer. Tool-card breakdowns are intentionally minimal in the MVP
+//! (one-liner per tool call); rich diff / image / file previews are
+//! deferred to the followup issues called out in the implementation
+//! plan. Press `o` from the transcript pane to open the web cockpit
+//! for full-fidelity inspection.
+
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+use ratatui::Frame;
+
+use super::input::Focus;
+use super::reducer::{ActivityRow, CockpitTranscript, NoteKind, ToolCallRow};
+use super::state::CockpitViewState;
+use crate::cockpit::approvals::ApprovalDecision;
+use crate::tui::styles::Theme;
+
+pub fn render(frame: &mut Frame, area: Rect, theme: &Theme, state: &CockpitViewState) {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Min(5),    // transcript
+            Constraint::Length(1), // status line
+            Constraint::Length(composer_height(state)),
+        ])
+        .split(area);
+
+    render_transcript(frame, chunks[0], theme, state);
+    render_status(frame, chunks[1], theme, state);
+    render_composer(frame, chunks[2], theme, state);
+}
+
+fn composer_height(state: &CockpitViewState) -> u16 {
+    // Composer is 3 rows tall by default (1 border top + 1 line + 1
+    // border bottom). Grows up to 8 rows as the user types newlines so
+    // multi-line prompts don't squash the transcript. The textarea
+    // itself tracks logical lines.
+    let lines = state.composer.lines().len().max(1) as u16;
+    lines.clamp(1, 6) + 2
+}
+
+fn render_transcript(frame: &mut Frame, area: Rect, theme: &Theme, state: &CockpitViewState) {
+    let title = format!(
+        " Cockpit · {}{} ",
+        state.session_id,
+        match state.transcript.current_mode.as_deref() {
+            Some(m) => format!(" · mode: {m}"),
+            None => String::new(),
+        }
+    );
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .border_style(border_style(theme, state, Focus::Transcript));
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let lines = transcript_lines(&state.transcript, state.selected_approval, state.focus);
+    let scroll = compute_scroll(&lines, inner.height, state.scroll_offset);
+    let para = Paragraph::new(lines)
+        .wrap(Wrap { trim: false })
+        .scroll(scroll);
+    frame.render_widget(para, inner);
+}
+
+fn render_status(frame: &mut Frame, area: Rect, theme: &Theme, state: &CockpitViewState) {
+    let mut spans: Vec<Span> = Vec::new();
+    if let Some(toast) = &state.toast {
+        let color = match toast.kind {
+            super::state::ToastKind::Info => theme.title,
+            super::state::ToastKind::Error => theme.error,
+        };
+        spans.push(Span::styled(
+            format!(" {} ", toast.text),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        ));
+    }
+    if let Some(banner) = &state.transcript.status_text {
+        spans.push(Span::styled(
+            format!(" {banner} "),
+            Style::default().fg(theme.title),
+        ));
+    }
+    if state.transcript.context_primer_pending {
+        spans.push(Span::styled(
+            " context lost — next prompt re-primes ",
+            Style::default().fg(theme.error),
+        ));
+    }
+    if state.transcript.lagged {
+        spans.push(Span::styled(
+            " broadcast lagged — refetching ",
+            Style::default().fg(theme.error),
+        ));
+    }
+    if !state.transcript.pending_approvals.is_empty() {
+        let n = state.transcript.pending_approvals.len();
+        spans.push(Span::styled(
+            format!(
+                " {n} pending approval{} — Tab to focus ",
+                if n == 1 { "" } else { "s" }
+            ),
+            Style::default().fg(theme.error),
+        ));
+    }
+    if spans.is_empty() {
+        // Footer help when nothing else is going on.
+        spans.push(Span::styled(
+            help_hint(state.focus),
+            Style::default().fg(theme.hint),
+        ));
+    }
+    let para = Paragraph::new(Line::from(spans));
+    frame.render_widget(para, area);
+}
+
+fn render_composer(frame: &mut Frame, area: Rect, theme: &Theme, state: &CockpitViewState) {
+    let title = match state.focus {
+        Focus::Composer => " Composer (Enter=send, Shift+Enter=newline, Esc=back) ",
+        _ => " Composer (Tab/i to focus) ",
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .border_style(border_style(theme, state, Focus::Composer));
+    // ratatui-textarea borrows the Frame's buffer indirectly via
+    // widget impl; render the block first, then the textarea inside.
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    frame.render_widget(&state.composer, inner);
+}
+
+fn transcript_lines<'a>(
+    transcript: &'a CockpitTranscript,
+    selected_approval: Option<usize>,
+    focus: Focus,
+) -> Vec<Line<'a>> {
+    let mut out: Vec<Line<'a>> = Vec::new();
+    let mut approval_render_idx: usize = 0;
+    for row in &transcript.rows {
+        match row {
+            ActivityRow::UserPrompt(text) => {
+                out.push(Line::from(Span::styled(
+                    format!("you  ▸ {text}"),
+                    Style::default().add_modifier(Modifier::BOLD),
+                )));
+                out.push(Line::default());
+            }
+            ActivityRow::AgentMessage(text) => {
+                for chunk_line in text.lines() {
+                    out.push(Line::from(format!("aoe  {chunk_line}")));
+                }
+                if text.is_empty() {
+                    out.push(Line::from("aoe  …"));
+                }
+                out.push(Line::default());
+            }
+            ActivityRow::ToolCall(tool) => {
+                out.extend(render_tool_lines(tool));
+                out.push(Line::default());
+            }
+            ActivityRow::Approval(row) => {
+                let highlighted = focus == Focus::Approval
+                    && selected_approval
+                        .map(|i| i == approval_render_idx)
+                        .unwrap_or(false);
+                approval_render_idx += 1;
+                let mut header = Vec::new();
+                header.push(Span::raw(if highlighted { "▶ " } else { "  " }));
+                header.push(Span::styled(
+                    format!("approval · {} ", row.title),
+                    Style::default().add_modifier(Modifier::BOLD),
+                ));
+                if row.destructive {
+                    header.push(Span::styled(
+                        "[destructive] ",
+                        Style::default().add_modifier(Modifier::BOLD),
+                    ));
+                }
+                header.push(Span::styled(
+                    format!("nonce={}", row.nonce),
+                    Style::default().add_modifier(Modifier::DIM),
+                ));
+                out.push(Line::from(header));
+                let body = match row.decision {
+                    Some(ApprovalDecision::Allow) => "  → allowed",
+                    Some(ApprovalDecision::AllowAlways) => "  → allow-always",
+                    Some(ApprovalDecision::Deny) => "  → denied",
+                    None => "  press a / A / d to resolve, Esc to leave",
+                };
+                out.push(Line::from(body));
+                out.push(Line::default());
+            }
+            ActivityRow::Plan(steps) => {
+                out.push(Line::from(Span::styled(
+                    "plan",
+                    Style::default().add_modifier(Modifier::BOLD),
+                )));
+                for step in steps {
+                    let marker = match step.status {
+                        crate::cockpit::state::PlanStepStatus::Pending => "[ ]",
+                        crate::cockpit::state::PlanStepStatus::InProgress => "[~]",
+                        crate::cockpit::state::PlanStepStatus::Done => "[x]",
+                        crate::cockpit::state::PlanStepStatus::Cancelled => "[-]",
+                    };
+                    out.push(Line::from(format!("  {marker} {}", step.title)));
+                }
+                out.push(Line::default());
+            }
+            ActivityRow::Note { kind, text } => {
+                let modifier = match kind {
+                    NoteKind::Info => Modifier::DIM,
+                    NoteKind::Warning => Modifier::BOLD,
+                    NoteKind::Error => Modifier::BOLD,
+                };
+                out.push(Line::from(Span::styled(
+                    format!("· {text}"),
+                    Style::default().add_modifier(modifier),
+                )));
+                out.push(Line::default());
+            }
+        }
+    }
+    if out.is_empty() {
+        out.push(Line::from(Span::styled(
+            "(no events yet — waiting for the agent…)",
+            Style::default().add_modifier(Modifier::DIM),
+        )));
+    }
+    out
+}
+
+fn render_tool_lines(tool: &ToolCallRow) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    let header = format!(
+        "tool {} · {}",
+        match tool.completed.as_ref() {
+            None => "▶",
+            Some(c) if c.ok => "✓",
+            Some(_) => "✗",
+        },
+        tool.name
+    );
+    lines.push(Line::from(Span::styled(
+        header,
+        Style::default().add_modifier(Modifier::BOLD),
+    )));
+    if !tool.args.is_empty() {
+        let truncated = if tool.args.len() > 200 {
+            format!("  $ {}…", &tool.args[..200])
+        } else {
+            format!("  $ {}", tool.args)
+        };
+        lines.push(Line::from(truncated));
+    }
+    if let Some(completion) = &tool.completed {
+        let content = if completion.content.is_empty() {
+            if completion.ok {
+                "  (no output)".to_string()
+            } else {
+                "  (tool failed; press `o` for details)".to_string()
+            }
+        } else if completion.content.len() > 400 {
+            format!(
+                "  {}…\n  (output truncated; press `o` for full)",
+                &completion.content[..400]
+            )
+        } else {
+            completion
+                .content
+                .lines()
+                .map(|l| format!("  {l}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        for line in content.lines() {
+            lines.push(Line::from(line.to_string()));
+        }
+    }
+    lines
+}
+
+fn compute_scroll(lines: &[Line], height: u16, requested: u16) -> (u16, u16) {
+    // Clamp scroll so the user never scrolls past the bottom: the
+    // bottom-most visible line should always be the last row. Without
+    // this, j-spam at the bottom shows an empty pane.
+    let total = lines.len() as u16;
+    let max = total.saturating_sub(height);
+    (requested.min(max), 0)
+}
+
+fn border_style(theme: &Theme, state: &CockpitViewState, this_focus: Focus) -> Style {
+    if state.focus == this_focus {
+        Style::default().fg(theme.title)
+    } else {
+        Style::default().fg(theme.border)
+    }
+}
+
+fn help_hint(focus: Focus) -> &'static str {
+    match focus {
+        Focus::Composer => " Enter=send · Shift+Enter=newline · Esc=back · Ctrl-C=cancel ",
+        Focus::Transcript => " j/k=scroll · i=compose · Tab=approvals · o=browser · Esc=exit ",
+        Focus::Approval => " a=allow · A=always · d=deny · Esc=back ",
+    }
+}

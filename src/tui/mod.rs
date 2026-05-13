@@ -1,6 +1,8 @@
 //! Terminal User Interface module
 
 mod app;
+#[cfg(feature = "serve")]
+pub(crate) mod cockpit_view;
 mod components;
 mod creation_poller;
 mod deletion_poller;

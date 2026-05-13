@@ -1,0 +1,398 @@
+//! Native ratatui rendering of a cockpit session.
+//!
+//! Consumes the same daemon HTTP / WebSocket surface that the web
+//! frontend uses; the per-frame reducer mirrors the activity semantics
+//! of `web/src/hooks/useCockpit.ts` without the React-specific shapes.
+//!
+//! Directory name is `cockpit_view` (not `cockpit`) to avoid colliding
+//! with `src/cockpit/` per the recipe in
+//! https://github.com/njbrake/agent-of-empires/issues/1018#issuecomment-4444040929.
+
+pub mod input;
+pub mod reducer;
+pub mod render;
+pub mod state;
+
+use std::io::Stdout;
+use std::time::Duration;
+
+use anyhow::{Context, Result};
+use crossterm::event::{Event as CrosstermEvent, EventStream, KeyEventKind};
+use futures_util::StreamExt;
+use ratatui::backend::CrosstermBackend;
+use ratatui::Terminal;
+use tokio::time::Instant;
+
+use self::input::{Focus, Intent};
+use self::state::{CockpitViewState, ToastBanner, ToastKind};
+use crate::cockpit::client::{
+    ensure_daemon, ws_connect, HttpClient, ManagerError, WsError, WsMessage,
+};
+use crate::cockpit::protocol::ApprovalDecisionWire;
+use crate::tui::styles::Theme;
+
+/// Per-keystroke redraw interval. The animations are minimal (just the
+/// blinking caret in the composer); 120ms keeps it from looking laggy
+/// without burning CPU.
+const REDRAW_INTERVAL: Duration = Duration::from_millis(120);
+/// Toasts auto-clear after this long.
+const TOAST_TTL: Duration = Duration::from_secs(4);
+
+/// Open the cockpit view for `session_id` and run its event loop until
+/// the user exits with `Esc`, or until the cockpit daemon becomes
+/// unreachable in a way the view can't recover from.
+///
+/// Borrows the host terminal + event stream so the parent App can
+/// resume rendering when the view returns.
+pub async fn run(
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    event_stream: &mut EventStream,
+    theme: &Theme,
+    session_id: &str,
+) -> Result<()> {
+    let endpoint = match ensure_daemon().await {
+        Ok(e) => e,
+        Err(ManagerError::EnvOverrideUnreachable) => {
+            render_error_screen(
+                terminal,
+                theme,
+                "AOE_DAEMON_URL is set but the daemon at that URL is unreachable.\n\nCheck the URL / token, or unset the env var to use a local daemon.",
+            )?;
+            wait_for_dismiss(event_stream).await?;
+            return Ok(());
+        }
+        Err(e) => {
+            render_error_screen(
+                terminal,
+                theme,
+                &format!("Failed to start cockpit daemon:\n\n{e}\n\nPress any key to return."),
+            )?;
+            wait_for_dismiss(event_stream).await?;
+            return Ok(());
+        }
+    };
+
+    let http = HttpClient::new(endpoint.clone()).context("build cockpit HTTP client")?;
+
+    // Hydrate the transcript via /replay before opening the WebSocket
+    // so the user sees the historical conversation immediately instead
+    // of a blank pane until live frames start arriving.
+    let initial = http.replay(session_id, 0).await;
+    let ws = ws_connect(&endpoint, session_id, 0).await.ok();
+
+    let mut state = CockpitViewState::new(session_id.to_string(), endpoint, http, ws);
+    state.focus = Focus::Transcript;
+
+    if let Ok(replay) = initial {
+        if replay.lost {
+            state.transcript.set_lagged();
+        }
+        for frame in &replay.frames {
+            state.transcript.apply(frame);
+        }
+        state.reconcile_selection();
+    }
+
+    redraw(terminal, theme, &state)?;
+
+    let mut redraw_ticker = tokio::time::interval(REDRAW_INTERVAL);
+    redraw_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+
+    let mut toast_deadline: Option<Instant> = None;
+
+    loop {
+        tokio::select! {
+            biased;
+            evt = event_stream.next() => {
+                let Some(evt) = evt else {
+                    // EventStream closed; bail out so the parent App
+                    // can do its own cleanup.
+                    return Ok(());
+                };
+                let evt = evt.context("read terminal event")?;
+                let should_exit = handle_terminal_event(&mut state, evt, &mut toast_deadline).await?;
+                if should_exit {
+                    return Ok(());
+                }
+                redraw(terminal, theme, &state)?;
+            }
+            ws_msg = recv_ws(&mut state) => {
+                match ws_msg {
+                    Some(Ok(WsMessage::Frame(frame))) => {
+                        state.transcript.apply(&frame);
+                        state.reconcile_selection();
+                        redraw(terminal, theme, &state)?;
+                    }
+                    Some(Ok(WsMessage::Lagged)) => {
+                        // Daemon evicted events we hadn't seen yet. Drop
+                        // local reducer state and rehydrate from /replay.
+                        state.transcript.reset();
+                        match state.http.replay(&state.session_id, 0).await {
+                            Ok(replay) => {
+                                if replay.lost {
+                                    state.transcript.set_lagged();
+                                }
+                                for frame in &replay.frames {
+                                    state.transcript.apply(frame);
+                                }
+                                state.reconcile_selection();
+                            }
+                            Err(e) => {
+                                set_toast(&mut state, &mut toast_deadline, format!("replay failed: {e}"), ToastKind::Error);
+                            }
+                        }
+                        redraw(terminal, theme, &state)?;
+                    }
+                    Some(Err(e)) => {
+                        // WS dropped; show a banner and try to reconnect
+                        // from the last seq we processed.
+                        tracing::warn!(target: "cockpit.tui.ws", "ws disconnect: {e}");
+                        set_toast(&mut state, &mut toast_deadline, format!("ws disconnected: {e}; reconnecting…"), ToastKind::Error);
+                        state.ws = None;
+                        let since = state.transcript.last_seq;
+                        match ws_connect(&state.endpoint, &state.session_id, since).await {
+                            Ok(handle) => {
+                                state.ws = Some(handle);
+                                set_toast(&mut state, &mut toast_deadline, "ws reconnected".into(), ToastKind::Info);
+                            }
+                            Err(e) => {
+                                set_toast(&mut state, &mut toast_deadline, format!("ws reconnect failed: {e}"), ToastKind::Error);
+                            }
+                        }
+                        redraw(terminal, theme, &state)?;
+                    }
+                    None => {
+                        // Either no ws handle or the channel closed.
+                        // Sleep briefly to avoid spinning the select loop.
+                        tokio::time::sleep(Duration::from_millis(200)).await;
+                    }
+                }
+            }
+            _ = redraw_ticker.tick() => {
+                let now = Instant::now();
+                if let Some(deadline) = toast_deadline {
+                    if now >= deadline {
+                        state.toast = None;
+                        toast_deadline = None;
+                    }
+                }
+                redraw(terminal, theme, &state)?;
+            }
+        }
+    }
+}
+
+async fn handle_terminal_event(
+    state: &mut CockpitViewState,
+    evt: CrosstermEvent,
+    toast_deadline: &mut Option<Instant>,
+) -> Result<bool> {
+    let CrosstermEvent::Key(key) = evt else {
+        return Ok(false);
+    };
+    // Skip key-release events on terminals that emit them (Windows
+    // crossterm, kitty enhanced protocol). Otherwise every keypress
+    // triggers two handle_key calls.
+    if !matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+        return Ok(false);
+    }
+
+    let has_pending = !state.transcript.pending_approvals.is_empty();
+    let intent = input::dispatch(state.focus, &key, has_pending);
+    match intent {
+        Intent::Ignore => Ok(false),
+        Intent::Exit => Ok(true),
+        Intent::SetFocus(focus) => {
+            // Approval focus only makes sense when there's one to
+            // select; otherwise fall through to transcript.
+            state.focus = if matches!(focus, Focus::Approval) && !has_pending {
+                Focus::Transcript
+            } else {
+                focus
+            };
+            state.reconcile_selection();
+            Ok(false)
+        }
+        Intent::Compose(k) => {
+            // ratatui_textarea consumes raw crossterm KeyEvent through
+            // its `Input` conversion.
+            state.composer.input(k);
+            Ok(false)
+        }
+        Intent::SubmitPrompt => {
+            let text = state.take_composer_text();
+            if text.is_empty() {
+                set_toast(
+                    state,
+                    toast_deadline,
+                    "composer is empty".into(),
+                    ToastKind::Info,
+                );
+                return Ok(false);
+            }
+            match state.http.prompt(&state.session_id, &text).await {
+                Ok(()) => {
+                    set_toast(
+                        state,
+                        toast_deadline,
+                        format!("prompt sent ({} bytes)", text.len()),
+                        ToastKind::Info,
+                    );
+                }
+                Err(e) => {
+                    set_toast(
+                        state,
+                        toast_deadline,
+                        format!("send failed: {e}"),
+                        ToastKind::Error,
+                    );
+                }
+            }
+            Ok(false)
+        }
+        Intent::Scroll(delta) => {
+            apply_scroll(state, delta);
+            Ok(false)
+        }
+        Intent::ResolveApproval(decision) => {
+            let Some(idx) = state.selected_approval else {
+                return Ok(false);
+            };
+            let Some(pending) = state.transcript.pending_approvals.get(idx).cloned() else {
+                return Ok(false);
+            };
+            match state
+                .http
+                .resolve_approval(&state.session_id, &pending.nonce, decision)
+                .await
+            {
+                Ok(()) => {
+                    let label = match decision {
+                        ApprovalDecisionWire::Allow => "allowed",
+                        ApprovalDecisionWire::AllowAlways => "allow-always",
+                        ApprovalDecisionWire::Deny => "denied",
+                    };
+                    set_toast(
+                        state,
+                        toast_deadline,
+                        format!("approval {label}"),
+                        ToastKind::Info,
+                    );
+                }
+                Err(e) => {
+                    set_toast(
+                        state,
+                        toast_deadline,
+                        format!("approval failed: {e}"),
+                        ToastKind::Error,
+                    );
+                }
+            }
+            // Server will emit ApprovalResolved over WS; the reducer
+            // updates state then.
+            Ok(false)
+        }
+        Intent::CancelInFlight => {
+            match state.http.cancel(&state.session_id).await {
+                Ok(()) => set_toast(state, toast_deadline, "cancel sent".into(), ToastKind::Info),
+                Err(e) => set_toast(
+                    state,
+                    toast_deadline,
+                    format!("cancel failed: {e}"),
+                    ToastKind::Error,
+                ),
+            }
+            Ok(false)
+        }
+        Intent::OpenInBrowser => {
+            let url = format!(
+                "{}/sessions/{}/cockpit",
+                state.endpoint.base_url, state.session_id
+            );
+            if let Err(e) = webbrowser::open(&url) {
+                set_toast(
+                    state,
+                    toast_deadline,
+                    format!("open failed: {e}"),
+                    ToastKind::Error,
+                );
+            } else {
+                set_toast(
+                    state,
+                    toast_deadline,
+                    "opened in browser".into(),
+                    ToastKind::Info,
+                );
+            }
+            Ok(false)
+        }
+    }
+}
+
+/// Async pull from the cockpit WebSocket. Returns `None` when no ws
+/// handle is currently attached so the select arm degrades to a
+/// timed wait instead of busy-looping.
+async fn recv_ws(state: &mut CockpitViewState) -> Option<Result<WsMessage, WsError>> {
+    let ws = state.ws.as_mut()?;
+    ws.recv().await
+}
+
+fn apply_scroll(state: &mut CockpitViewState, delta: i32) {
+    if delta == i32::MIN {
+        state.scroll_offset = 0;
+    } else if delta == i32::MAX {
+        state.scroll_offset = u16::MAX;
+    } else if delta < 0 {
+        state.scroll_offset = state.scroll_offset.saturating_sub((-delta) as u16);
+    } else {
+        state.scroll_offset = state.scroll_offset.saturating_add(delta as u16);
+    }
+}
+
+fn set_toast(
+    state: &mut CockpitViewState,
+    deadline: &mut Option<Instant>,
+    text: String,
+    kind: ToastKind,
+) {
+    state.toast = Some(ToastBanner { text, kind });
+    *deadline = Some(Instant::now() + TOAST_TTL);
+}
+
+fn redraw(
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    theme: &Theme,
+    state: &CockpitViewState,
+) -> Result<()> {
+    terminal.draw(|f| render::render(f, f.area(), theme, state))?;
+    Ok(())
+}
+
+fn render_error_screen(
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    _theme: &Theme,
+    message: &str,
+) -> Result<()> {
+    use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+    let msg = message.to_string();
+    terminal.draw(|f| {
+        let area = f.area();
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(" Cockpit · error ");
+        let para = Paragraph::new(msg.clone())
+            .block(block)
+            .wrap(Wrap { trim: false });
+        f.render_widget(para, area);
+    })?;
+    Ok(())
+}
+
+async fn wait_for_dismiss(event_stream: &mut EventStream) -> Result<()> {
+    while let Some(evt) = event_stream.next().await {
+        if let Ok(CrosstermEvent::Key(_)) = evt {
+            return Ok(());
+        }
+    }
+    Ok(())
+}

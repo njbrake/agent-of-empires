@@ -78,7 +78,7 @@ pub struct ResolveApprovalRequest {
 
 /// PascalCase JSON variants (`Allow`, `AllowAlways`, `Deny`) matching
 /// the web frontend's approval flow.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "PascalCase")]
 pub enum ApprovalDecisionWire {
     Allow,

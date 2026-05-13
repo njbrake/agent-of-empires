@@ -1107,10 +1107,17 @@ impl HomeView {
                             return None;
                         }
                         if inst.is_cockpit_mode() {
-                            return Some(Action::SetTransientStatus(
-                                "Cockpit session: open the web dashboard (aoe serve) to attach"
-                                    .to_string(),
-                            ));
+                            #[cfg(feature = "serve")]
+                            {
+                                return Some(Action::OpenCockpit(id.clone()));
+                            }
+                            #[cfg(not(feature = "serve"))]
+                            {
+                                return Some(Action::SetTransientStatus(
+                                    "Cockpit session: rebuild with --features serve to attach"
+                                        .to_string(),
+                                ));
+                            }
                         }
                     }
                     return match self.view_mode {

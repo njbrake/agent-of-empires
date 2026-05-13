@@ -69,6 +69,11 @@ pub struct App {
     /// it back on when the surface dismisses. Default true to match the
     /// startup `EnableMouseCapture` in `tui::run`.
     mouse_captured: bool,
+    /// Set by `Action::OpenCockpit` so the async main loop can pick it
+    /// up and enter the cockpit view (which needs `event_stream` access
+    /// the sync `execute_action` can't lend out).
+    #[cfg(feature = "serve")]
+    pending_cockpit_open: Option<String>,
 }
 
 /// Check if the app version changed and return the previous version if changelog should be shown.
@@ -147,6 +152,8 @@ impl App {
             update_bar_dismissed: false,
             event_stream: Some(EventStream::new()),
             mouse_captured: true,
+            #[cfg(feature = "serve")]
+            pending_cockpit_open: None,
         })
     }
 
@@ -746,6 +753,37 @@ impl App {
             self.execute_action(action, terminal)?;
         }
 
+        #[cfg(feature = "serve")]
+        if let Some(session_id) = self.pending_cockpit_open.take() {
+            self.run_cockpit_view(&session_id, terminal).await?;
+        }
+
+        Ok(())
+    }
+
+    #[cfg(feature = "serve")]
+    async fn run_cockpit_view(
+        &mut self,
+        session_id: &str,
+        terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+    ) -> Result<()> {
+        // The cockpit view borrows the EventStream so it can drive its
+        // own tokio::select! loop. Pull it out for the duration of the
+        // call; restore on return.
+        let mut stream = match self.event_stream.take() {
+            Some(s) => s,
+            None => return Ok(()),
+        };
+        let result =
+            crate::tui::cockpit_view::run(terminal, &mut stream, &self.theme, session_id).await;
+        self.event_stream = Some(stream);
+        // Forcing a full redraw on return so the home screen redraws
+        // any cells the cockpit view painted over.
+        self.needs_redraw = true;
+        terminal.clear()?;
+        if let Err(e) = result {
+            self.update_status = Some(UpdateStatus::transient(format!("cockpit closed: {e}")));
+        }
         Ok(())
     }
 
@@ -818,6 +856,14 @@ impl App {
                 terminal.draw(|f| self.render(f))?;
                 self.home.execute_send_message(&id, &message);
                 self.update_status = None;
+            }
+            #[cfg(feature = "serve")]
+            Action::OpenCockpit(id) => {
+                // Stash for the async main loop. The cockpit view needs
+                // `event_stream` access that this sync handler can't
+                // lend; the loop picks `pending_cockpit_open` up after
+                // we return.
+                self.pending_cockpit_open = Some(id);
             }
         }
         Ok(())
@@ -1093,6 +1139,12 @@ pub enum Action {
     /// can render a "Reviving..." status before the potentially-slow
     /// ensure_pane_ready call.
     SendMessage(String, String),
+    /// Open the native cockpit view for `session_id`. The action handler
+    /// stashes the id in `pending_cockpit_open`; the main loop drains it
+    /// after `execute_action` returns and runs the async cockpit loop
+    /// against the borrowed terminal + event stream.
+    #[cfg(feature = "serve")]
+    OpenCockpit(String),
 }
 
 #[cfg(test)]
