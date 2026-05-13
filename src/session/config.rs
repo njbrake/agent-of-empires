@@ -437,6 +437,15 @@ pub struct WebConfig {
     /// Server-wide default: fire a push on Running to Error transitions.
     #[serde(default = "default_true")]
     pub notify_on_error: bool,
+
+    /// Server-wide default: fire a push when a cockpit session's
+    /// `ScheduleWakeup` timer fires (the next /loop turn starts). On by
+    /// default because the headline use case for `/loop` dynamic mode
+    /// is "walk away during the sleep window" — without a push the
+    /// user has to keep peeking at the dashboard. Suppression for
+    /// active TUI / web sessions still applies. See #1091.
+    #[serde(default = "default_true")]
+    pub notify_on_wake_fire: bool,
 }
 
 impl Default for WebConfig {
@@ -446,6 +455,7 @@ impl Default for WebConfig {
             notify_on_waiting: true,
             notify_on_idle: false,
             notify_on_error: true,
+            notify_on_wake_fire: true,
         }
     }
 }

@@ -650,6 +650,100 @@ async fn fire_due_pushes(
     }
 }
 
+/// Fire a one-shot push notification when a cockpit session's pending
+/// `ScheduleWakeup` actually triggers. Called from the cockpit event
+/// listener when a `UserPromptSent` arrives while a `WakeupScheduled`
+/// is the most recent un-fired wakeup for the session. Bypasses the
+/// dwell/cooldown machinery the status-change consumer uses because
+/// the wake fire is already a discrete event, not a sticky state.
+///
+/// Respects the same active-use suppression as `fire_due_pushes` (TUI
+/// open within the last 30s OR the web dashboard active within 30s),
+/// and the server-wide `web.notify_on_wake_fire` opt-out. See #1091.
+pub async fn fire_wake_fired_push(
+    state: std::sync::Arc<super::AppState>,
+    session_id: &str,
+    session_title: &str,
+    reason: Option<&str>,
+) {
+    let Some(push) = state.push.as_ref().cloned() else {
+        return;
+    };
+    let web_config = state.web_config.clone();
+    if !web_config.notifications_enabled || !web_config.notify_on_wake_fire {
+        return;
+    }
+    if crate::session::is_tui_active(std::time::Duration::from_secs(30)) {
+        tracing::debug!(
+            target: "push.wake_fired",
+            session = %session_id,
+            "suppressed: TUI is active"
+        );
+        return;
+    }
+    if state.web_active_within(std::time::Duration::from_secs(30)) {
+        tracing::debug!(
+            target: "push.wake_fired",
+            session = %session_id,
+            "suppressed: web dashboard is active"
+        );
+        return;
+    }
+
+    let subs = push.store.snapshot().await;
+    if subs.is_empty() {
+        return;
+    }
+    let client = match super::push_send::build_client() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(
+                target: "push.wake_fired",
+                "failed to build reqwest client: {e}"
+            );
+            return;
+        }
+    };
+
+    let body_suffix = if session_title.is_empty() {
+        String::new()
+    } else {
+        format!(": {}", session_title)
+    };
+    let body = match reason {
+        Some(r) if !r.is_empty() => format!("Agent resumed{} — {}", body_suffix, r),
+        _ => format!("Agent resumed{}", body_suffix),
+    };
+    let payload = super::push_send::PushPayload {
+        title: "Scheduled wakeup fired".to_string(),
+        body,
+        url: format!("/session/{}", session_id),
+        tag: format!("session-{}", session_id),
+        session_id: session_id.to_string(),
+    };
+
+    for sub in subs {
+        let client = client.clone();
+        let push = push.clone();
+        let payload_clone = super::push_send::PushPayload {
+            title: payload.title.clone(),
+            body: payload.body.clone(),
+            url: payload.url.clone(),
+            tag: payload.tag.clone(),
+            session_id: payload.session_id.clone(),
+        };
+        tokio::spawn(async move {
+            let outcome =
+                super::push_send::send_one(&client, push.as_ref(), &sub, &payload_clone).await;
+            if outcome == super::push_send::SendOutcome::Gone {
+                if let Err(e) = push.store.gc_stale(&sub.endpoint, sub.generation).await {
+                    tracing::warn!("Failed to GC stale push subscription: {e}");
+                }
+            }
+        });
+    }
+}
+
 pub fn sha256_token(token: &str) -> [u8; 32] {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
@@ -1074,6 +1168,7 @@ mod tests {
             notify_on_waiting: true,
             notify_on_idle: false, // globally off
             notify_on_error: true,
+            notify_on_wake_fire: true,
         };
 
         // No instance (session not in state): fall back to web defaults.

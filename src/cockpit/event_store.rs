@@ -328,6 +328,52 @@ impl EventStore {
         }
     }
 
+    /// Given the seq of a just-published `UserPromptSent`, return the
+    /// `WakeupScheduled` whose timer this prompt is satisfying — i.e.
+    /// the latest `WakeupScheduled` whose seq sits strictly between
+    /// the previous prompt's seq and `prompt_seq`. Returns `None` when
+    /// no wakeup is in that window, which is the common case (regular
+    /// user-typed prompt, no scheduled wake involved). Used by the
+    /// cockpit event listener to fire a one-shot push on wake fire
+    /// without scanning the whole event log. See #1091.
+    pub fn fired_wakeup_for_prompt(
+        &self,
+        session_id: &str,
+        prompt_seq: u64,
+    ) -> Option<(DateTime<Utc>, Option<String>)> {
+        let conn = match self.conn.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        let prompt_seq_i64 = prompt_seq as i64;
+        let json: String = conn
+            .query_row(
+                "SELECT event_json FROM cockpit_events
+                 WHERE session_id = ?1
+                   AND seq < ?2
+                   AND event_json LIKE '{\"WakeupScheduled\":%'
+                   AND seq > COALESCE(
+                     (SELECT MAX(seq) FROM cockpit_events
+                      WHERE session_id = ?1
+                        AND seq < ?2
+                        AND event_json LIKE '{\"UserPromptSent\":%'),
+                     0
+                   )
+                 ORDER BY seq DESC LIMIT 1",
+                params![session_id, prompt_seq_i64],
+                |row| row.get(0),
+            )
+            .optional()
+            .ok()
+            .flatten()?;
+        let event: Event = serde_json::from_str(&json).ok()?;
+        if let Event::WakeupScheduled { at, reason } = event {
+            Some((at, reason))
+        } else {
+            None
+        }
+    }
+
     /// Return the highest seq stored for `session_id`, or 0 if none.
     /// Used at startup to re-seed the in-memory `next_seqs` counter so
     /// fresh publishes don't collide with restored history.

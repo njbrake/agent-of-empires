@@ -107,6 +107,7 @@ pub enum FieldKey {
     WebNotifyOnWaiting,
     WebNotifyOnIdle,
     WebNotifyOnError,
+    WebNotifyOnWakeFire,
     // Cockpit (gated on the `serve` feature; the variants are always
     // present in the enum so external callers don't have to cfg-gate
     // their match arms)
@@ -483,6 +484,15 @@ fn build_web_fields(
             label: "Notify on error",
             description: "Default: send a push when a session errors (Running to Error).",
             value: FieldValue::Bool(global.web.notify_on_error),
+            category: SettingsCategory::Web,
+            has_override: false,
+            inherited_display: None,
+        },
+        SettingField {
+            key: FieldKey::WebNotifyOnWakeFire,
+            label: "Notify on scheduled wake",
+            description: "Default: send a push when a cockpit session's ScheduleWakeup timer fires (the next /loop turn starts). Suppressed if the TUI or web dashboard has been active in the last 30s.",
+            value: FieldValue::Bool(global.web.notify_on_wake_fire),
             category: SettingsCategory::Web,
             has_override: false,
             inherited_display: None,
@@ -1789,6 +1799,9 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
         }
         (FieldKey::WebNotifyOnIdle, FieldValue::Bool(v)) => {
             config.web.notify_on_idle = *v;
+        }
+        (FieldKey::WebNotifyOnWakeFire, FieldValue::Bool(v)) => {
+            config.web.notify_on_wake_fire = *v;
         }
         (FieldKey::WebNotifyOnError, FieldValue::Bool(v)) => {
             config.web.notify_on_error = *v;

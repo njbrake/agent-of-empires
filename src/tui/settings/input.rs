@@ -782,7 +782,8 @@ impl SettingsView {
             FieldKey::WebNotificationsEnabled
             | FieldKey::WebNotifyOnWaiting
             | FieldKey::WebNotifyOnIdle
-            | FieldKey::WebNotifyOnError => {}
+            | FieldKey::WebNotifyOnError
+            | FieldKey::WebNotifyOnWakeFire => {}
             // Cockpit overrides clear by setting the override field to None.
             FieldKey::CockpitEnabled => {
                 if let Some(c) = config.cockpit.as_mut() {

@@ -1486,6 +1486,41 @@ async fn cockpit_event_listener(state: Arc<AppState>) {
             }
         };
 
+        // Detect wake-fire: a `UserPromptSent` arriving immediately
+        // after a `WakeupScheduled` (with no other prompts between)
+        // means the agent's pending wake just fired. Push opt-in to
+        // the user's phone so /loop dynamic runs don't need them to
+        // keep checking the dashboard. See #1091.
+        if matches!(
+            frame.event.as_ref(),
+            crate::cockpit::state::Event::UserPromptSent { .. }
+        ) {
+            if let Some((_at, reason)) = state
+                .cockpit_event_store
+                .fired_wakeup_for_prompt(&frame.session_id, frame.seq)
+            {
+                let session_id = frame.session_id.clone();
+                let session_title = state
+                    .instances
+                    .read()
+                    .await
+                    .iter()
+                    .find(|i| i.id == session_id)
+                    .map(|i| i.title.clone())
+                    .unwrap_or_default();
+                let state_for_push = state.clone();
+                tokio::spawn(async move {
+                    crate::server::push::fire_wake_fired_push(
+                        state_for_push,
+                        &session_id,
+                        &session_title,
+                        reason.as_deref(),
+                    )
+                    .await;
+                });
+            }
+        }
+
         let status_intent = derive_cockpit_status(frame.event.as_ref());
         let acp_change = derive_acp_session_change(frame.event.as_ref());
         if status_intent.is_none() && acp_change.is_none() {
