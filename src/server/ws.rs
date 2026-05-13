@@ -114,15 +114,36 @@ async fn respawn_paired_if_dead(
 
     let mut inst_for_blocking = inst.clone();
     let tmux_name_clone = tmux_name.clone();
+    // Two failure modes the user can land in:
+    //   1. Pane is dead but the tmux session still exists (shell exit
+    //      under `remain-on-exit on`). `kill_terminal_if_dead` clears
+    //      the tombstone, then we respawn.
+    //   2. The whole tmux session is gone (`tmux kill-session`, daemon
+    //      reaped on aoe restart, etc). `kill_terminal_if_dead`
+    //      returns false here because there's nothing to kill, but the
+    //      next `tmux attach-session` will fail with "can't find
+    //      session" and the WS will close with code 4001. Recreate
+    //      the session in that case too so the retry click recovers
+    //      instead of hot-looping. See #1107 follow-up.
     let respawned = tokio::task::spawn_blocking(move || -> anyhow::Result<bool> {
-        if !inst_for_blocking.kill_terminal_if_dead()? {
+        let killed_dead = inst_for_blocking.kill_terminal_if_dead()?;
+        let session_missing = !inst_for_blocking.terminal_tmux_session()?.exists();
+        if !killed_dead && !session_missing {
             return Ok(false);
         }
-        tracing::warn!(
-            target: "terminal.ws",
-            tmux = %tmux_name_clone,
-            "paired terminal pane dead at WS upgrade, killing and respawning"
-        );
+        if killed_dead {
+            tracing::warn!(
+                target: "terminal.ws",
+                tmux = %tmux_name_clone,
+                "paired terminal pane dead at WS upgrade, killing and respawning"
+            );
+        } else {
+            tracing::warn!(
+                target: "terminal.ws",
+                tmux = %tmux_name_clone,
+                "paired terminal session missing at WS upgrade, recreating"
+            );
+        }
         inst_for_blocking.start_terminal()?;
         Ok(true)
     })
@@ -205,15 +226,31 @@ async fn respawn_container_if_dead(
     // No in-memory cache to update for container terminal: `has_container_terminal()`
     // queries tmux directly, so unlike the paired variant we don't need to write
     // back a `terminal_info` flag after a successful respawn.
+    //
+    // See `respawn_paired_if_dead` for the missing-session branch: a
+    // `tmux kill-session` on a paired container terminal also has to
+    // recreate from scratch, not just kill-then-respawn the pane.
     let _respawned = tokio::task::spawn_blocking(move || -> anyhow::Result<bool> {
-        if !inst_for_blocking.kill_container_terminal_if_dead()? {
+        let killed_dead = inst_for_blocking.kill_container_terminal_if_dead()?;
+        let session_missing = !inst_for_blocking
+            .container_terminal_tmux_session()?
+            .exists();
+        if !killed_dead && !session_missing {
             return Ok(false);
         }
-        tracing::warn!(
-            target: "terminal.ws",
-            tmux = %tmux_name_clone,
-            "container terminal pane dead at WS upgrade, killing and respawning"
-        );
+        if killed_dead {
+            tracing::warn!(
+                target: "terminal.ws",
+                tmux = %tmux_name_clone,
+                "container terminal pane dead at WS upgrade, killing and respawning"
+            );
+        } else {
+            tracing::warn!(
+                target: "terminal.ws",
+                tmux = %tmux_name_clone,
+                "container terminal session missing at WS upgrade, recreating"
+            );
+        }
         inst_for_blocking.start_container_terminal_with_size(None)?;
         Ok(true)
     })
