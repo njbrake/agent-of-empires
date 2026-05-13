@@ -14,11 +14,18 @@ export function useWorkspaces(sessions: SessionResponse[]): Workspace[] {
   return useMemo(() => {
     const groups = new Map<string, SessionResponse[]>();
 
+    // Sessions with a non-null `branch` represent a worktree and collapse
+    // into a single workspace row (one row per worktree). Sessions with a
+    // null `branch` (no `--worktree`) each get their own workspace; without
+    // this split, multiple `aoe add <same-path>` sessions vanished behind
+    // `workspace.sessions[0]`. See #956.
     for (const session of sessions) {
       const repoPath = normalizePath(
         session.main_repo_path ?? session.project_path,
       );
-      const key = `${repoPath}::${session.branch ?? "__default__"}`;
+      const key = session.branch
+        ? `${repoPath}::${session.branch}`
+        : `${repoPath}::__session__::${session.id}`;
       const existing = groups.get(key);
       if (existing) {
         existing.push(session);
