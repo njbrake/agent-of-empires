@@ -65,6 +65,8 @@ import { AboutModal } from "./components/AboutModal";
 import { CommandPalette } from "./components/command-palette/CommandPalette";
 import { DisconnectBanner } from "./components/DisconnectBanner";
 
+const RIGHT_PANEL_COLLAPSED_KEY = "aoe-right-collapsed";
+
 export default function App() {
   const [loginRequired, setLoginRequired] = useState<boolean | null>(null);
   const [loginAuthenticated, setLoginAuthenticated] = useState(true);
@@ -172,9 +174,15 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
   } | null>(null);
   const selectedFilePath = selectedFile?.path ?? null;
   const selectedRepoName = selectedFile?.repoName;
-  const [diffCollapsed, setDiffCollapsed] = useState(
-    () => window.innerWidth < 768,
-  );
+  const [diffCollapsed, setDiffCollapsed] = useState(() => {
+    const stored = localStorage.getItem(RIGHT_PANEL_COLLAPSED_KEY);
+    if (stored === "1") return true;
+    if (stored === "0") return false;
+    return window.innerWidth < 768;
+  });
+  useEffect(() => {
+    localStorage.setItem(RIGHT_PANEL_COLLAPSED_KEY, diffCollapsed ? "1" : "0");
+  }, [diffCollapsed]);
   const [showSessionWizard, setShowSessionWizard] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
   const [showPalette, setShowPalette] = useState(false);
