@@ -336,11 +336,13 @@ impl EventStore {
     }
 
     /// Return the most recent unfired `WakeupScheduled` for `session_id`.
-    /// A wakeup counts as pending when its seq is greater than the seq
-    /// of the latest `UserPromptSent` (the /loop skill's self-firing
-    /// emits a fresh prompt when the wake triggers, so a wakeup whose
-    /// seq is ≤ the latest prompt has already fired). Returns the
-    /// stored `at` timestamp and optional `reason`. See #1091.
+    /// "Pending" means the latest scheduled `at` is still in the future;
+    /// the previous heuristic (any `UserPromptSent` with a higher seq
+    /// marks the wakeup as fired) is wrong because a user-typed
+    /// follow-up message during the wait wasn't the wake firing — the
+    /// next ScheduleWakeup turn could still arrive minutes later. Pick
+    /// the latest WakeupScheduled and gate on the timestamp instead.
+    /// See #1091.
     pub fn latest_pending_wakeup(
         &self,
         session_id: &str,
@@ -354,12 +356,6 @@ impl EventStore {
                 "SELECT event_json FROM cockpit_events
                  WHERE session_id = ?1
                    AND event_json LIKE '{\"WakeupScheduled\":%'
-                   AND seq > COALESCE(
-                     (SELECT MAX(seq) FROM cockpit_events
-                      WHERE session_id = ?1
-                        AND event_json LIKE '{\"UserPromptSent\":%'),
-                     0
-                   )
                  ORDER BY seq DESC LIMIT 1",
                 params![session_id],
                 |row| row.get(0),
@@ -369,7 +365,11 @@ impl EventStore {
             .flatten()?;
         let event: Event = serde_json::from_str(&json).ok()?;
         if let Event::WakeupScheduled { at, reason } = event {
-            Some((at, reason))
+            if at > Utc::now() {
+                Some((at, reason))
+            } else {
+                None
+            }
         } else {
             None
         }
@@ -944,6 +944,93 @@ mod tests {
             .record("s-1", 4, &Event::AgentMessageChunk { text: "mid".into() })
             .unwrap();
         assert!(store.has_in_flight_turn("s-1"));
+    }
+
+    #[test]
+    fn latest_pending_wakeup_returns_future_wakeup_even_after_user_prompt() {
+        // Regression for #1091: the old query treated any UserPromptSent
+        // with a higher seq than the WakeupScheduled as evidence the
+        // wake had already fired, which hid the sidebar countdown +
+        // cockpit "Asleep until …" banner whenever the user typed a
+        // follow-up message during the wait. Pending now gates purely
+        // on `at > now()`.
+        let (_tmp, store) = open_store(1000);
+        let at = Utc::now() + chrono::Duration::seconds(120);
+        store
+            .record(
+                "s-1",
+                1,
+                &Event::UserPromptSent {
+                    text: "schedule a wake in 2m".into(),
+                },
+            )
+            .unwrap();
+        store
+            .record(
+                "s-1",
+                2,
+                &Event::WakeupScheduled {
+                    at,
+                    reason: Some("test wake".into()),
+                },
+            )
+            .unwrap();
+        // User-typed follow-up while the wake is still pending.
+        store
+            .record(
+                "s-1",
+                3,
+                &Event::UserPromptSent {
+                    text: "btw, ping me when you wake".into(),
+                },
+            )
+            .unwrap();
+        let pending = store.latest_pending_wakeup("s-1").expect("still pending");
+        assert!((pending.0 - at).num_seconds().abs() <= 1);
+        assert_eq!(pending.1.as_deref(), Some("test wake"));
+    }
+
+    #[test]
+    fn latest_pending_wakeup_returns_none_when_at_in_past() {
+        let (_tmp, store) = open_store(1000);
+        let at = Utc::now() - chrono::Duration::seconds(30);
+        store
+            .record("s-1", 1, &Event::WakeupScheduled { at, reason: None })
+            .unwrap();
+        assert!(store.latest_pending_wakeup("s-1").is_none());
+    }
+
+    #[test]
+    fn latest_pending_wakeup_uses_latest_scheduled_event() {
+        // When the agent reschedules mid-flight, the latest
+        // WakeupScheduled supersedes the earlier one. The query must
+        // pick the latest by seq, not by `at` ordering — that's the
+        // single source of truth for the active wake.
+        let (_tmp, store) = open_store(1000);
+        let earlier = Utc::now() + chrono::Duration::seconds(60);
+        let later = Utc::now() + chrono::Duration::seconds(600);
+        store
+            .record(
+                "s-1",
+                1,
+                &Event::WakeupScheduled {
+                    at: earlier,
+                    reason: Some("first schedule".into()),
+                },
+            )
+            .unwrap();
+        store
+            .record(
+                "s-1",
+                2,
+                &Event::WakeupScheduled {
+                    at: later,
+                    reason: Some("rescheduled".into()),
+                },
+            )
+            .unwrap();
+        let pending = store.latest_pending_wakeup("s-1").expect("pending");
+        assert_eq!(pending.1.as_deref(), Some("rescheduled"));
     }
 
     #[test]

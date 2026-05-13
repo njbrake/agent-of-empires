@@ -620,12 +620,19 @@ export function applyEvent(
     // user_stopped banner without waiting for AcpSessionAssigned.
     next.workerStopped = false;
     next.workerRestarting = false;
-    // /loop dynamic mode self-fires a UserPromptSent on wake, which
-    // is exactly the signal that the previously-pending wakeup has
-    // fired. Clear it here so the sidebar countdown / banner go away
-    // without waiting for a server-side recomputation. See #1091.
-    next.nextWakeupAt = null;
-    next.nextWakeupReason = null;
+    // /loop dynamic mode self-fires a UserPromptSent on wake, but a
+    // user-typed follow-up during the wait is NOT the wake firing —
+    // only clear when the scheduled time has already elapsed. The
+    // countdown UI continues counting down through a mid-wait user
+    // prompt; the next ScheduleWakeup turn (or the wake itself)
+    // overrides it cleanly. See #1091.
+    if (next.nextWakeupAt) {
+      const wakeAt = new Date(next.nextWakeupAt).getTime();
+      if (!Number.isNaN(wakeAt) && Date.now() >= wakeAt) {
+        next.nextWakeupAt = null;
+        next.nextWakeupReason = null;
+      }
+    }
     // Any pending context-primer offer is consumed once the user
     // submits a new prompt — the recovery affordance is one-shot.
     next.contextPrimerAvailable = null;
