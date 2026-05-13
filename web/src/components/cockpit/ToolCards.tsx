@@ -37,6 +37,7 @@ import { useCockpitPrefs } from "../../lib/cockpitPrefs";
 import type { ActivityRow, ToolCall } from "../../lib/cockpitTypes";
 import { diffPair } from "../../lib/diffPair";
 import { StringDiff } from "../diff/StringDiff";
+import { ToolErrorBody } from "./ToolErrorBody";
 import {
   classifyMcp,
   humanizeServer,
@@ -522,7 +523,7 @@ function ExecuteToolCard({ tool, result }: Props) {
       expanded={open}
       onToggle={() => setOpen((v) => !v)}
       body={
-        <>
+        <ToolErrorBody status={status} errorText={result?.text}>
           {description && (
             <div className="border-t border-surface-800 bg-surface-900/40 px-3 py-1 text-[11px] text-text-muted italic">
               {description}
@@ -533,14 +534,14 @@ function ExecuteToolCard({ tool, result }: Props) {
               users can read and copy it. Shiki's bash grammar gives
               the same coloring as our markdown code blocks. */}
           <HighlightedBlock text={command} language="bash" maxLines={6} />
-          {output ? (
+          {output && status !== "err" ? (
             <HighlightedBlock text={output} language="bash" maxLines={20} />
-          ) : (
+          ) : status !== "err" ? (
             <div className="border-t border-surface-800 bg-surface-950 px-3 py-2 text-[11px] text-text-dim italic">
               {status === "running" ? "Running…" : "(no output)"}
             </div>
-          )}
-        </>
+          ) : null}
+        </ToolErrorBody>
       }
     />
   );
@@ -579,12 +580,16 @@ function ReadToolCard({ tool, result }: Props) {
           {meta}
         </>
       }
-      expanded={open}
-      onToggle={content ? () => setOpen((v) => !v) : undefined}
+      expanded={open || status === "err"}
+      onToggle={
+        status === "err" || content ? () => setOpen((v) => !v) : undefined
+      }
       body={
-        content && (
-          <HighlightedBlock text={content} language={ext} maxLines={16} />
-        )
+        <ToolErrorBody status={status} errorText={result?.text}>
+          {content && status !== "err" && (
+            <HighlightedBlock text={content} language={ext} maxLines={16} />
+          )}
+        </ToolErrorBody>
       }
     />
   );
@@ -626,6 +631,10 @@ function EditToolCard({ tool, result }: Props) {
     </span>
   );
 
+  // Hide the "+N -M" chip on failure: no change actually landed, and
+  // the chip reads as a successful diff summary. Surface the adapter's
+  // failure reason via ToolErrorBody instead. See #1090.
+  const errorChip = status === "err";
   return (
     <CardChrome
       status={status}
@@ -634,19 +643,23 @@ function EditToolCard({ tool, result }: Props) {
       icon={<Pencil className="h-3.5 w-3.5" />}
       label={verb}
       primary={path}
-      meta={meta}
-      expanded={open}
-      onToggle={hasDiff ? () => setOpen((v) => !v) : undefined}
+      meta={errorChip ? undefined : meta}
+      expanded={open || status === "err"}
+      onToggle={
+        status === "err" || hasDiff ? () => setOpen((v) => !v) : undefined
+      }
       body={
-        hasDiff && (
-          <div className="border-t border-surface-800 bg-surface-950">
-            <StringDiff
-              oldText={oldText}
-              newText={newText}
-              filePath={path}
-            />
-          </div>
-        )
+        <ToolErrorBody status={status} errorText={result?.text}>
+          {hasDiff && (
+            <div className="border-t border-surface-800 bg-surface-950">
+              <StringDiff
+                oldText={oldText}
+                newText={newText}
+                filePath={path}
+              />
+            </div>
+          )}
+        </ToolErrorBody>
       }
     />
   );
@@ -660,6 +673,7 @@ function DeleteToolCard({ tool, result }: Props) {
   const argPath = pickStr(args, "path", "file_path", "filePath", "filename");
   const title = pickStr(args, "_aoe_title");
   const path = pickFirst(argPath, title, tool.name) ?? "(unknown file)";
+  const [open, setOpen] = useState(false);
   return (
     <CardChrome
       status={status}
@@ -668,7 +682,15 @@ function DeleteToolCard({ tool, result }: Props) {
       icon={<Trash2 className="h-3.5 w-3.5 text-rose-400" />}
       label="delete"
       primary={path}
-      expanded={false}
+      expanded={open || status === "err"}
+      onToggle={status === "err" ? () => setOpen((v) => !v) : undefined}
+      body={
+        status === "err" ? (
+          <ToolErrorBody status={status} errorText={result?.text}>
+            {null}
+          </ToolErrorBody>
+        ) : undefined
+      }
     />
   );
 }
@@ -717,31 +739,36 @@ function SearchToolCard({ tool, result, provenance }: SearchProps) {
           )}
         </>
       }
-      expanded={open}
-      onToggle={lines.length > 0 ? () => setOpen((v) => !v) : undefined}
+      expanded={open || status === "err"}
+      onToggle={
+        status === "err" || lines.length > 0 ? () => setOpen((v) => !v) : undefined
+      }
       body={
-        lines.length > 0 && (
-          <div className="border-t border-surface-800 bg-surface-950 max-h-64 overflow-y-auto">
-            {lines.slice(0, 50).map((l, i) => (
-              <div
-                key={i}
-                className="flex font-mono text-[11px] hover:bg-surface-900"
-              >
-                <span className="select-none w-10 shrink-0 px-2 py-0.5 text-right text-text-dim">
-                  {i + 1}
-                </span>
-                <span className="px-2 py-0.5 text-text-secondary truncate">
-                  {l}
-                </span>
-              </div>
-            ))}
-            {lines.length > 50 && (
-              <div className="border-t border-surface-800 px-3 py-1 text-center text-[11px] text-text-dim">
-                {lines.length - 50} more match{lines.length - 50 === 1 ? "" : "es"}
-              </div>
-            )}
-          </div>
-        )
+        <ToolErrorBody status={status} errorText={result?.text}>
+          {lines.length > 0 && status !== "err" && (
+            <div className="border-t border-surface-800 bg-surface-950 max-h-64 overflow-y-auto">
+              {lines.slice(0, 50).map((l, i) => (
+                <div
+                  key={i}
+                  className="flex font-mono text-[11px] hover:bg-surface-900"
+                >
+                  <span className="select-none w-10 shrink-0 px-2 py-0.5 text-right text-text-dim">
+                    {i + 1}
+                  </span>
+                  <span className="px-2 py-0.5 text-text-secondary truncate">
+                    {l}
+                  </span>
+                </div>
+              ))}
+              {lines.length > 50 && (
+                <div className="border-t border-surface-800 px-3 py-1 text-center text-[11px] text-text-dim">
+                  {lines.length - 50} more match
+                  {lines.length - 50 === 1 ? "" : "es"}
+                </div>
+              )}
+            </div>
+          )}
+        </ToolErrorBody>
       }
     />
   );
@@ -766,10 +793,16 @@ function FetchToolCard({ tool, result }: Props) {
       icon={<Globe className="h-3.5 w-3.5" />}
       label="fetch"
       primary={url}
-      expanded={open}
-      onToggle={output ? () => setOpen((v) => !v) : undefined}
+      expanded={open || status === "err"}
+      onToggle={
+        status === "err" || output ? () => setOpen((v) => !v) : undefined
+      }
       body={
-        output && <HighlightedBlock text={output} language="json" maxLines={16} />
+        <ToolErrorBody status={status} errorText={result?.text}>
+          {output && status !== "err" && (
+            <HighlightedBlock text={output} language="json" maxLines={16} />
+          )}
+        </ToolErrorBody>
       }
     />
   );
@@ -885,28 +918,30 @@ function TodoUpdateCard({ tool, result, todos }: TodoCardProps) {
           )}
         </>
       }
-      expanded={open}
+      expanded={open || status === "err"}
       onToggle={() => setOpen((v) => !v)}
       startedAt={tool.started_at}
       endedAt={result?.at}
       body={
-        <div className="border-t border-surface-800 bg-surface-950 px-3 py-2">
-          <ul className="flex flex-col gap-1 font-mono text-xs">
-            {todos.map((t, i) => (
-              <li
-                key={`${i}-${t.content}`}
-                className={`flex items-start gap-2 ${TODO_CLASS[t.status]}`}
-              >
-                <span className="select-none w-4 shrink-0 text-center">
-                  {TODO_GLYPH[t.status]}
-                </span>
-                <span className="min-w-0 flex-1 whitespace-pre-wrap break-words">
-                  {t.content}
-                </span>
-              </li>
-            ))}
-          </ul>
-        </div>
+        <ToolErrorBody status={status} errorText={result?.text}>
+          <div className="border-t border-surface-800 bg-surface-950 px-3 py-2">
+            <ul className="flex flex-col gap-1 font-mono text-xs">
+              {todos.map((t, i) => (
+                <li
+                  key={`${i}-${t.content}`}
+                  className={`flex items-start gap-2 ${TODO_CLASS[t.status]}`}
+                >
+                  <span className="select-none w-4 shrink-0 text-center">
+                    {TODO_GLYPH[t.status]}
+                  </span>
+                  <span className="min-w-0 flex-1 whitespace-pre-wrap break-words">
+                    {t.content}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </ToolErrorBody>
       }
     />
   );
@@ -966,12 +1001,14 @@ function SkillToolCard({ tool, result, skillName }: SkillProps) {
       icon={<Sparkles className="h-3.5 w-3.5" />}
       label="skill"
       primary={skillName}
-      expanded={open}
-      onToggle={hasBody ? () => setOpen((v) => !v) : undefined}
+      expanded={open || status === "err"}
+      onToggle={
+        status === "err" || hasBody ? () => setOpen((v) => !v) : undefined
+      }
       startedAt={tool.started_at}
       endedAt={result?.at}
       body={
-        <>
+        <ToolErrorBody status={status} errorText={result?.text}>
           {args && Object.keys(args).filter((k) => !isCockpitBookkeepingKey(k)).length > 0 && (
             <div className="border-t border-surface-800 bg-surface-950 px-3 py-2">
               <div className="mb-1 flex items-center justify-between text-[10px] uppercase tracking-wider text-text-dim">
@@ -983,10 +1020,10 @@ function SkillToolCard({ tool, result, skillName }: SkillProps) {
               </pre>
             </div>
           )}
-          {output && (
+          {output && status !== "err" && (
             <HighlightedBlock text={output} language="markdown" maxLines={16} />
           )}
-        </>
+        </ToolErrorBody>
       }
     />
   );
@@ -1262,10 +1299,12 @@ function McpToolCard({ tool, result, server, verb }: McpProps) {
           )}
         </>
       }
-      expanded={open}
-      onToggle={hasBody ? () => setOpen((v) => !v) : undefined}
+      expanded={open || status === "err"}
+      onToggle={
+        status === "err" || hasBody ? () => setOpen((v) => !v) : undefined
+      }
       body={
-        <>
+        <ToolErrorBody status={status} errorText={result?.text}>
           {args && Object.keys(args).filter((k) => !isCockpitBookkeepingKey(k)).length > 0 && (
             <div className="border-t border-surface-800 bg-surface-950 px-3 py-2">
               <div className="mb-1 flex items-center justify-between text-[10px] uppercase tracking-wider text-text-dim">
@@ -1277,10 +1316,10 @@ function McpToolCard({ tool, result, server, verb }: McpProps) {
               </pre>
             </div>
           )}
-          {output && (
+          {output && status !== "err" && (
             <HighlightedBlock text={output} language="markdown" maxLines={24} />
           )}
-        </>
+        </ToolErrorBody>
       }
     />
   );
@@ -1345,10 +1384,13 @@ function MemoryCard({ tool, result, hit }: MemoryCardProps) {
         </>
       }
       meta={meta}
-      expanded={open}
-      onToggle={hasBody ? () => setOpen((v) => !v) : undefined}
+      expanded={open || status === "err"}
+      onToggle={
+        status === "err" || hasBody ? () => setOpen((v) => !v) : undefined
+      }
       body={
-        hasBody && parsed ? (
+        <ToolErrorBody status={status} errorText={result?.text}>
+          {hasBody && parsed && status !== "err" ? (
           <div className="border-t border-surface-800 bg-surface-950">
             {(parsed.name || parsed.description || parsed.type) && (
               <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-0.5 px-3 py-2 text-[11px]">
@@ -1382,7 +1424,8 @@ function MemoryCard({ tool, result, hit }: MemoryCardProps) {
               />
             )}
           </div>
-        ) : null
+          ) : null}
+        </ToolErrorBody>
       }
     />
   );
@@ -1402,10 +1445,14 @@ function GenericToolCard({ tool, result }: Props) {
       icon={<Sparkles className="h-3.5 w-3.5" />}
       label={tool.kind || "tool"}
       primary={tool.name}
-      expanded={open}
-      onToggle={tool.args_preview || output ? () => setOpen((v) => !v) : undefined}
+      expanded={open || status === "err"}
+      onToggle={
+        status === "err" || tool.args_preview || output
+          ? () => setOpen((v) => !v)
+          : undefined
+      }
       body={
-        <>
+        <ToolErrorBody status={status} errorText={result?.text}>
           {tool.args_preview && (
             <div className="border-t border-surface-800 bg-surface-950 px-3 py-2">
               <div className="mb-1 flex items-center justify-between text-[10px] uppercase tracking-wider text-text-dim">
@@ -1417,7 +1464,7 @@ function GenericToolCard({ tool, result }: Props) {
               </pre>
             </div>
           )}
-          {output && (
+          {output && status !== "err" && (
             <div className="border-t border-surface-800 bg-surface-950 px-3 py-2">
               <div className="mb-1 flex items-center justify-between text-[10px] uppercase tracking-wider text-text-dim">
                 <span>output</span>
@@ -1428,7 +1475,7 @@ function GenericToolCard({ tool, result }: Props) {
               </pre>
             </div>
           )}
-        </>
+        </ToolErrorBody>
       }
     />
   );
