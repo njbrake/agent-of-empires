@@ -60,6 +60,7 @@ interface Props {
 export interface CockpitContext {
   state: CockpitState;
   status: ReturnType<typeof useCockpit>["status"];
+  hasEverOpened: boolean;
   resolveApproval: (
     nonce: string,
     decision: ApprovalDecision,
@@ -128,6 +129,7 @@ export function CockpitRuntime({
       {children({
         state: cockpit.state,
         status: cockpit.status,
+        hasEverOpened: cockpit.hasEverOpened,
         resolveApproval: cockpit.resolveApproval,
         sendPrompt: cockpit.sendPrompt,
         forceEndTurn: cockpit.forceEndTurn,

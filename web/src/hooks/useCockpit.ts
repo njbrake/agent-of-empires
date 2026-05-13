@@ -237,6 +237,15 @@ export function useCockpit(
   useEffect(() => {
     lastSeqRef.current = state.lastSeq;
   }, [state.lastSeq]);
+  // Flips true the first time the WS opens for this session and
+  // resets on session change. Lets the SystemNotices banner copy
+  // distinguish "first connect, worker still spawning" from
+  // "reconnecting after a real drop" — the prior wording was
+  // misleading on brand-new sessions. See #1106.
+  const [hasEverOpened, setHasEverOpened] = useState(false);
+  useEffect(() => {
+    setHasEverOpened(false);
+  }, [sessionId]);
 
   // Timestamp (ms) of the most recent applied frame. Read by the
   // "Force end turn" escape hatch in WorkingSpinner: when `turnActive`
@@ -361,6 +370,7 @@ export function useCockpit(
       ws.onopen = () => {
         statusRef.current = "open";
         setStatus("open");
+        setHasEverOpened(true);
       };
       ws.onerror = () => {
         statusRef.current = "error";
@@ -667,6 +677,12 @@ export function useCockpit(
   return {
     state,
     status,
+    /** True once the WS has reached `onopen` at least once for the
+     *  current session. Lets banner copy distinguish "first dial
+     *  while the worker spawns" (no prior connection to recover) from
+     *  "we lost a live connection and are retrying" (cached
+     *  transcript and the recovery framing are honest). See #1106. */
+    hasEverOpened,
     resolveApproval,
     sendPrompt,
     cancelPrompt,

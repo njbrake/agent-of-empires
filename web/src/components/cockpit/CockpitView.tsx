@@ -93,6 +93,7 @@ function CockpitChrome({
   onToggleClearedTurns,
   state,
   status,
+  hasEverOpened,
   resolveApproval,
   sendPrompt,
   forceEndTurn,
@@ -169,6 +170,7 @@ function CockpitChrome({
           status={status}
           lagged={state.lagged}
           rateLimit={state.rateLimit}
+          hasEverOpened={hasEverOpened}
         />
       )}
 
@@ -184,7 +186,8 @@ function CockpitChrome({
       {cockpitWorkerState === "resuming" &&
         !state.startupError &&
         !state.workerStopped &&
-        !state.workerRestarting && <WorkerResumingBanner />}
+        !state.workerRestarting &&
+        (state.lastSeq === 0 ? <SpawningBanner /> : <WorkerResumingBanner />)}
       {state.nextWakeupAt &&
         !state.turnActive &&
         !state.startupError &&
@@ -890,25 +893,34 @@ function SystemNotices({
   status,
   lagged,
   rateLimit,
+  hasEverOpened,
 }: {
   status: CockpitContext["status"];
   lagged: boolean;
   rateLimit: CockpitState["rateLimit"];
+  hasEverOpened: boolean;
 }) {
   const messages: { kind: string; text: string }[] = [];
   if (status === "connecting") {
-    messages.push({ kind: "info", text: "Connecting to cockpit…" });
+    messages.push({
+      kind: "info",
+      text: hasEverOpened ? "Reconnecting to cockpit…" : "Starting cockpit…",
+    });
   }
   if (status === "error") {
     messages.push({
       kind: "warn",
-      text: "Cockpit reconnecting… showing cached transcript; new messages disabled.",
+      text: hasEverOpened
+        ? "Cockpit reconnecting… showing cached transcript; new messages disabled."
+        : "Starting cockpit worker… this can take a few seconds for new sessions.",
     });
   }
   if (status === "closed") {
     messages.push({
       kind: "warn",
-      text: "Cockpit disconnected. Showing cached transcript; new messages disabled.",
+      text: hasEverOpened
+        ? "Cockpit disconnected. Showing cached transcript; new messages disabled."
+        : "Cockpit not ready yet. Retrying…",
     });
   }
   if (lagged) {
@@ -977,6 +989,25 @@ function WorkerRestartingBanner() {
       <span>
         Restarting cockpit worker… the daemon will respawn the agent with
         your existing transcript shortly.
+      </span>
+    </div>
+  );
+}
+
+/** First-spawn variant of `WorkerResumingBanner` shown when the
+ *  session has no prior transcript (`lastSeq === 0`). The "cached
+ *  transcript still available" copy is wrong there since there's
+ *  nothing to be still-available. See #1106. */
+function SpawningBanner() {
+  return (
+    <div className="flex items-center gap-2 border-b border-amber-900/60 bg-amber-950/40 px-4 py-2 text-xs text-amber-200">
+      <span
+        className="inline-block h-2 w-2 animate-pulse rounded-full bg-amber-400"
+        aria-hidden
+      />
+      <span>
+        Starting cockpit worker for new session… this can take a few
+        seconds.
       </span>
     </div>
   );
