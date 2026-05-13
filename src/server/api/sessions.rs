@@ -10,7 +10,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::session::{Instance, Status, Storage};
+use crate::session::{EnsureReadyError, EnsureReadyOutcome, Instance, Status, Storage};
 
 use super::validate_no_shell_injection;
 use super::AppState;
@@ -2078,10 +2078,21 @@ mod tests {
 #[derive(Deserialize)]
 pub struct SendMessageRequest {
     pub message: String,
+    /// Whether to auto-revive a dead/stopped session before sending. Defaults
+    /// to `true`; set to `false` for fail-loud behavior (parity with the
+    /// `--no-revive` CLI flag).
+    #[serde(default = "default_revive")]
+    pub revive: bool,
+}
+
+fn default_revive() -> bool {
+    true
 }
 
 enum SendKeysError {
     NotRunning,
+    Transient(Status),
+    CockpitMode,
     Tmux(anyhow::Error),
 }
 
@@ -2125,25 +2136,49 @@ pub async fn send_message(
 
     let tool = instance.tool.clone();
     let message = req.message;
-    let send_result = tokio::task::spawn_blocking(move || -> Result<(), SendKeysError> {
-        let tmux_session = instance.tmux_session().map_err(SendKeysError::Tmux)?;
-        if !tmux_session.exists() {
-            return Err(SendKeysError::NotRunning);
-        }
-        let delay = crate::agents::send_keys_enter_delay(&tool);
-        tmux_session
-            .send_keys_with_delay(&message, delay)
-            .map_err(SendKeysError::Tmux)?;
-        Ok(())
-    })
+    let revive = req.revive;
+    let send_result = tokio::task::spawn_blocking(
+        move || -> Result<(EnsureReadyOutcome, Instance), SendKeysError> {
+            // Revive the pane before sending. Without this, a send to a dead
+            // pane silently writes keystrokes to a corpse with no agent.
+            // Skipped when the caller opts out via `revive: false`.
+            let mut inst_owned = instance;
+            let outcome = if revive {
+                inst_owned.ensure_pane_ready().map_err(|e| match e {
+                    EnsureReadyError::Transient(s) => SendKeysError::Transient(s),
+                    EnsureReadyError::CockpitMode => SendKeysError::CockpitMode,
+                    EnsureReadyError::Tmux(e) => SendKeysError::Tmux(e),
+                })?
+            } else {
+                EnsureReadyOutcome::AlreadyAlive
+            };
+            let tmux_session = inst_owned.tmux_session().map_err(SendKeysError::Tmux)?;
+            if !tmux_session.exists() {
+                return Err(SendKeysError::NotRunning);
+            }
+            let delay = crate::agents::send_keys_enter_delay(&tool);
+            tmux_session
+                .send_keys_with_delay(&message, delay)
+                .map_err(SendKeysError::Tmux)?;
+            Ok((outcome, inst_owned))
+        },
+    )
     .await;
 
     match send_result {
-        Ok(Ok(())) => {
-            // Stamp last_accessed_at so the activity column reflects API-driven
-            // interaction the same way TUI/web interaction does.
+        Ok(Ok((outcome, started))) => {
+            // ensure_pane_ready mutated `started` (status, agent_session_id,
+            // last_start_time, last_error) on the clone. Sync those back to
+            // the live entry so the next request sees a coherent view;
+            // without this, a rapid follow-up could generate a fresh
+            // `agent_session_id` and orphan the prior Claude conversation.
+            // See `apply_post_restart_sync`. Also stamp last_accessed_at so
+            // the activity column reflects API-driven interaction.
             let mut instances = state.instances.write().await;
             let profile = if let Some(i) = instances.iter_mut().find(|i| i.id == id) {
+                if !matches!(outcome, EnsureReadyOutcome::AlreadyAlive) {
+                    apply_post_restart_sync(i, &started);
+                }
                 i.touch_last_accessed();
                 i.source_profile.clone()
             } else {
@@ -2172,6 +2207,19 @@ pub async fn send_message(
         Ok(Err(SendKeysError::NotRunning)) => (
             StatusCode::CONFLICT,
             Json(serde_json::json!({"error": "session_not_running"})),
+        )
+            .into_response(),
+        Ok(Err(SendKeysError::Transient(status))) => (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "error": "session_transient",
+                "status": format!("{status:?}"),
+            })),
+        )
+            .into_response(),
+        Ok(Err(SendKeysError::CockpitMode)) => (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({"error": "cockpit_mode_unsupported"})),
         )
             .into_response(),
         Ok(Err(SendKeysError::Tmux(e))) => {

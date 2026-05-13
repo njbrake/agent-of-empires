@@ -218,12 +218,16 @@ Remove a session
 
 Send a message to a running agent session
 
-**Usage:** `aoe send <IDENTIFIER> <MESSAGE>`
+**Usage:** `aoe send [OPTIONS] <IDENTIFIER> <MESSAGE>`
 
 ###### **Arguments:**
 
 * `<IDENTIFIER>` — Session ID or title
 * `<MESSAGE>` — Message to send to the agent
+
+###### **Options:**
+
+* `--no-revive` — Fail loud on dead/stopped sessions instead of auto-respawning. Default behavior is to revive the session so a `send` after a crash or stop just works; pass this for scripts that want the previous bail-out
 
 
 

@@ -3,7 +3,7 @@
 use anyhow::{bail, Result};
 use clap::Args;
 
-use crate::session::Storage;
+use crate::session::{EnsureReadyError, EnsureReadyOutcome, Storage};
 
 #[derive(Args)]
 pub struct SendArgs {
@@ -12,6 +12,12 @@ pub struct SendArgs {
 
     /// Message to send to the agent
     message: String,
+
+    /// Fail loud on dead/stopped sessions instead of auto-respawning. Default
+    /// behavior is to revive the session so a `send` after a crash or stop
+    /// just works; pass this for scripts that want the previous bail-out.
+    #[arg(long = "no-revive")]
+    no_revive: bool,
 }
 
 pub async fn run(profile: &str, args: SendArgs) -> Result<()> {
@@ -26,8 +32,32 @@ pub async fn run(profile: &str, args: SendArgs) -> Result<()> {
     let session_id = inst.id.clone();
     let session_title = inst.title.clone();
     let tool = inst.tool.clone();
-    let tmux_session = crate::tmux::Session::new(&inst.id, &inst.title)?;
 
+    // Revive the pane if needed before delivering keystrokes. Without this,
+    // a send to a dead pane silently writes to a corpse with no agent to
+    // respond to it.
+    if !args.no_revive {
+        if let Some(target) = instances.iter_mut().find(|i| i.id == session_id) {
+            match target.ensure_pane_ready() {
+                Ok(EnsureReadyOutcome::Respawned) => {
+                    eprintln!("  (respawned dead pane before send)");
+                }
+                Ok(EnsureReadyOutcome::Started) => {
+                    eprintln!("  (started stopped session before send)");
+                }
+                Ok(EnsureReadyOutcome::AlreadyAlive) => {}
+                Err(EnsureReadyError::Transient(status)) => {
+                    bail!("Session is mid-lifecycle ({status:?}); cannot send right now")
+                }
+                Err(EnsureReadyError::CockpitMode) => {
+                    bail!("Cockpit-mode sessions have no tmux pane; send is not supported")
+                }
+                Err(EnsureReadyError::Tmux(e)) => bail!("{}", e),
+            }
+        }
+    }
+
+    let tmux_session = crate::tmux::Session::new(&session_id, &session_title)?;
     if !tmux_session.exists() {
         bail!(
             "Session is not running. Start it first with: aoe session start {}",
