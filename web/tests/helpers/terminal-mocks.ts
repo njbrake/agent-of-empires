@@ -46,7 +46,7 @@ export async function mockTerminalApis(page: Page): Promise<MockHandle> {
     r.fulfill({ status: 200, body: "" }),
   );
   await page.route("**/api/sessions/*/diff/files", (r) =>
-    r.fulfill({ json: { files: [] } }),
+    r.fulfill({ json: { files: [], per_repo_bases: [], warning: null } }),
   );
   for (const path of [
     "settings",
