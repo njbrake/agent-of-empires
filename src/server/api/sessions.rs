@@ -34,6 +34,11 @@ pub struct SessionResponse {
     pub last_error: Option<String>,
     pub branch: Option<String>,
     pub main_repo_path: Option<String>,
+    /// Base branch the worktree was created from when AoE managed the
+    /// creation. None for sessions attached to a pre-existing branch,
+    /// or those that took the repo's default branch. See #948.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_branch: Option<String>,
     pub is_sandboxed: bool,
     pub has_managed_worktree: bool,
     pub has_terminal: bool,
@@ -169,6 +174,10 @@ impl SessionResponse {
                 .worktree_info
                 .as_ref()
                 .map(|w| w.main_repo_path.clone()),
+            base_branch: inst
+                .worktree_info
+                .as_ref()
+                .and_then(|w| w.base_branch.clone()),
             is_sandboxed: inst.is_sandboxed(),
             has_managed_worktree: inst
                 .worktree_info
@@ -1874,12 +1883,36 @@ mod tests {
             main_repo_path: "/tmp/repo".to_string(),
             managed_by_aoe: true,
             created_at: chrono::Utc::now(),
+            base_branch: None,
         });
         assert_eq!(
             SessionResponse::from_instance(&inst, false)
                 .branch
                 .as_deref(),
             Some("feature/test")
+        );
+    }
+
+    #[test]
+    fn session_response_surfaces_base_branch_when_set() {
+        let mut inst = make_test_instance();
+        inst.worktree_info = Some(crate::session::WorktreeInfo {
+            branch: "feature/test".to_string(),
+            main_repo_path: "/tmp/repo".to_string(),
+            managed_by_aoe: true,
+            created_at: chrono::Utc::now(),
+            base_branch: Some("release-1.2".to_string()),
+        });
+        let resp = SessionResponse::from_instance(&inst, false);
+        assert_eq!(resp.base_branch.as_deref(), Some("release-1.2"));
+
+        // Field is omitted from the wire JSON when None so old clients
+        // don't see a flood of nulls.
+        inst.worktree_info.as_mut().unwrap().base_branch = None;
+        let json = serde_json::to_value(SessionResponse::from_instance(&inst, false)).unwrap();
+        assert!(
+            json.get("base_branch").is_none(),
+            "base_branch should be omitted when None, got: {json}"
         );
     }
 
@@ -1958,6 +1991,7 @@ mod tests {
             main_repo_path: "/tmp/repo".to_string(),
             managed_by_aoe: true,
             created_at: chrono::Utc::now(),
+            base_branch: None,
         });
 
         apply_session_title_rename(&mut inst, "Renamed Session".to_string());

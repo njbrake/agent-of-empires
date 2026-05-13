@@ -55,6 +55,15 @@ pub struct WorktreeInfo {
     pub main_repo_path: String,
     pub managed_by_aoe: bool,
     pub created_at: DateTime<Utc>,
+    /// Branch the worktree was created from when `managed_by_aoe` is
+    /// true. None means "the repo's default branch was used" (the
+    /// historical behavior before #948) or the worktree was attached
+    /// to a pre-existing branch (`create_branch = false`). Surfaced
+    /// in `aoe list --json`, the TUI preview, and the web sessions
+    /// API; not used by core logic, so old `sessions.json` files
+    /// deserialize without the field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_branch: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2173,6 +2182,7 @@ mod tests {
             main_repo_path: "/home/user/repo".to_string(),
             managed_by_aoe: true,
             created_at: Utc::now(),
+            base_branch: None,
         };
 
         let json = serde_json::to_string(&info).unwrap();
@@ -2281,6 +2291,7 @@ mod tests {
             main_repo_path: "/tmp/main".to_string(),
             managed_by_aoe: true,
             created_at: Utc::now(),
+            base_branch: None,
         });
 
         let json = serde_json::to_string(&inst).unwrap();

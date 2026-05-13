@@ -796,6 +796,7 @@ impl HomeView {
                 main_repo_path: data.path.clone(),
                 managed_by_aoe: false,
                 created_at: chrono::Utc::now(),
+                base_branch: data.base_branch.clone(),
             });
         }
 

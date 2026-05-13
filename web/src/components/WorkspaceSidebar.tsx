@@ -246,12 +246,16 @@ const SessionRow = memo(function SessionRow({
   const singleSession = workspace.sessions.length === 1;
   const sessionTitle = firstSession?.title.trim() ?? "";
   const branchLabel = workspace.branch ?? null;
+  const baseBranch = firstSession?.base_branch ?? null;
   const label = singleSession
     ? sessionTitle || branchLabel || "default"
     : branchLabel || sessionTitle || "default";
   const subtitle = singleSession && sessionTitle && branchLabel && sessionTitle !== branchLabel
     ? branchLabel
     : null;
+  const subtitleTitle = subtitle && baseBranch
+    ? `${subtitle} (based on ${baseBranch})`
+    : subtitle;
   const sessionId = firstSession?.id;
   const navigationSessionId = runningSession?.id ?? firstSession?.id ?? null;
   const sessionPath = navigationSessionId
@@ -473,8 +477,14 @@ const SessionRow = memo(function SessionRow({
               )}
             </span>
             {subtitle && (
-              <span className="block text-[11px] font-mono text-text-dim truncate" title={subtitle}>
+              <span
+                className="block text-[11px] font-mono text-text-dim truncate"
+                title={subtitleTitle ?? subtitle}
+              >
                 {subtitle}
+                {baseBranch && (
+                  <span className="ml-1 text-text-dim/70">← {baseBranch}</span>
+                )}
               </span>
             )}
             {firstSession?.plan_summary && firstSession.plan_summary.total > 0 && (

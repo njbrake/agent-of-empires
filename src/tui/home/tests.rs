@@ -1035,6 +1035,7 @@ fn test_group_has_managed_worktrees() {
         main_repo_path: "/tmp/main".to_string(),
         managed_by_aoe: true,
         created_at: Utc::now(),
+        base_branch: None,
     });
 
     let mut inst2 = Instance::new("other-session", "/tmp/other");
@@ -1213,6 +1214,7 @@ fn test_delete_group_with_sessions_respects_worktree_option() {
         main_repo_path: "/tmp/main".to_string(),
         managed_by_aoe: true,
         created_at: Utc::now(),
+        base_branch: None,
     });
 
     storage.save(&[inst1]).unwrap();
@@ -2176,6 +2178,7 @@ fn test_shift_n_prefills_main_repo_path_for_worktree_session() {
         main_repo_path: "/tmp/repo".to_string(),
         managed_by_aoe: true,
         created_at: chrono::Utc::now(),
+        base_branch: None,
     });
     storage.save(&[inst]).unwrap();
 
@@ -2614,6 +2617,7 @@ fn test_project_group_name_uses_main_repo_for_worktree() {
         main_repo_path: "/home/user/my-project".to_string(),
         managed_by_aoe: true,
         created_at: Utc::now(),
+        base_branch: None,
     });
     assert_eq!(project_group_name(&inst), "my-project");
 }

@@ -48,6 +48,7 @@ fn test_add_session_with_worktree_flag() {
         main_repo_path: repo_dir.path().to_string_lossy().to_string(),
         managed_by_aoe: true,
         created_at: Utc::now(),
+        base_branch: None,
     });
 
     assert!(wt_path.exists());
@@ -69,6 +70,7 @@ fn test_session_has_worktree_info_after_creation() {
         main_repo_path: repo_dir.path().to_string_lossy().to_string(),
         managed_by_aoe: true,
         created_at: now,
+        base_branch: None,
     });
 
     let info = instance.worktree_info.as_ref().unwrap();
@@ -94,6 +96,7 @@ fn test_worktree_info_persists_across_save_load() {
         main_repo_path: "/original/repo".to_string(),
         managed_by_aoe: true,
         created_at: Utc::now(),
+        base_branch: None,
     });
 
     storage.save(&[instance.clone()]).unwrap();
@@ -160,6 +163,7 @@ fn test_worktree_cleanup_on_session_removal() {
         main_repo_path: repo_dir.path().to_string_lossy().to_string(),
         managed_by_aoe: true,
         created_at: Utc::now(),
+        base_branch: None,
     });
 
     git_wt.remove_worktree(&wt_path, false).unwrap();
@@ -186,6 +190,7 @@ fn test_worktree_preserved_when_keep_flag_used() {
         main_repo_path: repo_dir.path().to_string_lossy().to_string(),
         managed_by_aoe: true,
         created_at: Utc::now(),
+        base_branch: None,
     });
 
     assert!(wt_path.exists());

@@ -414,6 +414,7 @@ pub fn build_instance(
                         main_repo_path: main_repo_path.to_string_lossy().to_string(),
                         managed_by_aoe: false,
                         created_at: Utc::now(),
+                        base_branch: None,
                     });
                 } else {
                     let session_id = uuid::Uuid::new_v4().to_string();
@@ -432,6 +433,7 @@ pub fn build_instance(
                         main_repo_path: main_repo_path.to_string_lossy().to_string(),
                         managed_by_aoe: true,
                         created_at: Utc::now(),
+                        base_branch: None,
                     });
                 }
             } else {
@@ -460,6 +462,7 @@ pub fn build_instance(
                     main_repo_path: main_repo_path.to_string_lossy().to_string(),
                     managed_by_aoe: true,
                     created_at: Utc::now(),
+                    base_branch: params.base_branch.clone(),
                 });
             }
         }

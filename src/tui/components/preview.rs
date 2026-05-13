@@ -165,8 +165,9 @@ impl Preview {
         // 3 base lines (profile+tool / path / status) + optional sandbox + optional worktree block
         let base = 3;
         let sandbox_lines = if instance.is_sandboxed() { 1 } else { 0 };
-        let info_height = if instance.worktree_info.is_some() {
-            base + sandbox_lines + 4 // blank + header + branch + main
+        let info_height = if let Some(wt) = instance.worktree_info.as_ref() {
+            let base_branch_line = if wt.base_branch.is_some() { 1 } else { 0 };
+            base + sandbox_lines + 4 + base_branch_line // blank + header + branch + main (+ optional base)
         } else {
             base + sandbox_lines
         };
@@ -275,6 +276,12 @@ impl Preview {
                     Style::default().fg(theme.text),
                 ),
             ]));
+            if let Some(base) = wt_info.base_branch.as_deref() {
+                info_lines.push(Line::from(vec![
+                    Span::styled("Base:    ", Style::default().fg(theme.dimmed)),
+                    Span::styled(base, Style::default().fg(theme.branch)),
+                ]));
+            }
         }
 
         let paragraph = Paragraph::new(info_lines);

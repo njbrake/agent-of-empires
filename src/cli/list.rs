@@ -36,6 +36,8 @@ struct SessionJson {
     /// Empty for single-repo sessions; populated with one entry per repo
     /// (including the primary) for sessions created with `--repo`/`--project`.
     workspace_repos: Vec<WorkspaceRepoJson>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    worktree: Option<WorktreeJson>,
 }
 
 #[derive(Serialize)]
@@ -43,6 +45,24 @@ struct WorkspaceRepoJson {
     name: String,
     source_path: String,
     branch: String,
+}
+
+#[derive(Serialize)]
+struct WorktreeJson {
+    branch: String,
+    main_repo_path: String,
+    managed_by_aoe: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    base_branch: Option<String>,
+}
+
+fn worktree_for(inst: &Instance) -> Option<WorktreeJson> {
+    inst.worktree_info.as_ref().map(|w| WorktreeJson {
+        branch: w.branch.clone(),
+        main_repo_path: w.main_repo_path.clone(),
+        managed_by_aoe: w.managed_by_aoe,
+        base_branch: w.base_branch.clone(),
+    })
 }
 
 fn workspace_repos_for(inst: &Instance) -> Vec<WorkspaceRepoJson> {
@@ -120,6 +140,7 @@ pub async fn run(profile: &str, args: ListArgs) -> Result<()> {
                 profile: storage.profile().to_string(),
                 created_at: inst.created_at,
                 workspace_repos: workspace_repos_for(inst),
+                worktree: worktree_for(inst),
             })
             .collect();
         super::output::print_json(&sessions)?;
@@ -153,6 +174,7 @@ async fn run_all_profiles(json: bool) -> Result<()> {
                 if let Ok((instances, _)) = storage.load_with_groups() {
                     for inst in instances {
                         let workspace_repos = workspace_repos_for(&inst);
+                        let worktree = worktree_for(&inst);
                         all_sessions.push(SessionJson {
                             id: inst.id,
                             title: inst.title,
@@ -163,6 +185,7 @@ async fn run_all_profiles(json: bool) -> Result<()> {
                             profile: profile_name.clone(),
                             created_at: inst.created_at,
                             workspace_repos,
+                            worktree,
                         });
                     }
                 }

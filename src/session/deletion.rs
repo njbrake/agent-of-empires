@@ -679,6 +679,7 @@ mod tests {
                 main_repo_path: main_repo.to_string_lossy().to_string(),
                 managed_by_aoe: true,
                 created_at: chrono::Utc::now(),
+                base_branch: None,
             });
 
             let request = DeletionRequest {
@@ -769,6 +770,7 @@ mod tests {
                 main_repo_path: main_repo.to_string_lossy().to_string(),
                 managed_by_aoe: true,
                 created_at: chrono::Utc::now(),
+                base_branch: None,
             });
 
             // First: without force, deletion must fail and leave the
@@ -859,6 +861,7 @@ mod tests {
                 main_repo_path: main_repo.to_string_lossy().to_string(),
                 managed_by_aoe: true,
                 created_at: chrono::Utc::now(),
+                base_branch: None,
             });
             instance.sandbox_info = Some(SandboxInfo {
                 enabled: true,

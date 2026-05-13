@@ -17,6 +17,10 @@ export interface SessionResponse {
   last_error: string | null;
   branch: string | null;
   main_repo_path: string | null;
+  /** Base branch the worktree was created from when AoE managed the
+   *  creation. null for sessions attached to a pre-existing branch or
+   *  those that took the repo's default branch. See #948. */
+  base_branch?: string | null;
   is_sandboxed: boolean;
   has_managed_worktree: boolean;
   has_terminal: boolean;
