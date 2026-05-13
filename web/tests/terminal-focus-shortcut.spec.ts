@@ -192,7 +192,7 @@ test.describe("Cmd/Ctrl+` desktop", () => {
               deletions: 1,
             },
           ],
-          base_branch: "main",
+          per_repo_bases: [{ base_branch: "main" }],
           warning: null,
         },
       }),

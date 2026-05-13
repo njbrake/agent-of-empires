@@ -1,15 +1,19 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { RichDiffFile } from "../../lib/types";
+import type { RepoBase, RichDiffFile } from "../../lib/types";
 import { buildDiffTree, type DiffTreeNode } from "../../lib/diffTree";
 import { useWebSettings } from "../../hooks/useWebSettings";
 
 interface Props {
   files: RichDiffFile[];
-  baseBranch: string;
+  /** One entry per repo whose diff was computed. Single-repo sessions
+   *  get a one-element array; workspace sessions get one per member.
+   *  See #1047. */
+  perRepoBases: RepoBase[];
   warning: string | null;
   selectedPath: string | null;
+  selectedRepoName: string | undefined;
   loading: boolean;
-  onSelectFile: (path: string) => void;
+  onSelectFile: (path: string, repoName?: string) => void;
 }
 
 const STATUS_COLORS: Record<string, string> = {
@@ -40,13 +44,15 @@ function nodeKey(node: DiffTreeNode): string {
 function FlatList({
   files,
   selectedPath,
+  selectedRepoName,
   onSelectFile,
   focusedIndex,
   onFocusIndex,
 }: {
   files: RichDiffFile[];
   selectedPath: string | null;
-  onSelectFile: (path: string) => void;
+  selectedRepoName: string | undefined;
+  onSelectFile: (path: string, repoName?: string) => void;
   focusedIndex: number;
   onFocusIndex: (i: number) => void;
 }) {
@@ -56,14 +62,15 @@ function FlatList({
         const parts = file.path.split("/");
         const fileName = parts.pop() || file.path;
         const dirPath = parts.length > 0 ? parts.join("/") + "/" : "";
-        const isSelected = file.path === selectedPath;
+        const isSelected =
+          file.path === selectedPath && file.repo_name === selectedRepoName;
         const isFocused = i === focusedIndex;
 
         return (
           <button
-            key={file.path}
+            key={`${file.repo_name ?? ""}::${file.path}`}
             data-index={i}
-            onClick={() => onSelectFile(file.path)}
+            onClick={() => onSelectFile(file.path, file.repo_name)}
             onMouseEnter={() => onFocusIndex(i)}
             className={`w-full text-left px-3 py-1.5 cursor-pointer transition-colors flex items-center gap-2 ${
               isSelected
@@ -102,6 +109,7 @@ function FlatList({
 function TreeView({
   nodes,
   selectedPath,
+  selectedRepoName,
   onSelectFile,
   onToggleDir,
   focusedIndex,
@@ -109,7 +117,8 @@ function TreeView({
 }: {
   nodes: DiffTreeNode[];
   selectedPath: string | null;
-  onSelectFile: (path: string) => void;
+  selectedRepoName: string | undefined;
+  onSelectFile: (path: string, repoName?: string) => void;
   onToggleDir: (dirPath: string) => void;
   focusedIndex: number;
   onFocusIndex: (i: number) => void;
@@ -162,13 +171,14 @@ function TreeView({
 
         const file = node.file;
         const fileName = file.path.split("/").pop() || file.path;
-        const isSelected = file.path === selectedPath;
+        const isSelected =
+          file.path === selectedPath && file.repo_name === selectedRepoName;
 
         return (
           <button
-            key={file.path}
+            key={`${file.repo_name ?? ""}::${file.path}`}
             data-index={i}
-            onClick={() => onSelectFile(file.path)}
+            onClick={() => onSelectFile(file.path, file.repo_name)}
             onMouseEnter={() => onFocusIndex(i)}
             className={`w-full text-left py-1.5 cursor-pointer transition-colors flex items-center gap-2 ${
               isSelected
@@ -208,12 +218,39 @@ function scrollToIndex(container: HTMLDivElement | null, index: number) {
 
 export function DiffFileList({
   files,
-  baseBranch,
+  perRepoBases,
   warning,
   selectedPath,
+  selectedRepoName,
   loading,
   onSelectFile,
 }: Props) {
+  const isMultiRepo = perRepoBases.length > 1;
+  // Multi-repo workspaces compose multiple `(name, base_branch)` pairs;
+  // single-repo sessions get one entry and we don't show a per-repo
+  // header at all. See #1047.
+  const singleBaseBranch = perRepoBases[0]?.base_branch ?? "main";
+  const [collapsedRepos, setCollapsedRepos] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const toggleRepo = useCallback((name: string) => {
+    setCollapsedRepos((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  }, []);
+  const filesByRepo = useMemo(() => {
+    const map = new Map<string, RichDiffFile[]>();
+    for (const f of files) {
+      const key = f.repo_name ?? "";
+      const arr = map.get(key);
+      if (arr) arr.push(f);
+      else map.set(key, [f]);
+    }
+    return map;
+  }, [files]);
   const { settings, update } = useWebSettings();
   const viewMode = settings.diffViewMode;
   const [collapsedDirs, setCollapsedDirs] = useState<Set<string>>(
@@ -330,9 +367,15 @@ export function DiffFileList({
           <span className="font-mono text-[11px] uppercase tracking-wider text-text-dim">
             Changes
           </span>
-          <span className="font-mono text-[10px] px-1.5 py-px rounded bg-surface-800 text-text-muted">
-            vs {baseBranch}
-          </span>
+          {isMultiRepo ? (
+            <span className="font-mono text-[10px] px-1.5 py-px rounded bg-surface-800 text-text-muted">
+              {perRepoBases.length} repos
+            </span>
+          ) : (
+            <span className="font-mono text-[10px] px-1.5 py-px rounded bg-surface-800 text-text-muted">
+              vs {singleBaseBranch}
+            </span>
+          )}
           {files.length > 0 && (
             <>
               <span className="font-mono text-[11px] text-text-muted">
@@ -345,8 +388,10 @@ export function DiffFileList({
               </span>
             </>
           )}
-          {/* View mode toggle */}
-          {files.length > 0 && (
+          {/* View mode toggle. Hidden in multi-repo mode where each
+              repo gets its own collapsible group; the tree view has no
+              clean place for the workspace-vs-repo nesting yet. */}
+          {files.length > 0 && !isMultiRepo && (
             <button
               onClick={toggleViewMode}
               className="ml-auto shrink-0 p-1 rounded text-text-dim hover:text-text-muted hover:bg-surface-800/50 transition-colors cursor-pointer"
@@ -401,10 +446,21 @@ export function DiffFileList({
               <p className="text-xs">No changes yet</p>
             </div>
           </div>
+        ) : isMultiRepo ? (
+          <MultiRepoGroups
+            perRepoBases={perRepoBases}
+            filesByRepo={filesByRepo}
+            selectedPath={selectedPath}
+            selectedRepoName={selectedRepoName}
+            collapsedRepos={collapsedRepos}
+            onToggleRepo={toggleRepo}
+            onSelectFile={onSelectFile}
+          />
         ) : viewMode === "tree" ? (
           <TreeView
             nodes={treeNodes}
             selectedPath={selectedPath}
+            selectedRepoName={selectedRepoName}
             onSelectFile={onSelectFile}
             onToggleDir={toggleDir}
             focusedIndex={clampedFocusedIndex}
@@ -414,6 +470,7 @@ export function DiffFileList({
           <FlatList
             files={files}
             selectedPath={selectedPath}
+            selectedRepoName={selectedRepoName}
             onSelectFile={onSelectFile}
             focusedIndex={clampedFocusedIndex}
             onFocusIndex={setFocusedIndex}
@@ -421,5 +478,119 @@ export function DiffFileList({
         )}
       </div>
     </div>
+  );
+}
+
+const STATUS_COLORS_FILE = STATUS_COLORS;
+const STATUS_LETTERS_FILE = STATUS_LETTERS;
+
+function MultiRepoGroups({
+  perRepoBases,
+  filesByRepo,
+  selectedPath,
+  selectedRepoName,
+  collapsedRepos,
+  onToggleRepo,
+  onSelectFile,
+}: {
+  perRepoBases: RepoBase[];
+  filesByRepo: Map<string, RichDiffFile[]>;
+  selectedPath: string | null;
+  selectedRepoName: string | undefined;
+  collapsedRepos: Set<string>;
+  onToggleRepo: (name: string) => void;
+  onSelectFile: (path: string, repoName?: string) => void;
+}) {
+  return (
+    <>
+      {perRepoBases.map((repo) => {
+        const name = repo.repo_name ?? "";
+        const repoFiles = filesByRepo.get(name) ?? [];
+        const collapsed = collapsedRepos.has(name);
+        const adds = repoFiles.reduce((s, f) => s + f.additions, 0);
+        const dels = repoFiles.reduce((s, f) => s + f.deletions, 0);
+        return (
+          <div key={name || "_default"} className="border-b border-surface-700/20 last:border-b-0">
+            <button
+              type="button"
+              onClick={() => onToggleRepo(name)}
+              aria-expanded={!collapsed}
+              className="w-full text-left px-3 py-1.5 cursor-pointer transition-colors flex items-center gap-1.5 bg-surface-850 hover:bg-surface-800 text-text-secondary"
+            >
+              <svg
+                className={`w-3 h-3 shrink-0 text-text-dim transition-transform duration-75 ${
+                  collapsed ? "-rotate-90" : ""
+                }`}
+                viewBox="0 0 16 16"
+                fill="currentColor"
+              >
+                <path d="M4 6l4 4 4-4" />
+              </svg>
+              <span className="font-mono text-[12px] truncate flex-1">
+                {repo.repo_name ?? "(default)"}
+              </span>
+              <span className="font-mono text-[10px] text-text-dim">
+                vs {repo.base_branch}
+              </span>
+              <span className="font-mono text-[11px] text-text-muted">
+                {repoFiles.length}
+              </span>
+              <span className="font-mono text-[11px] flex items-center gap-1">
+                {adds > 0 && <span className="text-status-running">+{adds}</span>}
+                {dels > 0 && <span className="text-status-error">-{dels}</span>}
+              </span>
+            </button>
+            {!collapsed && repoFiles.length === 0 && (
+              <div className="px-3 py-2 text-[11px] text-text-dim italic">
+                No changes in this repo.
+              </div>
+            )}
+            {!collapsed &&
+              repoFiles.map((file) => {
+                const parts = file.path.split("/");
+                const fileName = parts.pop() || file.path;
+                const dirPath = parts.length > 0 ? parts.join("/") + "/" : "";
+                const isSelected =
+                  file.path === selectedPath &&
+                  file.repo_name === selectedRepoName;
+                return (
+                  <button
+                    key={`${file.repo_name ?? ""}::${file.path}`}
+                    type="button"
+                    onClick={() => onSelectFile(file.path, file.repo_name)}
+                    className={`w-full text-left px-6 py-1.5 cursor-pointer transition-colors flex items-center gap-2 ${
+                      isSelected
+                        ? "bg-surface-850 text-text-primary"
+                        : "text-text-secondary hover:bg-surface-800/50"
+                    }`}
+                  >
+                    <span
+                      className={`shrink-0 font-mono text-[12px] w-3 text-center ${STATUS_COLORS_FILE[file.status] ?? "text-text-muted"}`}
+                    >
+                      {STATUS_LETTERS_FILE[file.status] ?? "?"}
+                    </span>
+                    <span className="truncate min-w-0 flex-1">
+                      {dirPath && (
+                        <span className="font-mono text-[11px] text-text-dim">
+                          {dirPath}
+                        </span>
+                      )}
+                      <span className="font-mono text-[12px]">{fileName}</span>
+                    </span>
+                    <span className="shrink-0 font-mono text-[11px] flex items-center gap-1">
+                      {file.additions > 0 && (
+                        <span className="text-status-running">+{file.additions}</span>
+                      )}
+                      {file.deletions > 0 && (
+                        <span className="text-status-error">-{file.deletions}</span>
+                      )}
+                    </span>
+                  </button>
+                );
+              })}
+          </div>
+        );
+      })}
+    </>
   );
 }

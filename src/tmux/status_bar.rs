@@ -214,7 +214,7 @@ fn get_session_option(session_name: &str, option: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tui::styles::load_theme;
+    use crate::tui::styles::{load_theme, BUILTIN_THEMES};
 
     #[test]
     fn test_get_status_returns_none_for_non_tmux() {
@@ -238,13 +238,7 @@ mod tests {
 
     #[test]
     fn test_all_themes_produce_valid_status_bar_colors() {
-        for theme_name in &[
-            "empire",
-            "phosphor",
-            "tokyo-night-storm",
-            "catppuccin-latte",
-            "dracula",
-        ] {
+        for theme_name in BUILTIN_THEMES {
             let theme = load_theme(theme_name);
             let colors = [
                 ("background", color_to_tmux(theme.background)),

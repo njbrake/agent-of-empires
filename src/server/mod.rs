@@ -6,6 +6,8 @@
 pub mod api;
 pub mod auth;
 #[cfg(feature = "serve")]
+pub mod cockpit_reconciler;
+#[cfg(feature = "serve")]
 pub mod cockpit_ws;
 pub mod login;
 pub mod push;
@@ -1337,267 +1339,6 @@ fn load_all_instances() -> anyhow::Result<Vec<Instance>> {
     Ok(all)
 }
 
-/// Reconcile cockpit workers against the on-disk session list. Spawns a
-/// worker for every cockpit-mode session that doesn't already have one,
-/// recording the attempt in `attempted` so a permanently-failing spawn
-/// (e.g. `claude-agent-acp` not installed) doesn't retry every 2s tick.
-/// Pruning `attempted` to live ids first lets a delete + recreate of
-/// the same id spawn again.
-///
-/// Covers three entry points to "cockpit session exists, no worker
-/// running": cold serve startup (first tick fires immediately), `aoe
-/// add --cockpit` while serve is running (next tick after the disk
-/// write), and any race where serve starts before a session file is
-/// fully written.
-#[cfg(feature = "serve")]
-async fn reconcile_cockpit_workers(
-    state: &Arc<AppState>,
-    attempted: &mut std::collections::HashSet<String>,
-) {
-    // Honor `cockpit.enabled = false` from config.toml — the persistent
-    // master switch. Mirrored as an atomic; `PATCH /api/cockpit/master`
-    // flips it live without restarting `aoe serve`.
-    if !state
-        .cockpit_master_enabled
-        .load(std::sync::atomic::Ordering::Relaxed)
-    {
-        return;
-    }
-
-    // Detect `aoe cockpit stop|kill|restart` (a separate process that
-    // deletes the registry entry + SIGTERMs the runner) and surface it
-    // as a typed Stopped event. The daemon's protocol-layer connection
-    // task blocks on `cmd_rx.recv()` while idle, so socket EOF doesn't
-    // propagate to the drain task on its own — without this poll, the
-    // UI stays stuck on "thinking" and the supervisor keeps a phantom
-    // worker. For the `restart` case, the reaper returns the ids it
-    // marked as `restart_pending`; clear them from `attempted` so the
-    // spawn pass below treats them as fresh and the next 2s tick
-    // reattaches with the cached `acp_session_id` (transcript
-    // continuity).
-    let restart_pending = state.cockpit_supervisor.reap_user_stopped().await;
-    for id in &restart_pending {
-        attempted.remove(id);
-    }
-
-    let targets: Vec<_> = {
-        let instances = state.instances.read().await;
-        instances
-            .iter()
-            .filter(|i| i.cockpit_mode)
-            .map(|i| {
-                (
-                    i.id.clone(),
-                    i.tool.clone(),
-                    i.cockpit_agent.clone(),
-                    i.cockpit_model.clone(),
-                    i.project_path.clone(),
-                    i.cockpit_acp_session_id.clone(),
-                )
-            })
-            .collect()
-    };
-
-    let live: std::collections::HashSet<&String> = targets.iter().map(|t| &t.0).collect();
-    attempted.retain(|id| live.contains(id));
-
-    // ORDERING INVARIANT: this orphan sweep MUST run before the
-    // spawn-with-capacity-check loop below. The capacity check counts
-    // both in-memory workers AND on-disk registry entries (so a fresh
-    // daemon can't race the reconciler and over-spawn). If the sweep
-    // ran after, dead-PID entries from a previous unclean shutdown
-    // would still count toward `max_concurrent_workers` and could
-    // block legitimate spawns until the next tick. Do not reorder.
-    //
-    // Sweep registry entries whose session no longer exists (deleted
-    // while serve was down) and SIGTERM the orphan runner so the user
-    // doesn't see a phantom in `aoe cockpit ps`. Only runs against
-    // entries that aren't currently in our `workers` map.
-    if let Ok(records) = crate::cockpit::worker_registry::list() {
-        for record in records {
-            if live.contains(&record.session_id) {
-                continue;
-            }
-            if state
-                .cockpit_supervisor
-                .is_running(&record.session_id)
-                .await
-            {
-                continue;
-            }
-            tracing::info!(
-                target: "cockpit.supervisor",
-                session = %record.session_id,
-                pid = record.pid,
-                "sweeping orphan worker (no matching session on disk)"
-            );
-            #[cfg(unix)]
-            if crate::cockpit::worker_registry::is_pid_alive(record.pid) {
-                use nix::sys::signal::{kill, Signal};
-                use nix::unistd::Pid;
-                let _ = kill(Pid::from_raw(record.pid as i32), Signal::SIGTERM);
-            }
-            crate::cockpit::worker_registry::delete(&record.session_id).ok();
-        }
-    }
-
-    for (id, tool, agent_override, model, project_path, stored_acp_session_id) in targets {
-        if attempted.contains(&id) {
-            continue;
-        }
-        if state.cockpit_supervisor.is_running(&id).await {
-            // A REST-triggered spawn (POST /api/sessions or
-            // /api/cockpit/sessions/:id/enable) already owns the worker;
-            // record the id so we don't poll is_running every tick.
-            attempted.insert(id);
-            continue;
-        }
-
-        // Snapshot the on-disk "is this session mid-turn?" hint once per
-        // pass. Used to arm the resume-idle watchdog on the attach path,
-        // and to decide whether the fresh-spawn fallback below needs to
-        // publish a synthetic Stopped so the UI doesn't stay stuck on
-        // "thinking" after a daemon crash killed the agent mid-prompt.
-        let in_flight_turn = state.cockpit_event_store.has_in_flight_turn(&id);
-
-        // Reattach path: if a previous daemon detached a runner for this
-        // session and the runner is still alive, dial its socket instead
-        // of spawning a fresh agent. Bounded by the registry probe — no
-        // network IO unless we have a live PID + socket on disk.
-        if let Ok(Some(record)) = crate::cockpit::worker_registry::load(&id) {
-            if crate::cockpit::worker_registry::is_record_live(&record) {
-                attempted.insert(id.clone());
-                let supervisor = state.cockpit_supervisor.clone();
-                let cwd = std::path::PathBuf::from(&project_path);
-                let attach_res = tokio::time::timeout(
-                    std::time::Duration::from_secs(3),
-                    supervisor.attach(id.clone(), cwd, vec![], in_flight_turn),
-                )
-                .await;
-                match attach_res {
-                    Ok(Ok(())) => {
-                        tracing::info!(
-                            target: "cockpit.supervisor",
-                            session = %id,
-                            pid = record.pid,
-                            in_flight_turn,
-                            "reattached to existing cockpit runner"
-                        );
-                        continue;
-                    }
-                    Ok(Err(e)) => {
-                        tracing::warn!(
-                            target: "cockpit.supervisor",
-                            session = %id,
-                            "attach failed; falling back to fresh spawn: {e}"
-                        );
-                        crate::cockpit::worker_registry::delete(&id).ok();
-                    }
-                    Err(_) => {
-                        tracing::warn!(
-                            target: "cockpit.supervisor",
-                            session = %id,
-                            "attach timed out after 3s; falling back to fresh spawn"
-                        );
-                        crate::cockpit::worker_registry::delete(&id).ok();
-                        attempted.remove(&id);
-                    }
-                }
-            } else {
-                // Dead PID or missing socket: sweep the orphan registry
-                // entry so the next attempt is a clean fresh spawn.
-                crate::cockpit::worker_registry::delete(&id).ok();
-            }
-        }
-
-        // Fresh-spawn fallback: we are about to spin up a brand new
-        // agent process. The previous one (if any) was killed before it
-        // could complete the in-flight prompt, so its turn is forever
-        // orphaned. Publish a synthetic Stopped now so the UI doesn't
-        // keep "thinking" after restart — same fix path as on `main`
-        // where there's no runner at all and every cockpit session
-        // takes this branch on restart.
-        if in_flight_turn {
-            state
-                .cockpit_supervisor
-                .synthesize_stopped_for_orphan(&id, "orphaned_at_restart");
-        }
-
-        // Mark before spawning so the next 2s tick doesn't double-spawn
-        // while AcpClient::spawn is still negotiating with the agent.
-        attempted.insert(id.clone());
-        // Persisted cockpit-mode sessions auto-spawn even when
-        // `AOE_EXPERIMENTAL_COCKPIT` is unset (the env-var gate is for
-        // *new* sessions, not pre-existing ones). Log a warning per
-        // session so operators who unset the env var on a daemon with
-        // existing cockpit sessions know why those are still running.
-        // The `attempted` set bounds this to one log line per session
-        // per daemon lifetime.
-        if !crate::cockpit::experimental_enabled() {
-            tracing::warn!(
-                target: "cockpit.supervisor",
-                session = %id,
-                "auto-spawning persisted cockpit-mode session while \
-                 AOE_EXPERIMENTAL_COCKPIT is not set. To stop cockpit \
-                 from running existing sessions, set \
-                 `cockpit.enabled = false` in config.toml and restart \
-                 `aoe serve`. To stop just this one, switch its \
-                 substrate to tmux from the dashboard."
-            );
-        }
-        let supervisor = state.cockpit_supervisor.clone();
-        let agent = supervisor
-            .pick_agent_for_tool(&tool, agent_override.as_deref())
-            .await;
-        let cwd = std::path::PathBuf::from(project_path);
-        // Serialize reconciler spawns: claude-agent-acp lazy-installs
-        // its native binary on first run, and two concurrent session/new
-        // calls against a partially-installed SDK race the install,
-        // causing the second spawn to fail with "Claude Code native
-        // binary not found". Awaiting each spawn before starting the
-        // next costs us a few seconds at daemon startup but keeps the
-        // batch reliable. Per-session auto-spawn (the create flow in
-        // sessions.rs) stays detached because it's the only spawn in
-        // flight at that moment.
-        let spawn_result = supervisor
-            .spawn(crate::cockpit::supervisor::SpawnRequest {
-                session_id: id.clone(),
-                agent: agent.clone(),
-                cwd,
-                additional_dirs: vec![],
-                provider_env: vec![],
-                model,
-                stored_acp_session_id,
-            })
-            .await;
-        if let Err(e) = spawn_result {
-            // Re-check whether the session still exists in instances.
-            // The user can delete a session during the spawn handshake
-            // (2-3s for ACP), and the resulting error is noise for a
-            // session that no longer exists. Demote to debug rather
-            // than warn + AgentStartupError publish in that case.
-            let still_present = state.instances.read().await.iter().any(|i| i.id == id);
-            let message = format!("Failed to start cockpit agent {agent:?}: {e}");
-            if still_present {
-                tracing::warn!(
-                    target: "cockpit.supervisor",
-                    session = %id,
-                    agent = %agent,
-                    "auto-spawn reconciler failed: {message}"
-                );
-                supervisor.publish_startup_error(&id, message);
-            } else {
-                tracing::debug!(
-                    target: "cockpit.supervisor",
-                    session = %id,
-                    agent = %agent,
-                    "auto-spawn reconciler error after session removed (ignored): {message}"
-                );
-            }
-        }
-    }
-}
-
 /// Background task that periodically refreshes session statuses. On each
 /// tick, diffs pre- and post-refresh statuses and emits a `StatusChange`
 /// on `state.status_tx` for every transition. Keeping the diff here,
@@ -1701,7 +1442,8 @@ async fn status_poll_loop(state: Arc<AppState>) {
             *state.instances.write().await = instances;
 
             #[cfg(feature = "serve")]
-            reconcile_cockpit_workers(&state, &mut attempted_cockpit_spawns).await;
+            cockpit_reconciler::reconcile_cockpit_workers(&state, &mut attempted_cockpit_spawns)
+                .await;
         }
     }
 }
@@ -1967,6 +1709,7 @@ mod tests {
             kind: "execute".into(),
             args_preview: "{}".into(),
             started_at: chrono::Utc::now(),
+            parent_tool_call_id: None,
         };
         assert_eq!(
             derive_cockpit_status(&Event::UserPromptSent { text: "hi".into() }),

@@ -90,6 +90,61 @@ pub struct CockpitConfig {
     /// "subprocess started" signal.
     #[serde(default = "default_true")]
     pub show_tool_durations: bool,
+    /// How the web composer drains client-side queued follow-up prompts
+    /// when the agent finishes a turn (see #1031). `Combined` (default)
+    /// joins every queued entry with a blank line and dispatches as one
+    /// prompt; `Serial` pops the head and waits for the next Stopped to
+    /// fire the next entry. The setting is surfaced via
+    /// `ServerAbout.cockpit_queue_drain_mode` so toggling it here flows
+    /// to every connected web client without restarting the daemon.
+    #[serde(default)]
+    pub queue_drain_mode: QueueDrainMode,
+    /// Maximum number of cockpit worker resumes (spawn or attach) the
+    /// reconciler runs in parallel on `aoe serve` cold start. Bounded
+    /// at runtime by `min(max_concurrent_resumes, max_concurrent_workers).max(1)`
+    /// so this knob can never exceed the total live worker cap. Default
+    /// is 4: Node.js bootup is memory-heavy and 4 concurrent
+    /// claude-agent-acp processes are around 200-320MB transient. Lower
+    /// it on constrained hosts; raise on beefier machines. See #1088.
+    #[serde(default = "default_max_concurrent_resumes")]
+    pub max_concurrent_resumes: u32,
+}
+
+fn default_max_concurrent_resumes() -> u32 {
+    4
+}
+
+/// Drain strategy for the cockpit composer's client-side prompt queue.
+/// See `CockpitConfig::queue_drain_mode`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QueueDrainMode {
+    /// Join every queued entry with `\n\n` and dispatch as a single
+    /// prompt when the current turn ends. One response covers the whole
+    /// batch.
+    #[default]
+    Combined,
+    /// Pop the head off the queue and dispatch it; wait for the next
+    /// Stopped event before firing the following entry. One response
+    /// per queued entry.
+    Serial,
+}
+
+impl QueueDrainMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            QueueDrainMode::Combined => "combined",
+            QueueDrainMode::Serial => "serial",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        match s {
+            "combined" => Some(QueueDrainMode::Combined),
+            "serial" => Some(QueueDrainMode::Serial),
+            _ => None,
+        }
+    }
 }
 
 impl Default for CockpitConfig {
@@ -103,6 +158,8 @@ impl Default for CockpitConfig {
             replay_bytes: default_replay_bytes(),
             node_path: String::new(),
             show_tool_durations: true,
+            queue_drain_mode: QueueDrainMode::default(),
+            max_concurrent_resumes: default_max_concurrent_resumes(),
         }
     }
 }

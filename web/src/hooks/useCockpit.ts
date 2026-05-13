@@ -14,10 +14,12 @@ import {
   type ApprovalDecision,
   type CockpitFrame,
   type CockpitState,
+  type QueuedPrompt,
 } from "../lib/cockpitTypes";
+import { useCockpitPrefs } from "../lib/cockpitPrefs";
 import { getToken } from "../lib/token";
 
-type Action =
+export type Action =
   | { kind: "frame"; frame: CockpitFrame }
   | { kind: "frames"; frames: CockpitFrame[] }
   | { kind: "lagged"; skipped: number }
@@ -26,7 +28,11 @@ type Action =
   | { kind: "clear_error" }
   | { kind: "lagged_resolved" }
   | { kind: "reset" }
-  | { kind: "hydrate"; state: CockpitState };
+  | { kind: "hydrate"; state: CockpitState }
+  | { kind: "enqueue_prompt"; text: string }
+  | { kind: "dequeue_prompt"; id: string }
+  | { kind: "edit_queued_prompt"; id: string; text: string }
+  | { kind: "clear_queue" };
 
 // LRU-capped module cache keyed by cockpit session id. Survives
 // component unmount within the same page lifetime so the user can
@@ -82,6 +88,24 @@ function initialState(sessionId: string | null): CockpitState {
   return cacheGet(sessionId) ?? emptyCockpitState();
 }
 
+export function cockpitHookReducer(
+  state: CockpitState,
+  action: Action,
+): CockpitState {
+  return reducer(state, action);
+}
+
+/** Build the single combined prompt fired when
+ *  `cockpit.queue_drain_mode = combined` and the agent transitions to
+ *  idle with a non-empty queue. Joins every queued entry's text with a
+ *  blank line so the agent sees them as one batch follow-up. Extracted
+ *  for testability; consumed by the drain effect below. See #1031. */
+export function combineQueuedPrompts(
+  queue: ReadonlyArray<QueuedPrompt>,
+): string {
+  return queue.map((q) => q.text).join("\n\n");
+}
+
 function reducer(state: CockpitState, action: Action): CockpitState {
   if (action.kind === "frame") {
     return applyEvent(state, action.frame);
@@ -121,6 +145,31 @@ function reducer(state: CockpitState, action: Action): CockpitState {
       turnActive: true,
     };
   }
+  if (action.kind === "enqueue_prompt") {
+    const entry: QueuedPrompt = {
+      id: `q-${Date.now()}-${state.queuedPrompts.length}`,
+      text: action.text,
+      queuedAt: new Date().toISOString(),
+    };
+    return { ...state, queuedPrompts: state.queuedPrompts.concat(entry) };
+  }
+  if (action.kind === "dequeue_prompt") {
+    return {
+      ...state,
+      queuedPrompts: state.queuedPrompts.filter((q) => q.id !== action.id),
+    };
+  }
+  if (action.kind === "edit_queued_prompt") {
+    return {
+      ...state,
+      queuedPrompts: state.queuedPrompts.map((q) =>
+        q.id === action.id ? { ...q, text: action.text } : q,
+      ),
+    };
+  }
+  if (action.kind === "clear_queue") {
+    return { ...state, queuedPrompts: [] };
+  }
   return emptyCockpitState();
 }
 
@@ -130,9 +179,31 @@ export type ConnectionStatus =
   | "closed"
   | "error";
 
-export function useCockpit(sessionId: string | null) {
+export function useCockpit(
+  sessionId: string | null,
+  /** Live cockpit worker lifecycle from `SessionResponse.cockpit_worker_state`.
+   *  When not `"running"`, the drain effect parks queued prompts so they
+   *  don't dispatch into a worker that isn't online yet. Defaults to
+   *  `"running"` so non-cockpit / pre-#1088 call sites keep working. */
+  workerState: "absent" | "resuming" | "running" = "running",
+) {
   const [state, dispatch] = useReducer(reducer, sessionId, initialState);
   const [status, setStatus] = useState<ConnectionStatus>("connecting");
+  // Mirror the worker state into a ref so the drain effect always sees
+  // the latest value without re-running on every poll.
+  const workerStateRef = useRef(workerState);
+  useEffect(() => {
+    workerStateRef.current = workerState;
+  }, [workerState]);
+  // Drain mode is sourced from the daemon's resolved `[cockpit]` config
+  // and republished via `CockpitPrefsProvider` (App.tsx). Held in a ref
+  // so the drain effect's pop logic always sees the latest value
+  // without re-running the effect on every toggle. See #1031.
+  const { queueDrainMode } = useCockpitPrefs();
+  const drainModeRef = useRef(queueDrainMode);
+  useEffect(() => {
+    drainModeRef.current = queueDrainMode;
+  }, [queueDrainMode]);
   // Mirror status into a ref so sendPrompt's stable callback can short
   // circuit when the WS is closed without re-creating the callback on
   // every status flip (which would invalidate downstream memoised
@@ -326,14 +397,12 @@ export function useCockpit(sessionId: string | null) {
     [sessionId],
   );
 
-  const sendPrompt = useCallback(
+  // Dispatch a prompt immediately, no queueing. Internal helper used by
+  // both sendPrompt (when the turn is idle) and the drain effect below
+  // (when popping the head of queuedPrompts on Stopped).
+  const dispatchPromptNow = useCallback(
     async (text: string) => {
       if (!sessionId) return;
-      // Hard guard: if the WS isn't open, the agent won't see the
-      // prompt and the optimistic row would mislead the user into
-      // thinking it was sent. Surface the offline state via the
-      // existing error banner instead. TODO: queue the prompt
-      // locally and flush on reconnect.
       if (statusRef.current !== "open") {
         dispatch({
           kind: "error",
@@ -371,6 +440,99 @@ export function useCockpit(sessionId: string | null) {
     },
     [sessionId],
   );
+
+  // Public sendPrompt. When the agent is already working we enqueue
+  // client-side; the drain effect dispatches the head once the current
+  // turn ends. When idle we dispatch immediately. Background: #1031.
+  const sendPrompt = useCallback(
+    async (text: string) => {
+      if (!sessionId) return;
+      // The reducer sees the same `turnActive` the UI does. statusRef
+      // covers the WS-closed case separately so disconnected users
+      // still get the existing error banner even when typing into a
+      // running session.
+      if (statusRef.current !== "open") {
+        dispatch({
+          kind: "error",
+          message: "Cockpit disconnected; message not sent. Reconnect to retry.",
+        });
+        return;
+      }
+      if (state.turnActive) {
+        dispatch({ kind: "enqueue_prompt", text });
+        return;
+      }
+      // Worker still resuming (e.g. cold-start parallel reconciler
+      // hasn't reached this session yet). Queue locally rather than
+      // POSTing into a worker that isn't online; the drain effect
+      // fires once `workerState` transitions to `"running"`. See #1088.
+      if (workerStateRef.current !== "running") {
+        dispatch({ kind: "enqueue_prompt", text });
+        return;
+      }
+      await dispatchPromptNow(text);
+    },
+    [sessionId, state.turnActive, dispatchPromptNow],
+  );
+
+  // Drain effect: when the agent transitions to idle and the queue is
+  // non-empty, dispatch follow-ups per `cockpit.queue_drain_mode`:
+  //   - combined (default): join every queued entry with `\n\n` and
+  //     fire one prompt; the agent's single response covers the batch.
+  //   - serial: pop the head only; the next Stopped re-runs this effect
+  //     and fires the following entry. One response per entry.
+  // Guarded by `drainingRef` so a re-render between the dequeue
+  // dispatch and the next state tick doesn't fire the same head twice.
+  // Skipped while a worker-stopped / restarting banner is showing; a
+  // fresh `AcpSessionAssigned` (which clears both flags) re-runs this
+  // effect and drains then. See #1031.
+  const drainingRef = useRef(false);
+  useEffect(() => {
+    if (drainingRef.current) return;
+    if (!sessionId) return;
+    if (state.turnActive) return;
+    if (state.workerStopped || state.workerRestarting) return;
+    // Worker still mid-resume from a daemon cold start (or it never
+    // came online). Park queued prompts so they don't POST into a
+    // worker that's not online yet; the next REST poll flips
+    // workerState to "running" and re-runs this effect. See #1088.
+    if (workerStateRef.current !== "running") return;
+    if (state.queuedPrompts.length === 0) return;
+    drainingRef.current = true;
+    if (drainModeRef.current === "combined") {
+      const combined = combineQueuedPrompts(state.queuedPrompts);
+      dispatch({ kind: "clear_queue" });
+      void dispatchPromptNow(combined).finally(() => {
+        drainingRef.current = false;
+      });
+    } else {
+      const head = state.queuedPrompts[0]!;
+      dispatch({ kind: "dequeue_prompt", id: head.id });
+      void dispatchPromptNow(head.text).finally(() => {
+        drainingRef.current = false;
+      });
+    }
+  }, [
+    sessionId,
+    workerState,
+    state.turnActive,
+    state.workerStopped,
+    state.workerRestarting,
+    state.queuedPrompts,
+    dispatchPromptNow,
+  ]);
+
+  const removeQueuedPrompt = useCallback((id: string) => {
+    dispatch({ kind: "dequeue_prompt", id });
+  }, []);
+
+  const editQueuedPrompt = useCallback((id: string, text: string) => {
+    dispatch({ kind: "edit_queued_prompt", id, text });
+  }, []);
+
+  const clearQueue = useCallback(() => {
+    dispatch({ kind: "clear_queue" });
+  }, []);
 
   // Cancels the in-flight agent turn (ACP session/cancel). Must only
   // fire on an explicit user gesture against a dedicated cancel/stop
@@ -413,6 +575,9 @@ export function useCockpit(sessionId: string | null) {
     sendPrompt,
     cancelPrompt,
     dismissError,
+    removeQueuedPrompt,
+    editQueuedPrompt,
+    clearQueue,
   };
 }
 

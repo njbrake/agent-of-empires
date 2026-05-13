@@ -824,6 +824,16 @@ impl SettingsView {
                     c.show_tool_durations = None;
                 }
             }
+            FieldKey::CockpitQueueDrainMode => {
+                if let Some(c) = config.cockpit.as_mut() {
+                    c.queue_drain_mode = None;
+                }
+            }
+            FieldKey::CockpitMaxConcurrentResumes => {
+                if let Some(c) = config.cockpit.as_mut() {
+                    c.max_concurrent_resumes = None;
+                }
+            }
         }
 
         // Sync repo_config when in Repo scope

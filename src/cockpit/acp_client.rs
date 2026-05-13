@@ -47,6 +47,14 @@ use super::terminal_handler::TerminalManager;
 pub enum AcpError {
     #[error("agent spawn failed: {0}")]
     Spawn(String),
+    /// The session's working directory does not exist on disk. Distinct
+    /// from a generic spawn ENOENT (which on POSIX is indistinguishable
+    /// at the libc level between missing binary, missing interpreter, and
+    /// missing cwd). Surfaced as its own variant so the UI can render a
+    /// targeted remediation banner instead of the default "install the
+    /// adapter" copy. See issue #1089.
+    #[error("project path no longer exists: {path}")]
+    ProjectPathMissing { path: PathBuf },
     #[error("transport error: {0}")]
     Transport(String),
     #[error("protocol violation: {0}")]
@@ -59,6 +67,32 @@ pub enum AcpError {
     UnknownNonce,
     #[error("agent did not offer a {0:?} option")]
     NoMatchingOption(ApprovalDecision),
+}
+
+impl AcpError {
+    /// Inspect a `std::io::Error` returned by `Command::spawn` against
+    /// the spawn site's cwd + (resolved) command. POSIX returns ENOENT
+    /// for both "binary not on PATH" and "cwd does not exist", so the
+    /// disambiguation has to happen via filesystem stat. Stats only on
+    /// the ENOENT branch to keep the hot path free.
+    ///
+    /// Belt-and-suspenders for the cwd-missing case: the supervisor
+    /// pre-flights `cwd.exists()` before spawning, but the directory
+    /// can race-disappear between pre-flight and exec. Without this
+    /// classifier the bare ENOENT bubbles up as a generic spawn error
+    /// and the UI lands on the wrong remediation banner. See #1089.
+    pub fn classify_spawn_error(
+        err: std::io::Error,
+        cwd: &std::path::Path,
+        spawn_command: &str,
+    ) -> Self {
+        if err.kind() == std::io::ErrorKind::NotFound && !cwd.exists() {
+            return AcpError::ProjectPathMissing {
+                path: cwd.to_path_buf(),
+            };
+        }
+        AcpError::Spawn(format!("{err} (command `{spawn_command}`)"))
+    }
 }
 
 /// Configuration for spawning an ACP agent.
@@ -216,6 +250,18 @@ impl AcpClient {
         config: SpawnConfig,
         session_id: CockpitSessionId,
     ) -> Result<Self, AcpError> {
+        // Pre-flight: if the session's project_path was renamed or moved
+        // externally (e.g. `git worktree move` or a plain `mv`), the
+        // agent process's `current_dir` will ENOENT at exec time. POSIX
+        // surfaces that as the same `os error 2` as a missing binary,
+        // so without the pre-flight the UI lands on the wrong "install
+        // the adapter" remediation. Fail fast with a typed variant so
+        // the supervisor can route to a targeted banner. See #1089.
+        if !config.cwd.exists() {
+            return Err(AcpError::ProjectPathMissing {
+                path: config.cwd.clone(),
+            });
+        }
         let (cmd_tx, cmd_rx) = mpsc::channel::<ClientCmd>(16);
         let (event_tx, event_rx) = mpsc::channel::<Event>(64);
         let pending_responders: PendingResponders = Arc::new(Mutex::new(HashMap::new()));
@@ -988,11 +1034,16 @@ fn spawn_subprocess(config: &SpawnConfig) -> Result<tokio::process::Child, AcpEr
             resolved = %spawn_command,
             "spawn failed: {e}"
         );
-        // ENOENT on a bare command means we couldn't find the binary on
-        // PATH or in any known node-manager dir. Bubble up a hint instead
-        // of the bare libc message; the daemon's frozen PATH is the
-        // most common cause and the generic message doesn't say so.
-        if e.kind() == std::io::ErrorKind::NotFound && resolved.is_none() {
+        // POSIX ENOENT on `Command::spawn` is ambiguous: missing binary,
+        // missing cwd, or missing interpreter all surface as the same
+        // libc error. Order matters here:
+        //   1. cwd missing → ProjectPathMissing (so the UI renders the
+        //      "restore or rebind project_path" banner, not the
+        //      install-adapter copy). See #1089.
+        //   2. bare-command ENOENT with no PATH resolution → enriched
+        //      Spawn message hinting at the frozen-PATH cause. See #1048.
+        //   3. fallback → generic Spawn classification.
+        if e.kind() == std::io::ErrorKind::NotFound && config.cwd.exists() && resolved.is_none() {
             AcpError::Spawn(format!(
                 "{} (binary `{}` not found on the daemon's PATH or in any \
                  known node-manager bin dir; install it where the daemon \
@@ -1001,7 +1052,7 @@ fn spawn_subprocess(config: &SpawnConfig) -> Result<tokio::process::Child, AcpEr
                 e, config.spec.command, config.spec.command
             ))
         } else {
-            AcpError::Spawn(e.to_string())
+            AcpError::classify_spawn_error(e, &config.cwd, &spawn_command)
         }
     })?;
 
@@ -1235,6 +1286,23 @@ fn is_compact_completion(text: &str) -> bool {
     text.contains("Compacting completed.")
 }
 
+/// Extract a sub-agent parent tool-call id from an ACP `_meta` blob.
+///
+/// claude-agent-acp tags child tool calls launched by Claude's `Task`
+/// tool with `_meta.claudeCode.parentToolUseId` pointing at the parent
+/// Task's `tool_call_id`. Other adapters may grow their own keys
+/// later; this helper only knows about the `claudeCode` namespace for
+/// now. See #1041.
+fn parent_tool_use_id_from_meta(
+    meta: &Option<agent_client_protocol::schema::Meta>,
+) -> Option<String> {
+    meta.as_ref()
+        .and_then(|m| m.get("claudeCode"))
+        .and_then(|cc| cc.get("parentToolUseId"))
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_owned())
+}
+
 /// Map an ACP `SessionUpdate` to the cockpit's typed `Event`. Variants we
 /// don't yet handle pass through as `RawAgentUpdate` so UI clients can at
 /// least see them; we'll narrow these as the schema stabilises.
@@ -1283,12 +1351,26 @@ fn map_update_to_events(update: SessionUpdate) -> Vec<Event> {
         SessionUpdate::ToolCall(tc) => {
             let raw_args = tc.raw_input.clone().unwrap_or(serde_json::Value::Null);
             let args_preview = preview_args(&raw_args);
+            let parent_tool_call_id = parent_tool_use_id_from_meta(&tc.meta);
+            if let Some(parent) = parent_tool_call_id.as_deref() {
+                // Breadcrumb so AOE_ACP_TRACE=1 sessions can verify the
+                // subagent linkage round-trip (parent Task id → child
+                // tool_call id) end-to-end. See #1041 layer C.
+                debug!(
+                    target: "cockpit.acp",
+                    child = %tc.tool_call_id.0,
+                    parent,
+                    kind = %tool_kind_str(&tc.kind),
+                    "subagent child tool_call linked to parent via _meta.claudeCode.parentToolUseId"
+                );
+            }
             let tool_call = ToolCall {
                 id: tc.tool_call_id.0.to_string(),
                 name: tc.title.clone(),
                 kind: tool_kind_str(&tc.kind),
                 args_preview: args_preview.clone(),
                 started_at: chrono::Utc::now(),
+                parent_tool_call_id,
             };
             let mut events = vec![Event::ToolCallStarted { tool_call }];
             if is_destructive(&tc.title, &args_preview) {
@@ -1423,6 +1505,7 @@ fn map_update_to_events(update: SessionUpdate) -> Vec<Event> {
                         kind: "think".to_string(),
                         args_preview,
                         started_at: now,
+                        parent_tool_call_id: None,
                     },
                 },
                 Event::PlanUpdated {
@@ -2483,6 +2566,7 @@ async fn handle_permission_request(
             .unwrap_or_else(|| "other".into()),
         args_preview,
         started_at: chrono::Utc::now(),
+        parent_tool_call_id: parent_tool_use_id_from_meta(&request.tool_call.meta),
     };
     let approval = build_approval(tool_call);
     let nonce = approval.nonce.clone();
@@ -2561,6 +2645,146 @@ mod tests {
         };
         let result = AcpClient::spawn(config, CockpitSessionId("s-1".into())).await;
         assert!(matches!(result, Err(AcpError::Spawn(_))));
+    }
+
+    /// Pre-flight cwd check: when `project_path` was renamed out from
+    /// under the session, the supervisor's spawn fails with a typed
+    /// `ProjectPathMissing` instead of a bare ENOENT-mapped `Spawn`.
+    /// See #1089.
+    #[tokio::test]
+    async fn spawn_returns_project_path_missing_when_cwd_does_not_exist() {
+        let missing =
+            std::env::temp_dir().join(format!("aoe-test-missing-cwd-{}", std::process::id()));
+        // Ensure the path truly does not exist.
+        let _ = std::fs::remove_dir_all(&missing);
+        let config = SpawnConfig {
+            spec: AgentSpec {
+                command: "/bin/true".into(),
+                args: vec![],
+                description: "test".into(),
+                env_allowlist: None,
+            },
+            cwd: missing.clone(),
+            additional_dirs: vec![],
+            provider_env: vec![],
+            socket_path: None,
+            stored_acp_session_id: None,
+        };
+        let result = AcpClient::spawn(config, CockpitSessionId("s-1".into())).await;
+        match result {
+            Err(AcpError::ProjectPathMissing { path }) => assert_eq!(path, missing),
+            Err(other) => panic!("expected ProjectPathMissing, got {other:?}"),
+            Ok(_) => panic!("expected ProjectPathMissing, got Ok"),
+        }
+    }
+
+    /// Belt-and-suspenders: even if the pre-flight raced (cwd vanishes
+    /// between `cwd.exists()` and `Command::spawn`), the classifier turns
+    /// the raw ENOENT into `ProjectPathMissing` rather than the generic
+    /// install-the-adapter message.
+    #[test]
+    fn classify_spawn_error_routes_missing_cwd_to_project_path_missing() {
+        let missing =
+            std::env::temp_dir().join(format!("aoe-test-classify-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&missing);
+        let io_err = std::io::Error::from(std::io::ErrorKind::NotFound);
+        match AcpError::classify_spawn_error(io_err, &missing, "/bin/true") {
+            AcpError::ProjectPathMissing { path } => assert_eq!(path, missing),
+            other => panic!("expected ProjectPathMissing, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_spawn_error_keeps_spawn_when_cwd_exists() {
+        let cwd = std::env::temp_dir();
+        let io_err = std::io::Error::from(std::io::ErrorKind::NotFound);
+        match AcpError::classify_spawn_error(io_err, &cwd, "/nonexistent/bin/foo") {
+            AcpError::Spawn(msg) => {
+                assert!(
+                    msg.contains("/nonexistent/bin/foo"),
+                    "spawn message should echo command: {msg}"
+                );
+            }
+            other => panic!("expected Spawn, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_spawn_error_passes_through_non_enoent() {
+        let cwd = std::env::temp_dir();
+        let io_err = std::io::Error::from(std::io::ErrorKind::PermissionDenied);
+        match AcpError::classify_spawn_error(io_err, &cwd, "/bin/true") {
+            AcpError::Spawn(_) => {}
+            other => panic!("expected Spawn for non-ENOENT, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn parent_tool_use_id_from_meta_reads_claudecode_namespace() {
+        let mut meta = serde_json::Map::new();
+        meta.insert(
+            "claudeCode".to_string(),
+            serde_json::json!({ "parentToolUseId": "tc-parent-7" }),
+        );
+        assert_eq!(
+            parent_tool_use_id_from_meta(&Some(meta)),
+            Some("tc-parent-7".to_string())
+        );
+    }
+
+    #[test]
+    fn parent_tool_use_id_from_meta_returns_none_for_unrelated_keys() {
+        let mut meta = serde_json::Map::new();
+        meta.insert("terminalExit".to_string(), serde_json::json!({ "code": 0 }));
+        assert!(parent_tool_use_id_from_meta(&Some(meta)).is_none());
+    }
+
+    #[test]
+    fn parent_tool_use_id_from_meta_returns_none_for_none_meta() {
+        assert!(parent_tool_use_id_from_meta(&None).is_none());
+    }
+
+    #[test]
+    fn parent_tool_use_id_from_meta_returns_none_when_value_not_a_string() {
+        let mut meta = serde_json::Map::new();
+        meta.insert(
+            "claudeCode".to_string(),
+            serde_json::json!({ "parentToolUseId": 42 }),
+        );
+        assert!(parent_tool_use_id_from_meta(&Some(meta)).is_none());
+    }
+
+    #[test]
+    fn map_update_to_events_threads_parent_tool_call_id() {
+        use agent_client_protocol::schema::{SessionUpdate, ToolCall as AcpToolCall};
+        let mut meta = serde_json::Map::new();
+        meta.insert(
+            "claudeCode".to_string(),
+            serde_json::json!({ "parentToolUseId": "tc-task-1" }),
+        );
+        let mut tc = AcpToolCall::new("tc-child-1", "Read");
+        tc.raw_input = Some(serde_json::json!({"path": "x"}));
+        tc.meta = Some(meta);
+        let events = map_update_to_events(SessionUpdate::ToolCall(tc));
+        let started = events.iter().find_map(|e| match e {
+            Event::ToolCallStarted { tool_call } => Some(tool_call),
+            _ => None,
+        });
+        let started = started.expect("ToolCallStarted emitted");
+        assert_eq!(started.parent_tool_call_id.as_deref(), Some("tc-task-1"),);
+    }
+
+    #[test]
+    fn map_update_to_events_leaves_parent_none_when_meta_missing() {
+        use agent_client_protocol::schema::{SessionUpdate, ToolCall as AcpToolCall};
+        let mut tc = AcpToolCall::new("tc-1", "Read");
+        tc.raw_input = Some(serde_json::json!({"path": "x"}));
+        let events = map_update_to_events(SessionUpdate::ToolCall(tc));
+        let started = events.iter().find_map(|e| match e {
+            Event::ToolCallStarted { tool_call } => Some(tool_call),
+            _ => None,
+        });
+        assert!(started.unwrap().parent_tool_call_id.is_none());
     }
 
     #[test]

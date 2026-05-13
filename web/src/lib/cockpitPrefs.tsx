@@ -21,10 +21,16 @@ export interface CockpitPrefs {
    *  `CardChromeProps.startedAt` in ToolCards.tsx for the upstream
    *  limitation. */
   showToolDurations: boolean;
+  /** Resolved `cockpit.queue_drain_mode` from the active profile. Selects
+   *  how the composer drains client-side queued follow-up prompts on
+   *  Stopped: `combined` (default) joins them with blank lines into a
+   *  single prompt; `serial` fires one entry at a time. See #1031. */
+  queueDrainMode: "combined" | "serial";
 }
 
 const DEFAULT_PREFS: CockpitPrefs = {
   showToolDurations: true,
+  queueDrainMode: "combined",
 };
 
 const CockpitPrefsContext = createContext<CockpitPrefs>(DEFAULT_PREFS);

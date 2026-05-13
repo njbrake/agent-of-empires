@@ -162,11 +162,21 @@ default_agent = "aoe-agent"
 approval_timeout_secs = 300
 destructive_require_double_confirm = true
 max_concurrent_workers = 5
+max_concurrent_resumes = 4  # cap on parallel cold-start spawns/attaches (#1088)
 replay_events = 0  # 0 = unlimited history; set a positive value to cap per-session rows
 replay_bytes = 5_242_880
 node_path = ""
 show_tool_durations = true  # per-tool elapsed-time label in the web UI
+queue_drain_mode = "combined"  # how the composer drains client-side queued prompts: "combined" | "serial" (#1031)
 ```
+
+`max_concurrent_resumes` bounds how many cockpit workers the reconciler
+spawns/attaches in parallel on `aoe serve` cold start. Default 4 keeps
+Node.js bootup memory bounded for laptops/Pis; raise on beefier hosts.
+Clamped at runtime by `min(this, max_concurrent_workers).max(1)`. The
+supervisor's per-agent install gate serialises only the first spawn of
+each agent per daemon lifetime, so the claude-agent-acp lazy-install
+race is safe even at high parallelism (#1088).
 
 `enabled = false` is a master kill switch; cockpit refuses to spawn
 even if a session has `--cockpit`. `default_for_claude = true` makes
@@ -401,6 +411,15 @@ Then run `claude login` if you haven't already.
 `aoe serve` captures the launching shell's PATH at startup and keeps it for the daemon's lifetime. If the adapter is installed under a node-version-manager dir (`~/.nvm/versions/node/v<ver>/bin`, `~/.fnm/node-versions/.../installation/bin`, mise/asdf equivalents) and the active node version on the daemon's PATH doesn't match, the spawn fails with `agent spawn failed: No such file or directory`.
 
 The spawn path scans common node-manager bin dirs (nvm, fnm, mise, asdf, Volta, `~/.npm-global/bin`, `~/.local/bin`, `/usr/local/bin`, `/opt/homebrew/bin`) per spawn, so a `nvm use <other-version>` after the daemon started is picked up on the next worker respawn without a daemon restart. If the binary lives somewhere else, either restart `aoe serve` from a shell where `which claude-agent-acp` resolves, or symlink it into one of those dirs.
+
+### "Project path no longer exists" banner
+
+The session's working directory was renamed, moved, or deleted out from under `aoe serve`. The most common trigger is a `git worktree move` or a manual `mv` on a worktree dir the session was bound to. The cockpit pre-flights `project_path` before spawning, so this fails fast with a typed banner instead of a generic ENOENT (which is indistinguishable on POSIX from "the adapter is missing"). Two ways to recover:
+
+1. **Restore the directory at the path the banner shows** (e.g. `git worktree move <new> <old>`, or recreate the dir), then click **Retry** on the banner. Cockpit transcript continuity is preserved.
+2. **Stop `aoe serve`**, edit `project_path` for this session in `~/.agent-of-empires/profiles/<profile>/sessions.json` to point at the new location, then start `aoe serve` again. If the worktree's branch was also renamed, update `worktree_info.branch` in the same file. Cockpit history + `cockpit_acp_session_id` are preserved; the conversation resumes against the new path.
+
+Reinstalling the adapter does not help here; the adapter is fine, the cwd is gone.
 
 ### Cockpit feels "stuck" with no events
 

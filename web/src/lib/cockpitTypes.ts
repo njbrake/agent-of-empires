@@ -36,6 +36,12 @@ export interface ToolCall {
   kind: string;
   args_preview: string;
   started_at: string; // ISO-8601 from chrono
+  /** When the agent launches a sub-agent (Claude's Task tool), the
+   *  adapter rides `_meta.claudeCode.parentToolUseId` along on the
+   *  child tool calls. Threaded through here so the cockpit can group
+   *  sub-tools under their parent Task. Undefined for top-level
+   *  calls. See #1041. */
+  parent_tool_call_id?: string;
 }
 
 export interface DiffPreview {
@@ -243,6 +249,24 @@ export interface CockpitState {
    *  transient "Restarting…" banner appears without a reconnect button;
    *  cleared on AcpSessionAssigned or UserPromptSent. */
   workerRestarting: boolean;
+  /** Follow-up prompts the user typed and submitted while a turn was
+   *  already running. The composer enqueues them client-side instead
+   *  of racing the agent (claude-agent-acp serialises session/prompt
+   *  internally, but client-side queueing gives us a visible "queued"
+   *  badge and lets the user edit / drop entries before they fire).
+   *  On `Stopped` (when the worker is healthy) the head is popped and
+   *  dispatched via the regular sendPrompt path. See #1031. */
+  queuedPrompts: QueuedPrompt[];
+}
+
+export interface QueuedPrompt {
+  /** Client-minted id; survives edits. Used by the composer strip to
+   *  key the list and by the edit / delete actions to target a row. */
+  id: string;
+  text: string;
+  /** ISO-8601 client wall clock at enqueue time. Displayed as a
+   *  relative age in the strip. */
+  queuedAt: string;
 }
 
 export interface ActivityRow {
@@ -293,6 +317,7 @@ export function emptyCockpitState(): CockpitState {
     turnHasOutput: false,
     workerStopped: false,
     workerRestarting: false,
+    queuedPrompts: [],
   };
 }
 

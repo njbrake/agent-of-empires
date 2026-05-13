@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  SUBAGENT_TASK_NAME,
   TOOL_GROUP_NAME,
   activityToThreadMessages,
 } from "./CockpitRuntime";
@@ -128,6 +129,176 @@ describe("activityToThreadMessages; tool-call grouping (#1057)", () => {
     expect(groups).toHaveLength(0);
     const toolParts = parts.filter((p) => p.type === "tool-call");
     expect(toolParts).toHaveLength(4);
+  });
+
+  it("smuggles parent_tool_call_id through args_preview as _aoe_parent_tool_call_id (#1041)", () => {
+    const childTool: ToolCall = {
+      id: "ch-1",
+      name: "Read",
+      kind: "read",
+      args_preview: JSON.stringify({ path: "/tmp/x" }),
+      started_at: "2026-05-12T00:00:00Z",
+      parent_tool_call_id: "task-parent-1",
+    };
+    const row: ActivityRow = {
+      id: "start-ch-1",
+      kind: "tool_start",
+      text: "Read",
+      toolCallId: "ch-1",
+      tool: childTool,
+      at: "2026-05-12T00:00:00Z",
+    };
+    const messages = activityToThreadMessages([userRow("go"), row], false);
+    const assistant = messages.find((m) => m.role === "assistant")!;
+    const parts = assistant.content as Array<{
+      type: string;
+      argsText?: string;
+    }>;
+    const child = parts.find((p) => p.type === "tool-call")!;
+    const parsed = JSON.parse(child.argsText!);
+    expect(parsed._aoe_parent_tool_call_id).toBe("task-parent-1");
+  });
+
+  it("collapses a parent Task + its children into a _aoe_subagent_task part (#1041)", () => {
+    const parent: ToolCall = {
+      id: "task-1",
+      name: "Investigate auth bug",
+      kind: "think",
+      args_preview: JSON.stringify({
+        description: "Investigate auth bug",
+        _aoe_title: "Investigate auth bug",
+      }),
+      started_at: "2026-05-12T00:00:00Z",
+    };
+    const parentRow: ActivityRow = {
+      id: "start-task-1",
+      kind: "tool_start",
+      text: "Task",
+      toolCallId: "task-1",
+      tool: parent,
+      at: "2026-05-12T00:00:00Z",
+    };
+    const child: ToolCall = {
+      id: "ch-1",
+      name: "Read",
+      kind: "read",
+      args_preview: JSON.stringify({ path: "/x" }),
+      started_at: "2026-05-12T00:00:01Z",
+      parent_tool_call_id: "task-1",
+    };
+    const childRow: ActivityRow = {
+      id: "start-ch-1",
+      kind: "tool_start",
+      text: "Read",
+      toolCallId: "ch-1",
+      tool: child,
+      at: "2026-05-12T00:00:01Z",
+    };
+    const messages = activityToThreadMessages(
+      [userRow("go"), parentRow, childRow],
+      false,
+    );
+    const assistant = messages.find((m) => m.role === "assistant")!;
+    const parts = assistant.content as Array<{
+      type: string;
+      toolName?: string;
+      argsText?: string;
+    }>;
+    const subagentParts = parts.filter(
+      (p) => p.type === "tool-call" && p.toolName === SUBAGENT_TASK_NAME,
+    );
+    expect(subagentParts).toHaveLength(1);
+    const payload = JSON.parse(subagentParts[0]!.argsText!);
+    expect(payload.parent.toolCallId).toBe("task-1");
+    expect(payload.children).toHaveLength(1);
+    expect(payload.children[0].toolCallId).toBe("ch-1");
+    // The original child part should not appear as a top-level tool-call.
+    const directChild = parts.find(
+      (p) => p.type === "tool-call" && p.toolName !== SUBAGENT_TASK_NAME,
+    );
+    expect(directChild).toBeUndefined();
+  });
+
+  it("leaves orphan children in place when their parent is absent", () => {
+    const orphanChild: ToolCall = {
+      id: "ch-1",
+      name: "Read",
+      kind: "read",
+      args_preview: JSON.stringify({ path: "/x" }),
+      started_at: "2026-05-12T00:00:00Z",
+      parent_tool_call_id: "task-elsewhere",
+    };
+    const childRow: ActivityRow = {
+      id: "start-ch-1",
+      kind: "tool_start",
+      text: "Read",
+      toolCallId: "ch-1",
+      tool: orphanChild,
+      at: "2026-05-12T00:00:00Z",
+    };
+    const messages = activityToThreadMessages([userRow("go"), childRow], false);
+    const assistant = messages.find((m) => m.role === "assistant")!;
+    const parts = assistant.content as Array<{
+      type: string;
+      toolName?: string;
+    }>;
+    const subagentParts = parts.filter(
+      (p) => p.type === "tool-call" && p.toolName === SUBAGENT_TASK_NAME,
+    );
+    expect(subagentParts).toHaveLength(0);
+    const toolParts = parts.filter((p) => p.type === "tool-call");
+    expect(toolParts).toHaveLength(1);
+  });
+
+  it("does not fold subagent parent + children into the generic tool group", () => {
+    // Three children would otherwise hit TOOL_GROUP_MIN_RUN=3.
+    const parent: ToolCall = {
+      id: "task-1",
+      name: "Task",
+      kind: "think",
+      args_preview: JSON.stringify({ description: "go" }),
+      started_at: "2026-05-12T00:00:00Z",
+    };
+    const parentRow: ActivityRow = {
+      id: "start-task-1",
+      kind: "tool_start",
+      text: "Task",
+      toolCallId: "task-1",
+      tool: parent,
+      at: "2026-05-12T00:00:00Z",
+    };
+    const mkChild = (id: string): ActivityRow => ({
+      id: `start-${id}`,
+      kind: "tool_start",
+      text: "Read",
+      toolCallId: id,
+      tool: {
+        id,
+        name: "Read",
+        kind: "read",
+        args_preview: JSON.stringify({ path: `/${id}` }),
+        started_at: "2026-05-12T00:00:00Z",
+        parent_tool_call_id: "task-1",
+      },
+      at: "2026-05-12T00:00:00Z",
+    });
+    const messages = activityToThreadMessages(
+      [userRow("go"), parentRow, mkChild("a"), mkChild("b"), mkChild("c")],
+      false,
+    );
+    const assistant = messages.find((m) => m.role === "assistant")!;
+    const parts = assistant.content as Array<{
+      type: string;
+      toolName?: string;
+    }>;
+    const groups = parts.filter(
+      (p) => p.type === "tool-call" && p.toolName === TOOL_GROUP_NAME,
+    );
+    expect(groups).toHaveLength(0);
+    const subagents = parts.filter(
+      (p) => p.type === "tool-call" && p.toolName === SUBAGENT_TASK_NAME,
+    );
+    expect(subagents).toHaveLength(1);
   });
 
   it("does not group across user-prompt boundaries (separate messages)", () => {

@@ -118,6 +118,8 @@ pub enum FieldKey {
     CockpitReplayBytes,
     CockpitNodePath,
     CockpitShowToolDurations,
+    CockpitQueueDrainMode,
+    CockpitMaxConcurrentResumes,
 }
 
 /// Resolve a field value from global config and optional profile override.
@@ -327,6 +329,16 @@ fn build_cockpit_fields(
         global.cockpit.show_tool_durations,
         p.and_then(|c| c.show_tool_durations),
     );
+    let (queue_drain_mode, qdm_override) = resolve_value(
+        scope,
+        global.cockpit.queue_drain_mode,
+        p.and_then(|c| c.queue_drain_mode),
+    );
+    let (max_concurrent_resumes, mcr_override) = resolve_value(
+        scope,
+        global.cockpit.max_concurrent_resumes,
+        p.and_then(|c| c.max_concurrent_resumes),
+    );
 
     vec![
         SettingField {
@@ -399,6 +411,30 @@ fn build_cockpit_fields(
             value: FieldValue::Bool(show_tool_durations),
             category: SettingsCategory::Cockpit,
             has_override: std_override,
+            inherited_display: None,
+        },
+        SettingField {
+            key: FieldKey::CockpitMaxConcurrentResumes,
+            label: "Max concurrent resumes",
+            description: "Upper bound on parallel cockpit worker spawns/attaches the reconciler runs on `aoe serve` cold start. Default 4 keeps Node.js bootup memory within bounds for laptops/Pis (each claude-agent-acp is ~50-80 MB transient). Bounded at runtime by `min(this, max_concurrent_workers).max(1)`. See #1088.",
+            value: FieldValue::Number(u64::from(max_concurrent_resumes)),
+            category: SettingsCategory::Cockpit,
+            has_override: mcr_override,
+            inherited_display: None,
+        },
+        SettingField {
+            key: FieldKey::CockpitQueueDrainMode,
+            label: "Queue drain mode",
+            description: "How the web composer dispatches follow-up prompts queued while the agent was busy. Combined (default) joins every queued entry with a blank line and sends them as a single prompt on the next Stopped; one response covers the whole batch. Serial fires one entry at a time; each gets its own response. See #1031.",
+            value: FieldValue::Select {
+                selected: match queue_drain_mode {
+                    crate::session::config::QueueDrainMode::Combined => 0,
+                    crate::session::config::QueueDrainMode::Serial => 1,
+                },
+                options: vec!["combined".to_string(), "serial".to_string()],
+            },
+            category: SettingsCategory::Cockpit,
+            has_override: qdm_override,
             inherited_display: None,
         },
     ]
@@ -1780,6 +1816,16 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
         (FieldKey::CockpitShowToolDurations, FieldValue::Bool(v)) => {
             config.cockpit.show_tool_durations = *v
         }
+        (FieldKey::CockpitQueueDrainMode, FieldValue::Select { selected, options }) => {
+            if let Some(name) = options.get(*selected) {
+                if let Some(mode) = crate::session::config::QueueDrainMode::parse(name) {
+                    config.cockpit.queue_drain_mode = mode;
+                }
+            }
+        }
+        (FieldKey::CockpitMaxConcurrentResumes, FieldValue::Number(v)) => {
+            config.cockpit.max_concurrent_resumes = (*v).max(1).min(u32::MAX as u64) as u32
+        }
         _ => {}
     }
 }
@@ -2099,6 +2145,21 @@ fn apply_field_to_profile(field: &SettingField, _global: &Config, config: &mut P
         (FieldKey::CockpitShowToolDurations, FieldValue::Bool(v)) => {
             set_profile_override(*v, &mut config.cockpit, |s, val| {
                 s.show_tool_durations = val
+            });
+        }
+        (FieldKey::CockpitQueueDrainMode, FieldValue::Select { selected, options }) => {
+            if let Some(name) = options.get(*selected) {
+                if let Some(mode) = crate::session::config::QueueDrainMode::parse(name) {
+                    set_profile_override(mode, &mut config.cockpit, |s, val| {
+                        s.queue_drain_mode = val
+                    });
+                }
+            }
+        }
+        (FieldKey::CockpitMaxConcurrentResumes, FieldValue::Number(v)) => {
+            let clamped = (*v).max(1).min(u32::MAX as u64) as u32;
+            set_profile_override(clamped, &mut config.cockpit, |s, val| {
+                s.max_concurrent_resumes = val
             });
         }
         _ => {}

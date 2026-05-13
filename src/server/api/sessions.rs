@@ -51,6 +51,14 @@ pub struct SessionResponse {
     /// between the cockpit panels and the terminal view.
     #[cfg(feature = "serve")]
     pub cockpit_mode: bool,
+    /// Live cockpit worker lifecycle. `absent` for tmux sessions or
+    /// cockpit sessions whose worker has not been spawned/attached
+    /// yet; `resuming` while the reconciler is mid-spawn or mid-attach;
+    /// `running` once the supervisor holds a live worker. Drives the
+    /// sidebar `Resuming…` chip and the per-session banner in the
+    /// cockpit view. See #1088.
+    #[cfg(feature = "serve")]
+    pub cockpit_worker_state: crate::cockpit::supervisor::CockpitWorkerState,
     /// True when the session is a Claude Code session AND the user has
     /// enabled Claude's fullscreen renderer (`tui: "fullscreen"` in
     /// `~/.claude/settings.json`). The web client uses this to skip
@@ -108,7 +116,13 @@ impl SessionResponse {
     /// request via `crate::claude_settings::read_tui_fullscreen()`); it
     /// surfaces on the response only when the session's agent is Claude.
     pub fn from_instance(inst: &Instance, claude_fullscreen: bool) -> Self {
-        Self::from_instance_with_plan(inst, claude_fullscreen, None)
+        Self::from_instance_with_plan(
+            inst,
+            claude_fullscreen,
+            None,
+            #[cfg(feature = "serve")]
+            crate::cockpit::supervisor::CockpitWorkerState::Absent,
+        )
     }
 
     /// Build a response with the per-session plan snapshot. Called from
@@ -118,6 +132,8 @@ impl SessionResponse {
         inst: &Instance,
         claude_fullscreen: bool,
         plan_summary: Option<PlanSummary>,
+        #[cfg(feature = "serve")]
+        cockpit_worker_state: crate::cockpit::supervisor::CockpitWorkerState,
     ) -> Self {
         Self {
             id: inst.id.clone(),
@@ -154,6 +170,8 @@ impl SessionResponse {
             notify_on_error: inst.notify_on_error,
             #[cfg(feature = "serve")]
             cockpit_mode: inst.cockpit_mode,
+            #[cfg(feature = "serve")]
+            cockpit_worker_state,
             claude_fullscreen: claude_fullscreen && inst.tool == "claude",
             workspace_repos: inst
                 .workspace_info
@@ -210,6 +228,10 @@ fn truncate_title(s: &str, max: usize) -> String {
 pub async fn list_sessions(State(state): State<Arc<AppState>>) -> Json<Vec<SessionResponse>> {
     let instances = state.instances.read().await;
     let claude_fullscreen = crate::claude_settings::read_tui_fullscreen();
+    // Snapshot the supervisor's worker lifecycle map once per request
+    // rather than locking it per row. See #1088.
+    #[cfg(feature = "serve")]
+    let worker_states = state.cockpit_supervisor.worker_states_snapshot().await;
     let mut sessions: Vec<SessionResponse> = instances
         .iter()
         .map(|inst| {
@@ -221,7 +243,18 @@ pub async fn list_sessions(State(state): State<Arc<AppState>>) -> Json<Vec<Sessi
             } else {
                 None
             };
-            SessionResponse::from_instance_with_plan(inst, claude_fullscreen, plan_summary)
+            #[cfg(feature = "serve")]
+            let cockpit_worker_state = worker_states
+                .get(&inst.id)
+                .copied()
+                .unwrap_or(crate::cockpit::supervisor::CockpitWorkerState::Absent);
+            SessionResponse::from_instance_with_plan(
+                inst,
+                claude_fullscreen,
+                plan_summary,
+                #[cfg(feature = "serve")]
+                cockpit_worker_state,
+            )
         })
         .collect();
 
@@ -1317,12 +1350,31 @@ pub struct RichDiffFileInfo {
     pub status: String,
     pub additions: usize,
     pub deletions: usize,
+    /// Name of the workspace repo this file belongs to. None for
+    /// single-repo (non-workspace) sessions. The frontend uses this to
+    /// group entries in the sidebar diff list and to disambiguate
+    /// path collisions across repos. See #1047.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repo_name: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct RepoBase {
+    /// None for single-repo sessions; Some for each workspace member.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub repo_name: Option<String>,
+    pub base_branch: String,
 }
 
 #[derive(Serialize)]
 pub struct RichDiffFilesResponse {
     pub files: Vec<RichDiffFileInfo>,
-    pub base_branch: String,
+    /// One entry per repo whose diff was computed. Single-repo
+    /// sessions get a one-element array with `repo_name: None`;
+    /// workspace sessions get one entry per workspace member. Replaces
+    /// the previous single-string `base_branch` since each member can
+    /// have a different default. See #1047.
+    pub per_repo_bases: Vec<RepoBase>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub warning: Option<String>,
 }
@@ -1419,19 +1471,47 @@ fn validate_diff_path(
     Ok(final_path)
 }
 
-/// Helper: look up a session's project_path by ID.
-async fn resolve_session_path(
+/// One repo's worth of diff context: a name (for workspace members)
+/// and the filesystem path the diff helper walks. See #1047.
+#[derive(Clone, Debug)]
+struct DiffRepo {
+    /// Workspace member name, or None for single-repo sessions.
+    name: Option<String>,
+    path: String,
+}
+
+/// Expand a session into the list of repos whose diffs the sidebar
+/// cares about. Workspace sessions iterate `workspace_info.repos`
+/// (each `worktree_path` becomes one entry); single-repo sessions
+/// fall back to a one-element list of `[project_path]` so the
+/// existing flow is unchanged. See #1047.
+async fn resolve_diff_repos(
     state: &AppState,
     id: &str,
-) -> Result<String, axum::response::Response> {
+) -> Result<Vec<DiffRepo>, axum::response::Response> {
     let instances = state.instances.read().await;
-    match instances.iter().find(|i| i.id == id) {
-        Some(i) => Ok(i.project_path.clone()),
-        None => Err((
+    let inst = instances.iter().find(|i| i.id == id).ok_or_else(|| {
+        (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({"error": "not_found", "message": "Session not found"})),
         )
-            .into_response()),
+            .into_response()
+    })?;
+    if let Some(ws) = inst.workspace_info.as_ref() {
+        let repos = ws
+            .repos
+            .iter()
+            .map(|r| DiffRepo {
+                name: Some(r.name.clone()),
+                path: r.worktree_path.clone(),
+            })
+            .collect();
+        Ok(repos)
+    } else {
+        Ok(vec![DiffRepo {
+            name: None,
+            path: inst.project_path.clone(),
+        }])
     }
 }
 
@@ -1439,34 +1519,54 @@ pub async fn session_diff_files(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let project_path = match resolve_session_path(&state, &id).await {
-        Ok(p) => p,
+    let repos = match resolve_diff_repos(&state, &id).await {
+        Ok(r) => r,
         Err(resp) => return resp,
     };
 
     let result = tokio::task::spawn_blocking(move || {
         use crate::git::diff;
-        let path = std::path::Path::new(&project_path);
 
-        let base_branch = diff::get_default_branch(path).unwrap_or_else(|_| "main".to_string());
-        let warning = diff::check_merge_base_status(path, &base_branch);
-        let changed = diff::compute_changed_files(path, &base_branch).unwrap_or_default();
+        let mut all_files: Vec<RichDiffFileInfo> = Vec::new();
+        let mut per_repo_bases: Vec<RepoBase> = Vec::new();
+        let mut warnings: Vec<String> = Vec::new();
 
-        let files: Vec<RichDiffFileInfo> = changed
-            .into_iter()
-            .map(|f| RichDiffFileInfo {
-                path: f.path.to_string_lossy().to_string(),
-                old_path: f.old_path.map(|p| p.to_string_lossy().to_string()),
-                status: f.status.label().to_string(),
-                additions: f.additions,
-                deletions: f.deletions,
-            })
-            .collect();
+        for repo in &repos {
+            let path = std::path::Path::new(&repo.path);
+            let base_branch = diff::get_default_branch(path).unwrap_or_else(|_| "main".to_string());
+            let warning = diff::check_merge_base_status(path, &base_branch);
+            let changed = diff::compute_changed_files(path, &base_branch).unwrap_or_default();
+
+            for f in changed {
+                all_files.push(RichDiffFileInfo {
+                    path: f.path.to_string_lossy().to_string(),
+                    old_path: f.old_path.map(|p| p.to_string_lossy().to_string()),
+                    status: f.status.label().to_string(),
+                    additions: f.additions,
+                    deletions: f.deletions,
+                    repo_name: repo.name.clone(),
+                });
+            }
+            per_repo_bases.push(RepoBase {
+                repo_name: repo.name.clone(),
+                base_branch: base_branch.clone(),
+            });
+            if let Some(w) = warning {
+                match repo.name.as_deref() {
+                    Some(n) => warnings.push(format!("{n}: {w}")),
+                    None => warnings.push(w),
+                }
+            }
+        }
 
         RichDiffFilesResponse {
-            files,
-            base_branch,
-            warning,
+            files: all_files,
+            per_repo_bases,
+            warning: if warnings.is_empty() {
+                None
+            } else {
+                Some(warnings.join("\n"))
+            },
         }
     })
     .await;
@@ -1491,6 +1591,12 @@ pub async fn session_diff_files(
 #[derive(Deserialize)]
 pub struct FileDiffQuery {
     pub path: String,
+    /// Workspace repo name when the session is a multi-repo workspace.
+    /// Omitted for single-repo sessions; if a workspace session omits
+    /// it, the handler defaults to the first member so the legacy
+    /// single-repo URL keeps working for the primary repo. See #1047.
+    #[serde(default)]
+    pub repo: Option<String>,
 }
 
 /// Response for a rejected diff request (bad path, file not changed, etc.).
@@ -1505,10 +1611,38 @@ pub async fn session_diff_file(
     Path(id): Path<String>,
     axum::extract::Query(query): axum::extract::Query<FileDiffQuery>,
 ) -> impl IntoResponse {
-    let project_path = match resolve_session_path(&state, &id).await {
-        Ok(p) => p,
+    let repos = match resolve_diff_repos(&state, &id).await {
+        Ok(r) => r,
         Err(resp) => return resp,
     };
+
+    // Pick the workspace member named in `?repo=`. When the param is
+    // missing we default to the first member, which matches the
+    // legacy single-repo URL contract (`?path=...` against the
+    // session's primary repo). When the named repo doesn't exist, the
+    // request is rejected so a stale link doesn't quietly diff the
+    // wrong repo. See #1047.
+    let selected_repo = match query.repo.as_deref() {
+        Some(name) => match repos.iter().find(|r| r.name.as_deref() == Some(name)) {
+            Some(r) => r.clone(),
+            None => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({
+                        "error": "bad_request",
+                        "message": "unknown workspace repo"
+                    })),
+                )
+                    .into_response();
+            }
+        },
+        None => repos
+            .first()
+            .cloned()
+            .expect("resolve_diff_repos always returns at least one entry (single-repo fallback)"),
+    };
+    let project_path = selected_repo.path;
+    let selected_repo_name = selected_repo.name;
 
     let result =
         tokio::task::spawn_blocking(move || -> Result<RichFileDiffResponse, DiffFileError> {
@@ -1549,6 +1683,7 @@ pub async fn session_diff_file(
                 status: file_diff.file.status.label().to_string(),
                 additions: file_diff.file.additions,
                 deletions: file_diff.file.deletions,
+                repo_name: selected_repo_name.clone(),
             };
 
             // Size cap: avoid OOM'ing the browser on huge files (minified bundles,

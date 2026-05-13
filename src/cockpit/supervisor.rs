@@ -105,30 +105,76 @@ struct WorkerHandle {
 /// loss of the agent's first message after a retry.
 type SeqMap = std::sync::Mutex<HashMap<String, u64>>;
 
+/// Public lifecycle state for a cockpit worker, surfaced via
+/// `SessionResponse.cockpit_worker_state` so the sidebar + cockpit view
+/// can show a "Resuming…" affordance while the reconciler is mid-spawn
+/// or mid-attach. Deliberately not persisted to the cockpit event log:
+/// daemon lifecycle is ephemeral, transcript replay should not carry
+/// it. See #1088.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CockpitWorkerState {
+    /// No worker for this session and no resume in flight.
+    Absent,
+    /// A spawn or attach is in progress; the UI shows the "Resuming…"
+    /// banner + sidebar chip.
+    Resuming,
+    /// Worker is online and reachable.
+    Running,
+}
+
+/// Which code path put a reservation into `pending_resumes`. The UI
+/// treats both as `Resuming`; the supervisor only uses the kind for
+/// capacity accounting (only `Spawn` reservations count toward
+/// `max_concurrent_workers`, attach reattaches an existing runner).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResumeKind {
+    /// Reattaching to a live runner via `Supervisor::attach`.
+    Attach,
+    /// Fresh `Supervisor::spawn` after a missing/dead runner.
+    Spawn,
+}
+
 pub struct Supervisor<S: BroadcastSink> {
     sink: Arc<S>,
     registry: Arc<Mutex<AgentRegistry>>,
     workers: Arc<Mutex<HashMap<String, WorkerHandle>>>,
     next_seqs: Arc<SeqMap>,
-    /// Reservation set: a session_id present here means another task
-    /// is mid-`spawn` for it. `AcpClient::spawn` takes 2-3s for the
-    /// initial handshake; without this reservation, two concurrent
-    /// callers (POST /api/sessions auto-spawn + 2s reconciler tick)
-    /// both pass the empty-`workers` check and race to insert,
-    /// silently overwriting the first WorkerHandle. The dropped
-    /// client's cmd_tx then closes its connection task and burns the
-    /// restart budget. The RAII `SpawnReservation` guard in `spawn`
+    /// Reservation map: a session_id present here means another task is
+    /// mid-resume (spawn OR attach) for it. The `ResumeKind` lets the
+    /// capacity check distinguish fresh spawns (which contribute to the
+    /// worker pool) from reattaches (which take over an existing live
+    /// runner). `AcpClient::spawn` takes 2-3s for the initial handshake
+    /// and `attach` can block up to ~3s on socket dial; without this
+    /// reservation, two concurrent callers both pass the empty-`workers`
+    /// check and race to insert. The RAII `ResumeReservation` guard
     /// removes the entry on success, error, or panic.
-    pending_spawns: Arc<Mutex<HashSet<String>>>,
+    pending_resumes: Arc<Mutex<HashMap<String, ResumeKind>>>,
     /// Session ids whose in-flight `spawn` should bail out instead of
-    /// inserting the freshly-spawned WorkerHandle. Set by
-    /// `shutdown` when it observes a session that's in
-    /// `pending_spawns` but not yet in `workers` — without this, a
-    /// `cockpit_disable` arriving during the 2-3s ACP handshake
-    /// would no-op (shutdown returns UnknownSession) but the
-    /// in-flight spawn would still complete a few seconds later,
-    /// producing an orphaned worker the user can no longer manage.
+    /// inserting the freshly-spawned WorkerHandle. Set by `shutdown`
+    /// when it observes a session that's in `pending_resumes` but not
+    /// yet in `workers` — without this, a `cockpit_disable` arriving
+    /// during the 2-3s ACP handshake would no-op (shutdown returns
+    /// UnknownSession) but the in-flight spawn would still complete a
+    /// few seconds later, producing an orphaned worker the user can no
+    /// longer manage.
     cancelled_spawns: Arc<Mutex<HashSet<String>>>,
+    /// Per-agent install gate. claude-agent-acp lazy-installs its
+    /// native binary on first ever run; two concurrent `session/new`
+    /// calls against a partially-installed SDK race the install and
+    /// the second fails with "Claude Code native binary not found".
+    /// Tracking which agents have already been warmed up in this
+    /// process lifetime lets every subsequent spawn proceed in
+    /// parallel without the gate. Reset on every `aoe serve` restart
+    /// (warm-cache restarts pay one serial spawn). See #1088.
+    warmed_up_agents: Arc<Mutex<HashSet<String>>>,
+    /// Per-agent warm-up locks. The first `spawn` for an agent name
+    /// that is not yet in `warmed_up_agents` acquires the matching
+    /// lock for the duration of its handshake, then inserts the agent
+    /// into the warm-up set. Subsequent concurrent callers `await`
+    /// the lock, see the agent is now warmed up, and proceed without
+    /// re-acquiring it. See #1088.
+    agent_warmup_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
     /// Cap on concurrently-running workers, snapshotted from
     /// `[cockpit] max_concurrent_workers` at startup. Enforced in
     /// `spawn`; new workers past the cap return `CapacityFull`.
@@ -137,20 +183,20 @@ pub struct Supervisor<S: BroadcastSink> {
     max_concurrent_workers: u32,
 }
 
-/// RAII guard: ensures a session_id is removed from `pending_spawns`
-/// when `spawn` returns or unwinds, no matter which path was taken.
-/// Without this, a panic or early-return in the middle of `spawn`
-/// would leave a phantom reservation that blocks every future spawn
-/// for that session.
-struct SpawnReservation {
-    pending: Arc<Mutex<HashSet<String>>>,
+/// RAII guard: ensures a session_id is removed from `pending_resumes`
+/// when `spawn` or `attach` returns or unwinds, no matter which path
+/// was taken. Without this, a panic or early-return mid-resume would
+/// leave a phantom reservation that blocks every future resume for
+/// that session AND keeps the UI stuck on "Resuming…".
+struct ResumeReservation {
+    pending: Arc<Mutex<HashMap<String, ResumeKind>>>,
     session_id: String,
 }
 
-impl Drop for SpawnReservation {
+impl Drop for ResumeReservation {
     fn drop(&mut self) {
         // Sync remove via blocking_lock would deadlock inside an
-        // async runtime; spawn a detached task to release. The set
+        // async runtime; spawn a detached task to release. The map
         // operation is constant-time and the task lives only for the
         // duration of one `lock().await` + remove.
         let pending = Arc::clone(&self.pending);
@@ -196,10 +242,46 @@ impl<S: BroadcastSink> Supervisor<S> {
             registry: Arc::new(Mutex::new(AgentRegistry::with_defaults())),
             workers: Arc::new(Mutex::new(HashMap::new())),
             next_seqs: Arc::new(std::sync::Mutex::new(HashMap::new())),
-            pending_spawns: Arc::new(Mutex::new(HashSet::new())),
+            pending_resumes: Arc::new(Mutex::new(HashMap::new())),
             cancelled_spawns: Arc::new(Mutex::new(HashSet::new())),
+            warmed_up_agents: Arc::new(Mutex::new(HashSet::new())),
+            agent_warmup_locks: Arc::new(Mutex::new(HashMap::new())),
             max_concurrent_workers,
         }
+    }
+
+    /// Snapshot the lifecycle state of every cockpit session known to
+    /// the supervisor (running OR mid-resume). Cheap: one lock per map.
+    /// Used by `GET /api/sessions` to fill `cockpit_worker_state` so the
+    /// sidebar + cockpit view can render a "Resuming…" affordance
+    /// without polling per-session. See #1088.
+    pub async fn worker_states_snapshot(&self) -> HashMap<String, CockpitWorkerState> {
+        let mut out = HashMap::new();
+        for id in self.workers.lock().await.keys() {
+            out.insert(id.clone(), CockpitWorkerState::Running);
+        }
+        for id in self.pending_resumes.lock().await.keys() {
+            // Running wins over Resuming if both maps happen to carry
+            // the id during a hand-off; the WorkerHandle is the
+            // authoritative "online" signal.
+            out.entry(id.clone())
+                .or_insert(CockpitWorkerState::Resuming);
+        }
+        out
+    }
+
+    /// Single-session lifecycle query. Prefer `worker_states_snapshot`
+    /// for batch reads (the API layer overlays the snapshot onto every
+    /// `SessionResponse`); this method is convenient for tests + the
+    /// occasional one-off query.
+    pub async fn worker_state(&self, session_id: &str) -> CockpitWorkerState {
+        if self.workers.lock().await.contains_key(session_id) {
+            return CockpitWorkerState::Running;
+        }
+        if self.pending_resumes.lock().await.contains_key(session_id) {
+            return CockpitWorkerState::Resuming;
+        }
+        CockpitWorkerState::Absent
     }
 
     /// Resolve the agent spec from the registry. Surfaces UnknownAgent
@@ -354,9 +436,12 @@ impl<S: BroadcastSink> Supervisor<S> {
                 return Err(SupervisorError::AlreadyRunning(session_id));
             }
             // Capacity check counts both running (in-memory) and
-            // detached (on-disk-only) workers, so a fresh `aoe serve`
-            // can't race the reconciler and over-spawn while attaches
-            // are still in flight.
+            // detached (on-disk-only) workers PLUS any in-flight Spawn
+            // reservations, so a parallel reconciler can't pass the
+            // limit check for N concurrent callers before any have
+            // inserted into `workers`. Attach reservations don't
+            // contribute: they reattach to an existing live runner that
+            // is already counted in `registry_count`. See #1088.
             let registry_count = super::worker_registry::list()
                 .map(|recs| {
                     recs.into_iter()
@@ -367,26 +452,56 @@ impl<S: BroadcastSink> Supervisor<S> {
                         .count()
                 })
                 .unwrap_or(0);
-            let combined = workers.len() + registry_count;
+            // Acquire pending_resumes under the same critical section
+            // as the workers check so the (workers ∪ pending) set is
+            // observed atomically. A second caller arriving here sees
+            // either the workers entry (after insert below) or the
+            // pending entry; in both cases it returns AlreadyRunning.
+            let mut pending = self.pending_resumes.lock().await;
+            if pending.contains_key(&session_id) {
+                return Err(SupervisorError::AlreadyRunning(session_id));
+            }
+            let pending_spawn_count = pending
+                .values()
+                .filter(|k| matches!(k, ResumeKind::Spawn))
+                .count();
+            let combined = workers.len() + registry_count + pending_spawn_count;
             if combined >= self.max_concurrent_workers as usize {
                 return Err(SupervisorError::CapacityFull {
                     current: combined,
                     limit: self.max_concurrent_workers,
                 });
             }
-            // Acquire pending_spawns under the same critical section
-            // as the workers check so the (workers ∪ pending) set is
-            // observed atomically. A second caller arriving here
-            // sees either the workers entry (after insert below) or
-            // the pending entry; in both cases it returns
-            // AlreadyRunning.
-            let mut pending = self.pending_spawns.lock().await;
-            if !pending.insert(session_id.clone()) {
-                return Err(SupervisorError::AlreadyRunning(session_id));
-            }
-            SpawnReservation {
-                pending: Arc::clone(&self.pending_spawns),
+            pending.insert(session_id.clone(), ResumeKind::Spawn);
+            ResumeReservation {
+                pending: Arc::clone(&self.pending_resumes),
                 session_id: session_id.clone(),
+            }
+        };
+
+        // Per-agent install gate. claude-agent-acp lazy-installs its
+        // native binary on first ever run; two concurrent `session/new`
+        // calls against a partially-installed SDK race the install and
+        // the second fails with "Claude Code native binary not found".
+        // The first caller for an agent name that is not yet in
+        // `warmed_up_agents` holds an `Arc<Mutex<()>>` keyed on agent
+        // name for the duration of the handshake; subsequent callers
+        // await the lock, see the agent is warmed up, and proceed in
+        // parallel. The set is process-lifetime only, so cold-start
+        // warm-cache restarts pay one serial spawn before the rest
+        // parallelize. See #1088.
+        let warmup_guard = {
+            if self.warmed_up_agents.lock().await.contains(&agent) {
+                None
+            } else {
+                let lock = self
+                    .agent_warmup_locks
+                    .lock()
+                    .await
+                    .entry(agent.clone())
+                    .or_insert_with(|| Arc::new(Mutex::new(())))
+                    .clone();
+                Some(lock.lock_owned().await)
             }
         };
 
@@ -432,6 +547,16 @@ impl<S: BroadcastSink> Supervisor<S> {
 
         let cockpit_session_id = CockpitSessionId(session_id.clone());
         let mut client = AcpClient::spawn(config.clone(), cockpit_session_id.clone()).await?;
+
+        // First spawn for this agent succeeded; record it in
+        // `warmed_up_agents` so subsequent concurrent callers skip the
+        // per-agent install lock and run fully parallel. Only on
+        // success: a failed warm-up should leave the next caller to
+        // retry the gate. See #1088.
+        if warmup_guard.is_some() {
+            self.warmed_up_agents.lock().await.insert(agent.clone());
+        }
+        drop(warmup_guard);
 
         info!(target: "cockpit.supervisor", session = %session_id, "cockpit worker spawned");
 
@@ -739,10 +864,11 @@ impl<S: BroadcastSink> Supervisor<S> {
             if self.workers.lock().await.contains_key(session_id) {
                 return true;
             }
-            // No worker yet. If a spawn is in flight, wait for it;
-            // otherwise the worker isn't coming and we should fail
-            // fast rather than burn the full deadline.
-            if !self.pending_spawns.lock().await.contains(session_id) {
+            // No worker yet. If a resume (spawn or attach) is in
+            // flight, wait for it; otherwise the worker isn't coming
+            // and we should fail fast rather than burn the full
+            // deadline.
+            if !self.pending_resumes.lock().await.contains_key(session_id) {
                 return false;
             }
             if start.elapsed() >= deadline {
@@ -810,12 +936,12 @@ impl<S: BroadcastSink> Supervisor<S> {
 
     /// Shutdown a single cockpit worker.
     pub async fn shutdown(&self, session_id: &str) -> Result<(), SupervisorError> {
-        // Hold workers + pending_spawns simultaneously so the spawn
+        // Hold workers + pending_resumes simultaneously so the spawn
         // can't observe an empty workers map, finish the handshake,
         // and insert a WorkerHandle while we're walking through this
         // function. Lock order matches `spawn`: workers, then pending.
         let mut workers = self.workers.lock().await;
-        let pending_has_it = self.pending_spawns.lock().await.contains(session_id);
+        let pending_has_it = self.pending_resumes.lock().await.contains_key(session_id);
         if let Some(handle) = workers.remove(session_id) {
             // Worker is alive — tear it down.
             drop(workers);
@@ -847,7 +973,7 @@ impl<S: BroadcastSink> Supervisor<S> {
             // Spawn is mid-handshake. Mark it cancelled so
             // `Supervisor::spawn`'s pre-insert check bails instead of
             // installing an orphaned worker. The reservation cleanup
-            // (SpawnReservation::Drop) clears `pending_spawns` on
+            // (ResumeReservation::Drop) clears `pending_resumes` on
             // exit, so we don't have to.
             drop(workers);
             self.cancelled_spawns
@@ -972,7 +1098,12 @@ impl<S: BroadcastSink> Supervisor<S> {
             )));
         };
 
-        {
+        // Reserve a `pending_resumes` slot for the duration of the
+        // attach so the UI shows "Resuming…" while the socket dial +
+        // resume handshake runs, AND the capacity check in a
+        // concurrent `spawn` sees this id and avoids over-allocating.
+        // RAII guard removes the entry on every exit path.
+        let _reservation = {
             let workers = self.workers.lock().await;
             if workers.contains_key(&session_id) {
                 return Err(SupervisorError::AlreadyRunning(session_id));
@@ -983,7 +1114,16 @@ impl<S: BroadcastSink> Supervisor<S> {
                     limit: self.max_concurrent_workers,
                 });
             }
-        }
+            let mut pending = self.pending_resumes.lock().await;
+            if pending.contains_key(&session_id) {
+                return Err(SupervisorError::AlreadyRunning(session_id));
+            }
+            pending.insert(session_id.clone(), ResumeKind::Attach);
+            ResumeReservation {
+                pending: Arc::clone(&self.pending_resumes),
+                session_id: session_id.clone(),
+            }
+        };
 
         let cockpit_session_id = CockpitSessionId(session_id.clone());
         let mut client = AcpClient::attach(
@@ -1031,17 +1171,17 @@ impl<S: BroadcastSink> Supervisor<S> {
         Ok(())
     }
 
-    /// Whether this session has a running cockpit worker, or a
-    /// spawn currently in-flight. The pending check prevents the
-    /// reconciler from racing the auto-spawn-after-create path: a
-    /// freshly-created cockpit session takes 2-3s for the ACP
+    /// Whether this session has a running cockpit worker, or a resume
+    /// (spawn or attach) currently in-flight. The pending check
+    /// prevents the reconciler from racing the auto-spawn-after-create
+    /// path: a freshly-created cockpit session takes 2-3s for the ACP
     /// handshake to insert the WorkerHandle, and during that window
     /// `workers.contains_key` is false.
     pub async fn is_running(&self, session_id: &str) -> bool {
         if self.workers.lock().await.contains_key(session_id) {
             return true;
         }
-        self.pending_spawns.lock().await.contains(session_id)
+        self.pending_resumes.lock().await.contains_key(session_id)
     }
 
     /// Return the number of running workers (for the doctor + stats).
@@ -1848,16 +1988,19 @@ mod tests {
     /// pre-insert check drops the freshly-built client instead of
     /// installing an orphaned worker. This test exercises the
     /// supervisor-side state machine without a real ACP handshake by
-    /// pre-seeding `pending_spawns` and asserting `shutdown`'s effect.
+    /// pre-seeding `pending_resumes` and asserting `shutdown`'s effect.
     #[tokio::test]
     async fn shutdown_during_pending_spawn_marks_for_cancellation() {
         let sink = VecSink::new();
         let sup = Supervisor::new(sink);
-        // Simulate "spawn in flight": session is in pending_spawns
+        // Simulate "spawn in flight": session is in pending_resumes
         // but no WorkerHandle yet. This is the exact window where
         // the bug used to bite — shutdown returned UnknownSession
         // and the late spawn completion installed an orphan.
-        sup.pending_spawns.lock().await.insert("s-cancel".into());
+        sup.pending_resumes
+            .lock()
+            .await
+            .insert("s-cancel".into(), ResumeKind::Spawn);
         assert!(sup.is_running("s-cancel").await);
 
         // The new shutdown contract: success (Ok(())), and the id is
@@ -2150,5 +2293,140 @@ mod tests {
             })
             .collect();
         assert_eq!(texts, vec!["first", "second", "third", "after restart"]);
+    }
+
+    /// `worker_state` returns Resuming while an entry sits in
+    /// `pending_resumes`, regardless of ResumeKind (attach or spawn).
+    /// The UI uses the same indicator for both lifecycle paths so the
+    /// kind distinction is supervisor-internal only. See #1088.
+    #[tokio::test]
+    async fn worker_state_resuming_for_spawn_and_attach() {
+        let sink = VecSink::new();
+        let sup = Supervisor::new(sink);
+
+        assert_eq!(
+            sup.worker_state("s-spawn").await,
+            CockpitWorkerState::Absent
+        );
+
+        sup.pending_resumes
+            .lock()
+            .await
+            .insert("s-spawn".into(), ResumeKind::Spawn);
+        sup.pending_resumes
+            .lock()
+            .await
+            .insert("s-attach".into(), ResumeKind::Attach);
+
+        assert_eq!(
+            sup.worker_state("s-spawn").await,
+            CockpitWorkerState::Resuming
+        );
+        assert_eq!(
+            sup.worker_state("s-attach").await,
+            CockpitWorkerState::Resuming
+        );
+
+        let snap = sup.worker_states_snapshot().await;
+        assert_eq!(snap.get("s-spawn"), Some(&CockpitWorkerState::Resuming));
+        assert_eq!(snap.get("s-attach"), Some(&CockpitWorkerState::Resuming));
+    }
+
+    /// Capacity must count in-flight Spawn reservations alongside
+    /// in-memory workers and detached registry entries. Without this,
+    /// the parallel reconciler can pass N concurrent callers through
+    /// the limit check before any worker insert lands, allowing
+    /// `max_concurrent_workers` to be exceeded. Attach reservations do
+    /// NOT contribute (they take over an existing live runner already
+    /// counted in registry_count). See #1088.
+    #[tokio::test]
+    async fn capacity_counts_pending_spawn_reservations() {
+        let sink = VecSink::new();
+        let sup = Supervisor::with_capacity(sink, 2);
+
+        // Pre-seed two pending Spawn reservations, simulating two
+        // concurrent reconciler tasks that have passed the workers
+        // check and are mid-handshake.
+        sup.pending_resumes
+            .lock()
+            .await
+            .insert("s-a".into(), ResumeKind::Spawn);
+        sup.pending_resumes
+            .lock()
+            .await
+            .insert("s-b".into(), ResumeKind::Spawn);
+
+        // A third spawn must fail the capacity check rather than slip
+        // through the pre-insert window.
+        let result = sup
+            .spawn(SpawnRequest {
+                session_id: "s-c".into(),
+                agent: "claude".into(),
+                cwd: std::env::temp_dir(),
+                additional_dirs: vec![],
+                provider_env: vec![],
+                model: None,
+                stored_acp_session_id: None,
+            })
+            .await;
+        match result {
+            Err(SupervisorError::CapacityFull { current, limit }) => {
+                assert_eq!(limit, 2);
+                assert!(current >= 2, "expected combined >= limit, got {current}");
+            }
+            other => panic!("expected CapacityFull, got {other:?}"),
+        }
+    }
+
+    /// An Attach reservation must NOT count toward the spawn capacity:
+    /// reattach takes over an existing live runner which is already
+    /// counted via `registry_count`. Counting attach reservations
+    /// alongside registry entries would double-count. See #1088.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn capacity_ignores_pending_attach_reservations() {
+        // Isolate HOME so registry writes from other tests don't
+        // pollute this test's capacity count.
+        let tmp = tempfile::TempDir::new().unwrap();
+        unsafe {
+            std::env::set_var("HOME", tmp.path());
+            std::env::set_var("XDG_CONFIG_HOME", tmp.path().join(".config"));
+        }
+
+        let sink = VecSink::new();
+        let sup = Supervisor::with_capacity(sink, 1);
+
+        sup.pending_resumes
+            .lock()
+            .await
+            .insert("s-attach".into(), ResumeKind::Attach);
+
+        // With max=1 and one Attach pending, a fresh spawn for a
+        // different id must still pass the capacity check; the spawn
+        // will fail later (in this test, after the capacity gate, with
+        // UnknownAgent because the test agent isn't registered), but
+        // NOT with CapacityFull.
+        let result = sup
+            .spawn(SpawnRequest {
+                session_id: "s-spawn".into(),
+                agent: "definitely-not-a-real-agent-xyz".into(),
+                cwd: std::env::temp_dir(),
+                additional_dirs: vec![],
+                provider_env: vec![],
+                model: None,
+                stored_acp_session_id: None,
+            })
+            .await;
+        match result {
+            Err(SupervisorError::CapacityFull { .. }) => {
+                panic!("Attach reservation must not count toward spawn capacity");
+            }
+            Err(SupervisorError::UnknownAgent(_)) | Ok(_) => {
+                // Expected: capacity gate passed, then spawn failed
+                // downstream on agent resolution. Either path proves
+                // the capacity check didn't reject us.
+            }
+            other => panic!("unexpected error path: {other:?}"),
+        }
     }
 }

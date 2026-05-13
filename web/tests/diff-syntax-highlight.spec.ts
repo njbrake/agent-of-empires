@@ -13,7 +13,7 @@ const DIFF_FILES_RESPONSE = {
       deletions: 1,
     },
   ],
-  base_branch: "main",
+  per_repo_bases: [{ base_branch: "main" }],
   warning: null,
 };
 
@@ -166,7 +166,7 @@ test.describe("Diff syntax highlighting", () => {
               deletions: 0,
             },
           ],
-          base_branch: "main",
+          per_repo_bases: [{ base_branch: "main" }],
           warning: null,
         },
       }),

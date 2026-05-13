@@ -43,6 +43,10 @@ import type {
 
 interface Props {
   sessionId: string;
+  /** Live cockpit worker lifecycle pulled from `SessionResponse.cockpit_worker_state`.
+   *  Threaded through to `useCockpit` so the drain effect parks queued
+   *  prompts while the reconciler is mid-resume. See #1088. */
+  cockpitWorkerState?: "absent" | "resuming" | "running";
   children: (ctx: CockpitContext) => ReactNode;
 }
 
@@ -55,6 +59,9 @@ export interface CockpitContext {
   ) => Promise<void>;
   sendPrompt: (text: string) => Promise<void>;
   dismissError: () => void;
+  removeQueuedPrompt: (id: string) => void;
+  editQueuedPrompt: (id: string, text: string) => void;
+  clearQueue: () => void;
 }
 
 /**
@@ -63,8 +70,12 @@ export interface CockpitContext {
  * cockpit state + actions for things assistant-ui doesn't own
  * (approvals, plan strip, system notices).
  */
-export function CockpitRuntime({ sessionId, children }: Props) {
-  const cockpit = useCockpit(sessionId);
+export function CockpitRuntime({
+  sessionId,
+  cockpitWorkerState = "running",
+  children,
+}: Props) {
+  const cockpit = useCockpit(sessionId, cockpitWorkerState);
   // Memoise the activity → ThreadMessageLike conversion. The function
   // walks the entire activity array, allocates a new AssistantBuilder
   // per turn, and produces brand-new message objects. Without
@@ -105,6 +116,9 @@ export function CockpitRuntime({ sessionId, children }: Props) {
         resolveApproval: cockpit.resolveApproval,
         sendPrompt: cockpit.sendPrompt,
         dismissError: cockpit.dismissError,
+        removeQueuedPrompt: cockpit.removeQueuedPrompt,
+        editQueuedPrompt: cockpit.editQueuedPrompt,
+        clearQueue: cockpit.clearQueue,
       })}
     </AssistantRuntimeProvider>
   );
@@ -293,6 +307,9 @@ class AssistantBuilder {
     }
     if (tool.name) argsObj._aoe_title = tool.name;
     if (tool.started_at) argsObj._aoe_started_at = tool.started_at;
+    if (tool.parent_tool_call_id) {
+      argsObj._aoe_parent_tool_call_id = tool.parent_tool_call_id;
+    }
     this.parts.push({
       type: "tool-call",
       toolCallId: tool.id,
@@ -317,7 +334,8 @@ class AssistantBuilder {
   }
 
   build(): ThreadMessageLike {
-    const grouped = collapseToolRuns(this.parts);
+    const subagentCollapsed = collapseSubagents(this.parts);
+    const grouped = collapseToolRuns(subagentCollapsed);
     return {
       id: this.id,
       role: "assistant",
@@ -348,6 +366,109 @@ function isTodoWriteArgsText(argsText: string): boolean {
     // ignore
   }
   return false;
+}
+
+/** Synthetic toolName for a Claude sub-agent (Task) and its child tool
+ *  calls collapsed into one renderable part. See #1041 layer B. */
+export const SUBAGENT_TASK_NAME = "_aoe_subagent_task";
+
+/** Read the smuggled `_aoe_parent_tool_call_id` out of a tool-call
+ *  part's argsText. Returns the parent's tool_call_id when the part
+ *  represents a sub-agent child tool call; null for top-level calls. */
+function parentIdFromArgsText(argsText: string): string | null {
+  try {
+    const p = JSON.parse(argsText);
+    if (p && typeof p === "object" && !Array.isArray(p)) {
+      const v = (p as Record<string, unknown>)._aoe_parent_tool_call_id;
+      if (typeof v === "string" && v !== "") return v;
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+/** Walk an assistant message's parts and collapse each parent-Task
+ *  tool call plus its children (matched via `_aoe_parent_tool_call_id`)
+ *  into one synthetic `_aoe_subagent_task` part. Children whose parent
+ *  is not in the same message are left in place, falling through to
+ *  the orphan rendering. Run before `collapseToolRuns` so a parent
+ *  Task with N children doesn't get folded into the generic group
+ *  card. */
+function collapseSubagents(parts: DraftPart[]): DraftPart[] {
+  // Identify children + map child-index → parentToolCallId.
+  const childToParent = new Map<number, string>();
+  for (let i = 0; i < parts.length; i++) {
+    const p = parts[i];
+    if (!p || p.type !== "tool-call") continue;
+    const parentId = parentIdFromArgsText(p.argsText);
+    if (parentId) childToParent.set(i, parentId);
+  }
+  if (childToParent.size === 0) return parts;
+
+  // Map each parentId to its part index (only when the parent is in
+  // this same message; orphans skip the collapse).
+  const referencedParents = new Set(childToParent.values());
+  const parentIndex = new Map<string, number>();
+  for (let i = 0; i < parts.length; i++) {
+    const p = parts[i];
+    if (!p || p.type !== "tool-call") continue;
+    if (referencedParents.has(p.toolCallId)) parentIndex.set(p.toolCallId, i);
+  }
+
+  // Group children by parent (only when parent is present).
+  const childrenByParent = new Map<string, DraftPart[]>();
+  const childIndicesToDrop = new Set<number>();
+  for (const [idx, parentId] of childToParent) {
+    if (!parentIndex.has(parentId)) continue;
+    const arr = childrenByParent.get(parentId) ?? [];
+    const child = parts[idx];
+    if (child) arr.push(child);
+    childrenByParent.set(parentId, arr);
+    childIndicesToDrop.add(idx);
+  }
+  if (childrenByParent.size === 0) return parts;
+
+  const out: DraftPart[] = [];
+  for (let i = 0; i < parts.length; i++) {
+    if (childIndicesToDrop.has(i)) continue;
+    const p = parts[i];
+    if (!p) continue;
+    if (p.type === "tool-call" && parentIndex.has(p.toolCallId)) {
+      const childParts = childrenByParent.get(p.toolCallId) ?? [];
+      const children = childParts
+        .map((c) =>
+          c.type === "tool-call"
+            ? {
+                toolCallId: c.toolCallId,
+                toolName: c.toolName,
+                argsText: c.argsText,
+                result: c.result,
+                isError: c.isError,
+              }
+            : null,
+        )
+        .filter((c): c is NonNullable<typeof c> => c !== null);
+      out.push({
+        type: "tool-call",
+        toolCallId: `subagent-${p.toolCallId}`,
+        toolName: SUBAGENT_TASK_NAME,
+        argsText: JSON.stringify({
+          parent: {
+            toolCallId: p.toolCallId,
+            toolName: p.toolName,
+            argsText: p.argsText,
+            result: p.result,
+            isError: p.isError,
+          },
+          children,
+        }),
+      });
+    } else {
+      out.push(p);
+    }
+  }
+  return out;
 }
 
 /** Minimum run length that triggers grouping. Two-in-a-row stays inline
@@ -386,6 +507,17 @@ function collapseToolRuns(parts: DraftPart[]): DraftPart[] {
         (p) => p.type === "tool-call" && isTodoWriteArgsText(p.argsText),
       );
       if (hasTodoWrite) {
+        for (const p of run) out.push(p);
+        run = [];
+        return;
+      }
+      // Subagent cards are already their own collapsible block (one card
+      // per Task). Folding N parallel Tasks into a single generic group
+      // card hides the parallelism the user dispatched. See #1041.
+      const hasSubagent = run.some(
+        (p) => p.type === "tool-call" && p.toolName === SUBAGENT_TASK_NAME,
+      );
+      if (hasSubagent) {
         for (const p of run) out.push(p);
         run = [];
         return;

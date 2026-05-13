@@ -587,6 +587,14 @@ function CockpitSettings({
     typeof cockpit.show_tool_durations === "boolean"
       ? (cockpit.show_tool_durations as boolean)
       : (serverAbout?.cockpit_show_tool_durations ?? true);
+  const queueDrainMode: "combined" | "serial" =
+    cockpit.queue_drain_mode === "serial" || cockpit.queue_drain_mode === "combined"
+      ? (cockpit.queue_drain_mode as "combined" | "serial")
+      : (serverAbout?.cockpit_queue_drain_mode ?? "combined");
+  const maxConcurrentResumes =
+    typeof cockpit.max_concurrent_resumes === "number"
+      ? (cockpit.max_concurrent_resumes as number)
+      : (serverAbout?.cockpit_max_concurrent_resumes ?? 4);
 
   const onToggle = async (next: boolean) => {
     setBusy(true);
@@ -675,6 +683,16 @@ function CockpitSettings({
         />
       </div>
 
+      <div className="border-t border-surface-800 pt-3">
+        <NumberField
+          label="Max concurrent resumes"
+          description="Upper bound on parallel cockpit worker spawns/attaches the reconciler runs on `aoe serve` cold start. Default 4 keeps Node.js bootup memory bounded for laptops/Pis (each claude-agent-acp is ~50-80 MB transient). Bounded at runtime by `min(this, max_concurrent_workers).max(1)`. Persists to config.toml as cockpit.max_concurrent_resumes; cross-device."
+          value={maxConcurrentResumes}
+          min={1}
+          onChange={(v) => onSaveField("cockpit", "max_concurrent_resumes", v)}
+        />
+      </div>
+
       <div className="flex items-start justify-between gap-3 py-1 border-t border-surface-800 pt-3">
         <div>
           <div className="text-sm text-text-bright">Show tool-call durations</div>
@@ -705,6 +723,41 @@ function CockpitSettings({
         >
           {showToolDurations ? "Visible" : "Hidden"}
         </button>
+      </div>
+
+      <div className="flex items-start justify-between gap-3 py-1 border-t border-surface-800 pt-3">
+        <div>
+          <div className="text-sm text-text-bright">Queue drain mode</div>
+          <div className="text-xs text-text-dim mt-0.5">
+            Persists to <code>config.toml</code> as{" "}
+            <code>cockpit.queue_drain_mode</code>; cross-device. Controls how follow-up prompts queued
+            while the agent is busy get dispatched once the current turn ends. <strong>Combined</strong>{" "}
+            (default) joins every queued entry with a blank line and sends them as a single prompt; one
+            response covers the whole batch. <strong>Serial</strong> fires one entry at a time and waits
+            for each response before sending the next.
+          </div>
+        </div>
+        <div className="shrink-0 inline-flex rounded border border-surface-700 bg-surface-900/50 p-0.5 text-xs font-medium">
+          {(["combined", "serial"] as const).map((opt) => (
+            <button
+              key={opt}
+              type="button"
+              aria-pressed={queueDrainMode === opt}
+              onClick={async () => {
+                if (queueDrainMode === opt) return;
+                onSaveField("cockpit", "queue_drain_mode", opt);
+                await onRefresh();
+              }}
+              className={`rounded px-2.5 py-1 transition-colors cursor-pointer ${
+                queueDrainMode === opt
+                  ? "bg-brand-500 text-white"
+                  : "text-text-secondary hover:bg-surface-700"
+              }`}
+            >
+              {opt[0]!.toUpperCase() + opt.slice(1)}
+            </button>
+          ))}
+        </div>
       </div>
 
       {error && <div className="text-xs text-rose-400">{error}</div>}

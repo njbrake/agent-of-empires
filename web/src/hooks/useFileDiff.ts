@@ -12,6 +12,9 @@ interface UseFileDiffResult {
 export function useFileDiff(
   sessionId: string | null,
   filePath: string | null,
+  /** Workspace repo name; pass for files belonging to a workspace
+   *  member, leave undefined for single-repo sessions. See #1047. */
+  repoName: string | undefined,
   /** Triggers a re-fetch when bumped (e.g. from useDiffFiles.revision). */
   externalRevision?: number,
 ): UseFileDiffResult {
@@ -28,14 +31,20 @@ export function useFileDiff(
     const reqId = ++requestIdRef.current;
     const capturedSessionId = sessionId;
     const capturedFilePath = filePath;
+    const capturedRepoName = repoName;
     setLoading(true);
     setError(null);
-    const resp = await getSessionFileDiff(capturedSessionId, capturedFilePath);
+    const resp = await getSessionFileDiff(
+      capturedSessionId,
+      capturedFilePath,
+      capturedRepoName,
+    );
     // Drop stale responses: rapid file/session switches can cause out-of-order replies
     if (
       reqId !== requestIdRef.current ||
       capturedSessionId !== sessionId ||
-      capturedFilePath !== filePath
+      capturedFilePath !== filePath ||
+      capturedRepoName !== repoName
     ) {
       return;
     }
@@ -45,7 +54,7 @@ export function useFileDiff(
       setError("Failed to load diff");
     }
     setLoading(false);
-  }, [sessionId, filePath]);
+  }, [sessionId, filePath, repoName]);
 
   useEffect(() => {
     void fetchDiff();

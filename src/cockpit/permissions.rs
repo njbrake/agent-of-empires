@@ -53,6 +53,7 @@ mod tests {
             kind: "execute".into(),
             args_preview: r#"{"command":"rm -rf /tmp/x"}"#.into(),
             started_at: Utc::now(),
+            parent_tool_call_id: None,
         };
         let a = build_approval(tc);
         assert!(a.destructive);
@@ -68,6 +69,7 @@ mod tests {
             kind: "read".into(),
             args_preview: "{}".into(),
             started_at: Utc::now(),
+            parent_tool_call_id: None,
         };
         let mut a = build_approval(tc);
         resolve(&mut a, ApprovalDecision::Allow, None);
