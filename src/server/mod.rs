@@ -1492,38 +1492,56 @@ async fn cockpit_event_listener(state: Arc<AppState>) {
             }
         };
 
-        // Detect wake-fire: a `UserPromptSent` arriving immediately
-        // after a `WakeupScheduled` (with no other prompts between)
-        // means the agent's pending wake just fired. Push opt-in to
-        // the user's phone so /loop dynamic runs don't need them to
-        // keep checking the dashboard. See #1091.
+        // Detect wake-fire: a `UserPromptSent` arriving at-or-after a
+        // `WakeupScheduled`'s `at` timestamp means the agent's pending
+        // wake just fired. Push opt-in to the user's phone so /loop
+        // dynamic runs don't need them to keep checking the dashboard.
+        // See #1091.
         if matches!(
             frame.event.as_ref(),
             crate::cockpit::state::Event::UserPromptSent { .. }
         ) {
-            if let Some((_at, reason)) = state
+            match state
                 .cockpit_event_store
                 .fired_wakeup_for_prompt(&frame.session_id, frame.seq)
             {
-                let session_id = frame.session_id.clone();
-                let session_title = state
-                    .instances
-                    .read()
-                    .await
-                    .iter()
-                    .find(|i| i.id == session_id)
-                    .map(|i| i.title.clone())
-                    .unwrap_or_default();
-                let state_for_push = state.clone();
-                tokio::spawn(async move {
-                    crate::server::push::fire_wake_fired_push(
-                        state_for_push,
-                        &session_id,
-                        &session_title,
-                        reason.as_deref(),
-                    )
-                    .await;
-                });
+                Some((at, reason)) => {
+                    let session_id = frame.session_id.clone();
+                    let session_title = state
+                        .instances
+                        .read()
+                        .await
+                        .iter()
+                        .find(|i| i.id == session_id)
+                        .map(|i| i.title.clone())
+                        .unwrap_or_default();
+                    tracing::info!(
+                        target: "cockpit.wakeup",
+                        session = %session_id,
+                        prompt_seq = frame.seq,
+                        wake_at = %at,
+                        reason = ?reason,
+                        "wake-fire detected; dispatching push notification"
+                    );
+                    let state_for_push = state.clone();
+                    tokio::spawn(async move {
+                        crate::server::push::fire_wake_fired_push(
+                            state_for_push,
+                            &session_id,
+                            &session_title,
+                            reason.as_deref(),
+                        )
+                        .await;
+                    });
+                }
+                None => {
+                    tracing::trace!(
+                        target: "cockpit.wakeup",
+                        session = %frame.session_id,
+                        prompt_seq = frame.seq,
+                        "UserPromptSent: no fired-wake match (regular follow-up)"
+                    );
+                }
             }
         }
 

@@ -1204,11 +1204,30 @@ fn transcript_event_kind(event: &Event) -> &'static str {
 /// missing or non-finite — better to skip the event than publish a
 /// wakeup at epoch zero. See #1091.
 fn wakeup_event_from_raw(raw_input: &serde_json::Value) -> Option<Event> {
-    let delay_value = raw_input.get("delaySeconds")?;
-    let delay_secs: f64 = delay_value
+    let Some(delay_value) = raw_input.get("delaySeconds") else {
+        debug!(
+            target: "cockpit.acp.wakeup",
+            "ScheduleWakeup raw_input missing `delaySeconds`; not emitting WakeupScheduled"
+        );
+        return None;
+    };
+    let Some(delay_secs) = delay_value
         .as_f64()
-        .or_else(|| delay_value.as_str().and_then(|s| s.parse().ok()))?;
+        .or_else(|| delay_value.as_str().and_then(|s| s.parse().ok()))
+    else {
+        debug!(
+            target: "cockpit.acp.wakeup",
+            value = %delay_value,
+            "ScheduleWakeup `delaySeconds` not numeric; not emitting WakeupScheduled"
+        );
+        return None;
+    };
     if !delay_secs.is_finite() || delay_secs < 0.0 {
+        warn!(
+            target: "cockpit.acp.wakeup",
+            delay_secs,
+            "ScheduleWakeup `delaySeconds` non-finite or negative; refusing to emit"
+        );
         return None;
     }
     let delay_ms = (delay_secs * 1000.0).clamp(0.0, i64::MAX as f64) as i64;
@@ -1217,6 +1236,13 @@ fn wakeup_event_from_raw(raw_input: &serde_json::Value) -> Option<Event> {
         .get("reason")
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
+    info!(
+        target: "cockpit.acp.wakeup",
+        delay_secs,
+        wake_at = %at,
+        reason = ?reason,
+        "emitting WakeupScheduled from ScheduleWakeup tool args"
+    );
     Some(Event::WakeupScheduled { at, reason })
 }
 
