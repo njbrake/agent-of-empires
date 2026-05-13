@@ -621,7 +621,7 @@ export function applyEvent(
     next.workerStopped = false;
     next.workerRestarting = false;
     // /loop dynamic mode self-fires a UserPromptSent on wake, but a
-    // user-typed follow-up during the wait is NOT the wake firing —
+    // user-typed follow-up during the wait is NOT the wake firing;
     // only clear when the scheduled time has already elapsed. The
     // countdown UI continues counting down through a mid-wait user
     // prompt; the next ScheduleWakeup turn (or the wake itself)
@@ -634,7 +634,7 @@ export function applyEvent(
       }
     }
     // Any pending context-primer offer is consumed once the user
-    // submits a new prompt — the recovery affordance is one-shot.
+    // submits a new prompt; the recovery affordance is one-shot.
     next.contextPrimerAvailable = null;
     return next;
   }

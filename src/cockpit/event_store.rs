@@ -339,7 +339,7 @@ impl EventStore {
     /// "Pending" means the latest scheduled `at` is still in the future;
     /// the previous heuristic (any `UserPromptSent` with a higher seq
     /// marks the wakeup as fired) is wrong because a user-typed
-    /// follow-up message during the wait wasn't the wake firing — the
+    /// follow-up message during the wait wasn't the wake firing; the
     /// next ScheduleWakeup turn could still arrive minutes later. Pick
     /// the latest WakeupScheduled and gate on the timestamp instead.
     /// See #1091.
@@ -417,7 +417,7 @@ impl EventStore {
     ///    session.
     /// 2. The wakeup's `at` timestamp is at-or-before the prompt's
     ///    `created_at` (the scheduled moment has actually elapsed by
-    ///    the time the prompt arrived — a user-typed message *during*
+    ///    the time the prompt arrived; a user-typed message *during*
     ///    the wait must not count as the wake firing).
     /// 3. No earlier prompt has already "claimed" the same wakeup,
     ///    i.e. no `UserPromptSent` exists with seq strictly between the
@@ -1135,7 +1135,7 @@ mod tests {
     fn latest_pending_wakeup_uses_latest_scheduled_event() {
         // When the agent reschedules mid-flight, the latest
         // WakeupScheduled supersedes the earlier one. The query must
-        // pick the latest by seq, not by `at` ordering — that's the
+        // pick the latest by seq, not by `at` ordering; that's the
         // single source of truth for the active wake.
         let (_tmp, store) = open_store(1000);
         let earlier = Utc::now() + chrono::Duration::seconds(60);

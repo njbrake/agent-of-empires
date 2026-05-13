@@ -1201,7 +1201,7 @@ fn transcript_event_kind(event: &Event) -> &'static str {
 /// raw_input. Reads `delaySeconds` (number, falls back to numeric
 /// string) and the optional `reason`; computes the absolute wake
 /// timestamp from `Utc::now()`. Returns `None` if `delaySeconds` is
-/// missing or non-finite — better to skip the event than publish a
+/// missing or non-finite, better to skip the event than publish a
 /// wakeup at epoch zero. See #1091.
 fn wakeup_event_from_raw(raw_input: &serde_json::Value) -> Option<Event> {
     let Some(delay_value) = raw_input.get("delaySeconds") else {
@@ -3174,7 +3174,7 @@ mod tests {
     #[test]
     fn map_tool_call_update_skips_wakeup_when_raw_input_missing() {
         // Title-only update (the initial frame's mirror, before
-        // raw_input arrives) must NOT emit a WakeupScheduled — otherwise
+        // raw_input arrives) must NOT emit a WakeupScheduled, otherwise
         // we'd publish a "wakeup at epoch zero" placeholder.
         use agent_client_protocol::schema::{ToolCallUpdate, ToolCallUpdateFields};
         let fields = ToolCallUpdateFields::new().title("ScheduleWakeup".to_string());

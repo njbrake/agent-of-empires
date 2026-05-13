@@ -88,7 +88,7 @@ async function openWizardOnSessionStep(page: Page) {
     .first();
   await recentBtn.waitFor({ state: "visible", timeout: 5000 });
   await recentBtn.click();
-  // Next is gated on `data.path` being set — wait for it to enable
+  // Next is gated on `data.path` being set; wait for it to enable
   // before clicking through to the Session step.
   const nextBtn = page.getByRole("button", { name: "Next" });
   await expect(nextBtn).toBeEnabled();

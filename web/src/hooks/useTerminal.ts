@@ -140,7 +140,7 @@ export function useTerminal(
   const flushPendingResizeRef = useRef<(() => void) | null>(null);
   // Set inside the effect to point at the local `connect()` function so
   // `manualReconnect` (defined outside the effect closure) can dial a
-  // fresh WS directly when the prior socket is already CLOSED — calling
+  // fresh WS directly when the prior socket is already CLOSED. Calling
   // ws.close() on a CLOSED socket is a no-op, which was the bug behind
   // the dead Retry button after retries exhausted. See #1009.
   const connectRef = useRef<(() => void) | null>(null);

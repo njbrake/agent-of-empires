@@ -716,7 +716,7 @@ describe("applyEvent / WakeupScheduled lifecycle", () => {
 
   it("prompt after wakeup `at` clears the pending wakeup", () => {
     // The self-fired prompt from /loop arrives once the scheduled
-    // moment has passed — that's the genuine wake-fired signal.
+    // moment has passed; that's the genuine wake-fired signal.
     const past = new Date(Date.now() - 5_000).toISOString();
     let state = applyEvent(emptyCockpitState(), {
       session_id: "s-1",

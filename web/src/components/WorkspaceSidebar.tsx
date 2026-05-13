@@ -175,7 +175,7 @@ function WakeupCountdown({
   const remaining = Math.max(0, Math.floor((targetMs - now) / 1000));
   const label = elapsed ? "waking…" : `in ${formatDurationSecondsShort(remaining)}`;
   const title = reason
-    ? `Scheduled wakeup — ${reason}`
+    ? `Scheduled wakeup: ${reason}`
     : "Scheduled wakeup";
   return (
     <span

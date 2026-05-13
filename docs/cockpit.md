@@ -343,7 +343,7 @@ which walks the SQLite event log and returns a compact markdown
 recap of the last ~20 turns (capped at ~24k characters, bulky tool
 inputs/outputs elided, tool calls collapsed to one-liners). The
 primer is pre-filled into the composer so you can review, trim, or
-extend it before sending — nothing is sent silently. The banner is
+extend it before sending; nothing is sent silently. The banner is
 one-shot per reset: dismiss it or submit any prompt and it stays
 gone until the next `session/load` failure. See #1004.
 

@@ -84,7 +84,7 @@ pub struct SessionResponse {
     /// Absolute RFC3339 timestamp at which the cockpit session's
     /// `ScheduleWakeup` tool will fire (i.e. the next turn is expected
     /// to start). Cleared once a `UserPromptSent` lands after the
-    /// scheduling tool call — the /loop skill's self-firing emits that
+    /// scheduling tool call; the /loop skill's self-firing emits that
     /// prompt at wake time, so a wakeup whose seq is ≤ the latest
     /// prompt has already fired. See #1091.
     #[serde(skip_serializing_if = "Option::is_none")]

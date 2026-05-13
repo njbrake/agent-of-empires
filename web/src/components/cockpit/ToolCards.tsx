@@ -1516,7 +1516,7 @@ function ScheduleToolCard({ tool, result, kind }: ScheduleProps) {
   );
   const output = result?.text ?? "";
 
-  // Hide the bookkeeping fields and (for wakeup) the `prompt` field —
+  // Hide the bookkeeping fields and (for wakeup) the `prompt` field:
   // it's either the `<<autonomous-loop-dynamic>>` sentinel or a repeat
   // of the user's prior input, never user-relevant in the card view.
   const inputJson = useMemo<string>(() => {
@@ -1565,7 +1565,7 @@ function ScheduleToolCard({ tool, result, kind }: ScheduleProps) {
           ? `in ${formatDurationSeconds(delaySeconds)}`
           : "scheduled"}
         {reason ? (
-          <span className="text-text-dim"> — {reason}</span>
+          <span className="text-text-dim">: {reason}</span>
         ) : null}
       </span>
     );
@@ -1589,7 +1589,7 @@ function ScheduleToolCard({ tool, result, kind }: ScheduleProps) {
           "schedule created"
         )}
         {reason ? (
-          <span className="text-text-dim"> — {reason}</span>
+          <span className="text-text-dim">: {reason}</span>
         ) : null}
       </span>
     );

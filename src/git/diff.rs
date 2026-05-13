@@ -538,7 +538,7 @@ pub fn list_branches(repo_path: &Path) -> Result<Vec<String>> {
 #[derive(Debug, Clone)]
 pub struct BranchEntry {
     /// Short branch name (e.g. `feature/x`). For remote-only branches
-    /// the remote prefix (`origin/`) is stripped — pass the short name
+    /// the remote prefix (`origin/`) is stripped; pass the short name
     /// to `create_worktree` and it resolves the remote internally.
     pub name: String,
     /// True if the branch only exists on the remote (no matching local
@@ -570,7 +570,7 @@ pub fn list_branches_with_remotes(repo_path: &Path) -> Result<Vec<BranchEntry>> 
         let (branch, _) = branch?;
         if let Some(name) = branch.name()? {
             // Strip the leading "<remote>/" segment. `HEAD` symbolic
-            // refs ("origin/HEAD") are skipped — they're not a real
+            // refs ("origin/HEAD") are skipped; they're not a real
             // branch the user can base off.
             let short = name.split_once('/').map(|(_, rest)| rest).unwrap_or(name);
             if short == "HEAD" || short.is_empty() {

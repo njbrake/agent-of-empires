@@ -335,10 +335,12 @@ export interface ContextPrimerResponse {
 export function fetchContextPrimer(
   sessionId: string,
   beforeSeq: number,
+  signal?: AbortSignal,
 ): Promise<ContextPrimerResponse | null> {
   const params = new URLSearchParams({ before_seq: String(beforeSeq) });
   return fetchJson<ContextPrimerResponse>(
     `/api/sessions/${encodeURIComponent(sessionId)}/cockpit/context-primer?${params.toString()}`,
+    signal ? { signal } : undefined,
   );
 }
 

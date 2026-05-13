@@ -542,7 +542,7 @@ fn describe_tool(name: &str, kind: &str, args_preview: &str) -> String {
         }
     }
 
-    // args_preview is not JSON-shaped — likely already a string preview.
+    // args_preview is not JSON-shaped, likely already a string preview.
     // Keep a short fragment if it's not obviously bulk.
     let arg_trim = args_preview.trim();
     if arg_trim.is_empty() {

@@ -903,7 +903,7 @@ function ScheduledWakeupBanner({
       <span className="truncate">
         {label}
         {reason ? (
-          <span className="text-sky-300/70"> — {reason}</span>
+          <span className="text-sky-300/70">: {reason}</span>
         ) : null}
       </span>
     </div>

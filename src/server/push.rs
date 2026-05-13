@@ -711,7 +711,7 @@ pub async fn fire_wake_fired_push(
         format!(": {}", session_title)
     };
     let body = match reason {
-        Some(r) if !r.is_empty() => format!("Agent resumed{} — {}", body_suffix, r),
+        Some(r) if !r.is_empty() => format!("Agent resumed{}: {}", body_suffix, r),
         _ => format!("Agent resumed{}", body_suffix),
     };
     let payload = super::push_send::PushPayload {

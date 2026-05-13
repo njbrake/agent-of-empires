@@ -155,7 +155,7 @@ export function Composer({
       try {
         el.setSelectionRange(len, len);
       } catch {
-        // ignore — non-text inputs can throw here
+        // ignore: non-text inputs can throw here
       }
       el.style.height = "auto";
       el.style.height = `${Math.min(el.scrollHeight, 200)}px`;

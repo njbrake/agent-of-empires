@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { fetchContextPrimer } from "../../lib/api";
 
 /**
@@ -25,6 +25,7 @@ export function ContextPrimerBanner({
   // affordance instead of inheriting the previous one's dismissed
   // state.
   const [dismissedSeq, setDismissedSeq] = useState<number | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     // Reset transient state whenever a new reset incident lands.
@@ -32,13 +33,28 @@ export function ContextPrimerBanner({
     setLoading(false);
   }, [available?.resetSeq]);
 
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort();
+      abortRef.current = null;
+    };
+  }, [sessionId, available?.resetSeq]);
+
   if (!available || dismissedSeq === available.resetSeq) return null;
 
   const handleClick = async () => {
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
     setLoading(true);
     setError(null);
     try {
-      const resp = await fetchContextPrimer(sessionId, available.resetSeq);
+      const resp = await fetchContextPrimer(
+        sessionId,
+        available.resetSeq,
+        controller.signal,
+      );
+      if (controller.signal.aborted) return;
       if (!resp || !resp.primer) {
         setError(
           resp
@@ -49,10 +65,12 @@ export function ContextPrimerBanner({
       }
       onInsertPrimer(resp.primer);
       setDismissedSeq(available.resetSeq);
-    } catch {
+    } catch (e) {
+      if ((e as { name?: string }).name === "AbortError") return;
       setError("Network error fetching primer.");
     } finally {
-      setLoading(false);
+      if (abortRef.current === controller) abortRef.current = null;
+      if (!controller.signal.aborted) setLoading(false);
     }
   };
 

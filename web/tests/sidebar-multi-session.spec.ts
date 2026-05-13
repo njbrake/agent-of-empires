@@ -83,7 +83,7 @@ test.describe("Sidebar multi-session (#956)", () => {
   test("collapsing still applies when sessions share a non-null branch (worktree)", async ({
     page,
   }) => {
-    // Two sessions on the same explicit worktree branch DO still collapse —
+    // Two sessions on the same explicit worktree branch DO still collapse;
     // the fix only targets the null-branch (no-worktree) case. This matches
     // the issue's option #2.
     await mockApis(page, [
