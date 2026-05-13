@@ -1237,7 +1237,35 @@ impl Instance {
         }
 
         let profile = self.effective_profile();
-        let on_launch_hooks = self.resolve_on_launch_hooks(skip_on_launch, &profile);
+        let cmd = self.build_launch_command(skip_on_launch, &profile)?;
+
+        tracing::debug!(target: "session.store",
+            "container cmd: {}",
+            cmd.as_ref().map_or("none".to_string(), |v| {
+                super::environment::redact_env_values(v)
+            })
+        );
+        session.create_with_size(&self.project_path, cmd.as_deref(), size)?;
+
+        self.finalize_launch(session.name(), &profile);
+
+        Ok(())
+    }
+
+    /// Build the launch command string the way `start_with_size_opts` would,
+    /// but without creating a tmux session. Shared with the dead-pane
+    /// respawn path so we send the same command to `tmux respawn-pane` that
+    /// `tmux new-session` would have received. Returns `None` for cockpit
+    /// or other modes where there is no command to launch.
+    ///
+    /// Side effects mirror the start path: agent status hooks are installed,
+    /// and (for sandboxed sessions) on_launch hooks run inside the container.
+    fn build_launch_command(
+        &mut self,
+        skip_on_launch: bool,
+        profile: &str,
+    ) -> Result<Option<String>> {
+        let on_launch_hooks = self.resolve_on_launch_hooks(skip_on_launch, profile);
 
         let agent = crate::agents::get_agent(&self.tool)
             .or_else(|| crate::agents::get_agent(&self.detect_as));
@@ -1312,17 +1340,7 @@ impl Instance {
             self.build_host_command(agent, &on_launch_hooks)
         };
 
-        tracing::debug!(target: "session.store",
-            "container cmd: {}",
-            cmd.as_ref().map_or("none".to_string(), |v| {
-                super::environment::redact_env_values(v)
-            })
-        );
-        session.create_with_size(&self.project_path, cmd.as_deref(), size)?;
-
-        self.finalize_launch(session.name(), &profile);
-
-        Ok(())
+        Ok(cmd)
     }
 
     /// Resolve on_launch hooks from the full config chain (global > profile > repo).
