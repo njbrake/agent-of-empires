@@ -79,6 +79,28 @@ pub trait BroadcastSink: Send + Sync + 'static {
     }
 }
 
+/// How this supervisor acquired the worker. Drives both reap (which
+/// kinds the user-stop poller treats as runner-managed) and respawn
+/// (only `Runner` carries a `SpawnConfig` and participates in the
+/// restart budget). Replaces an older `spawn_config: Option<...>` plus
+/// `socket_path.is_some()` filter that conflated "runner-managed" with
+/// "auto-respawnable" and missed attached workers in both filters.
+enum WorkerKind {
+    /// Fresh spawn owned by this daemon. Watchdog respawns on crash
+    /// within `MAX_RESPAWNS_IN_WINDOW`.
+    Runner { spawn_config: SpawnConfig },
+    /// Reattached to an already-running runner from a previous daemon
+    /// (see `Supervisor::attach`). No auto-respawn from in-memory
+    /// state; the reconciler handles a fresh spawn on its next tick.
+    /// Still backed by a runner-registry entry, so user-stop detection
+    /// via the registry-gone signal applies.
+    Attached,
+    /// In-process stdio fixture inserted by tests. No registry, no
+    /// auto-respawn. The reap poller skips this kind so legacy stdio
+    /// fixtures aren't torn down on every tick.
+    Stdio,
+}
+
 struct WorkerHandle {
     client: Arc<Mutex<AcpClient>>,
     /// Background task draining events from the client. Aborted on
@@ -89,11 +111,7 @@ struct WorkerHandle {
     /// `MAX_RESPAWNS_IN_WINDOW`. Empty on first spawn so the initial
     /// boot doesn't consume the budget.
     restart_history: Vec<Instant>,
-    /// Stored so the watchdog can respawn the worker when its ACP
-    /// connection task exits (subprocess crash, transport break).
-    /// Populated for real workers; left as `None` for fake workers
-    /// inserted by tests.
-    spawn_config: Option<SpawnConfig>,
+    kind: WorkerKind,
 }
 
 /// Per-session monotonically-increasing seq counter. Lives at the
@@ -607,7 +625,9 @@ impl<S: BroadcastSink> Supervisor<S> {
                 // entry; budget burns when entries-in-window exceed
                 // MAX_RESPAWNS_IN_WINDOW.
                 restart_history: vec![],
-                spawn_config: Some(config),
+                kind: WorkerKind::Runner {
+                    spawn_config: config,
+                },
             },
         );
         Ok(())
@@ -640,14 +660,15 @@ impl<S: BroadcastSink> Supervisor<S> {
                         Event::AcpSessionAssigned { acp_session_id } => {
                             let mut guard = workers.lock().await;
                             if let Some(handle) = guard.get_mut(&session_id) {
-                                if let Some(cfg) = handle.spawn_config.as_mut() {
+                                if let WorkerKind::Runner { spawn_config } = &mut handle.kind {
                                     info!(
                                         target: "cockpit.supervisor",
                                         session = %session_id,
                                         acp_session_id = %acp_session_id,
                                         "caching agent-assigned id for future respawn"
                                     );
-                                    cfg.stored_acp_session_id = Some(acp_session_id.clone());
+                                    spawn_config.stored_acp_session_id =
+                                        Some(acp_session_id.clone());
                                 }
                             }
                             // Mirror into the on-disk registry so a fresh
@@ -661,14 +682,14 @@ impl<S: BroadcastSink> Supervisor<S> {
                         Event::SessionContextReset { reason } => {
                             let mut guard = workers.lock().await;
                             if let Some(handle) = guard.get_mut(&session_id) {
-                                if let Some(cfg) = handle.spawn_config.as_mut() {
+                                if let WorkerKind::Runner { spawn_config } = &mut handle.kind {
                                     info!(
                                         target: "cockpit.supervisor",
                                         session = %session_id,
                                         %reason,
                                         "clearing cached id after session/load failure"
                                     );
-                                    cfg.stored_acp_session_id = None;
+                                    spawn_config.stored_acp_session_id = None;
                                 }
                             }
                             super::worker_registry::update_stored_acp_session_id(&session_id, None);
@@ -955,6 +976,21 @@ impl<S: BroadcastSink> Supervisor<S> {
             // we also delete the registry entry here to handle the
             // case where the runner is wedged.
             terminate_runner_for_session(session_id);
+            // Publish `Stopped` so the UI clears any "thinking" state
+            // and renders the reconnect banner immediately, instead of
+            // waiting for the next reap tick. Skipped for stdio test
+            // fixtures since they have no UI to update and the seq
+            // counter is shared with respawn-budget tests.
+            if !matches!(handle.kind, WorkerKind::Stdio) {
+                let seq = next_seq(&self.next_seqs, session_id);
+                self.sink.publish(
+                    session_id,
+                    seq,
+                    &Event::Stopped {
+                        reason: "user_stopped".into(),
+                    },
+                );
+            }
             return Ok(());
         }
         // No in-memory worker, but there may still be a detached
@@ -1154,11 +1190,12 @@ impl<S: BroadcastSink> Supervisor<S> {
                 client,
                 drain_task,
                 restart_history: vec![],
-                // No respawn config — if the worker dies, the drain
-                // task will see EOF and we'll let the reconciler spawn
-                // a fresh runner on the next tick rather than auto-
-                // respawning from this in-memory state.
-                spawn_config: None,
+                // Attached: if the worker dies, the drain task sees
+                // EOF and we let the reconciler spawn a fresh runner
+                // on the next tick rather than auto-respawning from
+                // this in-memory state. Registry-backed, so user-stop
+                // detection still applies.
+                kind: WorkerKind::Attached,
             },
         );
         info!(
@@ -1228,12 +1265,7 @@ impl<S: BroadcastSink> Supervisor<S> {
             let workers = self.workers.lock().await;
             workers
                 .iter()
-                .filter(|(_, h)| {
-                    h.spawn_config
-                        .as_ref()
-                        .map(|c| c.socket_path.is_some())
-                        .unwrap_or(false)
-                })
+                .filter(|(_, h)| matches!(h.kind, WorkerKind::Runner { .. } | WorkerKind::Attached))
                 .map(|(id, _)| id.clone())
                 .filter(|id| matches!(super::worker_registry::load(id), Ok(None)))
                 .collect()
@@ -1342,16 +1374,15 @@ async fn restart_decision(
     // emit a non-crash `Stopped` so the UI clears any "thinking" state
     // instead of showing the budget-burned red banner.
     //
-    // Only consult the registry for runner-mediated workers (those have
-    // a `socket_path` in their cached spawn_config). The in-proc stdio
-    // path used by legacy tests has no registry entry by construction,
-    // so the "gone" check would always fire and break unrelated test
-    // fixtures.
-    let runner_managed = handle
-        .spawn_config
-        .as_ref()
-        .map(|c| c.socket_path.is_some())
-        .unwrap_or(false);
+    // Both `Runner` (fresh spawn) and `Attached` (reattached to an
+    // existing runner) are backed by a runner-registry entry, so the
+    // registry-gone signal is meaningful for both. `Stdio` test
+    // fixtures have no registry entry by construction and must be
+    // skipped here so the "gone" check doesn't tear them down.
+    let runner_managed = matches!(
+        handle.kind,
+        WorkerKind::Runner { .. } | WorkerKind::Attached
+    );
     if runner_managed {
         let registry_gone = matches!(super::worker_registry::load(session_id), Ok(None));
         if registry_gone {
@@ -1382,12 +1413,17 @@ async fn restart_decision(
     if count > MAX_RESPAWNS_IN_WINDOW {
         return RestartDecision::BudgetBurned;
     }
-    match handle.spawn_config.clone() {
-        Some(cfg) => RestartDecision::Respawn(Box::new(cfg)),
-        // Test handles inserted via fake_for_test: the entry exists but
-        // we have no real spawn config. Treat as budget-burned so the
-        // drain task exits cleanly.
-        None => RestartDecision::BudgetBurned,
+    match &handle.kind {
+        WorkerKind::Runner { spawn_config } => {
+            RestartDecision::Respawn(Box::new(spawn_config.clone()))
+        }
+        // Attached: the previous daemon owned the runner and we have
+        // no spawn config to respawn from. The reconciler will pick
+        // this session back up on the next tick if it's still
+        // `cockpit_mode = true`. Stdio: in-proc test fixture with no
+        // subprocess to respawn. Either way, budget-burned exits the
+        // drain task cleanly.
+        WorkerKind::Attached | WorkerKind::Stdio => RestartDecision::BudgetBurned,
     }
 }
 
@@ -1541,7 +1577,7 @@ mod tests {
                 client: Arc::new(Mutex::new(client)),
                 drain_task: drain,
                 restart_history: vec![Instant::now()],
-                spawn_config: None,
+                kind: WorkerKind::Stdio,
             },
         );
         drop(workers);
@@ -1601,7 +1637,9 @@ mod tests {
                     client: Arc::new(Mutex::new(client)),
                     drain_task: drain,
                     restart_history: vec![],
-                    spawn_config: Some(dummy_config),
+                    kind: WorkerKind::Runner {
+                        spawn_config: dummy_config,
+                    },
                 },
             );
         }
@@ -1628,9 +1666,9 @@ mod tests {
     /// `BudgetBurned` (which would surface the scary red banner the
     /// user originally hit).
     ///
-    /// The gate is "spawn_config.socket_path is Some" (runner-managed)
-    /// + registry entry absent; we explicitly populate `socket_path`
-    /// here so the production code path fires.
+    /// The gate is `WorkerKind::Runner | Attached` (runner-managed)
+    /// + registry entry absent; we install a `Runner` kind here so the
+    /// production code path fires.
     #[tokio::test]
     #[serial_test::serial]
     async fn restart_decision_returns_user_stopped_when_registry_deleted() {
@@ -1669,7 +1707,9 @@ mod tests {
                     client: Arc::new(Mutex::new(client)),
                     drain_task: drain,
                     restart_history: vec![],
-                    spawn_config: Some(dummy_config),
+                    kind: WorkerKind::Runner {
+                        spawn_config: dummy_config,
+                    },
                 },
             );
         }
@@ -1736,7 +1776,9 @@ mod tests {
                     client: Arc::new(Mutex::new(client)),
                     drain_task: drain,
                     restart_history: vec![],
-                    spawn_config: Some(dummy_config),
+                    kind: WorkerKind::Runner {
+                        spawn_config: dummy_config,
+                    },
                 },
             );
         }
@@ -1803,7 +1845,9 @@ mod tests {
                     client: Arc::new(Mutex::new(client)),
                     drain_task: drain,
                     restart_history: vec![],
-                    spawn_config: Some(dummy_config),
+                    kind: WorkerKind::Runner {
+                        spawn_config: dummy_config,
+                    },
                 },
             );
         }
@@ -1847,12 +1891,52 @@ mod tests {
     }
 
     /// `reap_user_stopped` must NOT touch stdio-only workers: those have
-    /// no registry entry by construction (the runner-managed socket path
-    /// isn't set on `SpawnConfig`), so the registry-gone check would
-    /// always fire and tear down every legacy test fixture.
+    /// no registry entry by construction, so the registry-gone check
+    /// would always fire and tear down every legacy test fixture.
+    /// `WorkerKind::Stdio` is the explicit gate.
     #[tokio::test]
     #[serial_test::serial]
     async fn reap_user_stopped_skips_stdio_workers() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        unsafe {
+            std::env::set_var("HOME", tmp.path());
+            std::env::set_var("XDG_CONFIG_HOME", tmp.path().join(".config"));
+        }
+        let sink = VecSink::new();
+        let sup = Supervisor::new(sink.clone());
+        {
+            let mut workers = sup.workers.lock().await;
+            let (client, _tx) = AcpClient::fake_for_test(CockpitSessionId("s-stdio".into()));
+            let drain = tokio::spawn(async {});
+            workers.insert(
+                "s-stdio".into(),
+                WorkerHandle {
+                    client: Arc::new(Mutex::new(client)),
+                    drain_task: drain,
+                    restart_history: vec![],
+                    kind: WorkerKind::Stdio,
+                },
+            );
+        }
+        sup.reap_user_stopped().await;
+        assert!(
+            sup.workers.lock().await.contains_key("s-stdio"),
+            "stdio worker must survive the reaper"
+        );
+        assert!(
+            sink.frames.lock().unwrap().is_empty(),
+            "reaper must not publish for stdio workers"
+        );
+    }
+
+    /// `Supervisor::shutdown` against a live runner-kind worker must
+    /// publish `Stopped { reason: "user_stopped" }` synchronously so
+    /// the dashboard clears any "thinking" state immediately instead
+    /// of waiting for the next reap tick. Covers the REST stop path
+    /// (issue #1095 (C)).
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn shutdown_publishes_stopped_event() {
         let tmp = tempfile::TempDir::new().unwrap();
         unsafe {
             std::env::set_var("HOME", tmp.path());
@@ -1866,15 +1950,55 @@ mod tests {
             description: "test fixture".into(),
             env_allowlist: None,
         };
-        // No socket_path → not runner-managed → reaper skips.
         let dummy_config = SpawnConfig {
             spec: dummy_spec,
             cwd: std::env::temp_dir(),
             additional_dirs: vec![],
             provider_env: vec![],
-            socket_path: None,
+            socket_path: Some(tmp.path().join("dummy.sock")),
             stored_acp_session_id: None,
         };
+        {
+            let mut workers = sup.workers.lock().await;
+            let (client, _tx) = AcpClient::fake_for_test(CockpitSessionId("s-stop".into()));
+            let drain = tokio::spawn(async {});
+            workers.insert(
+                "s-stop".into(),
+                WorkerHandle {
+                    client: Arc::new(Mutex::new(client)),
+                    drain_task: drain,
+                    restart_history: vec![],
+                    kind: WorkerKind::Runner {
+                        spawn_config: dummy_config,
+                    },
+                },
+            );
+        }
+
+        sup.shutdown("s-stop")
+            .await
+            .expect("shutdown should succeed");
+
+        let frames = sink.frames.lock().unwrap();
+        let stopped = frames
+            .iter()
+            .find(|(id, _, _)| id == "s-stop")
+            .expect("shutdown must publish a frame for the stopped session");
+        match &stopped.2 {
+            Event::Stopped { reason } => {
+                assert_eq!(reason, "user_stopped");
+            }
+            other => panic!("expected Event::Stopped, got {other:?}"),
+        }
+    }
+
+    /// `Supervisor::shutdown` against an `Stdio` test fixture must NOT
+    /// publish a `Stopped` event (the seq counter is shared with
+    /// budget-tally tests; spurious publishes corrupt their assertions).
+    #[tokio::test]
+    async fn shutdown_does_not_publish_for_stdio_workers() {
+        let sink = VecSink::new();
+        let sup = Supervisor::new(sink.clone());
         {
             let mut workers = sup.workers.lock().await;
             let (client, _tx) = AcpClient::fake_for_test(CockpitSessionId("s-stdio".into()));
@@ -1885,18 +2009,16 @@ mod tests {
                     client: Arc::new(Mutex::new(client)),
                     drain_task: drain,
                     restart_history: vec![],
-                    spawn_config: Some(dummy_config),
+                    kind: WorkerKind::Stdio,
                 },
             );
         }
-        sup.reap_user_stopped().await;
-        assert!(
-            sup.workers.lock().await.contains_key("s-stdio"),
-            "stdio worker must survive the reaper"
-        );
+        sup.shutdown("s-stdio")
+            .await
+            .expect("shutdown should succeed");
         assert!(
             sink.frames.lock().unwrap().is_empty(),
-            "reaper must not publish for stdio workers"
+            "shutdown must not publish for stdio fixtures"
         );
     }
 
@@ -2066,7 +2188,7 @@ mod tests {
                 client: Arc::new(Mutex::new(client)),
                 drain_task: drain,
                 restart_history: vec![],
-                spawn_config: None,
+                kind: WorkerKind::Stdio,
             },
         );
         drop(workers);
