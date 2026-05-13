@@ -77,6 +77,14 @@ pub trait BroadcastSink: Send + Sync + 'static {
     fn approval_requested(&self, _session_id: &str, _approval_title: &str, _destructive: bool) {
         // Default: no-op. The server impl fires a push notification.
     }
+    /// Approval nonces from `ApprovalRequested` events on disk with no
+    /// matching `ApprovalResolved`. Used by `Supervisor::attach` to
+    /// cancel approvals whose responder died with the previous daemon.
+    /// Default returns empty so test sinks without an event store opt
+    /// out cleanly.
+    fn unresolved_approval_nonces(&self, _session_id: &str) -> Vec<Nonce> {
+        Vec::new()
+    }
 }
 
 /// How this supervisor acquired the worker. Drives both reap (which
@@ -97,7 +105,9 @@ enum WorkerKind {
     Attached,
     /// In-process stdio fixture inserted by tests. No registry, no
     /// auto-respawn. The reap poller skips this kind so legacy stdio
-    /// fixtures aren't torn down on every tick.
+    /// fixtures aren't torn down on every tick. Test-only: production
+    /// spawn always passes through a runner socket.
+    #[cfg(test)]
     Stdio,
 }
 
@@ -981,7 +991,12 @@ impl<S: BroadcastSink> Supervisor<S> {
             // waiting for the next reap tick. Skipped for stdio test
             // fixtures since they have no UI to update and the seq
             // counter is shared with respawn-budget tests.
-            if !matches!(handle.kind, WorkerKind::Stdio) {
+            let should_publish = match &handle.kind {
+                WorkerKind::Runner { .. } | WorkerKind::Attached => true,
+                #[cfg(test)]
+                WorkerKind::Stdio => false,
+            };
+            if should_publish {
                 let seq = next_seq(&self.next_seqs, session_id);
                 self.sink.publish(
                     session_id,
@@ -1205,6 +1220,38 @@ impl<S: BroadcastSink> Supervisor<S> {
             pid = record.pid,
             "reattached to existing cockpit worker"
         );
+        drop(workers);
+
+        // Approvals that were on screen when the previous daemon died
+        // are now dead nonces: the responder oneshot was parked in the
+        // old daemon's `pending_responders` map and dropped with the
+        // process. Without this sweep, clicking allow/deny in the UI
+        // races the new daemon's empty map and 404s, leaving the agent
+        // wedged on the original JSON-RPC request id. Emit a synthetic
+        // `ApprovalResolved { decision: Cancelled }` per dead nonce so
+        // the frontend reducer drops the card. The agent-side wedge
+        // (parked request_permission) is unblocked separately by the
+        // runner's outstanding-request cancellation on detach.
+        let stale_nonces = self.sink.unresolved_approval_nonces(&session_id);
+        if !stale_nonces.is_empty() {
+            info!(
+                target: "cockpit.supervisor",
+                session = %session_id,
+                stale = stale_nonces.len(),
+                "cancelling approvals orphaned by daemon restart"
+            );
+            for nonce in stale_nonces {
+                let seq = next_seq(&self.next_seqs, &session_id);
+                self.sink.publish(
+                    &session_id,
+                    seq,
+                    &Event::ApprovalResolved {
+                        nonce,
+                        decision: ApprovalDecision::Cancelled,
+                    },
+                );
+            }
+        }
         Ok(())
     }
 
@@ -1420,10 +1467,11 @@ async fn restart_decision(
         // Attached: the previous daemon owned the runner and we have
         // no spawn config to respawn from. The reconciler will pick
         // this session back up on the next tick if it's still
-        // `cockpit_mode = true`. Stdio: in-proc test fixture with no
-        // subprocess to respawn. Either way, budget-burned exits the
-        // drain task cleanly.
-        WorkerKind::Attached | WorkerKind::Stdio => RestartDecision::BudgetBurned,
+        // `cockpit_mode = true`.
+        WorkerKind::Attached => RestartDecision::BudgetBurned,
+        // Stdio: in-proc test fixture with no subprocess to respawn.
+        #[cfg(test)]
+        WorkerKind::Stdio => RestartDecision::BudgetBurned,
     }
 }
 
@@ -1507,6 +1555,10 @@ impl BroadcastSink for ChannelSink {
 
     fn approval_requested(&self, session_id: &str, approval_title: &str, destructive: bool) {
         (self.on_approval)(session_id, approval_title, destructive);
+    }
+
+    fn unresolved_approval_nonces(&self, session_id: &str) -> Vec<Nonce> {
+        self.event_store.unresolved_approval_nonces(session_id)
     }
 }
 

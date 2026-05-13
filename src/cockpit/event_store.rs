@@ -54,6 +54,7 @@ use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use tracing::{debug, trace, warn};
 
+use super::approvals::Nonce;
 use super::state::{Event, Plan};
 
 /// SQLite-backed cockpit event log. One row per (session_id, seq).
@@ -615,6 +616,48 @@ impl EventStore {
             "all_session_seqs hydration"
         );
         collected
+    }
+
+    /// Nonces of `ApprovalRequested` events for the session that lack a
+    /// later `ApprovalResolved` with the same nonce. Used on reattach
+    /// to surface "this approval card is dead, the previous daemon's
+    /// responder oneshot died with it" so the supervisor can publish a
+    /// synthetic `ApprovalResolved { decision: Cancelled }` and the UI
+    /// clears the now-404 card. See #1099.
+    pub fn unresolved_approval_nonces(&self, session_id: &str) -> Vec<Nonce> {
+        let conn = match self.conn.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        let mut stmt = match conn.prepare(
+            "SELECT json_extract(event_json, '$.ApprovalRequested.approval.nonce') AS nonce
+             FROM cockpit_events
+             WHERE session_id = ?1
+               AND json_extract(event_json, '$.ApprovalRequested') IS NOT NULL
+               AND json_extract(event_json, '$.ApprovalRequested.approval.nonce') NOT IN (
+                   SELECT json_extract(event_json, '$.ApprovalResolved.nonce')
+                   FROM cockpit_events
+                   WHERE session_id = ?1
+                     AND json_extract(event_json, '$.ApprovalResolved') IS NOT NULL
+               )",
+        ) {
+            Ok(s) => s,
+            Err(e) => {
+                warn!(target: "cockpit.event_store", "prepare unresolved_approval_nonces for {session_id}: {e}");
+                return Vec::new();
+            }
+        };
+        let rows = match stmt.query_map(params![session_id], |row| {
+            let nonce: String = row.get(0)?;
+            Ok(Nonce(nonce))
+        }) {
+            Ok(r) => r,
+            Err(e) => {
+                warn!(target: "cockpit.event_store", "query unresolved_approval_nonces for {session_id}: {e}");
+                return Vec::new();
+            }
+        };
+        rows.filter_map(|r| r.ok()).collect()
     }
 
     /// True iff the session has a `UserPromptSent` whose turn never
@@ -1303,5 +1346,95 @@ mod tests {
         let replay = store.replay_from("s-1", 0);
         assert_eq!(replay.len(), 2);
         assert_eq!(store.highest_seq("s-1"), 2);
+    }
+
+    /// `unresolved_approval_nonces` finds `ApprovalRequested` rows whose
+    /// nonce never saw a matching `ApprovalResolved`. Used by
+    /// `Supervisor::attach` to clear approval cards orphaned by daemon
+    /// restart (#1099).
+    #[test]
+    fn unresolved_approval_nonces_finds_orphaned_requests() {
+        use crate::cockpit::approvals::{Approval, ApprovalDecision, Nonce};
+        use crate::cockpit::state::ToolCall;
+
+        let (_tmp, store) = open_store(1000);
+        let tool_call = ToolCall {
+            id: "tc-1".into(),
+            name: "Bash".into(),
+            kind: "execute".into(),
+            args_preview: "ls".into(),
+            started_at: Utc::now(),
+            parent_tool_call_id: None,
+        };
+        let nonce_a = Nonce("aaaa".into());
+        let nonce_b = Nonce("bbbb".into());
+        let nonce_c = Nonce("cccc".into());
+        let approval_a = Approval {
+            nonce: nonce_a.clone(),
+            tool_call: tool_call.clone(),
+            destructive: false,
+            requested_at: Utc::now(),
+            resolved: None,
+        };
+        let approval_b = Approval {
+            nonce: nonce_b.clone(),
+            tool_call: tool_call.clone(),
+            destructive: false,
+            requested_at: Utc::now(),
+            resolved: None,
+        };
+        let approval_c = Approval {
+            nonce: nonce_c.clone(),
+            tool_call,
+            destructive: false,
+            requested_at: Utc::now(),
+            resolved: None,
+        };
+        // A is requested and resolved. B and C are requested but never
+        // resolved (orphans).
+        store
+            .record(
+                "s-1",
+                1,
+                &Event::ApprovalRequested {
+                    approval: approval_a,
+                },
+            )
+            .unwrap();
+        store
+            .record(
+                "s-1",
+                2,
+                &Event::ApprovalResolved {
+                    nonce: nonce_a,
+                    decision: ApprovalDecision::Allow,
+                },
+            )
+            .unwrap();
+        store
+            .record(
+                "s-1",
+                3,
+                &Event::ApprovalRequested {
+                    approval: approval_b,
+                },
+            )
+            .unwrap();
+        store
+            .record(
+                "s-1",
+                4,
+                &Event::ApprovalRequested {
+                    approval: approval_c,
+                },
+            )
+            .unwrap();
+
+        let mut orphans = store.unresolved_approval_nonces("s-1");
+        orphans.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(orphans, vec![nonce_b, nonce_c]);
+
+        // Unrelated session must not bleed into the query.
+        assert!(store.unresolved_approval_nonces("s-2").is_empty());
     }
 }

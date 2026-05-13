@@ -1137,6 +1137,11 @@ fn pick_option_id(
             PermissionOptionKind::RejectOnce,
             PermissionOptionKind::RejectAlways,
         ][..],
+        // Synthetic decision emitted by the daemon-restart rehydration
+        // sweep. Has no agent option to map to (the agent never sees
+        // it); the caller falls through to `RequestPermissionOutcome::
+        // Cancelled` when this returns None.
+        ApprovalDecision::Cancelled => &[][..],
     };
     for kind in preferred_kinds {
         if let Some(opt) = options.iter().find(|o| &o.kind == kind) {

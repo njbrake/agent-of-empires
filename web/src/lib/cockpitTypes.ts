@@ -4,7 +4,11 @@
 // side can add new variants without breaking the UI as long as the
 // component renders unknown frames gracefully.
 
-export type ApprovalDecision = "Allow" | "AllowAlways" | "Deny";
+export type ApprovalDecision =
+  | "Allow"
+  | "AllowAlways"
+  | "Deny"
+  | "Cancelled";
 
 export type SessionMode =
   | "Default"

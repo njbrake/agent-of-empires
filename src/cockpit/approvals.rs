@@ -61,6 +61,13 @@ pub enum ApprovalDecision {
     AllowAlways,
     /// Deny, equivalent to ACP `reject`.
     Deny,
+    /// Approval was not resolved by the user, e.g. the daemon was
+    /// restarted while the approval card was on screen. Emitted only as
+    /// the `decision` on a synthetic `Event::ApprovalResolved` from
+    /// `Supervisor::attach`'s rehydration sweep so the UI can clear the
+    /// dead card. Never sent to the agent (the runner-side cancellation
+    /// path produces the JSON-RPC response).
+    Cancelled,
 }
 
 /// A pending or resolved approval for a tool call. Held in

@@ -41,7 +41,7 @@
 //! JSON-RPC (ACP), no shim-specific framing, so collapsing this
 //! process is purely an agent-side change.
 
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -49,7 +49,8 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use clap::Args;
-use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use serde::Deserialize;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::process::{Child, Command};
 use tokio::sync::Mutex;
@@ -265,19 +266,57 @@ struct RunnerShared {
     /// Ring of agent → daemon ndjson lines that arrived while no daemon
     /// was attached. Drained into the next attached daemon's outbound.
     pending: Mutex<VecDeque<Vec<u8>>>,
+    /// JSON-RPC request ids the agent issued to the daemon that have
+    /// not yet seen a response. Populated from agent → daemon traffic
+    /// (`method` + numeric `id`) and cleared on response (`id` only).
+    /// On daemon disconnect the runner synthesizes a cancellation
+    /// response for every outstanding `session/request_permission` so
+    /// the agent doesn't park forever on a request the new daemon
+    /// can't answer (the responder oneshot died with the old daemon's
+    /// `pending_responders` map). See #1099.
+    outstanding_requests: Mutex<HashMap<i64, String>>,
 }
+
+/// JSON-RPC peek for outstanding-request tracking. Pulls only the
+/// fields needed; anything else (params, result, error) is ignored.
+/// `serde(default)` so notification lines (no id, no method) and
+/// responses (id without method) deserialise without complaint.
+#[derive(Deserialize)]
+struct JsonRpcPeek {
+    #[serde(default)]
+    id: Option<serde_json::Value>,
+    #[serde(default)]
+    method: Option<String>,
+}
+
+/// Method name we synthesize cancellations for. Other agent → daemon
+/// requests (fs/* etc.) can park too in principle, but their typed
+/// response shapes vary and synthesizing them safely would need
+/// per-method work — out of scope for the headline approval fix.
+const PERMISSION_METHOD: &str = "session/request_permission";
 
 impl RunnerShared {
     fn new() -> Self {
         Self {
             active_outbound: Mutex::new(None),
             pending: Mutex::new(VecDeque::with_capacity(NOTIFICATION_BUFFER_LINES)),
+            outstanding_requests: Mutex::new(HashMap::new()),
         }
     }
 
     /// Forward a line to the daemon if attached; else buffer. Returns
     /// whether forwarding happened (false → buffered).
     async fn deliver_line(&self, line: &[u8]) -> bool {
+        // Peek-parse outgoing agent → daemon traffic to track outstanding
+        // requests. A line with both a numeric `id` and a `method` is a
+        // request the agent is making to the daemon; record it so we can
+        // synthesize a cancellation response if the daemon disconnects
+        // before answering. Notifications (no id) and responses (id but
+        // no method) are not requests; ignore them here.
+        if let Some((id, method)) = parse_request(line) {
+            self.outstanding_requests.lock().await.insert(id, method);
+        }
+
         let mut guard = self.active_outbound.lock().await;
         if let Some(out) = guard.as_mut() {
             if out.write_all(line).await.is_ok() && out.flush().await.is_ok() {
@@ -294,6 +333,90 @@ impl RunnerShared {
         }
         pending.push_back(line.to_vec());
         false
+    }
+
+    /// Peek-parse a daemon → agent line: if it's a response (id without
+    /// method) clear the matching outstanding request.
+    async fn note_daemon_response(&self, line: &[u8]) {
+        if let Some(id) = parse_response_id(line) {
+            self.outstanding_requests.lock().await.remove(&id);
+        }
+    }
+
+    /// On daemon disconnect, synthesize a cancellation response for
+    /// every outstanding `session/request_permission` request so the
+    /// agent's blocked stdio loop unblocks instead of waiting on a
+    /// responder that died with the previous daemon. Other methods are
+    /// left tracked; their responses have method-specific schemas and
+    /// synthesizing them generically would risk corrupting the agent's
+    /// state machine.
+    async fn cancel_outstanding_permission_requests(
+        &self,
+        agent_stdin: &Mutex<tokio::process::ChildStdin>,
+        session_id: &str,
+    ) {
+        let drained: Vec<(i64, String)> = {
+            let mut map = self.outstanding_requests.lock().await;
+            let keep: Vec<(i64, String)> = map
+                .iter()
+                .filter(|(_, m)| m.as_str() != PERMISSION_METHOD)
+                .map(|(id, m)| (*id, m.clone()))
+                .collect();
+            let cancellable: Vec<(i64, String)> = map
+                .iter()
+                .filter(|(_, m)| m.as_str() == PERMISSION_METHOD)
+                .map(|(id, m)| (*id, m.clone()))
+                .collect();
+            map.clear();
+            for (id, method) in keep {
+                map.insert(id, method);
+            }
+            cancellable
+        };
+
+        if drained.is_empty() {
+            return;
+        }
+        info!(
+            target: "cockpit.runner",
+            session = %session_id,
+            count = drained.len(),
+            "synthesising cancellation responses for outstanding permission requests"
+        );
+        let mut stdin = agent_stdin.lock().await;
+        for (id, _method) in drained {
+            // ACP `RequestPermissionResponse` with the `cancelled`
+            // outcome. The agent SDK unblocks its parked stdio loop on
+            // receipt and either retries on the next user prompt or
+            // surfaces a cancelled-tool-call event upstream.
+            let response = serde_json::json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "result": {
+                    "outcome": { "outcome": "cancelled" }
+                }
+            });
+            let mut bytes = match serde_json::to_vec(&response) {
+                Ok(b) => b,
+                Err(e) => {
+                    warn!(
+                        target: "cockpit.runner",
+                        session = %session_id,
+                        "failed to serialise cancellation for id {id}: {e}"
+                    );
+                    continue;
+                }
+            };
+            bytes.push(b'\n');
+            if stdin.write_all(&bytes).await.is_err() || stdin.flush().await.is_err() {
+                warn!(
+                    target: "cockpit.runner",
+                    session = %session_id,
+                    "agent stdin write failed during cancellation synthesis"
+                );
+                break;
+            }
+        }
     }
 
     /// Install the daemon's outbound write half. First drains the
@@ -323,6 +446,29 @@ impl RunnerShared {
         let mut guard = self.active_outbound.lock().await;
         *guard = None;
     }
+}
+
+/// Extract `(id, method)` from a JSON-RPC request line. Returns None
+/// for malformed lines, notifications (no id), responses (no method),
+/// and lines whose id is non-numeric (we only track i64 ids; ACP
+/// agents in practice always use numbers, and a fast peek doesn't
+/// have to model the entire JSON-RPC spec).
+fn parse_request(line: &[u8]) -> Option<(i64, String)> {
+    let peek: JsonRpcPeek = serde_json::from_slice(line).ok()?;
+    let id = peek.id?.as_i64()?;
+    let method = peek.method?;
+    Some((id, method))
+}
+
+/// Extract the response id from a JSON-RPC response line, i.e. a line
+/// with an `id` field but no `method`. Notifications and requests
+/// return None.
+fn parse_response_id(line: &[u8]) -> Option<i64> {
+    let peek: JsonRpcPeek = serde_json::from_slice(line).ok()?;
+    if peek.method.is_some() {
+        return None;
+    }
+    peek.id?.as_i64()
 }
 
 /// Read agent stdout line-by-line (ndjson) and either forward to the
@@ -355,7 +501,10 @@ async fn fanout_agent_stdout(
 }
 
 /// Handle one daemon connection: install its write half, then pump
-/// inbound bytes (daemon → agent stdin) until the socket closes.
+/// inbound lines (daemon → agent stdin) until the socket closes. Reads
+/// line-by-line so the runner can peek-parse responses and clear the
+/// outstanding-requests map; without that, the cancellation-on-detach
+/// sweep wouldn't know which ids the daemon has already answered.
 async fn handle_connection(
     stream: UnixStream,
     shared: Arc<RunnerShared>,
@@ -372,14 +521,16 @@ async fn handle_connection(
         );
     }
 
-    let mut read_half = read_half;
-    let mut buf = [0u8; STDOUT_READ_BUF];
+    let mut reader = BufReader::with_capacity(STDOUT_READ_BUF, read_half);
+    let mut line = Vec::with_capacity(4096);
     loop {
-        match read_half.read(&mut buf).await {
+        line.clear();
+        match reader.read_until(b'\n', &mut line).await {
             Ok(0) => break, // EOF: daemon closed the connection.
-            Ok(n) => {
+            Ok(_) => {
+                shared.note_daemon_response(&line).await;
                 let mut stdin = agent_stdin.lock().await;
-                if stdin.write_all(&buf[..n]).await.is_err() || stdin.flush().await.is_err() {
+                if stdin.write_all(&line).await.is_err() || stdin.flush().await.is_err() {
                     warn!(
                         target: "cockpit.runner",
                         session = %session_id,
@@ -394,6 +545,13 @@ async fn handle_connection(
             }
         }
     }
+    // Daemon disconnected. Synthesize cancellation responses for any
+    // outstanding `session/request_permission` requests so the agent's
+    // stdio loop unblocks instead of waiting forever on a responder
+    // that died with the previous daemon.
+    shared
+        .cancel_outstanding_permission_requests(&agent_stdin, &session_id)
+        .await;
     shared.clear_outbound().await;
 }
 
@@ -495,4 +653,86 @@ fn open_log_file(path: &Path) -> Result<()> {
         let _ = f.set_permissions(std::fs::Permissions::from_mode(0o600));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_request_extracts_id_and_method() {
+        let line =
+            br#"{"jsonrpc":"2.0","id":42,"method":"session/request_permission","params":{}}"#;
+        let parsed = parse_request(line);
+        assert_eq!(parsed, Some((42, "session/request_permission".into())));
+    }
+
+    #[test]
+    fn parse_request_returns_none_for_notifications() {
+        let line = br#"{"jsonrpc":"2.0","method":"session/update","params":{}}"#;
+        assert_eq!(parse_request(line), None);
+    }
+
+    #[test]
+    fn parse_request_returns_none_for_responses() {
+        let line = br#"{"jsonrpc":"2.0","id":7,"result":{}}"#;
+        assert_eq!(parse_request(line), None);
+    }
+
+    #[test]
+    fn parse_request_skips_non_numeric_ids() {
+        // String ids exist in the JSON-RPC spec but ACP agents emit
+        // numeric ids in practice. The peek skips strings rather than
+        // misclassifying them.
+        let line = br#"{"jsonrpc":"2.0","id":"abc","method":"foo","params":{}}"#;
+        assert_eq!(parse_request(line), None);
+    }
+
+    #[test]
+    fn parse_response_id_extracts_numeric_id() {
+        let line = br#"{"jsonrpc":"2.0","id":42,"result":{"outcome":{"outcome":"cancelled"}}}"#;
+        assert_eq!(parse_response_id(line), Some(42));
+    }
+
+    #[test]
+    fn parse_response_id_ignores_requests() {
+        let line = br#"{"jsonrpc":"2.0","id":42,"method":"foo"}"#;
+        assert_eq!(parse_response_id(line), None);
+    }
+
+    #[test]
+    fn parse_response_id_handles_error_envelope() {
+        let line = br#"{"jsonrpc":"2.0","id":5,"error":{"code":-32000,"message":"oops"}}"#;
+        assert_eq!(parse_response_id(line), Some(5));
+    }
+
+    #[test]
+    fn parse_helpers_tolerate_malformed_json() {
+        assert_eq!(parse_request(b"not json"), None);
+        assert_eq!(parse_response_id(b"not json"), None);
+    }
+
+    /// `deliver_line` populates the outstanding-requests map on the
+    /// agent → daemon request path; `note_daemon_response` removes it
+    /// on the daemon → agent reply path. The map is the source of
+    /// truth for `cancel_outstanding_permission_requests`, so this
+    /// covers the bookkeeping invariant directly.
+    #[tokio::test]
+    async fn outstanding_requests_tracked_and_cleared() {
+        let shared = RunnerShared::new();
+        let req = br#"{"jsonrpc":"2.0","id":1,"method":"session/request_permission","params":{}}
+"#;
+        // No active outbound: line just gets buffered, but the peek
+        // path still runs.
+        shared.deliver_line(req).await;
+        assert_eq!(
+            shared.outstanding_requests.lock().await.get(&1),
+            Some(&"session/request_permission".to_string())
+        );
+
+        let resp = br#"{"jsonrpc":"2.0","id":1,"result":{"outcome":{"outcome":"selected","optionId":"allow"}}}
+"#;
+        shared.note_daemon_response(resp).await;
+        assert!(shared.outstanding_requests.lock().await.is_empty());
+    }
 }
