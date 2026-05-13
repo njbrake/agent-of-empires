@@ -671,6 +671,7 @@ pub async fn cockpit_replay(
         frames,
         lost,
         highest_seq,
+        lowest_seq,
     })
     .into_response()
 }

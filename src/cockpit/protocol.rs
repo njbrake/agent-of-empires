@@ -129,6 +129,11 @@ pub struct ReplayResponse {
     /// Highest seq the buffer has seen, even if it's been evicted.
     /// Lets the client decide whether reloading is worth it.
     pub highest_seq: u64,
+    /// Lowest seq still stored on disk for this session, or `None`
+    /// when no events have been recorded yet. Lets clients display the
+    /// retention window in status output and detect mid-flight prunes.
+    #[serde(default)]
+    pub lowest_seq: Option<u64>,
 }
 
 /// `GET /api/sessions/{id}/cockpit/context-primer?before_seq=N` query.

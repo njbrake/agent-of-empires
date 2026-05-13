@@ -67,6 +67,61 @@ pub enum CockpitCommands {
         /// Session id whose worker to restart.
         session: String,
     },
+    /// Print the persisted transcript for a cockpit session.
+    History {
+        /// Cockpit session id.
+        session: String,
+        /// Skip events at or below this seq.
+        #[arg(long, default_value = "0")]
+        since: u64,
+        /// Emit raw frames as JSON (one frame per line).
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print live status for a cockpit session: highest/lowest seq, and
+    /// whether the on-disk retention window has truncated history.
+    Status {
+        /// Cockpit session id.
+        session: String,
+        /// Emit machine-readable JSON instead of a human report.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Send a prompt to a cockpit session's agent.
+    Prompt {
+        /// Cockpit session id.
+        session: String,
+        /// Prompt text. Pass `-` to read from stdin.
+        text: String,
+    },
+    /// Resolve a pending approval (default: allow). Use --always for a
+    /// session-scoped allow-list entry, --deny to refuse the request.
+    Approve {
+        /// Cockpit session id.
+        session: String,
+        /// Approval nonce, as printed in the pending-approval banner.
+        nonce: String,
+        /// Allow this kind of operation for the rest of the session.
+        #[arg(long, conflicts_with = "deny")]
+        always: bool,
+        /// Refuse the request.
+        #[arg(long)]
+        deny: bool,
+    },
+    /// Cancel the in-flight prompt for a cockpit session.
+    Cancel {
+        /// Cockpit session id.
+        session: String,
+    },
+    /// Stream the cockpit broadcast for a session to stdout as JSON
+    /// lines (one frame per line). Press Ctrl-C to stop.
+    Tail {
+        /// Cockpit session id.
+        session: String,
+        /// Start at this seq (default 0 = full replay then live).
+        #[arg(long, default_value = "0")]
+        since: u64,
+    },
 }
 
 pub async fn run(command: CockpitCommands) -> Result<()> {
@@ -82,6 +137,21 @@ pub async fn run(command: CockpitCommands) -> Result<()> {
         CockpitCommands::Kill { session } => kill_now(&session),
         CockpitCommands::Logs { session, follow } => logs(session, follow),
         CockpitCommands::Restart { session } => restart(&session),
+        CockpitCommands::History {
+            session,
+            since,
+            json,
+        } => history(&session, since, json).await,
+        CockpitCommands::Status { session, json } => status(&session, json).await,
+        CockpitCommands::Prompt { session, text } => prompt(&session, &text).await,
+        CockpitCommands::Approve {
+            session,
+            nonce,
+            always,
+            deny,
+        } => approve(&session, &nonce, always, deny).await,
+        CockpitCommands::Cancel { session } => cancel(&session).await,
+        CockpitCommands::Tail { session, since } => tail(&session, since).await,
     }
 }
 
@@ -580,6 +650,188 @@ fn truncate(s: &str, n: usize) -> String {
         let mut out: String = s.chars().take(n.saturating_sub(1)).collect();
         out.push('…');
         out
+    }
+}
+
+// ── Daemon-backed cockpit verbs ─────────────────────────────────────
+//
+// These talk to a running `aoe serve` daemon via the cockpit HTTP / WS
+// client. Mutating verbs (`prompt`, `approve`, `cancel`) auto-spawn a
+// loopback daemon when none is running so a user who only ever uses
+// the CLI doesn't have to remember to start `aoe serve` first. Read
+// verbs (`history`, `status`, `tail`) auto-spawn too because the
+// daemon is the only path to the disk-backed event store; there's no
+// useful read against "no daemon".
+
+use crate::cockpit::client::{ensure_daemon, HttpClient, HttpError, WsMessage};
+use crate::cockpit::protocol::ApprovalDecisionWire;
+
+async fn history(session: &str, since: u64, json: bool) -> Result<()> {
+    let endpoint = ensure_daemon().await?;
+    let client = HttpClient::new(endpoint)?;
+    let resp = client.replay(session, since).await.map_err(map_http)?;
+    if resp.lost {
+        eprintln!(
+            "warning: retention window evicted events before seq {}; transcript is partial.",
+            since
+        );
+    }
+    if json {
+        for frame in &resp.frames {
+            println!("{}", serde_json::to_string(&frame)?);
+        }
+        return Ok(());
+    }
+    if resp.frames.is_empty() {
+        println!(
+            "(no events; highest_seq={}, lowest_seq={})",
+            resp.highest_seq,
+            resp.lowest_seq
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "-".into())
+        );
+        return Ok(());
+    }
+    for frame in &resp.frames {
+        println!("seq {:>6}  {}", frame.seq, event_kind(&frame.event));
+    }
+    Ok(())
+}
+
+async fn status(session: &str, json: bool) -> Result<()> {
+    let endpoint = ensure_daemon().await?;
+    let client = HttpClient::new(endpoint.clone())?;
+    // since=highest_seq returns an empty frames vec but keeps the
+    // highest/lowest/lost summary intact. Cheaper than full replay.
+    let probe = client.replay(session, u64::MAX).await.map_err(map_http)?;
+    if json {
+        let blob = serde_json::json!({
+            "session_id": session,
+            "highest_seq": probe.highest_seq,
+            "lowest_seq": probe.lowest_seq,
+            "lost": probe.lost,
+            "daemon_url": endpoint.base_url,
+            "daemon_source": format!("{:?}", endpoint.source),
+        });
+        println!("{}", serde_json::to_string_pretty(&blob)?);
+        return Ok(());
+    }
+    println!("Cockpit session: {session}");
+    println!(
+        "  daemon       : {} ({:?})",
+        endpoint.base_url, endpoint.source
+    );
+    println!("  highest_seq  : {}", probe.highest_seq);
+    println!(
+        "  lowest_seq   : {}",
+        probe
+            .lowest_seq
+            .map(|v| v.to_string())
+            .unwrap_or_else(|| "-".into())
+    );
+    if probe.highest_seq == 0 {
+        println!("  state        : no events recorded yet (worker may be idle or not yet spawned)");
+    }
+    Ok(())
+}
+
+async fn prompt(session: &str, text: &str) -> Result<()> {
+    let body = read_text_arg(text)?;
+    let endpoint = ensure_daemon().await?;
+    let client = HttpClient::new(endpoint)?;
+    client.prompt(session, &body).await.map_err(map_http)?;
+    println!("prompt accepted ({} bytes)", body.len());
+    Ok(())
+}
+
+async fn approve(session: &str, nonce: &str, always: bool, deny: bool) -> Result<()> {
+    let decision = match (always, deny) {
+        (_, true) => ApprovalDecisionWire::Deny,
+        (true, false) => ApprovalDecisionWire::AllowAlways,
+        (false, false) => ApprovalDecisionWire::Allow,
+    };
+    let endpoint = ensure_daemon().await?;
+    let client = HttpClient::new(endpoint)?;
+    client
+        .resolve_approval(session, nonce, decision)
+        .await
+        .map_err(map_http)?;
+    println!("approval {nonce} -> {decision:?}");
+    Ok(())
+}
+
+async fn cancel(session: &str) -> Result<()> {
+    let endpoint = ensure_daemon().await?;
+    let client = HttpClient::new(endpoint)?;
+    client.cancel(session).await.map_err(map_http)?;
+    println!("cancel sent");
+    Ok(())
+}
+
+async fn tail(session: &str, since: u64) -> Result<()> {
+    let endpoint = ensure_daemon().await?;
+    let mut handle = crate::cockpit::client::ws_connect(&endpoint, session, since).await?;
+    while let Some(msg) = handle.recv().await {
+        match msg {
+            Ok(WsMessage::Frame(frame)) => {
+                let line = serde_json::to_string(&*frame)?;
+                println!("{line}");
+            }
+            Ok(WsMessage::Lagged) => {
+                eprintln!("warning: ring buffer lagged; some events lost. Refetch with `aoe cockpit history <session>`.");
+            }
+            Err(e) => {
+                eprintln!("ws error: {e}");
+                anyhow::bail!("ws disconnected: {e}");
+            }
+        }
+    }
+    Ok(())
+}
+
+fn read_text_arg(text: &str) -> Result<String> {
+    if text == "-" {
+        use std::io::Read;
+        let mut buf = String::new();
+        std::io::stdin().read_to_string(&mut buf)?;
+        Ok(buf.trim_end_matches('\n').to_string())
+    } else {
+        Ok(text.to_string())
+    }
+}
+
+fn map_http(e: HttpError) -> anyhow::Error {
+    anyhow::Error::new(e)
+}
+
+fn event_kind(event: &crate::cockpit::Event) -> &'static str {
+    use crate::cockpit::Event;
+    match event {
+        Event::PlanUpdated { .. } => "plan_updated",
+        Event::TodoListUpdated { .. } => "todo_list_updated",
+        Event::ToolCallStarted { .. } => "tool_call_started",
+        Event::ToolCallCompleted { .. } => "tool_call_completed",
+        Event::ToolCallContent { .. } => "tool_call_content",
+        Event::ToolCallUpdated { .. } => "tool_call_updated",
+        Event::ApprovalRequested { .. } => "approval_requested",
+        Event::ApprovalResolved { .. } => "approval_resolved",
+        Event::DiffEmitted { .. } => "diff_emitted",
+        Event::ThinkingStarted => "thinking_started",
+        Event::ThinkingEnded => "thinking_ended",
+        Event::RateLimit { .. } => "rate_limit",
+        Event::UsageUpdated { .. } => "usage_updated",
+        Event::ModeChanged { .. } => "mode_changed",
+        Event::ModesAvailable { .. } => "modes_available",
+        Event::CurrentModeChanged { .. } => "current_mode_changed",
+        Event::AvailableCommandsUpdated { .. } => "available_commands_updated",
+        Event::RawAgentUpdate { .. } => "raw_agent_update",
+        Event::AgentMessageChunk { .. } => "agent_message_chunk",
+        Event::Stopped { .. } => "stopped",
+        Event::AgentStartupError { .. } => "agent_startup_error",
+        Event::UserPromptSent { .. } => "user_prompt_sent",
+        Event::AcpSessionAssigned { .. } => "acp_session_assigned",
+        Event::SessionContextReset { .. } => "session_context_reset",
+        Event::WakeupScheduled { .. } => "wakeup_scheduled",
     }
 }
 
