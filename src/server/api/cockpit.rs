@@ -229,6 +229,28 @@ pub async fn cockpit_cancel(
     }
 }
 
+/// Escape hatch for the "stuck spinner" failure mode (#1100). Publishes
+/// a synthetic `Stopped { reason: "user_forced" }` so every connected UI
+/// drops `turnActive`, then best-effort cancels any in-flight agent
+/// turn. Always returns 202: the publish is idempotent and the cancel
+/// is fire-and-forget.
+pub async fn cockpit_force_end_turn(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(resp) = read_only_block(&state) {
+        return resp;
+    }
+    match state.cockpit_supervisor.force_end_turn(&id).await {
+        Ok(()) => StatusCode::ACCEPTED.into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("force_end_turn failed: {e}"),
+        )
+            .into_response(),
+    }
+}
+
 #[derive(Debug, Serialize)]
 pub struct FilesResponse {
     pub files: Vec<String>,

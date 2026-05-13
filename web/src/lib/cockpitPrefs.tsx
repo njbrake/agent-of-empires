@@ -26,11 +26,16 @@ export interface CockpitPrefs {
    *  Stopped: `combined` (default) joins them with blank lines into a
    *  single prompt; `serial` fires one entry at a time. See #1031. */
   queueDrainMode: "combined" | "serial";
+  /** Resolved `cockpit.force_end_turn_threshold_secs` from the active
+   *  profile. Seconds of streaming inactivity after which the cockpit
+   *  spinner offers a "Force end turn" escape hatch. See #1100. */
+  forceEndTurnThresholdSecs: number;
 }
 
 const DEFAULT_PREFS: CockpitPrefs = {
   showToolDurations: true,
   queueDrainMode: "combined",
+  forceEndTurnThresholdSecs: 30,
 };
 
 const CockpitPrefsContext = createContext<CockpitPrefs>(DEFAULT_PREFS);

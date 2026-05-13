@@ -37,6 +37,7 @@ import {
   VERB_INTERVAL_MS,
   chooseVerb,
 } from "../../lib/cockpitRattle";
+import { useCockpitPrefs } from "../../lib/cockpitPrefs";
 import type {
   Approval,
   ApprovalDecision,
@@ -84,6 +85,8 @@ function CockpitChrome({
   status,
   resolveApproval,
   sendPrompt,
+  forceEndTurn,
+  lastActivityRef,
   dismissError,
   removeQueuedPrompt,
   editQueuedPrompt,
@@ -162,6 +165,8 @@ function CockpitChrome({
                 <WorkingSpinner
                   thinking={state.thinking}
                   tool={state.inFlightTool?.name ?? null}
+                  lastActivityRef={lastActivityRef}
+                  onForceEndTurn={forceEndTurn}
                 />
               </div>
             </ThreadPrimitive.If>
@@ -575,12 +580,23 @@ function EmptyState({
 function WorkingSpinner({
   thinking,
   tool,
+  lastActivityRef,
+  onForceEndTurn,
 }: {
   thinking: boolean;
   tool: string | null;
+  lastActivityRef: React.RefObject<number>;
+  onForceEndTurn: () => Promise<void>;
 }) {
   const [frame, setFrame] = useState(0);
   const [seed, setSeed] = useState(() => Math.floor(Math.random() * 0xffffffff));
+  // 1s-tick clock for the force-end-turn watchdog. We compare against
+  // `lastActivityRef.current` (a ref bumped on every incoming frame)
+  // and surface the escape hatch when the gap exceeds the configured
+  // threshold. Polling here, not on every event, so the rest of the
+  // tree isn't perturbed by activity bookkeeping. See #1100.
+  const [stalledSecs, setStalledSecs] = useState(0);
+  const { forceEndTurnThresholdSecs } = useCockpitPrefs();
 
   useEffect(() => {
     const t = window.setInterval(() => {
@@ -596,22 +612,53 @@ function WorkingSpinner({
     return () => window.clearInterval(t);
   }, []);
 
+  useEffect(() => {
+    // The hook starts the ref at 0 to avoid a render-time `Date.now()`
+    // (react-hooks/purity). If we land here while it's still the
+    // sentinel (e.g. mounting against a cached `turnActive=true`
+    // state without yet receiving a fresh frame), pin it to now so
+    // the watchdog clock isn't instantly tripped.
+    if (lastActivityRef.current === 0) {
+      lastActivityRef.current = Date.now();
+    }
+    const t = window.setInterval(() => {
+      const last = lastActivityRef.current;
+      setStalledSecs(Math.floor((Date.now() - last) / 1000));
+    }, 1000);
+    return () => window.clearInterval(t);
+  }, [lastActivityRef]);
+
   const state: "thinking" | "tool" | "working" = thinking
     ? "thinking"
     : tool
       ? "tool"
       : "working";
   const label = chooseVerb(state, seed, tool);
+  const showForceEnd = stalledSecs >= forceEndTurnThresholdSecs;
 
   return (
-    <div className="flex items-center gap-2 text-sm italic text-text-muted">
-      <span
-        className="inline-block w-3 text-center font-mono text-brand-500"
-        aria-hidden="true"
-      >
-        {SPINNER_FRAMES[frame]}
-      </span>
-      <span>{label}</span>
+    <div className="flex flex-col gap-2 text-sm italic text-text-muted">
+      <div className="flex items-center gap-2">
+        <span
+          className="inline-block w-3 text-center font-mono text-brand-500"
+          aria-hidden="true"
+        >
+          {SPINNER_FRAMES[frame]}
+        </span>
+        <span>{label}</span>
+      </div>
+      {showForceEnd ? (
+        <button
+          type="button"
+          onClick={() => {
+            void onForceEndTurn();
+          }}
+          className="self-start text-xs not-italic px-2 py-1 rounded-md border border-surface-700 bg-surface-800 text-text-secondary hover:bg-surface-700 hover:text-text-primary cursor-pointer"
+          title={`No streaming activity for ${stalledSecs}s. Clears the spinner and sends a best-effort cancel to the agent.`}
+        >
+          Force end turn
+        </button>
+      ) : null}
     </div>
   );
 }

@@ -159,6 +159,7 @@ replay_bytes = 5_242_880
 node_path = ""
 show_tool_durations = true  # per-tool elapsed-time label in the web UI
 queue_drain_mode = "combined"  # how the composer drains client-side queued prompts: "combined" | "serial" (#1031)
+force_end_turn_threshold_secs = 30  # seconds of streaming silence before the spinner offers a "Force end turn" button (#1100)
 ```
 
 `max_concurrent_resumes` bounds how many cockpit workers the reconciler
@@ -436,6 +437,17 @@ Approvals expire after `approval_timeout_secs` (default 300). The
 agent receives a structured cancellation; you'll typically see a
 follow-up message asking again. Bump the timeout if you're in a
 context where approvals legitimately take longer.
+
+### "Force end turn" button under the spinner
+
+If the agent finished a turn but the cockpit's working spinner is
+still rattling (no streaming chunks landed for a while), a small
+"Force end turn" button appears beneath it. Clicking it clears the
+local spinner immediately and asks the daemon to publish a synthetic
+`Stopped` plus a best-effort `session/cancel` to the agent. Pure
+recovery affordance for a missed-event race (#1100); during a healthy
+turn it never shows. Configure the inactivity threshold with
+`cockpit.force_end_turn_threshold_secs` (default 30s).
 
 ### Sharing debug logs
 

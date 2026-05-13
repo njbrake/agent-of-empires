@@ -95,8 +95,10 @@ pub trait BroadcastSink: Send + Sync + 'static {
 /// "auto-respawnable" and missed attached workers in both filters.
 enum WorkerKind {
     /// Fresh spawn owned by this daemon. Watchdog respawns on crash
-    /// within `MAX_RESPAWNS_IN_WINDOW`.
-    Runner { spawn_config: SpawnConfig },
+    /// within `MAX_RESPAWNS_IN_WINDOW`. Boxed because `SpawnConfig` is
+    /// significantly larger than the unit variants — keeping it inline
+    /// trips `clippy::large_enum_variant`.
+    Runner { spawn_config: Box<SpawnConfig> },
     /// Reattached to an already-running runner from a previous daemon
     /// (see `Supervisor::attach`). No auto-respawn from in-memory
     /// state; the reconciler handles a fresh spawn on its next tick.
@@ -636,7 +638,7 @@ impl<S: BroadcastSink> Supervisor<S> {
                 // MAX_RESPAWNS_IN_WINDOW.
                 restart_history: vec![],
                 kind: WorkerKind::Runner {
-                    spawn_config: config,
+                    spawn_config: Box::new(config),
                 },
             },
         );
@@ -933,6 +935,32 @@ impl<S: BroadcastSink> Supervisor<S> {
             .ok_or_else(|| SupervisorError::UnknownSession(session_id.into()))?;
         let client = handle.client.lock().await;
         client.cancel_prompt().await?;
+        Ok(())
+    }
+
+    /// Escape hatch for the "spinner stuck because we never saw the
+    /// agent's `Stopped`" failure mode (#1100). Publishes a synthetic
+    /// `Stopped { reason: "user_forced" }` through the sink so every
+    /// connected UI flips `turnActive` off and any client-side prompt
+    /// queue can drain, then sends a best-effort `session/cancel` to
+    /// the agent in case it really is mid-turn. Idempotent: a second
+    /// call just publishes another (no-op for the reducer) Stopped.
+    pub async fn force_end_turn(&self, session_id: &str) -> Result<(), SupervisorError> {
+        let seq = next_seq(&self.next_seqs, session_id);
+        self.sink.publish(
+            session_id,
+            seq,
+            &Event::Stopped {
+                reason: "user_forced".into(),
+            },
+        );
+        // Best-effort cancel; ignore UnknownSession because the headline
+        // intent is "free the UI", which the publish above already did.
+        let workers = self.workers.lock().await;
+        if let Some(handle) = workers.get(session_id) {
+            let client = handle.client.lock().await;
+            let _ = client.cancel_prompt().await;
+        }
         Ok(())
     }
 
@@ -1461,9 +1489,7 @@ async fn restart_decision(
         return RestartDecision::BudgetBurned;
     }
     match &handle.kind {
-        WorkerKind::Runner { spawn_config } => {
-            RestartDecision::Respawn(Box::new(spawn_config.clone()))
-        }
+        WorkerKind::Runner { spawn_config } => RestartDecision::Respawn(spawn_config.clone()),
         // Attached: the previous daemon owned the runner and we have
         // no spawn config to respawn from. The reconciler will pick
         // this session back up on the next tick if it's still
@@ -1690,7 +1716,7 @@ mod tests {
                     drain_task: drain,
                     restart_history: vec![],
                     kind: WorkerKind::Runner {
-                        spawn_config: dummy_config,
+                        spawn_config: Box::new(dummy_config),
                     },
                 },
             );
@@ -1760,7 +1786,7 @@ mod tests {
                     drain_task: drain,
                     restart_history: vec![],
                     kind: WorkerKind::Runner {
-                        spawn_config: dummy_config,
+                        spawn_config: Box::new(dummy_config),
                     },
                 },
             );
@@ -1829,7 +1855,7 @@ mod tests {
                     drain_task: drain,
                     restart_history: vec![],
                     kind: WorkerKind::Runner {
-                        spawn_config: dummy_config,
+                        spawn_config: Box::new(dummy_config),
                     },
                 },
             );
@@ -1898,7 +1924,7 @@ mod tests {
                     drain_task: drain,
                     restart_history: vec![],
                     kind: WorkerKind::Runner {
-                        spawn_config: dummy_config,
+                        spawn_config: Box::new(dummy_config),
                     },
                 },
             );
@@ -2021,7 +2047,7 @@ mod tests {
                     drain_task: drain,
                     restart_history: vec![],
                     kind: WorkerKind::Runner {
-                        spawn_config: dummy_config,
+                        spawn_config: Box::new(dummy_config),
                     },
                 },
             );

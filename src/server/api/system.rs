@@ -406,6 +406,11 @@ pub struct ServerAbout {
     /// spawns/attaches the reconciler runs on `aoe serve` cold start.
     /// Surfaced so the settings UI shows the current value. See #1088.
     pub cockpit_max_concurrent_resumes: u32,
+    /// Resolved value of `cockpit.force_end_turn_threshold_secs` from
+    /// the active profile's config. Seconds of streaming inactivity
+    /// after which the cockpit web UI offers a "Force end turn" button
+    /// to unstick a missed-Stopped spinner. See #1100.
+    pub cockpit_force_end_turn_threshold_secs: u32,
 }
 
 pub async fn get_about(State(state): State<Arc<AppState>>) -> Json<ServerAbout> {
@@ -418,6 +423,7 @@ pub async fn get_about(State(state): State<Arc<AppState>>) -> Json<ServerAbout> 
     let cockpit_show_tool_durations = cockpit_cfg.show_tool_durations;
     let cockpit_queue_drain_mode = cockpit_cfg.queue_drain_mode.as_str().to_string();
     let cockpit_max_concurrent_resumes = cockpit_cfg.max_concurrent_resumes;
+    let cockpit_force_end_turn_threshold_secs = cockpit_cfg.force_end_turn_threshold_secs;
     Json(ServerAbout {
         version: env!("CARGO_PKG_VERSION").to_string(),
         auth_required,
@@ -429,6 +435,7 @@ pub async fn get_about(State(state): State<Arc<AppState>>) -> Json<ServerAbout> 
         cockpit_show_tool_durations,
         cockpit_queue_drain_mode,
         cockpit_max_concurrent_resumes,
+        cockpit_force_end_turn_threshold_secs,
     })
 }
 

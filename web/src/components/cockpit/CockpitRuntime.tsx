@@ -58,6 +58,8 @@ export interface CockpitContext {
     decision: ApprovalDecision,
   ) => Promise<void>;
   sendPrompt: (text: string) => Promise<void>;
+  forceEndTurn: () => Promise<void>;
+  lastActivityRef: ReturnType<typeof useCockpit>["lastActivityRef"];
   dismissError: () => void;
   removeQueuedPrompt: (id: string) => void;
   editQueuedPrompt: (id: string, text: string) => void;
@@ -115,6 +117,8 @@ export function CockpitRuntime({
         status: cockpit.status,
         resolveApproval: cockpit.resolveApproval,
         sendPrompt: cockpit.sendPrompt,
+        forceEndTurn: cockpit.forceEndTurn,
+        lastActivityRef: cockpit.lastActivityRef,
         dismissError: cockpit.dismissError,
         removeQueuedPrompt: cockpit.removeQueuedPrompt,
         editQueuedPrompt: cockpit.editQueuedPrompt,

@@ -108,10 +108,23 @@ pub struct CockpitConfig {
     /// it on constrained hosts; raise on beefier machines. See #1088.
     #[serde(default = "default_max_concurrent_resumes")]
     pub max_concurrent_resumes: u32,
+    /// Seconds of streaming inactivity after which the cockpit web UI
+    /// shows a "Force end turn" button. When `turnActive=true` and no
+    /// frame arrives for this long, the spinner is likely stuck on a
+    /// missed `Stopped` (#1100); the button locally clears the
+    /// spinner and POSTs to force_end_turn so the daemon publishes a
+    /// synthetic `Stopped { reason: "user_forced" }` and best-effort
+    /// `session/cancel` the agent. Default 30s.
+    #[serde(default = "default_force_end_turn_threshold_secs")]
+    pub force_end_turn_threshold_secs: u32,
 }
 
 fn default_max_concurrent_resumes() -> u32 {
     4
+}
+
+fn default_force_end_turn_threshold_secs() -> u32 {
+    30
 }
 
 /// Drain strategy for the cockpit composer's client-side prompt queue.
@@ -160,6 +173,7 @@ impl Default for CockpitConfig {
             show_tool_durations: true,
             queue_drain_mode: QueueDrainMode::default(),
             max_concurrent_resumes: default_max_concurrent_resumes(),
+            force_end_turn_threshold_secs: default_force_end_turn_threshold_secs(),
         }
     }
 }

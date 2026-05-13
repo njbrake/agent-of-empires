@@ -122,6 +122,7 @@ pub enum FieldKey {
     CockpitShowToolDurations,
     CockpitQueueDrainMode,
     CockpitMaxConcurrentResumes,
+    CockpitForceEndTurnThresholdSecs,
 }
 
 /// Resolve a field value from global config and optional profile override.
@@ -341,6 +342,11 @@ fn build_cockpit_fields(
         global.cockpit.max_concurrent_resumes,
         p.and_then(|c| c.max_concurrent_resumes),
     );
+    let (force_end_turn_threshold_secs, fet_override) = resolve_value(
+        scope,
+        global.cockpit.force_end_turn_threshold_secs,
+        p.and_then(|c| c.force_end_turn_threshold_secs),
+    );
 
     vec![
         SettingField {
@@ -437,6 +443,15 @@ fn build_cockpit_fields(
             },
             category: SettingsCategory::Cockpit,
             has_override: qdm_override,
+            inherited_display: None,
+        },
+        SettingField {
+            key: FieldKey::CockpitForceEndTurnThresholdSecs,
+            label: "Force end turn threshold (s)",
+            description: "Seconds of streaming inactivity after which the cockpit web UI offers a \"Force end turn\" button. When the spinner is stuck (a missed Stopped event), clicking the button clears the local spinner and asks the daemon to publish a synthetic Stopped + best-effort session/cancel. Default 30s. See #1100.",
+            value: FieldValue::Number(u64::from(force_end_turn_threshold_secs)),
+            category: SettingsCategory::Cockpit,
+            has_override: fet_override,
             inherited_display: None,
         },
     ]
@@ -1860,6 +1875,9 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
         (FieldKey::CockpitMaxConcurrentResumes, FieldValue::Number(v)) => {
             config.cockpit.max_concurrent_resumes = (*v).max(1).min(u32::MAX as u64) as u32
         }
+        (FieldKey::CockpitForceEndTurnThresholdSecs, FieldValue::Number(v)) => {
+            config.cockpit.force_end_turn_threshold_secs = (*v).max(1).min(u32::MAX as u64) as u32
+        }
         _ => {}
     }
 }
@@ -2199,6 +2217,12 @@ fn apply_field_to_profile(field: &SettingField, _global: &Config, config: &mut P
             let clamped = (*v).max(1).min(u32::MAX as u64) as u32;
             set_profile_override(clamped, &mut config.cockpit, |s, val| {
                 s.max_concurrent_resumes = val
+            });
+        }
+        (FieldKey::CockpitForceEndTurnThresholdSecs, FieldValue::Number(v)) => {
+            let clamped = (*v).max(1).min(u32::MAX as u64) as u32;
+            set_profile_override(clamped, &mut config.cockpit, |s, val| {
+                s.force_end_turn_threshold_secs = val
             });
         }
         _ => {}

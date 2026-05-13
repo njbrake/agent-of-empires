@@ -75,6 +75,13 @@ function cacheSet(sessionId: string, value: CockpitState): void {
  *  with no argument). Call from the session-delete handler so the
  *  next session created with the same id doesn't briefly show the
  *  prior transcript on remount. */
+/** How far back of a seq overlap `fetchReplay` requests on every call.
+ *  Catches events that landed in the broadcast tail without being
+ *  applied by the reducer (e.g. WS connect drain races against the
+ *  REST replay call). The reducer's `frame.seq <= state.lastSeq`
+ *  dedupe makes the overlap idempotent. See #1100. */
+const REPLAY_OVERLAP = 50;
+
 export function clearCockpitCache(sessionId?: string): void {
   if (sessionId === undefined) {
     stateCache.clear();
@@ -231,10 +238,31 @@ export function useCockpit(
     lastSeqRef.current = state.lastSeq;
   }, [state.lastSeq]);
 
+  // Timestamp (ms) of the most recent applied frame. Read by the
+  // "Force end turn" escape hatch in WorkingSpinner: when `turnActive`
+  // is true and `Date.now() - lastActivity` exceeds the configured
+  // threshold, the spinner offers the button. Kept as a ref (not
+  // reducer state) so updating it on every frame doesn't trigger a
+  // rerender; the spinner polls the ref on its own 1s timer. See
+  // #1100 (C).
+  // Initialised to 0; bumped to a real timestamp on first applied
+  // frame or first user submit. Date.now() at render time would trip
+  // react-hooks/purity (renders must be deterministic), and the zero
+  // sentinel does the right thing on first read since
+  // `Date.now() - 0` is enormous and the spinner only checks against
+  // it while `turnActive` is true (false on a freshly-mounted hook).
+  const lastActivityRef = useRef<number>(0);
+
   const fetchReplay = useCallback(
     async (sid: string) => {
       try {
-        const since = lastSeqRef.current;
+        // Defensive overlap: re-fetch from `lastSeq - REPLAY_OVERLAP`
+        // instead of `lastSeq` so events that landed in the broadcast
+        // tail without being applied (WS-vs-replay race, broadcast lag
+        // window, etc.) get a second chance. The reducer's
+        // `frame.seq <= state.lastSeq` dedupe drops the overlap, so
+        // this is idempotent. See #1100.
+        const since = Math.max(0, lastSeqRef.current - REPLAY_OVERLAP);
         const res = await fetch(
           `/api/sessions/${encodeURIComponent(sid)}/cockpit/replay?since=${since}`,
           { credentials: "same-origin" },
@@ -291,76 +319,102 @@ export function useCockpit(
     });
     statusRef.current = "connecting";
     setStatus("connecting");
-    // On reconnect, replay anything we may have missed.
-    fetchReplay(sessionId);
 
-    const token = getToken();
-    const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-    // Pass `?since=<lastSeq>` so the server's on-connect drain only
-    // resends events newer than what we already have. Without this,
-    // a long-running session resends its full transcript on every
-    // reconnect (page refresh / mobile flap), which can be tens of
-    // MB at the retention cap. lastSeqRef stays current via the
-    // effect below.
-    const since = lastSeqRef.current;
-    const url = `${protocol}://${window.location.host}/sessions/${encodeURIComponent(sessionId)}/cockpit/ws?since=${since}`;
+    // Set up cancellation so the cleanup function can stop a pending
+    // open if the effect re-runs (sessionId change) before the WS dial
+    // completed. Without this, a fast session-switch could leak a WS
+    // that fires onmessage into a now-stale reducer.
+    let cancelled = false;
+    let ws: WebSocket | null = null;
 
-    const ws = new WebSocket(url, token ? ["aoe-auth", token] : ["aoe-auth"]);
-    wsRef.current = ws;
+    (async () => {
+      // Order: replay first, then open WS. Today the server's WS
+      // on-connect drain and the REST replay endpoint read the same
+      // disk store; awaiting the replay before the dial gives the
+      // reducer a known-correct `lastSeq` so the WS subscribes from a
+      // settled cursor instead of racing two delivery paths. Without
+      // this, an event landing during the dial window could be
+      // delivered by both paths in different orders, and the dedupe
+      // would drop later applies — exactly the "Stopped never reaches
+      // the reducer" failure mode in #1100.
+      await fetchReplay(sessionId);
+      if (cancelled) return;
 
-    // Set the ref synchronously alongside setState so sendPrompt's
-    // gate (which reads the ref) doesn't race the next render. Without
-    // this, a click landing in the same event-loop tick as `onclose`
-    // could see statusRef.current === "open" and dispatch an
-    // optimistic prompt against a closed socket.
-    ws.onopen = () => {
-      statusRef.current = "open";
-      setStatus("open");
-    };
-    ws.onerror = () => {
-      statusRef.current = "error";
-      setStatus("error");
-    };
-    ws.onclose = () => {
-      statusRef.current = "closed";
-      setStatus("closed");
-    };
-    ws.onmessage = (ev) => {
-      try {
-        const data = JSON.parse(ev.data) as
-          | CockpitFrame
-          | { kind: "lagged"; skipped?: number };
-        if (
-          typeof data === "object" &&
-          data !== null &&
-          "kind" in data &&
-          (data as { kind?: unknown }).kind === "lagged"
-        ) {
-          const skipped =
-            ((data as unknown) as { skipped?: number }).skipped ?? 0;
-          dispatch({ kind: "lagged", skipped });
-          // Try to recover via the snapshot endpoint.
-          fetchReplay(sessionId);
-          return;
+      const token = getToken();
+      const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+      // Pass `?since=<lastSeq>` so the server's on-connect drain only
+      // resends events newer than what we already have. Without this,
+      // a long-running session resends its full transcript on every
+      // reconnect (page refresh / mobile flap), which can be tens of
+      // MB at the retention cap.
+      const since = lastSeqRef.current;
+      const url = `${protocol}://${window.location.host}/sessions/${encodeURIComponent(sessionId)}/cockpit/ws?since=${since}`;
+
+      ws = new WebSocket(url, token ? ["aoe-auth", token] : ["aoe-auth"]);
+      wsRef.current = ws;
+
+      // Set the ref synchronously alongside setState so sendPrompt's
+      // gate (which reads the ref) doesn't race the next render. Without
+      // this, a click landing in the same event-loop tick as `onclose`
+      // could see statusRef.current === "open" and dispatch an
+      // optimistic prompt against a closed socket.
+      ws.onopen = () => {
+        statusRef.current = "open";
+        setStatus("open");
+      };
+      ws.onerror = () => {
+        statusRef.current = "error";
+        setStatus("error");
+      };
+      ws.onclose = () => {
+        statusRef.current = "closed";
+        setStatus("closed");
+      };
+      ws.onmessage = (ev) => {
+        try {
+          const data = JSON.parse(ev.data) as
+            | CockpitFrame
+            | { kind: "lagged"; skipped?: number };
+          if (
+            typeof data === "object" &&
+            data !== null &&
+            "kind" in data &&
+            (data as { kind?: unknown }).kind === "lagged"
+          ) {
+            const skipped =
+              ((data as unknown) as { skipped?: number }).skipped ?? 0;
+            dispatch({ kind: "lagged", skipped });
+            // Try to recover via the snapshot endpoint.
+            fetchReplay(sessionId);
+            return;
+          }
+          if (
+            typeof data === "object" &&
+            data !== null &&
+            "session_id" in data &&
+            "event" in data
+          ) {
+            // Every incoming live frame is an "activity" tick for the
+            // force-end-turn watchdog: as long as the agent is
+            // streaming, the spinner stays "honest" and the escape
+            // hatch doesn't appear. See WorkingSpinner in CockpitView.
+            lastActivityRef.current = Date.now();
+            dispatch({ kind: "frame", frame: data as CockpitFrame });
+          }
+        } catch {
+          // Ignore malformed frames; the server should never send them.
         }
-        if (
-          typeof data === "object" &&
-          data !== null &&
-          "session_id" in data &&
-          "event" in data
-        ) {
-          dispatch({ kind: "frame", frame: data as CockpitFrame });
-        }
-      } catch {
-        // Ignore malformed frames; the server should never send them.
-      }
-    };
+      };
+    })();
 
     return () => {
-      try {
-        ws.close();
-      } catch {
-        // ignore
+      cancelled = true;
+      if (ws) {
+        try {
+          ws.close();
+        } catch {
+          // ignore
+        }
       }
       wsRef.current = null;
     };
@@ -415,6 +469,10 @@ export function useCockpit(
       // fails we'll surface a banner and the user can retry; the
       // optimistic row stays so they see what they tried to send.
       dispatch({ kind: "user_prompt", text });
+      // Submit counts as activity so the force-end-turn watchdog
+      // doesn't surface the escape hatch immediately on a fresh prompt
+      // (the agent's first chunk can be a few seconds out).
+      lastActivityRef.current = Date.now();
       try {
         const res = await fetch(
           `/api/sessions/${encodeURIComponent(sessionId)}/cockpit/prompt`,
@@ -564,6 +622,44 @@ export function useCockpit(
     }
   }, [sessionId]);
 
+  // Escape hatch for the "spinner stuck" failure mode (#1100). Locally
+  // dispatches a synthetic Stopped so the reducer flips `turnActive`
+  // off immediately, then POSTs to the daemon to publish a Stopped
+  // server-side and best-effort cancel any in-flight turn. The local
+  // dispatch is optimistic; the server echo (which lands as a real
+  // frame on the WS) is idempotent against the reducer.
+  const forceEndTurn = useCallback(async () => {
+    if (!sessionId) return;
+    dispatch({
+      kind: "frame",
+      frame: {
+        session_id: sessionId,
+        seq: lastSeqRef.current + 1,
+        event: { Stopped: { reason: "user_forced" } },
+      },
+    });
+    lastActivityRef.current = Date.now();
+    try {
+      const res = await fetch(
+        `/api/sessions/${encodeURIComponent(sessionId)}/cockpit/force_end_turn`,
+        { method: "POST" },
+      );
+      if (!res.ok) {
+        const detail = await safeText(res);
+        dispatch({
+          kind: "error",
+          message:
+            `Could not force end turn (${res.status}). ${detail}`.trim(),
+        });
+      }
+    } catch (e) {
+      dispatch({
+        kind: "error",
+        message: `Network error forcing end turn: ${describeError(e)}`,
+      });
+    }
+  }, [sessionId]);
+
   const dismissError = useCallback(() => {
     dispatch({ kind: "clear_error" });
   }, []);
@@ -574,6 +670,13 @@ export function useCockpit(
     resolveApproval,
     sendPrompt,
     cancelPrompt,
+    forceEndTurn,
+    /** Timestamp (ms) of the most recent applied frame. The
+     *  WorkingSpinner reads this on a 1s timer to decide whether to
+     *  surface the "Force end turn" button. Exposed as a ref so the
+     *  hook doesn't rerender every frame just to update a watchdog
+     *  clock. See #1100 (C). */
+    lastActivityRef,
     dismissError,
     removeQueuedPrompt,
     editQueuedPrompt,
