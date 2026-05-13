@@ -1197,6 +1197,29 @@ fn transcript_event_kind(event: &Event) -> &'static str {
     }
 }
 
+/// Build a `WakeupScheduled` event from a `ScheduleWakeup` tool's
+/// raw_input. Reads `delaySeconds` (number, falls back to numeric
+/// string) and the optional `reason`; computes the absolute wake
+/// timestamp from `Utc::now()`. Returns `None` if `delaySeconds` is
+/// missing or non-finite — better to skip the event than publish a
+/// wakeup at epoch zero. See #1091.
+fn wakeup_event_from_raw(raw_input: &serde_json::Value) -> Option<Event> {
+    let delay_value = raw_input.get("delaySeconds")?;
+    let delay_secs: f64 = delay_value
+        .as_f64()
+        .or_else(|| delay_value.as_str().and_then(|s| s.parse().ok()))?;
+    if !delay_secs.is_finite() || delay_secs < 0.0 {
+        return None;
+    }
+    let delay_ms = (delay_secs * 1000.0).clamp(0.0, i64::MAX as f64) as i64;
+    let at = chrono::Utc::now() + chrono::Duration::milliseconds(delay_ms);
+    let reason = raw_input
+        .get("reason")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string());
+    Some(Event::WakeupScheduled { at, reason })
+}
+
 /// Parse Claude's ExitPlanMode tool input into a structured `Plan`.
 /// Claude ships the plan markdown in `raw_input.plan`; we extract its
 /// bullet- or number-prefixed lines as `PlanStep`s with status=Pending,
@@ -1389,6 +1412,17 @@ fn map_update_to_events(update: SessionUpdate) -> Vec<Event> {
             if matches!(tc.kind, agent_client_protocol::schema::ToolKind::SwitchMode) {
                 if let Some(plan) = extract_plan_from_switch_mode(&raw_args) {
                     events.push(Event::PlanUpdated { plan });
+                }
+            }
+            // The Claude Agent SDK's `ScheduleWakeup` tool sleeps the
+            // session until `now + delaySeconds`, with `/loop` dynamic
+            // mode self-firing a fresh prompt when the wake triggers.
+            // Capture an absolute `at` timestamp here so the sidebar
+            // countdown survives daemon restarts and never has to parse
+            // the natural-language output string. See #1091.
+            if tc.title == "ScheduleWakeup" {
+                if let Some(event) = wakeup_event_from_raw(&raw_args) {
+                    events.push(event);
                 }
             }
             events

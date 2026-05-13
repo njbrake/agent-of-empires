@@ -81,6 +81,19 @@ pub struct SessionResponse {
     /// bridge in `acp_client::map_update_to_events`). See #1061.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub plan_summary: Option<PlanSummary>,
+    /// Absolute RFC3339 timestamp at which the cockpit session's
+    /// `ScheduleWakeup` tool will fire (i.e. the next turn is expected
+    /// to start). Cleared once a `UserPromptSent` lands after the
+    /// scheduling tool call — the /loop skill's self-firing emits that
+    /// prompt at wake time, so a wakeup whose seq is ≤ the latest
+    /// prompt has already fired. See #1091.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_wakeup_at: Option<String>,
+    /// User-facing reason the agent gave when scheduling the wakeup,
+    /// shown alongside the countdown chip / banner. Only set when
+    /// `next_wakeup_at` is also set. See #1091.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next_wakeup_reason: Option<String>,
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -122,6 +135,8 @@ impl SessionResponse {
             None,
             #[cfg(feature = "serve")]
             crate::cockpit::supervisor::CockpitWorkerState::Absent,
+            None,
+            None,
         )
     }
 
@@ -134,6 +149,8 @@ impl SessionResponse {
         plan_summary: Option<PlanSummary>,
         #[cfg(feature = "serve")]
         cockpit_worker_state: crate::cockpit::supervisor::CockpitWorkerState,
+        next_wakeup_at: Option<String>,
+        next_wakeup_reason: Option<String>,
     ) -> Self {
         Self {
             id: inst.id.clone(),
@@ -189,6 +206,8 @@ impl SessionResponse {
                 .unwrap_or_default(),
             warnings: Vec::new(),
             plan_summary,
+            next_wakeup_at,
+            next_wakeup_reason,
         }
     }
 }
@@ -243,6 +262,14 @@ pub async fn list_sessions(State(state): State<Arc<AppState>>) -> Json<Vec<Sessi
             } else {
                 None
             };
+            let (next_wakeup_at, next_wakeup_reason) = if inst.cockpit_mode {
+                match state.cockpit_event_store.latest_pending_wakeup(&inst.id) {
+                    Some((at, reason)) => (Some(at.to_rfc3339()), reason),
+                    None => (None, None),
+                }
+            } else {
+                (None, None)
+            };
             #[cfg(feature = "serve")]
             let cockpit_worker_state = worker_states
                 .get(&inst.id)
@@ -254,6 +281,8 @@ pub async fn list_sessions(State(state): State<Arc<AppState>>) -> Json<Vec<Sessi
                 plan_summary,
                 #[cfg(feature = "serve")]
                 cockpit_worker_state,
+                next_wakeup_at,
+                next_wakeup_reason,
             )
         })
         .collect();

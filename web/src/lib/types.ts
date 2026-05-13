@@ -51,6 +51,15 @@ export interface SessionResponse {
   /** Latest plan snapshot summarised for the sidebar. Present only on
    *  cockpit sessions whose agent has emitted a Plan. See #1061. */
   plan_summary?: PlanSummary;
+  /** Absolute RFC3339 timestamp at which the agent's pending
+   *  `ScheduleWakeup` fires. Cleared once a fresh user prompt lands
+   *  after the scheduling call. Present only on cockpit sessions
+   *  whose agent has called `ScheduleWakeup` since the last prompt.
+   *  See #1091. */
+  next_wakeup_at?: string;
+  /** Reason the agent provided when scheduling the wakeup. Only set
+   *  when `next_wakeup_at` is also set. */
+  next_wakeup_reason?: string;
 }
 
 export interface PlanSummary {

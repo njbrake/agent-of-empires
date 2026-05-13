@@ -166,7 +166,8 @@ export type CockpitEvent =
   | { AgentStartupError: { message: string } }
   | { UserPromptSent: { text: string } }
   | { AcpSessionAssigned: { acp_session_id: string } }
-  | { SessionContextReset: { reason: string } };
+  | { SessionContextReset: { reason: string } }
+  | { WakeupScheduled: { at: string; reason: string | null } };
 
 export interface CockpitFrame {
   session_id: string;
@@ -257,6 +258,14 @@ export interface CockpitState {
    *  On `Stopped` (when the worker is healthy) the head is popped and
    *  dispatched via the regular sendPrompt path. See #1031. */
   queuedPrompts: QueuedPrompt[];
+  /** ISO-8601 timestamp at which the agent's pending `ScheduleWakeup`
+   *  fires (i.e. when the next /loop turn is expected to start).
+   *  Cleared by `UserPromptSent` since /loop self-fires a prompt on
+   *  wake. See #1091. */
+  nextWakeupAt: string | null;
+  /** Reason the agent provided when scheduling the wakeup. Shown in
+   *  the cockpit banner next to the countdown. */
+  nextWakeupReason: string | null;
 }
 
 export interface QueuedPrompt {
@@ -318,6 +327,8 @@ export function emptyCockpitState(): CockpitState {
     workerStopped: false,
     workerRestarting: false,
     queuedPrompts: [],
+    nextWakeupAt: null,
+    nextWakeupReason: null,
   };
 }
 
@@ -602,6 +613,12 @@ export function applyEvent(
     // user_stopped banner without waiting for AcpSessionAssigned.
     next.workerStopped = false;
     next.workerRestarting = false;
+    // /loop dynamic mode self-fires a UserPromptSent on wake, which
+    // is exactly the signal that the previously-pending wakeup has
+    // fired. Clear it here so the sidebar countdown / banner go away
+    // without waiting for a server-side recomputation. See #1091.
+    next.nextWakeupAt = null;
+    next.nextWakeupReason = null;
     return next;
   }
   if ("AcpSessionAssigned" in event) {
@@ -650,6 +667,11 @@ export function applyEvent(
         "Conversation context reset; agent transcript was unavailable.",
       at: new Date().toISOString(),
     });
+    return next;
+  }
+  if ("WakeupScheduled" in event) {
+    next.nextWakeupAt = event.WakeupScheduled.at;
+    next.nextWakeupReason = event.WakeupScheduled.reason ?? null;
     return next;
   }
   // RawAgentUpdate, TodoListUpdated, anything else: pass through with

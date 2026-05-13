@@ -380,6 +380,18 @@ pub enum Event {
     SessionContextReset {
         reason: String,
     },
+    /// The agent invoked the Claude SDK's `ScheduleWakeup` tool. The
+    /// session will sit idle until `at`, then a new turn fires. Emitted
+    /// from `acp_client::map_update_to_events` on `ToolCallStarted` for
+    /// `ScheduleWakeup` so the sidebar can flip to a "scheduled" badge
+    /// plus countdown without subscribing to the cockpit WS. Considered
+    /// pending until the next `UserPromptSent` lands, which is what
+    /// /loop's self-firing emits when the wake actually triggers. See
+    /// #1091.
+    WakeupScheduled {
+        at: DateTime<Utc>,
+        reason: Option<String>,
+    },
 }
 
 impl CockpitState {
@@ -473,6 +485,11 @@ impl CockpitState {
                 // emits its first UsageUpdate.
                 self.usage = None;
             }
+            // Persistent state for "scheduled wakeup" lives in the
+            // event log (queried by the REST endpoint per #1091); no
+            // in-memory mirror needed yet. Bumps seq so the WS replay
+            // surfaces it to live clients.
+            Event::WakeupScheduled { .. } => {}
         }
         self.last_seq = self.last_seq.saturating_add(1);
         self.updated_at = Utc::now();
