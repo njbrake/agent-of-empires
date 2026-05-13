@@ -43,6 +43,13 @@ pub struct AddArgs {
     #[arg(short = 'b', long = "new-branch")]
     create_branch: bool,
 
+    /// Branch to base the new worktree branch on (use with --new-branch).
+    /// Defaults to the repository's default branch. Useful for stacking
+    /// work on top of an in-flight PR branch, hot-fixing a release
+    /// branch, or branching off a teammate's branch.
+    #[arg(long = "base-branch")]
+    base_branch: Option<String>,
+
     /// Additional repositories for multi-repo workspace (use with --worktree)
     #[arg(long = "repo", short = 'r')]
     extra_repos: Vec<PathBuf>,
@@ -165,6 +172,7 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
                 &all_extra_repos,
                 branch,
                 args.create_branch,
+                args.base_branch.as_deref(),
                 &config.worktree.workspace_path_template,
                 init_submodules,
             )?;
@@ -215,7 +223,13 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
             }
 
             println!("Creating worktree at: {}", worktree_path.display());
-            let warnings = git_wt.create_worktree(branch, &worktree_path, args.create_branch)?;
+            let base = if args.create_branch {
+                args.base_branch.as_deref()
+            } else {
+                None
+            };
+            let warnings =
+                git_wt.create_worktree(branch, &worktree_path, args.create_branch, base)?;
 
             path = worktree_path;
 

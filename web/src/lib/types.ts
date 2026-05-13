@@ -270,6 +270,9 @@ export interface CreateSessionRequest {
   yolo_mode?: boolean;
   worktree_branch?: string;
   create_new_branch?: boolean;
+  /** Branch the new worktree branch is based on (only honored when
+   *  `create_new_branch` is true; empty = repo default). See #948. */
+  base_branch?: string;
   sandbox?: boolean;
   extra_args?: string;
   sandbox_image?: string;

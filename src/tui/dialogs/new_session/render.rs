@@ -781,6 +781,7 @@ impl NewSessionDialog {
         let constraints = vec![
             Constraint::Length(2),            // Name
             Constraint::Length(2),            // New Branch checkbox
+            Constraint::Length(2),            // Base Branch
             Constraint::Length(repos_height), // Extra Repos
             Constraint::Min(1),               // Hints
         ];
@@ -861,11 +862,30 @@ impl NewSessionDialog {
             frame.render_widget(Paragraph::new(line), chunks[1]);
         }
 
+        // Base Branch (only meaningful when "new branch" is checked; when
+        // unchecked we render the field dimmed so the layout stays stable).
+        {
+            let placeholder = if self.create_new_branch {
+                "(empty = repo default)"
+            } else {
+                "(ignored: attaching to existing)"
+            };
+            render_text_field(
+                frame,
+                chunks[2],
+                "Base:",
+                &self.base_branch,
+                self.worktree_config_focused_field == 2,
+                Some(placeholder),
+                theme,
+            );
+        }
+
         // Extra Repos
         self.render_extra_repos_field(
             frame,
-            chunks[2],
-            self.worktree_config_focused_field == 2,
+            chunks[3],
+            self.worktree_config_focused_field == 3,
             theme,
         );
 
@@ -882,7 +902,7 @@ impl NewSessionDialog {
             Span::styled("Esc", Style::default().fg(theme.hint)),
             Span::raw(" back"),
         ];
-        if self.worktree_config_focused_field == 2 && !self.workspace_repos_expanded {
+        if self.worktree_config_focused_field == 3 && !self.workspace_repos_expanded {
             hint_spans = vec![
                 Span::styled("Tab", Style::default().fg(theme.hint)),
                 Span::raw(" next  "),
@@ -894,7 +914,7 @@ impl NewSessionDialog {
                 Span::raw(" back"),
             ];
         }
-        frame.render_widget(Paragraph::new(Line::from(hint_spans)), chunks[3]);
+        frame.render_widget(Paragraph::new(Line::from(hint_spans)), chunks[4]);
 
         if self.show_help {
             self.render_help_overlay(frame, area, theme);

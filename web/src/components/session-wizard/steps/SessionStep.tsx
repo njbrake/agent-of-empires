@@ -1,7 +1,13 @@
+import { useEffect, useRef, useState } from "react";
+import { fetchBranches } from "../../../lib/api";
+import type { BranchInfo } from "../../../lib/api";
+
 interface WizardData {
+  path: string;
   title: string;
   worktreeBranch: string;
   useWorktree: boolean;
+  baseBranch: string;
   group: string;
   tool: string;
   [key: string]: unknown;
@@ -78,6 +84,7 @@ export function SessionStep({ data, onChange }: Props) {
             className="w-full bg-surface-900 border border-surface-700 rounded-lg px-3 py-2.5 text-base font-mono text-text-primary placeholder:text-text-dim focus:border-brand-600 focus:outline-none"
           />
           <p className="text-xs text-text-dim mt-1">The branch name is also the worktree directory name. Leave blank to use the session title.</p>
+          <AdvancedWorktreeOptions data={data} onChange={onChange} />
         </div>
       )}
 
@@ -91,6 +98,144 @@ export function SessionStep({ data, onChange }: Props) {
           className="w-full bg-surface-900 border border-surface-700 rounded-lg px-3 py-2.5 text-sm font-mono text-text-primary placeholder:text-text-dim focus:border-brand-600 focus:outline-none"
         />
       </div>
+    </div>
+  );
+}
+
+/**
+ * Collapsed "Advanced" section under the worktree name input. Currently
+ * houses the base-branch picker (#948). Hidden by default and only
+ * matters when the user expands it; defaulting to the repo default
+ * means the common case stays exactly as before.
+ */
+function AdvancedWorktreeOptions({
+  data,
+  onChange,
+}: {
+  data: WizardData;
+  onChange: (field: string, value: unknown) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [branches, setBranches] = useState<BranchInfo[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [highlightIdx, setHighlightIdx] = useState(0);
+  const [hasFocus, setHasFocus] = useState(false);
+  const blurTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    if (!open || !data.path) return;
+    let cancelled = false;
+    setLoading(true);
+    fetchBranches(data.path, true).then((rows) => {
+      if (!cancelled) {
+        setBranches(rows ?? []);
+        setLoading(false);
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, data.path]);
+
+  const query = data.baseBranch.trim().toLowerCase();
+  const suggestions = (branches ?? [])
+    .filter((b) => !query || b.name.toLowerCase().includes(query))
+    .slice(0, 8);
+
+  const choose = (name: string) => {
+    onChange("baseBranch", name);
+    setHasFocus(false);
+  };
+
+  return (
+    <div className="mt-3">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        className="flex items-center gap-1.5 text-xs text-text-dim hover:text-text-secondary cursor-pointer"
+      >
+        <span
+          className={`inline-block transition-transform ${open ? "rotate-90" : ""}`}
+          aria-hidden="true"
+        >
+          ▸
+        </span>
+        Advanced
+      </button>
+      {open && (
+        <div className="mt-2 pl-4 border-l border-surface-700/40">
+          <label className="block text-xs text-text-dim mb-1.5">Base branch</label>
+          <div className="relative">
+            <input
+              type="text"
+              value={data.baseBranch}
+              onChange={(e) => {
+                onChange("baseBranch", e.target.value);
+                setHighlightIdx(0);
+              }}
+              onFocus={() => {
+                if (blurTimer.current) clearTimeout(blurTimer.current);
+                setHasFocus(true);
+              }}
+              onBlur={() => {
+                blurTimer.current = setTimeout(() => setHasFocus(false), 120);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "ArrowDown") {
+                  e.preventDefault();
+                  setHighlightIdx((i) => Math.min(i + 1, suggestions.length - 1));
+                } else if (e.key === "ArrowUp") {
+                  e.preventDefault();
+                  setHighlightIdx((i) => Math.max(i - 1, 0));
+                } else if (e.key === "Enter" && suggestions[highlightIdx]) {
+                  e.preventDefault();
+                  choose(suggestions[highlightIdx].name);
+                } else if (e.key === "Escape") {
+                  setHasFocus(false);
+                }
+              }}
+              placeholder={loading ? "Loading branches..." : "Defaults to project default branch"}
+              aria-label="Base branch"
+              autoComplete="off"
+              className="w-full bg-surface-900 border border-surface-700 rounded-lg px-3 py-2 text-sm font-mono text-text-primary placeholder:text-text-dim focus:border-brand-600 focus:outline-none"
+            />
+            {hasFocus && suggestions.length > 0 && (
+              <ul
+                role="listbox"
+                aria-label="Branch suggestions"
+                className="absolute z-10 left-0 right-0 mt-1 max-h-64 overflow-y-auto bg-surface-900 border border-surface-700/60 rounded-lg shadow-lg"
+              >
+                {suggestions.map((b, i) => (
+                  <li
+                    key={`${b.name}-${b.remote_only ? "r" : "l"}`}
+                    role="option"
+                    aria-selected={i === highlightIdx}
+                    onMouseEnter={() => setHighlightIdx(i)}
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      choose(b.name);
+                    }}
+                    className={`flex items-center justify-between gap-2 px-3 py-1.5 text-sm font-mono cursor-pointer ${
+                      i === highlightIdx
+                        ? "bg-surface-800 text-text-primary"
+                        : "text-text-secondary"
+                    }`}
+                  >
+                    <span className="truncate">{b.name}</span>
+                    <span className="text-[10px] uppercase tracking-wider text-text-dim shrink-0">
+                      {b.is_current ? "current" : b.remote_only ? "remote" : "local"}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+          <p className="text-xs text-text-dim mt-1">
+            Stack a new worktree on top of a different branch (an in-flight PR, a release branch, a teammate's branch). Leave blank for the repo's default.
+          </p>
+        </div>
+      )}
     </div>
   );
 }

@@ -87,6 +87,10 @@ pub struct NewSessionData {
     pub worktree_enabled: bool,
     pub worktree_branch: Option<String>,
     pub create_new_branch: bool,
+    /// Branch the new worktree branch is based on. Only meaningful when
+    /// `create_new_branch` is true; ignored otherwise. `None` falls
+    /// back to the repository's default branch. See #948.
+    pub base_branch: Option<String>,
     pub extra_repo_paths: Vec<String>,
     pub sandbox: bool,
     /// The sandbox image to use (always populated from the input field).
@@ -114,6 +118,10 @@ pub struct NewSessionDialog {
     pub(super) worktree_enabled: bool,
     pub(super) worktree_branch: Input,
     pub(super) create_new_branch: bool,
+    /// Free-text "base branch" input shown in the worktree config
+    /// overlay when "new branch" is on. Empty value = use repo
+    /// default. See #948.
+    pub(super) base_branch: Input,
     pub(super) sandbox_enabled: bool,
     pub(super) sandbox_image: Input,
     pub(super) docker_available: bool,
@@ -390,6 +398,7 @@ impl NewSessionDialog {
             worktree_enabled,
             worktree_branch: Input::default(),
             create_new_branch: true,
+            base_branch: Input::default(),
             workspace_repos: Vec::new(),
             workspace_repos_expanded: false,
             workspace_repo_selected_index: 0,
@@ -632,6 +641,7 @@ impl NewSessionDialog {
             worktree_enabled: config.worktree.enabled,
             worktree_branch: Input::default(),
             create_new_branch: true,
+            base_branch: Input::default(),
             workspace_repos: Vec::new(),
             workspace_repos_expanded: false,
             workspace_repo_selected_index: 0,
@@ -694,6 +704,7 @@ impl NewSessionDialog {
             worktree_enabled: false,
             worktree_branch: Input::default(),
             create_new_branch: true,
+            base_branch: Input::default(),
             workspace_repos: Vec::new(),
             workspace_repos_expanded: false,
             workspace_repo_selected_index: 0,
@@ -1208,12 +1219,17 @@ impl NewSessionDialog {
         // Worktree config fields: 0=name, 1=new_branch checkbox, 2=extra_repos list
         const WT_NAME: usize = 0;
         const WT_NEW_BRANCH: usize = 1;
-        const WT_EXTRA_REPOS: usize = 2;
-        const WT_MAX: usize = 3;
+        const WT_BASE_BRANCH: usize = 2;
+        const WT_EXTRA_REPOS: usize = 3;
+        const WT_MAX: usize = 4;
 
         if self.branch_picker.is_active() {
             if let ListPickerResult::Selected(value) = self.branch_picker.handle_key(key) {
-                self.worktree_branch = Input::new(value);
+                if self.worktree_config_focused_field == WT_BASE_BRANCH {
+                    self.base_branch = Input::new(value);
+                } else {
+                    self.worktree_branch = Input::new(value);
+                }
             }
             return DialogResult::Continue;
         }
@@ -1243,6 +1259,22 @@ impl NewSessionDialog {
             KeyCode::Char('p')
                 if key.modifiers.contains(KeyModifiers::CONTROL)
                     && self.worktree_config_focused_field == WT_NAME =>
+            {
+                let path = std::path::Path::new(self.path.value().trim());
+                if let Ok(branches) = crate::git::diff::list_branches(path) {
+                    if !branches.is_empty() {
+                        self.branch_picker.activate(branches);
+                    }
+                }
+                DialogResult::Continue
+            }
+            // Ctrl+P on base-branch field opens the branch picker too.
+            // Selection routes through `branch_picker` like WT_NAME, so we
+            // disambiguate after selection by checking the focused field.
+            // See `branch_picker` handling at the top of this function.
+            KeyCode::Char('p')
+                if key.modifiers.contains(KeyModifiers::CONTROL)
+                    && self.worktree_config_focused_field == WT_BASE_BRANCH =>
             {
                 let path = std::path::Path::new(self.path.value().trim());
                 if let Ok(branches) = crate::git::diff::list_branches(path) {
@@ -1291,6 +1323,11 @@ impl NewSessionDialog {
             }
             _ if self.worktree_config_focused_field == WT_NAME => {
                 self.worktree_branch
+                    .handle_event(&crossterm::event::Event::Key(key));
+                DialogResult::Continue
+            }
+            _ if self.worktree_config_focused_field == WT_BASE_BRANCH => {
+                self.base_branch
                     .handle_event(&crossterm::event::Event::Key(key));
                 DialogResult::Continue
             }
@@ -1528,6 +1565,13 @@ impl NewSessionDialog {
         } else {
             None
         };
+        let base_value = self.base_branch.value().trim();
+        let base_branch =
+            if self.worktree_enabled && self.create_new_branch && !base_value.is_empty() {
+                Some(base_value.to_string())
+            } else {
+                None
+            };
         DialogResult::Submit(NewSessionData {
             profile: self.selected_profile().to_string(),
             title: final_title,
@@ -1537,6 +1581,7 @@ impl NewSessionDialog {
             worktree_enabled: self.worktree_enabled,
             worktree_branch,
             create_new_branch: self.create_new_branch,
+            base_branch,
             extra_repo_paths: if self.worktree_enabled {
                 self.workspace_repos.clone()
             } else {

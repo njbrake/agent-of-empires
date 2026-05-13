@@ -244,6 +244,15 @@ impl GitWorktree {
 
     /// Create a new worktree at `path` checking out `branch`.
     ///
+    /// When `create_branch` is true, the new branch is based on `base_branch`
+    /// if provided, otherwise on the repository's detected default branch
+    /// (`main`/`master`). The base is resolved against the remote first
+    /// (`origin/<base>`) then against a local branch with that name, so
+    /// passing a teammate's branch works without manually fetching it.
+    ///
+    /// When `create_branch` is false, `base_branch` is ignored (the
+    /// worktree checks out the already-existing `branch`).
+    ///
     /// Returns a list of non-fatal warnings (e.g. post-checkout hook failures
     /// where the worktree directory was successfully created anyway). Callers
     /// should surface these to the user (CLI/TUI/web) so they know about the
@@ -253,6 +262,7 @@ impl GitWorktree {
         branch: &str,
         path: &Path,
         create_branch: bool,
+        base_branch: Option<&str>,
     ) -> Result<Vec<String>> {
         let total_start = std::time::Instant::now();
         let mut warnings: Vec<String> = Vec::new();
@@ -273,16 +283,20 @@ impl GitWorktree {
         tracing::info!("worktree create: prune done in {:?}", t.elapsed());
 
         // Fetch from remote so the worktree starts from the latest state.
-        // For new branches, fetch the default branch (main/master) to use as
-        // the base. For existing branches, fetch that specific branch.
-        // Fails silently on network errors, falling back to local refs.
+        // For new branches, fetch the base branch (default branch unless the
+        // caller specified one) to use as the base. For existing branches,
+        // fetch the branch itself. Fails silently on network errors, falling
+        // back to local refs.
         let t = std::time::Instant::now();
-        let default_branch = if create_branch {
-            let db = self
-                .detect_default_branch()
-                .unwrap_or_else(|_| "main".to_string());
-            self.fetch_branch(FETCH_REMOTE, &db)?;
-            Some(db)
+        let resolved_base = if create_branch {
+            let base = match base_branch {
+                Some(b) if !b.trim().is_empty() => b.trim().to_string(),
+                _ => self
+                    .detect_default_branch()
+                    .unwrap_or_else(|_| "main".to_string()),
+            };
+            self.fetch_branch(FETCH_REMOTE, &base)?;
+            Some(base)
         } else {
             self.fetch_branch(FETCH_REMOTE, branch)?;
             None
@@ -292,15 +306,22 @@ impl GitWorktree {
         let t = std::time::Instant::now();
         let repo = open_repo_at(&self.repo_path)?;
 
-        if let Some(default_branch) = default_branch {
-            // Branch from origin/<default> so new branches start from the
-            // latest remote state. Falls back to local HEAD if no remote
-            // exists, then to any local branch (bare repo with broken HEAD).
-            let remote_ref = format!("{FETCH_REMOTE}/{default_branch}");
+        if let Some(base) = resolved_base {
+            // Branch from `origin/<base>` so new branches start from the
+            // latest remote state. Falls back to a local branch with the
+            // same name (lets users base off a teammate's local-only
+            // branch), then to HEAD, then to any local branch (bare repo
+            // with broken HEAD).
+            let remote_ref = format!("{FETCH_REMOTE}/{base}");
             let commit_oid = repo
                 .find_branch(&remote_ref, git2::BranchType::Remote)
                 .ok()
                 .and_then(|b| b.get().target())
+                .or_else(|| {
+                    repo.find_branch(&base, git2::BranchType::Local)
+                        .ok()
+                        .and_then(|b| b.get().target())
+                })
                 .or_else(|| {
                     repo.head()
                         .ok()
@@ -929,7 +950,9 @@ mod tests {
 
         let wt_path = dir.path().join("feature-worktree");
         let git_wt = GitWorktree::new(repo_path.to_path_buf()).unwrap();
-        git_wt.create_worktree("feature", &wt_path, false).unwrap();
+        git_wt
+            .create_worktree("feature", &wt_path, false, None)
+            .unwrap();
 
         let worktrees = git_wt.list_worktrees().unwrap();
         assert!(worktrees.len() >= 2);
@@ -947,7 +970,7 @@ mod tests {
         let wt_path = repo_path.parent().unwrap().join("removable-wt");
         let git_wt = GitWorktree::new(repo_path.to_path_buf()).unwrap();
         git_wt
-            .create_worktree("removable", &wt_path, false)
+            .create_worktree("removable", &wt_path, false, None)
             .unwrap();
 
         assert!(wt_path.exists());
@@ -1304,7 +1327,7 @@ mod tests {
         let wt_path = dir.path().join("remote-wt");
         let git_wt = GitWorktree::new(local_path).unwrap();
         git_wt
-            .create_worktree("remote-only-branch", &wt_path, false)
+            .create_worktree("remote-only-branch", &wt_path, false, None)
             .unwrap();
 
         assert!(wt_path.exists());
@@ -1386,7 +1409,7 @@ mod tests {
         let wt_path = dir.path().join("stale-worktree");
         let git_wt = GitWorktree::new(repo_path.to_path_buf()).unwrap();
         git_wt
-            .create_worktree("stale-branch", &wt_path, false)
+            .create_worktree("stale-branch", &wt_path, false, None)
             .unwrap();
         assert!(wt_path.exists());
 
@@ -1398,7 +1421,7 @@ mod tests {
         // Creating a worktree at the same path should succeed because
         // create_worktree prunes stale entries first.
         git_wt
-            .create_worktree("stale-branch", &wt_path, false)
+            .create_worktree("stale-branch", &wt_path, false, None)
             .unwrap();
         assert!(wt_path.exists());
     }
@@ -1415,13 +1438,13 @@ mod tests {
         let wt_path = dir.path().join("fail-worktree");
         let git_wt = GitWorktree::new(repo_path.to_path_buf()).unwrap();
         git_wt
-            .create_worktree("fail-branch", &wt_path, false)
+            .create_worktree("fail-branch", &wt_path, false, None)
             .unwrap();
 
         // Try creating again at a different path but same branch - git won't
         // allow two worktrees to check out the same branch.
         let wt_path2 = dir.path().join("fail-worktree-2");
-        let result = git_wt.create_worktree("fail-branch", &wt_path2, false);
+        let result = git_wt.create_worktree("fail-branch", &wt_path2, false, None);
         assert!(result.is_err());
         let err_msg = format!("{}", result.unwrap_err());
         assert!(
@@ -1447,7 +1470,7 @@ mod tests {
 
         let wt_path = dir.path().join("feature-a-wt");
         git_wt
-            .create_worktree("feature-a", &wt_path, false)
+            .create_worktree("feature-a", &wt_path, false, None)
             .unwrap();
 
         assert!(wt_path.exists());
@@ -1463,12 +1486,66 @@ mod tests {
         let git_wt = GitWorktree::new(main_repo).unwrap();
 
         let wt_path = dir.path().join("new-feat-wt");
-        git_wt.create_worktree("new-feat", &wt_path, true).unwrap();
+        git_wt
+            .create_worktree("new-feat", &wt_path, true, None)
+            .unwrap();
 
         assert!(wt_path.exists());
         assert!(repo
             .find_branch("new-feat", git2::BranchType::Local)
             .is_ok());
+    }
+
+    /// Regression for #948: when an explicit `base_branch` is passed,
+    /// the new worktree branch must point at the base branch's commit,
+    /// not the repo's default branch tip.
+    #[test]
+    fn test_create_worktree_uses_explicit_base_branch() {
+        let (dir, repo) = setup_test_repo();
+        let repo_path = repo.path().parent().unwrap();
+
+        // Add a second commit on the default branch (HEAD), then branch
+        // "release-1" off the first commit. The new worktree branch
+        // based on "release-1" should land at the first commit, not the
+        // second.
+        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+        let first_commit_oid = repo.head().unwrap().peel_to_commit().unwrap().id();
+        std::fs::write(repo_path.join("post.txt"), b"second").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(std::path::Path::new("post.txt")).unwrap();
+        let tree_id = index.write_tree().unwrap();
+        index.write().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let parent = repo.find_commit(first_commit_oid).unwrap();
+        let second_commit_oid = repo
+            .commit(Some("HEAD"), &sig, &sig, "second", &tree, &[&parent])
+            .unwrap();
+        assert_ne!(first_commit_oid, second_commit_oid);
+
+        // Create "release-1" pointing at the first commit (pre-second).
+        repo.branch(
+            "release-1",
+            &repo.find_commit(first_commit_oid).unwrap(),
+            false,
+        )
+        .unwrap();
+
+        let main_repo = GitWorktree::find_main_repo(repo_path).unwrap();
+        let git_wt = GitWorktree::new(main_repo).unwrap();
+
+        let wt_path = dir.path().join("hotfix-wt");
+        git_wt
+            .create_worktree("hotfix-1", &wt_path, true, Some("release-1"))
+            .unwrap();
+
+        let hotfix = repo
+            .find_branch("hotfix-1", git2::BranchType::Local)
+            .unwrap();
+        let hotfix_target = hotfix.get().target().unwrap();
+        assert_eq!(
+            hotfix_target, first_commit_oid,
+            "branch based on release-1 should sit at the first commit, not HEAD"
+        );
     }
 
     #[test]
@@ -1494,7 +1571,9 @@ mod tests {
             .compute_path("my-branch", template, "abc12345")
             .unwrap();
 
-        git_wt.create_worktree("my-branch", &wt_path, true).unwrap();
+        git_wt
+            .create_worktree("my-branch", &wt_path, true, None)
+            .unwrap();
 
         assert!(wt_path.exists());
         assert!(wt_path.join(".git").exists());
@@ -1518,7 +1597,7 @@ mod tests {
 
         let wt_path = dir.path().join("new-feature");
         git_wt
-            .create_worktree("new-feature", &wt_path, true)
+            .create_worktree("new-feature", &wt_path, true, None)
             .unwrap();
 
         assert!(wt_path.exists(), "Worktree directory should be created");
@@ -1549,7 +1628,7 @@ mod tests {
 
         let wt_path = dir.path().join("existing-branch-wt");
         git_wt
-            .create_worktree("existing-branch", &wt_path, false)
+            .create_worktree("existing-branch", &wt_path, false, None)
             .unwrap();
 
         assert!(wt_path.exists());
@@ -1575,7 +1654,7 @@ mod tests {
 
         let wt_path = dir.path().join("from-wt-branch");
         git_wt
-            .create_worktree("from-wt-branch", &wt_path, true)
+            .create_worktree("from-wt-branch", &wt_path, true, None)
             .unwrap();
 
         assert!(wt_path.exists());
@@ -1613,7 +1692,7 @@ mod tests {
             .unwrap();
 
         git_wt
-            .create_worktree("builder-branch", &wt_path, true)
+            .create_worktree("builder-branch", &wt_path, true, None)
             .unwrap();
 
         assert!(
@@ -1657,7 +1736,7 @@ mod tests {
             .unwrap();
 
         git_wt
-            .create_worktree("root-branch", &wt_path, true)
+            .create_worktree("root-branch", &wt_path, true, None)
             .unwrap();
 
         assert!(wt_path.exists());
@@ -1678,7 +1757,7 @@ mod tests {
 
         let wt_path = bare_repo_path.parent().unwrap().join("new-sibling-wt");
         git_wt
-            .create_worktree("new-sibling", &wt_path, true)
+            .create_worktree("new-sibling", &wt_path, true, None)
             .unwrap();
 
         assert!(wt_path.exists());
@@ -1717,7 +1796,7 @@ mod tests {
 
         let wt_path = bare_repo_path.parent().unwrap().join("existing-sibling-wt");
         git_wt
-            .create_worktree("existing-sibling", &wt_path, false)
+            .create_worktree("existing-sibling", &wt_path, false, None)
             .unwrap();
 
         assert!(wt_path.exists());
@@ -1737,7 +1816,7 @@ mod tests {
 
         let wt_path = worktree_path.parent().unwrap().join("from-wt-sibling");
         git_wt
-            .create_worktree("from-wt-sibling", &wt_path, true)
+            .create_worktree("from-wt-sibling", &wt_path, true, None)
             .unwrap();
 
         assert!(wt_path.exists());
@@ -1864,7 +1943,7 @@ mod tests {
 
         let wt_path = bare_path.join("new-feature");
         git_wt
-            .create_worktree("new-feature", &wt_path, true)
+            .create_worktree("new-feature", &wt_path, true, None)
             .unwrap();
 
         assert!(wt_path.exists(), "Worktree directory should be created");
@@ -2062,7 +2141,7 @@ mod tests {
         let wt_path = wt_parent.path().join("test-fetch-wt");
         let git_wt = GitWorktree::new(local_dir.path().to_path_buf()).unwrap();
         git_wt
-            .create_worktree("new-feature", &wt_path, true)
+            .create_worktree("new-feature", &wt_path, true, None)
             .unwrap();
 
         // The new branch should be based on the remote's latest commit,
@@ -2174,7 +2253,7 @@ mod tests {
         let worktree_parent = TempDir::new().unwrap();
         let wt_path = worktree_parent.path().join("submodule-worktree");
         git_wt
-            .create_worktree("test-feature", &wt_path, false)
+            .create_worktree("test-feature", &wt_path, false, None)
             .unwrap();
 
         assert!(
@@ -2196,7 +2275,7 @@ mod tests {
         let worktree_parent = TempDir::new().unwrap();
         let wt_path = worktree_parent.path().join("submodule-worktree");
         git_wt
-            .create_worktree("test-feature", &wt_path, false)
+            .create_worktree("test-feature", &wt_path, false, None)
             .unwrap();
 
         assert!(
@@ -2286,7 +2365,7 @@ mod tests {
         let worktree_parent = TempDir::new().unwrap();
         let wt_path = worktree_parent.path().join("submodule-worktree");
         git_wt
-            .create_worktree("test-feature", &wt_path, false)
+            .create_worktree("test-feature", &wt_path, false, None)
             .unwrap();
 
         assert!(
@@ -2394,7 +2473,7 @@ mod tests {
         let wt_path = wt_parent.path().join("hook-failure");
 
         let warnings = git_wt
-            .create_worktree("test-feature", &wt_path, false)
+            .create_worktree("test-feature", &wt_path, false, None)
             .expect("create_worktree should succeed when only the post-checkout hook failed");
 
         assert!(

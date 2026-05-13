@@ -25,6 +25,10 @@ pub struct InstanceParams {
     pub worktree_enabled: bool,
     pub worktree_branch: Option<String>,
     pub create_new_branch: bool,
+    /// Branch to base a freshly-created worktree branch on. Only honored
+    /// when `create_new_branch` is true. `None` falls back to the
+    /// repository's detected default branch. See #948.
+    pub base_branch: Option<String>,
     pub sandbox: bool,
     /// The sandbox image to use. Required when sandbox is true.
     pub sandbox_image: String,
@@ -77,6 +81,7 @@ pub fn create_workspace(
     extra_repo_paths: &[PathBuf],
     branch: &str,
     create_new_branch: bool,
+    base_branch: Option<&str>,
     workspace_template: &str,
     init_submodules: bool,
 ) -> Result<WorkspaceResult> {
@@ -176,6 +181,7 @@ pub fn create_workspace(
                 .iter()
                 .map(|plan| {
                     let branch = branch.to_string();
+                    let base = base_branch.map(|b| b.to_string());
                     let main_repo_path = plan.main_repo_path.clone();
                     let worktree_subdir = plan.worktree_subdir.clone();
                     let repo_name = plan.repo_name.clone();
@@ -186,7 +192,12 @@ pub fn create_workspace(
                                 .map_err(|e| format!("{}: {}", repo_name, e))?
                                 .with_init_submodules(init_submodules);
                             git_wt
-                                .create_worktree(&branch, &worktree_subdir, create_new_branch)
+                                .create_worktree(
+                                    &branch,
+                                    &worktree_subdir,
+                                    create_new_branch,
+                                    base.as_deref(),
+                                )
                                 .map_err(|e| format!("{}: {}", repo_name, e))
                         })();
                         tracing::info!(
@@ -360,6 +371,7 @@ pub fn build_instance(
                 &extra_paths,
                 branch,
                 params.create_new_branch,
+                params.base_branch.as_deref(),
                 &config.worktree.workspace_path_template,
                 config.worktree.init_submodules,
             )?;
@@ -407,7 +419,7 @@ pub fn build_instance(
                     let session_id = uuid::Uuid::new_v4().to_string();
                     let worktree_path = git_wt.compute_path(branch, template, &session_id[..8])?;
 
-                    let w = git_wt.create_worktree(branch, &worktree_path, false)?;
+                    let w = git_wt.create_worktree(branch, &worktree_path, false, None)?;
                     warnings.extend(w);
 
                     final_path = worktree_path.to_string_lossy().to_string();
@@ -430,7 +442,12 @@ pub fn build_instance(
                     bail!("Worktree already exists at {}", worktree_path.display());
                 }
 
-                let w = git_wt.create_worktree(branch, &worktree_path, true)?;
+                let w = git_wt.create_worktree(
+                    branch,
+                    &worktree_path,
+                    true,
+                    params.base_branch.as_deref(),
+                )?;
                 warnings.extend(w);
 
                 final_path = worktree_path.to_string_lossy().to_string();
@@ -960,6 +977,7 @@ mod tests {
             &[repo_b],
             "nonexistent-branch",
             false,
+            None,
             &template,
             true,
         );
@@ -997,7 +1015,15 @@ mod tests {
             .to_string_lossy()
             .into_owned();
 
-        let result = create_workspace(&repo_a, &[], "nonexistent-branch", false, &template, true);
+        let result = create_workspace(
+            &repo_a,
+            &[],
+            "nonexistent-branch",
+            false,
+            None,
+            &template,
+            true,
+        );
 
         let err = match result {
             Ok(_) => panic!("single-repo failure should still surface"),

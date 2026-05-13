@@ -534,6 +534,71 @@ pub fn list_branches(repo_path: &Path) -> Result<Vec<String>> {
     Ok(branches)
 }
 
+/// One entry returned by [`list_branches_with_remotes`].
+#[derive(Debug, Clone)]
+pub struct BranchEntry {
+    /// Short branch name (e.g. `feature/x`). For remote-only branches
+    /// the remote prefix (`origin/`) is stripped — pass the short name
+    /// to `create_worktree` and it resolves the remote internally.
+    pub name: String,
+    /// True if the branch only exists on the remote (no matching local
+    /// branch). The UI surfaces this so the user knows the new
+    /// worktree will fetch + branch from the remote tip.
+    pub remote_only: bool,
+}
+
+/// List local branches plus remote-only branches (stripped of their
+/// remote prefix). Used by the worktree base-branch picker so users
+/// can pick a teammate's branch they haven't fetched locally. See #948.
+pub fn list_branches_with_remotes(repo_path: &Path) -> Result<Vec<BranchEntry>> {
+    let repo = super::open_repo_at(repo_path)?;
+    let mut locals: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut entries: Vec<BranchEntry> = Vec::new();
+
+    for branch in repo.branches(Some(git2::BranchType::Local))? {
+        let (branch, _) = branch?;
+        if let Some(name) = branch.name()? {
+            locals.insert(name.to_string());
+            entries.push(BranchEntry {
+                name: name.to_string(),
+                remote_only: false,
+            });
+        }
+    }
+
+    for branch in repo.branches(Some(git2::BranchType::Remote))? {
+        let (branch, _) = branch?;
+        if let Some(name) = branch.name()? {
+            // Strip the leading "<remote>/" segment. `HEAD` symbolic
+            // refs ("origin/HEAD") are skipped — they're not a real
+            // branch the user can base off.
+            let short = name.split_once('/').map(|(_, rest)| rest).unwrap_or(name);
+            if short == "HEAD" || short.is_empty() {
+                continue;
+            }
+            if locals.contains(short) {
+                continue;
+            }
+            entries.push(BranchEntry {
+                name: short.to_string(),
+                remote_only: true,
+            });
+        }
+    }
+
+    entries.sort_by(|a, b| {
+        let a_is_main = a.name == "main" || a.name == "master";
+        let b_is_main = b.name == "main" || b.name == "master";
+        match (a_is_main, b_is_main) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => a.name.cmp(&b.name),
+        }
+    });
+
+    Ok(entries)
+}
+
 /// Get the default branch name (main or master).
 /// Delegates to `GitWorktree::detect_default_branch` which also checks
 /// remote tracking refs as a fallback.

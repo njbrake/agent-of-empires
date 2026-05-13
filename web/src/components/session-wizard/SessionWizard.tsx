@@ -17,6 +17,10 @@ export interface WizardData {
   worktreeBranch: string;
   worktreeBranchDirty: boolean;
   useWorktree: boolean;
+  /** Optional base branch for the new worktree branch. Empty string =
+   *  use the project's default branch. Lives under "Advanced" in the
+   *  session step. See #948. */
+  baseBranch: string;
   group: string;
   tool: string;
   profile: string;
@@ -61,7 +65,7 @@ type Action =
 
 const initialData: WizardData = {
   path: "", title: "", worktreeBranch: "", worktreeBranchDirty: false,
-  useWorktree: true,
+  useWorktree: true, baseBranch: "",
   group: "", tool: "claude", profile: "",
   yoloMode: false, sandboxEnabled: false, sandboxImage: "", extraEnv: [],
   extraRepoPaths: [],
@@ -218,6 +222,8 @@ export function SessionWizard({ onClose, onCreated, prefill, experimentalCockpit
       yolo_mode: d.yoloMode,
       worktree_branch: d.useWorktree ? getSubmittedBranch(d.title, d.worktreeBranch) : undefined,
       create_new_branch: d.useWorktree,
+      base_branch:
+        d.useWorktree && d.baseBranch.trim() ? d.baseBranch.trim() : undefined,
       sandbox: d.sandboxEnabled,
       sandbox_image: d.sandboxEnabled ? d.sandboxImage : undefined,
       extra_env: d.sandboxEnabled && d.extraEnv.length > 0 ? d.extraEnv.filter(Boolean) : undefined,

@@ -297,6 +297,27 @@ export function fetchUpdateStatus(): Promise<UpdateStatus | null> {
   return fetchJson<UpdateStatus>("/api/system/update-status");
 }
 
+// --- Branches ---
+
+export interface BranchInfo {
+  name: string;
+  is_current: boolean;
+  remote_only?: boolean;
+}
+
+/** Lists branches for a repo path. When `includeRemote` is true the
+ *  response includes branches that only exist on the remote (with
+ *  `remote_only: true`); selecting one bases the new worktree off the
+ *  remote tip. See #948. */
+export function fetchBranches(
+  path: string,
+  includeRemote = false,
+): Promise<BranchInfo[] | null> {
+  const params = new URLSearchParams({ path });
+  if (includeRemote) params.set("include_remote", "true");
+  return fetchJson<BranchInfo[]>(`/api/git/branches?${params.toString()}`);
+}
+
 // --- Devices ---
 
 export interface DeviceInfo {

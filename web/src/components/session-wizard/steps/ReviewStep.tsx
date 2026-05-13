@@ -3,7 +3,7 @@ import type { StepDef, StepId } from "../StepIndicator";
 import { getReviewSummary } from "../sessionNames";
 import { useServerDown, OFFLINE_TITLE } from "../../../lib/connectionState";
 
-interface WizardData { path: string; title: string; worktreeBranch: string; useWorktree: boolean; group: string; tool: string; profile: string; profileDirty: boolean; yoloMode: boolean; sandboxEnabled: boolean; sandboxImage: string; extraArgs: string; customInstruction: string; commandOverride: string; [key: string]: unknown; }
+interface WizardData { path: string; title: string; worktreeBranch: string; useWorktree: boolean; baseBranch: string; group: string; tool: string; profile: string; profileDirty: boolean; yoloMode: boolean; sandboxEnabled: boolean; sandboxImage: string; extraArgs: string; customInstruction: string; commandOverride: string; [key: string]: unknown; }
 interface Props { data: WizardData; onChange: (field: string, value: unknown) => void; isSubmitting: boolean; error: string | null; onSubmit: () => void; onJumpTo: (stepId: StepId) => void; steps: StepDef[]; }
 
 const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.userAgent);
@@ -125,16 +125,21 @@ export function ReviewStep({ data, onChange, isSubmitting, error, onSubmit, onJu
           onChange={(v) => onChange("title", v)}
         />
         {data.useWorktree ? (
-          <EditableRow
-            label="Branch / worktree"
-            value={data.worktreeBranch}
-            displayValue={summary.branch}
-            placeholder="Auto-generated"
-            onChange={(v) => onChange("worktreeBranch", v)}
-            accent
-          />
+          <>
+            <EditableRow
+              label="Branch / worktree"
+              value={data.worktreeBranch}
+              displayValue={summary.branch}
+              placeholder="Auto-generated"
+              onChange={(v) => onChange("worktreeBranch", v)}
+              accent
+            />
+            {data.baseBranch.trim() && (
+              <Row label="Base branch" value={data.baseBranch.trim()} />
+            )}
+          </>
         ) : (
-          <Row label="Worktree" value="None — runs in repo folder" />
+          <Row label="Worktree" value="None, runs in repo folder" />
         )}
         <Row label="Agent" value={data.tool || "(not set)"} stepId="agent" onJumpTo={onJumpTo} />
         {data.profile && (

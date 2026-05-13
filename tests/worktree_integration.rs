@@ -39,7 +39,7 @@ fn test_add_session_with_worktree_flag() {
     let wt_path = repo_dir.path().join("worktree-test-feature");
 
     git_wt
-        .create_worktree("test-feature", &wt_path, false)
+        .create_worktree("test-feature", &wt_path, false, None)
         .unwrap();
 
     let mut instance = Instance::new("Test Session", wt_path.to_str().unwrap());
@@ -122,7 +122,7 @@ fn test_manual_worktree_detection() {
     let wt_path = repo_dir.path().join("detected-worktree");
 
     git_wt
-        .create_worktree("test-feature", &wt_path, false)
+        .create_worktree("test-feature", &wt_path, false, None)
         .unwrap();
 
     let worktrees = git_wt.list_worktrees().unwrap();
@@ -150,7 +150,7 @@ fn test_worktree_cleanup_on_session_removal() {
     let wt_path = worktree_container.path().join("cleanup-worktree");
 
     git_wt
-        .create_worktree("test-feature", &wt_path, false)
+        .create_worktree("test-feature", &wt_path, false, None)
         .unwrap();
     assert!(wt_path.exists());
 
@@ -176,7 +176,7 @@ fn test_worktree_preserved_when_keep_flag_used() {
     let wt_path = worktree_container.path().join("keep-worktree");
 
     git_wt
-        .create_worktree("test-feature", &wt_path, false)
+        .create_worktree("test-feature", &wt_path, false, None)
         .unwrap();
     assert!(wt_path.exists());
 
@@ -199,10 +199,10 @@ fn test_error_when_worktree_already_exists() {
     let wt_path = repo_dir.path().join("duplicate-worktree");
 
     git_wt
-        .create_worktree("test-feature", &wt_path, false)
+        .create_worktree("test-feature", &wt_path, false, None)
         .unwrap();
 
-    let result = git_wt.create_worktree("test-feature", &wt_path, false);
+    let result = git_wt.create_worktree("test-feature", &wt_path, false, None);
 
     assert!(result.is_err());
     match result.unwrap_err() {
@@ -220,7 +220,7 @@ fn test_error_when_branch_does_not_exist() {
     let git_wt = GitWorktree::new(repo_dir.path().to_path_buf()).unwrap();
     let wt_path = repo_dir.path().join("nonexistent-branch-worktree");
 
-    let result = git_wt.create_worktree("nonexistent-branch", &wt_path, false);
+    let result = git_wt.create_worktree("nonexistent-branch", &wt_path, false, None);
 
     assert!(result.is_err());
     match result.unwrap_err() {
@@ -244,7 +244,7 @@ fn test_create_new_branch_with_b_flag() {
     assert!(!branch_exists_before);
 
     git_wt
-        .create_worktree("brand-new-branch", &wt_path, true)
+        .create_worktree("brand-new-branch", &wt_path, true, None)
         .unwrap();
 
     assert!(wt_path.exists());

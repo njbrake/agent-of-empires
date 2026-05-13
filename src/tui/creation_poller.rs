@@ -116,6 +116,7 @@ impl CreationPoller {
             worktree_enabled: data.worktree_enabled,
             worktree_branch: data.worktree_branch,
             create_new_branch: data.create_new_branch,
+            base_branch: data.base_branch,
             sandbox: data.sandbox,
             sandbox_image: data.sandbox_image,
             yolo_mode: data.yolo_mode,

@@ -685,6 +685,12 @@ pub struct CreateSessionBody {
     pub worktree_branch: Option<String>,
     #[serde(default)]
     pub create_new_branch: bool,
+    /// Branch the new worktree branch is based on. Only honored when
+    /// `create_new_branch` is true; the server ignores it otherwise.
+    /// `None` (or empty) falls back to the repository's detected
+    /// default branch. See #948.
+    #[serde(default)]
+    pub base_branch: Option<String>,
     #[serde(default)]
     pub sandbox: bool,
     #[serde(default)]
@@ -853,6 +859,14 @@ pub async fn create_session(
             worktree_enabled: worktree_branch.is_some(),
             worktree_branch,
             create_new_branch: body.create_new_branch,
+            base_branch: if body.create_new_branch {
+                body.base_branch
+                    .as_ref()
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+            } else {
+                None
+            },
             sandbox: body.sandbox,
             sandbox_image,
             yolo_mode: body.yolo_mode,

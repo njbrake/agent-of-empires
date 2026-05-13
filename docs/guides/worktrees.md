@@ -11,12 +11,16 @@ For workflow guidance, see the [Workflow Guide](workflow.md).
 | Create new branch | Use `-b` flag | Always creates new branch |
 | Use existing branch | Omit `-b` flag | Not supported |
 | Branch validation | Checks if branch exists | None (always creates) |
+| Pick a base branch | `--base-branch <name>` | `Base` field in `Ctrl+P` overlay |
 
 ## CLI Commands
 
 ```bash
-# Create worktree session (new branch)
+# Create worktree session (new branch, branched off the repo default)
 aoe add . -w feat/my-feature -b
+
+# Create worktree session (new branch, branched off a specific base)
+aoe add . -w hotfix-1 -b --base-branch release-1.2
 
 # Create worktree session (existing branch)
 aoe add . -w feat/my-feature
@@ -37,6 +41,12 @@ aoe remove <session>
 aoe remove <session> --delete-worktree
 ```
 
+`--base-branch` only matters with `--new-branch` / `-b`. The base is
+resolved against the remote first (`origin/<base>`), then against a
+local branch with that name, so passing a teammate's not-yet-fetched
+branch works without a manual `git fetch`. When omitted, the new
+branch is based on the repository's default branch (`main`/`master`).
+
 ## TUI Keyboard Shortcuts
 
 | Key | Action |
@@ -47,7 +57,9 @@ aoe remove <session> --delete-worktree
 | `Enter` | Submit and create session |
 | `Esc` | Cancel |
 
-In the TUI, enable the Worktree checkbox to create a new branch and worktree. By default, the worktree name is derived from the session title. Press `Ctrl+P` on the Worktree field to set an explicit `Name`, attach to an existing branch, or configure extra repos.
+In the TUI, enable the Worktree checkbox to create a new branch and worktree. By default, the worktree name is derived from the session title. Press `Ctrl+P` on the Worktree field to set an explicit `Name`, attach to an existing branch, pick a `Base` branch the new branch is based on (defaults to the repo default), or configure extra repos. `Ctrl+P` on the `Base` field opens a branch picker over local and remote-tracking branches.
+
+The web dashboard's new-session wizard exposes the same control under an "Advanced" disclosure beneath the worktree name input; it shows a typeahead populated from local + remote branches via `GET /api/git/branches?include_remote=true`.
 
 ## Configuration
 

@@ -178,24 +178,32 @@ pub async fn clone_repo(
 #[derive(Deserialize)]
 pub struct BranchesQuery {
     pub path: String,
+    /// Include remote-only branches alongside local ones. Used by the
+    /// new-session wizard's base-branch picker so users can base a new
+    /// worktree off a teammate's not-yet-fetched branch. See #948.
+    #[serde(default)]
+    pub include_remote: bool,
 }
 
 #[derive(Serialize)]
 pub struct BranchInfo {
     pub name: String,
     pub is_current: bool,
+    /// Set when the branch only exists on the remote (no local copy).
+    /// Omitted on responses where every branch is local.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub remote_only: bool,
 }
 
 pub async fn list_branches(
     axum::extract::Query(query): axum::extract::Query<BranchesQuery>,
 ) -> impl IntoResponse {
+    let include_remote = query.include_remote;
     let result = tokio::task::spawn_blocking(move || {
         let path = std::path::Path::new(&query.path);
         if !crate::git::GitWorktree::is_git_repo(path) {
             return Err("Path is not a git repository".to_string());
         }
-
-        let branches = crate::git::diff::list_branches(path).map_err(|e| e.to_string())?;
 
         let current = std::process::Command::new("git")
             .args(["branch", "--show-current"])
@@ -206,14 +214,29 @@ pub async fn list_branches(
             .map(|s| s.trim().to_string())
             .unwrap_or_default();
 
-        let mut result: Vec<BranchInfo> = branches
-            .into_iter()
-            .take(200)
-            .map(|name| {
-                let is_current = name == current;
-                BranchInfo { name, is_current }
-            })
-            .collect();
+        let mut result: Vec<BranchInfo> = if include_remote {
+            crate::git::diff::list_branches_with_remotes(path)
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .take(400)
+                .map(|entry| BranchInfo {
+                    is_current: entry.name == current,
+                    name: entry.name,
+                    remote_only: entry.remote_only,
+                })
+                .collect()
+        } else {
+            crate::git::diff::list_branches(path)
+                .map_err(|e| e.to_string())?
+                .into_iter()
+                .take(200)
+                .map(|name| BranchInfo {
+                    is_current: name == current,
+                    name,
+                    remote_only: false,
+                })
+                .collect()
+        };
 
         result.sort_by_key(|b| std::cmp::Reverse(b.is_current));
 
