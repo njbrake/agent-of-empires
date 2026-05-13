@@ -295,10 +295,15 @@ function CockpitChrome({
 function UserMessage() {
   return (
     <MessagePrimitive.Root className="group mt-4 flex flex-col items-end gap-1">
-      <div className="max-w-[80%] rounded-2xl rounded-br-sm border border-surface-700 bg-surface-800/70 px-3 py-1.5 text-sm whitespace-pre-wrap">
+      <div className="max-w-[80%] min-w-0 rounded-2xl rounded-br-sm border border-surface-700 bg-surface-800/70 px-3 py-1.5 text-sm">
         <MessagePrimitive.Parts
           components={{
-            Text: ({ text }) => <>{text}</>,
+            // User prompts get the same markdown pipeline as agent
+            // messages so fenced code blocks render with syntax
+            // highlighting instead of literal backticks. Smooth-reveal
+            // is off because user prompts arrive complete; the pacing
+            // only matters for streamed agent tokens. See #1108.
+            Text: ({ text }) => <Markdown text={text} smooth={false} />,
           }}
         />
       </div>
