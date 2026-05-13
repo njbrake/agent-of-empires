@@ -917,16 +917,13 @@ impl App {
                     .set_instance_error(session_id, Some(err_str.clone()));
                 self.home
                     .set_instance_status(session_id, crate::session::Status::Error);
-                // Surface the failure as a transient toast so the user sees
-                // *something* when Enter on a dead/archived row fails to
-                // restart. Without this, the TUI silently stays on home and
-                // the user reports "nothing happened."
-                let mut msg = format!("restart failed: {err_str}");
-                if msg.len() > 80 {
-                    msg.truncate(77);
-                    msg.push_str("...");
-                }
-                self.update_status = Some(UpdateStatus::transient(msg));
+                // Without a toast, set_instance_error + Status::Error are
+                // invisible to the user: the TUI redraws on home as if Enter
+                // did nothing. Toast text is single-line; the bar truncates
+                // at terminal width without us needing to pre-clip.
+                self.update_status = Some(UpdateStatus::transient(format!(
+                    "restart failed: {err_str}"
+                )));
                 return Ok(());
             }
             self.home.set_instance_error(session_id, None);
