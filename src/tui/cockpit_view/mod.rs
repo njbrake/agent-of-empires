@@ -38,6 +38,56 @@ const REDRAW_INTERVAL: Duration = Duration::from_millis(120);
 /// Toasts auto-clear after this long.
 const TOAST_TTL: Duration = Duration::from_secs(4);
 
+/// Set up an alternate-screen terminal, run the cockpit view against
+/// the given session, and tear it back down on exit. Used by the
+/// `aoe cockpit attach <id>` CLI verb to jump straight into the
+/// cockpit view without going through the home screen. Pair with
+/// `AOE_DAEMON_URL` for remote-attach against another machine's
+/// cockpit daemon.
+pub async fn run_standalone(session_id: &str) -> anyhow::Result<()> {
+    use crossterm::event::{
+        DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+        EventStream,
+    };
+    use crossterm::execute;
+    use crossterm::terminal::{
+        disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+    };
+    use std::io;
+    use std::io::IsTerminal;
+
+    if !io::stdin().is_terminal() {
+        anyhow::bail!("stdin is not a terminal; `aoe cockpit attach` requires an interactive TTY");
+    }
+
+    enable_raw_mode()?;
+    let mut stdout = io::stdout();
+    execute!(
+        stdout,
+        EnterAlternateScreen,
+        EnableBracketedPaste,
+        EnableMouseCapture
+    )?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend)?;
+    let mut event_stream = EventStream::new();
+    // Standalone attach uses a default theme; the user's theme
+    // pref lives in the home view state, which we don't load here.
+    let theme = crate::tui::styles::load_theme_with_mode("empire", false);
+
+    let result = run(&mut terminal, &mut event_stream, &theme, session_id).await;
+
+    disable_raw_mode()?;
+    execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen,
+        DisableBracketedPaste,
+        DisableMouseCapture
+    )?;
+    terminal.show_cursor()?;
+    result
+}
+
 /// Open the cockpit view for `session_id` and run its event loop until
 /// the user exits with `Esc`, or until the cockpit daemon becomes
 /// unreachable in a way the view can't recover from.

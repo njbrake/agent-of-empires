@@ -122,6 +122,13 @@ pub enum CockpitCommands {
         #[arg(long, default_value = "0")]
         since: u64,
     },
+    /// Open the TUI cockpit view directly for a known session id.
+    /// Combine with `AOE_DAEMON_URL` (+ `AOE_DAEMON_TOKEN`) to attach
+    /// across machines without going through the home session list.
+    Attach {
+        /// Cockpit session id.
+        session: String,
+    },
 }
 
 pub async fn run(command: CockpitCommands) -> Result<()> {
@@ -152,6 +159,7 @@ pub async fn run(command: CockpitCommands) -> Result<()> {
         } => approve(&session, &nonce, always, deny).await,
         CockpitCommands::Cancel { session } => cancel(&session).await,
         CockpitCommands::Tail { session, since } => tail(&session, since).await,
+        CockpitCommands::Attach { session } => attach(&session).await,
     }
 }
 
@@ -766,6 +774,10 @@ async fn cancel(session: &str) -> Result<()> {
     client.cancel(session).await.map_err(map_http)?;
     println!("cancel sent");
     Ok(())
+}
+
+async fn attach(session: &str) -> Result<()> {
+    crate::tui::cockpit_view::run_standalone(session).await
 }
 
 async fn tail(session: &str, since: u64) -> Result<()> {
