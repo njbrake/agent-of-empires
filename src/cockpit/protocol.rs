@@ -70,7 +70,7 @@ pub struct PromptRequest {
     pub text: String,
 }
 
-/// `PATCH /api/sessions/{id}/cockpit/approvals/{nonce}` body.
+/// `POST /api/sessions/{id}/cockpit/approvals/{nonce}` body.
 #[derive(Debug, Serialize, Deserialize)]
 pub struct ResolveApprovalRequest {
     pub decision: ApprovalDecisionWire,

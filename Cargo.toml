@@ -142,6 +142,12 @@ agent-client-protocol-tokio = { version = "0.11", optional = true }
 tar = { version = "0.4", optional = true }
 xz2 = { version = "0.1", optional = true }
 
+# WebSocket client for the cockpit-in-TUI view: subscribes to the daemon's
+# `/sessions/{id}/cockpit/ws` stream and pumps frames into the local reducer.
+# Folded into the `serve` feature alongside the rest of the cockpit surface;
+# the daemon itself uses axum's built-in WS support and never pulls this in.
+tokio-tungstenite = { version = "0.29", default-features = false, features = ["rustls-tls-webpki-roots", "connect"], optional = true }
+
 [features]
 default = []
 # Re-exports private tmux env helpers via `crate::tmux::test_support` so that
@@ -172,6 +178,7 @@ serve = [
     "agent-client-protocol-tokio",
     "tar",
     "xz2",
+    "tokio-tungstenite",
 ]
 
 [dev-dependencies]
