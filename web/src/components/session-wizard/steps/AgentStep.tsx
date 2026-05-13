@@ -28,11 +28,11 @@ interface Props {
   profiles: ProfileInfo[];
   dockerAvailable: boolean;
   onApplyProfileDefaults: (defaults: { yoloMode: boolean; sandboxEnabled: boolean; tool: string; extraEnv: string[] }) => void;
-  /** Server-side AOE_EXPERIMENTAL_COCKPIT flag. When true, sessions
+  /** Live value of the cockpit master switch. When true, sessions
    *  the user creates here run in cockpit mode automatically (for
    *  tools with an ACP adapter); when false, every session is tmux.
-   *  No per-session picker — the env var is the opt-in. */
-  experimentalCockpit: boolean;
+   *  No per-session picker; the master switch is the opt-in. */
+  cockpitMasterEnabled: boolean;
 }
 
 function SubstrateNotice({ tool, acpCapable }: { tool: string; acpCapable: boolean }) {
@@ -54,7 +54,7 @@ function SubstrateNotice({ tool, acpCapable }: { tool: string; acpCapable: boole
       </div>
       <p className="mt-1 text-xs text-text-dim leading-snug">
         {acpCapable
-          ? "AOE_EXPERIMENTAL_COCKPIT is set, so this session will run in the structured cockpit UI. Switch to terminal substrate from the session view if needed."
+          ? "Cockpit is enabled, so this session will run in the structured cockpit UI. Switch to terminal substrate from the session view if needed."
           : `${tool} has no ACP adapter yet, so this session falls back to the tmux terminal. Pick a tool with cockpit support (e.g. claude, opencode, gemini) to use the structured UI.`}
       </p>
     </div>
@@ -82,7 +82,7 @@ function Toggle({ checked, onChange, disabled }: { checked: boolean; onChange: (
   );
 }
 
-export function AgentStep({ data, onChange, agents, profiles, dockerAvailable, onApplyProfileDefaults, experimentalCockpit }: Props) {
+export function AgentStep({ data, onChange, agents, profiles, dockerAvailable, onApplyProfileDefaults, cockpitMasterEnabled }: Props) {
   const installedAgents = agents.filter((a) => a.installed);
   const selectedAgent = agents.find((a) => a.name === data.tool);
   const isHostOnly = selectedAgent?.host_only ?? false;
@@ -165,13 +165,13 @@ export function AgentStep({ data, onChange, agents, profiles, dockerAvailable, o
       </div>
 
       {/* Substrate notice. Cockpit mode is auto-selected for ACP-capable
-          tools when the server has AOE_EXPERIMENTAL_COCKPIT set; non-ACP
-          tools fall back to tmux silently. The notice tells the user
-          which one they'll get without giving them a per-session toggle
-          (the env var is the opt-in, and the session view has a
-          post-creation switch if they need to flip). When the env var is
-          unset, every new session is tmux and no notice is shown. */}
-      {experimentalCockpit && (
+          tools when the master switch is on; non-ACP tools fall back to
+          tmux silently. The notice tells the user which one they'll get
+          without giving them a per-session toggle (the master switch is
+          the opt-in, and the session view has a post-creation switch if
+          they need to flip). When the master switch is off, every new
+          session is tmux and no notice is shown. */}
+      {cockpitMasterEnabled && (
         <SubstrateNotice
           tool={data.tool}
           acpCapable={ACP_CAPABLE_TOOLS.has(data.tool)}

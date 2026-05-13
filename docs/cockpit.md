@@ -1,24 +1,15 @@
 # Cockpit (Native Agent Rendering, Beta)
 
-> **Beta, opt-in.** Cockpit ships disabled by default behind two
-> independent gates:
+> **Beta, opt-in.** Cockpit ships disabled by default behind a single
+> master switch: `cockpit.enabled = true` in `config.toml` (default
+> `false` from migration v005). Toggle it from the web settings
+> (Cockpit tab) or by editing `config.toml` directly.
 >
-> 1. `cockpit.enabled = true` in `config.toml` (persistent master
->    switch; default `false` from migration v005). Editable via the
->    settings TUI.
-> 2. `AOE_EXPERIMENTAL_COCKPIT=1` env var on the process running
->    `aoe serve` (and the CLI for `aoe add --cockpit`). Per-process
->    opt-in for *new* sessions while the feature stabilises.
->
-> While either gate is off:
+> While the switch is off:
 >
 > - the web wizard auto-routes new sessions through tmux,
-> - `aoe add --cockpit` refuses with an actionable error.
->
-> Existing cockpit sessions still load and run when the env var is
-> unset (the env-var gate is for *new* sessions only); when the
-> master switch is off, the reconciler doesn't auto-spawn workers
-> for any session.
+> - `aoe add --cockpit` refuses with an actionable error,
+> - the reconciler doesn't auto-spawn workers for any session.
 >
 > The data model (`cockpit_mode: bool` per session) is stable; the
 > UI and reliability story are still evolving; see "What's deferred".
@@ -197,34 +188,26 @@ alone.
   flipping the switch shuts down running workers within a couple of
   seconds and respawns them when re-enabled, no `aoe serve --stop`
   required.
-- Don't set `AOE_EXPERIMENTAL_COCKPIT` (per-process). With the master
-  switch on but the env var unset, *new* browser sessions still get
-  tmux; existing cockpit sessions keep running with a one-time warn
-  log on startup.
 - `AOE_COCKPIT_NODE=/path/to/node` overrides Node discovery for one
   process (useful when the host's PATH-side Node is the wrong version
   and you can't change PATH).
 
 ### Fully turn cockpit off
 
+The fastest path: open the web settings, go to the Cockpit tab, and
+flip the master switch off. Workers exit within a couple of seconds.
+
+Or edit `config.toml` directly and restart:
+
 ```bash
-# 1. Stop the daemon.
 aoe serve --stop
-
-# 2. Set the master switch off in config.toml.
 $EDITOR ~/.config/agent-of-empires/config.toml  # [cockpit] enabled = false
-
-# 3. Make sure AOE_EXPERIMENTAL_COCKPIT is NOT in your shell init
-#    (.zshrc/.bashrc), systemd unit, launchd plist, etc.
-
-# 4. Start serve again.
 aoe serve
 ```
 
-`aoe cockpit doctor` reports the gate state up front. `aoe cockpit
-doctor --fix` will install missing ACP tooling but **will not** flip
-`cockpit.enabled` on for you; toggling that is always an explicit
-operator action.
+`aoe cockpit doctor --fix` will install missing ACP tooling but **will
+not** flip `cockpit.enabled` on for you; toggling that is always an
+explicit operator action.
 
 ## TUI vs web dashboard
 
@@ -489,9 +472,8 @@ These are tracked for follow-up releases:
 - Voice input/output on mobile.
 - A read-only cockpit transcript view inside the TUI (today the TUI
   shows a `[web]` badge and an "open in dashboard" hint).
-- Promotion out of `AOE_EXPERIMENTAL_COCKPIT`: once the
-  default-cockpit-on-web flow has burned in for one release,
-  `default_cockpit_for_web()` flips back to `true` for browser
-  clients and the wizard shows the substrate picker by default.
+- Default `cockpit.enabled = true`: once the default-cockpit-on-web
+  flow has burned in for one release, the master switch flips on by
+  default and the wizard shows the substrate picker out of the box.
 - Docker sandbox unix-socket transport for cockpit sessions running
   inside containers.

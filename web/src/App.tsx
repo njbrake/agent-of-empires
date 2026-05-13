@@ -585,8 +585,8 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
                   <TerminalView
                     key={activeSessionId}
                     session={activeSession}
-                    experimentalCockpit={
-                      !!serverAbout?.experimental_cockpit
+                    cockpitMasterEnabled={
+                      !!serverAbout?.cockpit_master_enabled
                     }
                   />
                 )}
@@ -705,8 +705,8 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
             setWizardPrefill(undefined);
           }}
           prefill={wizardPrefill}
-          experimentalCockpit={
-            !!serverAbout?.experimental_cockpit
+          cockpitMasterEnabled={
+            !!serverAbout?.cockpit_master_enabled
           }
         />
       )}
