@@ -150,6 +150,7 @@ export type CockpitEvent =
     }
   | { ApprovalRequested: { approval: Approval } }
   | { ApprovalResolved: { nonce: string; decision: ApprovalDecision } }
+  | "SessionCleared"
   | { DiffEmitted: { diff: DiffPreview } }
   | "ThinkingStarted"
   | "ThinkingEnded"
@@ -298,7 +299,8 @@ export interface ActivityRow {
     | "thinking"
     | "user_prompt"
     | "empty_output"
-    | "context_reset";
+    | "context_reset"
+    | "session_cleared";
   text: string;
   toolCallId?: string;
   /** Full ToolCall payload, present on tool_start rows so the UI can
@@ -363,6 +365,28 @@ export function applyEvent(
       next.turnHasOutput = true;
     } else if (event === "ThinkingEnded") {
       next.thinking = false;
+    } else if (event === "SessionCleared") {
+      // /clear wiped the model's memory. Append a divider row and
+      // drop session-scoped capability caches; the UI groups all
+      // rows above the divider behind a collapsible disclosure so
+      // the user can still scroll back but won't reply on top of a
+      // conversation the model no longer has. See #1101.
+      next.activity = [
+        ...next.activity,
+        {
+          id: `cleared-${frame.seq}`,
+          kind: "session_cleared",
+          text: "Conversation cleared, the model no longer remembers earlier turns.",
+          at: new Date().toISOString(),
+        },
+      ];
+      next.availableCommands = [];
+      next.availableModes = [];
+      next.currentModeId = null;
+      next.plan = null;
+      next.mode = "Default";
+      next.pendingApprovals = [];
+      next.sessionUsage = null;
     }
     return next;
   }

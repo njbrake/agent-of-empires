@@ -62,15 +62,23 @@ const STARTER_PROMPTS = [
 ];
 
 export function CockpitView({ sessionId, cockpitWorkerState }: Props) {
+  // Folds rows above the most recent `/clear` divider out of the
+  // thread by default; the disclosure banner toggles this. Lives on
+  // the view (not the reducer) because it's a UI preference, not
+  // event-log state. See #1101.
+  const [showClearedTurns, setShowClearedTurns] = useState(false);
   return (
     <CockpitRuntime
       sessionId={sessionId}
       cockpitWorkerState={cockpitWorkerState}
+      showClearedTurns={showClearedTurns}
     >
       {(ctx) => (
         <CockpitChrome
           sessionId={sessionId}
           cockpitWorkerState={cockpitWorkerState}
+          showClearedTurns={showClearedTurns}
+          onToggleClearedTurns={() => setShowClearedTurns((v) => !v)}
           {...ctx}
         />
       )}
@@ -81,6 +89,8 @@ export function CockpitView({ sessionId, cockpitWorkerState }: Props) {
 function CockpitChrome({
   sessionId,
   cockpitWorkerState,
+  showClearedTurns,
+  onToggleClearedTurns,
   state,
   status,
   resolveApproval,
@@ -94,7 +104,25 @@ function CockpitChrome({
 }: CockpitContext & {
   sessionId: string;
   cockpitWorkerState: "absent" | "resuming" | "running";
+  showClearedTurns: boolean;
+  onToggleClearedTurns: () => void;
 }) {
+  // Count how many activity rows precede the latest `session_cleared`
+  // divider so the banner can say "12 earlier turns hidden". The
+  // reducer always appends the divider as the last row at clear time,
+  // so the count is `lastClearIndex` (rows before it are the cleared
+  // history). See #1101.
+  const clearedSummary = (() => {
+    let lastClearIndex = -1;
+    for (let i = state.activity.length - 1; i >= 0; i -= 1) {
+      if (state.activity[i]!.kind === "session_cleared") {
+        lastClearIndex = i;
+        break;
+      }
+    }
+    if (lastClearIndex < 0) return null;
+    return { hiddenCount: lastClearIndex };
+  })();
   // Composer prefill keyed for re-fires; set by the
   // ContextPrimerBanner on click. Local rather than on CockpitState
   // because it's a one-shot UI action, not part of the event log.
@@ -152,6 +180,14 @@ function CockpitChrome({
             <ThreadPrimitive.Empty>
               <EmptyState onPick={sendPrompt} />
             </ThreadPrimitive.Empty>
+
+            {clearedSummary && clearedSummary.hiddenCount > 0 && (
+              <ClearedTurnsBanner
+                hiddenCount={clearedSummary.hiddenCount}
+                expanded={showClearedTurns}
+                onToggle={onToggleClearedTurns}
+              />
+            )}
 
             <ThreadPrimitive.Messages
               components={{
@@ -572,6 +608,38 @@ function EmptyState({
         ))}
       </div>
     </div>
+  );
+}
+
+/* ── Cleared turns disclosure ────────────────────────────────────── */
+
+function ClearedTurnsBanner({
+  hiddenCount,
+  expanded,
+  onToggle,
+}: {
+  hiddenCount: number;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      className="mb-4 w-full flex items-center gap-2 px-3 py-2 rounded-md border border-surface-700 bg-surface-800 text-text-secondary hover:bg-surface-700 hover:text-text-primary cursor-pointer text-sm"
+      aria-expanded={expanded}
+    >
+      <ChevronDown
+        size={14}
+        className={`shrink-0 transition-transform ${expanded ? "" : "-rotate-90"}`}
+        aria-hidden="true"
+      />
+      <span className="flex-1 text-left">
+        {expanded ? "Hide" : "Show"} {hiddenCount} earlier turn
+        {hiddenCount === 1 ? "" : "s"}
+        <span className="text-text-dim"> (cleared, not in the model's memory)</span>
+      </span>
+    </button>
   );
 }
 

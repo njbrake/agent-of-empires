@@ -401,10 +401,23 @@ impl<S: BroadcastSink> Supervisor<S> {
     /// the user's side of the conversation in the same stream as agent
     /// chunks; otherwise a reconnecting client sees only assistant text
     /// and every turn concatenates into one giant message.
+    ///
+    /// Also detects `/clear` (claude-agent-acp's reset-conversation
+    /// command) and emits a follow-up `Event::SessionCleared` so the
+    /// UI can fold the pre-clear transcript and drop now-stale
+    /// session-scoped capability caches. The adapter sends no
+    /// structured signal for `/clear` (text-only `agent_message_chunk`
+    /// notifications), so this is a deliberate server-side detection.
+    /// See #1101.
     pub fn publish_user_prompt(&self, session_id: &str, text: String) {
+        let is_clear = is_clear_command(&text);
         let seq = next_seq(&self.next_seqs, session_id);
         self.sink
             .publish(session_id, seq, &Event::UserPromptSent { text });
+        if is_clear {
+            let seq = next_seq(&self.next_seqs, session_id);
+            self.sink.publish(session_id, seq, &Event::SessionCleared);
+        }
     }
 
     /// Drop per-session bookkeeping (replay seq counter). Called when
@@ -1501,6 +1514,22 @@ async fn restart_decision(
     }
 }
 
+/// True when the user prompt is a `/clear` invocation. Matches `/clear`
+/// exact or `/clear ...flags`, tolerates surrounding whitespace.
+/// Conservative on purpose: a false positive renders an extra divider
+/// (harmless), a false negative leaves the UI showing stale capability
+/// state (the current bug we're fixing). claude-agent-acp doesn't emit
+/// a structured boundary event for `/clear`, so this is text-match
+/// detection. See #1101.
+fn is_clear_command(text: &str) -> bool {
+    let trimmed = text.trim();
+    trimmed == "/clear"
+        || trimmed
+            .strip_prefix("/clear")
+            .map(|rest| rest.starts_with(char::is_whitespace))
+            .unwrap_or(false)
+}
+
 /// Increment and return the per-session seq counter. Lives at the
 /// supervisor level so the no-worker `publish_startup_error` path
 /// and the drain task share a single source of truth — otherwise
@@ -2098,6 +2127,55 @@ mod tests {
             sink.frames.lock().unwrap().is_empty(),
             "shutdown must not publish for stdio fixtures"
         );
+    }
+
+    /// `is_clear_command` matches the user's `/clear` invocation in
+    /// the shapes the adapter accepts: bare, with flags, surrounded
+    /// by whitespace. Anything else falls through so a prompt that
+    /// merely mentions /clear (e.g. quoting a help string) doesn't
+    /// trip the divider. See #1101.
+    #[test]
+    fn is_clear_command_matches_invocations() {
+        assert!(is_clear_command("/clear"));
+        assert!(is_clear_command(" /clear "));
+        assert!(is_clear_command("/clear\n"));
+        assert!(is_clear_command("/clear --foo"));
+        assert!(!is_clear_command("clear"));
+        assert!(!is_clear_command("/cleart"));
+        assert!(!is_clear_command("hello /clear world"));
+        assert!(!is_clear_command(""));
+    }
+
+    /// `publish_user_prompt` emits a synthetic `SessionCleared` event
+    /// immediately after the `UserPromptSent` for a `/clear`
+    /// invocation, so the UI can fold the pre-clear transcript and
+    /// drop stale capability caches without waiting for an upstream
+    /// signal the adapter doesn't send. See #1101.
+    #[tokio::test]
+    async fn publish_user_prompt_emits_session_cleared_for_clear_command() {
+        let sink = VecSink::new();
+        let sup = Supervisor::new(sink.clone());
+        sup.publish_user_prompt("s-1", "/clear".into());
+        let frames = sink.frames.lock().unwrap().clone();
+        assert_eq!(frames.len(), 2);
+        assert!(matches!(
+            &frames[0].2,
+            Event::UserPromptSent { text } if text == "/clear"
+        ));
+        assert!(matches!(&frames[1].2, Event::SessionCleared));
+        assert_eq!(frames[1].1, 2, "SessionCleared must use the next seq");
+    }
+
+    /// A regular user prompt must not emit `SessionCleared`. Sanity
+    /// check that the detection isn't trigger-happy.
+    #[tokio::test]
+    async fn publish_user_prompt_does_not_emit_session_cleared_for_normal_prompts() {
+        let sink = VecSink::new();
+        let sup = Supervisor::new(sink.clone());
+        sup.publish_user_prompt("s-1", "tell me about /clear".into());
+        let frames = sink.frames.lock().unwrap().clone();
+        assert_eq!(frames.len(), 1);
+        assert!(matches!(&frames[0].2, Event::UserPromptSent { .. }));
     }
 
     /// `next_seq` increments per-session and is independent of the

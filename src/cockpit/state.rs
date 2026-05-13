@@ -392,6 +392,18 @@ pub enum Event {
         at: DateTime<Utc>,
         reason: Option<String>,
     },
+    /// User invoked `/clear` (claude-agent-acp's reset-conversation
+    /// slash command). The adapter rotates its internal session so the
+    /// model truly forgets earlier turns; aoe's transcript is now a
+    /// stale historical artifact. Reducer drops session-scoped
+    /// capabilities (`availableCommands`, `availableModes`, `plan`,
+    /// `mode`) and cancels any open approvals; UI collapses rows above
+    /// the divider behind a disclosure. Distinct from
+    /// `SessionContextReset` (which fires on `session/load` failure
+    /// and after `/compact`) because the user-experience contract
+    /// differs: cleared is "the model has forgotten", reset is "the
+    /// model has summary/empty context". See #1101.
+    SessionCleared,
 }
 
 impl CockpitState {
@@ -484,6 +496,17 @@ impl CockpitState {
                 // showing the old "75k / 200k" until the new session
                 // emits its first UsageUpdate.
                 self.usage = None;
+            }
+            Event::SessionCleared => {
+                // /clear truly wipes the model's memory. Drop
+                // session-scoped capability caches and the usage
+                // snapshot so the UI doesn't keep showing stale data
+                // referencing a conversation the model has forgotten.
+                self.usage = None;
+                self.available_commands = Vec::new();
+                self.current_plan = None;
+                self.mode = SessionMode::Default;
+                self.pending_approvals = Vec::new();
             }
             // Persistent state for "scheduled wakeup" lives in the
             // event log (queried by the REST endpoint per #1091); no

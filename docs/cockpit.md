@@ -438,6 +438,17 @@ agent receives a structured cancellation; you'll typically see a
 follow-up message asking again. Bump the timeout if you're in a
 context where approvals legitimately take longer.
 
+### `/clear` collapsed earlier turns
+
+When you run `/clear` in a cockpit session, the model's context is
+wiped on the adapter side but the visible transcript is preserved.
+The cockpit now appends a "Conversation cleared" divider, drops the
+cached slash-command / mode / plan state (the model has forgotten
+them), and folds every row above the divider behind a disclosure
+banner: `Show N earlier turns (cleared, not in the model's memory)`.
+Click the banner to expand the older transcript for your own
+reference; the model still won't see those turns. See #1101.
+
 ### "Force end turn" button under the spinner
 
 If the agent finished a turn but the cockpit's working spinner is

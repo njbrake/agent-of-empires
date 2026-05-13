@@ -773,6 +773,7 @@ fn event_kind(event: &Event) -> &'static str {
         Event::UserPromptSent { .. } => "user_prompt_sent",
         Event::AcpSessionAssigned { .. } => "acp_session_assigned",
         Event::SessionContextReset { .. } => "session_context_reset",
+        Event::SessionCleared => "session_cleared",
         Event::WakeupScheduled { .. } => "wakeup_scheduled",
     }
 }
