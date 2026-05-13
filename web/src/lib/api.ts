@@ -318,6 +318,30 @@ export function fetchBranches(
   return fetchJson<BranchInfo[]>(`/api/git/branches?${params.toString()}`);
 }
 
+// --- Cockpit context primer ---
+
+export interface ContextPrimerResponse {
+  primer: string;
+  included_event_count: number;
+  included_turn_count: number;
+  truncated: boolean;
+  max_chars: number;
+}
+
+/** Fetch a markdown primer built from events `seq < beforeSeq`. Used
+ *  after a `session/load` failure: the agent's model context is empty
+ *  but the transcript is intact in SQLite, so the user can opt in to
+ *  pre-filling the composer with a compact recap. See #1004. */
+export function fetchContextPrimer(
+  sessionId: string,
+  beforeSeq: number,
+): Promise<ContextPrimerResponse | null> {
+  const params = new URLSearchParams({ before_seq: String(beforeSeq) });
+  return fetchJson<ContextPrimerResponse>(
+    `/api/sessions/${encodeURIComponent(sessionId)}/cockpit/context-primer?${params.toString()}`,
+  );
+}
+
 // --- Devices ---
 
 export interface DeviceInfo {

@@ -467,6 +467,53 @@ describe("applyEvent / ACP session id lifecycle", () => {
     });
     expect(state.activity.some((r) => r.kind === "context_reset")).toBe(false);
   });
+
+  it("SessionContextReset with prior prompt sets contextPrimerAvailable (#1004)", () => {
+    let state = applyEvent(emptyCockpitState(), {
+      session_id: "s-1",
+      seq: 1,
+      event: { UserPromptSent: { text: "do a thing" } },
+    });
+    expect(state.contextPrimerAvailable).toBeNull();
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 2,
+      event: { SessionContextReset: { reason: "load failed: bad id" } },
+    });
+    expect(state.contextPrimerAvailable).toEqual({
+      resetSeq: 2,
+      reason: "load failed: bad id",
+    });
+  });
+
+  it("SessionContextReset without prior prompt does not set contextPrimerAvailable", () => {
+    const state = applyEvent(emptyCockpitState(), {
+      session_id: "s-1",
+      seq: 1,
+      event: { SessionContextReset: { reason: "load failed" } },
+    });
+    expect(state.contextPrimerAvailable).toBeNull();
+  });
+
+  it("UserPromptSent clears contextPrimerAvailable (one-shot affordance)", () => {
+    let state = applyEvent(emptyCockpitState(), {
+      session_id: "s-1",
+      seq: 1,
+      event: { UserPromptSent: { text: "first" } },
+    });
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 2,
+      event: { SessionContextReset: { reason: "load failed" } },
+    });
+    expect(state.contextPrimerAvailable).not.toBeNull();
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 3,
+      event: { UserPromptSent: { text: "second" } },
+    });
+    expect(state.contextPrimerAvailable).toBeNull();
+  });
 });
 
 describe("applyEvent / Stopped empty-output fallback", () => {

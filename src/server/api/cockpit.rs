@@ -659,11 +659,61 @@ pub struct ReplayResponse {
     pub highest_seq: u64,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct ContextPrimerQuery {
+    /// `seq` of the `SessionContextReset` event. The primer only
+    /// includes events with `seq < before_seq` so post-reset noise
+    /// (the reset notice itself, any subsequent prompts) stays out.
+    pub before_seq: u64,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ContextPrimerResponse {
+    /// Rendered markdown primer ready to drop into the composer.
+    /// Empty string when there is no prior transcript to recap.
+    pub primer: String,
+    pub included_event_count: usize,
+    pub included_turn_count: usize,
+    /// True when older turns were dropped or the newest turn was
+    /// truncated within itself to fit the budget. Frontend can surface
+    /// this via a "transcript was abbreviated" hint.
+    pub truncated: bool,
+    pub max_chars: usize,
+}
+
+/// Build a markdown context primer from the persisted cockpit event
+/// log. Used after a `session/load` failure: the agent's model
+/// context is empty, but the visible transcript is intact in SQLite,
+/// so the user can opt in to sending a compact recap as their next
+/// prompt. See #1004.
+pub async fn cockpit_context_primer(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    axum::extract::Query(q): axum::extract::Query<ContextPrimerQuery>,
+) -> impl IntoResponse {
+    let events = state.cockpit_event_store.replay_before(&id, q.before_seq);
+    let primer = crate::cockpit::context_primer::build_context_primer(
+        &events,
+        crate::cockpit::context_primer::PrimerOptions {
+            before_seq: Some(q.before_seq),
+            ..Default::default()
+        },
+    );
+    Json(ContextPrimerResponse {
+        primer: primer.text,
+        included_event_count: primer.included_event_count,
+        included_turn_count: primer.included_turn_count,
+        truncated: primer.truncated,
+        max_chars: primer.max_chars,
+    })
+    .into_response()
+}
+
 /// Reconnect/snapshot endpoint. Mobile clients drop their WebSocket
 /// briefly any time a screen lock fires; this lets them resync without
 /// a full page reload by replaying the buffered frames they missed.
 ///
-/// Gating note: only the standard auth middleware applies — no master-
+/// Gating note: only the standard auth middleware applies, no master-
 /// switch check. History is read-only and contains nothing the live
 /// channel didn't already broadcast, so flipping `cockpit.enabled` off
 /// (which requires a daemon restart and clears the buffers) is the

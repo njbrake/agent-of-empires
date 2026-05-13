@@ -1,0 +1,916 @@
+//! Synthesises a markdown "context primer" from a cockpit session's
+//! persisted event log. Used by `GET /api/sessions/{id}/cockpit/
+//! context-primer` after a `session/load` failure: the agent's model
+//! context is empty, but our SQLite event store still has the visible
+//! transcript, so the user can opt in to sending a compact recap of the
+//! prior turns as the next user message. See #1004.
+//!
+//! Design (see `history/plan-context-primer.md`):
+//!   - Group events into turns bounded by `UserPromptSent` and `Stopped`.
+//!   - Render newest-first under a global character cap (default 24k);
+//!     drop whole older turns when the budget runs out, only truncate
+//!     within the newest turn if it alone exceeds the budget.
+//!   - Tool calls: merge `ToolCallStarted` + `ToolCallUpdated` +
+//!     `ToolCallCompleted` by id, render as a single one-liner with
+//!     kind-aware key extraction (`path`, `command`, ...) and bulk-key
+//!     elision (`new_string`, `file_text`, `content`, ...).
+//!   - Keep `PlanUpdated` + `TodoListUpdated` as compact plan lines.
+//!   - Drop `ThinkingStarted`/`ThinkingEnded`/`UsageUpdated`/mode events
+//!     and other ambient noise.
+
+use super::state::{Event, ToolCall};
+
+pub const DEFAULT_MAX_PRIMER_CHARS: usize = 24_000;
+pub const DEFAULT_MAX_PRIMER_TURNS: usize = 20;
+pub const MAX_TOOL_SUMMARY_CHARS: usize = 300;
+pub const MAX_ASSISTANT_TAIL_CHARS: usize = 6_000;
+
+/// Tool argument keys whose values are bulk content (file bodies,
+/// patches, stdout/stderr). Always elided in the primer, both in
+/// kind-aware extraction and in the generic JSON fallback.
+const BULK_KEYS: &[&str] = &[
+    "content",
+    "file_text",
+    "old_string",
+    "new_string",
+    "output",
+    "stdout",
+    "stderr",
+    "diff",
+    "patch",
+    "replacement",
+    "edits",
+    "result",
+    "text",
+    "body",
+];
+
+/// Tool argument keys whose values are small identifiers we want to
+/// surface (paths, commands, URLs, patterns). Order matters: the
+/// kind-aware extractor checks the first matching key.
+const IMPORTANT_KEYS: &[&str] = &[
+    "file_path",
+    "path",
+    "relative_path",
+    "command",
+    "cmd",
+    "pattern",
+    "query",
+    "url",
+    "glob",
+    "cwd",
+];
+
+#[derive(Debug, Clone)]
+pub struct PrimerOptions {
+    /// Only consider events with `seq < before_seq`. Used to exclude
+    /// the `SessionContextReset` event itself and any post-reset noise.
+    pub before_seq: Option<u64>,
+    pub max_chars: usize,
+    pub max_turns: usize,
+}
+
+impl Default for PrimerOptions {
+    fn default() -> Self {
+        Self {
+            before_seq: None,
+            max_chars: DEFAULT_MAX_PRIMER_CHARS,
+            max_turns: DEFAULT_MAX_PRIMER_TURNS,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ContextPrimer {
+    pub text: String,
+    pub included_event_count: usize,
+    pub included_turn_count: usize,
+    /// True when older turns were dropped or the newest turn was
+    /// truncated within itself to fit the budget.
+    pub truncated: bool,
+    pub max_chars: usize,
+}
+
+#[derive(Debug, Default, Clone)]
+struct Turn {
+    user_text: String,
+    assistant_text: String,
+    /// Tool calls keyed by `id` so updates/completes merge with their
+    /// starting event. Render order matches insertion order.
+    tool_order: Vec<String>,
+    tools: std::collections::HashMap<String, ToolSummary>,
+    plan_lines: Vec<String>,
+    event_count: usize,
+}
+
+#[derive(Debug, Clone)]
+struct ToolSummary {
+    name: String,
+    kind: String,
+    args_preview: String,
+    status: ToolStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ToolStatus {
+    Running,
+    Completed,
+    Failed,
+}
+
+/// Build a markdown primer from the given events. Events should be in
+/// ascending seq order.
+pub fn build_context_primer(events: &[(u64, Event)], opts: PrimerOptions) -> ContextPrimer {
+    let mut turns: Vec<Turn> = Vec::new();
+    let mut current: Option<Turn> = None;
+    let mut included_event_count = 0usize;
+
+    for (seq, event) in events {
+        if let Some(before) = opts.before_seq {
+            if *seq >= before {
+                break;
+            }
+        }
+
+        match event {
+            Event::UserPromptSent { text } => {
+                if let Some(t) = current.take() {
+                    turns.push(t);
+                }
+                current = Some(Turn {
+                    user_text: text.clone(),
+                    event_count: 1,
+                    ..Turn::default()
+                });
+                included_event_count += 1;
+            }
+            Event::AgentMessageChunk { text } => {
+                let turn = current.get_or_insert_with(Turn::default);
+                turn.assistant_text.push_str(text);
+                turn.event_count += 1;
+                included_event_count += 1;
+            }
+            Event::ToolCallStarted { tool_call } => {
+                let turn = current.get_or_insert_with(Turn::default);
+                push_tool_start(turn, tool_call);
+                turn.event_count += 1;
+                included_event_count += 1;
+            }
+            Event::ToolCallUpdated {
+                tool_call_id,
+                title,
+                args_preview,
+                ..
+            } => {
+                if let Some(turn) = current.as_mut() {
+                    if let Some(tool) = turn.tools.get_mut(tool_call_id) {
+                        if let Some(t) = title {
+                            if !t.is_empty() {
+                                tool.name = t.clone();
+                            }
+                        }
+                        if let Some(a) = args_preview {
+                            if !a.is_empty() {
+                                tool.args_preview = a.clone();
+                            }
+                        }
+                    }
+                    turn.event_count += 1;
+                }
+                included_event_count += 1;
+            }
+            Event::ToolCallCompleted {
+                tool_call_id,
+                is_error,
+                ..
+            } => {
+                if let Some(turn) = current.as_mut() {
+                    if let Some(tool) = turn.tools.get_mut(tool_call_id) {
+                        tool.status = if *is_error {
+                            ToolStatus::Failed
+                        } else {
+                            ToolStatus::Completed
+                        };
+                    }
+                    turn.event_count += 1;
+                }
+                included_event_count += 1;
+            }
+            Event::PlanUpdated { plan } => {
+                let turn = current.get_or_insert_with(Turn::default);
+                let mut done = 0;
+                let mut in_progress = 0;
+                let mut pending = 0;
+                for step in &plan.steps {
+                    match step.status {
+                        super::state::PlanStepStatus::Done => done += 1,
+                        super::state::PlanStepStatus::InProgress => in_progress += 1,
+                        super::state::PlanStepStatus::Pending => pending += 1,
+                        super::state::PlanStepStatus::Cancelled => {}
+                    }
+                }
+                turn.plan_lines.push(format!(
+                    "Plan: {} done, {} in progress, {} pending ({} steps)",
+                    done,
+                    in_progress,
+                    pending,
+                    plan.steps.len()
+                ));
+                turn.event_count += 1;
+                included_event_count += 1;
+            }
+            Event::TodoListUpdated { todos } => {
+                let turn = current.get_or_insert_with(Turn::default);
+                let done = todos.iter().filter(|t| t.completed).count();
+                turn.plan_lines
+                    .push(format!("Todos: {}/{} completed", done, todos.len()));
+                turn.event_count += 1;
+                included_event_count += 1;
+            }
+            Event::Stopped { .. } => {
+                if let Some(t) = current.take() {
+                    turns.push(t);
+                }
+                included_event_count += 1;
+            }
+            // Everything else (Thinking*, UsageUpdated, ModeChanged,
+            // ModesAvailable, CurrentModeChanged, AvailableCommandsUpdated,
+            // RawAgentUpdate, ApprovalRequested/Resolved, DiffEmitted,
+            // RateLimit, AgentStartupError, AcpSessionAssigned,
+            // SessionContextReset, WakeupScheduled, ToolCallContent) is
+            // either ambient state or already represented elsewhere; skip.
+            _ => {}
+        }
+    }
+    if let Some(t) = current.take() {
+        turns.push(t);
+    }
+
+    if turns.is_empty() {
+        return ContextPrimer {
+            text: String::new(),
+            included_event_count: 0,
+            included_turn_count: 0,
+            truncated: false,
+            max_chars: opts.max_chars,
+        };
+    }
+
+    // Render newest-first under the char/turn budget. We render each
+    // turn into a fully-formed markdown block (including its header),
+    // then walk newest-to-oldest stuffing complete blocks into the
+    // budget. If a single newest turn alone overflows, we truncate
+    // within it to keep at least the user prompt + assistant tail.
+
+    let total_turns = turns.len();
+    let max_take = opts.max_turns.min(total_turns);
+    let start_index = total_turns.saturating_sub(max_take);
+
+    // Build each rendered turn body (without its `### Turn N` header,
+    // numbering depends on final ordering).
+    let mut bodies: Vec<String> = Vec::with_capacity(max_take);
+    for turn in &turns[start_index..] {
+        bodies.push(render_turn_body(turn));
+    }
+
+    let header = render_primer_header();
+    let footer = render_primer_footer();
+    let fixed_overhead = header.len() + footer.len();
+
+    let body_budget = opts.max_chars.saturating_sub(fixed_overhead);
+
+    // Walk newest first, accumulate complete turns until adding the
+    // next-oldest would exceed budget.
+    let mut accepted_rev: Vec<String> = Vec::new();
+    let mut accepted_chars: usize = 0;
+    let mut turn_header_len_estimate = 16usize; // "### Turn NN\n\n"
+    let mut older_dropped = false;
+    let mut newest_truncated = false;
+
+    for (i, body) in bodies.iter().enumerate().rev() {
+        let estimated = body.len() + turn_header_len_estimate;
+        if accepted_rev.is_empty() && estimated > body_budget {
+            // Newest turn alone overflows. Truncate within the turn.
+            let truncated_body =
+                truncate_turn_body(body, body_budget.saturating_sub(turn_header_len_estimate));
+            accepted_chars += truncated_body.len() + turn_header_len_estimate;
+            accepted_rev.push(truncated_body);
+            newest_truncated = true;
+            if i > 0 {
+                older_dropped = true;
+            }
+            break;
+        }
+        if accepted_chars + estimated > body_budget {
+            older_dropped = true;
+            break;
+        }
+        accepted_chars += estimated;
+        accepted_rev.push(body.clone());
+        turn_header_len_estimate = turn_header_len_estimate.max(20);
+    }
+
+    // accepted_rev holds bodies newest-first; reverse for chronological.
+    accepted_rev.reverse();
+    let truncated = older_dropped || newest_truncated || start_index > 0;
+    let included_turn_count = accepted_rev.len();
+
+    let mut text = String::with_capacity(opts.max_chars.min(accepted_chars + fixed_overhead));
+    text.push_str(&header);
+    if truncated {
+        text.push_str("_Older transcript entries were omitted to fit the primer budget._\n\n");
+    }
+    text.push_str("## Transcript\n\n");
+    let total_in_primer = accepted_rev.len();
+    for (i, body) in accepted_rev.iter().enumerate() {
+        let number = total_in_primer - i; // newest gets highest number? No, we want chronological: oldest = 1.
+                                          // Recompute: accepted_rev is chronological (we reversed). So
+                                          // first entry is the oldest of the kept turns.
+        let _ = number;
+        text.push_str(&format!("### Turn {}\n\n", i + 1));
+        text.push_str(body);
+        text.push('\n');
+    }
+    text.push_str(&footer);
+
+    ContextPrimer {
+        text,
+        included_event_count,
+        included_turn_count,
+        truncated,
+        max_chars: opts.max_chars,
+    }
+}
+
+fn push_tool_start(turn: &mut Turn, tool: &ToolCall) {
+    let summary = ToolSummary {
+        name: tool.name.clone(),
+        kind: tool.kind.clone(),
+        args_preview: tool.args_preview.clone(),
+        status: ToolStatus::Running,
+    };
+    if !turn.tools.contains_key(&tool.id) {
+        turn.tool_order.push(tool.id.clone());
+    }
+    turn.tools.insert(tool.id.clone(), summary);
+}
+
+fn render_primer_header() -> String {
+    String::from(
+        "# Prior cockpit context\n\
+         \n\
+         The previous ACP session could not be loaded, so you have no memory of the conversation below. \
+         Use the transcript excerpt as background context for the current request. \
+         Do not repeat it back unless asked.\n\
+         \n",
+    )
+}
+
+fn render_primer_footer() -> String {
+    String::from("\n---\n\n## Current request\n\nContinue from where we left off.\n")
+}
+
+fn render_turn_body(turn: &Turn) -> String {
+    let mut out = String::new();
+    if !turn.user_text.is_empty() {
+        out.push_str("User:\n");
+        out.push_str(turn.user_text.trim());
+        out.push_str("\n\n");
+    }
+    if !turn.assistant_text.is_empty() {
+        out.push_str("Assistant:\n");
+        let tail = clip_assistant_text(&turn.assistant_text);
+        out.push_str(tail.trim());
+        out.push_str("\n\n");
+    }
+    if !turn.plan_lines.is_empty() {
+        out.push_str("Plan state:\n");
+        for line in &turn.plan_lines {
+            out.push_str("- ");
+            out.push_str(line);
+            out.push('\n');
+        }
+        out.push('\n');
+    }
+    if !turn.tool_order.is_empty() {
+        out.push_str("Tools:\n");
+        for id in &turn.tool_order {
+            if let Some(tool) = turn.tools.get(id) {
+                let line = render_tool_line(tool);
+                out.push_str("- ");
+                out.push_str(&line);
+                out.push('\n');
+            }
+        }
+        out.push('\n');
+    }
+    out
+}
+
+fn clip_assistant_text(s: &str) -> String {
+    if s.chars().count() <= MAX_ASSISTANT_TAIL_CHARS {
+        return s.to_string();
+    }
+    // Keep the tail (most recent assistant output is what continues the
+    // conversation); prepend an elision marker.
+    let bytes_skip = s.len().saturating_sub(MAX_ASSISTANT_TAIL_CHARS);
+    let mut idx = bytes_skip;
+    while idx < s.len() && !s.is_char_boundary(idx) {
+        idx += 1;
+    }
+    format!("[...earlier assistant text omitted]\n{}", &s[idx..])
+}
+
+fn render_tool_line(tool: &ToolSummary) -> String {
+    let status_suffix = match tool.status {
+        ToolStatus::Running => "",
+        ToolStatus::Completed => " → completed",
+        ToolStatus::Failed => " → failed",
+    };
+
+    let descriptor = describe_tool(&tool.name, &tool.kind, &tool.args_preview);
+    let mut combined = format!("{}{}", descriptor, status_suffix);
+    if combined.len() > MAX_TOOL_SUMMARY_CHARS {
+        combined.truncate(MAX_TOOL_SUMMARY_CHARS - 3);
+        combined.push_str("...");
+    }
+    combined
+}
+
+fn describe_tool(name: &str, kind: &str, args_preview: &str) -> String {
+    let trimmed_name = if name.is_empty() { "Tool" } else { name };
+
+    // Parse args_preview as JSON if possible; fall back to literal.
+    let json: Option<serde_json::Value> = serde_json::from_str(args_preview).ok();
+
+    if let Some(value) = json {
+        if let Some(obj) = value.as_object() {
+            // Kind-aware short circuits.
+            match kind {
+                "read" | "edit" | "delete" | "move" | "write" => {
+                    if let Some(path) = pick_scalar(obj, &["file_path", "path", "relative_path"]) {
+                        return format!("Tool: {} {}", trimmed_name, path);
+                    }
+                }
+                "execute" => {
+                    if let Some(cmd) = pick_scalar(obj, &["command", "cmd"]) {
+                        return format!("Tool: {} `{}`", trimmed_name, cmd);
+                    }
+                }
+                "search" => {
+                    let pattern = pick_scalar(obj, &["pattern", "query", "glob"]);
+                    let path = pick_scalar(obj, &["path", "relative_path"]);
+                    return match (pattern, path) {
+                        (Some(p), Some(loc)) => {
+                            format!("Tool: {} \"{}\" in {}", trimmed_name, p, loc)
+                        }
+                        (Some(p), None) => format!("Tool: {} \"{}\"", trimmed_name, p),
+                        (None, Some(loc)) => format!("Tool: {} {}", trimmed_name, loc),
+                        (None, None) => format!("Tool: {}", trimmed_name),
+                    };
+                }
+                "fetch" => {
+                    if let Some(url) = pick_scalar(obj, &["url"]) {
+                        return format!("Tool: {} {}", trimmed_name, url);
+                    }
+                }
+                _ => {}
+            }
+
+            // Generic fallback: pick the first important scalar.
+            if let Some(scalar) = pick_scalar(obj, IMPORTANT_KEYS) {
+                return format!("Tool: {} {}", trimmed_name, scalar);
+            }
+
+            // Final fallback: indicate bulk content was elided when the
+            // args object is non-trivial.
+            let has_bulk = obj.keys().any(|k| BULK_KEYS.contains(&k.as_str()));
+            if has_bulk {
+                return format!("Tool: {} (bulk content omitted)", trimmed_name);
+            }
+            return format!("Tool: {}", trimmed_name);
+        }
+    }
+
+    // args_preview is not JSON-shaped — likely already a string preview.
+    // Keep a short fragment if it's not obviously bulk.
+    let arg_trim = args_preview.trim();
+    if arg_trim.is_empty() {
+        format!("Tool: {}", trimmed_name)
+    } else if arg_trim.len() <= 80 && !arg_trim.contains('\n') {
+        format!("Tool: {} {}", trimmed_name, arg_trim)
+    } else {
+        format!("Tool: {}", trimmed_name)
+    }
+}
+
+fn pick_scalar(obj: &serde_json::Map<String, serde_json::Value>, keys: &[&str]) -> Option<String> {
+    for key in keys {
+        if BULK_KEYS.contains(key) {
+            continue;
+        }
+        if let Some(value) = obj.get(*key) {
+            if let Some(s) = scalar_to_string(value) {
+                return Some(s);
+            }
+        }
+    }
+    None
+}
+
+fn scalar_to_string(value: &serde_json::Value) -> Option<String> {
+    match value {
+        serde_json::Value::String(s) => {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                None
+            } else if trimmed.len() > 200 {
+                Some(format!("{}...", &trimmed[..200]))
+            } else {
+                Some(trimmed.to_string())
+            }
+        }
+        serde_json::Value::Number(n) => Some(n.to_string()),
+        serde_json::Value::Bool(b) => Some(b.to_string()),
+        _ => None,
+    }
+}
+
+fn truncate_turn_body(body: &str, budget: usize) -> String {
+    if body.len() <= budget {
+        return body.to_string();
+    }
+    // Preserve a head slice plus the very end of the assistant text so
+    // the model sees the user prompt and the latest assistant chunk.
+    let head_chunk = budget.min(2_000);
+    let tail_chunk = budget.saturating_sub(head_chunk).saturating_sub(80);
+    let mut head_end = head_chunk.min(body.len());
+    while head_end < body.len() && !body.is_char_boundary(head_end) {
+        head_end += 1;
+    }
+    let head = &body[..head_end];
+    let tail_start = body.len().saturating_sub(tail_chunk);
+    let mut idx = tail_start;
+    while idx < body.len() && !body.is_char_boundary(idx) {
+        idx += 1;
+    }
+    let tail = &body[idx..];
+    format!("{}\n[...turn body truncated]\n{}", head, tail)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::approvals::{Approval, ApprovalDecision, Nonce};
+    use super::super::state::{Plan, PlanStep, PlanStepStatus, ToolCall};
+    use super::*;
+    use chrono::Utc;
+
+    fn user_event(seq: u64, text: &str) -> (u64, Event) {
+        (
+            seq,
+            Event::UserPromptSent {
+                text: text.to_string(),
+            },
+        )
+    }
+
+    fn assistant_event(seq: u64, text: &str) -> (u64, Event) {
+        (
+            seq,
+            Event::AgentMessageChunk {
+                text: text.to_string(),
+            },
+        )
+    }
+
+    fn stopped_event(seq: u64) -> (u64, Event) {
+        (
+            seq,
+            Event::Stopped {
+                reason: "prompt_complete".into(),
+            },
+        )
+    }
+
+    fn tool_event(seq: u64, id: &str, name: &str, kind: &str, args: &str) -> (u64, Event) {
+        (
+            seq,
+            Event::ToolCallStarted {
+                tool_call: ToolCall {
+                    id: id.to_string(),
+                    name: name.to_string(),
+                    kind: kind.to_string(),
+                    args_preview: args.to_string(),
+                    started_at: Utc::now(),
+                    parent_tool_call_id: None,
+                },
+            },
+        )
+    }
+
+    fn completed_event(seq: u64, id: &str, error: bool) -> (u64, Event) {
+        (
+            seq,
+            Event::ToolCallCompleted {
+                tool_call_id: id.to_string(),
+                is_error: error,
+                content: String::new(),
+                completed_at: Utc::now(),
+            },
+        )
+    }
+
+    #[test]
+    fn empty_event_log_produces_empty_primer() {
+        let primer = build_context_primer(&[], PrimerOptions::default());
+        assert!(primer.text.is_empty());
+        assert_eq!(primer.included_turn_count, 0);
+        assert!(!primer.truncated);
+    }
+
+    #[test]
+    fn renders_basic_transcript_with_user_and_assistant() {
+        let events = vec![
+            user_event(1, "build a CLI to do X"),
+            assistant_event(2, "Here is a Rust skeleton..."),
+            stopped_event(3),
+        ];
+        let primer = build_context_primer(&events, PrimerOptions::default());
+        assert!(primer.text.contains("# Prior cockpit context"));
+        assert!(primer.text.contains("### Turn 1"));
+        assert!(primer.text.contains("User:"));
+        assert!(primer.text.contains("build a CLI to do X"));
+        assert!(primer.text.contains("Assistant:"));
+        assert!(primer.text.contains("Here is a Rust skeleton"));
+        assert!(primer.text.contains("## Current request"));
+        assert_eq!(primer.included_turn_count, 1);
+        assert!(!primer.truncated);
+    }
+
+    #[test]
+    fn before_seq_filters_out_post_reset_events() {
+        let events = vec![
+            user_event(1, "first"),
+            assistant_event(2, "first reply"),
+            stopped_event(3),
+            (
+                4,
+                Event::SessionContextReset {
+                    reason: "load failed".into(),
+                },
+            ),
+            user_event(5, "second"),
+            assistant_event(6, "should be excluded"),
+        ];
+        let opts = PrimerOptions {
+            before_seq: Some(4),
+            ..PrimerOptions::default()
+        };
+        let primer = build_context_primer(&events, opts);
+        assert!(primer.text.contains("first"));
+        assert!(!primer.text.contains("second"));
+        assert!(!primer.text.contains("should be excluded"));
+        assert_eq!(primer.included_turn_count, 1);
+    }
+
+    #[test]
+    fn merges_tool_lifecycle_into_one_line() {
+        let events = vec![
+            user_event(1, "edit foo.rs"),
+            tool_event(2, "t1", "Edit", "edit", r#"{"file_path":"src/foo.rs"}"#),
+            (
+                3,
+                Event::ToolCallUpdated {
+                    tool_call_id: "t1".into(),
+                    title: Some("Edit".into()),
+                    args_preview: Some(
+                        r#"{"file_path":"src/foo.rs","old_string":"x","new_string":"y"}"#.into(),
+                    ),
+                    started_at: None,
+                },
+            ),
+            completed_event(4, "t1", false),
+            stopped_event(5),
+        ];
+        let primer = build_context_primer(&events, PrimerOptions::default());
+        // Only one tool line, even though there are 3 events for it.
+        let lines: Vec<&str> = primer
+            .text
+            .lines()
+            .filter(|l| l.starts_with("- Tool:"))
+            .collect();
+        assert_eq!(lines.len(), 1, "expected one tool line, got: {:?}", lines);
+        let tool_line = lines[0];
+        assert!(tool_line.contains("src/foo.rs"));
+        assert!(tool_line.contains("→ completed"));
+        // Bulk fields must NOT appear in the primer.
+        assert!(!primer.text.contains("old_string"));
+        assert!(!primer.text.contains("new_string"));
+    }
+
+    #[test]
+    fn tool_failure_renders_failed_status() {
+        let events = vec![
+            user_event(1, "run tests"),
+            tool_event(2, "t1", "Bash", "execute", r#"{"command":"cargo test"}"#),
+            completed_event(3, "t1", true),
+            stopped_event(4),
+        ];
+        let primer = build_context_primer(&events, PrimerOptions::default());
+        assert!(primer.text.contains("`cargo test`"));
+        assert!(primer.text.contains("→ failed"));
+    }
+
+    #[test]
+    fn search_tool_extracts_pattern_and_path() {
+        let events = vec![
+            user_event(1, "find references"),
+            tool_event(
+                2,
+                "t1",
+                "Grep",
+                "search",
+                r#"{"pattern":"SessionContextReset","path":"src/cockpit"}"#,
+            ),
+            completed_event(3, "t1", false),
+            stopped_event(4),
+        ];
+        let primer = build_context_primer(&events, PrimerOptions::default());
+        let tool_line = primer
+            .text
+            .lines()
+            .find(|l| l.starts_with("- Tool:"))
+            .expect("a tool line");
+        assert!(tool_line.contains("\"SessionContextReset\""));
+        assert!(tool_line.contains("src/cockpit"));
+    }
+
+    #[test]
+    fn plan_updates_render_as_compact_state_line() {
+        let plan = Plan {
+            plan_id: "p".into(),
+            version: 1,
+            steps: vec![
+                PlanStep {
+                    id: "1".into(),
+                    title: "a".into(),
+                    detail: None,
+                    status: PlanStepStatus::Done,
+                },
+                PlanStep {
+                    id: "2".into(),
+                    title: "b".into(),
+                    detail: None,
+                    status: PlanStepStatus::InProgress,
+                },
+                PlanStep {
+                    id: "3".into(),
+                    title: "c".into(),
+                    detail: None,
+                    status: PlanStepStatus::Pending,
+                },
+            ],
+        };
+        let events = vec![
+            user_event(1, "make a plan"),
+            (2, Event::PlanUpdated { plan }),
+            stopped_event(3),
+        ];
+        let primer = build_context_primer(&events, PrimerOptions::default());
+        assert!(primer
+            .text
+            .contains("Plan: 1 done, 1 in progress, 1 pending"));
+    }
+
+    #[test]
+    fn ambient_events_are_skipped() {
+        let events = vec![
+            user_event(1, "hi"),
+            (2, Event::ThinkingStarted),
+            assistant_event(3, "hello"),
+            (4, Event::ThinkingEnded),
+            (
+                5,
+                Event::ApprovalRequested {
+                    approval: Approval {
+                        nonce: Nonce::new(),
+                        tool_call: ToolCall {
+                            id: "tc-x".into(),
+                            name: "X".into(),
+                            kind: "edit".into(),
+                            args_preview: "{}".into(),
+                            started_at: Utc::now(),
+                            parent_tool_call_id: None,
+                        },
+                        destructive: false,
+                        requested_at: Utc::now(),
+                        resolved: None,
+                    },
+                },
+            ),
+            stopped_event(6),
+        ];
+        let primer = build_context_primer(&events, PrimerOptions::default());
+        assert!(!primer.text.contains("Thinking"));
+        assert!(!primer.text.contains("Approval"));
+        assert!(primer.text.contains("hi"));
+        assert!(primer.text.contains("hello"));
+        // ApprovalDecision isn't read, suppress unused warning.
+        let _ = ApprovalDecision::Allow;
+    }
+
+    #[test]
+    fn drops_oldest_turns_when_over_budget() {
+        let mut events = Vec::new();
+        // Build 30 small turns, each ~100 chars of assistant text. The
+        // 24k char default fits roughly 20.
+        let mut seq = 1u64;
+        for i in 0..30 {
+            events.push(user_event(seq, &format!("user prompt #{i}")));
+            seq += 1;
+            events.push(assistant_event(seq, &"x".repeat(800)));
+            seq += 1;
+            events.push(stopped_event(seq));
+            seq += 1;
+        }
+        let primer = build_context_primer(&events, PrimerOptions::default());
+        assert!(primer.truncated, "primer should be marked truncated");
+        assert!(
+            primer.text.len() <= DEFAULT_MAX_PRIMER_CHARS + 256,
+            "primer len {} should fit under cap (+rounding)",
+            primer.text.len()
+        );
+        // Newest turn must be present (turn 29).
+        assert!(primer.text.contains("user prompt #29"));
+        // Oldest turns must be dropped (turn 0 shouldn't fit).
+        assert!(!primer.text.contains("user prompt #0\n"));
+    }
+
+    #[test]
+    fn newest_turn_alone_over_budget_is_truncated_in_place() {
+        let huge = "z".repeat(40_000);
+        let events = vec![
+            user_event(1, "say a lot"),
+            assistant_event(2, &huge),
+            stopped_event(3),
+        ];
+        // The clipped-assistant tail is ~6k chars; pick a max_chars
+        // below that so the newest turn alone still exceeds the budget
+        // and forces the in-place truncation branch.
+        let opts = PrimerOptions {
+            max_chars: 4_000,
+            ..PrimerOptions::default()
+        };
+        let primer = build_context_primer(&events, opts);
+        assert!(primer.truncated);
+        assert!(primer.text.len() <= 4_000 + 256);
+        assert!(primer.text.contains("# Prior cockpit context"));
+        assert!(primer.text.contains("## Current request"));
+    }
+
+    #[test]
+    fn assistant_text_is_clipped_with_tail_preserved() {
+        let mut text = String::new();
+        for i in 0..1_000 {
+            text.push_str(&format!("line {i}\n"));
+        }
+        let events = vec![
+            user_event(1, "go"),
+            assistant_event(2, &text),
+            stopped_event(3),
+        ];
+        let primer = build_context_primer(&events, PrimerOptions::default());
+        // Tail must be preserved (last line should appear).
+        assert!(primer.text.contains("line 999"));
+        // An early line should be dropped.
+        assert!(!primer.text.contains("line 0\n"));
+        assert!(primer.text.contains("[...earlier assistant text omitted]"));
+    }
+
+    #[test]
+    fn args_preview_with_only_bulk_content_renders_omission_marker() {
+        let events = vec![
+            user_event(1, "write a file"),
+            tool_event(
+                2,
+                "t1",
+                "Write",
+                "write",
+                r#"{"file_text":"...big...","other":42}"#,
+            ),
+            completed_event(3, "t1", false),
+            stopped_event(4),
+        ];
+        let primer = build_context_primer(&events, PrimerOptions::default());
+        let tool_line = primer
+            .text
+            .lines()
+            .find(|l| l.starts_with("- Tool:"))
+            .expect("a tool line");
+        assert!(
+            tool_line.contains("bulk content omitted") || tool_line.contains("42"),
+            "tool line: {tool_line}"
+        );
+        assert!(!primer.text.contains("...big..."));
+    }
+}

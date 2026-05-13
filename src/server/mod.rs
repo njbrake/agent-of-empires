@@ -1036,6 +1036,10 @@ fn build_router(state: Arc<AppState>) -> Router {
             get(api::cockpit_replay),
         )
         .route(
+            "/api/sessions/{id}/cockpit/context-primer",
+            get(api::cockpit_context_primer),
+        )
+        .route(
             "/api/sessions/{id}/cockpit/mode",
             post(api::cockpit_set_mode),
         )

@@ -336,6 +336,17 @@ longer available), cockpit falls back to a fresh session and renders
 an amber "Conversation context reset" callout in the transcript so
 you know prior turns are no longer in the model's context window.
 
+After that callout, an inline "Resume with prior context" banner
+appears above the composer. Clicking it calls
+`GET /api/sessions/{id}/cockpit/context-primer?before_seq=<reset-seq>`,
+which walks the SQLite event log and returns a compact markdown
+recap of the last ~20 turns (capped at ~24k characters, bulky tool
+inputs/outputs elided, tool calls collapsed to one-liners). The
+primer is pre-filled into the composer so you can review, trim, or
+extend it before sending — nothing is sent silently. The banner is
+one-shot per reset: dismiss it or submit any prompt and it stays
+gone until the next `session/load` failure. See #1004.
+
 The bundled `aoe-agent` doesn't yet support context restoration; its
 transcript still replays from disk, but the model starts fresh on each
 spawn. Tracked in

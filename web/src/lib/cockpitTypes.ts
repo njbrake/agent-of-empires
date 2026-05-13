@@ -266,6 +266,12 @@ export interface CockpitState {
   /** Reason the agent provided when scheduling the wakeup. Shown in
    *  the cockpit banner next to the countdown. */
   nextWakeupReason: string | null;
+  /** Set when the agent emitted `SessionContextReset` after a prior
+   *  user prompt: the model's context is empty but the visible
+   *  transcript is intact, so the user can opt in to fetching a
+   *  primer (last N turns) and pre-filling the composer with it.
+   *  Cleared by `UserPromptSent`. See #1004. */
+  contextPrimerAvailable: { resetSeq: number; reason: string } | null;
 }
 
 export interface QueuedPrompt {
@@ -329,6 +335,7 @@ export function emptyCockpitState(): CockpitState {
     queuedPrompts: [],
     nextWakeupAt: null,
     nextWakeupReason: null,
+    contextPrimerAvailable: null,
   };
 }
 
@@ -619,6 +626,9 @@ export function applyEvent(
     // without waiting for a server-side recomputation. See #1091.
     next.nextWakeupAt = null;
     next.nextWakeupReason = null;
+    // Any pending context-primer offer is consumed once the user
+    // submits a new prompt — the recovery affordance is one-shot.
+    next.contextPrimerAvailable = null;
     return next;
   }
   if ("AcpSessionAssigned" in event) {
@@ -667,6 +677,16 @@ export function applyEvent(
         "Conversation context reset; agent transcript was unavailable.",
       at: new Date().toISOString(),
     });
+    // Offer the opt-in primer affordance. The banner only appears
+    // when there is a prior user prompt (we're already inside that
+    // branch), and stays one-shot: any UserPromptSent below clears
+    // it, even if the user typed something other than the primer.
+    next.contextPrimerAvailable = {
+      resetSeq: frame.seq,
+      reason:
+        event.SessionContextReset.reason ||
+        "Conversation context reset; agent transcript was unavailable.",
+    };
     return next;
   }
   if ("WakeupScheduled" in event) {

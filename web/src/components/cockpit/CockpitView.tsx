@@ -28,6 +28,7 @@ import {
   type CockpitContext,
 } from "./CockpitRuntime";
 import { Composer } from "./Composer";
+import { ContextPrimerBanner } from "./ContextPrimerBanner";
 import { Markdown } from "./Markdown";
 import { SubagentCard, ToolCard, ToolGroupCard } from "./ToolCards";
 import {
@@ -91,6 +92,12 @@ function CockpitChrome({
   sessionId: string;
   cockpitWorkerState: "absent" | "resuming" | "running";
 }) {
+  // Composer prefill keyed for re-fires; set by the
+  // ContextPrimerBanner on click. Local rather than on CockpitState
+  // because it's a one-shot UI action, not part of the event log.
+  const [primerPrefill, setPrimerPrefill] = useState<
+    { id: string; text: string } | null
+  >(null);
   return (
     <div className="flex h-full flex-col bg-surface-900 text-text-primary">
       <PlanStrip plan={state.plan} mode={state.mode} />
@@ -176,6 +183,17 @@ function CockpitChrome({
           onClear={clearQueue}
         />
 
+        <ContextPrimerBanner
+          sessionId={sessionId}
+          available={state.contextPrimerAvailable}
+          onInsertPrimer={(text) =>
+            setPrimerPrefill({
+              id: `primer-${state.contextPrimerAvailable?.resetSeq ?? 0}-${Date.now()}`,
+              text,
+            })
+          }
+        />
+
         <Composer
           sessionId={sessionId}
           availableModes={state.availableModes}
@@ -187,6 +205,7 @@ function CockpitChrome({
           turnActive={state.turnActive}
           queuedCount={state.queuedPrompts.length}
           enqueuePrompt={sendPrompt}
+          primerPrefill={primerPrefill}
         />
       </ThreadPrimitive.Root>
     </div>

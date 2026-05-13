@@ -206,6 +206,53 @@ impl EventStore {
         Ok(())
     }
 
+    /// Return all events for `session_id` with `seq < before`, oldest
+    /// first. Used by the context-primer endpoint to fetch only the
+    /// transcript that precedes a `SessionContextReset` event without
+    /// having to over-fetch and filter client-side. See #1004.
+    pub fn replay_before(&self, session_id: &str, before: u64) -> Vec<(u64, Event)> {
+        let conn = match self.conn.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        let mut stmt = match conn.prepare(
+            "SELECT seq, event_json FROM cockpit_events
+             WHERE session_id = ?1 AND seq < ?2
+             ORDER BY seq ASC",
+        ) {
+            Ok(s) => s,
+            Err(e) => {
+                warn!(target: "cockpit.event_store", "prepare replay_before for {session_id}: {e}");
+                return Vec::new();
+            }
+        };
+        let rows = match stmt.query_map(params![session_id, before as i64], |row| {
+            let seq: i64 = row.get(0)?;
+            let json: String = row.get(1)?;
+            Ok((seq as u64, json))
+        }) {
+            Ok(r) => r,
+            Err(e) => {
+                warn!(target: "cockpit.event_store", "query replay_before for {session_id}: {e}");
+                return Vec::new();
+            }
+        };
+        let mut out = Vec::new();
+        for row in rows {
+            match row {
+                Ok((seq, json)) => match serde_json::from_str::<Event>(&json) {
+                    Ok(event) => out.push((seq, event)),
+                    Err(e) => warn!(
+                        target: "cockpit.event_store",
+                        "deserialise event {session_id}@{seq}: {e}"
+                    ),
+                },
+                Err(e) => warn!(target: "cockpit.event_store", "row error: {e}"),
+            }
+        }
+        out
+    }
+
     /// Return all events for `session_id` with `seq > since`, oldest
     /// first. An empty vec means the session has no newer events.
     pub fn replay_from(&self, session_id: &str, since: u64) -> Vec<(u64, Event)> {

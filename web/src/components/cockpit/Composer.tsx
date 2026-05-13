@@ -64,6 +64,12 @@ interface Props {
    *  while `thread.isRunning && !capabilities.queue`). Used by the
    *  mid-turn Send button + the Enter-while-running handler. */
   enqueuePrompt: (text: string) => void | Promise<void>;
+  /** When set, replace the current composer text with `text` and
+   *  focus the textarea (cursor at end). Used by the context-primer
+   *  banner to prefill a transcript recap before send. The `id` is
+   *  a fresh nonce per insertion so the effect re-fires even when
+   *  the same text is inserted twice. See #1004. */
+  primerPrefill?: { id: string; text: string } | null;
 }
 
 export function Composer({
@@ -77,6 +83,7 @@ export function Composer({
   turnActive,
   queuedCount,
   enqueuePrompt,
+  primerPrefill,
 }: Props) {
   const taRef = useRef<HTMLTextAreaElement | null>(null);
   const { files } = useFilesIndex(sessionId);
@@ -128,6 +135,29 @@ export function Composer({
   );
 
   const composerRuntime = useComposerRuntime();
+
+  // Context-primer prefill: when the parent passes a `primerPrefill`
+  // payload (after the user clicked "Resume with prior context" on the
+  // banner), replace the composer text with the primer + focus the
+  // textarea + position the cursor at the end. Keyed on `id` so the
+  // effect re-fires for repeat insertions. See #1004.
+  useEffect(() => {
+    if (!primerPrefill) return;
+    composerRuntime.setText(primerPrefill.text);
+    requestAnimationFrame(() => {
+      const el = taRef.current;
+      if (!el) return;
+      el.focus();
+      const len = el.value.length;
+      try {
+        el.setSelectionRange(len, len);
+      } catch {
+        // ignore — non-text inputs can throw here
+      }
+      el.style.height = "auto";
+      el.style.height = `${Math.min(el.scrollHeight, 200)}px`;
+    });
+  }, [composerRuntime, primerPrefill]);
 
   // Auto-grow the textarea up to ~6 visible lines.
   const onInput = (e: React.FormEvent<HTMLTextAreaElement>) => {
