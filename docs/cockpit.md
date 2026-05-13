@@ -211,13 +211,17 @@ explicit operator action.
 
 ## TUI vs web dashboard
 
-Cockpit is a **web-dashboard surface**. The TUI does not render the
-structured cockpit view today.
+Cockpit renders natively in the TUI alongside the web dashboard.
+Both consume the same `aoe serve` daemon over the same HTTP/WS
+surface, so the conversation log, pending approvals, and worker
+state are always in sync.
 
 - **Sessions started in cockpit mode** appear in the TUI session list
-  with a `[web]` badge. Pressing Enter opens an info dialog telling
-  the user to switch to the dashboard; it does *not* attach to a tmux
-  pane (cockpit sessions don't have one).
+  with a `[cockpit]` badge. Pressing Enter opens the native cockpit
+  view (auto-spawning `aoe serve` on loopback if it's not already
+  running). The daemon stays alive after you close the TUI so the
+  "create in TUI, drive from a phone later" flow works; stop it
+  with `aoe serve --stop`.
 - **Sessions started in tmux mode** work in both surfaces as before.
   The TUI attaches to the pane; the dashboard renders the pane via
   xterm.js.
@@ -230,9 +234,75 @@ structured cockpit view today.
   as Idle/Active in the TUI session list, since cockpit health is
   observed via the ACP event stream rather than tmux pane probing.
 
-A future release will either render a read-only cockpit transcript
-inside the TUI, or grow a richer "open this in the dashboard"
-affordance. Both are tracked as deferred work below.
+### TUI cockpit view keybinds
+
+The TUI cockpit view has three focusable regions: composer (where
+you type prompts), transcript (the activity feed), and approval
+cards (one per pending tool authorization). Tab cycles focus; the
+status banner at the bottom of the screen shows the current focus.
+
+| Focus       | Key             | Action                                                |
+| ----------- | --------------- | ----------------------------------------------------- |
+| Composer    | `Enter`         | Send the buffered text as a prompt                    |
+| Composer    | `Shift+Enter`   | Insert a newline (multi-line prompts)                 |
+| Composer    | `Esc`           | Return focus to the transcript                        |
+| Transcript  | `j` / `↓`       | Scroll down one line                                  |
+| Transcript  | `k` / `↑`       | Scroll up one line                                    |
+| Transcript  | `PgDn` / `PgUp` | Scroll ten lines                                      |
+| Transcript  | `g` / `G`       | Jump to top / bottom                                  |
+| Transcript  | `i`             | Focus the composer                                    |
+| Transcript  | `Tab`           | Cycle to the approval card (if any pending)           |
+| Transcript  | `o`             | Open this session in the web dashboard                |
+| Transcript  | `Esc`           | Close the cockpit view and return to the session list |
+| Approval    | `a`             | Allow once                                            |
+| Approval    | `Shift+A`       | Allow always (session-scoped allow-list entry)        |
+| Approval    | `d`             | Deny                                                  |
+| Approval    | `Esc`           | Return focus to the transcript                        |
+| Any         | `Ctrl+C`        | Cancel the in-flight prompt                           |
+| Any         | `Ctrl+O`        | Open the session in the web dashboard                 |
+
+**Focus isolation.** Approval keys (`a`/`Shift+A`/`d`) only resolve
+when the approval card itself has focus. Typing "always allow" into
+the composer will never silently approve a pending tool — the
+composer captures every keystroke, including those letters.
+
+### Cross-machine attach
+
+Set `AOE_DAEMON_URL` (and optionally `AOE_DAEMON_TOKEN`) to point at
+a remote `aoe serve` daemon, then either:
+
+```sh
+# Browse the remote daemon's cockpit sessions and pick one.
+AOE_DAEMON_URL=https://aoe.example.com AOE_DAEMON_TOKEN=… aoe
+
+# Or jump straight into a known session id.
+aoe cockpit attach <session_id> --daemon-url https://aoe.example.com
+```
+
+When `AOE_DAEMON_URL` is set, the TUI swaps the local home view for
+a remote-cockpit picker. Local-only operations (tmux attach,
+`aoe stop`, file edit) aren't available against a remote — for
+those, use the web dashboard or SSH into the host machine.
+
+### Headless CLI verbs
+
+For scripting and quick checks, every cockpit operation has a
+matching `aoe cockpit <verb>` that talks to the same daemon:
+
+| Verb                              | What it does                                                |
+| --------------------------------- | ----------------------------------------------------------- |
+| `aoe cockpit history <id>`        | Dump the persisted transcript                               |
+| `aoe cockpit status <id>`         | Print highest/lowest seq and the daemon source              |
+| `aoe cockpit prompt <id> <text>`  | Send a prompt (`-` reads from stdin)                        |
+| `aoe cockpit approve <id> <nonce> [--always\|--deny]` | Resolve a pending approval        |
+| `aoe cockpit cancel <id>`         | Cancel the in-flight prompt                                 |
+| `aoe cockpit tail <id>`           | Stream broadcast frames to stdout as JSON lines             |
+| `aoe cockpit attach <id>`         | Open the TUI cockpit view directly for this session id      |
+
+All verbs auto-spawn an `aoe serve` daemon on loopback if none is
+running, unless `AOE_DAEMON_URL` is set (in which case they fail loud
+when the remote is unreachable instead of accidentally attaching to a
+local fallback).
 
 ## Tool compatibility
 
