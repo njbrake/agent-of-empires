@@ -12,7 +12,11 @@ use axum::response::IntoResponse;
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
-use crate::cockpit::approvals::{ApprovalDecision, Nonce};
+use crate::cockpit::approvals::Nonce;
+use crate::cockpit::protocol::{
+    ContextPrimerQuery, ContextPrimerResponse, PromptRequest, ReplayQuery, ReplayResponse,
+    ResolveApprovalRequest,
+};
 use crate::cockpit::supervisor::SupervisorError;
 use crate::server::AppState;
 
@@ -174,11 +178,6 @@ pub async fn shutdown_cockpit(
         )
             .into_response(),
     }
-}
-
-#[derive(Debug, Deserialize)]
-pub struct PromptRequest {
-    pub text: String,
 }
 
 pub async fn cockpit_prompt(
@@ -571,29 +570,6 @@ pub async fn cockpit_set_mode(
     }
 }
 
-#[derive(Debug, Deserialize)]
-pub struct ResolveApprovalRequest {
-    pub decision: ApprovalDecisionWire,
-}
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "PascalCase")]
-pub enum ApprovalDecisionWire {
-    Allow,
-    AllowAlways,
-    Deny,
-}
-
-impl From<ApprovalDecisionWire> for ApprovalDecision {
-    fn from(d: ApprovalDecisionWire) -> Self {
-        match d {
-            ApprovalDecisionWire::Allow => ApprovalDecision::Allow,
-            ApprovalDecisionWire::AllowAlways => ApprovalDecision::AllowAlways,
-            ApprovalDecisionWire::Deny => ApprovalDecision::Deny,
-        }
-    }
-}
-
 pub async fn resolve_approval(
     State(state): State<Arc<AppState>>,
     Path((id, nonce_str)): Path<(String, String)>,
@@ -621,51 +597,6 @@ pub async fn resolve_approval(
         )
             .into_response(),
     }
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ReplayQuery {
-    /// Last seq the client has applied. The endpoint returns frames
-    /// strictly newer than this. Defaults to 0 (full replay).
-    #[serde(default)]
-    pub since: u64,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ReplayResponse {
-    /// Frames the client missed, in publish order. Empty when the
-    /// client is already caught up.
-    pub frames: Vec<crate::server::CockpitBroadcastFrame>,
-    /// True when the requested `since` predates what's still in the
-    /// buffer (the client missed events that have since been evicted).
-    /// Clients should treat the conversation log as truncated and
-    /// request a fresh start, e.g. by reloading.
-    pub lost: bool,
-    /// Highest seq the buffer has seen, even if it's been evicted.
-    /// Lets the client decide whether reloading is worth it.
-    pub highest_seq: u64,
-}
-
-#[derive(Debug, Deserialize)]
-pub struct ContextPrimerQuery {
-    /// `seq` of the `SessionContextReset` event. The primer only
-    /// includes events with `seq < before_seq` so post-reset noise
-    /// (the reset notice itself, any subsequent prompts) stays out.
-    pub before_seq: u64,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ContextPrimerResponse {
-    /// Rendered markdown primer ready to drop into the composer.
-    /// Empty string when there is no prior transcript to recap.
-    pub primer: String,
-    pub included_event_count: usize,
-    pub included_turn_count: usize,
-    /// True when older turns were dropped or the newest turn was
-    /// truncated within itself to fit the budget. Frontend can surface
-    /// this via a "transcript was abbreviated" hint.
-    pub truncated: bool,
-    pub max_chars: usize,
 }
 
 /// Build a markdown context primer from the persisted cockpit event
@@ -718,6 +649,7 @@ pub async fn cockpit_replay(
     // just restarted) or the client lagged far enough to need older
     // events than the ring holds.
     let highest_seq = state.cockpit_event_store.highest_seq(&id);
+    let lowest_seq = state.cockpit_event_store.lowest_seq(&id);
     let entries = state.cockpit_event_store.replay_from(&id, q.since);
     let frames: Vec<crate::server::CockpitBroadcastFrame> = entries
         .into_iter()
@@ -727,15 +659,17 @@ pub async fn cockpit_replay(
             event: Arc::new(event),
         })
         .collect();
+    // `lost = true` when the client's `since` cursor predates the oldest
+    // seq still on disk. The retention cap can evict older events, so a
+    // client that returns after a long absence may legitimately need a
+    // full reload. With no events on disk yet, nothing is lost.
+    let lost = match lowest_seq {
+        Some(lo) => q.since < lo.saturating_sub(1),
+        None => false,
+    };
     Json(ReplayResponse {
         frames,
-        // The retention cap can drop oldest events; we don't currently
-        // expose lowest-stored-seq, so leave `lost=false` and trust the
-        // client's seq dedupe to hide any short-lived holes. If we
-        // need to surface a real "history truncated" signal later, the
-        // event store can grow a `lowest_seq()` query to compare with
-        // `since`.
-        lost: false,
+        lost,
         highest_seq,
     })
     .into_response()
