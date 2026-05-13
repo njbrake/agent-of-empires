@@ -62,7 +62,14 @@
   --color-text-primary: #e4e4e7;
   --color-text-secondary: #a1a1aa;
   --color-text-muted: #71717a;
-  --color-text-dim: #52525b;
+  /* Body text using the dim slot must clear WCAG AA against
+     surface-900 (#1c1c1f) and surface-800 (#2c2c30); the previous
+     value (#52525b ≈ 2.6:1 vs surface-900) failed both AA body and
+     AA large. Bumped to ~5.0:1 vs surface-900 / ~4.2:1 vs surface-800
+     so per-setting descriptions and similar tertiary copy stay
+     legible. Decorative uses (separator hairlines, etc.) that need
+     to read as quieter can drop to surface-700 directly. See #1105. */
+  --color-text-dim: #8b8b94;
   --color-text-bright: #fafafa;
 
   /* Semantic Status */
