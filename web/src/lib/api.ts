@@ -256,6 +256,11 @@ export interface ServerAbout {
    *  with blank lines into a single prompt; `serial` fires one entry
    *  at a time. See #1031. */
   cockpit_queue_drain_mode: "combined" | "serial";
+  /** Resolved `cockpit.max_concurrent_resumes` from the active
+   *  profile's config. Upper bound on parallel cockpit worker
+   *  spawns/attaches the reconciler runs on `aoe serve` cold start.
+   *  See #1088. */
+  cockpit_max_concurrent_resumes: number;
 }
 
 export async function setCockpitMaster(

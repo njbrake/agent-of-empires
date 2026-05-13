@@ -99,6 +99,19 @@ pub struct CockpitConfig {
     /// to every connected web client without restarting the daemon.
     #[serde(default)]
     pub queue_drain_mode: QueueDrainMode,
+    /// Maximum number of cockpit worker resumes (spawn or attach) the
+    /// reconciler runs in parallel on `aoe serve` cold start. Bounded
+    /// at runtime by `min(max_concurrent_resumes, max_concurrent_workers).max(1)`
+    /// so this knob can never exceed the total live worker cap. Default
+    /// is 4: Node.js bootup is memory-heavy and 4 concurrent
+    /// claude-agent-acp processes are around 200-320MB transient. Lower
+    /// it on constrained hosts; raise on beefier machines. See #1088.
+    #[serde(default = "default_max_concurrent_resumes")]
+    pub max_concurrent_resumes: u32,
+}
+
+fn default_max_concurrent_resumes() -> u32 {
+    4
 }
 
 /// Drain strategy for the cockpit composer's client-side prompt queue.
@@ -146,6 +159,7 @@ impl Default for CockpitConfig {
             node_path: String::new(),
             show_tool_durations: true,
             queue_drain_mode: QueueDrainMode::default(),
+            max_concurrent_resumes: default_max_concurrent_resumes(),
         }
     }
 }

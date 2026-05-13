@@ -591,6 +591,10 @@ function CockpitSettings({
     cockpit.queue_drain_mode === "serial" || cockpit.queue_drain_mode === "combined"
       ? (cockpit.queue_drain_mode as "combined" | "serial")
       : (serverAbout?.cockpit_queue_drain_mode ?? "combined");
+  const maxConcurrentResumes =
+    typeof cockpit.max_concurrent_resumes === "number"
+      ? (cockpit.max_concurrent_resumes as number)
+      : (serverAbout?.cockpit_max_concurrent_resumes ?? 4);
 
   const onToggle = async (next: boolean) => {
     setBusy(true);
@@ -676,6 +680,16 @@ function CockpitSettings({
           }
           min={0}
           onChange={(v) => onSaveField("cockpit", "replay_bytes", v)}
+        />
+      </div>
+
+      <div className="border-t border-surface-800 pt-3">
+        <NumberField
+          label="Max concurrent resumes"
+          description="Upper bound on parallel cockpit worker spawns/attaches the reconciler runs on `aoe serve` cold start. Default 4 keeps Node.js bootup memory bounded for laptops/Pis (each claude-agent-acp is ~50-80 MB transient). Bounded at runtime by `min(this, max_concurrent_workers).max(1)`. Persists to config.toml as cockpit.max_concurrent_resumes; cross-device."
+          value={maxConcurrentResumes}
+          min={1}
+          onChange={(v) => onSaveField("cockpit", "max_concurrent_resumes", v)}
         />
       </div>
 

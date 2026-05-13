@@ -408,6 +408,11 @@ pub struct ServerAbout {
     /// blank lines into a single follow-up; `serial` fires them one at a
     /// time. Cross-device since it lives in config.toml. See #1031.
     pub cockpit_queue_drain_mode: String,
+    /// Resolved value of `cockpit.max_concurrent_resumes` from the
+    /// active profile's config. Upper bound on parallel cockpit worker
+    /// spawns/attaches the reconciler runs on `aoe serve` cold start.
+    /// Surfaced so the settings UI shows the current value. See #1088.
+    pub cockpit_max_concurrent_resumes: u32,
 }
 
 pub async fn get_about(State(state): State<Arc<AppState>>) -> Json<ServerAbout> {
@@ -421,6 +426,7 @@ pub async fn get_about(State(state): State<Arc<AppState>>) -> Json<ServerAbout> 
         crate::session::profile_config::resolve_config_or_warn(&state.profile).cockpit;
     let cockpit_show_tool_durations = cockpit_cfg.show_tool_durations;
     let cockpit_queue_drain_mode = cockpit_cfg.queue_drain_mode.as_str().to_string();
+    let cockpit_max_concurrent_resumes = cockpit_cfg.max_concurrent_resumes;
     Json(ServerAbout {
         version: env!("CARGO_PKG_VERSION").to_string(),
         auth_required,
@@ -433,6 +439,7 @@ pub async fn get_about(State(state): State<Arc<AppState>>) -> Json<ServerAbout> 
         cockpit_env_enabled,
         cockpit_show_tool_durations,
         cockpit_queue_drain_mode,
+        cockpit_max_concurrent_resumes,
     })
 }
 

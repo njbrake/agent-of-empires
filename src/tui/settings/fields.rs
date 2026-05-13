@@ -119,6 +119,7 @@ pub enum FieldKey {
     CockpitNodePath,
     CockpitShowToolDurations,
     CockpitQueueDrainMode,
+    CockpitMaxConcurrentResumes,
 }
 
 /// Resolve a field value from global config and optional profile override.
@@ -333,6 +334,11 @@ fn build_cockpit_fields(
         global.cockpit.queue_drain_mode,
         p.and_then(|c| c.queue_drain_mode),
     );
+    let (max_concurrent_resumes, mcr_override) = resolve_value(
+        scope,
+        global.cockpit.max_concurrent_resumes,
+        p.and_then(|c| c.max_concurrent_resumes),
+    );
 
     vec![
         SettingField {
@@ -405,6 +411,15 @@ fn build_cockpit_fields(
             value: FieldValue::Bool(show_tool_durations),
             category: SettingsCategory::Cockpit,
             has_override: std_override,
+            inherited_display: None,
+        },
+        SettingField {
+            key: FieldKey::CockpitMaxConcurrentResumes,
+            label: "Max concurrent resumes",
+            description: "Upper bound on parallel cockpit worker spawns/attaches the reconciler runs on `aoe serve` cold start. Default 4 keeps Node.js bootup memory within bounds for laptops/Pis (each claude-agent-acp is ~50-80 MB transient). Bounded at runtime by `min(this, max_concurrent_workers).max(1)`. See #1088.",
+            value: FieldValue::Number(u64::from(max_concurrent_resumes)),
+            category: SettingsCategory::Cockpit,
+            has_override: mcr_override,
             inherited_display: None,
         },
         SettingField {
@@ -1808,6 +1823,9 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
                 }
             }
         }
+        (FieldKey::CockpitMaxConcurrentResumes, FieldValue::Number(v)) => {
+            config.cockpit.max_concurrent_resumes = (*v).max(1).min(u32::MAX as u64) as u32
+        }
         _ => {}
     }
 }
@@ -2137,6 +2155,12 @@ fn apply_field_to_profile(field: &SettingField, _global: &Config, config: &mut P
                     });
                 }
             }
+        }
+        (FieldKey::CockpitMaxConcurrentResumes, FieldValue::Number(v)) => {
+            let clamped = (*v).max(1).min(u32::MAX as u64) as u32;
+            set_profile_override(clamped, &mut config.cockpit, |s, val| {
+                s.max_concurrent_resumes = val
+            });
         }
         _ => {}
     }
