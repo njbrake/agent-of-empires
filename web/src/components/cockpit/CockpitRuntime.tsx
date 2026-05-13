@@ -215,29 +215,40 @@ export function activityToThreadMessages(
     }
 
     if (row.kind === "context_reset") {
-      // Two senders share this row kind:
-      //   - `session/load` fallback after an `aoe serve` restart (model's
-      //     window is empty even though we replay the prior transcript)
-      //   - `/compact` completion: model's window has been replaced by a
-      //     summary while the rendered transcript stays put (#1050)
-      // Both want the same amber-callout shape; only the header differs.
-      // The Rust side sets the reason text; we sniff the compact case
-      // off its leading word so the divider names what actually changed.
+      // `session/load` fallback after an `aoe serve` restart: model's
+      // window is empty even though we replay the prior transcript.
+      // Renders the amber-callout divider; the parallel
+      // ContextPrimerBanner offers the recovery affordance.
       flushAssistant();
-      const isCompact = row.text.startsWith("Conversation compacted");
-      const header = isCompact
-        ? "Conversation compacted"
-        : "Conversation context reset";
-      const body = isCompact
-        ? row.text.replace(/^Conversation compacted\s*[;,—-]?\s*/, "")
-        : row.text;
       messages.push({
         id: `assistant-${row.id}`,
         role: "assistant",
         content: [
           {
             type: "text",
-            text: `> ⚠️ **${header}**; ${body}`,
+            text: `> ⚠️ **Conversation context reset**; ${row.text}`,
+          },
+        ],
+        createdAt: parseDate(row.at),
+      });
+      continue;
+    }
+
+    if (row.kind === "compacted") {
+      // `/compact` completion: the model's window has been replaced
+      // by a summary while the rendered transcript stays put. Same
+      // amber-callout shape as a true context reset, different
+      // header. No primer banner fires (see #1109); the model still
+      // has continuity through the summary.
+      flushAssistant();
+      const body = row.text.replace(/^Conversation compacted[;,]?\s*/, "");
+      messages.push({
+        id: `assistant-${row.id}`,
+        role: "assistant",
+        content: [
+          {
+            type: "text",
+            text: `> ⚠️ **Conversation compacted**; ${body}`,
           },
         ],
         createdAt: parseDate(row.at),

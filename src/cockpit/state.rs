@@ -399,11 +399,20 @@ pub enum Event {
     /// capabilities (`availableCommands`, `availableModes`, `plan`,
     /// `mode`) and cancels any open approvals; UI collapses rows above
     /// the divider behind a disclosure. Distinct from
-    /// `SessionContextReset` (which fires on `session/load` failure
-    /// and after `/compact`) because the user-experience contract
-    /// differs: cleared is "the model has forgotten", reset is "the
-    /// model has summary/empty context". See #1101.
+    /// `SessionContextReset` (which fires only on `session/load`
+    /// failure now) and `ConversationCompacted` because the
+    /// user-experience contract differs: cleared is "the model has
+    /// forgotten", reset is "the model has empty context", compacted
+    /// is "the model has a summary". See #1101.
     SessionCleared,
+    /// `/compact` cycle completed: the model's context window has been
+    /// replaced with a summary of the prior turns. The model still
+    /// has continuity through the summary, so unlike
+    /// `SessionContextReset` there is no recovery to offer; the
+    /// reducer drops the now-stale usage snapshot and the UI renders
+    /// an inline divider but does NOT surface the context-primer
+    /// banner. See #1109.
+    ConversationCompacted,
 }
 
 impl CockpitState {
@@ -507,6 +516,15 @@ impl CockpitState {
                 self.current_plan = None;
                 self.mode = SessionMode::Default;
                 self.pending_approvals = Vec::new();
+            }
+            Event::ConversationCompacted => {
+                // /compact replaces the model's context with a summary
+                // of the prior turns. The usage snapshot for the old
+                // raw turns no longer matches what the model holds;
+                // clear it so the next UsageUpdate seeds the new
+                // (compacted) value. Plan/mode/commands persist:
+                // unlike /clear, the model still has continuity here.
+                self.usage = None;
             }
             // Persistent state for "scheduled wakeup" lives in the
             // event log (queried by the REST endpoint per #1091); no

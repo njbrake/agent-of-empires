@@ -151,6 +151,7 @@ export type CockpitEvent =
   | { ApprovalRequested: { approval: Approval } }
   | { ApprovalResolved: { nonce: string; decision: ApprovalDecision } }
   | "SessionCleared"
+  | "ConversationCompacted"
   | { DiffEmitted: { diff: DiffPreview } }
   | "ThinkingStarted"
   | "ThinkingEnded"
@@ -300,7 +301,8 @@ export interface ActivityRow {
     | "user_prompt"
     | "empty_output"
     | "context_reset"
-    | "session_cleared";
+    | "session_cleared"
+    | "compacted";
   text: string;
   toolCallId?: string;
   /** Full ToolCall payload, present on tool_start rows so the UI can
@@ -365,6 +367,24 @@ export function applyEvent(
       next.turnHasOutput = true;
     } else if (event === "ThinkingEnded") {
       next.thinking = false;
+    } else if (event === "ConversationCompacted") {
+      // /compact replaced the model's context with a summary. The
+      // model still has continuity through the summary so no primer
+      // affordance is appropriate; just drop the now-stale usage
+      // snapshot and append a divider row. The renderer maps the
+      // `compacted` kind to a "Conversation compacted" divider that
+      // makes the boundary visible without nudging the user toward
+      // pre-filling duplicate context. See #1109.
+      next.sessionUsage = null;
+      next.activity = [
+        ...next.activity,
+        {
+          id: `compacted-${frame.seq}`,
+          kind: "compacted",
+          text: "Conversation compacted; earlier turns above are summarised in the model's context.",
+          at: new Date().toISOString(),
+        },
+      ];
     } else if (event === "SessionCleared") {
       // /clear wiped the model's memory. Append a divider row and
       // drop session-scoped capability caches; the UI groups all
