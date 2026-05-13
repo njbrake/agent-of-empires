@@ -14,10 +14,11 @@ import {
   type ApprovalDecision,
   type CockpitFrame,
   type CockpitState,
+  type QueuedPrompt,
 } from "../lib/cockpitTypes";
 import { getToken } from "../lib/token";
 
-type Action =
+export type Action =
   | { kind: "frame"; frame: CockpitFrame }
   | { kind: "frames"; frames: CockpitFrame[] }
   | { kind: "lagged"; skipped: number }
@@ -26,7 +27,11 @@ type Action =
   | { kind: "clear_error" }
   | { kind: "lagged_resolved" }
   | { kind: "reset" }
-  | { kind: "hydrate"; state: CockpitState };
+  | { kind: "hydrate"; state: CockpitState }
+  | { kind: "enqueue_prompt"; text: string }
+  | { kind: "dequeue_prompt"; id: string }
+  | { kind: "edit_queued_prompt"; id: string; text: string }
+  | { kind: "clear_queue" };
 
 // LRU-capped module cache keyed by cockpit session id. Survives
 // component unmount within the same page lifetime so the user can
@@ -82,6 +87,13 @@ function initialState(sessionId: string | null): CockpitState {
   return cacheGet(sessionId) ?? emptyCockpitState();
 }
 
+export function cockpitHookReducer(
+  state: CockpitState,
+  action: Action,
+): CockpitState {
+  return reducer(state, action);
+}
+
 function reducer(state: CockpitState, action: Action): CockpitState {
   if (action.kind === "frame") {
     return applyEvent(state, action.frame);
@@ -120,6 +132,31 @@ function reducer(state: CockpitState, action: Action): CockpitState {
       lastError: null,
       turnActive: true,
     };
+  }
+  if (action.kind === "enqueue_prompt") {
+    const entry: QueuedPrompt = {
+      id: `q-${Date.now()}-${state.queuedPrompts.length}`,
+      text: action.text,
+      queuedAt: new Date().toISOString(),
+    };
+    return { ...state, queuedPrompts: state.queuedPrompts.concat(entry) };
+  }
+  if (action.kind === "dequeue_prompt") {
+    return {
+      ...state,
+      queuedPrompts: state.queuedPrompts.filter((q) => q.id !== action.id),
+    };
+  }
+  if (action.kind === "edit_queued_prompt") {
+    return {
+      ...state,
+      queuedPrompts: state.queuedPrompts.map((q) =>
+        q.id === action.id ? { ...q, text: action.text } : q,
+      ),
+    };
+  }
+  if (action.kind === "clear_queue") {
+    return { ...state, queuedPrompts: [] };
   }
   return emptyCockpitState();
 }
@@ -326,14 +363,12 @@ export function useCockpit(sessionId: string | null) {
     [sessionId],
   );
 
-  const sendPrompt = useCallback(
+  // Dispatch a prompt immediately, no queueing. Internal helper used by
+  // both sendPrompt (when the turn is idle) and the drain effect below
+  // (when popping the head of queuedPrompts on Stopped).
+  const dispatchPromptNow = useCallback(
     async (text: string) => {
       if (!sessionId) return;
-      // Hard guard: if the WS isn't open, the agent won't see the
-      // prompt and the optimistic row would mislead the user into
-      // thinking it was sent. Surface the offline state via the
-      // existing error banner instead. TODO: queue the prompt
-      // locally and flush on reconnect.
       if (statusRef.current !== "open") {
         dispatch({
           kind: "error",
@@ -371,6 +406,72 @@ export function useCockpit(sessionId: string | null) {
     },
     [sessionId],
   );
+
+  // Public sendPrompt. When the agent is already working we enqueue
+  // client-side; the drain effect dispatches the head once the current
+  // turn ends. When idle we dispatch immediately. Background: #1031.
+  const sendPrompt = useCallback(
+    async (text: string) => {
+      if (!sessionId) return;
+      // The reducer sees the same `turnActive` the UI does. statusRef
+      // covers the WS-closed case separately so disconnected users
+      // still get the existing error banner even when typing into a
+      // running session.
+      if (statusRef.current !== "open") {
+        dispatch({
+          kind: "error",
+          message: "Cockpit disconnected; message not sent. Reconnect to retry.",
+        });
+        return;
+      }
+      if (state.turnActive) {
+        dispatch({ kind: "enqueue_prompt", text });
+        return;
+      }
+      await dispatchPromptNow(text);
+    },
+    [sessionId, state.turnActive, dispatchPromptNow],
+  );
+
+  // Drain effect: when the agent transitions to idle and the queue
+  // has a head, pop it and dispatch. Guarded by `drainingRef` so a
+  // re-render between dequeue dispatch and the next state tick doesn't
+  // fire the head twice. Skipped while a worker-stopped / restarting
+  // banner is showing; a fresh `AcpSessionAssigned` (which clears both
+  // flags) re-runs this effect and drains then.
+  const drainingRef = useRef(false);
+  useEffect(() => {
+    if (drainingRef.current) return;
+    if (!sessionId) return;
+    if (state.turnActive) return;
+    if (state.workerStopped || state.workerRestarting) return;
+    const head = state.queuedPrompts[0];
+    if (!head) return;
+    drainingRef.current = true;
+    dispatch({ kind: "dequeue_prompt", id: head.id });
+    void dispatchPromptNow(head.text).finally(() => {
+      drainingRef.current = false;
+    });
+  }, [
+    sessionId,
+    state.turnActive,
+    state.workerStopped,
+    state.workerRestarting,
+    state.queuedPrompts,
+    dispatchPromptNow,
+  ]);
+
+  const removeQueuedPrompt = useCallback((id: string) => {
+    dispatch({ kind: "dequeue_prompt", id });
+  }, []);
+
+  const editQueuedPrompt = useCallback((id: string, text: string) => {
+    dispatch({ kind: "edit_queued_prompt", id, text });
+  }, []);
+
+  const clearQueue = useCallback(() => {
+    dispatch({ kind: "clear_queue" });
+  }, []);
 
   // Cancels the in-flight agent turn (ACP session/cancel). Must only
   // fire on an explicit user gesture against a dedicated cancel/stop
@@ -413,6 +514,9 @@ export function useCockpit(sessionId: string | null) {
     sendPrompt,
     cancelPrompt,
     dismissError,
+    removeQueuedPrompt,
+    editQueuedPrompt,
+    clearQueue,
   };
 }
 

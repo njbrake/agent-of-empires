@@ -55,6 +55,9 @@ export interface CockpitContext {
   ) => Promise<void>;
   sendPrompt: (text: string) => Promise<void>;
   dismissError: () => void;
+  removeQueuedPrompt: (id: string) => void;
+  editQueuedPrompt: (id: string, text: string) => void;
+  clearQueue: () => void;
 }
 
 /**
@@ -105,6 +108,9 @@ export function CockpitRuntime({ sessionId, children }: Props) {
         resolveApproval: cockpit.resolveApproval,
         sendPrompt: cockpit.sendPrompt,
         dismissError: cockpit.dismissError,
+        removeQueuedPrompt: cockpit.removeQueuedPrompt,
+        editQueuedPrompt: cockpit.editQueuedPrompt,
+        clearQueue: cockpit.clearQueue,
       })}
     </AssistantRuntimeProvider>
   );

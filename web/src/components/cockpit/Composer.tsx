@@ -10,7 +10,6 @@
 
 import {
   ComposerPrimitive,
-  ThreadPrimitive,
   useComposerRuntime,
   useThreadRuntime,
 } from "@assistant-ui/react";
@@ -51,6 +50,20 @@ interface Props {
    *  to retry). TODO(post-disconnect): queue locally and flush on
    *  reconnect instead of blocking. */
   connected: boolean;
+  /** True while the agent is producing the current turn. When true the
+   *  composer keeps its textarea editable and surfaces a queue-send
+   *  button alongside Stop; sends go through the client-side queue (see
+   *  #1031). When false the regular ComposerPrimitive.Send path runs as
+   *  before. */
+  turnActive: boolean;
+  /** Number of items already enqueued for after the current turn.
+   *  Drives the badge on the queue-send button. */
+  queuedCount: number;
+  /** Push the composer text straight onto the cockpit queue. Bypasses
+   *  the ComposerPrimitive.Send path (which assistant-ui hard-disables
+   *  while `thread.isRunning && !capabilities.queue`). Used by the
+   *  mid-turn Send button + the Enter-while-running handler. */
+  enqueuePrompt: (text: string) => void | Promise<void>;
 }
 
 export function Composer({
@@ -61,6 +74,9 @@ export function Composer({
   sessionUsage,
   availableCommands,
   connected,
+  turnActive,
+  queuedCount,
+  enqueuePrompt,
 }: Props) {
   const taRef = useRef<HTMLTextAreaElement | null>(null);
   const { files } = useFilesIndex(sessionId);
@@ -229,8 +245,34 @@ export function Composer({
             <ComposerPrimitive.Input
               ref={taRef}
               rows={2}
-              placeholder="Send a message…  Type @ for files, / for commands"
+              placeholder={
+                turnActive
+                  ? "Queue a follow-up… (sent when current turn ends)"
+                  : "Send a message…  Type @ for files, / for commands"
+              }
               onInput={onInput}
+              onKeyDown={(e) => {
+                // Intercept Enter while the agent is running so the
+                // textarea can queue follow-ups; ComposerPrimitive.Input
+                // hard-blocks Enter when `thread.isRunning && !queue`
+                // (see ComposerInput.js in @assistant-ui/react). Without
+                // this the textarea would do nothing on Enter mid-turn.
+                // Capture-phase so our handler wins over the primitive's
+                // bubble-phase listener.
+                if (
+                  !turnActive ||
+                  e.key !== "Enter" ||
+                  e.shiftKey ||
+                  e.ctrlKey ||
+                  e.metaKey ||
+                  e.nativeEvent.isComposing
+                ) {
+                  return;
+                }
+                e.preventDefault();
+                e.stopPropagation();
+                void sendFromTextarea(taRef, composerRuntime, enqueuePrompt);
+              }}
               autoFocus
               className={[
                 "min-h-[56px] max-h-[200px] resize-none bg-transparent",
@@ -265,12 +307,18 @@ export function Composer({
 
               <div className="flex items-center gap-2">
                 <UsageHint usage={sessionUsage} />
-                <ThreadPrimitive.If running>
-                  <StopButton />
-                </ThreadPrimitive.If>
-                <ThreadPrimitive.If running={false}>
+                {turnActive ? (
+                  <>
+                    <StopButton />
+                    <QueueSendButton
+                      disabled={!connected}
+                      queuedCount={queuedCount}
+                      onSend={() => sendFromTextarea(taRef, composerRuntime, enqueuePrompt)}
+                    />
+                  </>
+                ) : (
                   <SendButton disabled={!connected} />
-                </ThreadPrimitive.If>
+                )}
               </div>
             </div>
           </ComposerPrimitive.Root>
@@ -673,6 +721,78 @@ function StopButton() {
       <span>Stop</span>
     </button>
   );
+}
+
+/** Send button rendered alongside Stop while a turn is in flight.
+ *  Bypasses ComposerPrimitive.Send (which is disabled by the SDK when
+ *  the thread is running). Shows a small badge with the current queue
+ *  length so users can see at a glance how many follow-ups are stacked
+ *  up. See #1031. */
+function QueueSendButton({
+  disabled,
+  queuedCount,
+  onSend,
+}: {
+  disabled: boolean;
+  queuedCount: number;
+  onSend: () => void;
+}) {
+  const title = disabled
+    ? "Disconnected, reconnect to send"
+    : queuedCount > 0
+      ? `Queue follow-up (${queuedCount} pending) · Enter`
+      : "Queue follow-up (sent when current turn ends) · Enter";
+  return (
+    <button
+      type="button"
+      aria-label="Queue follow-up message"
+      title={title}
+      disabled={disabled}
+      onClick={() => {
+        if (!disabled) onSend();
+      }}
+      className={[
+        "group/send relative inline-flex items-center justify-center gap-1",
+        "rounded-lg bg-brand-600 px-2.5 py-1.5 text-white shadow-sm",
+        "hover:bg-brand-500 active:scale-[0.98]",
+        "disabled:cursor-not-allowed disabled:bg-surface-700 disabled:text-text-dim disabled:shadow-none",
+        "transition-all duration-100",
+      ].join(" ")}
+    >
+      <PaperPlaneIcon />
+      {queuedCount > 0 && (
+        <span
+          aria-hidden
+          className={[
+            "absolute -right-1.5 -top-1.5 inline-flex h-4 min-w-[16px] items-center justify-center",
+            "rounded-full bg-amber-500 px-1 text-[10px] font-semibold text-surface-900",
+            "ring-2 ring-surface-900",
+          ].join(" ")}
+        >
+          {queuedCount}
+        </span>
+      )}
+    </button>
+  );
+}
+
+/** Pulls current composer text, hands it to the cockpit queue, then
+ *  clears the textarea + persisted draft. Shared by the mid-turn Send
+ *  button and the Enter-while-running keyboard handler. */
+function sendFromTextarea(
+  taRef: React.RefObject<HTMLTextAreaElement | null>,
+  composerRuntime: ReturnType<typeof useComposerRuntime>,
+  enqueuePrompt: (text: string) => void | Promise<void>,
+): void {
+  if (!composerRuntime) return;
+  const text = composerRuntime.getState().text.trim();
+  if (!text) return;
+  void enqueuePrompt(text);
+  composerRuntime.setText("");
+  // Manually reset the textarea height; auto-grow runs on input events
+  // and we cleared the value without firing one.
+  const el = taRef.current;
+  if (el) el.style.height = "auto";
 }
 
 function PaperPlaneIcon() {

@@ -18,7 +18,7 @@ import {
   MessagePrimitive,
   ThreadPrimitive,
 } from "@assistant-ui/react";
-import { ChevronDown, ListChecks } from "lucide-react";
+import { Check, ChevronDown, Clock, ListChecks, X } from "lucide-react";
 
 import { ApprovalCard } from "./ApprovalCard";
 import {
@@ -41,6 +41,7 @@ import type {
   ApprovalDecision,
   CockpitState,
   Plan,
+  QueuedPrompt,
   ToolCall,
 } from "../../lib/cockpitTypes";
 
@@ -69,6 +70,9 @@ function CockpitChrome({
   resolveApproval,
   sendPrompt,
   dismissError,
+  removeQueuedPrompt,
+  editQueuedPrompt,
+  clearQueue,
 }: CockpitContext & { sessionId: string }) {
   return (
     <div className="flex h-full flex-col bg-surface-900 text-text-primary">
@@ -134,6 +138,13 @@ function CockpitChrome({
           </div>
         </ThreadPrimitive.Viewport>
 
+        <QueuedPromptsStrip
+          queued={state.queuedPrompts}
+          onRemove={removeQueuedPrompt}
+          onEdit={editQueuedPrompt}
+          onClear={clearQueue}
+        />
+
         <Composer
           sessionId={sessionId}
           availableModes={state.availableModes}
@@ -142,6 +153,9 @@ function CockpitChrome({
           sessionUsage={state.sessionUsage}
           availableCommands={state.availableCommands}
           connected={status === "open" && !state.workerStopped && !state.workerRestarting}
+          turnActive={state.turnActive}
+          queuedCount={state.queuedPrompts.length}
+          enqueuePrompt={sendPrompt}
         />
       </ThreadPrimitive.Root>
     </div>
@@ -940,5 +954,156 @@ function StartupErrorBanner({
         )}
       </div>
     </div>
+  );
+}
+
+/* ── Queued prompts strip ─────────────────────────────────────────── */
+
+interface QueuedPromptsStripProps {
+  queued: QueuedPrompt[];
+  onRemove: (id: string) => void;
+  onEdit: (id: string, text: string) => void;
+  onClear: () => void;
+}
+
+/** Strip rendered above the composer listing prompts the user has
+ *  queued mid-turn. Each row is editable in place (click to edit, save
+ *  on Enter or blur, cancel on Escape) and removable via the X button.
+ *  Hidden when the queue is empty. See #1031. */
+function QueuedPromptsStrip({
+  queued,
+  onRemove,
+  onEdit,
+  onClear,
+}: QueuedPromptsStripProps) {
+  if (queued.length === 0) return null;
+  return (
+    <div className="border-t border-surface-800 bg-surface-900/60 px-4 py-2">
+      <div className="mx-auto max-w-3xl xl:max-w-4xl 2xl:max-w-5xl">
+        <div className="flex items-center justify-between pb-1.5 text-[11px] uppercase tracking-wider text-text-dim">
+          <span className="inline-flex items-center gap-1">
+            <Clock className="h-3 w-3" />
+            Queued ({queued.length})
+          </span>
+          {queued.length > 1 && (
+            <button
+              type="button"
+              onClick={onClear}
+              className="text-text-dim hover:text-rose-300 transition-colors"
+            >
+              Clear all
+            </button>
+          )}
+        </div>
+        <ul className="flex flex-col gap-1.5">
+          {queued.map((q) => (
+            <QueuedPromptRow
+              key={q.id}
+              prompt={q}
+              onRemove={() => onRemove(q.id)}
+              onEdit={(text) => onEdit(q.id, text)}
+            />
+          ))}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
+function QueuedPromptRow({
+  prompt,
+  onRemove,
+  onEdit,
+}: {
+  prompt: QueuedPrompt;
+  onRemove: () => void;
+  onEdit: (text: string) => void;
+}) {
+  // Editor state co-mounts with the textarea: when `editing` flips on
+  // we re-key <QueuedPromptEditor> so it initialises `draft` from the
+  // current prompt.text. This avoids a setState-in-effect to keep the
+  // draft synced with external edits (lint: react-hooks/set-state-in-effect).
+  const [editing, setEditing] = useState(false);
+
+  return (
+    <li className="group flex items-start gap-2 rounded-lg border border-amber-700/30 bg-amber-950/15 px-2.5 py-1.5">
+      <span className="mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-amber-500/20 text-[10px] font-semibold text-amber-300">
+        ⏱
+      </span>
+      {editing ? (
+        <QueuedPromptEditor
+          key={prompt.id}
+          initial={prompt.text}
+          onCancel={() => setEditing(false)}
+          onSave={(text) => {
+            const trimmed = text.trim();
+            if (trimmed && trimmed !== prompt.text) onEdit(trimmed);
+            setEditing(false);
+          }}
+        />
+      ) : (
+        <button
+          type="button"
+          onClick={() => setEditing(true)}
+          title="Click to edit"
+          className="min-w-0 flex-1 text-left text-xs leading-5 text-text-secondary whitespace-pre-wrap break-words hover:text-text-primary"
+        >
+          {prompt.text}
+        </button>
+      )}
+      <button
+        type="button"
+        onClick={onRemove}
+        title="Drop this queued message"
+        className="shrink-0 rounded p-1 text-text-dim hover:bg-surface-800 hover:text-rose-300"
+      >
+        <X className="h-3.5 w-3.5" />
+      </button>
+    </li>
+  );
+}
+
+function QueuedPromptEditor({
+  initial,
+  onCancel,
+  onSave,
+}: {
+  initial: string;
+  onCancel: () => void;
+  onSave: (text: string) => void;
+}) {
+  const [draft, setDraft] = useState(initial);
+  return (
+    <>
+      <textarea
+        autoFocus
+        value={draft}
+        onChange={(e) => setDraft(e.target.value)}
+        onBlur={() => onSave(draft)}
+        onKeyDown={(e) => {
+          if (e.key === "Enter" && !e.shiftKey) {
+            e.preventDefault();
+            onSave(draft);
+          } else if (e.key === "Escape") {
+            e.preventDefault();
+            onCancel();
+          }
+        }}
+        rows={Math.min(6, Math.max(1, draft.split("\n").length))}
+        className={[
+          "min-w-0 flex-1 resize-none bg-transparent text-xs leading-5",
+          "text-text-primary outline-none placeholder:text-text-dim",
+        ].join(" ")}
+      />
+      <button
+        type="button"
+        onMouseDown={(e) => e.preventDefault()}
+        onClick={() => onSave(draft)}
+        title="Save (Enter)"
+        className="shrink-0 rounded p-1 text-text-dim hover:bg-surface-800 hover:text-emerald-300"
+      >
+        <Check className="h-3.5 w-3.5" />
+      </button>
+    </>
   );
 }
