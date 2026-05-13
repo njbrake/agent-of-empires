@@ -312,7 +312,22 @@ export interface ActivityRow {
   at: string; // ISO-8601
 }
 
-const ACTIVITY_LIMIT = 200;
+/** Module-level mirror of `cockpit.replay_events`. Set by the
+ *  `useCockpit` hook from `useCockpitPrefs` so the reducer (which
+ *  can't read React context) sees the user's chosen retention cap.
+ *  0 means unlimited. Default 0 matches `cockpit.replay_events`'
+ *  default after #1065 made server-side retention unlimited; without
+ *  this mirror, a frontend-only 200-row cap clipped the rendered
+ *  transcript regardless of what the user set on the server side.
+ *  See #1111. */
+let activityLimit = 0;
+
+/** Set the activity buffer cap. Called by `useCockpit` whenever the
+ *  resolved prefs change so the reducer's `pushActivity` honours
+ *  the current setting. Visible for tests that need to pin the cap. */
+export function setActivityLimit(limit: number): void {
+  activityLimit = Math.max(0, Math.floor(limit));
+}
 
 export function emptyCockpitState(): CockpitState {
   return {
@@ -757,8 +772,8 @@ export function applyEvent(
 
 function pushActivity(rows: ActivityRow[], row: ActivityRow): ActivityRow[] {
   const next = rows.concat(row);
-  if (next.length > ACTIVITY_LIMIT) {
-    return next.slice(next.length - ACTIVITY_LIMIT);
+  if (activityLimit > 0 && next.length > activityLimit) {
+    return next.slice(next.length - activityLimit);
   }
   return next;
 }

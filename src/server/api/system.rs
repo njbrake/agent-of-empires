@@ -411,6 +411,13 @@ pub struct ServerAbout {
     /// after which the cockpit web UI offers a "Force end turn" button
     /// to unstick a missed-Stopped spinner. See #1100.
     pub cockpit_force_end_turn_threshold_secs: u32,
+    /// Resolved value of `cockpit.replay_events` from the active
+    /// profile's config. Per-session retention cap on the cockpit
+    /// event log; 0 means unlimited. The web client mirrors this on
+    /// its in-memory activity buffer so the rendered transcript
+    /// honours the user's chosen ceiling instead of clipping at a
+    /// hard-coded constant. See #1111.
+    pub cockpit_replay_events: u32,
 }
 
 pub async fn get_about(State(state): State<Arc<AppState>>) -> Json<ServerAbout> {
@@ -424,6 +431,7 @@ pub async fn get_about(State(state): State<Arc<AppState>>) -> Json<ServerAbout> 
     let cockpit_queue_drain_mode = cockpit_cfg.queue_drain_mode.as_str().to_string();
     let cockpit_max_concurrent_resumes = cockpit_cfg.max_concurrent_resumes;
     let cockpit_force_end_turn_threshold_secs = cockpit_cfg.force_end_turn_threshold_secs;
+    let cockpit_replay_events = cockpit_cfg.replay_events;
     Json(ServerAbout {
         version: env!("CARGO_PKG_VERSION").to_string(),
         auth_required,
@@ -436,6 +444,7 @@ pub async fn get_about(State(state): State<Arc<AppState>>) -> Json<ServerAbout> 
         cockpit_queue_drain_mode,
         cockpit_max_concurrent_resumes,
         cockpit_force_end_turn_threshold_secs,
+        cockpit_replay_events,
     })
 }
 

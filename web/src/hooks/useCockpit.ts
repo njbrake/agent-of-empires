@@ -11,6 +11,7 @@ import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import {
   applyEvent,
   emptyCockpitState,
+  setActivityLimit,
   type ApprovalDecision,
   type CockpitFrame,
   type CockpitState,
@@ -214,11 +215,18 @@ export function useCockpit(
   // and republished via `CockpitPrefsProvider` (App.tsx). Held in a ref
   // so the drain effect's pop logic always sees the latest value
   // without re-running the effect on every toggle. See #1031.
-  const { queueDrainMode } = useCockpitPrefs();
+  const { queueDrainMode, replayEvents } = useCockpitPrefs();
   const drainModeRef = useRef(queueDrainMode);
   useEffect(() => {
     drainModeRef.current = queueDrainMode;
   }, [queueDrainMode]);
+  // Mirror the server-side retention cap onto the reducer's
+  // in-memory activity buffer. Without this, a frontend-only 200-row
+  // cap clipped the rendered transcript regardless of what the user
+  // set on the server side (#1111). 0 means unlimited.
+  useEffect(() => {
+    setActivityLimit(replayEvents);
+  }, [replayEvents]);
   // Mirror status into a ref so sendPrompt's stable callback can short
   // circuit when the WS is closed without re-creating the callback on
   // every status flip (which would invalidate downstream memoised

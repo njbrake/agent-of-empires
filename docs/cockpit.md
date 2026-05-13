@@ -154,7 +154,7 @@ approval_timeout_secs = 300
 destructive_require_double_confirm = true
 max_concurrent_workers = 5
 max_concurrent_resumes = 4  # cap on parallel cold-start spawns/attaches (#1088)
-replay_events = 0  # 0 = unlimited history; set a positive value to cap per-session rows
+replay_events = 0  # 0 = unlimited history; set a positive value to cap per-session rows (also caps the web client's in-memory activity buffer, #1111)
 replay_bytes = 5_242_880
 node_path = ""
 show_tool_durations = true  # per-tool elapsed-time label in the web UI
