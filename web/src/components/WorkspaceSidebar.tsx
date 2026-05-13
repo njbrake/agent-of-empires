@@ -487,9 +487,20 @@ const SessionRow = memo(function SessionRow({
                 )}
               </span>
             )}
-            {firstSession?.plan_summary && firstSession.plan_summary.total > 0 && (
-              <PlanProgressMini summary={firstSession.plan_summary} />
-            )}
+            {firstSession?.plan_summary &&
+              firstSession.plan_summary.total > 0 &&
+              // Hide the completed-plan bar when the session is also
+              // sitting idle waiting for the next prompt: at that
+              // point the bar is a static "100% 5/5" line that adds
+              // clutter without conveying anything actionable. The
+              // bar reappears on the next prompt because the agent
+              // either emits a new plan (resetting completed) or
+              // stays on the old one but flips status back to Running.
+              !(
+                firstSession.plan_summary.completed >=
+                  firstSession.plan_summary.total &&
+                firstSession.status === "Idle"
+              ) && <PlanProgressMini summary={firstSession.plan_summary} />}
             {firstSession && (firstSession.workspace_repos?.length ?? 0) > 1 && (
               <span
                 className="mt-0.5 flex flex-wrap gap-1 text-[10px] font-mono text-text-dim"
