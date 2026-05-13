@@ -34,6 +34,21 @@ fn github_api_releases_url() -> String {
     )
 }
 
+/// Public release-page URL for a given version tag. Stable enough to
+/// hardcode (GitHub redirects from `/releases/tag/vX.Y.Z` even when the
+/// release is later edited). Used by the web update banner. See #984.
+pub fn release_page_url(version: &str) -> String {
+    let tag = if version.starts_with('v') {
+        version.to_string()
+    } else {
+        format!("v{}", version)
+    };
+    format!(
+        "https://github.com/njbrake/agent-of-empires/releases/tag/{}",
+        tag
+    )
+}
+
 #[derive(Debug, Clone)]
 pub struct UpdateInfo {
     pub available: bool,

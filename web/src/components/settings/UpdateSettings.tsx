@@ -40,6 +40,14 @@ export function UpdateSettings({ settings, onSaveField, onUpdate }: Props) {
         checked={(updates.notify_in_cli as boolean) ?? true}
         onChange={(v) => save("notify_in_cli", v)}
       />
+      <NumberField
+        label="Web poll interval (minutes)"
+        value={(updates.web_poll_interval_minutes as number) ?? 60}
+        onChange={(v) =>
+          save("web_poll_interval_minutes", Math.max(5, v))
+        }
+        min={5}
+      />
     </div>
   );
 }

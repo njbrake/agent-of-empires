@@ -64,6 +64,7 @@ import {
 import { AboutModal } from "./components/AboutModal";
 import { CommandPalette } from "./components/command-palette/CommandPalette";
 import { DisconnectBanner } from "./components/DisconnectBanner";
+import { UpdateBanner } from "./components/UpdateBanner";
 
 const RIGHT_PANEL_COLLAPSED_KEY = "aoe-right-collapsed";
 
@@ -666,6 +667,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
       />
 
       <DisconnectBanner />
+      <UpdateBanner />
 
       <div className="flex flex-1 min-h-0">
         {!showSettings && !showProjects && (

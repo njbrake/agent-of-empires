@@ -200,14 +200,16 @@ check_enabled = true
 auto_update = false
 check_interval_hours = 24
 notify_in_cli = true
+web_poll_interval_minutes = 60
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `check_enabled` | `true` | Check for new versions |
+| `check_enabled` | `true` | Check for new versions; also gates the web dashboard's update banner |
 | `auto_update` | `false` | Automatically install updates |
-| `check_interval_hours` | `24` | Hours between update checks |
+| `check_interval_hours` | `24` | Hours between GitHub checks (server-side cache TTL) |
 | `notify_in_cli` | `true` | Show update notifications in CLI output |
+| `web_poll_interval_minutes` | `60` | How often the web dashboard re-polls `/api/system/update-status` while open (min 5) |
 
 ## Profiles
 

@@ -283,6 +283,20 @@ export function fetchAbout(): Promise<ServerAbout | null> {
   return fetchJson<ServerAbout>("/api/about");
 }
 
+export interface UpdateStatus {
+  check_enabled: boolean;
+  current_version: string;
+  latest_version: string | null;
+  update_available: boolean;
+  release_url: string | null;
+  web_poll_interval_minutes: number;
+  error: string | null;
+}
+
+export function fetchUpdateStatus(): Promise<UpdateStatus | null> {
+  return fetchJson<UpdateStatus>("/api/system/update-status");
+}
+
 // --- Devices ---
 
 export interface DeviceInfo {

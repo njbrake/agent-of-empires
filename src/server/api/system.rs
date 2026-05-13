@@ -443,6 +443,77 @@ pub async fn get_about(State(state): State<Arc<AppState>>) -> Json<ServerAbout> 
     })
 }
 
+// --- Update status ---
+
+/// Web-facing snapshot of `update::check_for_update`. `check_enabled`
+/// mirrors `updates.check_enabled` so the frontend can hide its banner
+/// without separately fetching settings. `web_poll_interval_minutes`
+/// echoes the configured frontend re-poll cadence so the dashboard
+/// doesn't need a second settings round-trip. See #984.
+#[derive(Serialize)]
+pub struct UpdateStatusResponse {
+    pub check_enabled: bool,
+    pub current_version: String,
+    pub latest_version: Option<String>,
+    pub update_available: bool,
+    pub release_url: Option<String>,
+    pub web_poll_interval_minutes: u64,
+    /// Set when the GitHub check failed (e.g. rate-limited, offline).
+    /// Frontend keeps polling on its normal cadence; the banner stays
+    /// hidden until a successful poll. The error is exposed so the
+    /// settings UI can surface a one-liner if useful later.
+    pub error: Option<String>,
+}
+
+pub async fn get_update_status(State(state): State<Arc<AppState>>) -> Json<UpdateStatusResponse> {
+    let cfg = crate::session::profile_config::resolve_config_or_warn(&state.profile);
+    let current = env!("CARGO_PKG_VERSION").to_string();
+
+    if !cfg.updates.check_enabled {
+        return Json(UpdateStatusResponse {
+            check_enabled: false,
+            current_version: current,
+            latest_version: None,
+            update_available: false,
+            release_url: None,
+            web_poll_interval_minutes: cfg.updates.web_poll_interval_minutes,
+            error: None,
+        });
+    }
+
+    match crate::update::check_for_update(&current, false).await {
+        Ok(info) => {
+            let release_url = if info.latest_version.is_empty() {
+                None
+            } else {
+                Some(crate::update::release_page_url(&info.latest_version))
+            };
+            Json(UpdateStatusResponse {
+                check_enabled: true,
+                current_version: info.current_version,
+                latest_version: if info.latest_version.is_empty() {
+                    None
+                } else {
+                    Some(info.latest_version)
+                },
+                update_available: info.available,
+                release_url,
+                web_poll_interval_minutes: cfg.updates.web_poll_interval_minutes,
+                error: None,
+            })
+        }
+        Err(e) => Json(UpdateStatusResponse {
+            check_enabled: true,
+            current_version: current,
+            latest_version: None,
+            update_available: false,
+            release_url: None,
+            web_poll_interval_minutes: cfg.updates.web_poll_interval_minutes,
+            error: Some(e.to_string()),
+        }),
+    }
+}
+
 // --- Profile management ---
 
 #[derive(Deserialize)]

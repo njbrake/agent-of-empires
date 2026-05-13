@@ -92,6 +92,9 @@ pub struct UpdatesConfigOverride {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notify_in_cli: Option<bool>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub web_poll_interval_minutes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -463,6 +466,9 @@ pub fn merge_configs(mut global: Config, profile: &ProfileConfig) -> Config {
         }
         if let Some(notify_in_cli) = updates_override.notify_in_cli {
             global.updates.notify_in_cli = notify_in_cli;
+        }
+        if let Some(web_poll_interval_minutes) = updates_override.web_poll_interval_minutes {
+            global.updates.web_poll_interval_minutes = web_poll_interval_minutes;
         }
     }
 

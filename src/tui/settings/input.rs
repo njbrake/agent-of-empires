@@ -562,6 +562,11 @@ impl SettingsView {
                     u.notify_in_cli = None;
                 }
             }
+            FieldKey::WebPollIntervalMinutes => {
+                if let Some(ref mut u) = config.updates {
+                    u.web_poll_interval_minutes = None;
+                }
+            }
             // Worktree
             FieldKey::WorktreeEnabled => {
                 if let Some(ref mut w) = config.worktree {
