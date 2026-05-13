@@ -7,24 +7,26 @@ import { fetchContextPrimer } from "../../lib/api";
  * fetches a markdown primer (last N turns from the SQLite event log)
  * and pre-fills the composer with it so the user can review/edit
  * before sending. See #1004.
+ *
+ * Dismiss state lives on the cached reducer state (`onDismiss` clears
+ * `contextPrimerAvailable` in the hook) rather than component-local
+ * `useState`, so dismissing once survives session switches. See #1110.
  */
 interface Props {
   sessionId: string;
   available: { resetSeq: number; reason: string } | null;
   onInsertPrimer: (text: string) => void;
+  onDismiss: () => void;
 }
 
 export function ContextPrimerBanner({
   sessionId,
   available,
   onInsertPrimer,
+  onDismiss,
 }: Props) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Keyed on the reset seq so a new context-reset re-arms the
-  // affordance instead of inheriting the previous one's dismissed
-  // state.
-  const [dismissedSeq, setDismissedSeq] = useState<number | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
@@ -40,7 +42,7 @@ export function ContextPrimerBanner({
     };
   }, [sessionId, available?.resetSeq]);
 
-  if (!available || dismissedSeq === available.resetSeq) return null;
+  if (!available) return null;
 
   const handleClick = async () => {
     abortRef.current?.abort();
@@ -64,7 +66,7 @@ export function ContextPrimerBanner({
         return;
       }
       onInsertPrimer(resp.primer);
-      setDismissedSeq(available.resetSeq);
+      onDismiss();
     } catch (e) {
       if ((e as { name?: string }).name === "AbortError") return;
       setError("Network error fetching primer.");
@@ -103,7 +105,7 @@ export function ContextPrimerBanner({
       </button>
       <button
         type="button"
-        onClick={() => setDismissedSeq(available.resetSeq)}
+        onClick={onDismiss}
         aria-label="Dismiss context-reset banner"
         className="shrink-0 px-1 text-amber-300/70 hover:text-amber-100 cursor-pointer"
       >

@@ -69,6 +69,7 @@ export interface CockpitContext {
   forceEndTurn: () => Promise<void>;
   lastActivityRef: ReturnType<typeof useCockpit>["lastActivityRef"];
   dismissError: () => void;
+  dismissPrimer: () => void;
   removeQueuedPrompt: (id: string) => void;
   editQueuedPrompt: (id: string, text: string) => void;
   clearQueue: () => void;
@@ -135,6 +136,7 @@ export function CockpitRuntime({
         forceEndTurn: cockpit.forceEndTurn,
         lastActivityRef: cockpit.lastActivityRef,
         dismissError: cockpit.dismissError,
+        dismissPrimer: cockpit.dismissPrimer,
         removeQueuedPrompt: cockpit.removeQueuedPrompt,
         editQueuedPrompt: cockpit.editQueuedPrompt,
         clearQueue: cockpit.clearQueue,

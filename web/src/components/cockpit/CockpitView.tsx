@@ -99,6 +99,7 @@ function CockpitChrome({
   forceEndTurn,
   lastActivityRef,
   dismissError,
+  dismissPrimer,
   removeQueuedPrompt,
   editQueuedPrompt,
   clearQueue,
@@ -269,6 +270,7 @@ function CockpitChrome({
                 text,
               })
             }
+            onDismiss={dismissPrimer}
           />
 
           <Composer

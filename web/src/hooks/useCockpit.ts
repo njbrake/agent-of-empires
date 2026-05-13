@@ -32,7 +32,8 @@ export type Action =
   | { kind: "enqueue_prompt"; text: string }
   | { kind: "dequeue_prompt"; id: string }
   | { kind: "edit_queued_prompt"; id: string; text: string }
-  | { kind: "clear_queue" };
+  | { kind: "clear_queue" }
+  | { kind: "dismiss_primer" };
 
 // LRU-capped module cache keyed by cockpit session id. Survives
 // component unmount within the same page lifetime so the user can
@@ -176,6 +177,13 @@ function reducer(state: CockpitState, action: Action): CockpitState {
   }
   if (action.kind === "clear_queue") {
     return { ...state, queuedPrompts: [] };
+  }
+  if (action.kind === "dismiss_primer") {
+    // Clear the offer entirely so it doesn't re-render on session
+    // re-mount. A subsequent SessionContextReset re-seeds the field
+    // with a new `resetSeq`, which the banner reads as a fresh
+    // incident and shows again. See #1110.
+    return { ...state, contextPrimerAvailable: null };
   }
   return emptyCockpitState();
 }
@@ -602,6 +610,10 @@ export function useCockpit(
     dispatch({ kind: "clear_queue" });
   }, []);
 
+  const dismissPrimer = useCallback(() => {
+    dispatch({ kind: "dismiss_primer" });
+  }, []);
+
   // Cancels the in-flight agent turn (ACP session/cancel). Must only
   // fire on an explicit user gesture against a dedicated cancel/stop
   // affordance; never bind this to the Escape key. Claude Code CLI
@@ -694,6 +706,7 @@ export function useCockpit(
      *  clock. See #1100 (C). */
     lastActivityRef,
     dismissError,
+    dismissPrimer,
     removeQueuedPrompt,
     editQueuedPrompt,
     clearQueue,
