@@ -13,7 +13,7 @@
 // CockpitRuntime.tsx. We never let assistant-ui own the chat state; it
 // only renders what we feed it and surfaces user actions back.
 
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   MessagePrimitive,
   ThreadPrimitive,
@@ -129,6 +129,37 @@ function CockpitChrome({
   const [primerPrefill, setPrimerPrefill] = useState<
     { id: string; text: string } | null
   >(null);
+
+  // Re-pin the chat viewport to the bottom when the composer (or any
+  // sibling below it: queued strip, primer banner) grows. assistant-ui's
+  // `autoScroll` only re-pins on message updates, not on viewport
+  // height shrinks; without this, typing multi-line prompts slides the
+  // visible bottom of the chat up by the height the composer just
+  // grew. See #1104.
+  const viewportRef = useRef<HTMLDivElement | null>(null);
+  const belowViewportRef = useRef<HTMLDivElement | null>(null);
+  useLayoutEffect(() => {
+    const vp = viewportRef.current;
+    const below = belowViewportRef.current;
+    if (!vp || !below) return;
+    let prevHeight = below.offsetHeight;
+    const ro = new ResizeObserver(() => {
+      const nextHeight = below.offsetHeight;
+      if (nextHeight === prevHeight) return;
+      // Treat "within 16px of the bottom" as pinned. assistant-ui's
+      // own stick-to-bottom uses a similar slop; sub-pixel rounding
+      // and momentary content reflows otherwise drop us out of the
+      // pinned state for one frame.
+      const wasAtBottom =
+        vp.scrollTop + vp.clientHeight >= vp.scrollHeight - 16;
+      prevHeight = nextHeight;
+      if (wasAtBottom) {
+        vp.scrollTop = vp.scrollHeight;
+      }
+    });
+    ro.observe(below);
+    return () => ro.disconnect();
+  }, []);
   return (
     <div className="flex h-full flex-col bg-surface-900 text-text-primary">
       <PlanStrip plan={state.plan} mode={state.mode} />
@@ -174,6 +205,7 @@ function CockpitChrome({
       <ThreadPrimitive.Root className="flex flex-1 flex-col min-h-0">
         <ThreadPrimitive.Viewport
           autoScroll
+          ref={viewportRef}
           className="flex-1 overflow-y-auto"
         >
           <div className="mx-auto max-w-3xl xl:max-w-4xl 2xl:max-w-5xl px-4 py-6">
@@ -217,37 +249,39 @@ function CockpitChrome({
           </div>
         </ThreadPrimitive.Viewport>
 
-        <QueuedPromptsStrip
-          queued={state.queuedPrompts}
-          onRemove={removeQueuedPrompt}
-          onEdit={editQueuedPrompt}
-          onClear={clearQueue}
-        />
+        <div ref={belowViewportRef}>
+          <QueuedPromptsStrip
+            queued={state.queuedPrompts}
+            onRemove={removeQueuedPrompt}
+            onEdit={editQueuedPrompt}
+            onClear={clearQueue}
+          />
 
-        <ContextPrimerBanner
-          sessionId={sessionId}
-          available={state.contextPrimerAvailable}
-          onInsertPrimer={(text) =>
-            setPrimerPrefill({
-              id: `primer-${state.contextPrimerAvailable?.resetSeq ?? 0}-${Date.now()}`,
-              text,
-            })
-          }
-        />
+          <ContextPrimerBanner
+            sessionId={sessionId}
+            available={state.contextPrimerAvailable}
+            onInsertPrimer={(text) =>
+              setPrimerPrefill({
+                id: `primer-${state.contextPrimerAvailable?.resetSeq ?? 0}-${Date.now()}`,
+                text,
+              })
+            }
+          />
 
-        <Composer
-          sessionId={sessionId}
-          availableModes={state.availableModes}
-          currentModeId={state.currentModeId}
-          legacyMode={state.mode}
-          sessionUsage={state.sessionUsage}
-          availableCommands={state.availableCommands}
-          connected={status === "open" && !state.workerStopped && !state.workerRestarting}
-          turnActive={state.turnActive}
-          queuedCount={state.queuedPrompts.length}
-          enqueuePrompt={sendPrompt}
-          primerPrefill={primerPrefill}
-        />
+          <Composer
+            sessionId={sessionId}
+            availableModes={state.availableModes}
+            currentModeId={state.currentModeId}
+            legacyMode={state.mode}
+            sessionUsage={state.sessionUsage}
+            availableCommands={state.availableCommands}
+            connected={status === "open" && !state.workerStopped && !state.workerRestarting}
+            turnActive={state.turnActive}
+            queuedCount={state.queuedPrompts.length}
+            enqueuePrompt={sendPrompt}
+            primerPrefill={primerPrefill}
+          />
+        </div>
       </ThreadPrimitive.Root>
     </div>
   );
