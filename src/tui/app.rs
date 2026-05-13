@@ -805,6 +805,20 @@ impl App {
             Action::SetTransientStatus(text) => {
                 self.update_status = Some(UpdateStatus::transient(text));
             }
+            Action::SendMessage(id, message) => {
+                // Flip the row to Starting and show a toast so the user has
+                // visible feedback during ensure_pane_ready, which can take
+                // several seconds on a cold-start sandboxed session (Docker
+                // pull) or while the readiness loop waits for an agent
+                // splash to clear. The status poller will correct the row
+                // back to the real state after we return.
+                self.home
+                    .set_instance_status(&id, crate::session::Status::Starting);
+                self.update_status = Some(UpdateStatus::transient("Reviving session...".into()));
+                terminal.draw(|f| self.render(f))?;
+                self.home.execute_send_message(&id, &message);
+                self.update_status = None;
+            }
         }
         Ok(())
     }
@@ -1074,6 +1088,11 @@ pub enum Action {
     SetTheme(String),
     SpawnUpdate(crate::update::install::InstallMethod, String),
     SetTransientStatus(String),
+    /// Send a message to a session. Deferred to `execute_action` (rather
+    /// than handled inline in the dialog Submit branch) so the app loop
+    /// can render a "Reviving..." status before the potentially-slow
+    /// ensure_pane_ready call.
+    SendMessage(String, String),
 }
 
 #[cfg(test)]

@@ -1492,18 +1492,29 @@ impl Instance {
 
     /// Best-effort wait for a freshly-started pane to settle past its initial
     /// shell/splash so subsequent `send-keys` land in the agent instead of a
-    /// boot prompt. Polls up to 3s in 50ms increments; returns early once the
-    /// pane is alive and (for non-shell agents) no longer running a shell.
-    /// Returns even on timeout so a sluggish agent doesn't block the send
-    /// indefinitely.
+    /// boot prompt. Polls up to 3s in 50ms increments; returns even on
+    /// timeout so a sluggish agent doesn't block the send indefinitely.
+    ///
+    /// Readiness signal:
+    /// - Agents that expect a shell, run a custom command override, or have
+    ///   an active hook status file: just wait for the pane to not be dead.
+    ///   Wrapper scripts look like shells to tmux, so `is_pane_running_shell`
+    ///   would never clear for them and we would eat the full 3s every time.
+    ///   This mirrors the same guard chain `ensure_session` uses.
+    /// - Real agents (e.g. claude, opencode): also wait for the pane to no
+    ///   longer be running a shell, so a keystroke doesn't land in the boot
+    ///   prompt that runs before the agent binary takes over.
     fn wait_for_pane_ready(&self, session: &tmux::Session) {
-        let expects_shell = self.expects_shell();
+        let shell_check_unreliable = self.expects_shell()
+            || self.has_command_override()
+            || crate::hooks::read_hook_status(&self.id).is_some();
         let deadline = std::time::Instant::now() + std::time::Duration::from_millis(3000);
         loop {
             if !session.exists() {
                 return;
             }
-            if !session.is_pane_dead() && (expects_shell || !session.is_pane_running_shell()) {
+            let pane_alive = !session.is_pane_dead();
+            if pane_alive && (shell_check_unreliable || !session.is_pane_running_shell()) {
                 return;
             }
             if std::time::Instant::now() >= deadline {

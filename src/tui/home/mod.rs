@@ -1346,6 +1346,44 @@ impl HomeView {
         self.mutate_instance(id, |inst| inst.touch_last_accessed());
     }
 
+    /// Run the send-message work after the dialog has been dismissed: call
+    /// `ensure_pane_ready` (which may auto-start or respawn), then deliver
+    /// the keystrokes. Errors are surfaced via `info_dialog` so the caller
+    /// (`execute_action`) only has to clear its transient status.
+    pub fn execute_send_message(&mut self, session_id: &str, message: &str) {
+        if let Err(err) = self.try_mutate_instance(session_id, |inst| {
+            inst.ensure_pane_ready().map(drop).map_err(Into::into)
+        }) {
+            self.info_dialog = Some(InfoDialog::new(
+                "Send Failed",
+                &format!("Cannot prepare session: {}", err),
+            ));
+            return;
+        }
+        let Some(inst) = self.get_instance(session_id) else {
+            return;
+        };
+        let tmux_session = match crate::tmux::Session::new(&inst.id, &inst.title) {
+            Ok(s) => s,
+            Err(e) => {
+                self.info_dialog = Some(InfoDialog::new(
+                    "Send Failed",
+                    &format!("Failed to resolve session: {}", e),
+                ));
+                return;
+            }
+        };
+        let delay = crate::agents::send_keys_enter_delay(&inst.tool);
+        if let Err(e) = tmux_session.send_keys_with_delay(message, delay) {
+            self.info_dialog = Some(InfoDialog::new(
+                "Send Failed",
+                &format!("Failed to send message: {}", e),
+            ));
+            return;
+        }
+        self.stamp_last_accessed(session_id);
+    }
+
     pub fn save(&self) -> anyhow::Result<()> {
         for (profile_name, storage) in &self.storages {
             let profile_instances: Vec<Instance> = self

@@ -514,41 +514,13 @@ impl HomeView {
                 DialogResult::Submit(message) => {
                     self.send_message_dialog = None;
                     if let Some(session_id) = self.pending_send_session.take() {
-                        // Revive the pane before sending. Without this, a
-                        // send to a dead pane silently writes keystrokes to
-                        // a corpse with no agent to respond.
-                        if let Err(err) = self.try_mutate_instance(&session_id, |inst| {
-                            inst.ensure_pane_ready().map(drop).map_err(Into::into)
-                        }) {
-                            self.info_dialog = Some(InfoDialog::new(
-                                "Send Failed",
-                                &format!("Cannot prepare session: {}", err),
-                            ));
-                            return None;
-                        }
-                        if let Some(inst) = self.get_instance(&session_id) {
-                            match crate::tmux::Session::new(&inst.id, &inst.title) {
-                                Ok(tmux_session) => {
-                                    let delay = crate::agents::send_keys_enter_delay(&inst.tool);
-                                    if let Err(e) =
-                                        tmux_session.send_keys_with_delay(&message, delay)
-                                    {
-                                        self.info_dialog = Some(InfoDialog::new(
-                                            "Send Failed",
-                                            &format!("Failed to send message: {}", e),
-                                        ));
-                                    } else {
-                                        self.stamp_last_accessed(&session_id);
-                                    }
-                                }
-                                Err(e) => {
-                                    self.info_dialog = Some(InfoDialog::new(
-                                        "Send Failed",
-                                        &format!("Failed to resolve session: {}", e),
-                                    ));
-                                }
-                            }
-                        }
+                        // Defer the actual work to execute_action so the app
+                        // loop can render a status indicator first. The send
+                        // path may need to start a Docker container or wait
+                        // for an agent splash to settle (up to several seconds
+                        // total); doing it inline here would freeze the TUI
+                        // with no feedback.
+                        return Some(Action::SendMessage(session_id, message));
                     }
                 }
             }
