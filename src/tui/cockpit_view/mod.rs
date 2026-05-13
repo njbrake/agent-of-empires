@@ -26,7 +26,7 @@ use tokio::time::Instant;
 use self::input::{Focus, Intent};
 use self::state::{CockpitViewState, ToastBanner, ToastKind};
 use crate::cockpit::client::{
-    ensure_daemon, ws_connect, HttpClient, ManagerError, WsError, WsMessage,
+    ensure_daemon, ws_connect, DaemonEndpoint, HttpClient, ManagerError, WsError, WsMessage,
 };
 use crate::cockpit::protocol::ApprovalDecisionWire;
 use crate::tui::styles::Theme;
@@ -121,7 +121,21 @@ pub async fn run(
             return Ok(());
         }
     };
+    run_for_endpoint(terminal, event_stream, theme, endpoint, session_id).await
+}
 
+/// Same as [`run`] but the caller has already located the daemon
+/// endpoint (e.g. the remote-home picker that ran a session discovery
+/// step against a fixed `AOE_DAEMON_URL`). Skips `ensure_daemon` so the
+/// view never silently auto-spawns a local daemon when the user
+/// explicitly chose a remote one.
+pub async fn run_for_endpoint(
+    terminal: &mut Terminal<CrosstermBackend<Stdout>>,
+    event_stream: &mut EventStream,
+    theme: &Theme,
+    endpoint: DaemonEndpoint,
+    session_id: &str,
+) -> Result<()> {
     let http = HttpClient::new(endpoint.clone()).context("build cockpit HTTP client")?;
 
     // Hydrate the transcript via /replay before opening the WebSocket

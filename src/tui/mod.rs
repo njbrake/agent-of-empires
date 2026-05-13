@@ -9,6 +9,8 @@ mod deletion_poller;
 pub mod dialogs;
 pub mod diff;
 mod home;
+#[cfg(feature = "serve")]
+pub(crate) mod remote_home;
 pub(crate) mod responsive;
 pub mod settings;
 mod status_poller;
@@ -30,6 +32,18 @@ use crate::session::get_update_settings;
 use crate::update::check_for_update;
 
 pub async fn run(profile: &str, startup_warning: Option<String>) -> Result<()> {
+    // Cross-machine entrypoint: when `AOE_DAEMON_URL` is set, swap the
+    // local home view for the remote cockpit picker so the user never
+    // sees a session list that doesn't reflect the daemon they pointed
+    // us at. Tmux check + migrations are intentionally skipped here:
+    // the remote machine owns those, this side is a pure client.
+    #[cfg(feature = "serve")]
+    if let Some(endpoint) = crate::cockpit::client::discovery::discover_env() {
+        let _ = startup_warning; // remote mode skips the local startup-warning channel
+        let _ = profile;
+        return remote_home::run_standalone(endpoint).await;
+    }
+
     // Run pending migrations with a spinner so users see progress
     if migrations::has_pending_migrations() {
         const SPINNER_FRAMES: &[char] = &['◐', '◓', '◑', '◒'];
