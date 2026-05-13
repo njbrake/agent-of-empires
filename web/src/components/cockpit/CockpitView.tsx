@@ -138,29 +138,45 @@ function CockpitChrome({
   // height shrinks; without this, typing multi-line prompts slides the
   // visible bottom of the chat up by the height the composer just
   // grew. See #1104.
+  //
+  // We sample "is the viewport pinned to the bottom?" on every scroll
+  // event into a ref. By the time the ResizeObserver fires the layout
+  // has already settled at the smaller viewport height, so reading
+  // pinned-ness after the fact would always be false for the very
+  // case we want to catch (composer grew, scroll content now overflows
+  // the shrunk viewport by exactly the grow amount). The scroll-time
+  // sample captures the pre-resize state; the RO callback consumes it.
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const belowViewportRef = useRef<HTMLDivElement | null>(null);
+  const wasAtBottomRef = useRef<boolean>(true);
   useLayoutEffect(() => {
     const vp = viewportRef.current;
     const below = belowViewportRef.current;
     if (!vp || !below) return;
+    // Treat "within 16px of the bottom" as pinned. assistant-ui's
+    // own stick-to-bottom uses a similar slop; sub-pixel rounding
+    // and momentary content reflows otherwise drop us out of the
+    // pinned state for one frame.
+    const sampleAtBottom = () => {
+      wasAtBottomRef.current =
+        vp.scrollTop + vp.clientHeight >= vp.scrollHeight - 16;
+    };
+    sampleAtBottom();
+    vp.addEventListener("scroll", sampleAtBottom, { passive: true });
     let prevHeight = below.offsetHeight;
     const ro = new ResizeObserver(() => {
       const nextHeight = below.offsetHeight;
       if (nextHeight === prevHeight) return;
-      // Treat "within 16px of the bottom" as pinned. assistant-ui's
-      // own stick-to-bottom uses a similar slop; sub-pixel rounding
-      // and momentary content reflows otherwise drop us out of the
-      // pinned state for one frame.
-      const wasAtBottom =
-        vp.scrollTop + vp.clientHeight >= vp.scrollHeight - 16;
       prevHeight = nextHeight;
-      if (wasAtBottom) {
+      if (wasAtBottomRef.current) {
         vp.scrollTop = vp.scrollHeight;
       }
     });
     ro.observe(below);
-    return () => ro.disconnect();
+    return () => {
+      ro.disconnect();
+      vp.removeEventListener("scroll", sampleAtBottom);
+    };
   }, []);
   return (
     <div className="flex h-full flex-col bg-surface-900 text-text-primary">
