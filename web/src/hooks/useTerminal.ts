@@ -138,6 +138,16 @@ export function useTerminal(
   // Set inside the effect; the scrollback-watch effect calls it to flush
   // a deferred resize without poking React state.
   const flushPendingResizeRef = useRef<(() => void) | null>(null);
+  // Set inside the effect to point at the local `connect()` function so
+  // `manualReconnect` (defined outside the effect closure) can dial a
+  // fresh WS directly when the prior socket is already CLOSED — calling
+  // ws.close() on a CLOSED socket is a no-op, which was the bug behind
+  // the dead Retry button after retries exhausted. See #1009.
+  const connectRef = useRef<(() => void) | null>(null);
+  // Reverse pointer so the `online` / `pageshow` listeners installed
+  // inside the connect-effect can call manualReconnect (defined below
+  // the effect) without re-running the effect itself.
+  const manualReconnectRef = useRef<(() => void) | null>(null);
   const [state, setState] = useState<TerminalState>({
     connected: false,
     reconnecting: false,
@@ -458,6 +468,7 @@ export function useTerminal(
         console.error("wterm init failed:", err);
       });
 
+    connectRef.current = connect;
     function connect() {
       const proto = location.protocol === "https:" ? "wss:" : "ws:";
       // Pass the auth token via the WebSocket subprotocol list instead of
@@ -1070,25 +1081,60 @@ export function useTerminal(
         ws.send(JSON.stringify(msg));
       }
     };
+    // Auto-reconnect probe for "viewport just came back" events. iOS
+    // Safari (and Chrome's bfcache restore) can suspend a tab in a way
+    // that drops the WS onclose; the socket is CLOSED on resume but
+    // the retry-driver never fired, so the user sees a frozen terminal
+    // until they hit Retry. Triggering manualReconnect on these events
+    // wakes the WS without user input. Bail when the socket is OPEN
+    // (or still actively CONNECTING) so we don't disrupt a live
+    // session. See #1009.
+    const tryAutoReconnect = (label: string) => {
+      const ws = wsRef.current;
+      const readyState = ws?.readyState;
+      if (
+        readyState === WebSocket.OPEN ||
+        readyState === WebSocket.CONNECTING
+      ) {
+        return;
+      }
+      tdbg("auto-reconnect", { trigger: label, readyState });
+      manualReconnectRef.current?.();
+    };
     const onVisibilityChange = () => {
       tdbg("visibilitychange", {
         state: document.visibilityState,
         readyState: wsRef.current?.readyState,
       });
-      if (document.visibilityState === "visible") sendActivate();
+      if (document.visibilityState === "visible") {
+        sendActivate();
+        tryAutoReconnect("visibilitychange");
+      }
     };
     const onWindowFocus = () => {
       tdbg("window.focus", { readyState: wsRef.current?.readyState });
       sendActivate();
     };
+    const onOnline = () => tryAutoReconnect("online");
+    const onPageShow = (e: PageTransitionEvent) => {
+      tdbg("pageshow", {
+        persisted: e.persisted,
+        readyState: wsRef.current?.readyState,
+      });
+      tryAutoReconnect("pageshow");
+    };
     document.addEventListener("visibilitychange", onVisibilityChange);
     window.addEventListener("focus", onWindowFocus);
+    window.addEventListener("online", onOnline);
+    window.addEventListener("pageshow", onPageShow);
 
     return () => {
       connectOnReady = false;
       cancelMomentum();
       document.removeEventListener("visibilitychange", onVisibilityChange);
       window.removeEventListener("focus", onWindowFocus);
+      window.removeEventListener("online", onOnline);
+      window.removeEventListener("pageshow", onPageShow);
       viewport.removeEventListener("touchstart", onTouchStart, touchOpts);
       viewport.removeEventListener("touchmove", onTouchMove, touchOpts);
       viewport.removeEventListener("touchend", onTouchEnd, touchOpts);
@@ -1142,6 +1188,16 @@ export function useTerminal(
       readyState: ws?.readyState,
       previousAttempt: retryCountRef.current,
     });
+    // Cancel any armed backoff retry / countdown so the upcoming connect
+    // isn't immediately followed by the scheduled one.
+    if (retryTimerRef.current) {
+      clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = null;
+    }
+    if (countdownRef.current) {
+      clearInterval(countdownRef.current);
+      countdownRef.current = null;
+    }
     retryCountRef.current = 0;
     setState((prev) => ({
       ...prev,
@@ -1150,8 +1206,18 @@ export function useTerminal(
       retryCount: 0,
       retryCountdown: 0,
     }));
-    ws?.close();
+    // If the socket is already CLOSED, ws.close() is a no-op and no
+    // onclose will fire to drive the retry path; dial a fresh socket
+    // directly. CONNECTING / OPEN / CLOSING all still have onclose
+    // ahead of them, so close() + onclose's retry handler is the
+    // right path there.
+    if (!ws || ws.readyState === WebSocket.CLOSED) {
+      connectRef.current?.();
+    } else {
+      ws.close();
+    }
   };
+  manualReconnectRef.current = manualReconnect;
 
   const sendData = useCallback((data: string) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
@@ -1204,5 +1270,6 @@ export function useTerminal(
     exitScrollback,
     ctrlActiveRef,
     clearCtrlRef,
+    maxRetries: MAX_RETRIES,
   };
 }

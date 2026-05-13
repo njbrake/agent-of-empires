@@ -49,6 +49,7 @@ export function TerminalView({ session, experimentalCockpit = false }: Props) {
     exitScrollback,
     ctrlActiveRef,
     clearCtrlRef,
+    maxRetries,
   } = useTerminal(
     ensureState === "ready" ? session.id : null,
     "ws",
@@ -351,11 +352,11 @@ export function TerminalView({ session, experimentalCockpit = false }: Props) {
       {!state.connected && state.reconnecting && (
         <div className="bg-status-waiting/15 border-b border-status-waiting/30 px-4 py-1.5 flex items-center gap-2 shrink-0">
           <span className="text-xs text-status-waiting">
-            Reconnecting in {state.retryCountdown}s... ({state.retryCount}/3)
+            Reconnecting in {state.retryCountdown}s... ({state.retryCount}/{maxRetries})
           </span>
         </div>
       )}
-      {!state.connected && !state.reconnecting && state.retryCount >= 3 && (
+      {!state.connected && !state.reconnecting && state.retryCount >= maxRetries && (
         <div className="bg-status-error/10 border-b border-status-error/30 px-4 py-1.5 flex items-center gap-2 shrink-0">
           <span className="text-xs text-status-error">Connection lost</span>
           <button

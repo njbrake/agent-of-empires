@@ -136,6 +136,68 @@ test.describe("Terminal WebSocket reconnection", () => {
     expect(attempts).toBe(2);
   });
 
+  test("'online' event short-circuits the backoff and dials immediately", async ({
+    page,
+  }) => {
+    // After the first retry fires (~1s), the second backoff is ~2s. We
+    // close attempt #2 mid-flight, then dispatch a window 'online' event
+    // during the 4s backoff window before attempt #3 would normally fire.
+    // With the #1009 fix this triggers manualReconnect → connect()
+    // immediately; without it, the listener never reconnects on a CLOSED
+    // socket.
+    const title = "online-test";
+    await mockApisExceptWs(page, title);
+
+    await page.routeWebSocket(
+      /\/sessions\/[^/]+\/(terminal\/ws|container-ws)$/,
+      (ws) => {
+        ws.onMessage(() => {});
+      },
+    );
+
+    let attempts = 0;
+    const closeTimes: number[] = [];
+    const openTimes: number[] = [];
+    await page.routeWebSocket(/\/sessions\/[^/]+\/ws$/, (ws) => {
+      attempts += 1;
+      const attemptNum = attempts;
+      openTimes.push(Date.now());
+      ws.onMessage(() => {});
+      // Drop attempts 1 and 2 quickly to drive the retry path; let
+      // attempts 3+ stay open so the test can see the third connect
+      // arrive promptly after the 'online' kick.
+      if (attemptNum <= 2) {
+        setTimeout(() => {
+          closeTimes.push(Date.now());
+          try {
+            ws.close();
+          } catch {
+            /* already closed */
+          }
+        }, 50);
+      }
+    });
+
+    await openSession(page, title);
+
+    // Wait for two retry cycles to land (attempts 1 + 2 closed).
+    await expect.poll(() => closeTimes.length, { timeout: 6_000 }).toBe(2);
+
+    // Fire 'online' while the third backoff is still pending (~4s).
+    // Wait a short moment so the listener is firmly armed and the WS is
+    // CLOSED, then dispatch.
+    await page.waitForTimeout(200);
+    const beforeOnline = Date.now();
+    await page.evaluate(() => window.dispatchEvent(new Event("online")));
+
+    // Attempt 3 should arrive well under the 4s backoff that would
+    // otherwise gate it.
+    await expect.poll(() => attempts, { timeout: 2_000 }).toBeGreaterThanOrEqual(3);
+    const thirdOpenedAt = openTimes[2];
+    expect(thirdOpenedAt).toBeDefined();
+    expect(thirdOpenedAt! - beforeOnline).toBeLessThan(1_500);
+  });
+
   test("retries more than the old max of 3", async ({ page }) => {
     // The old hardcoded MAX_RETRIES was 3. The new value is 7 with
     // exponential backoff (1s, 2s, 4s, …). We don't wait the full schedule;
