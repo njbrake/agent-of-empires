@@ -338,6 +338,44 @@ impl Theme {
             sandbox: Color::Rgb(189, 147, 249),
         }
     }
+
+    /// Rosé Pine theme
+    /// Official palette: https://rosepinetheme.com/palette/ingredients/
+    pub fn rose_pine() -> Self {
+        Self {
+            background: Color::Rgb(25, 23, 36),
+            border: Color::Rgb(82, 79, 103),
+            terminal_border: Color::Rgb(156, 207, 216),
+            selection: Color::Rgb(33, 32, 46),
+            session_selection: Color::Rgb(64, 61, 82),
+
+            title: Color::Rgb(196, 167, 231),
+            text: Color::Rgb(224, 222, 244),
+            dimmed: Color::Rgb(110, 106, 134),
+            hint: Color::Rgb(144, 140, 170),
+
+            running: Color::Rgb(156, 207, 216),
+            waiting: Color::Rgb(246, 193, 119),
+            fresh_idle: Color::Rgb(144, 140, 170),
+            idle: Color::Rgb(110, 106, 134),
+            error: Color::Rgb(235, 111, 146),
+            terminal_active: Color::Rgb(156, 207, 216),
+
+            group: Color::Rgb(224, 222, 244),
+            search: Color::Rgb(246, 193, 119),
+            accent: Color::Rgb(235, 188, 186),
+
+            diff_add: Color::Rgb(156, 207, 216),
+            diff_delete: Color::Rgb(235, 111, 146),
+            diff_modified: Color::Rgb(235, 188, 186),
+            diff_header: Color::Rgb(49, 116, 143),
+
+            help_key: Color::Rgb(246, 193, 119),
+
+            branch: Color::Rgb(49, 116, 143),
+            sandbox: Color::Rgb(144, 140, 170),
+        }
+    }
 }
 
 /// Serde helper for Color as hex string (#rrggbb)
@@ -386,6 +424,7 @@ pub(super) mod hex_color {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tui::styles::{load_theme, BUILTIN_THEMES};
 
     #[test]
     fn downsample_to_palette_converts_all_fields() {
@@ -528,24 +567,19 @@ mod tests {
         // Heuristic limit: a custom user theme with a mid-tone background
         // (luminance near the 128 cutoff) could fall on the wrong side of
         // the dark/light split and fail this assertion in surprising
-        // ways. That's intentional — the test guards the 5 built-ins, not
-        // arbitrary user themes loaded from `~/.config/agent-of-empires/
-        // themes/*.toml`. If a custom-theme contributor needs to bypass
-        // this, they should pick `fresh_idle` themselves rather than rely
-        // on the test to validate it.
+        // ways. That's intentional, the test guards every built-in
+        // registered in `BUILTIN_THEMES`, not arbitrary user themes loaded
+        // from `~/.config/agent-of-empires/themes/*.toml`. If a custom-theme
+        // contributor needs to bypass this, they should pick `fresh_idle`
+        // themselves rather than rely on the test to validate it.
         fn luminance(c: Color) -> f32 {
             match c {
                 Color::Rgb(r, g, b) => 0.299 * r as f32 + 0.587 * g as f32 + 0.114 * b as f32,
                 _ => 0.0,
             }
         }
-        for (name, theme) in [
-            ("empire", Theme::empire()),
-            ("phosphor", Theme::phosphor()),
-            ("tokyo_night_storm", Theme::tokyo_night_storm()),
-            ("catppuccin_latte", Theme::catppuccin_latte()),
-            ("dracula", Theme::dracula()),
-        ] {
+        for name in BUILTIN_THEMES {
+            let theme = load_theme(name);
             let bg = luminance(theme.background);
             let dark_bg = bg < 128.0;
             let cmp = |label_a, a, label_b, b| {

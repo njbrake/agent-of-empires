@@ -44,12 +44,12 @@ All settings below can also be edited from the TUI settings screen (press `s` or
 
 ```toml
 [theme]
-name = "empire"   # empire, phosphor, tokyo-night-storm, catppuccin-latte, dracula
+name = "empire"   # empire, phosphor, tokyo-night-storm, catppuccin-latte, dracula, rose-pine
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `name` | `"empire"` | TUI color theme. Available: `empire` (warm navy/amber), `phosphor` (green), `tokyo-night-storm` (dark blue/purple), `catppuccin-latte` (light pastel), `dracula` (dark purple/pink). |
+| `name` | `"empire"` | TUI color theme. Available: `empire` (warm navy/amber), `phosphor` (green), `tokyo-night-storm` (dark blue/purple), `catppuccin-latte` (light pastel), `dracula` (dark purple/pink), `rose-pine` (dark muted purple/pink). |
 
 ## Session
 

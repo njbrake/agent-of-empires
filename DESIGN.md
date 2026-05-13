@@ -189,7 +189,7 @@ This makes the two panels feel like one cohesive surface with a divider rather t
 - **Information density** in the session list -- AoE is a dashboard, density is correct
 - **Dialog structure** -- functional, well-proportioned, dialogs should be boxed
 - **Status bar layout** -- the key/description/separator pattern is learnable and functional
-- **The other 4 themes** -- keep them all as options for users who prefer them
+- **The other 5 themes** -- keep them all as options for users who prefer them
 
 ## Decisions Log
 | Date       | Decision | Rationale |

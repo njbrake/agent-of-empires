@@ -21,6 +21,7 @@ pub const BUILTIN_THEMES: &[&str] = &[
     "tokyo-night-storm",
     "catppuccin-latte",
     "dracula",
+    "rose-pine",
 ];
 
 /// Return the directory where custom theme TOML files are stored.
@@ -93,6 +94,7 @@ pub fn load_theme(name: &str) -> Theme {
         "tokyo-night-storm" => Theme::tokyo_night_storm(),
         "catppuccin-latte" => Theme::catppuccin_latte(),
         "dracula" => Theme::dracula(),
+        "rose-pine" => Theme::rose_pine(),
         _ => {
             // Try loading from custom themes directory
             for (theme_name, path) in discover_custom_themes() {
@@ -187,13 +189,21 @@ mod tests {
     }
 
     #[test]
+    fn test_load_rose_pine() {
+        let theme = load_theme("rose-pine");
+        assert_eq!(theme.title, Color::Rgb(196, 167, 231));
+        assert_eq!(theme.background, Color::Rgb(25, 23, 36));
+    }
+
+    #[test]
     fn test_builtin_themes_count() {
-        assert_eq!(BUILTIN_THEMES.len(), 5);
+        assert_eq!(BUILTIN_THEMES.len(), 6);
         assert!(BUILTIN_THEMES.contains(&"empire"));
         assert!(BUILTIN_THEMES.contains(&"phosphor"));
         assert!(BUILTIN_THEMES.contains(&"tokyo-night-storm"));
         assert!(BUILTIN_THEMES.contains(&"catppuccin-latte"));
         assert!(BUILTIN_THEMES.contains(&"dracula"));
+        assert!(BUILTIN_THEMES.contains(&"rose-pine"));
     }
 
     #[test]
