@@ -618,6 +618,42 @@ impl EventStore {
         collected
     }
 
+    /// Latest event for `session_id` that the sidebar status derivation
+    /// cares about. Used at daemon startup to seed `Instance.status`
+    /// from history: the in-memory status writes that fire on live
+    /// cockpit events don't survive restart, so without this scan a
+    /// session that was mid-turn when the previous daemon died would
+    /// render Idle until the next lifecycle event arrived. See #1103.
+    pub fn latest_status_event(&self, session_id: &str) -> Option<Event> {
+        let conn = match self.conn.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        let json: Option<String> = conn
+            .query_row(
+                "SELECT event_json FROM cockpit_events
+                 WHERE session_id = ?1
+                   AND (json_extract(event_json, '$.UserPromptSent') IS NOT NULL
+                     OR json_extract(event_json, '$.ApprovalRequested') IS NOT NULL
+                     OR json_extract(event_json, '$.ApprovalResolved') IS NOT NULL
+                     OR json_extract(event_json, '$.Stopped') IS NOT NULL
+                     OR json_extract(event_json, '$.AgentStartupError') IS NOT NULL)
+                 ORDER BY seq DESC
+                 LIMIT 1",
+                params![session_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .unwrap_or_else(|e| {
+                warn!(
+                    target: "cockpit.event_store",
+                    "latest_status_event query for {session_id}: {e}"
+                );
+                None
+            });
+        json.and_then(|s| serde_json::from_str(&s).ok())
+    }
+
     /// Nonces of `ApprovalRequested` events for the session that lack a
     /// later `ApprovalResolved` with the same nonce. Used on reattach
     /// to surface "this approval card is dead, the previous daemon's
@@ -1347,6 +1383,46 @@ mod tests {
         let replay = store.replay_from("s-1", 0);
         assert_eq!(replay.len(), 2);
         assert_eq!(store.highest_seq("s-1"), 2);
+    }
+
+    /// `latest_status_event` returns the most recent lifecycle event the
+    /// sidebar status derivation cares about. Used by the startup
+    /// seeding pass (#1103) so a session that was mid-turn when the
+    /// previous daemon died renders Running on cold start.
+    #[test]
+    fn latest_status_event_returns_most_recent_lifecycle_event() {
+        let (_tmp, store) = open_store(1000);
+        store
+            .record("s-1", 1, &Event::UserPromptSent { text: "hi".into() })
+            .unwrap();
+        store.record("s-1", 2, &Event::ThinkingStarted).unwrap();
+        store.record("s-1", 3, &Event::ThinkingEnded).unwrap();
+        // Most recent matching event is the UserPromptSent at seq 1.
+        let latest = store.latest_status_event("s-1");
+        assert!(matches!(
+            latest,
+            Some(Event::UserPromptSent { text }) if text == "hi"
+        ));
+
+        // Stopped at seq 4 takes over as the most recent lifecycle event.
+        store
+            .record(
+                "s-1",
+                4,
+                &Event::Stopped {
+                    reason: "prompt_complete".into(),
+                },
+            )
+            .unwrap();
+        let latest = store.latest_status_event("s-1");
+        assert!(matches!(latest, Some(Event::Stopped { reason }) if reason == "prompt_complete"));
+
+        // Session with no lifecycle events → None.
+        store.record("s-2", 1, &Event::ThinkingStarted).unwrap();
+        assert!(store.latest_status_event("s-2").is_none());
+
+        // Unknown session → None.
+        assert!(store.latest_status_event("nope").is_none());
     }
 
     /// `unresolved_approval_nonces` finds `ApprovalRequested` rows whose

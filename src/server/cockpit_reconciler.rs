@@ -251,6 +251,28 @@ async fn resume_one(state: Arc<AppState>, target: ResumeTarget) -> ResumeOutcome
                         in_flight_turn,
                         "reattached to existing cockpit runner"
                     );
+                    // The startup pass in `seed_cockpit_statuses`
+                    // covers the cold-start case. Anything attached
+                    // later (e.g. a session created after the daemon
+                    // started) also needs its status seeded; the
+                    // attach path's only sidebar-moving signal is the
+                    // next live event, which can be many seconds
+                    // away. Re-derive from history here too so the
+                    // dot turns green immediately. See #1103 (A).
+                    if in_flight_turn {
+                        if let Some(event) = state.cockpit_event_store.latest_status_event(&id) {
+                            if let Some(intent) = crate::server::derive_cockpit_status(&event) {
+                                let mut instances = state.instances.write().await;
+                                if let Some(inst) = instances.iter_mut().find(|i| i.id == id) {
+                                    crate::server::apply_status_intent(
+                                        inst,
+                                        Some(intent),
+                                        &state.status_tx,
+                                    );
+                                }
+                            }
+                        }
+                    }
                     return ResumeOutcome::Attached;
                 }
                 Ok(Err(e)) => {
