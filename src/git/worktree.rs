@@ -2,6 +2,7 @@
 //! path computation. Split out from `mod.rs` as part of the code-quality
 //! consolidation pass; the public API is unchanged.
 
+use std::collections::HashSet;
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
@@ -9,15 +10,47 @@ use super::error::{GitError, Result};
 use super::open_repo_at;
 use super::template::{resolve_template, TemplateVars};
 
-/// Default remote name used for fetch-before-worktree-create.
-/// Hardcoded for now; if multi-remote support is needed (e.g., "upstream"
-/// vs personal fork), this is the place to parameterize.
+/// Remote name used as a fallback when no candidate remote can be picked
+/// from the local refs. Real selection happens in
+/// `detect_default_branch_info`, which walks every configured remote and
+/// scores its tracking refs by ancestry to HEAD and commit recency. This
+/// constant only matters for the legacy single-remote / "no refs in repo
+/// yet" path.
 const FETCH_REMOTE: &str = "origin";
 
 pub struct WorktreeEntry {
     pub path: PathBuf,
     pub branch: Option<String>,
     pub is_detached: bool,
+}
+
+/// Resolved default branch with the remote it came from, if any.
+///
+/// Returned by `GitWorktree::detect_default_branch_info`. Callers that
+/// need to fetch / branch off / diff against the canonical default
+/// should use this rather than just the branch name, because the same
+/// short name (e.g. `main`) can refer to different commits depending on
+/// which remote the canonical version lives at. See issue #1029.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DefaultBranchInfo {
+    /// Short branch name (e.g. `"main"`).
+    pub name: String,
+    /// Remote name (`"origin"`, `"upstream"`, ...) when the chosen ref
+    /// is a remote tracking branch. `None` when the chosen ref is a
+    /// purely local branch.
+    pub remote: Option<String>,
+}
+
+impl DefaultBranchInfo {
+    /// Resolvable ref name for git2's `find_branch` (remote variant)
+    /// and `revparse_single`. Remote refs become `"<remote>/<name>"`;
+    /// local refs are returned unchanged.
+    pub fn qualified_ref(&self) -> String {
+        match &self.remote {
+            Some(remote) => format!("{remote}/{name}", name = self.name),
+            None => self.name.clone(),
+        }
+    }
 }
 
 pub struct GitWorktree {
@@ -203,49 +236,92 @@ impl GitWorktree {
         }
     }
 
-    /// Detect the default branch name by checking the remote HEAD first, then
-    /// local and remote refs for "main" or "master". Falls back to the first
-    /// local branch if neither exists.
+    /// Detect the default branch name by short name only. Wraps
+    /// `detect_default_branch_info`; callers that need the remote (for
+    /// fetching / building a tracking-ref string) should use the info
+    /// variant directly.
     pub fn detect_default_branch(&self) -> Result<String> {
-        let repo = open_repo_at(&self.repo_path)?;
-        let remote_prefix = format!("refs/remotes/{FETCH_REMOTE}/");
-        let remote_head_ref = format!("{remote_prefix}HEAD");
+        self.detect_default_branch_info().map(|i| i.name)
+    }
 
-        if let Ok(reference) = repo.find_reference(&remote_head_ref) {
-            if let Some(target) = reference.symbolic_target() {
-                if let Some(branch_name) = target.strip_prefix(&remote_prefix) {
-                    if branch_name != "HEAD" {
-                        return Ok(branch_name.to_string());
-                    }
+    /// Detect the default branch and the remote that owns the freshest
+    /// copy of it, scored against HEAD.
+    ///
+    /// Selection considers every configured remote (not just `origin`),
+    /// so a fork + `upstream` layout picks `upstream/main` over a stale
+    /// local `main` or fork `origin/main` (issue #1029).
+    ///
+    /// Candidate pool: every remote's `refs/remotes/<r>/HEAD` symbolic
+    /// target, plus `refs/remotes/<r>/main` / `refs/remotes/<r>/master`
+    /// for every remote, plus local `main` / `master`. Among candidates
+    /// that HEAD descends from (`merge_base(HEAD, candidate) == candidate`),
+    /// the one with the most recent commit time wins; ties break in
+    /// favor of a remote's stated default (`refs/remotes/*/HEAD`),
+    /// then remote over local, then `origin` over other remotes.
+    ///
+    /// If HEAD doesn't descend from any candidate (unrelated history),
+    /// the same scoring runs over all candidates without the ancestry
+    /// filter. With no candidates at all (no main/master, no remote
+    /// HEAD), falls back to the first local branch like the previous
+    /// implementation.
+    pub fn detect_default_branch_info(&self) -> Result<DefaultBranchInfo> {
+        let repo = open_repo_at(&self.repo_path)?;
+        let candidates = collect_default_branch_candidates(&repo);
+
+        if candidates.is_empty() {
+            if let Some(Ok((branch, _))) = repo.branches(Some(git2::BranchType::Local))?.next() {
+                if let Ok(Some(name)) = branch.name() {
+                    return Ok(DefaultBranchInfo {
+                        name: name.to_string(),
+                        remote: None,
+                    });
                 }
             }
+            return Err(GitError::BranchNotFound(
+                "No default branch found".to_string(),
+            ));
         }
 
-        for name in &["main", "master"] {
-            if repo.find_branch(name, git2::BranchType::Local).is_ok() {
-                return Ok(name.to_string());
+        let head_commit = repo.head().ok().and_then(|h| h.peel_to_commit().ok());
+
+        let pool: Vec<&Candidate> = if let Some(head_commit) = head_commit.as_ref() {
+            let ancestors: Vec<&Candidate> = candidates
+                .iter()
+                .filter(|c| {
+                    repo.merge_base(head_commit.id(), c.oid)
+                        .map(|mb| mb == c.oid)
+                        .unwrap_or(false)
+                })
+                .collect();
+            if ancestors.is_empty() {
+                candidates.iter().collect()
+            } else {
+                ancestors
             }
-        }
+        } else {
+            candidates.iter().collect()
+        };
 
-        for name in &["main", "master"] {
-            let remote_ref = format!("{FETCH_REMOTE}/{name}");
-            if repo
-                .find_branch(&remote_ref, git2::BranchType::Remote)
-                .is_ok()
-            {
-                return Ok(name.to_string());
-            }
-        }
+        let pick = pool
+            .into_iter()
+            .max_by(|a, b| {
+                a.commit_time
+                    .cmp(&b.commit_time)
+                    .then_with(|| a.is_stated_default.cmp(&b.is_stated_default))
+                    .then_with(|| a.remote.is_some().cmp(&b.remote.is_some()))
+                    .then_with(|| {
+                        let a_origin = a.remote.as_deref() == Some(FETCH_REMOTE);
+                        let b_origin = b.remote.as_deref() == Some(FETCH_REMOTE);
+                        a_origin.cmp(&b_origin)
+                    })
+                    .then_with(|| b.name.cmp(&a.name))
+            })
+            .expect("pool is non-empty when candidates is non-empty");
 
-        if let Some(Ok((branch, _))) = repo.branches(Some(git2::BranchType::Local))?.next() {
-            if let Ok(Some(name)) = branch.name() {
-                return Ok(name.to_string());
-            }
-        }
-
-        Err(GitError::BranchNotFound(
-            "No default branch found".to_string(),
-        ))
+        Ok(DefaultBranchInfo {
+            name: pick.name.clone(),
+            remote: pick.remote.clone(),
+        })
     }
 
     /// Create a new worktree at `path` checking out `branch`.
@@ -294,15 +370,25 @@ impl GitWorktree {
         // fetch the branch itself. Fails silently on network errors, falling
         // back to local refs.
         let t = std::time::Instant::now();
-        let resolved_base = if create_branch {
-            let base = match base_branch {
-                Some(b) if !b.trim().is_empty() => b.trim().to_string(),
-                _ => self
-                    .detect_default_branch()
-                    .unwrap_or_else(|_| "main".to_string()),
-            };
-            self.fetch_branch(FETCH_REMOTE, &base)?;
-            Some(base)
+        let resolved_base: Option<(String, Option<String>)> = if create_branch {
+            match base_branch {
+                Some(b) if !b.trim().is_empty() => {
+                    let base = b.trim().to_string();
+                    self.fetch_branch(FETCH_REMOTE, &base)?;
+                    Some((base, None))
+                }
+                _ => {
+                    let info = self
+                        .detect_default_branch_info()
+                        .unwrap_or(DefaultBranchInfo {
+                            name: "main".to_string(),
+                            remote: None,
+                        });
+                    let fetch_remote = info.remote.as_deref().unwrap_or(FETCH_REMOTE);
+                    self.fetch_branch(fetch_remote, &info.name)?;
+                    Some((info.name, info.remote))
+                }
+            }
         } else {
             self.fetch_branch(FETCH_REMOTE, branch)?;
             None
@@ -312,17 +398,32 @@ impl GitWorktree {
         let t = std::time::Instant::now();
         let repo = open_repo_at(&self.repo_path)?;
 
-        if let Some(base) = resolved_base {
-            // Branch from `origin/<base>` so new branches start from the
-            // latest remote state. Falls back to a local branch with the
-            // same name (lets users base off a teammate's local-only
-            // branch), then to HEAD, then to any local branch (bare repo
-            // with broken HEAD).
-            let remote_ref = format!("{FETCH_REMOTE}/{base}");
+        if let Some((base, base_remote)) = resolved_base {
+            // Branch from the picked remote's tip when the auto-detected
+            // canonical remote isn't `origin` (issue #1029: fork+upstream
+            // layouts). When the caller passed an explicit `--base-branch`,
+            // try `origin/<base>` first to preserve historical behavior.
+            // Falls back to a local branch with the same name (lets users
+            // base off a teammate's local-only branch), then to HEAD,
+            // then to any local branch (bare repo with broken HEAD).
+            let primary_remote = base_remote.as_deref().unwrap_or(FETCH_REMOTE);
+            let remote_ref = format!("{primary_remote}/{base}");
             let commit_oid = repo
                 .find_branch(&remote_ref, git2::BranchType::Remote)
                 .ok()
                 .and_then(|b| b.get().target())
+                .or_else(|| {
+                    // Secondary fallback to `origin/<base>` when the
+                    // primary remote was something other than `origin`.
+                    if primary_remote == FETCH_REMOTE {
+                        None
+                    } else {
+                        let origin_ref = format!("{FETCH_REMOTE}/{base}");
+                        repo.find_branch(&origin_ref, git2::BranchType::Remote)
+                            .ok()
+                            .and_then(|b| b.get().target())
+                    }
+                })
                 .or_else(|| {
                     repo.find_branch(&base, git2::BranchType::Local)
                         .ok()
@@ -745,6 +846,109 @@ impl GitWorktree {
             Err(GitError::NotAGitRepo)
         }
     }
+}
+
+/// One default-branch candidate considered by
+/// `detect_default_branch_info`. Scored by `commit_time` first, with
+/// `is_stated_default`/remote/origin used as tiebreakers.
+struct Candidate {
+    name: String,
+    remote: Option<String>,
+    /// True when this candidate came from a `refs/remotes/<r>/HEAD`
+    /// symbolic target rather than the `main`/`master` convention.
+    is_stated_default: bool,
+    oid: git2::Oid,
+    commit_time: i64,
+}
+
+fn collect_default_branch_candidates(repo: &git2::Repository) -> Vec<Candidate> {
+    let mut out: Vec<Candidate> = Vec::new();
+    let mut seen: HashSet<(String, Option<String>)> = HashSet::new();
+
+    let remote_names: Vec<String> = repo
+        .remotes()
+        .ok()
+        .as_ref()
+        .map(|rs| rs.iter().flatten().map(String::from).collect())
+        .unwrap_or_default();
+
+    let mut stated_defaults: Vec<(String, String)> = Vec::new();
+    for remote in &remote_names {
+        let head_ref_name = format!("refs/remotes/{remote}/HEAD");
+        let Ok(reference) = repo.find_reference(&head_ref_name) else {
+            continue;
+        };
+        let Some(target) = reference.symbolic_target() else {
+            continue;
+        };
+        let prefix = format!("refs/remotes/{remote}/");
+        if let Some(branch_name) = target.strip_prefix(&prefix) {
+            if branch_name != "HEAD" && !branch_name.is_empty() {
+                stated_defaults.push((remote.clone(), branch_name.to_string()));
+            }
+        }
+    }
+
+    let push = |out: &mut Vec<Candidate>,
+                seen: &mut HashSet<(String, Option<String>)>,
+                name: String,
+                remote: Option<String>,
+                is_stated_default: bool| {
+        let key = (name.clone(), remote.clone());
+        if seen.contains(&key) {
+            return;
+        }
+        let commit = match &remote {
+            Some(r) => {
+                let full = format!("{r}/{name}");
+                repo.find_branch(&full, git2::BranchType::Remote)
+                    .ok()
+                    .and_then(|b| b.get().peel_to_commit().ok())
+            }
+            None => repo
+                .find_branch(&name, git2::BranchType::Local)
+                .ok()
+                .and_then(|b| b.get().peel_to_commit().ok()),
+        };
+        if let Some(commit) = commit {
+            seen.insert(key);
+            out.push(Candidate {
+                name,
+                remote,
+                is_stated_default,
+                oid: commit.id(),
+                commit_time: commit.time().seconds(),
+            });
+        }
+    };
+
+    for (remote, name) in &stated_defaults {
+        push(
+            &mut out,
+            &mut seen,
+            name.clone(),
+            Some(remote.clone()),
+            true,
+        );
+    }
+
+    for remote in &remote_names {
+        for name in ["main", "master"] {
+            push(
+                &mut out,
+                &mut seen,
+                name.to_string(),
+                Some(remote.clone()),
+                false,
+            );
+        }
+    }
+
+    for name in ["main", "master"] {
+        push(&mut out, &mut seen, name.to_string(), None, false);
+    }
+
+    out
 }
 
 struct WorktreeWalkStats {
@@ -2050,6 +2254,192 @@ mod tests {
 
         let git_wt = GitWorktree::new(local_dir.path().to_path_buf()).unwrap();
         assert_eq!(git_wt.detect_default_branch().unwrap(), "develop");
+    }
+
+    /// Fork + upstream layout (issue #1029): when `origin` is the user's
+    /// stale fork and `upstream` is the canonical remote, the freshest
+    /// `main` lives at `upstream/main`. Detection must pick it over a
+    /// stale local `main` and stale `origin/main`.
+    #[test]
+    fn test_detect_default_branch_picks_upstream_over_stale_origin() {
+        let upstream_dir = TempDir::new().unwrap();
+        let upstream = git2::Repository::init_bare(upstream_dir.path()).unwrap();
+        upstream.set_head("refs/heads/main").unwrap();
+
+        // Use explicit timestamps so commit B is detectably newer than
+        // commit A. git2 commit times are second-precision; without
+        // this the in-test commits all collide at the same second and
+        // commit-time scoring degenerates into tiebreak territory.
+        let sig_a = git2::Signature::new(
+            "Test",
+            "test@example.com",
+            &git2::Time::new(1_700_000_000, 0),
+        )
+        .unwrap();
+        let sig_b = git2::Signature::new(
+            "Test",
+            "test@example.com",
+            &git2::Time::new(1_700_001_000, 0),
+        )
+        .unwrap();
+        let tree_a_id = {
+            let blob = upstream.blob(b"hello").unwrap();
+            let mut tb = upstream.treebuilder(None).unwrap();
+            tb.insert("file.txt", blob, 0o100644).unwrap();
+            tb.write().unwrap()
+        };
+        let tree_a = upstream.find_tree(tree_a_id).unwrap();
+        let commit_a = upstream
+            .commit(
+                Some("refs/heads/main"),
+                &sig_a,
+                &sig_a,
+                "commit A",
+                &tree_a,
+                &[],
+            )
+            .unwrap();
+
+        let origin_dir = TempDir::new().unwrap();
+        let origin = git2::Repository::init_bare(origin_dir.path()).unwrap();
+        origin.set_head("refs/heads/main").unwrap();
+        let origin_tree = {
+            let blob = origin.blob(b"hello").unwrap();
+            let mut tb = origin.treebuilder(None).unwrap();
+            tb.insert("file.txt", blob, 0o100644).unwrap();
+            let id = tb.write().unwrap();
+            origin.find_tree(id).unwrap()
+        };
+        origin
+            .commit(
+                Some("refs/heads/main"),
+                &sig_a,
+                &sig_a,
+                "commit A",
+                &origin_tree,
+                &[],
+            )
+            .unwrap();
+
+        let commit_a_obj = upstream.find_commit(commit_a).unwrap();
+        let tree_b = {
+            let blob = upstream.blob(b"world").unwrap();
+            let mut tb = upstream.treebuilder(Some(&tree_a)).unwrap();
+            tb.insert("file2.txt", blob, 0o100644).unwrap();
+            let id = tb.write().unwrap();
+            upstream.find_tree(id).unwrap()
+        };
+        let commit_b = upstream
+            .commit(
+                Some("refs/heads/main"),
+                &sig_b,
+                &sig_b,
+                "commit B",
+                &tree_b,
+                &[&commit_a_obj],
+            )
+            .unwrap();
+
+        let local_dir = TempDir::new().unwrap();
+        git2::Repository::clone(origin_dir.path().to_str().unwrap(), local_dir.path()).unwrap();
+        run_git(
+            local_dir.path(),
+            &[
+                "remote",
+                "add",
+                "upstream",
+                upstream_dir.path().to_str().unwrap(),
+            ],
+        );
+        run_git(local_dir.path(), &["fetch", "upstream"]);
+
+        let local_repo = git2::Repository::open(local_dir.path()).unwrap();
+        let upstream_tip = local_repo
+            .find_branch("upstream/main", git2::BranchType::Remote)
+            .unwrap()
+            .get()
+            .peel_to_commit()
+            .unwrap();
+        local_repo.branch("feature", &upstream_tip, false).unwrap();
+        local_repo.set_head("refs/heads/feature").unwrap();
+
+        // Sanity: HEAD is at commit B, local main and origin/main at commit A.
+        assert_eq!(
+            local_repo.head().unwrap().peel_to_commit().unwrap().id(),
+            commit_b
+        );
+        let local_main_oid = local_repo
+            .find_branch("main", git2::BranchType::Local)
+            .unwrap()
+            .get()
+            .peel_to_commit()
+            .unwrap()
+            .id();
+        assert_eq!(local_main_oid, commit_a);
+
+        let git_wt = GitWorktree::new(local_dir.path().to_path_buf()).unwrap();
+        let info = git_wt.detect_default_branch_info().unwrap();
+        assert_eq!(info.name, "main");
+        assert_eq!(
+            info.remote.as_deref(),
+            Some("upstream"),
+            "should pick upstream/main over stale origin/main and local main; got {info:?}"
+        );
+        assert_eq!(info.qualified_ref(), "upstream/main");
+        assert_eq!(git_wt.detect_default_branch().unwrap(), "main");
+    }
+
+    /// HEAD doesn't descend from any candidate (unrelated history /
+    /// fresh detached state). The non-ancestor pool is still scored,
+    /// so something sensible comes back rather than an error.
+    #[test]
+    fn test_detect_default_branch_info_falls_back_when_no_ancestor() {
+        let dir = TempDir::new().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+
+        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+        let tree_id = repo.index().unwrap().write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        let main_commit = repo
+            .commit(Some("refs/heads/main"), &sig, &sig, "init", &tree, &[])
+            .unwrap();
+
+        // Force HEAD onto an unrelated history by detaching to an
+        // orphan commit (no parents, different tree).
+        let blob = repo.blob(b"orphan").unwrap();
+        let mut tb = repo.treebuilder(None).unwrap();
+        tb.insert("orphan.txt", blob, 0o100644).unwrap();
+        let orphan_tree = repo.find_tree(tb.write().unwrap()).unwrap();
+        let orphan_commit = repo
+            .commit(None, &sig, &sig, "orphan", &orphan_tree, &[])
+            .unwrap();
+        repo.set_head_detached(orphan_commit).unwrap();
+
+        // Sanity: HEAD is orphan, main exists at main_commit.
+        let head_oid = repo.head().unwrap().peel_to_commit().unwrap().id();
+        assert_eq!(head_oid, orphan_commit);
+        assert_ne!(head_oid, main_commit);
+
+        let git_wt = GitWorktree::new(dir.path().to_path_buf()).unwrap();
+        let info = git_wt.detect_default_branch_info().unwrap();
+        assert_eq!(info.name, "main");
+        assert!(info.remote.is_none());
+    }
+
+    /// Qualified ref helper round-trips remote vs local correctly.
+    #[test]
+    fn test_default_branch_info_qualified_ref() {
+        let remote = DefaultBranchInfo {
+            name: "main".to_string(),
+            remote: Some("upstream".to_string()),
+        };
+        assert_eq!(remote.qualified_ref(), "upstream/main");
+
+        let local = DefaultBranchInfo {
+            name: "develop".to_string(),
+            remote: None,
+        };
+        assert_eq!(local.qualified_ref(), "develop");
     }
 
     // --- fetch_branch tests ---

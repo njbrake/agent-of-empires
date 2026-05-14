@@ -47,6 +47,13 @@ local branch with that name, so passing a teammate's not-yet-fetched
 branch works without a manual `git fetch`. When omitted, the new
 branch is based on the repository's default branch (`main`/`master`).
 
+Default-branch detection scores every configured remote (not just
+`origin`). In a fork plus `upstream` layout, aoe picks the freshest
+`main`/`master` it can find that HEAD descends from. So if `upstream/main`
+is ahead of `origin/main` and your local `main`, `aoe add` fetches and
+branches off `upstream/main` rather than the stale fork tip. See issue
+\#1029 for the rationale.
+
 ## TUI Keyboard Shortcuts
 
 | Key | Action |

@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use crate::git::diff::{
-    check_merge_base_status, compute_changed_files, compute_file_diff, get_default_branch,
+    check_merge_base_status, compute_changed_files, compute_file_diff, get_default_base_ref,
     list_branches, DiffFile, FileDiff,
 };
 use crate::session::config::{load_config, save_config};
@@ -81,7 +81,7 @@ impl DiffView {
             .diff
             .default_branch
             .clone()
-            .or_else(|| get_default_branch(&repo_path).ok())
+            .or_else(|| get_default_base_ref(&repo_path).ok())
             .unwrap_or_else(|| "main".to_string());
 
         let context_lines = config.diff.context_lines;

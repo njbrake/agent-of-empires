@@ -10,6 +10,8 @@ From the main screen, press `D` to open the diff view. It shows:
 
 The diff is computed against the base branch (defaults to `main` or your repo's default branch).
 
+Auto-detection scores every configured remote, not just `origin`. In a fork plus `upstream` layout, the diff compares against `upstream/main` when that tip is fresher than your local `main` and `origin/main`. The chosen ref is whichever candidate HEAD descends from with the most recent commit time, so a worktree branched off `upstream/main` does not see the gap between your stale fork-main and the actual branch point as session changes.
+
 ## Navigation
 
 | Key | Action |

@@ -1581,7 +1581,8 @@ pub async fn session_diff_files(
 
         for repo in &repos {
             let path = std::path::Path::new(&repo.path);
-            let base_branch = diff::get_default_branch(path).unwrap_or_else(|_| "main".to_string());
+            let base_branch =
+                diff::get_default_base_ref(path).unwrap_or_else(|_| "main".to_string());
             let warning = diff::check_merge_base_status(path, &base_branch);
             let changed = diff::compute_changed_files(path, &base_branch).unwrap_or_default();
 
@@ -1701,7 +1702,7 @@ pub async fn session_diff_file(
             let file_path = std::path::Path::new(&query.path);
 
             let base_branch =
-                diff::get_default_branch(repo_path).unwrap_or_else(|_| "main".to_string());
+                diff::get_default_base_ref(repo_path).unwrap_or_else(|_| "main".to_string());
 
             // Validate the requested path against the set of actually-changed files.
             // This is the primary security boundary: only files modified on this

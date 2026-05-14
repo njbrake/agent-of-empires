@@ -607,6 +607,18 @@ pub fn get_default_branch(repo_path: &Path) -> Result<String> {
     git_wt.detect_default_branch()
 }
 
+/// Get the default base ref for diffing as a remote-qualified ref name
+/// when the freshest copy lives on a non-default remote. Falls back to
+/// the short branch name when the picked candidate is local.
+///
+/// Use this (not `get_default_branch`) for diff base resolution, so
+/// fork + `upstream` layouts compare against `upstream/main` instead
+/// of a stale local `main`. See issue #1029.
+pub fn get_default_base_ref(repo_path: &Path) -> Result<String> {
+    let git_wt = super::GitWorktree::new(repo_path.to_path_buf())?;
+    Ok(git_wt.detect_default_branch_info()?.qualified_ref())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
