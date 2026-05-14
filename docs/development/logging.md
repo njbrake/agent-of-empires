@@ -41,6 +41,24 @@ Resolved once at startup in `LogConfig::from_env`:
 
 If no level env var is set and you're starting `aoe serve`, the daemon defaults to info-level stdout logging so the TUI Starting-screen log tail isn't empty. Outside of `aoe serve`, no subscriber is installed (TUI mode prints to ratatui's alt-screen; a tracing subscriber on stderr would garble it).
 
+## Persistent configuration (`[logging]` in `config.toml`)
+
+The settings UI (web dashboard *Settings → Logging*, TUI *Settings → Logging*) writes a `[logging]` section to `~/.agent-of-empires/config.toml`:
+
+```toml
+[logging]
+default_level = "info"
+
+[logging.targets]
+"cockpit.acp" = "trace"
+"auth.middleware" = "debug"
+"process.signal" = "warn"
+```
+
+`default_level` is the baseline; entries in `targets` override per target. The list of targets surfaced as dropdowns mirrors `KNOWN_SUB_TARGETS` in `src/logging.rs`. Anything else can still be set via raw EnvFilter syntax through the runtime endpoint or CLI.
+
+Precedence at startup: `AOE_LOG_LEVEL` env var → `[logging]` in config → built-in `info` fallback. Changes via the settings UI live-apply through the same `FilterController` swap that powers `aoe log-level`, including propagation to cockpit runners via the `runtime_filter` notify watcher. No daemon restart needed.
+
 ## Runtime control
 
 ### REST
