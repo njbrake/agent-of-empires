@@ -8,6 +8,8 @@ import { useWorkspaces } from "./hooks/useWorkspaces";
 import { useRepoGroups } from "./hooks/useRepoGroups";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { useDiffFiles } from "./hooks/useDiffFiles";
+import { useDiffComments } from "./hooks/useDiffComments";
+import { SendCommentsDialog } from "./components/diff/comments/SendCommentsDialog";
 import { useCommandActions } from "./hooks/useCommandActions";
 import { useEdgeSwipe } from "./hooks/useEdgeSwipe";
 import { useMobileKeyboard } from "./hooks/useMobileKeyboard";
@@ -211,6 +213,37 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
     revision,
     refresh: refreshDiffFiles,
   } = useDiffFiles(activeSessionId, !diffCollapsed);
+
+  // Diff-viewer comments (#928). Cockpit-only and session-scoped. The
+  // banner lives in RightPanel while the inline UI lives inside
+  // DiffFileViewer, so the store is lifted here and threaded to both.
+  const diffComments = useDiffComments(activeSessionId);
+  const commentsEnabled = !!activeSession?.cockpit_mode;
+  const commentSendEnabled =
+    commentsEnabled && activeSession?.cockpit_worker_state === "running";
+  const commentSendDisabledReason = !commentsEnabled
+    ? "Diff comments require a cockpit session"
+    : "Cockpit worker is not running";
+  const commentsIsMultiRepo = (activeSession?.workspace_repos.length ?? 0) > 0;
+  const [sendDialogOpen, setSendDialogOpen] = useState(false);
+
+  useEffect(() => {
+    if (!commentsEnabled) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (!((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "s")) {
+        return;
+      }
+      const tgt = e.target as HTMLElement | null;
+      const tag = tgt?.tagName;
+      const editable = tgt?.isContentEditable;
+      if (tag === "INPUT" || tag === "TEXTAREA" || editable) return;
+      if (diffComments.count === 0) return;
+      e.preventDefault();
+      setSendDialogOpen(true);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [commentsEnabled, diffComments.count]);
 
   useEffect(() => {
     if (!activeSessionId) {
@@ -600,6 +633,8 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
                   repoName={selectedRepoName}
                   revision={revision}
                   onClose={handleCloseFile}
+                  commentsEnabled={commentsEnabled}
+                  commentsStore={diffComments}
                 />
               )}
             </div>
@@ -616,9 +651,38 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
               selectedRepoName={selectedRepoName}
               onSelectFile={handleSelectFile}
               onDiffRefresh={refreshDiffFiles}
+              commentsEnabled={commentsEnabled}
+              commentsCount={diffComments.count}
+              commentsSendEnabled={commentSendEnabled}
+              commentsSendDisabledReason={commentSendDisabledReason}
+              onOpenSendDialog={() => setSendDialogOpen(true)}
+              onDiscardAllComments={diffComments.clearComments}
             />
           }
         />
+        {sendDialogOpen && commentsEnabled && activeSessionId && (
+          <SendCommentsDialog
+            sessionId={activeSessionId}
+            comments={diffComments.comments}
+            isMultiRepo={commentsIsMultiRepo}
+            introDraft={diffComments.introDraft}
+            outroDraft={diffComments.outroDraft}
+            clearAfterSend={diffComments.clearAfterSend}
+            onChangeIntro={diffComments.setIntroDraft}
+            onChangeOutro={diffComments.setOutroDraft}
+            onChangeClearAfterSend={diffComments.setClearAfterSend}
+            onClose={() => setSendDialogOpen(false)}
+            onSent={() => {
+              if (diffComments.clearAfterSend) {
+                diffComments.clearComments();
+                diffComments.setIntroDraft("");
+                diffComments.setOutroDraft("");
+              }
+              setSendDialogOpen(false);
+              toastBus.handler?.success("Comments sent to agent");
+            }}
+          />
+        )}
       </div>
     );
   };

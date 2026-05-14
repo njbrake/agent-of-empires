@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { DiffFileList } from "./diff/DiffFileList";
+import { CommentsBanner } from "./diff/comments/CommentsBanner";
 import { useTerminal } from "../hooks/useTerminal";
 import { useMobileKeyboard } from "../hooks/useMobileKeyboard";
 import { MobileTerminalToolbar } from "./MobileTerminalToolbar";
@@ -46,6 +47,13 @@ interface Props {
   /** Re-fetch the diff. Called after the user changes the per-session
    *  base-branch override so the file list reflects the new comparison. */
   onDiffRefresh: () => void;
+  /** Diff-comments banner state (#928). Hidden on tmux sessions. */
+  commentsEnabled: boolean;
+  commentsCount: number;
+  commentsSendEnabled: boolean;
+  commentsSendDisabledReason?: string;
+  onOpenSendDialog: () => void;
+  onDiscardAllComments: () => void;
 }
 
 type ShellMode = "host" | "container";
@@ -277,6 +285,12 @@ export function RightPanel({
   selectedRepoName,
   onSelectFile,
   onDiffRefresh,
+  commentsEnabled,
+  commentsCount,
+  commentsSendEnabled,
+  commentsSendDisabledReason,
+  onOpenSendDialog,
+  onDiscardAllComments,
 }: Props) {
   const [shellMode, setShellMode] = useState<ShellMode>("host");
   const isSandboxed = session?.is_sandboxed ?? false;
@@ -365,6 +379,15 @@ export function RightPanel({
         style={{ flexBasis: `${topRatio * 100}%` }}
         className="flex flex-col min-h-0 overflow-hidden"
       >
+        {commentsEnabled && commentsCount > 0 && (
+          <CommentsBanner
+            count={commentsCount}
+            sendEnabled={commentsSendEnabled}
+            sendDisabledReason={commentsSendDisabledReason}
+            onSend={onOpenSendDialog}
+            onDiscardAll={onDiscardAllComments}
+          />
+        )}
         <DiffFileList
           files={files}
           perRepoBases={perRepoBases}

@@ -1,10 +1,18 @@
+import { Fragment, useCallback, useMemo, useState } from "react";
 import { useFileDiff } from "../../hooks/useFileDiff";
 import {
   useHighlightedLines,
   type SyntaxToken,
 } from "../../hooks/useHighlightedLines";
-import type { RichDiffHunk } from "../../lib/types";
+import type { RichDiffHunk, RichDiffLine } from "../../lib/types";
 import { DiffLine } from "./DiffLine";
+import type { UseDiffCommentsResult } from "../../hooks/useDiffComments";
+import { anchorComments } from "./comments/anchor";
+import { extractSnippetFromHunks } from "./comments/extractSnippet";
+import { extensionToLanguage } from "./comments/language";
+import { CommentCard } from "./comments/CommentCard";
+import { CommentForm } from "./comments/CommentForm";
+import type { AnchoredComment, DiffSide } from "./comments/types";
 
 interface Props {
   sessionId: string;
@@ -17,6 +25,12 @@ interface Props {
   revision?: number;
   /** Called when the user wants to return to the terminal view. */
   onClose?: () => void;
+  /** When true, the in-diff comment UI ("+" gutter buttons, inline
+   *  cards/forms, stale block) is enabled. False for non-cockpit
+   *  sessions where prompts can't be sent. */
+  commentsEnabled?: boolean;
+  /** Session-scoped comments store. Required when `commentsEnabled`. */
+  commentsStore?: UseDiffCommentsResult;
 }
 
 const STATUS_LABELS: Record<string, string> = {
@@ -39,14 +53,54 @@ const STATUS_COLORS: Record<string, string> = {
   conflicted: "text-status-waiting",
 };
 
+/** Transient range-selection state. Local to this viewer because it
+ *  changes on every gutter click and shouldn't broadcast through the
+ *  comments store. */
+interface RangeStart {
+  hunkIndex: number;
+  side: DiffSide;
+  line: number;
+}
+
+interface DraftRange {
+  hunkIndex: number;
+  side: DiffSide;
+  startLine: number;
+  endLine: number;
+  endRowIndex: number;
+  snippet: string;
+}
+
 function HunkView({
   hunk,
+  hunkIndex,
   lineTokens,
   highlightPending,
+  rangeStart,
+  draft,
+  cardsByEndRow,
+  formRowIndex,
+  commentsEnabled,
+  onPlusClick,
+  onCommentSave,
+  onCommentDelete,
+  onDraftSave,
+  onDraftCancel,
 }: {
   hunk: RichDiffHunk;
+  hunkIndex: number;
   lineTokens?: SyntaxToken[][];
   highlightPending?: boolean;
+  rangeStart: RangeStart | null;
+  draft: DraftRange | null;
+  cardsByEndRow: Map<number, AnchoredComment[]>;
+  formRowIndex: number | null;
+  commentsEnabled: boolean;
+  onPlusClick: (hunkIndex: number, side: DiffSide, lineNum: number) => void;
+  onCommentSave: (id: string, body: string) => void;
+  onCommentDelete: (id: string) => void;
+  onDraftSave: (body: string) => void;
+  onDraftCancel: () => void;
 }) {
   return (
     <div>
@@ -58,16 +112,139 @@ function HunkView({
           @@ -{hunk.old_start},{hunk.old_lines} +{hunk.new_start},{hunk.new_lines} @@
         </span>
       </div>
-      {hunk.lines.map((line, i) => (
-        <DiffLine
-          key={`${line.old_line_num ?? "_"}-${line.new_line_num ?? "_"}-${i}`}
-          line={line}
-          tokens={lineTokens?.[i]}
-          highlightPending={highlightPending}
-        />
-      ))}
+      {hunk.lines.map((line, i) => {
+        const rowKey = `h${hunkIndex}-r${i}`;
+        const { isHighlighted, isRangeEndpoint, side, lineNum } =
+          highlightForRow(line, hunkIndex, rangeStart, draft);
+        const leadingSlot =
+          commentsEnabled && lineNum != null && side != null ? (
+            <PlusButton
+              hunkIndex={hunkIndex}
+              side={side}
+              lineNum={lineNum}
+              onClick={onPlusClick}
+              active={
+                rangeStart != null &&
+                rangeStart.hunkIndex === hunkIndex &&
+                rangeStart.side === side &&
+                rangeStart.line === lineNum
+              }
+            />
+          ) : null;
+        const cards = cardsByEndRow.get(i);
+        const showForm = formRowIndex === i && draft != null;
+        return (
+          <Fragment key={rowKey}>
+            <DiffLine
+              line={line}
+              tokens={lineTokens?.[i]}
+              highlightPending={highlightPending}
+              leadingSlot={leadingSlot}
+              isHighlighted={isHighlighted}
+              isRangeEndpoint={isRangeEndpoint}
+            />
+            {cards?.map((anchored) => (
+              <CommentCard
+                key={`card-${anchored.comment.id}`}
+                anchored={anchored}
+                onSave={onCommentSave}
+                onDelete={onCommentDelete}
+              />
+            ))}
+            {showForm && draft && (
+              <CommentForm
+                key={`form-h${hunkIndex}-r${i}`}
+                startLine={draft.startLine}
+                endLine={draft.endLine}
+                side={draft.side}
+                onSave={onDraftSave}
+                onCancel={onDraftCancel}
+              />
+            )}
+          </Fragment>
+        );
+      })}
     </div>
   );
+}
+
+function PlusButton({
+  hunkIndex,
+  side,
+  lineNum,
+  onClick,
+  active,
+}: {
+  hunkIndex: number;
+  side: DiffSide;
+  lineNum: number;
+  onClick: (hunkIndex: number, side: DiffSide, lineNum: number) => void;
+  active: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={() => onClick(hunkIndex, side, lineNum)}
+      aria-label={`Add comment on line ${lineNum}`}
+      className={`absolute left-0 top-0 h-full w-4 flex items-center justify-center text-white text-[11px] leading-none cursor-pointer transition-opacity ${
+        active
+          ? "bg-brand-600 opacity-100"
+          : "bg-brand-600 opacity-0 group-hover:opacity-100 hover:bg-brand-500"
+      }`}
+    >
+      +
+    </button>
+  );
+}
+
+function highlightForRow(
+  line: RichDiffLine,
+  hunkIndex: number,
+  rangeStart: RangeStart | null,
+  draft: DraftRange | null,
+): {
+  isHighlighted: boolean;
+  isRangeEndpoint: boolean;
+  side: DiffSide | null;
+  lineNum: number | null;
+} {
+  // Side preference: added → new, deleted → old, equal → new.
+  const sideForRow: DiffSide =
+    line.type === "delete" ? "old" : "new";
+  const lineNum =
+    sideForRow === "new" ? line.new_line_num : line.old_line_num;
+  if (lineNum == null) {
+    return {
+      isHighlighted: false,
+      isRangeEndpoint: false,
+      side: null,
+      lineNum: null,
+    };
+  }
+
+  const draftMatch =
+    draft != null &&
+    draft.hunkIndex === hunkIndex &&
+    draft.side === sideForRow &&
+    lineNum >= draft.startLine &&
+    lineNum <= draft.endLine;
+  const startMatch =
+    rangeStart != null &&
+    rangeStart.hunkIndex === hunkIndex &&
+    rangeStart.side === sideForRow &&
+    rangeStart.line === lineNum;
+
+  return {
+    isHighlighted: draftMatch || startMatch,
+    isRangeEndpoint:
+      startMatch ||
+      (draft != null &&
+        draft.hunkIndex === hunkIndex &&
+        draft.side === sideForRow &&
+        (lineNum === draft.startLine || lineNum === draft.endLine)),
+    side: sideForRow,
+    lineNum,
+  };
 }
 
 export function DiffFileViewer({
@@ -76,6 +253,8 @@ export function DiffFileViewer({
   repoName,
   revision,
   onClose,
+  commentsEnabled = false,
+  commentsStore,
 }: Props) {
   const { diff, loading, error } = useFileDiff(
     sessionId,
@@ -86,6 +265,133 @@ export function DiffFileViewer({
   const { tokens: tokenGrid, loading: highlightLoading } = useHighlightedLines(
     diff?.hunks ?? [],
     diff?.file.path ?? filePath,
+  );
+
+  const [rangeStart, setRangeStart] = useState<RangeStart | null>(null);
+  const [draft, setDraft] = useState<DraftRange | null>(null);
+
+  const hunks = diff?.hunks ?? [];
+  const comments = commentsStore?.comments ?? [];
+
+  const anchored: AnchoredComment[] = useMemo(
+    () => anchorComments(comments, filePath, repoName, hunks),
+    [comments, filePath, repoName, hunks],
+  );
+
+  const staleComments = useMemo(
+    () => anchored.filter((a) => a.status === "stale"),
+    [anchored],
+  );
+
+  // Group active anchors per (hunkIndex, endRowIndex) so HunkView can
+  // emit cards inline without re-scanning the comments list per row.
+  const cardsByHunkRow = useMemo(() => {
+    const map = new Map<number, Map<number, AnchoredComment[]>>();
+    for (const a of anchored) {
+      if (a.status !== "active" || a.hunkIndex == null || a.endRowIndex == null)
+        continue;
+      let inner = map.get(a.hunkIndex);
+      if (!inner) {
+        inner = new Map();
+        map.set(a.hunkIndex, inner);
+      }
+      const list = inner.get(a.endRowIndex) ?? [];
+      list.push(a);
+      inner.set(a.endRowIndex, list);
+    }
+    return map;
+  }, [anchored]);
+
+  const handlePlusClick = useCallback(
+    (hunkIndex: number, side: DiffSide, lineNum: number) => {
+      if (draft) return; // form is open; ignore further clicks until resolved.
+      if (!rangeStart) {
+        setRangeStart({ hunkIndex, side, line: lineNum });
+        return;
+      }
+      if (rangeStart.hunkIndex !== hunkIndex || rangeStart.side !== side) {
+        // Restart selection on a cross-hunk or cross-side click instead
+        // of silently ignoring; the new line becomes the new start.
+        setRangeStart({ hunkIndex, side, line: lineNum });
+        return;
+      }
+      const startLine = Math.min(rangeStart.line, lineNum);
+      const endLine = Math.max(rangeStart.line, lineNum);
+      const extracted = extractSnippetFromHunks(
+        hunks,
+        side,
+        startLine,
+        endLine,
+      );
+      if (!extracted) {
+        // Range failed to resolve (probably straddled a non-side row at
+        // the boundary). Fall back to single-line on the clicked row.
+        setRangeStart(null);
+        const fallback = extractSnippetFromHunks(
+          hunks,
+          side,
+          lineNum,
+          lineNum,
+        );
+        if (!fallback) return;
+        setDraft({
+          hunkIndex,
+          side,
+          startLine: lineNum,
+          endLine: lineNum,
+          endRowIndex: fallback.endRowIndex,
+          snippet: fallback.snippet,
+        });
+        return;
+      }
+      setRangeStart(null);
+      setDraft({
+        hunkIndex,
+        side,
+        startLine,
+        endLine,
+        endRowIndex: extracted.endRowIndex,
+        snippet: extracted.snippet,
+      });
+    },
+    [draft, rangeStart, hunks],
+  );
+
+  const handleDraftSave = useCallback(
+    (body: string) => {
+      if (!draft || !commentsStore) return;
+      commentsStore.addComment({
+        repoName,
+        filePath,
+        side: draft.side,
+        startLine: draft.startLine,
+        endLine: draft.endLine,
+        body,
+        capturedSnippet: draft.snippet,
+        language: extensionToLanguage(filePath),
+      });
+      setDraft(null);
+    },
+    [draft, commentsStore, repoName, filePath],
+  );
+
+  const handleDraftCancel = useCallback(() => {
+    setDraft(null);
+    setRangeStart(null);
+  }, []);
+
+  const handleCommentSave = useCallback(
+    (id: string, body: string) => {
+      commentsStore?.updateComment(id, body);
+    },
+    [commentsStore],
+  );
+
+  const handleCommentDelete = useCallback(
+    (id: string) => {
+      commentsStore?.deleteComment(id);
+    },
+    [commentsStore],
   );
 
   if (loading && !diff) {
@@ -137,7 +443,7 @@ export function DiffFileViewer({
         </span>
         <span className="font-mono text-[12px] text-text-primary truncate">
           {diff.file.old_path
-            ? `${diff.file.old_path} \u2192 ${diff.file.path}`
+            ? `${diff.file.old_path} → ${diff.file.path}`
             : diff.file.path}
         </span>
         <span className="font-mono text-[11px] flex items-center gap-1">
@@ -171,12 +477,42 @@ export function DiffFileViewer({
           </div>
         ) : (
           <div className="leading-[1.6]">
+            {staleComments.length > 0 && (
+              <div className="px-3 py-2 bg-status-error/5 border-b border-status-error/30">
+                <div className="text-[11px] font-mono text-status-error mb-2">
+                  {staleComments.length} stale comment
+                  {staleComments.length === 1 ? "" : "s"} (line range no longer
+                  in current diff)
+                </div>
+                {staleComments.map((anchored) => (
+                  <CommentCard
+                    key={`stale-${anchored.comment.id}`}
+                    anchored={anchored}
+                    onSave={handleCommentSave}
+                    onDelete={handleCommentDelete}
+                  />
+                ))}
+              </div>
+            )}
             {diff.hunks.map((hunk, hi) => (
               <HunkView
                 key={`${hunk.old_start}-${hunk.new_start}`}
                 hunk={hunk}
+                hunkIndex={hi}
                 lineTokens={tokenGrid?.[hi]}
                 highlightPending={highlightLoading}
+                rangeStart={rangeStart}
+                draft={draft?.hunkIndex === hi ? draft : null}
+                cardsByEndRow={cardsByHunkRow.get(hi) ?? EMPTY_MAP}
+                formRowIndex={
+                  draft?.hunkIndex === hi ? draft.endRowIndex : null
+                }
+                commentsEnabled={commentsEnabled && !!commentsStore}
+                onPlusClick={handlePlusClick}
+                onCommentSave={handleCommentSave}
+                onCommentDelete={handleCommentDelete}
+                onDraftSave={handleDraftSave}
+                onDraftCancel={handleDraftCancel}
               />
             ))}
           </div>
@@ -185,3 +521,5 @@ export function DiffFileViewer({
     </div>
   );
 }
+
+const EMPTY_MAP: Map<number, AnchoredComment[]> = new Map();

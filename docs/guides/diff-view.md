@@ -36,6 +36,41 @@ After saving and exiting, the diff view refreshes automatically to show your cha
 | `?` | Show help |
 | `Esc` | Close diff view |
 
+## Commenting on the diff (web only, cockpit sessions)
+
+The web dashboard lets you annotate lines in the diff and send the
+comments to the agent as a single prompt (#928).
+
+- Hover any line in the diff viewer to reveal a `+` button in the
+  left gutter. Click it to start a comment.
+- Click the `+` on the same line again to comment on that single
+  line, or click `+` on another line in the **same hunk** to extend
+  the range. Cross-hunk ranges are not allowed.
+- An inline form opens beneath the last line of the range. The body
+  supports markdown; `Cmd/Ctrl+Enter` saves, `Esc` cancels.
+- Saved comments render inline as cards with edit / delete actions
+  and a markdown-rendered body. Each card shows the line range it's
+  anchored to.
+- The right panel surfaces a banner above the diff file list once
+  you have at least one comment, with a Send button (or
+  `Cmd/Ctrl+Shift+S`).
+- The send dialog has three pieces: an editable intro textarea, a
+  read-only markdown preview of the assembled comments (each with
+  its captured code snippet so the agent can act without re-reading
+  the file), and an editable outro textarea (default "Please
+  address these comments."). Send fires `POST
+  /api/sessions/:id/cockpit/prompt`. Comments are cleared on
+  success unless you uncheck "Clear comments after sending".
+- Comments persist in `localStorage`, scoped per session. They
+  survive page reloads but are browser-local.
+- If a line range becomes unreachable in the current diff (agent
+  edited the file), the comment moves to a "stale comments" block
+  at the top of the file view with a `[stale]` chip; the captured
+  snippet still goes through to the agent in the prompt.
+- The feature is hidden for non-cockpit sessions (tmux/PTY). The
+  Send button is also disabled while the cockpit worker isn't
+  running.
+
 ## Per-session base override
 
 Each session has an optional `base_branch_override` that takes
