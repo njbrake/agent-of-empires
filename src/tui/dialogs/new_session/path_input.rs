@@ -36,7 +36,11 @@ pub(super) fn collapse_tilde(path: &str) -> String {
     path.to_string()
 }
 
-/// Expand a leading `~` to the user's home directory.
+/// Expand a leading `~` or `~/...` to the user's home directory.
+/// Cross-platform via `dirs::home_dir()` (handles `USERPROFILE` on Windows).
+///
+/// Returns the input unchanged when the path does not start with `~`, or
+/// when no home directory is available.
 pub(super) fn expand_tilde(path: &str) -> String {
     if path == "~" {
         if let Some(home) = dirs::home_dir() {
@@ -282,5 +286,23 @@ impl NewSessionDialog {
 
     pub(super) fn is_path_invalid_flash_active(&self) -> bool {
         self.path_invalid_flash_until.is_some()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_expand_tilde_passthrough_for_absolute_path() {
+        assert_eq!(expand_tilde("/abs/path"), "/abs/path");
+        assert_eq!(expand_tilde("relative/path"), "relative/path");
+    }
+
+    #[test]
+    fn test_expand_tilde_unrecognized_dollar_prefix_passthrough() {
+        // `$HOME` is intentionally not handled: path inputs use `~`, not
+        // shell-style variable references.
+        assert_eq!(expand_tilde("$HOME/foo"), "$HOME/foo");
     }
 }

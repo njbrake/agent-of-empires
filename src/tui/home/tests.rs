@@ -2806,3 +2806,50 @@ fn apply_status_update_skips_terminal_states() {
     assert_eq!(inst.status, Status::Deleting);
     assert_eq!(inst.idle_entered_at, None);
 }
+
+/// Regression: a transient status toast must render even when no aoe update
+/// is pending. Before the fix, the update-bar row was only laid out when
+/// `update_info.is_some()`, so toasts produced by paths like the
+/// restart-during-attach failure or `Action::SendMessage`'s "Reviving
+/// session..." were silently dropped on the floor for the common-case user
+/// with no update available.
+#[test]
+#[serial]
+fn update_bar_renders_status_toast_without_update_info() {
+    use crate::tui::styles::Theme;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let mut env = create_test_env_empty();
+    let backend = TestBackend::new(100, 30);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let theme = Theme::empire();
+
+    let toast = "restart failed: tmux session unreachable";
+
+    terminal
+        .draw(|f| {
+            let area = f.area();
+            env.view.render(f, area, &theme, None, Some(toast));
+        })
+        .unwrap();
+
+    let buf = terminal.backend().buffer();
+    let mut out = String::new();
+    for y in 0..buf.area.height {
+        for x in 0..buf.area.width {
+            out.push_str(buf[(x, y)].symbol());
+        }
+        out.push('\n');
+    }
+
+    assert!(
+        out.contains("restart failed:"),
+        "expected the toast to be rendered even when update_info is None.\n\
+         Full buffer:\n{out}"
+    );
+    assert!(
+        out.contains("[Ctrl+x] dismiss"),
+        "expected the dismiss hint alongside the toast.\nFull buffer:\n{out}"
+    );
+}

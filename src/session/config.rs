@@ -51,6 +51,20 @@ pub struct Config {
 
     #[serde(default)]
     pub logging: LoggingConfig,
+
+    /// Environment variables injected into the host command line for every
+    /// session spawned at global scope. Entries are `KEY=value`, `KEY=$VAR`
+    /// (read VAR from the host env), `KEY=$$literal` (escape a `$`), or
+    /// bare `KEY` (passthrough from the host env). Values are passed through
+    /// verbatim; `~` is not expanded, use an absolute path. Profiles can
+    /// replace this list via their own `environment` field. Sandboxed
+    /// sessions ignore this list; configure `sandbox.environment` instead.
+    #[serde(
+        default,
+        skip_serializing_if = "Vec::is_empty",
+        deserialize_with = "super::serde_helpers::string_or_vec"
+    )]
+    pub environment: Vec<String>,
 }
 
 /// Persistent logging configuration. Drives the default tracing

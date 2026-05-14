@@ -843,6 +843,9 @@ impl SettingsView {
             // Logging is global-only for v1 (no profile overrides); the
             // "clear override" gesture is a no-op for these keys.
             FieldKey::LoggingDefaultLevel | FieldKey::LoggingTarget(_) => {}
+            FieldKey::HostEnvironment => {
+                config.environment = None;
+            }
         }
 
         // Sync repo_config when in Repo scope

@@ -80,10 +80,10 @@ fn test_enter_preserves_custom_title() {
 #[test]
 fn test_tab_cycles_fields_single_tool() {
     let mut dialog = single_tool_dialog();
-    assert_eq!(dialog.focused_field, 0); // title (single profile, no profile field)
+    assert_eq!(dialog.focused_field, 0); // path (single profile, no profile field)
 
     dialog.handle_key(key(KeyCode::Tab));
-    assert_eq!(dialog.focused_field, 1); // path
+    assert_eq!(dialog.focused_field, 1); // title
 
     dialog.handle_key(key(KeyCode::Tab));
     assert_eq!(dialog.focused_field, 2); // yolo mode
@@ -104,10 +104,10 @@ fn test_tab_cycles_fields_single_tool_with_worktree() {
     // so the main form has the same tab stops as without worktree.
     let mut dialog = single_tool_dialog();
     dialog.worktree_enabled = true;
-    assert_eq!(dialog.focused_field, 0); // title
+    assert_eq!(dialog.focused_field, 0); // path
 
     dialog.handle_key(key(KeyCode::Tab));
-    assert_eq!(dialog.focused_field, 1); // path
+    assert_eq!(dialog.focused_field, 1); // title
 
     dialog.handle_key(key(KeyCode::Tab));
     assert_eq!(dialog.focused_field, 2); // yolo mode
@@ -125,10 +125,10 @@ fn test_tab_cycles_fields_single_tool_with_worktree() {
 #[test]
 fn test_tab_cycles_fields_multi_tool() {
     let mut dialog = multi_tool_dialog();
-    assert_eq!(dialog.focused_field, 0); // title
+    assert_eq!(dialog.focused_field, 0); // path
 
     dialog.handle_key(key(KeyCode::Tab));
-    assert_eq!(dialog.focused_field, 1); // path
+    assert_eq!(dialog.focused_field, 1); // title
 
     dialog.handle_key(key(KeyCode::Tab));
     assert_eq!(dialog.focused_field, 2); // tool selection
@@ -149,7 +149,7 @@ fn test_tab_cycles_fields_multi_tool() {
 #[test]
 fn test_backtab_cycles_fields_reverse() {
     let mut dialog = single_tool_dialog();
-    assert_eq!(dialog.focused_field, 0); // title
+    assert_eq!(dialog.focused_field, 0); // path
 
     dialog.handle_key(shift_key(KeyCode::BackTab));
     assert_eq!(dialog.focused_field, 4); // group (last field without worktree/docker)
@@ -161,16 +161,16 @@ fn test_backtab_cycles_fields_reverse() {
     assert_eq!(dialog.focused_field, 2); // yolo mode
 
     dialog.handle_key(shift_key(KeyCode::BackTab));
-    assert_eq!(dialog.focused_field, 1); // path
+    assert_eq!(dialog.focused_field, 1); // title
 
     dialog.handle_key(shift_key(KeyCode::BackTab));
-    assert_eq!(dialog.focused_field, 0); // title
+    assert_eq!(dialog.focused_field, 0); // path
 }
 
 #[test]
 fn test_char_input_to_title() {
     let mut dialog = single_tool_dialog();
-    dialog.focused_field = 0; // title
+    dialog.focused_field = 1; // title
     dialog.handle_key(key(KeyCode::Char('H')));
     dialog.handle_key(key(KeyCode::Char('i')));
     assert_eq!(dialog.title.value(), "Hi");
@@ -179,7 +179,7 @@ fn test_char_input_to_title() {
 #[test]
 fn test_char_input_to_path() {
     let mut dialog = single_tool_dialog();
-    dialog.focused_field = 1; // path
+    dialog.focused_field = 0; // path
     dialog.handle_key(key(KeyCode::Char('/')));
     dialog.handle_key(key(KeyCode::Char('a')));
     assert_eq!(dialog.path.value(), format!("{TEST_PATH}/a"));
@@ -192,7 +192,7 @@ fn test_ghost_text_appears_for_single_match() {
     fs::write(tmp.path().join("project-file"), "not a directory").expect("failed to write file");
 
     let mut dialog = single_tool_dialog();
-    dialog.focused_field = 1; // path
+    dialog.focused_field = 0; // path
     dialog.path = Input::new(format!("{}/pro", tmp.path().display()));
     dialog.recompute_path_ghost();
 
@@ -206,7 +206,7 @@ fn test_ghost_text_shows_common_prefix_for_multiple_matches() {
     fs::create_dir(tmp.path().join("client-web")).expect("failed to create directory");
 
     let mut dialog = single_tool_dialog();
-    dialog.focused_field = 1; // path
+    dialog.focused_field = 0; // path
     dialog.path = Input::new(format!("{}/cl", tmp.path().display()));
     dialog.recompute_path_ghost();
 
@@ -218,7 +218,7 @@ fn test_ghost_text_none_when_no_matches() {
     let tmp = tempfile::tempdir().expect("failed to create temp dir");
 
     let mut dialog = single_tool_dialog();
-    dialog.focused_field = 1; // path
+    dialog.focused_field = 0; // path
     dialog.path = Input::new(format!("{}/zzz_nonexistent", tmp.path().display()));
     dialog.recompute_path_ghost();
 
@@ -231,7 +231,7 @@ fn test_ghost_shows_slash_for_exact_directory_match() {
     fs::create_dir(tmp.path().join("alpha")).expect("failed to create directory");
 
     let mut dialog = single_tool_dialog();
-    dialog.focused_field = 1; // path
+    dialog.focused_field = 0; // path
     dialog.path = Input::new(format!("{}/alpha", tmp.path().display()));
     dialog.recompute_path_ghost();
 
@@ -244,7 +244,7 @@ fn test_right_arrow_accepts_ghost_text() {
     fs::create_dir(tmp.path().join("project-alpha")).expect("failed to create directory");
 
     let mut dialog = single_tool_dialog();
-    dialog.focused_field = 1; // path
+    dialog.focused_field = 0; // path
     dialog.path = Input::new(format!("{}/pro", tmp.path().display()));
     dialog.recompute_path_ghost();
     assert!(dialog.ghost_text().is_some());
@@ -263,7 +263,7 @@ fn test_end_key_accepts_ghost_text() {
     fs::create_dir(tmp.path().join("project-alpha")).expect("failed to create directory");
 
     let mut dialog = single_tool_dialog();
-    dialog.focused_field = 1; // path
+    dialog.focused_field = 0; // path
     dialog.path = Input::new(format!("{}/pro", tmp.path().display()));
     dialog.recompute_path_ghost();
     assert!(dialog.ghost_text().is_some());
@@ -279,7 +279,7 @@ fn test_end_key_accepts_ghost_text() {
 #[test]
 fn test_right_arrow_at_mid_input_moves_cursor_normally() {
     let mut dialog = single_tool_dialog();
-    dialog.focused_field = 1; // path
+    dialog.focused_field = 0; // path
     dialog.path = Input::new("/tmp/alpha/beta".to_string());
     // Move cursor to start
     dialog.handle_key(ctrl_key(KeyCode::Char('a')));
@@ -299,7 +299,7 @@ fn test_ghost_recomputes_after_accepting() {
     fs::create_dir(tmp.path().join("alpha").join("inner")).expect("failed to create directory");
 
     let mut dialog = single_tool_dialog();
-    dialog.focused_field = 1; // path
+    dialog.focused_field = 0; // path
     dialog.path = Input::new(format!("{}/alp", tmp.path().display()));
     dialog.recompute_path_ghost();
     assert_eq!(dialog.ghost_text(), Some("ha/"));
@@ -320,7 +320,7 @@ fn test_tab_always_navigates_from_path_field() {
     fs::create_dir(tmp.path().join("project-alpha")).expect("failed to create directory");
 
     let mut dialog = single_tool_dialog();
-    dialog.focused_field = 1; // path
+    dialog.focused_field = 0; // path
     dialog.path = Input::new(format!("{}/pro", tmp.path().display()));
     dialog.recompute_path_ghost();
     assert!(dialog.ghost_text().is_some());
@@ -328,7 +328,7 @@ fn test_tab_always_navigates_from_path_field() {
     dialog.handle_key(key(KeyCode::Tab));
 
     // Tab should navigate to next field, not accept ghost
-    assert_eq!(dialog.focused_field, 2); // yolo mode
+    assert_eq!(dialog.focused_field, 1); // title
 }
 
 #[test]
@@ -337,7 +337,7 @@ fn test_ghost_cleared_when_leaving_path_field() {
     fs::create_dir(tmp.path().join("project-alpha")).expect("failed to create directory");
 
     let mut dialog = single_tool_dialog();
-    dialog.focused_field = 1; // path
+    dialog.focused_field = 0; // path
     dialog.path = Input::new(format!("{}/pro", tmp.path().display()));
     dialog.recompute_path_ghost();
     assert!(dialog.ghost_text().is_some());
@@ -353,7 +353,7 @@ fn test_ghost_not_shown_when_cursor_not_at_end() {
     fs::create_dir(tmp.path().join("alpha")).expect("failed to create directory");
 
     let mut dialog = single_tool_dialog();
-    dialog.focused_field = 1; // path
+    dialog.focused_field = 0; // path
     dialog.path = Input::new(format!("{}/alp", tmp.path().display()));
     // Move cursor to start
     dialog.handle_key(ctrl_key(KeyCode::Char('a')));
@@ -365,7 +365,7 @@ fn test_ghost_not_shown_when_cursor_not_at_end() {
 #[test]
 fn test_invalid_path_flash_expires_after_tick() {
     let mut dialog = single_tool_dialog();
-    dialog.focused_field = 1; // path
+    dialog.focused_field = 0; // path
     dialog.path_invalid_flash_until =
         Some(std::time::Instant::now() - std::time::Duration::from_millis(1));
     assert!(dialog.tick());
@@ -375,7 +375,7 @@ fn test_invalid_path_flash_expires_after_tick() {
 #[test]
 fn test_ctrl_left_jumps_to_previous_path_segment() {
     let mut dialog = single_tool_dialog();
-    dialog.focused_field = 1; // path
+    dialog.focused_field = 0; // path
     dialog.path = Input::new("/tmp/alpha/beta".to_string());
 
     dialog.handle_key(ctrl_key(KeyCode::Left));
@@ -387,7 +387,7 @@ fn test_ctrl_left_jumps_to_previous_path_segment() {
 #[test]
 fn test_alt_b_jumps_to_previous_path_segment() {
     let mut dialog = single_tool_dialog();
-    dialog.focused_field = 1; // path
+    dialog.focused_field = 0; // path
     dialog.path = Input::new("/tmp/alpha/beta".to_string());
 
     dialog.handle_key(alt_key(KeyCode::Char('b')));
@@ -399,7 +399,7 @@ fn test_alt_b_jumps_to_previous_path_segment() {
 #[test]
 fn test_ctrl_a_jumps_to_start_of_path() {
     let mut dialog = single_tool_dialog();
-    dialog.focused_field = 1; // path
+    dialog.focused_field = 0; // path
     dialog.path = Input::new("/tmp/alpha/beta".to_string());
 
     dialog.handle_key(ctrl_key(KeyCode::Char('a')));
@@ -411,7 +411,7 @@ fn test_ctrl_a_jumps_to_start_of_path() {
 #[test]
 fn test_char_input_to_group() {
     let mut dialog = single_tool_dialog();
-    dialog.focused_field = 4; // group (single tool, single profile: title=0, path=1, yolo=2, worktree=3, group=4)
+    dialog.focused_field = 4; // group (single tool, single profile: path=0, title=1, yolo=2, worktree=3, group=4)
     dialog.handle_key(key(KeyCode::Char('w')));
     dialog.handle_key(key(KeyCode::Char('o')));
     dialog.handle_key(key(KeyCode::Char('r')));
@@ -422,7 +422,7 @@ fn test_char_input_to_group() {
 #[test]
 fn test_backspace_removes_char() {
     let mut dialog = single_tool_dialog();
-    dialog.focused_field = 0; // title
+    dialog.focused_field = 1; // title
     dialog.title = Input::new("Hello".to_string());
     dialog.handle_key(key(KeyCode::Backspace));
     assert_eq!(dialog.title.value(), "Hell");
@@ -431,7 +431,7 @@ fn test_backspace_removes_char() {
 #[test]
 fn test_backspace_on_empty_field() {
     let mut dialog = single_tool_dialog();
-    dialog.focused_field = 0; // title
+    dialog.focused_field = 1; // title
     dialog.handle_key(key(KeyCode::Backspace));
     assert_eq!(dialog.title.value(), "");
 }
@@ -439,7 +439,7 @@ fn test_backspace_on_empty_field() {
 #[test]
 fn test_tool_selection_left_right() {
     let mut dialog = multi_tool_dialog();
-    dialog.focused_field = 2; // tool field (single profile: title=0, path=1, tool=2)
+    dialog.focused_field = 2; // tool field (single profile: path=0, title=1, tool=2)
     assert_eq!(dialog.tool_index, 0);
 
     dialog.handle_key(key(KeyCode::Right));
@@ -492,7 +492,7 @@ fn test_tool_selection_space() {
 #[test]
 fn test_tool_selection_ignored_on_text_field() {
     let mut dialog = multi_tool_dialog();
-    dialog.focused_field = 0; // title
+    dialog.focused_field = 1; // title
     dialog.handle_key(key(KeyCode::Char(' ')));
     assert_eq!(dialog.title.value(), " ");
     assert_eq!(dialog.tool_index, 0);
@@ -532,7 +532,7 @@ fn test_unknown_key_continues() {
 #[test]
 fn test_error_clears_on_input() {
     let mut dialog = single_tool_dialog();
-    dialog.focused_field = 0; // title
+    dialog.focused_field = 1; // title
     dialog.error_message = Some("Some error".to_string());
 
     dialog.handle_key(key(KeyCode::Char('a')));
@@ -834,7 +834,7 @@ fn test_yolo_mode_toggle() {
     let mut dialog = multi_tool_dialog();
     dialog.docker_available = true;
     dialog.sandbox_enabled = true;
-    dialog.focused_field = 3; // yolo mode field (single profile: title=0, path=1, tool=2, yolo=3)
+    dialog.focused_field = 3; // yolo mode field (single profile: path=0, title=1, tool=2, yolo=3)
     assert!(!dialog.yolo_mode);
 
     dialog.handle_key(key(KeyCode::Char(' ')));
