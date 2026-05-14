@@ -1,7 +1,9 @@
 //! tmux session management
 
 use anyhow::{bail, Result};
-use std::process::Command;
+use std::io::Write;
+use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::{
     refresh_session_cache, session_exists_from_cache,
@@ -338,9 +340,11 @@ impl Session {
     }
 
     /// Send literal text to the session's first window pane, followed by Enter.
-    /// For multi-line text, newlines are sent as ESC+CR (the same sequence
-    /// terminals send for Shift+Enter) so the coding agent inserts a newline
-    /// rather than submitting after each line.
+    /// Short single-line text is delivered via `send-keys -l`; multi-line or
+    /// long payloads route through `paste-buffer -p` (bracketed paste) so the
+    /// receiving agent ingests the whole block as a paste rather than
+    /// submitting per line. See `send_keys_with_delay` for the threshold and
+    /// `send_via_paste_buffer` for the bracketed-paste contract.
     pub fn send_keys(&self, text: &str) -> Result<()> {
         self.send_keys_with_delay(text, 0)
     }
@@ -356,16 +360,35 @@ impl Session {
         }
 
         let target = format!("{}:^.0", self.name);
+        let byte_len = text.len();
+        let line_count = text.lines().count();
+        let max_line = text.lines().map(str::len).max().unwrap_or(0);
 
-        let lines: Vec<&str> = text.lines().collect();
-        for (i, line) in lines.iter().enumerate() {
+        // Long or multi-line messages go through the tmux paste-buffer path
+        // (load-buffer over stdin, then paste-buffer with bracketed-paste
+        // markers). The per-line `send-keys -l` + ESC+CR path encodes
+        // newlines as Shift+Enter, which is brittle compared to the
+        // bracketed-paste contract claude-code (and most agents in raw mode)
+        // are designed to ingest; the byte threshold is a conservative cap
+        // so very long single-line payloads also take the safer path.
+        const PASTE_BYTE_THRESHOLD: usize = 2048;
+        let use_paste_buffer = byte_len >= PASTE_BYTE_THRESHOLD || text.contains('\n');
+
+        tracing::debug!(
+            "send_keys_with_delay: bytes={} lines={} max_line={} use_paste_buffer={} target={}",
+            byte_len,
+            line_count,
+            max_line,
+            use_paste_buffer,
+            target
+        );
+
+        if use_paste_buffer {
+            Self::send_via_paste_buffer(&target, text)?;
+        } else {
             // `--` ends option parsing so lines beginning with `-` (markdown
             // bullets, CLI flags in prompts) are not misread as tmux flags.
-            Self::tmux_send(&target, &["-l", "--", line])?;
-            if i < lines.len() - 1 {
-                // ESC + CR: what terminals send for Shift+Enter (inserts newline)
-                Self::tmux_send(&target, &["-H", "1b", "0d"])?;
-            }
+            Self::tmux_send(&target, &["-l", "--", text])?;
         }
 
         if enter_delay_ms > 0 {
@@ -374,6 +397,59 @@ impl Session {
 
         // Enter to submit
         Self::tmux_send(&target, &["Enter"])?;
+
+        Ok(())
+    }
+
+    /// Deliver `text` to `target` via tmux's load-buffer + paste-buffer.
+    /// Buffer names are scoped by pid + a per-call counter so concurrent
+    /// senders (and retries) cannot clobber each other. `-p` enables
+    /// bracketed-paste markers when the receiving pane has DECSET 2004 set;
+    /// `-d` deletes the buffer after the paste. If paste-buffer fails after
+    /// load-buffer succeeded we issue an explicit `delete-buffer` so a
+    /// partial failure cannot leak a buffer.
+    ///
+    /// Bracketed-paste assumption: this replaces the old per-line `send-keys
+    /// -l` + `ESC+CR` (Shift+Enter) encoding. The old path worked against any
+    /// pane regardless of paste-mode support. The new path relies on the
+    /// receiving agent enabling DECSET 2004 (claude-code, codex, opencode,
+    /// gemini, and most modern TUI agent CLIs do). For panes that do *not*
+    /// enable bracketed paste (raw shells, simple REPLs), embedded newlines
+    /// will arrive as literal CRs and submit per line. If a future agent
+    /// integration hits this, the fallback is to short-circuit the
+    /// `use_paste_buffer` branch above for that agent and keep the per-line
+    /// Shift+Enter path.
+    fn send_via_paste_buffer(target: &str, text: &str) -> Result<()> {
+        static SEND_COUNTER: AtomicU64 = AtomicU64::new(0);
+        let seq = SEND_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let buf_name = format!("aoe-send-{}-{}", std::process::id(), seq);
+
+        let mut child = Command::new("tmux")
+            .args(["load-buffer", "-b", &buf_name, "-"])
+            .stdin(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()?;
+        if let Some(mut stdin) = child.stdin.take() {
+            stdin.write_all(text.as_bytes())?;
+        }
+        let status = child.wait()?;
+        if !status.success() {
+            bail!("tmux load-buffer failed (status={:?})", status.code());
+        }
+
+        let output = Command::new("tmux")
+            .args(["paste-buffer", "-d", "-p", "-b", &buf_name, "-t", target])
+            .output()?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            // paste-buffer's `-d` only deletes on success; on failure the
+            // buffer survives, so clean it up explicitly. Ignore errors
+            // from the cleanup so the original failure isn't masked.
+            let _ = Command::new("tmux")
+                .args(["delete-buffer", "-b", &buf_name])
+                .output();
+            bail!("tmux paste-buffer failed: {}", stderr);
+        }
 
         Ok(())
     }

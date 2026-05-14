@@ -2807,6 +2807,47 @@ fn apply_status_update_skips_terminal_states() {
     assert_eq!(inst.idle_entered_at, None);
 }
 
+/// Regression: paste over a group header must stash to `pending_paste`,
+/// never open a compose dialog targeted at "the first running session".
+/// Earlier behavior fell through to the first-running fallback whenever
+/// `selected_session` was None — silently misrouting voice/dictation
+/// across groups. With cursor on a group, `selected_session` is None and
+/// `resolve_paste_target` must return None unconditionally.
+#[test]
+#[serial]
+fn paste_on_group_header_stashes_instead_of_misrouting() {
+    let mut env = create_test_env_with_groups();
+
+    // Find the cursor index of the first group header in flat_items.
+    let group_idx = env
+        .view
+        .flat_items
+        .iter()
+        .position(|item| matches!(item, Item::Group { .. }))
+        .expect("fixture should produce at least one group header");
+    env.view.cursor = group_idx;
+    env.view.update_selected();
+
+    // Cursor on a group sets selected_session to None.
+    assert!(
+        env.view.selected_session.is_none(),
+        "cursor on a group header must clear selected_session"
+    );
+
+    env.view
+        .handle_paste("voice dictation that must not misroute");
+
+    assert!(
+        env.view.send_message_dialog.is_none(),
+        "paste over a group must NOT open a compose dialog against an unrelated session"
+    );
+    assert_eq!(
+        env.view.pending_paste.as_deref(),
+        Some("voice dictation that must not misroute"),
+        "paste over a group must stash to pending_paste"
+    );
+}
+
 /// Regression: a transient status toast must render even when no aoe update
 /// is pending. Before the fix, the update-bar row was only laid out when
 /// `update_info.is_some()`, so toasts produced by paths like the
@@ -2851,5 +2892,45 @@ fn update_bar_renders_status_toast_without_update_info() {
     assert!(
         out.contains("[Ctrl+x] dismiss"),
         "expected the dismiss hint alongside the toast.\nFull buffer:\n{out}"
+    );
+}
+
+/// Regression for the e2e CI failure (job 76034901940):
+/// `test_command_palette_fuzzy_search_settings` and
+/// `test_profile_picker_create_new_profile` failed because the harness types
+/// fast enough to trip the paste-burst detector, and the resulting "paste"
+/// got stashed in `pending_paste` instead of reaching the dialog's input.
+/// `wants_paste_burst` must be false for dialogs that capture keys via
+/// `handle_key` but do not implement `handle_paste`.
+#[test]
+#[serial]
+fn wants_paste_burst_only_for_paste_aware_dialogs() {
+    let mut env = create_test_env_empty();
+
+    // No dialog open: burst is needed (home shortcuts at risk).
+    assert!(
+        env.view.wants_paste_burst(),
+        "burst must be enabled when no dialog is open"
+    );
+
+    // Command palette: captures keys, no handle_paste. Burst would
+    // strand input in pending_paste — must be disabled.
+    env.view.handle_key(
+        KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL),
+        None,
+    );
+    assert!(
+        env.view.command_palette.is_some(),
+        "Ctrl+K must open the command palette"
+    );
+    assert!(
+        !env.view.wants_paste_burst(),
+        "burst must be disabled when command palette is open"
+    );
+    env.view.handle_key(key(KeyCode::Esc), None);
+    assert!(env.view.command_palette.is_none());
+    assert!(
+        env.view.wants_paste_burst(),
+        "burst should re-enable after dialog closes"
     );
 }

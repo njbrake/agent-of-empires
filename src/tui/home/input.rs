@@ -1036,21 +1036,7 @@ impl HomeView {
                 }
             }
             KeyCode::Char('m') => {
-                if let Some(id) = self.selected_session.clone() {
-                    if let Some(inst) = self.get_instance(&id) {
-                        if inst.status == Status::Creating {
-                            return None;
-                        }
-                        let title = inst.title.clone();
-                        let inst_id = inst.id.clone();
-                        let tmux_session = crate::tmux::Session::new(&inst_id, &title).ok();
-                        let is_running = tmux_session.as_ref().is_some_and(|s| s.exists());
-                        if is_running {
-                            self.pending_send_session = Some(id);
-                            self.send_message_dialog = Some(SendMessageDialog::new(&title));
-                        }
-                    }
-                }
+                self.open_send_message_dialog();
             }
             KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.apply_sort_order(self.sort_order.cycle_reverse());
@@ -1513,11 +1499,13 @@ impl HomeView {
     }
 
     /// Route a bracketed paste event to the active text input dialog.
+    ///
+    /// Active text-input dialogs (rename / send_message / new) win first so
+    /// multi-line voice/dictation lands in the dialog the user is actively
+    /// typing into. The settings view is checked last; its paste handler
+    /// strips newlines (settings/input.rs handle_paste sanitizes), which
+    /// would destroy multi-line dictation if we checked it first.
     pub fn handle_paste(&mut self, text: &str) {
-        if let Some(ref mut settings) = self.settings_view {
-            settings.handle_paste(text);
-            return;
-        }
         if let Some(ref mut dialog) = self.rename_dialog {
             dialog.handle_paste(text);
             return;
@@ -1528,7 +1516,90 @@ impl HomeView {
         }
         if let Some(ref mut dialog) = self.new_dialog {
             dialog.handle_paste(text);
+            return;
         }
+        if let Some(ref mut settings) = self.settings_view {
+            settings.handle_paste(text);
+            return;
+        }
+
+        // No dialog open: route the paste into a new compose dialog if the
+        // selected session is runnable. If not, stash in pending_paste so the
+        // next dialog open (typically the next `m` press) drains it. Never
+        // throw voice text on the floor; losing dictation is worse than
+        // silently catching it.
+        if let Some((id, title)) = self.resolve_paste_target() {
+            self.pending_send_session = Some(id);
+            let mut dialog = SendMessageDialog::new(&title);
+            dialog.handle_paste(text);
+            self.send_message_dialog = Some(dialog);
+            return;
+        }
+
+        // No running sessions at all (or all Creating). Stash for later;
+        // the user will see the text on next 'm' / dialog open.
+        match self.pending_paste.as_mut() {
+            Some(buf) => buf.push_str(text),
+            None => self.pending_paste = Some(text.to_string()),
+        }
+    }
+
+    /// Open the send-message dialog for the currently-selected running session.
+    /// If pending_paste has accumulated text from earlier untargeted pastes,
+    /// drain it into the dialog so voice/dictation captured before a session
+    /// was picked still gets used. No-op if no running session is targetable.
+    fn open_send_message_dialog(&mut self) {
+        let Some((id, title)) = self.resolve_paste_target() else {
+            return;
+        };
+        self.pending_send_session = Some(id);
+        let mut dialog = SendMessageDialog::new(&title);
+        if let Some(buf) = self.pending_paste.take() {
+            if !buf.is_empty() {
+                dialog.handle_paste(&buf);
+            }
+        }
+        self.send_message_dialog = Some(dialog);
+    }
+
+    /// Resolve a target session id + title for an untargeted paste/type-burst.
+    /// Only returns Some when an explicit, runnable session is selected.
+    ///
+    /// Cases that return None (caller stashes to `pending_paste`):
+    /// - Cursor on a group header (`selected_session` is None).
+    /// - No selection at all (empty list, no sessions).
+    /// - Selected session is non-running (Stopped, Error, Creating, or tmux
+    ///   pane gone).
+    ///
+    /// Why no first-running fallback: silently dispatching paste/dictation
+    /// to "whichever session sorts first" misroutes voice messages across
+    /// groups. A user with cursor on the "backend" group expanding it to
+    /// browse, dictating, and having the paste land in a "frontend" session
+    /// is exactly the misrouting the archived-selection fix is preventing.
+    /// Stashing to `pending_paste` is strictly better: the status-bar
+    /// indicator surfaces the captured count, and the next `m` against a
+    /// runnable selection drains it into the compose dialog.
+    ///
+    /// Defensive fall-through: when `selected_session` references an id
+    /// that no longer maps to an instance (deleted underneath us between
+    /// select and paste, shouldn't happen in steady state), we also stash
+    /// rather than reroute.
+    fn resolve_paste_target(&self) -> Option<(String, String)> {
+        let pick = |inst: &crate::session::Instance| -> Option<(String, String)> {
+            if inst.status == Status::Creating {
+                return None;
+            }
+            let tmux_session = crate::tmux::Session::new(&inst.id, &inst.title).ok();
+            if tmux_session.as_ref().is_some_and(|s| s.exists()) {
+                Some((inst.id.clone(), inst.title.clone()))
+            } else {
+                None
+            }
+        };
+
+        let id = self.selected_session.as_ref()?;
+        let inst = self.get_instance(id)?;
+        pick(inst)
     }
 
     /// Re-score matches after a reload without moving the cursor.

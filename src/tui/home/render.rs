@@ -1166,6 +1166,21 @@ impl HomeView {
             }
         }
 
+        // Pending-paste indicator: text was captured at the home view but
+        // couldn't be routed yet (no runnable session selected). Surface a
+        // high-priority hint so the user knows the paste/dictation didn't
+        // vanish — pressing `m` after selecting a runnable session drains
+        // pending_paste into the compose dialog.
+        if let Some(buf) = &self.pending_paste {
+            if !buf.is_empty() {
+                let key = if strict { "M" } else { "m" };
+                let desc = format!("send {} buffered", buf.chars().count());
+                let mut spans = mk(key, &desc);
+                spans[1] = Span::styled(desc, Style::default().fg(theme.running).bold());
+                groups.push((0, spans));
+            }
+        }
+
         groups.push((0, mk_key("j/k")));
 
         if let Some(enter_action_text) = match self.flat_items.get(self.cursor) {
