@@ -86,6 +86,51 @@ pub struct LoggingConfig {
 
     #[serde(default)]
     pub targets: std::collections::BTreeMap<String, String>,
+
+    /// Where tracing output goes. `File` is the default; `Stdout` is only
+    /// honored for foreground `aoe serve` and env-overridden one-shot CLI
+    /// invocations. TUI, daemon child, and cockpit runners coerce to `File`
+    /// because their alt-screen / detached-stdio would otherwise corrupt or
+    /// discard the output.
+    #[serde(default)]
+    pub output: SinkKind,
+
+    /// Log file location. Relative paths resolve under the app data dir;
+    /// absolute paths are used verbatim. Defaults to `debug.log`.
+    #[serde(default = "default_file_path")]
+    pub file_path: String,
+
+    /// Rotation policy. `Size` rotates when the live file crosses
+    /// `max_size_mib`; `Never` disables rotation.
+    #[serde(default)]
+    pub rotation: RotationKind,
+
+    /// Size threshold (MiB) for `RotationKind::Size`. The file may
+    /// overshoot the threshold slightly between stat checks; bounded by
+    /// the writer's stat-on-tick interval.
+    #[serde(default = "default_max_size_mib")]
+    pub max_size_mib: u64,
+
+    /// How many rotated files to retain (`.1` through `.keep_count`).
+    /// Older rotations are dropped.
+    #[serde(default = "default_keep_count")]
+    pub keep_count: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SinkKind {
+    #[default]
+    File,
+    Stdout,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RotationKind {
+    #[default]
+    Size,
+    Never,
 }
 
 impl Default for LoggingConfig {
@@ -93,12 +138,29 @@ impl Default for LoggingConfig {
         Self {
             default_level: default_log_level(),
             targets: std::collections::BTreeMap::new(),
+            output: SinkKind::default(),
+            file_path: default_file_path(),
+            rotation: RotationKind::default(),
+            max_size_mib: default_max_size_mib(),
+            keep_count: default_keep_count(),
         }
     }
 }
 
 fn default_log_level() -> String {
     "info".to_string()
+}
+
+fn default_file_path() -> String {
+    "debug.log".to_string()
+}
+
+fn default_max_size_mib() -> u64 {
+    50
+}
+
+fn default_keep_count() -> u8 {
+    5
 }
 
 /// Configuration for the cockpit (ACP-based native rendering of agent
@@ -1661,5 +1723,54 @@ mod tests {
 
         let serialized = toml::to_string(&parsed).unwrap();
         assert!(serialized.contains(r#"container_runtime = "podman""#));
+    }
+
+    #[test]
+    fn logging_config_old_shape_populates_new_defaults() {
+        // Existing user configs predate output/file_path/rotation; their
+        // [logging] section is just default_level + targets. The new fields
+        // must populate from serde defaults rather than failing to parse.
+        let toml_str = r#"
+default_level = "debug"
+
+[targets]
+"cockpit.acp" = "trace"
+"#;
+        let parsed: LoggingConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(parsed.default_level, "debug");
+        assert_eq!(
+            parsed.targets.get("cockpit.acp"),
+            Some(&"trace".to_string())
+        );
+        assert_eq!(parsed.output, SinkKind::File);
+        assert_eq!(parsed.file_path, "debug.log");
+        assert_eq!(parsed.rotation, RotationKind::Size);
+        assert_eq!(parsed.max_size_mib, 50);
+        assert_eq!(parsed.keep_count, 5);
+    }
+
+    #[test]
+    fn logging_config_new_shape_round_trip() {
+        let toml_str = r#"
+default_level = "info"
+output = "stdout"
+file_path = "/tmp/aoe.log"
+rotation = "never"
+max_size_mib = 100
+keep_count = 10
+
+[targets]
+"#;
+        let parsed: LoggingConfig = toml::from_str(toml_str).unwrap();
+        assert_eq!(parsed.output, SinkKind::Stdout);
+        assert_eq!(parsed.file_path, "/tmp/aoe.log");
+        assert_eq!(parsed.rotation, RotationKind::Never);
+        assert_eq!(parsed.max_size_mib, 100);
+        assert_eq!(parsed.keep_count, 10);
+
+        let serialized = toml::to_string(&parsed).unwrap();
+        let reparsed: LoggingConfig = toml::from_str(&serialized).unwrap();
+        assert_eq!(reparsed.output, SinkKind::Stdout);
+        assert_eq!(reparsed.rotation, RotationKind::Never);
     }
 }
