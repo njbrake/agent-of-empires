@@ -81,7 +81,7 @@ Run without arguments to launch the TUI dashboard.
 * `agents` — List supported agents and their install status
 * `init` — Initialize .agent-of-empires/config.toml in a repository
 * `list` — List all sessions
-* `logs` — View AoE log files (debug.log, serve.log) with a pretty viewer
+* `logs` — View the configured AoE log file with a pretty viewer
 * `log-level` — Get or set the running daemon's log filter at runtime. Pass a bare level (debug/info/...) for the safe expansion, or `--filter <expr>` for raw EnvFilter syntax. `--get` prints the current filter. Changes are ephemeral and lost on daemon restart
 * `remove` — Remove a session
 * `send` — Send a message to a running agent session
@@ -182,19 +182,16 @@ List all sessions
 
 ## `aoe logs`
 
-View AoE log files (debug.log, serve.log) with a pretty viewer
+View the configured AoE log file with a pretty viewer
 
 **Usage:** `aoe logs [OPTIONS]`
 
 ###### **Options:**
 
-* `--debug` — View debug.log (default)
-* `--serve` — View serve.log (daemon stdout/stderr)
-* `--all` — View both debug.log and serve.log, merged by timestamp
 * `-f`, `--follow` — Live-tail the log
 * `-n`, `--lines <N>` — Show only the last N lines (fallback viewers; lnav handles its own)
 * `--no-pager` — Skip viewer detection; write plain log to stdout
-* `--path` — Print the resolved log file path(s) and exit (no viewing)
+* `--path` — Print the resolved log file path and exit (no viewing)
 
 
 
