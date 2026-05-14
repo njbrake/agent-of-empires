@@ -45,6 +45,7 @@ async fn main() -> Result<()> {
     // Else no subscriber installed.
     let env_cfg = LogConfig::from_env();
     let (init, log_path_for_msg) = if let Some(filter) = env_cfg.filter_string() {
+        // Env-var wins. Writes file logs.
         let log_path = agent_of_empires::session::get_app_dir().map(|d| d.join("debug.log"));
         match log_path.as_ref() {
             Ok(path) => {
@@ -63,11 +64,22 @@ async fn main() -> Result<()> {
             ),
         }
     } else if is_serve_command(&cli) {
-        let filter = LogConfig::serve_default()
-            .filter_string()
-            .expect("serve_default sets a level");
+        // Persistent settings (config.toml [logging]) drive the serve filter
+        // when no env var is set. Falls back to serve_default if config not
+        // readable for any reason — daemon must always come up.
+        let cfg_filter = agent_of_empires::session::load_config()
+            .ok()
+            .flatten()
+            .and_then(|c| {
+                logging::build_filter_from_config(&c.logging.default_level, &c.logging.targets)
+            })
+            .unwrap_or_else(|| {
+                LogConfig::serve_default()
+                    .filter_string()
+                    .expect("serve_default sets a level")
+            });
         (
-            logging::init_subscriber(SubscriberTarget::Stdout, filter),
+            logging::init_subscriber(SubscriberTarget::Stdout, cfg_filter),
             None,
         )
     } else {

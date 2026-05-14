@@ -66,6 +66,10 @@ pub(super) const ALLOWED_SETTINGS_SECTIONS: &[&str] = &[
     // (notifications_enabled, notify_on_waiting, notify_on_idle, notify_on_error).
     // No shell commands, no binary paths, no RCE surface.
     "web",
+    // logging: persistent tracing filter (default_level + per-target map).
+    // No shell commands, no binary paths. Values are validated against the
+    // EnvFilter parser before being written back to disk.
+    "logging",
 ];
 
 pub(super) const SESSION_BLOCKED_FIELDS: &[&str] = &[
@@ -174,6 +178,9 @@ mod tests {
             // (notifications_enabled, notify_on_waiting, notify_on_idle,
             // notify_on_error). No shell commands, no binary paths.
             "web",
+            // logging: persistent tracing filter. EnvFilter parser
+            // validates every value before save_config writes it back.
+            "logging",
         ];
         assert_eq!(
             ALLOWED_SETTINGS_SECTIONS.len(),

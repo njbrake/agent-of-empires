@@ -48,6 +48,43 @@ pub struct Config {
 
     #[serde(default)]
     pub cockpit: CockpitConfig,
+
+    #[serde(default)]
+    pub logging: LoggingConfig,
+}
+
+/// Persistent logging configuration. Drives the default tracing
+/// filter when no `AOE_LOG_LEVEL` env var is set, and is the
+/// source of truth the settings UI writes to.
+///
+/// `default_level` is the baseline applied to every known target
+/// root (see `crate::logging::DEFAULT_TARGET_ROOTS`). Entries in
+/// `targets` override per-target.
+///
+/// Env var takes precedence: when `AOE_LOG_LEVEL` is set at startup,
+/// this config is ignored for the initial filter (env wins for
+/// CI/scripted runs). Runtime changes via `/api/log-level` always
+/// honor whichever is active.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LoggingConfig {
+    #[serde(default = "default_log_level")]
+    pub default_level: String,
+
+    #[serde(default)]
+    pub targets: std::collections::BTreeMap<String, String>,
+}
+
+impl Default for LoggingConfig {
+    fn default() -> Self {
+        Self {
+            default_level: default_log_level(),
+            targets: std::collections::BTreeMap::new(),
+        }
+    }
+}
+
+fn default_log_level() -> String {
+    "info".to_string()
 }
 
 /// Configuration for the cockpit (ACP-based native rendering of agent

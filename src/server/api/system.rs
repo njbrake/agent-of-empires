@@ -132,17 +132,50 @@ pub async fn update_settings(
     .await;
 
     match result {
-        Ok(Ok(config)) => match serde_json::to_value(&config) {
-            Ok(val) => (StatusCode::OK, Json(val)).into_response(),
-            Err(e) => {
-                tracing::error!("Settings serialization failed: {}", e);
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({"error": "serialize_failed", "message": "Failed to serialize settings"})),
-                )
-                    .into_response()
+        Ok(Ok(config)) => {
+            // Settings touched [logging]? Apply the new filter live to
+            // the daemon + persist runtime_filter so cockpit runners pick
+            // it up via the notify watcher. Without this, settings edits
+            // would only take effect after `aoe serve --stop` + restart.
+            if let Some(filter) = crate::logging::build_filter_from_config(
+                &config.logging.default_level,
+                &config.logging.targets,
+            ) {
+                match crate::logging::set_filter(&filter) {
+                    Ok(swap) => {
+                        tracing::info!(
+                            target: "log.runtime",
+                            previous = %swap.previous,
+                            current = %swap.current,
+                            source = "settings",
+                            "filter swapped"
+                        );
+                        if let Ok(app_dir) = crate::session::get_app_dir() {
+                            crate::logging::persist_runtime_filter(&swap.current, &app_dir);
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(
+                            target: "log.runtime",
+                            error = %e,
+                            filter = %filter,
+                            "settings-driven filter swap failed"
+                        );
+                    }
+                }
             }
-        },
+            match serde_json::to_value(&config) {
+                Ok(val) => (StatusCode::OK, Json(val)).into_response(),
+                Err(e) => {
+                    tracing::error!("Settings serialization failed: {}", e);
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({"error": "serialize_failed", "message": "Failed to serialize settings"})),
+                    )
+                        .into_response()
+                }
+            }
+        }
         Ok(Err(e)) => {
             tracing::warn!("Settings update failed: {}", e);
             (

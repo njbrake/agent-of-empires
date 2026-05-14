@@ -41,6 +41,65 @@ pub const DEFAULT_TARGET_ROOTS: &[&str] = &[
     "log",
 ];
 
+/// Sub-targets users can tune individually from the settings UI.
+/// Order is the UI ordering. Anything not in this list still works
+/// in the runtime endpoint as a raw filter, but won't have a dropdown.
+pub const KNOWN_SUB_TARGETS: &[&str] = &[
+    "cockpit.acp",
+    "cockpit.acp.stderr",
+    "cockpit.supervisor",
+    "cockpit.event_store",
+    "cockpit.runner",
+    "terminal.ws",
+    "terminal.ws.bytes",
+    "auth.token",
+    "auth.middleware",
+    "auth.rate_limit",
+    "auth.passphrase",
+    "auth.device",
+    "auth.ip",
+    "process.signal",
+    "process.tree",
+    "process.reap",
+    "process.ppid",
+    "update.fetch",
+    "update.cache",
+    "update.parse",
+    "containers.docker",
+    "containers.image",
+    "containers.runtime",
+    "git.command",
+    "web.client",
+    "log.runtime",
+];
+
+/// Compose an EnvFilter directive from a baseline level + per-target overrides.
+/// Used both at startup (when no env var is set) and by the settings write path
+/// when a user updates `[logging]`.
+///
+/// Per-target overrides win over the baseline because EnvFilter is
+/// last-wins-per-target: the override directives are emitted AFTER the roots.
+pub fn build_filter_from_config(
+    default_level: &str,
+    targets: &std::collections::BTreeMap<String, String>,
+) -> Option<String> {
+    let baseline_level = LogLevel::parse(default_level)?;
+    let mut s = LogConfig::filter_for_level(baseline_level);
+    for (target, lvl) in targets {
+        if target.is_empty() {
+            continue;
+        }
+        if LogLevel::parse(lvl).is_none() {
+            continue;
+        }
+        s.push(',');
+        s.push_str(target);
+        s.push('=');
+        s.push_str(lvl);
+    }
+    Some(s)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogLevel {
     Trace,
