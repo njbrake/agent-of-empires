@@ -63,6 +63,14 @@ pub struct ServeArgs {
     /// no display server is reachable on Linux/BSD.
     #[arg(long)]
     pub open: bool,
+
+    /// Internal marker: this invocation is the detached child spawned by
+    /// `--daemon`. Set automatically by `start_daemon()`; never pass by hand.
+    /// Tells `main.rs` to classify the process as `ServeDaemonChild` so the
+    /// sink resolver routes tracing to the configured log file (its
+    /// stdout/stderr are detached). Hidden from `--help`.
+    #[arg(long, hide = true)]
+    pub daemon_child: bool,
 }
 
 impl ServeArgs {
@@ -431,12 +439,25 @@ pub async fn run(profile: &str, args: ServeArgs) -> Result<()> {
     result
 }
 
-/// Path to the daemon's combined stdout/stderr log.
-/// Kept alongside the PID file so the TUI can tail it while the
-/// server runs without attaching to the process directly.
-pub fn daemon_log_path() -> Result<PathBuf> {
+/// Path the daemon's stdout/stderr are redirected to. Resolved from the
+/// configured `[logging].file_path` so panic backtraces interleave with
+/// the structured tracing stream rather than going to /dev/null or a
+/// separate `serve.log` (removed). The TUI serve dialog and `aoe logs`
+/// resolve this same path to tail the daemon.
+pub fn stdio_redirect_path() -> Result<PathBuf> {
     let dir = crate::session::get_app_dir()?;
-    Ok(dir.join("serve.log"))
+    let log_cfg = crate::session::load_config()
+        .ok()
+        .flatten()
+        .map(|c| c.logging)
+        .unwrap_or_default();
+    Ok(crate::logging::resolve_log_path(&log_cfg, &dir))
+}
+
+/// Deprecated alias retained until commit 7 (drop serve.log everywhere)
+/// removes the last call sites in `aoe logs` and the TUI serve dialog.
+pub fn daemon_log_path() -> Result<PathBuf> {
+    stdio_redirect_path()
 }
 
 fn start_daemon(profile: &str, args: &ServeArgs) -> Result<()> {
@@ -446,6 +467,7 @@ fn start_daemon(profile: &str, args: &ServeArgs) -> Result<()> {
     let mut cmd = Command::new(exe);
     cmd.args([
         "serve",
+        "--daemon-child",
         "--port",
         &args.resolved_port().to_string(),
         "--host",
@@ -495,15 +517,22 @@ fn start_daemon(profile: &str, args: &ServeArgs) -> Result<()> {
         }
     }
 
-    // Redirect stdout/stderr to a log file so controllers like the TUI can
-    // tail the daemon's output. Truncate on each start so stale content from
-    // a prior run doesn't confuse the UI.
-    let log_path = daemon_log_path().ok();
-    match log_path
-        .as_ref()
-        .and_then(|p| std::fs::File::create(p).ok().map(|f| (p.clone(), f)))
-    {
-        Some((_, log_file)) => {
+    // Route the child's stdout/stderr into the configured log file so panic
+    // backtraces and stray prints land alongside structured tracing rather
+    // than disappearing into /dev/null. The tracing subscriber inside the
+    // child resolves the same path via `logging::resolve_log_path`, so the
+    // two streams interleave in one file. Inherited fds may go stale across
+    // a rotation; that is best-effort behavior documented in
+    // docs/development/logging.md.
+    let stdio_path = stdio_redirect_path().ok();
+    match stdio_path.as_ref().and_then(|p| {
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(p)
+            .ok()
+    }) {
+        Some(log_file) => {
             let stdout = log_file.try_clone()?;
             let stderr = log_file;
             cmd.stdout(Stdio::from(stdout)).stderr(Stdio::from(stderr));

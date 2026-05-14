@@ -21,6 +21,23 @@ fn is_serve_command(_cli: &Cli) -> bool {
     false
 }
 
+/// Did the parent `aoe serve --daemon` spawn this process as the detached
+/// child? Set by `start_daemon()` via the hidden `--daemon-child` flag.
+/// Drives sink resolution: child's stdout/stderr are redirected to the
+/// configured log file, so tracing must also write there (a Stdout sink
+/// would land bytes in the same file via the OS redirect, but mixing two
+/// writers on the same fd hurts ordering, and the configured-sink path
+/// is what the TUI dialog and `aoe logs` tail).
+#[cfg(feature = "serve")]
+fn is_serve_daemon_child(cli: &Cli) -> bool {
+    matches!(cli.command, Some(Commands::Serve(ref args)) if args.daemon_child)
+}
+
+#[cfg(not(feature = "serve"))]
+fn is_serve_daemon_child(_cli: &Cli) -> bool {
+    false
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -40,9 +57,12 @@ async fn main() -> Result<()> {
     let env_cfg = LogConfig::from_env();
     let env_filter = env_cfg.filter_string();
     let is_serve = is_serve_command(&cli);
+    let is_daemon_child = is_serve_daemon_child(&cli);
     let is_tui = cli.command.is_none();
 
-    let ctx = if is_serve {
+    let ctx = if is_daemon_child {
+        ProcessContext::ServeDaemonChild
+    } else if is_serve {
         ProcessContext::ServeForeground
     } else if is_tui {
         ProcessContext::Tui
