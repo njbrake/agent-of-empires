@@ -11,7 +11,7 @@
 //! design rather than threading a handle through application state.
 //! `Mutex<Option<Arc<_>>>` (over `OnceLock`) so tests can reset.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use tracing_subscriber::filter::EnvFilter;
@@ -19,6 +19,74 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::reload;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::Registry;
+
+use crate::session::config::LoggingConfig;
+
+/// Which context the running process is in. Drives whether `[logging].output`
+/// is honored or coerced to `File`. Contexts where the stdout sink would
+/// corrupt the UI (TUI alt-screen) or get discarded (daemon child's
+/// detached stdio, cockpit runner) force the file sink.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProcessContext {
+    Tui,
+    ServeDaemonChild,
+    ServeForeground,
+    Runner,
+    OneShotCli,
+}
+
+/// Output of `resolve_sink`. The `warning` is deferred until after subscriber
+/// init so it can be emitted through tracing rather than dropped silently.
+pub struct SinkResolution {
+    pub target: SubscriberTarget,
+    pub warning: Option<String>,
+}
+
+/// Resolve the configured log file path. Relative `file_path` values join
+/// onto `app_dir`; absolute paths are used verbatim. Used by every site
+/// that names the log file (main, runner, aoe logs, TUI serve dialog).
+pub fn resolve_log_path(cfg: &LoggingConfig, app_dir: &Path) -> PathBuf {
+    let p = Path::new(&cfg.file_path);
+    if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        app_dir.join(p)
+    }
+}
+
+/// Pick the subscriber sink for this process. `output = "stdout"` is
+/// honored only when the context can safely write to stdout; otherwise
+/// the resolution carries a `warning` describing the coercion so the
+/// caller can emit it through the now-live subscriber.
+pub fn resolve_sink(cfg: &LoggingConfig, app_dir: &Path, ctx: ProcessContext) -> SinkResolution {
+    use crate::session::config::SinkKind;
+
+    let force_file = matches!(
+        ctx,
+        ProcessContext::Tui | ProcessContext::ServeDaemonChild | ProcessContext::Runner
+    );
+    let want_stdout = matches!(cfg.output, SinkKind::Stdout);
+
+    if want_stdout && !force_file {
+        SinkResolution {
+            target: SubscriberTarget::Stdout,
+            warning: None,
+        }
+    } else {
+        let warning = if want_stdout && force_file {
+            Some(format!(
+                "[logging].output = \"stdout\" ignored for {:?} (file required to avoid output corruption)",
+                ctx
+            ))
+        } else {
+            None
+        };
+        SinkResolution {
+            target: SubscriberTarget::File(resolve_log_path(cfg, app_dir)),
+            warning,
+        }
+    }
+}
 
 /// Top-level tracing target roots. The default filter expands a
 /// single level (e.g. "debug") to one directive per root so user-defined

@@ -472,7 +472,6 @@ fn init_runner_logging(session_id: &str) -> Result<()> {
     let per_session = worker_registry::log_path_for(session_id)?;
     open_log_file(&per_session)?;
 
-    let shared_path = crate::session::get_app_dir()?.join("debug.log");
     // Same precedence as main.rs: env > [logging] in config.toml > info
     // baseline. The notify watcher on runtime_filter still takes over
     // for live swaps once the daemon writes one.
@@ -481,12 +480,21 @@ fn init_runner_logging(session_id: &str) -> Result<()> {
         .or_else(crate::logging::load_persisted_filter)
         .unwrap_or_else(crate::logging::serve_default_filter);
 
-    let init = crate::logging::init_subscriber(
-        crate::logging::SubscriberTarget::File(shared_path),
-        filter,
-    );
+    let app_dir = crate::session::get_app_dir()?;
+    let log_cfg = crate::session::load_config()
+        .ok()
+        .flatten()
+        .map(|c| c.logging)
+        .unwrap_or_default();
+    let resolution =
+        crate::logging::resolve_sink(&log_cfg, &app_dir, crate::logging::ProcessContext::Runner);
+
+    let init = crate::logging::init_subscriber(resolution.target, filter);
     if let Some(c) = init.controller {
         crate::logging::install_controller(c);
+    }
+    if let Some(w) = resolution.warning {
+        tracing::warn!(target: "log.runtime", "{}", w);
     }
     Ok(())
 }
