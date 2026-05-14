@@ -43,6 +43,27 @@ pub struct ProfileConfig {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cockpit: Option<CockpitConfigOverride>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude: Option<ClaudeConfigOverride>,
+}
+
+/// Per-profile override for the Claude config dir (i.e. the value passed
+/// as `$CLAUDE_CONFIG_DIR` to spawned Claude sessions). When the override
+/// is `None`, sessions inherit the host shell's `CLAUDE_CONFIG_DIR` (or
+/// fall back to `$HOME/.claude`, which is Claude's own default).
+///
+/// The override is intentionally just a path, not a named-account
+/// abstraction; users layer naming conventions on top however they like
+/// (e.g. a tree of `$HOME/.claude-accounts/<name>` dirs).
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ClaudeConfigOverride {
+    /// Directory that becomes `$CLAUDE_CONFIG_DIR` for sessions spawned
+    /// under this profile. Leading `~` and `$HOME` are expanded at spawn
+    /// time so TOML files stay portable across hosts. `None` (or an
+    /// empty string serialized as absent) means "inherit shell env".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_dir: Option<String>,
 }
 
 /// Per-profile overrides for the [cockpit] config section. Every field
@@ -282,6 +303,41 @@ pub fn profile_has_overrides(config: &ProfileConfig) -> bool {
         || config.session.is_some()
         || config.hooks.is_some()
         || config.sound.is_some()
+        || config.cockpit.is_some()
+        || config.claude.is_some()
+}
+
+/// Resolve the effective Claude config directory for a profile. Returns
+/// `None` when the profile has no override (caller should fall back to
+/// the host's `$CLAUDE_CONFIG_DIR` or `$HOME/.claude`). Leading `~` and
+/// `$HOME` in the stored path are expanded against the runtime
+/// environment so TOML stays host-portable for the simple case.
+pub fn resolve_claude_config_dir(profile: &ProfileConfig) -> Option<String> {
+    let raw = profile.claude.as_ref()?.config_dir.as_ref()?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(expand_home(trimmed))
+}
+
+fn expand_home(path: &str) -> String {
+    let Ok(home) = std::env::var("HOME") else {
+        return path.to_string();
+    };
+    if path == "~" {
+        return home;
+    }
+    if let Some(rest) = path.strip_prefix("~/") {
+        return format!("{}/{}", home.trim_end_matches('/'), rest);
+    }
+    if path == "$HOME" {
+        return home;
+    }
+    if let Some(rest) = path.strip_prefix("$HOME/") {
+        return format!("{}/{}", home.trim_end_matches('/'), rest);
+    }
+    path.to_string()
 }
 
 /// Load effective config for a profile (global + profile overrides merged)
@@ -494,6 +550,15 @@ pub fn merge_configs(mut global: Config, profile: &ProfileConfig) -> Config {
 
     if let Some(ref sound_override) = profile.sound {
         crate::sound::apply_sound_overrides(&mut global.sound, sound_override);
+    }
+
+    if let Some(ref claude_override) = profile.claude {
+        if claude_override.config_dir.is_some() {
+            global
+                .claude
+                .get_or_insert_with(super::config::ClaudeConfig::default)
+                .config_dir = claude_override.config_dir.clone();
+        }
     }
 
     if let Some(ref cockpit_override) = profile.cockpit {
@@ -931,5 +996,102 @@ mod tests {
         let hooks = config.hooks.unwrap();
         assert_eq!(hooks.on_create, Some(vec!["npm install".to_string()]));
         assert_eq!(hooks.on_launch, Some(vec!["npm start".to_string()]));
+    }
+
+    #[test]
+    fn test_claude_override_round_trips() {
+        let toml_in = r#"
+            [claude]
+            config_dir = "~/.claude-accounts/work"
+        "#;
+        let config: ProfileConfig = toml::from_str(toml_in).unwrap();
+        let claude = config.claude.clone().unwrap();
+        assert_eq!(
+            claude.config_dir.as_deref(),
+            Some("~/.claude-accounts/work")
+        );
+
+        let out = toml::to_string_pretty(&config).unwrap();
+        assert!(out.contains("[claude]"));
+        assert!(out.contains("config_dir = \"~/.claude-accounts/work\""));
+    }
+
+    #[test]
+    fn test_claude_override_promotes_profile_has_overrides() {
+        let mut profile = ProfileConfig::default();
+        assert!(!profile_has_overrides(&profile));
+        profile.claude = Some(ClaudeConfigOverride {
+            config_dir: Some("/tmp/x".to_string()),
+        });
+        assert!(profile_has_overrides(&profile));
+    }
+
+    #[test]
+    fn test_merge_configs_promotes_claude_override() {
+        let global = Config::default();
+        assert!(global.claude.is_none());
+
+        let profile = ProfileConfig {
+            claude: Some(ClaudeConfigOverride {
+                config_dir: Some("/srv/claude-bot".to_string()),
+            }),
+            ..Default::default()
+        };
+
+        let merged = merge_configs(global, &profile);
+        assert_eq!(
+            merged.claude.and_then(|c| c.config_dir).as_deref(),
+            Some("/srv/claude-bot")
+        );
+    }
+
+    #[test]
+    fn test_resolve_claude_config_dir_expansion() {
+        let home = std::env::var("HOME").unwrap_or_default();
+        if home.is_empty() {
+            return;
+        }
+
+        let cases = [
+            ("~", home.clone()),
+            ("~/foo", format!("{}/foo", home.trim_end_matches('/'))),
+            ("$HOME", home.clone()),
+            ("$HOME/bar", format!("{}/bar", home.trim_end_matches('/'))),
+            ("/abs/path", "/abs/path".to_string()),
+        ];
+
+        for (raw, expected) in cases {
+            let profile = ProfileConfig {
+                claude: Some(ClaudeConfigOverride {
+                    config_dir: Some(raw.to_string()),
+                }),
+                ..Default::default()
+            };
+            assert_eq!(
+                resolve_claude_config_dir(&profile),
+                Some(expected.clone()),
+                "expansion mismatch for input '{raw}'"
+            );
+        }
+    }
+
+    #[test]
+    fn test_resolve_claude_config_dir_none_paths() {
+        let none_cases = [
+            ProfileConfig::default(),
+            ProfileConfig {
+                claude: Some(ClaudeConfigOverride { config_dir: None }),
+                ..Default::default()
+            },
+            ProfileConfig {
+                claude: Some(ClaudeConfigOverride {
+                    config_dir: Some("   ".to_string()),
+                }),
+                ..Default::default()
+            },
+        ];
+        for p in none_cases {
+            assert!(resolve_claude_config_dir(&p).is_none());
+        }
     }
 }

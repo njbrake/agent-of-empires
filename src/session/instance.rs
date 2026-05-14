@@ -510,6 +510,15 @@ impl Instance {
         super::config::effective_profile(&self.source_profile)
     }
 
+    /// Resolve the effective profile's `CLAUDE_CONFIG_DIR` override, if
+    /// any. Returns the post-expansion absolute path string (with `~`
+    /// and `$HOME` resolved against the runtime environment).
+    fn profile_claude_config_dir(&self) -> Option<String> {
+        let profile = self.effective_profile();
+        let pc = super::profile_config::load_profile_config(&profile).ok()?;
+        super::profile_config::resolve_claude_config_dir(&pc)
+    }
+
     pub fn is_sub_session(&self) -> bool {
         self.parent_session_id.is_some()
     }
@@ -1109,7 +1118,23 @@ impl Instance {
         }
 
         // Prepend AOE_INSTANCE_ID env var if this agent supports hooks.
-        let env_prefix = status_hook_env_prefix(&self.id, &self.tool, agent);
+        let mut env_prefix = status_hook_env_prefix(&self.id, &self.tool, agent);
+
+        // Profile-scoped CLAUDE_CONFIG_DIR override. Resolved against the
+        // session's effective profile; `~` and `$HOME` in the stored
+        // path are expanded against the runtime environment so the TOML
+        // stays host-portable. Sandboxed sessions intentionally skip
+        // this injection because the override path lives on the host
+        // and may not exist (or may not match) inside the container;
+        // sandbox users should forward the var via `sandbox.environment`
+        // instead.
+        if let Some(dir) = self.profile_claude_config_dir() {
+            env_prefix = format!(
+                "CLAUDE_CONFIG_DIR={} {}",
+                super::environment::shell_escape(&dir),
+                env_prefix
+            );
+        }
 
         if self.command.is_empty() {
             crate::agents::get_agent(&self.tool).map(|a| {

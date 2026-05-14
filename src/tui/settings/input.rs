@@ -840,6 +840,12 @@ impl SettingsView {
                     c.max_concurrent_resumes = None;
                 }
             }
+            // Claude
+            FieldKey::ClaudeConfigDir => {
+                if let Some(c) = config.claude.as_mut() {
+                    c.config_dir = None;
+                }
+            }
         }
 
         // Sync repo_config when in Repo scope

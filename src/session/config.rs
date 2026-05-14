@@ -48,6 +48,25 @@ pub struct Config {
 
     #[serde(default)]
     pub cockpit: CockpitConfig,
+
+    /// Per-host Claude config override. The TUI surfaces this only at the
+    /// profile scope (where overriding `config_dir` per profile is the
+    /// whole point), but a global value is honoured as the fallback when
+    /// a profile has no override of its own. Most users will leave this
+    /// `None` and let Claude pick `$HOME/.claude` itself.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude: Option<ClaudeConfig>,
+}
+
+/// Top-level Claude configuration block. Currently a single field, but a
+/// struct (rather than a bare `Option<String>`) so future per-host Claude
+/// settings can be added without bumping the TOML schema.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ClaudeConfig {
+    /// Optional value for `$CLAUDE_CONFIG_DIR` (with `~` / `$HOME`
+    /// expanded at spawn time). `None` means "inherit shell env".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_dir: Option<String>,
 }
 
 /// Configuration for the cockpit (ACP-based native rendering of agent

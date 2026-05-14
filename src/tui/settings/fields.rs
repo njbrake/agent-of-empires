@@ -24,6 +24,7 @@ pub enum SettingsCategory {
     Hooks,
     Web,
     Cockpit,
+    Claude,
 }
 
 impl SettingsCategory {
@@ -39,6 +40,7 @@ impl SettingsCategory {
             Self::Hooks => "Hooks",
             Self::Web => "Web",
             Self::Cockpit => "Cockpit",
+            Self::Claude => "Claude",
         }
     }
 }
@@ -122,6 +124,8 @@ pub enum FieldKey {
     CockpitShowToolDurations,
     CockpitQueueDrainMode,
     CockpitMaxConcurrentResumes,
+    // Claude
+    ClaudeConfigDir,
 }
 
 /// Resolve a field value from global config and optional profile override.
@@ -284,7 +288,37 @@ pub fn build_fields_for_category(
         SettingsCategory::Hooks => build_hooks_fields(scope, global, profile),
         SettingsCategory::Web => build_web_fields(scope, global, profile),
         SettingsCategory::Cockpit => build_cockpit_fields(scope, global, profile),
+        SettingsCategory::Claude => build_claude_fields(scope, global, profile),
     }
+}
+
+fn build_claude_fields(
+    scope: SettingsScope,
+    global: &Config,
+    profile: &ProfileConfig,
+) -> Vec<SettingField> {
+    let global_dir = global.claude.as_ref().and_then(|c| c.config_dir.clone());
+    let profile_dir = profile.claude.as_ref().and_then(|c| c.config_dir.clone());
+    let has_explicit_override = profile_dir.is_some();
+    let (config_dir, override_flag) = resolve_optional(
+        scope,
+        global_dir.clone(),
+        profile_dir,
+        has_explicit_override,
+    );
+
+    vec![SettingField {
+        key: FieldKey::ClaudeConfigDir,
+        label: "Config dir",
+        description: "Directory exported as $CLAUDE_CONFIG_DIR when spawning Claude sessions under this profile. Leading `~` and `$HOME` are expanded at spawn time so the same TOML works across hosts. Empty (or unset) means inherit the shell's CLAUDE_CONFIG_DIR (or fall back to $HOME/.claude, Claude's own default). Not injected into sandboxed sessions; use sandbox.environment to forward it inside a container.",
+        value: FieldValue::OptionalText(config_dir),
+        category: SettingsCategory::Claude,
+        has_override: override_flag,
+        inherited_display: inherited_if(
+            override_flag,
+            FieldValue::OptionalText(global_dir),
+        ),
+    }]
 }
 
 fn build_cockpit_fields(
@@ -1860,6 +1894,26 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
         (FieldKey::CockpitMaxConcurrentResumes, FieldValue::Number(v)) => {
             config.cockpit.max_concurrent_resumes = (*v).max(1).min(u32::MAX as u64) as u32
         }
+        // Claude
+        (FieldKey::ClaudeConfigDir, FieldValue::OptionalText(v)) => {
+            let trimmed = v
+                .as_ref()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            match trimmed {
+                Some(dir) => {
+                    config
+                        .claude
+                        .get_or_insert_with(crate::session::ClaudeConfig::default)
+                        .config_dir = Some(dir);
+                }
+                None => {
+                    if let Some(c) = config.claude.as_mut() {
+                        c.config_dir = None;
+                    }
+                }
+            }
+        }
         _ => {}
     }
 }
@@ -2200,6 +2254,27 @@ fn apply_field_to_profile(field: &SettingField, _global: &Config, config: &mut P
             set_profile_override(clamped, &mut config.cockpit, |s, val| {
                 s.max_concurrent_resumes = val
             });
+        }
+        // Claude
+        (FieldKey::ClaudeConfigDir, FieldValue::OptionalText(v)) => {
+            let trimmed = v
+                .as_ref()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+            match trimmed {
+                Some(dir) => {
+                    use crate::session::ClaudeConfigOverride;
+                    let c = config
+                        .claude
+                        .get_or_insert_with(ClaudeConfigOverride::default);
+                    c.config_dir = Some(dir);
+                }
+                None => {
+                    if let Some(c) = config.claude.as_mut() {
+                        c.config_dir = None;
+                    }
+                }
+            }
         }
         _ => {}
     }
