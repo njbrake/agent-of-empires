@@ -90,12 +90,17 @@ pub async fn run(profile: &str, startup_warning: Option<String>) -> Result<()> {
     // Setup terminal
     enable_raw_mode()?;
     let mut stdout = io::stdout();
-    execute!(
-        stdout,
-        EnterAlternateScreen,
-        EnableBracketedPaste,
-        EnableMouseCapture
-    )?;
+    execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)?;
+    // Mosh mangles xterm mouse-tracking escapes, producing inverted or
+    // duplicated scroll on mobile clients (Termius, Blink, Mosh4iOS) and
+    // breaking right-click selection on desktop Mosh. MOSH_CONNECTION is
+    // set by mosh-server and propagates through the user's environment;
+    // when present, fall back to the terminal's native scroll and let
+    // the user select text without aoe eating mouse events.
+    let mosh_active = std::env::var_os("MOSH_CONNECTION").is_some();
+    if !mosh_active {
+        execute!(stdout, EnableMouseCapture)?;
+    }
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
@@ -133,9 +138,11 @@ pub async fn run(profile: &str, startup_warning: Option<String>) -> Result<()> {
     execute!(
         terminal.backend_mut(),
         LeaveAlternateScreen,
-        DisableBracketedPaste,
-        DisableMouseCapture
+        DisableBracketedPaste
     )?;
+    if !mosh_active {
+        execute!(terminal.backend_mut(), DisableMouseCapture)?;
+    }
     terminal.show_cursor()?;
 
     result
