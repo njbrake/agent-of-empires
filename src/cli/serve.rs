@@ -53,6 +53,12 @@ pub struct ServeArgs {
     #[arg(long)]
     pub stop: bool,
 
+    /// Print the running daemon's PID, mode, URLs, and log path. Exits
+    /// non-zero when no daemon is running. Useful for shell scripts and
+    /// for testing the cockpit auto-spawn flow without parsing `ps`.
+    #[arg(long, conflicts_with_all = ["stop", "daemon", "remote"])]
+    pub status: bool,
+
     /// Require a passphrase for login (second-factor auth).
     /// Can also be set via AOE_SERVE_PASSPHRASE environment variable.
     #[arg(long, env = "AOE_SERVE_PASSPHRASE")]
@@ -260,6 +266,10 @@ pub fn daemon_pid() -> Option<u32> {
 pub async fn run(profile: &str, args: ServeArgs) -> Result<()> {
     if args.stop {
         return stop_daemon().await;
+    }
+
+    if args.status {
+        return print_status();
     }
 
     // Refuse to start a second instance (daemon or foreground) while another
@@ -603,6 +613,37 @@ async fn stop_daemon() -> Result<()> {
         Err(e) => bail!("Failed to stop daemon (PID {}): {}", pid, e),
     }
 
+    Ok(())
+}
+
+/// Print the running daemon's PID, mode, URLs, and log path. Exits
+/// non-zero (via `bail!`) when no daemon is running so shell scripts
+/// can branch on it (`aoe serve --status && …`).
+fn print_status() -> Result<()> {
+    let Some(pid) = daemon_pid() else {
+        bail!("Daemon: not running\nStart one with: aoe serve --daemon");
+    };
+
+    let mode = read_serve_mode_label().unwrap_or("unknown");
+    let urls = read_serve_urls();
+    let log_path = crate::session::get_app_dir()
+        .ok()
+        .map(|d| d.join("serve.log"));
+
+    println!("Daemon: running (PID {})", pid);
+    println!("Mode:   {}", mode);
+    if let Some(primary) = urls.first() {
+        println!("URL:    {}", primary.url);
+        for u in urls.iter().skip(1) {
+            let label = u.label.as_deref().unwrap_or("alt");
+            println!("        {} {}", label, u.url);
+        }
+    } else {
+        println!("URL:    (serve.url missing)");
+    }
+    if let Some(p) = log_path {
+        println!("Log:    {}", p.display());
+    }
     Ok(())
 }
 
