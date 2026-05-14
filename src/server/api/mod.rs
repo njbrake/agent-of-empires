@@ -13,6 +13,7 @@ pub(super) use super::AppState;
 #[cfg(feature = "serve")]
 mod cockpit;
 mod git;
+mod log_level;
 mod projects;
 mod sessions;
 mod system;
@@ -25,6 +26,7 @@ pub use cockpit::{
 };
 
 pub use git::{clone_repo, list_branches};
+pub use log_level::{get_log_level, patch_log_level};
 pub use projects::{create_project, delete_project, list_projects};
 pub use sessions::{
     create_session, delete_session, ensure_container_terminal, ensure_session, ensure_terminal,

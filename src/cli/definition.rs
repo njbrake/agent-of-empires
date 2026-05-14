@@ -12,6 +12,8 @@ use super::cockpit::CockpitCommands;
 use super::group::GroupCommands;
 use super::init::InitArgs;
 use super::list::ListArgs;
+#[cfg(feature = "serve")]
+use super::log_level::LogLevelArgs;
 use super::logs::LogsArgs;
 use super::profile::ProfileCommands;
 use super::project::ProjectCommands;
@@ -67,6 +69,13 @@ pub enum Commands {
 
     /// View AoE log files (debug.log, serve.log) with a pretty viewer
     Logs(LogsArgs),
+
+    /// Get or set the running daemon's log filter at runtime.
+    /// Pass a bare level (debug/info/...) for the safe expansion, or
+    /// `--filter <expr>` for raw EnvFilter syntax. `--get` prints the
+    /// current filter. Changes are ephemeral and lost on daemon restart.
+    #[cfg(feature = "serve")]
+    LogLevel(LogLevelArgs),
 
     /// Remove a session
     #[command(alias = "rm")]

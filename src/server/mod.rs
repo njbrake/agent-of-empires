@@ -1009,6 +1009,10 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/about", get(api::get_about))
         // Update status (latest release, available flag)
         .route("/api/system/update-status", get(api::get_update_status))
+        .route(
+            "/api/log-level",
+            get(api::get_log_level).patch(api::patch_log_level),
+        )
         // Terminal WebSockets
         .route("/sessions/{id}/ws", get(ws::terminal_ws))
         .route("/sessions/{id}/terminal/ws", get(ws::paired_terminal_ws))

@@ -10,6 +10,7 @@ This document contains the help content for the `aoe` command-line program.
 * [`aoe init`↴](#aoe-init)
 * [`aoe list`↴](#aoe-list)
 * [`aoe logs`↴](#aoe-logs)
+* [`aoe log-level`↴](#aoe-log-level)
 * [`aoe remove`↴](#aoe-remove)
 * [`aoe send`↴](#aoe-send)
 * [`aoe status`↴](#aoe-status)
@@ -81,6 +82,7 @@ Run without arguments to launch the TUI dashboard.
 * `init` — Initialize .agent-of-empires/config.toml in a repository
 * `list` — List all sessions
 * `logs` — View AoE log files (debug.log, serve.log) with a pretty viewer
+* `log-level` — Get or set the running daemon's log filter at runtime. Pass a bare level (debug/info/...) for the safe expansion, or `--filter <expr>` for raw EnvFilter syntax. `--get` prints the current filter. Changes are ephemeral and lost on daemon restart
 * `remove` — Remove a session
 * `send` — Send a message to a running agent session
 * `status` — Show session status summary
@@ -193,6 +195,23 @@ View AoE log files (debug.log, serve.log) with a pretty viewer
 * `-n`, `--lines <N>` — Show only the last N lines (fallback viewers; lnav handles its own)
 * `--no-pager` — Skip viewer detection; write plain log to stdout
 * `--path` — Print the resolved log file path(s) and exit (no viewing)
+
+
+
+## `aoe log-level`
+
+Get or set the running daemon's log filter at runtime. Pass a bare level (debug/info/...) for the safe expansion, or `--filter <expr>` for raw EnvFilter syntax. `--get` prints the current filter. Changes are ephemeral and lost on daemon restart
+
+**Usage:** `aoe log-level [OPTIONS] [LEVEL]`
+
+###### **Arguments:**
+
+* `<LEVEL>` — Bare level (trace|debug|info|warn|error). Expands to all known target roots, avoiding the firehose of dependency logs you would get from `RUST_LOG=debug`
+
+###### **Options:**
+
+* `--filter <FILTER>` — Raw EnvFilter directive. Use this for per-target tuning, e.g. `--filter cockpit.acp=trace,info`. Bare `--filter debug` is rejected; use the positional `level` form instead
+* `--get` — Print the current filter without changing it
 
 
 
