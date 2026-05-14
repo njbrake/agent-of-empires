@@ -681,6 +681,11 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
                 diffComments.setOutroDraft("");
               }
               setSendDialogOpen(false);
+              // Close the diff viewer so the cockpit transcript is in
+              // view: the user just dispatched feedback and wants to
+              // see the agent's response. They can re-open any file
+              // from the right-panel list afterwards.
+              setSelectedFile(null);
               toastBus.handler?.info("Comments sent to agent");
             }}
           />

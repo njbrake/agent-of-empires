@@ -1,6 +1,12 @@
+import { useEffect, useState } from "react";
 import { CommentMarkdown } from "./CommentMarkdown";
 import type { DiffCommentsSentinelPayload } from "./buildPrompt";
 import type { DiffComment } from "./types";
+import {
+  getHighlighter,
+  langKeyForExt,
+  loadLanguage,
+} from "../../../lib/highlighter";
 
 interface Props {
   payload: DiffCommentsSentinelPayload;
@@ -35,9 +41,11 @@ export function DiffCommentsUserCard({ payload }: Props) {
             className="rounded-lg border border-surface-700/60 bg-surface-900/60"
           >
             <CommentHeader comment={c} isMultiRepo={isMultiRepo} />
-            <pre className="overflow-x-auto border-b border-surface-700/40 bg-surface-950 px-3 py-2 font-mono text-[12px] text-text-primary">
-              {c.capturedSnippet}
-            </pre>
+            <HighlightedSnippet
+              code={c.capturedSnippet}
+              language={c.language}
+              filePath={c.filePath}
+            />
             <div className="px-3 py-2 text-text-primary">
               <CommentMarkdown text={c.body} />
             </div>
@@ -50,6 +58,61 @@ export function DiffCommentsUserCard({ payload }: Props) {
         </div>
       )}
     </div>
+  );
+}
+
+/** Shiki-backed snippet renderer matching the cockpit Markdown code
+ *  block style. Loads the language module on demand and falls back to
+ *  plain `<pre>` while loading or when the language can't be resolved.
+ *  See `lib/highlighter.ts`. */
+function HighlightedSnippet({
+  code,
+  language,
+  filePath,
+}: {
+  code: string;
+  language?: string;
+  filePath: string;
+}) {
+  const [html, setHtml] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    const hint =
+      language && language.length > 0
+        ? language
+        : filePath.split(".").pop() ?? "";
+    if (!hint) return;
+    (async () => {
+      try {
+        const langKey = langKeyForExt(hint) ?? hint;
+        await loadLanguage(langKey);
+        const hl = await getHighlighter();
+        if (cancelled) return;
+        if (!hl.getLoadedLanguages().includes(langKey)) return;
+        setHtml(
+          hl.codeToHtml(code, { lang: langKey, theme: "github-dark" }),
+        );
+      } catch {
+        // Unknown lang → fall through to plain rendering.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [code, language, filePath]);
+
+  if (html) {
+    return (
+      <div
+        className="overflow-x-auto border-b border-surface-700/40 bg-surface-950 px-3 py-2 text-[12px] [&_pre]:!bg-transparent [&_pre]:!m-0 [&_pre]:!p-0"
+        dangerouslySetInnerHTML={{ __html: html }}
+      />
+    );
+  }
+  return (
+    <pre className="overflow-x-auto border-b border-surface-700/40 bg-surface-950 px-3 py-2 font-mono text-[12px] text-text-primary">
+      {code}
+    </pre>
   );
 }
 
