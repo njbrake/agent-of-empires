@@ -154,14 +154,13 @@ interface Props {
   onClose: () => void;
   onCreated: (session?: SessionResponse) => void;
   prefill?: WizardPrefill;
-  /** Server-resolved cockpit availability (master switch on AND
-   *  AOE_EXPERIMENTAL_COCKPIT set). When true, ACP-capable tools
-   *  create cockpit sessions automatically; when false, every new
-   *  session is tmux. */
-  experimentalCockpit: boolean;
+  /** Live value of the cockpit master switch (`config.cockpit.enabled`).
+   *  When true, ACP-capable tools create cockpit sessions automatically;
+   *  when false, every new session is tmux. */
+  cockpitMasterEnabled: boolean;
 }
 
-export function SessionWizard({ onClose, onCreated, prefill, experimentalCockpit }: Props) {
+export function SessionWizard({ onClose, onCreated, prefill, cockpitMasterEnabled }: Props) {
   const prefillData: WizardData = prefill
     ? {
         ...initialData,
@@ -232,12 +231,12 @@ export function SessionWizard({ onClose, onCreated, prefill, experimentalCockpit
       command_override: d.commandOverride || undefined,
       custom_instruction: d.customInstruction || undefined,
       profile: d.profile || undefined,
-      // Cockpit is auto-on for ACP-capable tools when the server
-      // exposes AOE_EXPERIMENTAL_COCKPIT; non-ACP tools and unset
-      // env both fall back to tmux. The server re-applies the same
-      // gate (see allow_cockpit in src/server/api/sessions.rs), so
-      // a tampered client request can't escalate cockpit on.
-      cockpit_mode: experimentalCockpit && ACP_CAPABLE_TOOLS.has(d.tool),
+      // Cockpit is auto-on for ACP-capable tools when the master
+      // switch is on; non-ACP tools and a disabled master switch
+      // both fall back to tmux. The server re-applies the master
+      // switch (see src/server/api/sessions.rs), so a tampered
+      // client request can't escalate cockpit on.
+      cockpit_mode: cockpitMasterEnabled && ACP_CAPABLE_TOOLS.has(d.tool),
     };
     const result = await createSession(body);
     if (result.ok) {
@@ -269,7 +268,7 @@ export function SessionWizard({ onClose, onCreated, prefill, experimentalCockpit
             profiles={state.profiles}
             dockerAvailable={state.dockerAvailable}
             onApplyProfileDefaults={handleApplyProfileDefaults}
-            experimentalCockpit={experimentalCockpit}
+            cockpitMasterEnabled={cockpitMasterEnabled}
           />
         );
       case "review":

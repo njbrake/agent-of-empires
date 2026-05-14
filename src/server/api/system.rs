@@ -385,19 +385,12 @@ pub struct ServerAbout {
     pub read_only: bool,
     pub behind_tunnel: bool,
     pub profile: String,
-    /// True when `AOE_EXPERIMENTAL_COCKPIT=1` is set on the server
-    /// process AND the master switch (`cockpit.enabled`) is on. The
-    /// wizard uses this to decide whether new sessions auto-route
-    /// through cockpit; when false, every new session is tmux.
-    pub experimental_cockpit: bool,
     /// Live value of the `cockpit.enabled` master switch. The settings
     /// UI binds its toggle to this and updates it via
-    /// `PATCH /api/cockpit/master`.
+    /// `PATCH /api/cockpit/master`. When true, new sessions for ACP-
+    /// capable tools default to cockpit mode; when false, every new
+    /// session is tmux.
     pub cockpit_master_enabled: bool,
-    /// Whether the server process has `AOE_EXPERIMENTAL_COCKPIT=1` set.
-    /// Read-only from the web; flipping requires restarting `aoe serve`
-    /// with the env var set.
-    pub cockpit_env_enabled: bool,
     /// Resolved value of `cockpit.show_tool_durations` from the active
     /// profile's config. Drives the per-tool elapsed-time label in the
     /// web UI; cross-device since it lives in config.toml.
@@ -420,8 +413,6 @@ pub async fn get_about(State(state): State<Arc<AppState>>) -> Json<ServerAbout> 
     let cockpit_master_enabled = state
         .cockpit_master_enabled
         .load(std::sync::atomic::Ordering::Relaxed);
-    let cockpit_env_enabled = crate::cockpit::experimental_enabled();
-    let experimental_cockpit = cockpit_master_enabled && cockpit_env_enabled;
     let cockpit_cfg =
         crate::session::profile_config::resolve_config_or_warn(&state.profile).cockpit;
     let cockpit_show_tool_durations = cockpit_cfg.show_tool_durations;
@@ -434,9 +425,7 @@ pub async fn get_about(State(state): State<Arc<AppState>>) -> Json<ServerAbout> 
         read_only: state.read_only,
         behind_tunnel: state.behind_tunnel,
         profile: state.profile.clone(),
-        experimental_cockpit,
         cockpit_master_enabled,
-        cockpit_env_enabled,
         cockpit_show_tool_durations,
         cockpit_queue_drain_mode,
         cockpit_max_concurrent_resumes,

@@ -840,6 +840,9 @@ impl SettingsView {
                     c.max_concurrent_resumes = None;
                 }
             }
+            FieldKey::HostEnvironment => {
+                config.environment = None;
+            }
         }
 
         // Sync repo_config when in Repo scope

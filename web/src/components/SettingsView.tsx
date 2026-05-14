@@ -44,8 +44,8 @@ type SidebarItem =
   | { kind: "tab"; id: TabId; label: string }
   | { kind: "divider"; label: string };
 
-function buildSidebar(showCockpit: boolean): SidebarItem[] {
-  const items: SidebarItem[] = [
+function buildSidebar(): SidebarItem[] {
+  return [
     { kind: "divider", label: "General" },
     { kind: "tab", id: "session", label: "Session" },
     { kind: "tab", id: "sandbox", label: "Sandbox" },
@@ -59,11 +59,8 @@ function buildSidebar(showCockpit: boolean): SidebarItem[] {
     { kind: "tab", id: "terminal", label: "Terminal" },
     { kind: "tab", id: "security", label: "Security" },
     { kind: "tab", id: "devices", label: "Devices" },
+    { kind: "tab", id: "cockpit", label: "Cockpit" },
   ];
-  if (showCockpit) {
-    items.push({ kind: "tab", id: "cockpit", label: "Cockpit" });
-  }
-  return items;
 }
 
 interface Props {
@@ -107,14 +104,11 @@ export function SettingsView({
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [selectedProfile, setSelectedProfile] = useState("default");
-  const cockpitEnvEnabled = !!serverAbout?.cockpit_env_enabled;
-  const sidebar = buildSidebar(cockpitEnvEnabled);
+  const sidebar = buildSidebar();
   const tabs = sidebar.filter(
     (s): s is { kind: "tab"; id: TabId; label: string } => s.kind === "tab",
   );
-  const requested: TabId = isTabId(tab) ? tab : "session";
-  const activeTab: TabId =
-    requested === "cockpit" && !cockpitEnvEnabled ? "session" : requested;
+  const activeTab: TabId = isTabId(tab) ? tab : "session";
   const [profiles, setProfiles] = useState<ProfileInfo[]>([]);
 
   useEffect(() => {
@@ -578,9 +572,7 @@ function CockpitSettings({
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const envEnabled = !!serverAbout?.cockpit_env_enabled;
   const masterEnabled = !!serverAbout?.cockpit_master_enabled;
-  const effective = envEnabled && masterEnabled;
   // Local mirror so the toggle reflects optimistically while the
   // backend save + /api/about re-fetch propagate.
   const showToolDurations =
@@ -613,24 +605,15 @@ function CockpitSettings({
       <div className="rounded border border-surface-700 bg-surface-800/40 p-3 text-xs text-text-dim space-y-1">
         <div>
           <span className="text-text-muted">Status:</span>{" "}
-          {effective ? (
+          {masterEnabled ? (
             <span className="text-emerald-400">Cockpit available for new sessions</span>
           ) : (
-            <span className="text-amber-400">Cockpit unavailable</span>
+            <span className="text-amber-400">Cockpit disabled</span>
           )}
-        </div>
-        <div>
-          <span className="text-text-muted">AOE_EXPERIMENTAL_COCKPIT:</span>{" "}
-          <code className="rounded bg-surface-900 px-1">{envEnabled ? "1" : "(unset)"}</code>
         </div>
         <div>
           <span className="text-text-muted">cockpit.enabled:</span>{" "}
           <code className="rounded bg-surface-900 px-1">{masterEnabled ? "true" : "false"}</code>
-        </div>
-        <div className="text-text-dim pt-1">
-          Both gates must be on. The env var is per-process and only flips by restarting{" "}
-          <code className="rounded bg-surface-900 px-1">aoe serve</code> with{" "}
-          <code className="rounded bg-surface-900 px-1">AOE_EXPERIMENTAL_COCKPIT=1</code>.
         </div>
       </div>
 

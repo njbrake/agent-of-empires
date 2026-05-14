@@ -236,16 +236,11 @@ export interface ServerAbout {
   read_only: boolean;
   behind_tunnel: boolean;
   profile: string;
-  /** True when cockpit is available for new sessions (master switch
-   *  is on AND AOE_EXPERIMENTAL_COCKPIT=1 is set). When false, every
-   *  new session is tmux. */
-  experimental_cockpit: boolean;
   /** Live value of the cockpit master switch (`config.cockpit.enabled`).
-   *  Toggleable from the web settings via PATCH /api/cockpit/master. */
+   *  Toggleable from the web settings via PATCH /api/cockpit/master.
+   *  When true, new sessions for ACP-capable tools default to cockpit
+   *  mode; when false, every new session is tmux. */
   cockpit_master_enabled: boolean;
-  /** Whether the server process has AOE_EXPERIMENTAL_COCKPIT=1 set.
-   *  Read-only; flipping requires restarting `aoe serve`. */
-  cockpit_env_enabled: boolean;
   /** Resolved `cockpit.show_tool_durations` from the active profile's
    *  config. Drives the per-tool elapsed-time label in the cockpit
    *  web UI; cross-device since it lives in config.toml. */
@@ -265,7 +260,7 @@ export interface ServerAbout {
 
 export async function setCockpitMaster(
   enabled: boolean,
-): Promise<{ master_enabled: boolean; env_enabled: boolean; effective: boolean } | null> {
+): Promise<{ master_enabled: boolean } | null> {
   try {
     const res = await fetch("/api/cockpit/master", {
       method: "PATCH",

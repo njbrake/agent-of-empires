@@ -538,8 +538,20 @@ impl NewSessionDialog {
         crate::agents::get_agent(tool_name).is_some_and(|a| a.host_only)
     }
 
-    /// The field index of the path field (shifts based on whether profile picker is visible)
+    /// The field index of the path field. Path comes BEFORE title in the
+    /// dialog so the user picks the working directory before naming the
+    /// session. Shifts based on whether the profile picker is visible at
+    /// field 0.
     fn path_field(&self) -> usize {
+        if self.has_profile_selection() {
+            1
+        } else {
+            0
+        }
+    }
+
+    /// The field index of the title field. Title sits one slot AFTER path.
+    fn title_field(&self) -> usize {
         if self.has_profile_selection() {
             2
         } else {
@@ -822,19 +834,6 @@ impl NewSessionDialog {
                             .and_then(path_input::compute_path_ghost);
                         self.workspace_repo_dir_picker_active = false;
                     } else {
-                        // Auto-fill title from folder basename when the user
-                        // hasn't typed one yet. The folder name is almost
-                        // always what they'd call the session anyway, and
-                        // making it the default removes a second step after
-                        // the browse picker selects a directory.
-                        if self.title.value().is_empty() {
-                            if let Some(basename) = std::path::Path::new(&path)
-                                .file_name()
-                                .and_then(|n| n.to_str())
-                            {
-                                self.title = Input::new(basename.to_string());
-                            }
-                        }
                         self.path = Input::new(path);
                         self.recompute_path_ghost();
                     }
@@ -852,7 +851,7 @@ impl NewSessionDialog {
         let is_host_only = self.selected_tool_host_only();
         let has_sandbox = self.docker_available && !is_host_only;
         let has_yolo = !self.selected_tool_always_yolo();
-        // Field order: [profile], title, path, [tool], [yolo], worktree, [sandbox], group
+        // Field order: [profile], path, title, [tool], [yolo], worktree, [sandbox], group
         // Worktree sub-options (new_branch, extra_repos) are in a Ctrl+P overlay.
         // Tool config (extra_args, command_override) is in a Ctrl+P overlay on tool field.
         // Sandbox sub-options are in a separate sandbox_config_mode overlay.
@@ -1534,7 +1533,7 @@ impl NewSessionDialog {
         let group_field = fi;
 
         let path_field = self.path_field();
-        let title_field = if self.has_profile_selection() { 1 } else { 0 };
+        let title_field = self.title_field();
         match self.focused_field {
             n if n == title_field => &mut self.title,
             n if n == path_field => &mut self.path,

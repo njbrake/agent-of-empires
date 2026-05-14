@@ -335,6 +335,12 @@ pub fn detect_codex_status(raw_content: &str) -> Status {
         .join("\n");
     let last_lines_lower = last_lines.to_lowercase();
 
+    if last_lines_lower.contains("enter to submit answer")
+        || last_lines_lower.contains("(unanswered)")
+    {
+        return Status::Waiting;
+    }
+
     if last_lines_lower.contains("esc to interrupt")
         || last_lines_lower.contains("ctrl+c to interrupt")
         || last_lines_lower.contains("working")
@@ -363,7 +369,7 @@ pub fn detect_codex_status(raw_content: &str) -> Status {
 
     for line in &lines {
         let trimmed = line.trim();
-        if trimmed.starts_with("❯") && trimmed.len() > 2 {
+        if (trimmed.starts_with("❯") || trimmed.starts_with("›")) && trimmed.len() > 2 {
             let after_cursor = trimmed.get(3..).unwrap_or("").trim_start();
             if after_cursor.starts_with("1.")
                 || after_cursor.starts_with("2.")
@@ -967,6 +973,37 @@ mod tests {
     fn test_detect_codex_status_idle() {
         assert_eq!(detect_codex_status("file saved"), Status::Idle);
         assert_eq!(detect_codex_status("random output text"), Status::Idle);
+    }
+
+    #[test]
+    fn test_detect_codex_status_request_user_input() {
+        // Regression test for codex `request_user_input` (Plan-mode radio UI).
+        // The hint line contains "esc to interrupt", which previously
+        // short-circuited to Running before any Waiting heuristic could fire.
+        let pane = "\
+  Question 1/1 (1 unanswered)
+  Which fruit do you want?
+
+  › 1. Banana (Recommended)  Choose banana.
+    2. Orange                Choose orange.
+    3. Apple                 Choose apple.
+    4. None of the above     Optionally, add details in notes (tab).
+
+  tab to add notes | enter to submit answer | esc to interrupt
+";
+        assert_eq!(detect_codex_status(pane), Status::Waiting);
+    }
+
+    #[test]
+    fn test_detect_codex_status_request_user_input_radio_only() {
+        // `›` (U+203A) menu cursor should also flip to Waiting on its own,
+        // independent of the hint-line tokens.
+        let pane = "\
+  › 1. Yes
+    2. No
+    3. Maybe
+";
+        assert_eq!(detect_codex_status(pane), Status::Waiting);
     }
 
     #[test]

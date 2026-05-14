@@ -289,23 +289,6 @@ async fn resume_one(state: Arc<AppState>, target: ResumeTarget) -> ResumeOutcome
             .synthesize_stopped_for_orphan(&id, "orphaned_at_restart");
     }
 
-    // Persisted cockpit-mode sessions auto-spawn even when
-    // `AOE_EXPERIMENTAL_COCKPIT` is unset (the env-var gate is for
-    // *new* sessions, not pre-existing ones). Log a warning per
-    // session so operators who unset the env var on a daemon with
-    // existing cockpit sessions know why those are still running.
-    if !crate::cockpit::experimental_enabled() {
-        tracing::warn!(
-            target: "cockpit.supervisor",
-            session = %id,
-            "auto-spawning persisted cockpit-mode session while \
-             AOE_EXPERIMENTAL_COCKPIT is not set. To stop cockpit \
-             from running existing sessions, set \
-             `cockpit.enabled = false` in config.toml and restart \
-             `aoe serve`. To stop just this one, switch its \
-             substrate to tmux from the dashboard."
-        );
-    }
     let supervisor = Arc::clone(&state.cockpit_supervisor);
     let agent = supervisor
         .pick_agent_for_tool(&tool, agent_override.as_deref())
