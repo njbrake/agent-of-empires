@@ -11,6 +11,8 @@
 pub(super) use super::AppState;
 
 #[cfg(feature = "serve")]
+mod client_log;
+#[cfg(feature = "serve")]
 mod cockpit;
 mod git;
 mod log_level;
@@ -25,6 +27,8 @@ pub use cockpit::{
     shutdown_cockpit, spawn_cockpit,
 };
 
+#[cfg(feature = "serve")]
+pub use client_log::post_client_log;
 pub use git::{clone_repo, list_branches};
 pub use log_level::{get_log_level, patch_log_level};
 pub use projects::{create_project, delete_project, list_projects};
