@@ -340,9 +340,11 @@ impl Session {
     }
 
     /// Send literal text to the session's first window pane, followed by Enter.
-    /// For multi-line text, newlines are sent as ESC+CR (the same sequence
-    /// terminals send for Shift+Enter) so the coding agent inserts a newline
-    /// rather than submitting after each line.
+    /// Short single-line text is delivered via `send-keys -l`; multi-line or
+    /// long payloads route through `paste-buffer -p` (bracketed paste) so the
+    /// receiving agent ingests the whole block as a paste rather than
+    /// submitting per line. See `send_keys_with_delay` for the threshold and
+    /// `send_via_paste_buffer` for the bracketed-paste contract.
     pub fn send_keys(&self, text: &str) -> Result<()> {
         self.send_keys_with_delay(text, 0)
     }
@@ -402,10 +404,21 @@ impl Session {
     /// Deliver `text` to `target` via tmux's load-buffer + paste-buffer.
     /// Buffer names are scoped by pid + a per-call counter so concurrent
     /// senders (and retries) cannot clobber each other. `-p` enables
-    /// bracketed-paste markers when the receiving pane has DECSET 2004 set
-    /// (claude-code does); `-d` deletes the buffer after the paste. If
-    /// paste-buffer fails after load-buffer succeeded we issue an explicit
-    /// `delete-buffer` so a partial failure cannot leak a buffer.
+    /// bracketed-paste markers when the receiving pane has DECSET 2004 set;
+    /// `-d` deletes the buffer after the paste. If paste-buffer fails after
+    /// load-buffer succeeded we issue an explicit `delete-buffer` so a
+    /// partial failure cannot leak a buffer.
+    ///
+    /// Bracketed-paste assumption: this replaces the old per-line `send-keys
+    /// -l` + `ESC+CR` (Shift+Enter) encoding. The old path worked against any
+    /// pane regardless of paste-mode support. The new path relies on the
+    /// receiving agent enabling DECSET 2004 (claude-code, codex, opencode,
+    /// gemini, and most modern TUI agent CLIs do). For panes that do *not*
+    /// enable bracketed paste (raw shells, simple REPLs), embedded newlines
+    /// will arrive as literal CRs and submit per line. If a future agent
+    /// integration hits this, the fallback is to short-circuit the
+    /// `use_paste_buffer` branch above for that agent and keep the per-line
+    /// Shift+Enter path.
     fn send_via_paste_buffer(target: &str, text: &str) -> Result<()> {
         static SEND_COUNTER: AtomicU64 = AtomicU64::new(0);
         let seq = SEND_COUNTER.fetch_add(1, Ordering::Relaxed);

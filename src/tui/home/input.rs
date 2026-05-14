@@ -1563,15 +1563,27 @@ impl HomeView {
     }
 
     /// Resolve a target session id + title for an untargeted paste/type-burst.
-    /// Returns the selected session if it has a live tmux pane; otherwise
-    /// falls back to the first running session (only when there's no
-    /// explicit selection or the selected id points to a deleted instance).
+    /// Only returns Some when an explicit, runnable session is selected.
     ///
-    /// If the user has a non-running session selected (Stopped, Error,
-    /// externally-killed tmux), we return None rather than fall through.
-    /// Silent fall-through would silently misroute the paste into a sibling
-    /// session; the caller stashes to `pending_paste` instead, preserving
-    /// the text for the next dialog open against a runnable session.
+    /// Cases that return None (caller stashes to `pending_paste`):
+    /// - Cursor on a group header (`selected_session` is None).
+    /// - No selection at all (empty list, no sessions).
+    /// - Selected session is non-running (Stopped, Error, Creating, or tmux
+    ///   pane gone).
+    ///
+    /// Why no first-running fallback: silently dispatching paste/dictation
+    /// to "whichever session sorts first" misroutes voice messages across
+    /// groups. A user with cursor on the "backend" group expanding it to
+    /// browse, dictating, and having the paste land in a "frontend" session
+    /// is exactly the misrouting the archived-selection fix is preventing.
+    /// Stashing to `pending_paste` is strictly better: the status-bar
+    /// indicator surfaces the captured count, and the next `m` against a
+    /// runnable selection drains it into the compose dialog.
+    ///
+    /// Defensive fall-through: when `selected_session` references an id
+    /// that no longer maps to an instance (deleted underneath us between
+    /// select and paste, shouldn't happen in steady state), we also stash
+    /// rather than reroute.
     fn resolve_paste_target(&self) -> Option<(String, String)> {
         let pick = |inst: &crate::session::Instance| -> Option<(String, String)> {
             if inst.status == Status::Creating {
@@ -1585,26 +1597,9 @@ impl HomeView {
             }
         };
 
-        if let Some(id) = self.selected_session.clone() {
-            if let Some(inst) = self.get_instance(&id) {
-                // Honor explicit selection: return whatever pick() decides
-                // (Some if runnable, None if tmux is gone). Do not fall
-                // through to first-running; the user picked this row
-                // intentionally, and rerouting would silently mis-land the
-                // paste in a sibling session.
-                return pick(inst);
-            }
-            // Selected id points to a missing instance (deleted underneath
-            // us). Fall through to first-running as a defensive recovery.
-        }
-
-        // No selection at all: pick any running session in the current view.
-        for inst in self.instances() {
-            if let Some(t) = pick(inst) {
-                return Some(t);
-            }
-        }
-        None
+        let id = self.selected_session.as_ref()?;
+        let inst = self.get_instance(id)?;
+        pick(inst)
     }
 
     /// Re-score matches after a reload without moving the cursor.

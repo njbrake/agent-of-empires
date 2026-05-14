@@ -2806,3 +2806,44 @@ fn apply_status_update_skips_terminal_states() {
     assert_eq!(inst.status, Status::Deleting);
     assert_eq!(inst.idle_entered_at, None);
 }
+
+/// Regression: paste over a group header must stash to `pending_paste`,
+/// never open a compose dialog targeted at "the first running session".
+/// Earlier behavior fell through to the first-running fallback whenever
+/// `selected_session` was None — silently misrouting voice/dictation
+/// across groups. With cursor on a group, `selected_session` is None and
+/// `resolve_paste_target` must return None unconditionally.
+#[test]
+#[serial]
+fn paste_on_group_header_stashes_instead_of_misrouting() {
+    let mut env = create_test_env_with_groups();
+
+    // Find the cursor index of the first group header in flat_items.
+    let group_idx = env
+        .view
+        .flat_items
+        .iter()
+        .position(|item| matches!(item, Item::Group { .. }))
+        .expect("fixture should produce at least one group header");
+    env.view.cursor = group_idx;
+    env.view.update_selected();
+
+    // Cursor on a group sets selected_session to None.
+    assert!(
+        env.view.selected_session.is_none(),
+        "cursor on a group header must clear selected_session"
+    );
+
+    env.view
+        .handle_paste("voice dictation that must not misroute");
+
+    assert!(
+        env.view.send_message_dialog.is_none(),
+        "paste over a group must NOT open a compose dialog against an unrelated session"
+    );
+    assert_eq!(
+        env.view.pending_paste.as_deref(),
+        Some("voice dictation that must not misroute"),
+        "paste over a group must stash to pending_paste"
+    );
+}
