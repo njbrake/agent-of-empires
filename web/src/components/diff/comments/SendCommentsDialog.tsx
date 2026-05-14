@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Markdown } from "../../cockpit/Markdown";
+import { CommentMarkdown } from "./CommentMarkdown";
 import { buildCommentsMarkdown, buildFullPrompt } from "./buildPrompt";
 import type { DiffComment } from "./types";
 
@@ -166,7 +166,7 @@ export function SendCommentsDialog({
             </div>
             <div className="border border-surface-700/60 rounded p-3 bg-surface-950 max-h-72 overflow-auto text-[13px]">
               {preview ? (
-                <Markdown text={preview} />
+                <CommentMarkdown text={preview} />
               ) : (
                 <span className="text-text-dim italic">No comments.</span>
               )}

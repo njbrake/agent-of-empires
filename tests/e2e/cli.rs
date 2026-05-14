@@ -695,3 +695,70 @@ on_create = ["touch {}"]
         "global hook marker file should exist, proving global on_create hooks ran as fallback"
     );
 }
+
+/// #969: `aoe add -w <branch>` (without `-b`) should attach to an
+/// already-existing worktree for that branch instead of bailing
+/// because the computed path collides. Matches the TUI's
+/// "Attach to existing branch" behavior.
+#[test]
+#[serial]
+fn test_cli_add_attaches_to_existing_worktree() {
+    let h = TuiTestHarness::new("cli_attach_existing");
+    let project = h.home_path().join("attach-project");
+    init_git_repo(&project);
+
+    // Create a worktree for `feat/existing` via the first `aoe add`.
+    let first = h.run_cli(&[
+        "add",
+        project.to_str().unwrap(),
+        "-w",
+        "feat/existing",
+        "-b",
+        "-t",
+        "FirstSession",
+    ]);
+    assert!(
+        first.status.success(),
+        "first aoe add failed: {}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+
+    // Second `aoe add -w feat/existing` (no `-b`) should attach to the
+    // existing worktree, not bail.
+    let second = h.run_cli(&[
+        "add",
+        project.to_str().unwrap(),
+        "-w",
+        "feat/existing",
+        "-t",
+        "SecondSession",
+    ]);
+    let stdout = String::from_utf8_lossy(&second.stdout);
+    let stderr = String::from_utf8_lossy(&second.stderr);
+    assert!(
+        second.status.success(),
+        "second aoe add (attach) failed:\nstdout: {}\nstderr: {}",
+        stdout,
+        stderr
+    );
+    assert!(
+        stdout.contains("Attaching to existing worktree"),
+        "expected 'Attaching to existing worktree' in stdout; got:\n{}",
+        stdout
+    );
+
+    let json = read_sessions_json(&h);
+    let sessions = json.as_array().expect("sessions array");
+    let second_session = sessions
+        .iter()
+        .find(|s| s["title"].as_str() == Some("SecondSession"))
+        .expect("SecondSession should exist");
+    assert_eq!(
+        second_session["worktree_info"]["managed_by_aoe"], false,
+        "attached session should not own the worktree"
+    );
+    assert_eq!(
+        second_session["worktree_info"]["branch"].as_str(),
+        Some("feat/existing"),
+    );
+}

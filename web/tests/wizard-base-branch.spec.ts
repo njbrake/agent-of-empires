@@ -106,7 +106,9 @@ test.describe("Wizard base branch (#948)", () => {
     await expect(page.getByText("Name your session")).toBeVisible();
     // Worktree toggle is on by default; if a previous test left it
     // off, click to re-enable so the Advanced section renders.
-    const toggle = page.getByRole("switch");
+    // `#969` added a second toggle ("Attach to existing branch") on this
+    // step, so target the worktree toggle by its accessible name.
+    const toggle = page.getByRole("switch", { name: /Create a worktree/ });
     if ((await toggle.getAttribute("aria-checked")) !== "true") {
       await toggle.click();
     }

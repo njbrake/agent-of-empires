@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Markdown } from "../../cockpit/Markdown";
+import { CommentMarkdown } from "./CommentMarkdown";
 import { CommentForm } from "./CommentForm";
 import type { AnchoredComment } from "./types";
 
@@ -70,7 +70,7 @@ export function CommentCard({ anchored, onSave, onDelete }: Props) {
         </div>
       </div>
       <div className="text-[13px] text-text-primary">
-        <Markdown text={comment.body} />
+        <CommentMarkdown text={comment.body} />
       </div>
     </div>
   );

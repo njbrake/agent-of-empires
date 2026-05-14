@@ -29,6 +29,7 @@ export function extractSnippetFromHunks(
 
   for (let hi_idx = 0; hi_idx < hunks.length; hi_idx++) {
     const hunk = hunks[hi_idx];
+    if (!hunk) continue;
     const hunkStart = side === "new" ? hunk.new_start : hunk.old_start;
     const hunkEnd =
       hunkStart + (side === "new" ? hunk.new_lines : hunk.old_lines) - 1;
@@ -44,6 +45,7 @@ export function extractSnippetFromHunks(
     let endRowIndex = -1;
     for (let row = 0; row < hunk.lines.length; row++) {
       const line = hunk.lines[row];
+      if (!line) continue;
       const num = line[lineKey];
       if (num == null) continue;
       if (num < lo || num > hi) continue;

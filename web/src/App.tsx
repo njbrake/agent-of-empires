@@ -681,7 +681,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
                 diffComments.setOutroDraft("");
               }
               setSendDialogOpen(false);
-              toastBus.handler?.success("Comments sent to agent");
+              toastBus.handler?.info("Comments sent to agent");
             }}
           />
         )}
