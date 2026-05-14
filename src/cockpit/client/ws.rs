@@ -16,6 +16,7 @@
 //! the URL string is exposed (we log only the base URL).
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
 use thiserror::Error;
@@ -65,16 +66,29 @@ pub struct WsHandle {
     shutdown: Option<mpsc::Sender<()>>,
 }
 
+/// Wait this long for the reader task to send its close frame and
+/// exit cleanly before falling back to `abort()`. Picked so a healthy
+/// loopback round-trip lands well inside the budget while a stuck
+/// task still doesn't block our caller's teardown.
+const SHUTDOWN_GRACE: Duration = Duration::from_millis(200);
+
 impl WsHandle {
     pub async fn recv(&mut self) -> Option<Result<WsMessage, WsError>> {
         self.rx.recv().await
     }
 
-    pub fn shutdown(mut self) {
+    /// Ask the reader task to send a Close frame and finish cleanly.
+    /// Falls back to `abort()` if the task doesn't finish within
+    /// `SHUTDOWN_GRACE` so a stuck or already-aborted task can't
+    /// block teardown.
+    pub async fn shutdown(mut self) {
         if let Some(tx) = self.shutdown.take() {
             let _ = tx.try_send(());
         }
-        self.task.abort();
+        match tokio::time::timeout(SHUTDOWN_GRACE, &mut self.task).await {
+            Ok(_) => {}
+            Err(_) => self.task.abort(),
+        }
     }
 }
 

@@ -218,12 +218,16 @@ pub async fn run_for_endpoint(
                     }
                     Some(Err(e)) => {
                         // WS dropped; show a banner and try to reconnect
-                        // from the last seq we processed.
+                        // from the last seq we processed. Bounded backoff
+                        // so a flaky daemon restart (e.g. a 2-second
+                        // process bounce) survives without paging the
+                        // user, but a permanently-down daemon doesn't
+                        // pin a worker tight-looping retries.
                         tracing::warn!(target: "cockpit.tui.ws", "ws disconnect: {e}");
                         set_toast(&mut state, &mut toast_deadline, format!("ws disconnected: {e}; reconnecting…"), ToastKind::Error);
                         state.ws = None;
                         let since = state.transcript.last_seq;
-                        match ws_connect(&state.endpoint, &state.session_id, since).await {
+                        match reconnect_with_backoff(&state.endpoint, &state.session_id, since).await {
                             Ok(handle) => {
                                 state.ws = Some(handle);
                                 set_toast(&mut state, &mut toast_deadline, "ws reconnected".into(), ToastKind::Info);
@@ -408,6 +412,36 @@ async fn handle_terminal_event(
 async fn recv_ws(state: &mut CockpitViewState) -> Option<Result<WsMessage, WsError>> {
     let ws = state.ws.as_mut()?;
     ws.recv().await
+}
+
+/// Reconnect with three attempts and 250ms / 500ms / 1000ms backoff.
+/// Daemon restarts on the same box come back in under a second; a
+/// remote daemon failure usually doesn't recover inside our budget,
+/// so the user gets a toast and can hit retry themselves.
+async fn reconnect_with_backoff(
+    endpoint: &DaemonEndpoint,
+    session_id: &str,
+    since: u64,
+) -> Result<crate::cockpit::client::WsHandle, WsError> {
+    const BACKOFFS_MS: &[u64] = &[250, 500, 1000];
+    let mut last_err: Option<WsError> = None;
+    for (i, &delay) in BACKOFFS_MS.iter().enumerate() {
+        if i > 0 {
+            tokio::time::sleep(Duration::from_millis(delay)).await;
+        }
+        match ws_connect(endpoint, session_id, since).await {
+            Ok(handle) => return Ok(handle),
+            Err(e) => {
+                tracing::debug!(
+                    target: "cockpit.tui.ws",
+                    attempt = i + 1,
+                    "ws reconnect attempt failed: {e}"
+                );
+                last_err = Some(e);
+            }
+        }
+    }
+    Err(last_err.expect("at least one attempt"))
 }
 
 fn apply_scroll(state: &mut CockpitViewState, delta: i32) {

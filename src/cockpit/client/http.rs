@@ -122,6 +122,18 @@ impl HttpClient {
         Ok(())
     }
 
+    /// `GET /api/sessions`. Returns the daemon's session list as
+    /// whatever shape the caller deserialises into. Used by the
+    /// remote-cockpit picker so the bespoke `reqwest::Client` it used
+    /// to keep can be retired in favour of the shared auth/header
+    /// plumbing.
+    pub async fn list_sessions<T: serde::de::DeserializeOwned>(&self) -> Result<Vec<T>, HttpError> {
+        let url = format!("{}/api/sessions", self.endpoint.base_url);
+        let res = self.auth(self.http.get(&url)).send().await?;
+        let res = check_status(res, "<sessions>").await?;
+        Ok(res.json::<Vec<T>>().await?)
+    }
+
     /// Lightweight reachability probe used by `ensure_daemon` (when
     /// `AOE_DAEMON_URL` is set, we fail loud before falling into raw
     /// reqwest transport errors) and `aoe serve --status` (renders

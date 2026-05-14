@@ -151,7 +151,16 @@ impl CockpitTranscript {
     pub fn apply(&mut self, frame: &CockpitBroadcastFrame) {
         if frame.seq <= self.last_seq && self.last_seq > 0 {
             // Already consumed; dedupe against the replay-vs-live
-            // overlap. The web reducer does the same.
+            // overlap. The web reducer does the same. Log at debug
+            // so an unexpected drop (e.g. true reordering) leaves a
+            // trail without spamming on every normal overlap.
+            tracing::debug!(
+                target: "cockpit.tui.reducer",
+                session = %self.session_id,
+                seq = frame.seq,
+                last_seq = self.last_seq,
+                "dropped duplicate or out-of-order frame"
+            );
             return;
         }
         self.last_seq = frame.seq;

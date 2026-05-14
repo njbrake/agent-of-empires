@@ -32,13 +32,20 @@ pub fn render(frame: &mut Frame, area: Rect, theme: &Theme, state: &CockpitViewS
     render_composer(frame, chunks[2], theme, state);
 }
 
+/// Top + bottom border rows wrapping the composer textarea.
+const COMPOSER_BORDER_ROWS: u16 = 2;
+/// Maximum content rows the composer is allowed to take before the
+/// transcript starts losing space. Multi-line prompts beyond this
+/// scroll inside the textarea instead of growing the pane.
+const COMPOSER_MAX_CONTENT_ROWS: u16 = 6;
+
 fn composer_height(state: &CockpitViewState) -> u16 {
-    // Composer is 3 rows tall by default (1 border top + 1 line + 1
-    // border bottom). Grows up to 8 rows as the user types newlines so
-    // multi-line prompts don't squash the transcript. The textarea
-    // itself tracks logical lines.
+    // Composer is `1 + COMPOSER_BORDER_ROWS = 3` rows tall by default,
+    // growing one row per typed newline up to
+    // `COMPOSER_MAX_CONTENT_ROWS + COMPOSER_BORDER_ROWS = 8` rows so
+    // multi-line prompts don't squash the transcript.
     let lines = state.composer.lines().len().max(1) as u16;
-    lines.clamp(1, 6) + 2
+    lines.clamp(1, COMPOSER_MAX_CONTENT_ROWS) + COMPOSER_BORDER_ROWS
 }
 
 fn render_transcript(frame: &mut Frame, area: Rect, theme: &Theme, state: &CockpitViewState) {

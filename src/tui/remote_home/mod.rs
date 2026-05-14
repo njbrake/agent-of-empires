@@ -18,15 +18,15 @@ mod render;
 
 use std::io::Stdout;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use crossterm::event::{Event as CrosstermEvent, EventStream, KeyCode, KeyEventKind};
 use futures_util::StreamExt;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
-use reqwest::header;
 use serde::Deserialize;
 
 use crate::cockpit::client::discovery::DaemonEndpoint;
+use crate::cockpit::client::HttpClient;
 use crate::tui::styles::Theme;
 
 /// Subset of `/api/sessions`'s `SessionResponse` we need. `serde` skips
@@ -177,11 +177,7 @@ async fn run(
 async fn refresh(state: &mut RemoteHomeState) {
     state.loading = true;
     state.last_error = None;
-    let url = format!("{}/api/sessions", state.endpoint.base_url);
-    let client = match reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-    {
+    let client = match HttpClient::new(state.endpoint.clone()) {
         Ok(c) => c,
         Err(e) => {
             state.loading = false;
@@ -189,11 +185,7 @@ async fn refresh(state: &mut RemoteHomeState) {
             return;
         }
     };
-    let mut req = client.get(&url);
-    if let Some(token) = &state.endpoint.token {
-        req = req.header(header::AUTHORIZATION, format!("Bearer {token}"));
-    }
-    match fetch_sessions(req).await {
+    match client.list_sessions::<RemoteSession>().await {
         Ok(sessions) => {
             // Only cockpit sessions are meaningful here: tmux sessions
             // can't be attached from another machine without SSH.
@@ -212,15 +204,4 @@ async fn refresh(state: &mut RemoteHomeState) {
         }
     }
     state.loading = false;
-}
-
-async fn fetch_sessions(req: reqwest::RequestBuilder) -> Result<Vec<RemoteSession>> {
-    let resp = req.send().await.context("send GET /api/sessions")?;
-    if !resp.status().is_success() {
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        anyhow::bail!("daemon returned {status}: {body}");
-    }
-    let list: Vec<RemoteSession> = resp.json().await.context("parse session list JSON")?;
-    Ok(list)
 }

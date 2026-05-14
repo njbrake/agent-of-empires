@@ -56,7 +56,21 @@ pub struct ServeArgs {
     /// Print the running daemon's PID, mode, URLs, and log path. Exits
     /// non-zero when no daemon is running. Useful for shell scripts and
     /// for testing the cockpit auto-spawn flow without parsing `ps`.
-    #[arg(long, conflicts_with_all = ["stop", "daemon", "remote"])]
+    ///
+    /// `--status` is read-only and incompatible with every flag that
+    /// would change daemon state (`--stop`, `--daemon`, `--remote`) or
+    /// the bind config of a fresh daemon (`--no-auth`, `--read-only`,
+    /// `--passphrase`, `--port`, `--tunnel-name`, `--no-tailscale`,
+    /// `--tunnel-url`, `--open`). Clap reports the misuse instead of
+    /// silently ignoring the extras.
+    #[arg(
+        long,
+        conflicts_with_all = [
+            "stop", "daemon", "remote",
+            "no_auth", "read_only", "passphrase", "port",
+            "tunnel_name", "no_tailscale", "tunnel_url", "open",
+        ],
+    )]
     pub status: bool,
 
     /// Require a passphrase for login (second-factor auth).
