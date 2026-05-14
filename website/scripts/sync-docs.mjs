@@ -126,6 +126,13 @@ const PAGES = [
       "Step-by-step guide for adding support for a new AI coding agent to AoE.",
   },
   {
+    source: "docs/development/logging.md",
+    dest: "docs/development/logging.md",
+    title: "Logging",
+    description:
+      "Logging targets, env-var matrix, runtime control endpoint, and browser-side error relay for Agent of Empires.",
+  },
+  {
     source: "docs/sounds.md",
     dest: "docs/sounds.md",
     title: "Sound Effects",
@@ -171,6 +178,7 @@ const URL_MAP = {
   "docs/sounds.md": "/docs/sounds/",
   "docs/development.md": "/docs/development/",
   "docs/development/adding-agents.md": "/docs/development/adding-agents/",
+  "docs/development/logging.md": "/docs/development/logging/",
   "docs/guides/configuration.md": "/docs/guides/configuration/",
   "docs/cli/reference.md": "/docs/cli/reference/",
   "docs/cockpit.md": "/docs/cockpit/",
