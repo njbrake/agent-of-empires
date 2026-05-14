@@ -316,6 +316,23 @@ pub fn detect_vibe_status(raw_content: &str) -> Status {
     Status::Idle
 }
 
+/// Codex doesn't use hooks yet (tracked in #1126), so we infer status from the
+/// pane text. Strategy, in priority order:
+///
+///   1. Explicit `Waiting` signals like `enter to submit answer` /
+///      `(unanswered)` win immediately, since Codex sometimes renders these
+///      alongside a stale spinner from earlier in the turn.
+///   2. Running is detected from the *current turn block* only, i.e. the lines
+///      below the most recent `─ Worked for ... ─` divider. This stops stale
+///      `• Working ...` markers from a previous turn leaking into a turn that
+///      has already completed.
+///   3. Within the current block we look for two shapes: a bullet-prefixed
+///      live status line carrying an `esc to interrupt` hint (anywhere in the
+///      block), or a bare activity verb / spinner+verb in the last ~10 lines.
+///   4. Waiting is detected from approval prompts, numbered `›`/`❯` choices,
+///      free-form `›`/`❯` prompts, and the `codex>` REPL prompt.
+///
+/// All comparisons are case-insensitive (content is lowercased on entry).
 pub fn detect_codex_status(raw_content: &str) -> Status {
     let content = raw_content.to_lowercase();
     let lines: Vec<&str> = content.lines().collect();
@@ -341,21 +358,7 @@ pub fn detect_codex_status(raw_content: &str) -> Status {
         return Status::Waiting;
     }
 
-    if codex_has_live_running_status(&non_empty_lines) {
-        return Status::Running;
-    }
-
-    if codex_current_block_lines(&non_empty_lines)
-        .take(10)
-        .any(codex_line_starts_with_activity)
-    {
-        return Status::Running;
-    }
-
-    if codex_current_block_lines(&non_empty_lines)
-        .take(10)
-        .any(codex_line_has_activity_spinner)
-    {
+    if codex_has_running_signal(&non_empty_lines) {
         return Status::Running;
     }
 
@@ -441,15 +444,25 @@ fn codex_status_line_body(line: &str) -> &str {
         .unwrap_or(trimmed)
 }
 
-fn codex_has_live_running_status(non_empty_lines: &[&str]) -> bool {
-    for line in codex_current_block_lines(non_empty_lines) {
+const CODEX_RECENT_ACTIVITY_WINDOW: usize = 10;
+
+fn codex_has_running_signal(non_empty_lines: &[&str]) -> bool {
+    for (index, line) in codex_current_block_lines(non_empty_lines).enumerate() {
         let trimmed = line.trim();
+
         if trimmed == "esc to interrupt" || trimmed == "ctrl+c to interrupt" {
             return true;
         }
 
         if codex_line_starts_with_live_interrupt_activity(trimmed)
             && (trimmed.contains("esc to interrupt") || trimmed.contains("ctrl+c to interrupt"))
+        {
+            return true;
+        }
+
+        if index < CODEX_RECENT_ACTIVITY_WINDOW
+            && (codex_line_starts_with_activity(trimmed)
+                || codex_line_has_activity_spinner(trimmed))
         {
             return true;
         }
