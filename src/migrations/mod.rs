@@ -14,13 +14,14 @@ mod v003_yolo_mode_config;
 mod v004_unified_environment;
 mod v005_cockpit_defaults;
 mod v006_unlimited_cockpit_history;
+mod v007_serve_log_to_legacy;
 
 use anyhow::Result;
 use std::fs;
 use std::path::PathBuf;
 use tracing::{debug, info};
 
-const CURRENT_VERSION: u32 = 6;
+const CURRENT_VERSION: u32 = 7;
 const VERSION_FILE: &str = ".schema_version";
 
 struct Migration {
@@ -59,6 +60,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 6,
         name: "unlimited_cockpit_history",
         run: v006_unlimited_cockpit_history::run,
+    },
+    Migration {
+        version: 7,
+        name: "serve_log_to_legacy",
+        run: v007_serve_log_to_legacy::run,
     },
 ];
 
