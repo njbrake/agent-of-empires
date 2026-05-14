@@ -288,6 +288,24 @@ mod tests {
         assert_eq!(dialog.get_text(), "hi world");
     }
 
+    /// iOS Speech-to-Text emits lone CR as sentence breaks. Without normalization,
+    /// `get_text` returned strings with embedded \r that caused premature submit
+    /// or garbled input downstream. Verify both \r\n and lone \r collapse to \n
+    /// regardless of which order they appear in.
+    #[test]
+    fn test_get_text_normalizes_carriage_returns() {
+        let mut dialog = SendMessageDialog::new("Test Session");
+        dialog.handle_paste("first\r\nsecond\rthird\r\nfourth");
+        assert_eq!(dialog.get_text(), "first\nsecond\nthird\nfourth");
+    }
+
+    #[test]
+    fn test_get_text_preserves_plain_newlines() {
+        let mut dialog = SendMessageDialog::new("Test Session");
+        dialog.handle_paste("a\nb\nc");
+        assert_eq!(dialog.get_text(), "a\nb\nc");
+    }
+
     #[test]
     fn test_ctrl_u_deletes_to_start_of_line() {
         let mut dialog = SendMessageDialog::new("Test Session");

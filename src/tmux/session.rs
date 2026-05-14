@@ -3,6 +3,7 @@
 use anyhow::{bail, Result};
 use std::io::Write;
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::{
     refresh_session_cache, session_exists_from_cache,
@@ -361,12 +362,13 @@ impl Session {
         let line_count = text.lines().count();
         let max_line = text.lines().map(str::len).max().unwrap_or(0);
 
-        // Long messages and embedded-newline messages go through the tmux
-        // paste-buffer path (load-buffer over stdin → paste-buffer with
-        // bracketed-paste markers). The per-line `send-keys -l` path hits
-        // ARG_MAX for very large payloads and produces brittle Shift+Enter
-        // sequences for newlines; bracketed paste is what the receiving
-        // agent (claude-code in raw mode) is designed to ingest.
+        // Long or multi-line messages go through the tmux paste-buffer path
+        // (load-buffer over stdin, then paste-buffer with bracketed-paste
+        // markers). The per-line `send-keys -l` + ESC+CR path encodes
+        // newlines as Shift+Enter, which is brittle compared to the
+        // bracketed-paste contract claude-code (and most agents in raw mode)
+        // are designed to ingest; the byte threshold is a conservative cap
+        // so very long single-line payloads also take the safer path.
         const PASTE_BYTE_THRESHOLD: usize = 2048;
         let use_paste_buffer = byte_len >= PASTE_BYTE_THRESHOLD || text.contains('\n');
 
@@ -398,13 +400,16 @@ impl Session {
     }
 
     /// Deliver `text` to `target` via tmux's load-buffer + paste-buffer.
-    /// Uses a process-id-scoped buffer name so concurrent senders don't
-    /// clobber each other. `-p` enables bracketed-paste markers when the
-    /// receiving pane has DECSET 2004 set (claude-code does); `-d` deletes
-    /// the buffer after the paste. Avoids ARG_MAX on long voice/dictation
-    /// pastes that the per-line send-keys path can't handle.
+    /// Buffer names are scoped by pid + a per-call counter so concurrent
+    /// senders (and retries) cannot clobber each other. `-p` enables
+    /// bracketed-paste markers when the receiving pane has DECSET 2004 set
+    /// (claude-code does); `-d` deletes the buffer after the paste. If
+    /// paste-buffer fails after load-buffer succeeded we issue an explicit
+    /// `delete-buffer` so a partial failure cannot leak a buffer.
     fn send_via_paste_buffer(target: &str, text: &str) -> Result<()> {
-        let buf_name = format!("aoe-send-{}", std::process::id());
+        static SEND_COUNTER: AtomicU64 = AtomicU64::new(0);
+        let seq = SEND_COUNTER.fetch_add(1, Ordering::Relaxed);
+        let buf_name = format!("aoe-send-{}-{}", std::process::id(), seq);
 
         let mut child = Command::new("tmux")
             .args(["load-buffer", "-b", &buf_name, "-"])
@@ -424,6 +429,12 @@ impl Session {
             .output()?;
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
+            // paste-buffer's `-d` only deletes on success; on failure the
+            // buffer survives, so clean it up explicitly. Ignore errors
+            // from the cleanup so the original failure isn't masked.
+            let _ = Command::new("tmux")
+                .args(["delete-buffer", "-b", &buf_name])
+                .output();
             bail!("tmux paste-buffer failed: {}", stderr);
         }
 

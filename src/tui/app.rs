@@ -16,6 +16,21 @@ use crate::session::{get_update_settings, load_config, save_config, Config};
 use crate::tmux::AvailableTools;
 use crate::update::{check_for_update, UpdateInfo};
 
+/// Inter-key timeout for the paste-burst detector. After any printable Char
+/// or Enter, the event loop polls for the next event with this timeout; if
+/// another burst-candidate arrives before the deadline, it joins the burst.
+/// Mosh strips bracketed-paste markers, so dictation from iOS clients lands
+/// as a tightly-packed stream of individual key events; 5ms is comfortably
+/// wider than a Mosh paste's inter-key gap and well under any human typing
+/// rhythm, so it discriminates between paste and typing without making
+/// single-key shortcuts feel laggy.
+const PASTE_BURST_INTER_KEY_MS: u64 = 5;
+
+/// Minimum length (in burst-candidate events) for an accumulated burst to be
+/// routed through `handle_paste`. Shorter accumulations are replayed as
+/// individual key events so genuine typing isn't mistaken for a paste.
+const PASTE_BURST_MIN_LEN: usize = 3;
+
 struct UpdateStatus {
     text: String,
     expires_at: Option<std::time::Instant>,
@@ -397,27 +412,26 @@ impl App {
                 event = self.event_stream.as_mut().expect("event_stream missing").next() => {
                     match event {
                         Some(Ok(Event::Key(key))) => {
-                            // Paste-burst detector — VoiceInk + Mosh ergonomics.
-                            // Mosh strips bracketed-paste markers (\e[200~ / \e[201~),
-                            // so pasted dictation arrives as a stream of individual
-                            // KeyEvents that fire destructive shortcuts (Q=quit,
-                            // N=new, B=cxs spawn, etc.). Look-ahead-poll the event
-                            // stream with a 5ms inter-key timeout: if 3+ printable
-                            // chars accumulate, route through handle_paste instead
-                            // of dispatching individually. Below the burst threshold
-                            // we replay the captured chars as individual key events.
+                            // Paste-burst detector for VoiceInk + Mosh ergonomics.
+                            // Mosh strips bracketed-paste markers, so pasted
+                            // dictation arrives as a stream of individual KeyEvents
+                            // that would otherwise fire home-view shortcuts (Q=quit,
+                            // N=new, X=stop, D=delete, ...). Look-ahead-poll the
+                            // event stream with a short inter-key timeout; if
+                            // PASTE_BURST_MIN_LEN printable chars accumulate, route
+                            // through handle_paste instead of dispatching them
+                            // individually. Below the threshold we replay the
+                            // captured keys as normal events.
                             if Self::is_burst_candidate(&key) {
-                                let first_char = match Self::burst_char_for(&key) {
-                                    Some(c) => c,
-                                    None => unreachable!(),
-                                };
+                                let first_char = Self::burst_char_for(&key)
+                                    .expect("is_burst_candidate guarantees burst_char_for returns Some");
                                 let mut burst_str = String::new();
                                 burst_str.push(first_char);
                                 let mut burst_keys: Vec<KeyEvent> = vec![key];
                                 let mut deferred: Option<Event> = None;
                                 loop {
                                     let next = tokio::time::timeout(
-                                        Duration::from_millis(5),
+                                        Duration::from_millis(PASTE_BURST_INTER_KEY_MS),
                                         self.event_stream.as_mut().expect("event_stream missing").next(),
                                     ).await;
                                     match next {
@@ -434,7 +448,7 @@ impl App {
                                         _ => break,
                                     }
                                 }
-                                if burst_keys.len() >= 3 {
+                                if burst_keys.len() >= PASTE_BURST_MIN_LEN {
                                     tracing::debug!(
                                         "paste-burst: routed {} chars via handle_paste (chars={:?})",
                                         burst_str.len(), burst_str
@@ -456,6 +470,12 @@ impl App {
                                         }
                                     }
                                 }
+                                // Mouse-capture state may have changed if the
+                                // burst opened or closed a copy-friendly surface
+                                // (info/changelog/serve dialog). Keep it in sync
+                                // before the next render, matching the
+                                // non-burst Event::Key arm below.
+                                self.sync_mouse_capture(terminal)?;
                                 if !self.needs_redraw {
                                     terminal.draw(|f| self.render(f))?;
                                 }
@@ -1287,5 +1307,85 @@ mod tests {
         assert!(info.is_some()); // But existing info is preserved
         assert_eq!(info.as_ref().unwrap().latest_version, "0.5.0");
         assert!(rx_out.is_none());
+    }
+
+    fn key(code: KeyCode, mods: KeyModifiers) -> KeyEvent {
+        KeyEvent::new(code, mods)
+    }
+
+    #[test]
+    fn burst_candidate_accepts_printable_chars_and_enter() {
+        assert!(App::is_burst_candidate(&key(
+            KeyCode::Char('a'),
+            KeyModifiers::NONE
+        )));
+        assert!(App::is_burst_candidate(&key(
+            KeyCode::Char(' '),
+            KeyModifiers::NONE
+        )));
+        assert!(App::is_burst_candidate(&key(
+            KeyCode::Char('A'),
+            KeyModifiers::SHIFT
+        )));
+        assert!(App::is_burst_candidate(&key(
+            KeyCode::Enter,
+            KeyModifiers::NONE
+        )));
+    }
+
+    #[test]
+    fn burst_candidate_rejects_modified_chords_and_nav_keys() {
+        // Ctrl/Alt chords are intentional shortcuts, never paste burst chars.
+        assert!(!App::is_burst_candidate(&key(
+            KeyCode::Char('c'),
+            KeyModifiers::CONTROL
+        )));
+        assert!(!App::is_burst_candidate(&key(
+            KeyCode::Char('b'),
+            KeyModifiers::ALT
+        )));
+        // Navigation/control keys are not burst candidates.
+        assert!(!App::is_burst_candidate(&key(
+            KeyCode::Esc,
+            KeyModifiers::NONE
+        )));
+        assert!(!App::is_burst_candidate(&key(
+            KeyCode::Tab,
+            KeyModifiers::NONE
+        )));
+        assert!(!App::is_burst_candidate(&key(
+            KeyCode::Up,
+            KeyModifiers::NONE
+        )));
+        assert!(!App::is_burst_candidate(&key(
+            KeyCode::Backspace,
+            KeyModifiers::NONE
+        )));
+    }
+
+    #[test]
+    fn burst_char_for_matches_is_burst_candidate_domain() {
+        // Contract: any key that passes is_burst_candidate must also yield
+        // Some from burst_char_for, otherwise the event-loop's expect() panics.
+        let candidates = [
+            key(KeyCode::Char('a'), KeyModifiers::NONE),
+            key(KeyCode::Char(' '), KeyModifiers::NONE),
+            key(KeyCode::Char('A'), KeyModifiers::SHIFT),
+            key(KeyCode::Char('~'), KeyModifiers::NONE),
+            key(KeyCode::Enter, KeyModifiers::NONE),
+        ];
+        for k in &candidates {
+            assert!(App::is_burst_candidate(k));
+            assert!(
+                App::burst_char_for(k).is_some(),
+                "burst_char_for must agree with is_burst_candidate for {:?}",
+                k
+            );
+        }
+        assert_eq!(
+            App::burst_char_for(&key(KeyCode::Enter, KeyModifiers::NONE)),
+            Some('\n'),
+            "Enter must map to \\n so embedded sentence-breaks land in the burst"
+        );
     }
 }

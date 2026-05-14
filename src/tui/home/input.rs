@@ -1035,10 +1035,7 @@ impl HomeView {
                     ));
                 }
             }
-            KeyCode::Char('m') if !self.strict_hotkeys => {
-                self.open_send_message_dialog();
-            }
-            KeyCode::Char('M') if self.strict_hotkeys => {
+            KeyCode::Char('m') => {
                 self.open_send_message_dialog();
             }
             KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -1505,7 +1502,7 @@ impl HomeView {
     ///
     /// Active text-input dialogs (rename / send_message / new) win first so
     /// multi-line voice/dictation lands in the dialog the user is actively
-    /// typing into. The settings view is checked LAST — its paste handler
+    /// typing into. The settings view is checked last; its paste handler
     /// strips newlines (settings/input.rs handle_paste sanitizes), which
     /// would destroy multi-line dictation if we checked it first.
     pub fn handle_paste(&mut self, text: &str) {
@@ -1523,27 +1520,14 @@ impl HomeView {
         }
         if let Some(ref mut settings) = self.settings_view {
             settings.handle_paste(text);
-        }
-        if let Some(ref mut dialog) = self.rename_dialog {
-            dialog.handle_paste(text);
-            return;
-        }
-        if let Some(ref mut dialog) = self.send_message_dialog {
-            dialog.handle_paste(text);
-            return;
-        }
-        if let Some(ref mut dialog) = self.new_dialog {
-            dialog.handle_paste(text);
             return;
         }
 
-        // No dialog open — try to route the paste into a compose dialog.
-        // If the cursor is on a running session, use it. Otherwise fall back
-        // to any running session (the most recent one is typically what voice
-        // dictation is targeting). If we still can't route, stash the text in
-        // pending_paste so the next 'm' press picks it up. Never throw voice
-        // text on the floor with a scolding info dialog — losing dictation is
-        // far worse than silently catching it.
+        // No dialog open: route the paste into a new compose dialog if the
+        // selected session is runnable. If not, stash in pending_paste so the
+        // next dialog open (typically the next `m` press) drains it. Never
+        // throw voice text on the floor; losing dictation is worse than
+        // silently catching it.
         if let Some((id, title)) = self.resolve_paste_target() {
             self.pending_send_session = Some(id);
             let mut dialog = SendMessageDialog::new(&title);
@@ -1579,16 +1563,15 @@ impl HomeView {
     }
 
     /// Resolve a target session id + title for an untargeted paste/type-burst.
-    /// Priority: currently-selected running session, then first running session
-    /// under the selected group, then any first running session.
+    /// Returns the selected session if it has a live tmux pane; otherwise
+    /// falls back to the first running session (only when there's no
+    /// explicit selection or the selected id points to a deleted instance).
     ///
-    /// Selection-respecting rule: if the user has a session selected but it
-    /// is not runnable (archived, tmux gone), this returns None instead of
-    /// falling through to "first running session." Silent fall-through
-    /// caused voice/dictation pastes to land in an unrelated session
-    /// (commonly wma-CRM) when the user was navigated to an archived row,
-    /// which is worse than losing the paste — the upstream layer stashes
-    /// to pending_paste so the text is preserved for the next dialog open.
+    /// If the user has a non-running session selected (Stopped, Error,
+    /// externally-killed tmux), we return None rather than fall through.
+    /// Silent fall-through would silently misroute the paste into a sibling
+    /// session; the caller stashes to `pending_paste` instead, preserving
+    /// the text for the next dialog open against a runnable session.
     fn resolve_paste_target(&self) -> Option<(String, String)> {
         let pick = |inst: &crate::session::Instance| -> Option<(String, String)> {
             if inst.status == Status::Creating {
@@ -1605,8 +1588,8 @@ impl HomeView {
         if let Some(id) = self.selected_session.clone() {
             if let Some(inst) = self.get_instance(&id) {
                 // Honor explicit selection: return whatever pick() decides
-                // (Some if runnable, None if archived/tmux-gone). Do NOT
-                // fall through to first-running — the user picked this row
+                // (Some if runnable, None if tmux is gone). Do not fall
+                // through to first-running; the user picked this row
                 // intentionally, and rerouting would silently mis-land the
                 // paste in a sibling session.
                 return pick(inst);
