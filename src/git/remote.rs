@@ -31,10 +31,13 @@ pub fn clone_repo(url: &str, destination: &Path, shallow: bool) -> Result<()> {
     // Pipe stdin to /dev/null so SSH passphrase prompts fail immediately
     // instead of hanging the blocking thread.
     let redacted_url = redact_url(url);
+    let redacted_args: Vec<&str> = args
+        .iter()
+        .map(|a| if *a == url { redacted_url.as_str() } else { *a })
+        .collect();
     tracing::debug!(
         target: "git.command",
-        args = ?["clone", "--shallow=", &redacted_url, dest_str],
-        shallow,
+        args = ?redacted_args,
         "spawning git clone"
     );
     let mut child = std::process::Command::new("git")
