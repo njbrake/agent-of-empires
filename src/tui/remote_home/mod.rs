@@ -3,7 +3,7 @@
 //! Activated when `AOE_DAEMON_URL` is set at startup (or `--daemon-url`
 //! is passed on the CLI). Fetches the daemon's session list via
 //! `GET /api/sessions`, filters to cockpit-mode sessions (the only
-//! kind that's meaningful to drive cross-machine — tmux PTYs can't be
+//! kind that's meaningful to drive cross-machine; tmux PTYs can't be
 //! attached remotely without SSH'ing into the host first), and lets
 //! the user open one with Enter.
 //!

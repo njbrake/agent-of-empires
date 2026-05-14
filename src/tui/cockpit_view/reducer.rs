@@ -37,7 +37,7 @@ pub struct CockpitTranscript {
     /// `/` picker (followup #1018).
     pub available_commands: Vec<AvailableCommand>,
     /// Set after a `SessionContextReset`; the view layer drops a
-    /// "context lost — re-prime?" banner until the user dismisses it
+    /// "context lost, re-prime?" banner until the user dismisses it
     /// or sends the next prompt.
     pub context_primer_pending: bool,
     /// Set when the WS layer reports `{"kind":"lagged"}`; the view

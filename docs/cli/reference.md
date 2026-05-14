@@ -83,33 +83,33 @@ Run without arguments to launch the TUI dashboard.
 
 ###### **Subcommands:**
 
-* `add` — Add a new session
-* `agents` — List supported agents and their install status
-* `init` — Initialize .agent-of-empires/config.toml in a repository
-* `list` — List all sessions
-* `logs` — View AoE log files (debug.log, serve.log) with a pretty viewer
-* `remove` — Remove a session
-* `send` — Send a message to a running agent session
-* `status` — Show session status summary
-* `session` — Manage session lifecycle (start, stop, attach, etc.)
-* `group` — Manage groups for organizing sessions
-* `profile` — Manage profiles (separate workspaces)
-* `project` — Manage the project registry used by multi-repo session pickers
-* `worktree` — Manage git worktrees for parallel development
-* `tmux` — tmux integration utilities
-* `sounds` — Manage sound effects for agent state transitions
-* `theme` — Manage color themes (list, export, customize)
-* `serve` — Start a web dashboard for remote session access
-* `url` — Print the current dashboard URL of a running `aoe serve` daemon
-* `cockpit` — Cockpit (ACP-based native agent rendering) management
-* `uninstall` — Uninstall Agent of Empires
-* `update` — Update aoe to the latest release
-* `completion` — Generate shell completions
+* `add` - Add a new session
+* `agents` - List supported agents and their install status
+* `init` - Initialize .agent-of-empires/config.toml in a repository
+* `list` - List all sessions
+* `logs` - View AoE log files (debug.log, serve.log) with a pretty viewer
+* `remove` - Remove a session
+* `send` - Send a message to a running agent session
+* `status` - Show session status summary
+* `session` - Manage session lifecycle (start, stop, attach, etc.)
+* `group` - Manage groups for organizing sessions
+* `profile` - Manage profiles (separate workspaces)
+* `project` - Manage the project registry used by multi-repo session pickers
+* `worktree` - Manage git worktrees for parallel development
+* `tmux` - tmux integration utilities
+* `sounds` - Manage sound effects for agent state transitions
+* `theme` - Manage color themes (list, export, customize)
+* `serve` - Start a web dashboard for remote session access
+* `url` - Print the current dashboard URL of a running `aoe serve` daemon
+* `cockpit` - Cockpit (ACP-based native agent rendering) management
+* `uninstall` - Uninstall Agent of Empires
+* `update` - Update aoe to the latest release
+* `completion` - Generate shell completions
 
 ###### **Options:**
 
-* `-p`, `--profile <PROFILE>` — Profile to use (separate workspace with its own sessions)
-* `--daemon-url <DAEMON_URL>` — Attach to a remote cockpit daemon instead of using the local session list. Equivalent to setting `AOE_DAEMON_URL`; pair with `AOE_DAEMON_TOKEN` for the bearer token. Only meaningful at the no-subcommand `aoe` invocation (the TUI dashboard); ignored otherwise
+* `-p`, `--profile <PROFILE>` - Profile to use (separate workspace with its own sessions)
+* `--daemon-url <DAEMON_URL>` - Attach to a remote cockpit daemon instead of using the local session list. Equivalent to setting `AOE_DAEMON_URL`; pair with `AOE_DAEMON_TOKEN` for the bearer token. Only meaningful at the no-subcommand `aoe` invocation (the TUI dashboard); ignored otherwise
 
 
 
@@ -121,33 +121,33 @@ Add a new session
 
 ###### **Arguments:**
 
-* `<PATH>` — Project directory (defaults to current directory)
+* `<PATH>` - Project directory (defaults to current directory)
 
   Default value: `.`
 
 ###### **Options:**
 
-* `-t`, `--title <TITLE>` — Session title (defaults to folder name)
-* `-g`, `--group <GROUP>` — Group path (defaults to parent folder)
-* `-c`, `--cmd <COMMAND>` — Command to run (e.g., 'claude' or any other supported agent)
-* `-P`, `--parent <PARENT>` — Parent session (creates sub-session, inherits group)
-* `-l`, `--launch` — Launch the session immediately after creating
-* `-w`, `--worktree <WORKTREE_BRANCH>` — Create session in a git worktree for the specified branch
-* `-b`, `--new-branch` — Create a new branch (use with --worktree)
-* `--base-branch <BASE_BRANCH>` — Branch to base the new worktree branch on (use with --new-branch). Defaults to the repository's default branch. Useful for stacking work on top of an in-flight PR branch, hot-fixing a release branch, or branching off a teammate's branch
-* `-r`, `--repo <EXTRA_REPOS>` — Additional repositories for multi-repo workspace (use with --worktree)
-* `--project <PROJECTS>` — Names of registered projects to include as extra repos (use with --worktree). Resolves against the union of global + profile project registries
-* `--no-submodules` — Skip `git submodule update --init --recursive` after creating the worktree, overriding the `worktree.init_submodules` config (default true). Useful for repos with large or deeply nested submodule trees that you don't need inside the agent session
-* `-s`, `--sandbox` — Run session in a container sandbox
-* `--sandbox-image <SANDBOX_IMAGE>` — Custom container image for sandbox (implies --sandbox)
-* `-y`, `--yolo` — Enable YOLO mode (skip permission prompts)
-* `--trust-hooks` — Automatically trust repository hooks without prompting
-* `--extra-args <EXTRA_ARGS>` — Extra arguments to append after the agent binary
-* `--cmd-override <CMD_OVERRIDE>` — Override the agent binary command
-* `--cockpit` — Use cockpit mode (ACP-based native rendering) for this session. Overrides the default-for-claude setting in cockpit config
-* `--no-cockpit` — Force terminal/PTY mode for this session, overriding the default-for-claude cockpit setting
-* `--agent <AGENT>` — Pick a specific cockpit agent (e.g., aoe-agent, claude-code). Implies --cockpit
-* `--model <MODEL>` — Override the model used by aoe-agent (e.g., claude-opus-4-7, gpt-5, gemini-2.5-pro). Forwarded to the agent at session start
+* `-t`, `--title <TITLE>` - Session title (defaults to folder name)
+* `-g`, `--group <GROUP>` - Group path (defaults to parent folder)
+* `-c`, `--cmd <COMMAND>` - Command to run (e.g., 'claude' or any other supported agent)
+* `-P`, `--parent <PARENT>` - Parent session (creates sub-session, inherits group)
+* `-l`, `--launch` - Launch the session immediately after creating
+* `-w`, `--worktree <WORKTREE_BRANCH>` - Create session in a git worktree for the specified branch
+* `-b`, `--new-branch` - Create a new branch (use with --worktree)
+* `--base-branch <BASE_BRANCH>` - Branch to base the new worktree branch on (use with --new-branch). Defaults to the repository's default branch. Useful for stacking work on top of an in-flight PR branch, hot-fixing a release branch, or branching off a teammate's branch
+* `-r`, `--repo <EXTRA_REPOS>` - Additional repositories for multi-repo workspace (use with --worktree)
+* `--project <PROJECTS>` - Names of registered projects to include as extra repos (use with --worktree). Resolves against the union of global + profile project registries
+* `--no-submodules` - Skip `git submodule update --init --recursive` after creating the worktree, overriding the `worktree.init_submodules` config (default true). Useful for repos with large or deeply nested submodule trees that you don't need inside the agent session
+* `-s`, `--sandbox` - Run session in a container sandbox
+* `--sandbox-image <SANDBOX_IMAGE>` - Custom container image for sandbox (implies --sandbox)
+* `-y`, `--yolo` - Enable YOLO mode (skip permission prompts)
+* `--trust-hooks` - Automatically trust repository hooks without prompting
+* `--extra-args <EXTRA_ARGS>` - Extra arguments to append after the agent binary
+* `--cmd-override <CMD_OVERRIDE>` - Override the agent binary command
+* `--cockpit` - Use cockpit mode (ACP-based native rendering) for this session. Overrides the default-for-claude setting in cockpit config
+* `--no-cockpit` - Force terminal/PTY mode for this session, overriding the default-for-claude cockpit setting
+* `--agent <AGENT>` - Pick a specific cockpit agent (e.g., aoe-agent, claude-code). Implies --cockpit
+* `--model <MODEL>` - Override the model used by aoe-agent (e.g., claude-opus-4-7, gpt-5, gemini-2.5-pro). Forwarded to the agent at session start
 
 
 
@@ -167,7 +167,7 @@ Initialize .agent-of-empires/config.toml in a repository
 
 ###### **Arguments:**
 
-* `<PATH>` — Directory to initialize (defaults to current directory)
+* `<PATH>` - Directory to initialize (defaults to current directory)
 
   Default value: `.`
 
@@ -181,8 +181,8 @@ List all sessions
 
 ###### **Options:**
 
-* `--json` — Output as JSON
-* `--all` — List sessions from all profiles
+* `--json` - Output as JSON
+* `--all` - List sessions from all profiles
 
 
 
@@ -194,13 +194,13 @@ View AoE log files (debug.log, serve.log) with a pretty viewer
 
 ###### **Options:**
 
-* `--debug` — View debug.log (default)
-* `--serve` — View serve.log (daemon stdout/stderr)
-* `--all` — View both debug.log and serve.log, merged by timestamp
-* `-f`, `--follow` — Live-tail the log
-* `-n`, `--lines <N>` — Show only the last N lines (fallback viewers; lnav handles its own)
-* `--no-pager` — Skip viewer detection; write plain log to stdout
-* `--path` — Print the resolved log file path(s) and exit (no viewing)
+* `--debug` - View debug.log (default)
+* `--serve` - View serve.log (daemon stdout/stderr)
+* `--all` - View both debug.log and serve.log, merged by timestamp
+* `-f`, `--follow` - Live-tail the log
+* `-n`, `--lines <N>` - Show only the last N lines (fallback viewers; lnav handles its own)
+* `--no-pager` - Skip viewer detection; write plain log to stdout
+* `--path` - Print the resolved log file path(s) and exit (no viewing)
 
 
 
@@ -212,14 +212,14 @@ Remove a session
 
 ###### **Arguments:**
 
-* `<IDENTIFIER>` — Session ID or title to remove
+* `<IDENTIFIER>` - Session ID or title to remove
 
 ###### **Options:**
 
-* `--delete-worktree` — Delete worktree directory (default: keep worktree)
-* `--delete-branch` — Delete git branch after worktree removal (default: per config)
-* `--force` — Force worktree removal even with untracked/modified files
-* `--keep-container` — Keep container instead of deleting it (default: delete per config)
+* `--delete-worktree` - Delete worktree directory (default: keep worktree)
+* `--delete-branch` - Delete git branch after worktree removal (default: per config)
+* `--force` - Force worktree removal even with untracked/modified files
+* `--keep-container` - Keep container instead of deleting it (default: delete per config)
 
 
 
@@ -231,12 +231,12 @@ Send a message to a running agent session
 
 ###### **Arguments:**
 
-* `<IDENTIFIER>` — Session ID or title
-* `<MESSAGE>` — Message to send to the agent
+* `<IDENTIFIER>` - Session ID or title
+* `<MESSAGE>` - Message to send to the agent
 
 ###### **Options:**
 
-* `--no-revive` — Fail loud on dead/stopped sessions instead of auto-respawning. Default behavior is to revive the session so a `send` after a crash or stop just works; pass this for scripts that want the previous bail-out
+* `--no-revive` - Fail loud on dead/stopped sessions instead of auto-respawning. Default behavior is to revive the session so a `send` after a crash or stop just works; pass this for scripts that want the previous bail-out
 
 
 
@@ -248,9 +248,9 @@ Show session status summary
 
 ###### **Options:**
 
-* `-v`, `--verbose` — Show detailed session list
-* `-q`, `--quiet` — Only output waiting count (for scripts)
-* `--json` — Output as JSON
+* `-v`, `--verbose` - Show detailed session list
+* `-q`, `--quiet` - Only output waiting count (for scripts)
+* `--json` - Output as JSON
 
 
 
@@ -262,15 +262,15 @@ Manage session lifecycle (start, stop, attach, etc.)
 
 ###### **Subcommands:**
 
-* `start` — Start a session's tmux process
-* `stop` — Stop session process
-* `restart` — Restart session (or all sessions with `--all`)
-* `attach` — Attach to session interactively
-* `show` — Show session details
-* `rename` — Rename a session
-* `capture` — Capture tmux pane output
-* `current` — Auto-detect current session
-* `set-session-id` — Set agent session ID for a session
+* `start` - Start a session's tmux process
+* `stop` - Stop session process
+* `restart` - Restart session (or all sessions with `--all`)
+* `attach` - Attach to session interactively
+* `show` - Show session details
+* `rename` - Rename a session
+* `capture` - Capture tmux pane output
+* `current` - Auto-detect current session
+* `set-session-id` - Set agent session ID for a session
 
 
 
@@ -282,7 +282,7 @@ Start a session's tmux process
 
 ###### **Arguments:**
 
-* `<IDENTIFIER>` — Session ID or title
+* `<IDENTIFIER>` - Session ID or title
 
 
 
@@ -294,7 +294,7 @@ Stop session process
 
 ###### **Arguments:**
 
-* `<IDENTIFIER>` — Session ID or title
+* `<IDENTIFIER>` - Session ID or title
 
 
 
@@ -306,12 +306,12 @@ Restart session (or all sessions with `--all`)
 
 ###### **Arguments:**
 
-* `<IDENTIFIER>` — Session ID or title (required unless `--all` is passed)
+* `<IDENTIFIER>` - Session ID or title (required unless `--all` is passed)
 
 ###### **Options:**
 
-* `--all` — Restart every session in the active profile. Useful after `aoe update`, after editing `sandbox.environment`, after a Docker hiccup, or after changing a hook. Mutually exclusive with `identifier`
-* `--parallel <PARALLEL>` — Concurrency cap for `--all`. Restarting many sandboxed sessions in parallel pressures dockerd, so the default is intentionally modest. Ignored when `--all` is not set
+* `--all` - Restart every session in the active profile. Useful after `aoe update`, after editing `sandbox.environment`, after a Docker hiccup, or after changing a hook. Mutually exclusive with `identifier`
+* `--parallel <PARALLEL>` - Concurrency cap for `--all`. Restarting many sandboxed sessions in parallel pressures dockerd, so the default is intentionally modest. Ignored when `--all` is not set
 
   Default value: `3`
 
@@ -325,7 +325,7 @@ Attach to session interactively
 
 ###### **Arguments:**
 
-* `<IDENTIFIER>` — Session ID or title
+* `<IDENTIFIER>` - Session ID or title
 
 
 
@@ -337,11 +337,11 @@ Show session details
 
 ###### **Arguments:**
 
-* `<IDENTIFIER>` — Session ID or title (optional, auto-detects in tmux)
+* `<IDENTIFIER>` - Session ID or title (optional, auto-detects in tmux)
 
 ###### **Options:**
 
-* `--json` — Output as JSON
+* `--json` - Output as JSON
 
 
 
@@ -353,12 +353,12 @@ Rename a session
 
 ###### **Arguments:**
 
-* `<IDENTIFIER>` — Session ID or title (optional, auto-detects in tmux)
+* `<IDENTIFIER>` - Session ID or title (optional, auto-detects in tmux)
 
 ###### **Options:**
 
-* `-t`, `--title <TITLE>` — New title for the session
-* `-g`, `--group <GROUP>` — New group for the session (empty string to ungroup)
+* `-t`, `--title <TITLE>` - New title for the session
+* `-g`, `--group <GROUP>` - New group for the session (empty string to ungroup)
 
 
 
@@ -370,15 +370,15 @@ Capture tmux pane output
 
 ###### **Arguments:**
 
-* `<IDENTIFIER>` — Session ID or title (auto-detects in tmux if omitted)
+* `<IDENTIFIER>` - Session ID or title (auto-detects in tmux if omitted)
 
 ###### **Options:**
 
-* `-n`, `--lines <LINES>` — Number of lines to capture
+* `-n`, `--lines <LINES>` - Number of lines to capture
 
   Default value: `50`
-* `--strip-ansi` — Strip ANSI escape codes
-* `--json` — Output as JSON
+* `--strip-ansi` - Strip ANSI escape codes
+* `--json` - Output as JSON
 
 
 
@@ -390,8 +390,8 @@ Auto-detect current session
 
 ###### **Options:**
 
-* `-q`, `--quiet` — Just session name (for scripting)
-* `--json` — Output as JSON
+* `-q`, `--quiet` - Just session name (for scripting)
+* `--json` - Output as JSON
 
 
 
@@ -403,8 +403,8 @@ Set agent session ID for a session
 
 ###### **Arguments:**
 
-* `<IDENTIFIER>` — Session ID or title
-* `<SESSION_ID>` — Agent session ID to set (pass empty string to clear)
+* `<IDENTIFIER>` - Session ID or title
+* `<SESSION_ID>` - Agent session ID to set (pass empty string to clear)
 
 
 
@@ -416,10 +416,10 @@ Manage groups for organizing sessions
 
 ###### **Subcommands:**
 
-* `list` — List all groups
-* `create` — Create a new group
-* `delete` — Delete a group
-* `move` — Move session to group
+* `list` - List all groups
+* `create` - Create a new group
+* `delete` - Delete a group
+* `move` - Move session to group
 
 
 
@@ -431,7 +431,7 @@ List all groups
 
 ###### **Options:**
 
-* `--json` — Output as JSON
+* `--json` - Output as JSON
 
 
 
@@ -443,11 +443,11 @@ Create a new group
 
 ###### **Arguments:**
 
-* `<NAME>` — Group name
+* `<NAME>` - Group name
 
 ###### **Options:**
 
-* `--parent <PARENT>` — Parent group for creating subgroups
+* `--parent <PARENT>` - Parent group for creating subgroups
 
 
 
@@ -459,11 +459,11 @@ Delete a group
 
 ###### **Arguments:**
 
-* `<NAME>` — Group name
+* `<NAME>` - Group name
 
 ###### **Options:**
 
-* `--force` — Force delete by moving sessions to default group
+* `--force` - Force delete by moving sessions to default group
 
 
 
@@ -475,8 +475,8 @@ Move session to group
 
 ###### **Arguments:**
 
-* `<IDENTIFIER>` — Session ID or title
-* `<GROUP>` — Target group
+* `<IDENTIFIER>` - Session ID or title
+* `<GROUP>` - Target group
 
 
 
@@ -488,11 +488,11 @@ Manage profiles (separate workspaces)
 
 ###### **Subcommands:**
 
-* `list` — List all profiles
-* `create` — Create a new profile
-* `delete` — Delete a profile
-* `rename` — Rename a profile
-* `default` — Show or set default profile
+* `list` - List all profiles
+* `create` - Create a new profile
+* `delete` - Delete a profile
+* `rename` - Rename a profile
+* `default` - Show or set default profile
 
 
 
@@ -512,7 +512,7 @@ Create a new profile
 
 ###### **Arguments:**
 
-* `<NAME>` — Profile name
+* `<NAME>` - Profile name
 
 
 
@@ -524,7 +524,7 @@ Delete a profile
 
 ###### **Arguments:**
 
-* `<NAME>` — Profile name
+* `<NAME>` - Profile name
 
 
 
@@ -536,8 +536,8 @@ Rename a profile
 
 ###### **Arguments:**
 
-* `<OLD_NAME>` — Current profile name
-* `<NEW_NAME>` — New profile name
+* `<OLD_NAME>` - Current profile name
+* `<NEW_NAME>` - New profile name
 
 
 
@@ -549,7 +549,7 @@ Show or set default profile
 
 ###### **Arguments:**
 
-* `<NAME>` — Profile name (optional, shows current if not provided)
+* `<NAME>` - Profile name (optional, shows current if not provided)
 
 
 
@@ -561,9 +561,9 @@ Manage the project registry used by multi-repo session pickers
 
 ###### **Subcommands:**
 
-* `list` — List registered projects
-* `add` — Add a project to the registry
-* `remove` — Remove a project from the registry
+* `list` - List registered projects
+* `add` - Add a project to the registry
+* `remove` - Remove a project from the registry
 
 
 
@@ -575,8 +575,8 @@ List registered projects
 
 ###### **Options:**
 
-* `--json` — Output as JSON
-* `--scope <SCOPE>` — Filter by scope (default: all)
+* `--json` - Output as JSON
+* `--scope <SCOPE>` - Filter by scope (default: all)
 
   Default value: `all`
 
@@ -593,16 +593,16 @@ Add a project to the registry
 
 ###### **Arguments:**
 
-* `<PATH>` — Path to the git repository
+* `<PATH>` - Path to the git repository
 
 ###### **Options:**
 
-* `--name <NAME>` — Display name (defaults to the directory's basename)
-* `--scope <SCOPE>` — Registry scope. When omitted: defaults to GLOBAL, unless `-p <profile>` was passed at the top level, in which case it defaults to PROFILE (scoping the entry to that profile only)
+* `--name <NAME>` - Display name (defaults to the directory's basename)
+* `--scope <SCOPE>` - Registry scope. When omitted: defaults to GLOBAL, unless `-p <profile>` was passed at the top level, in which case it defaults to PROFILE (scoping the entry to that profile only)
 
   Possible values: `global`, `profile`
 
-* `--allow-override` — Allow registering this path even if it already exists in the other scope. Without this flag the command errors when the same canonical path is already registered globally (when adding to profile) or in any profile (when adding globally). When override is allowed and both scopes hold the same path, the profile entry shadows the global one
+* `--allow-override` - Allow registering this path even if it already exists in the other scope. Without this flag the command errors when the same canonical path is already registered globally (when adding to profile) or in any profile (when adding globally). When override is allowed and both scopes hold the same path, the profile entry shadows the global one
 
 
 
@@ -614,11 +614,11 @@ Remove a project from the registry
 
 ###### **Arguments:**
 
-* `<NAME_OR_PATH>` — Project name or path to remove
+* `<NAME_OR_PATH>` - Project name or path to remove
 
 ###### **Options:**
 
-* `--scope <SCOPE>` — Registry scope to remove from. When omitted: defaults to GLOBAL, unless `-p <profile>` was passed at the top level, in which case it defaults to PROFILE
+* `--scope <SCOPE>` - Registry scope to remove from. When omitted: defaults to GLOBAL, unless `-p <profile>` was passed at the top level, in which case it defaults to PROFILE
 
   Possible values: `global`, `profile`
 
@@ -633,9 +633,9 @@ Manage git worktrees for parallel development
 
 ###### **Subcommands:**
 
-* `list` — List all worktrees in current repository
-* `info` — Show worktree information for a session
-* `cleanup` — Cleanup orphaned worktrees
+* `list` - List all worktrees in current repository
+* `info` - Show worktree information for a session
+* `cleanup` - Cleanup orphaned worktrees
 
 
 
@@ -655,7 +655,7 @@ Show worktree information for a session
 
 ###### **Arguments:**
 
-* `<IDENTIFIER>` — Session ID or title
+* `<IDENTIFIER>` - Session ID or title
 
 
 
@@ -667,7 +667,7 @@ Cleanup orphaned worktrees
 
 ###### **Options:**
 
-* `-f`, `--force` — Actually remove worktrees (default is dry-run)
+* `-f`, `--force` - Actually remove worktrees (default is dry-run)
 
 
 
@@ -679,7 +679,7 @@ tmux integration utilities
 
 ###### **Subcommands:**
 
-* `status` — Output session info for use in custom tmux status bar
+* `status` - Output session info for use in custom tmux status bar
 
 
 
@@ -693,7 +693,7 @@ Add this to your ~/.tmux.conf: set -g status-right "#(aoe tmux status)"
 
 ###### **Options:**
 
-* `-f`, `--format <FORMAT>` — Output format (text or json)
+* `-f`, `--format <FORMAT>` - Output format (text or json)
 
   Default value: `text`
 
@@ -707,9 +707,9 @@ Manage sound effects for agent state transitions
 
 ###### **Subcommands:**
 
-* `install` — Install bundled sound effects
-* `list` — List currently installed sounds
-* `test` — Test a sound by playing it
+* `install` - Install bundled sound effects
+* `list` - List currently installed sounds
+* `test` - Test a sound by playing it
 
 
 
@@ -737,7 +737,7 @@ Test a sound by playing it
 
 ###### **Arguments:**
 
-* `<NAME>` — Sound file name (without extension)
+* `<NAME>` - Sound file name (without extension)
 
 
 
@@ -749,9 +749,9 @@ Manage color themes (list, export, customize)
 
 ###### **Subcommands:**
 
-* `list` — List all available themes (built-in and custom)
-* `export` — Export a built-in theme as a TOML file for customization
-* `dir` — Show the custom themes directory path
+* `list` - List all available themes (built-in and custom)
+* `export` - Export a built-in theme as a TOML file for customization
+* `dir` - Show the custom themes directory path
 
 
 
@@ -771,11 +771,11 @@ Export a built-in theme as a TOML file for customization
 
 ###### **Arguments:**
 
-* `<NAME>` — Theme name to export
+* `<NAME>` - Theme name to export
 
 ###### **Options:**
 
-* `-o`, `--output <OUTPUT>` — Output file path (defaults to <name>.toml in the themes directory)
+* `-o`, `--output <OUTPUT>` - Output file path (defaults to <name>.toml in the themes directory)
 
 
 
@@ -795,21 +795,21 @@ Start a web dashboard for remote session access
 
 ###### **Options:**
 
-* `--port <PORT>` — Port to listen on (default: 8080; debug builds default to 8081 so a `cargo run` instance does not collide with an installed release `aoe`)
-* `--host <HOST>` — Host/IP to bind to (use 0.0.0.0 for LAN/VPN access)
+* `--port <PORT>` - Port to listen on (default: 8080; debug builds default to 8081 so a `cargo run` instance does not collide with an installed release `aoe`)
+* `--host <HOST>` - Host/IP to bind to (use 0.0.0.0 for LAN/VPN access)
 
   Default value: `127.0.0.1`
-* `--no-auth` — Disable authentication (only allowed with localhost binding)
-* `--read-only` — Read-only mode: view terminals but cannot send keystrokes
-* `--remote` — Expose the dashboard over a public HTTPS tunnel. Prefers Tailscale Funnel when `tailscale` is installed and logged in (stable `.ts.net` URL, installable PWAs survive restarts). Falls back to a Cloudflare quick tunnel otherwise (fresh URL on every restart)
-* `--tunnel-name <TUNNEL_NAME>` — Use a named Cloudflare Tunnel (requires prior `cloudflared tunnel create`). Takes precedence over Tailscale auto-detection
-* `--no-tailscale` — Skip Tailscale Funnel auto-detection and go straight to Cloudflare. Useful if you have Tailscale installed for unrelated reasons
-* `--tunnel-url <TUNNEL_URL>` — Hostname for a named tunnel (e.g., aoe.example.com)
-* `--daemon` — Run as a background daemon (detach from terminal)
-* `--stop` — Stop a running daemon
-* `--status` — Print the running daemon's PID, mode, URLs, and log path. Exits non-zero when no daemon is running. Useful for shell scripts and for testing the cockpit auto-spawn flow without parsing `ps`
-* `--passphrase <PASSPHRASE>` — Require a passphrase for login (second-factor auth). Can also be set via AOE_SERVE_PASSPHRASE environment variable
-* `--open` — Open the dashboard URL in the default browser once the server is ready. Ignored under --daemon, --remote, SSH (SSH_CONNECTION/SSH_TTY), or when no display server is reachable on Linux/BSD
+* `--no-auth` - Disable authentication (only allowed with localhost binding)
+* `--read-only` - Read-only mode: view terminals but cannot send keystrokes
+* `--remote` - Expose the dashboard over a public HTTPS tunnel. Prefers Tailscale Funnel when `tailscale` is installed and logged in (stable `.ts.net` URL, installable PWAs survive restarts). Falls back to a Cloudflare quick tunnel otherwise (fresh URL on every restart)
+* `--tunnel-name <TUNNEL_NAME>` - Use a named Cloudflare Tunnel (requires prior `cloudflared tunnel create`). Takes precedence over Tailscale auto-detection
+* `--no-tailscale` - Skip Tailscale Funnel auto-detection and go straight to Cloudflare. Useful if you have Tailscale installed for unrelated reasons
+* `--tunnel-url <TUNNEL_URL>` - Hostname for a named tunnel (e.g., aoe.example.com)
+* `--daemon` - Run as a background daemon (detach from terminal)
+* `--stop` - Stop a running daemon
+* `--status` - Print the running daemon's PID, mode, URLs, and log path. Exits non-zero when no daemon is running. Useful for shell scripts and for testing the cockpit auto-spawn flow without parsing `ps`
+* `--passphrase <PASSPHRASE>` - Require a passphrase for login (second-factor auth). Can also be set via AOE_SERVE_PASSPHRASE environment variable
+* `--open` - Open the dashboard URL in the default browser once the server is ready. Ignored under --daemon, --remote, SSH (SSH_CONNECTION/SSH_TTY), or when no display server is reachable on Linux/BSD
 
 
 
@@ -821,8 +821,8 @@ Print the current dashboard URL of a running `aoe serve` daemon
 
 ###### **Options:**
 
-* `--all` — Print every labeled URL (Tailscale / LAN / localhost) on its own line. The primary URL is printed first as `primary\t<url>`; alternates use `<label>\t<url>`. The tab-separated format makes the output easy to parse from shell scripts
-* `--token-only` — Print only the auth token from the primary URL's `?token=` query parameter. Useful for scripted login flows or pasting into the PWA. Exits non-zero when the URL has no token (e.g. `--no-auth` server)
+* `--all` - Print every labeled URL (Tailscale / LAN / localhost) on its own line. The primary URL is printed first as `primary\t<url>`; alternates use `<label>\t<url>`. The tab-separated format makes the output easy to parse from shell scripts
+* `--token-only` - Print only the auth token from the primary URL's `?token=` query parameter. Useful for scripted login flows or pasting into the PWA. Exits non-zero when the URL has no token (e.g. `--no-auth` server)
 
 
 
@@ -834,20 +834,20 @@ Cockpit (ACP-based native agent rendering) management
 
 ###### **Subcommands:**
 
-* `doctor` — Verify the cockpit can start: Node runtime, configured agents, provider auth (claude login)
-* `agents` — List configured cockpit agents (claude-code, aoe-agent, etc.)
-* `ps` — List running cockpit workers (detached or attached)
-* `stop` — Gracefully stop a cockpit worker (SIGTERM the runner, agent receives stdin EOF). Sessions can be reattached on the next `aoe serve` only if they are still alive afterward; `stop` destroys the worker
-* `kill` — SIGKILL a worker immediately (use when `stop` doesn't take)
-* `logs` — Tail the runner's log file for a cockpit session
-* `restart` — Restart a wedged cockpit worker: stop the existing runner, then let the daemon's reconciler spawn a fresh one on the next tick
-* `history` — Print the persisted transcript for a cockpit session
-* `status` — Print live status for a cockpit session: highest/lowest seq, and whether the on-disk retention window has truncated history
-* `prompt` — Send a prompt to a cockpit session's agent
-* `approve` — Resolve a pending approval (default: allow). Use --always for a session-scoped allow-list entry, --deny to refuse the request
-* `cancel` — Cancel the in-flight prompt for a cockpit session
-* `tail` — Stream the cockpit broadcast for a session to stdout as JSON lines (one frame per line). Press Ctrl-C to stop
-* `attach` — Open the TUI cockpit view directly for a known session id. Combine with `AOE_DAEMON_URL` (+ `AOE_DAEMON_TOKEN`) to attach across machines without going through the home session list
+* `doctor` - Verify the cockpit can start: Node runtime, configured agents, provider auth (claude login)
+* `agents` - List configured cockpit agents (claude-code, aoe-agent, etc.)
+* `ps` - List running cockpit workers (detached or attached)
+* `stop` - Gracefully stop a cockpit worker (SIGTERM the runner, agent receives stdin EOF). Sessions can be reattached on the next `aoe serve` only if they are still alive afterward; `stop` destroys the worker
+* `kill` - SIGKILL a worker immediately (use when `stop` doesn't take)
+* `logs` - Tail the runner's log file for a cockpit session
+* `restart` - Restart a wedged cockpit worker: stop the existing runner, then let the daemon's reconciler spawn a fresh one on the next tick
+* `history` - Print the persisted transcript for a cockpit session
+* `status` - Print live status for a cockpit session: highest/lowest seq, and whether the on-disk retention window has truncated history
+* `prompt` - Send a prompt to a cockpit session's agent
+* `approve` - Resolve a pending approval (default: allow). Use --always for a session-scoped allow-list entry, --deny to refuse the request
+* `cancel` - Cancel the in-flight prompt for a cockpit session
+* `tail` - Stream the cockpit broadcast for a session to stdout as JSON lines (one frame per line). Press Ctrl-C to stop
+* `attach` - Open the TUI cockpit view directly for a known session id. Combine with `AOE_DAEMON_URL` (+ `AOE_DAEMON_TOKEN`) to attach across machines without going through the home session list
 
 
 
@@ -859,8 +859,8 @@ Verify the cockpit can start: Node runtime, configured agents, provider auth (cl
 
 ###### **Options:**
 
-* `--json` — Emit machine-readable JSON instead of a human report
-* `--fix` — Attempt safe remediations: install missing claude-code-acp adapter, verify aoe-agent presence, etc. (Reserved for future release; the flag exists so scripts can opt in early.)
+* `--json` - Emit machine-readable JSON instead of a human report
+* `--fix` - Attempt safe remediations: install missing claude-code-acp adapter, verify aoe-agent presence, etc. (Reserved for future release; the flag exists so scripts can opt in early.)
 
 
 
@@ -880,7 +880,7 @@ List running cockpit workers (detached or attached)
 
 ###### **Options:**
 
-* `--json` — Emit machine-readable JSON instead of a table
+* `--json` - Emit machine-readable JSON instead of a table
 
 
 
@@ -892,12 +892,12 @@ Gracefully stop a cockpit worker (SIGTERM the runner, agent receives stdin EOF).
 
 ###### **Arguments:**
 
-* `<SESSION>` — Session id to stop. Mutually exclusive with `--all`
+* `<SESSION>` - Session id to stop. Mutually exclusive with `--all`
 
 ###### **Options:**
 
-* `--all` — Stop every running cockpit worker
-* `--timeout-secs <TIMEOUT_SECS>` — Seconds to wait after SIGTERM before escalating to SIGKILL
+* `--all` - Stop every running cockpit worker
+* `--timeout-secs <TIMEOUT_SECS>` - Seconds to wait after SIGTERM before escalating to SIGKILL
 
   Default value: `5`
 
@@ -911,7 +911,7 @@ SIGKILL a worker immediately (use when `stop` doesn't take)
 
 ###### **Arguments:**
 
-* `<SESSION>` — Session id to kill
+* `<SESSION>` - Session id to kill
 
 
 
@@ -923,8 +923,8 @@ Tail the runner's log file for a cockpit session
 
 ###### **Options:**
 
-* `--session <SESSION>` — Session id whose worker logs to tail
-* `--follow` — Follow new lines as they arrive
+* `--session <SESSION>` - Session id whose worker logs to tail
+* `--follow` - Follow new lines as they arrive
 
 
 
@@ -936,7 +936,7 @@ Restart a wedged cockpit worker: stop the existing runner, then let the daemon's
 
 ###### **Arguments:**
 
-* `<SESSION>` — Session id whose worker to restart
+* `<SESSION>` - Session id whose worker to restart
 
 
 
@@ -948,14 +948,14 @@ Print the persisted transcript for a cockpit session
 
 ###### **Arguments:**
 
-* `<SESSION>` — Cockpit session id
+* `<SESSION>` - Cockpit session id
 
 ###### **Options:**
 
-* `--since <SINCE>` — Skip events at or below this seq
+* `--since <SINCE>` - Skip events at or below this seq
 
   Default value: `0`
-* `--json` — Emit raw frames as JSON (one frame per line)
+* `--json` - Emit raw frames as JSON (one frame per line)
 
 
 
@@ -967,11 +967,11 @@ Print live status for a cockpit session: highest/lowest seq, and whether the on-
 
 ###### **Arguments:**
 
-* `<SESSION>` — Cockpit session id
+* `<SESSION>` - Cockpit session id
 
 ###### **Options:**
 
-* `--json` — Emit machine-readable JSON instead of a human report
+* `--json` - Emit machine-readable JSON instead of a human report
 
 
 
@@ -983,8 +983,8 @@ Send a prompt to a cockpit session's agent
 
 ###### **Arguments:**
 
-* `<SESSION>` — Cockpit session id
-* `<TEXT>` — Prompt text. Pass `-` to read from stdin
+* `<SESSION>` - Cockpit session id
+* `<TEXT>` - Prompt text. Pass `-` to read from stdin
 
 
 
@@ -996,13 +996,13 @@ Resolve a pending approval (default: allow). Use --always for a session-scoped a
 
 ###### **Arguments:**
 
-* `<SESSION>` — Cockpit session id
-* `<NONCE>` — Approval nonce, as printed in the pending-approval banner
+* `<SESSION>` - Cockpit session id
+* `<NONCE>` - Approval nonce, as printed in the pending-approval banner
 
 ###### **Options:**
 
-* `--always` — Allow this kind of operation for the rest of the session
-* `--deny` — Refuse the request
+* `--always` - Allow this kind of operation for the rest of the session
+* `--deny` - Refuse the request
 
 
 
@@ -1014,7 +1014,7 @@ Cancel the in-flight prompt for a cockpit session
 
 ###### **Arguments:**
 
-* `<SESSION>` — Cockpit session id
+* `<SESSION>` - Cockpit session id
 
 
 
@@ -1026,11 +1026,11 @@ Stream the cockpit broadcast for a session to stdout as JSON lines (one frame pe
 
 ###### **Arguments:**
 
-* `<SESSION>` — Cockpit session id
+* `<SESSION>` - Cockpit session id
 
 ###### **Options:**
 
-* `--since <SINCE>` — Start at this seq (default 0 = full replay then live)
+* `--since <SINCE>` - Start at this seq (default 0 = full replay then live)
 
   Default value: `0`
 
@@ -1044,7 +1044,7 @@ Open the TUI cockpit view directly for a known session id. Combine with `AOE_DAE
 
 ###### **Arguments:**
 
-* `<SESSION>` — Cockpit session id
+* `<SESSION>` - Cockpit session id
 
 
 
@@ -1056,10 +1056,10 @@ Uninstall Agent of Empires
 
 ###### **Options:**
 
-* `--keep-data` — Keep data directory (sessions, config, logs)
-* `--keep-tmux-config` — Keep tmux configuration
-* `--dry-run` — Show what would be removed without removing
-* `-y` — Skip confirmation prompts
+* `--keep-data` - Keep data directory (sessions, config, logs)
+* `--keep-tmux-config` - Keep tmux configuration
+* `--dry-run` - Show what would be removed without removing
+* `-y` - Skip confirmation prompts
 
 
 
@@ -1071,9 +1071,9 @@ Update aoe to the latest release
 
 ###### **Options:**
 
-* `-y`, `--yes` — Skip confirmation prompt
-* `--check` — Print update status and exit (no install)
-* `--dry-run` — Detect install method and print what would happen, no download
+* `-y`, `--yes` - Skip confirmation prompt
+* `--check` - Print update status and exit (no install)
+* `--dry-run` - Detect install method and print what would happen, no download
 
 
 
@@ -1085,7 +1085,7 @@ Generate shell completions
 
 ###### **Arguments:**
 
-* `<SHELL>` — Shell to generate completions for
+* `<SHELL>` - Shell to generate completions for
 
   Possible values: `bash`, `elvish`, `fish`, `powershell`, `zsh`
 

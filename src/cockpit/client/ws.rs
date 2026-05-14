@@ -3,9 +3,9 @@
 //! Subscribes to `/sessions/{id}/cockpit/ws?since=N` and yields a
 //! stream of decoded events. The daemon may push two shapes:
 //!
-//! - `{"kind":"frame", ...CockpitBroadcastFrame}` — the next replayed
+//! - `{"kind":"frame", ...CockpitBroadcastFrame}`: the next replayed
 //!   or live event.
-//! - `{"kind":"lagged"}` — the in-memory ring buffer evicted events
+//! - `{"kind":"lagged"}`: the in-memory ring buffer evicted events
 //!   the client hadn't acked yet. The consumer must drop its local
 //!   state and rehydrate via [`super::http::HttpClient::replay`].
 //!
@@ -39,6 +39,11 @@ pub enum WsError {
     InvalidUrl(String),
     #[error("websocket closed unexpectedly (code {0:?})")]
     UnexpectedClose(Option<CloseCode>),
+    /// A daemon frame failed to deserialise. Surfaced to the caller so
+    /// a toast like "ws: parse error" carries the real reason instead
+    /// of a fabricated transport error.
+    #[error("failed to parse websocket frame: {0}")]
+    Parse(String),
 }
 
 /// One message off the cockpit WebSocket.
@@ -168,9 +173,7 @@ fn parse_text(raw: &str) -> Result<WsMessage, WsError> {
     }
     let frame: CockpitBroadcastFrame = serde_json::from_str(raw).map_err(|e| {
         warn!(target: "cockpit.client.ws", error = %e, "ws frame parse failed");
-        WsError::Transport(tokio_tungstenite::tungstenite::Error::Protocol(
-            tokio_tungstenite::tungstenite::error::ProtocolError::InvalidOpcode(0),
-        ))
+        WsError::Parse(e.to_string())
     })?;
     Ok(WsMessage::Frame(Arc::new(frame)))
 }

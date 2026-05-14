@@ -80,7 +80,7 @@ fn composer_keys(key: &KeyEvent) -> Intent {
         (m, KeyCode::Esc) if m.is_empty() => Intent::SetFocus(Focus::Transcript),
         // Tab cycles forward through the focus regions.
         (m, KeyCode::Tab) if m.is_empty() => Intent::SetFocus(Focus::Transcript),
-        // Everything else is forwarded to the textarea — including
+        // Everything else is forwarded to the textarea, including
         // `a`/`A`/`d`. This is the focus-isolation guarantee.
         _ => Intent::Compose(*key),
     }

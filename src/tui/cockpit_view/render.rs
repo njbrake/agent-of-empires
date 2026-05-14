@@ -60,7 +60,7 @@ fn render_transcript(frame: &mut Frame, area: Rect, theme: &Theme, state: &Cockp
     let lines = transcript_lines(&state.transcript, state.selected_approval, state.focus);
     // Clamp scroll against the *wrapped* visual row count, not
     // `lines.len()`. Streaming `AgentMessage` rows grew text inside
-    // a single logical line — Paragraph's wrap inflated the
+    // a single logical line: Paragraph's wrap inflated the
     // rendered row count while `lines.len()` stayed constant, so
     // `state.scroll_offset = u16::MAX` (stick to bottom) clipped
     // short of the newest chunk. Tool calls didn't show the bug
@@ -112,13 +112,13 @@ fn render_status(frame: &mut Frame, area: Rect, theme: &Theme, state: &CockpitVi
     }
     if state.transcript.context_primer_pending {
         spans.push(Span::styled(
-            " context lost — next prompt re-primes ",
+            " context lost; next prompt re-primes ",
             Style::default().fg(theme.error),
         ));
     }
     if state.transcript.lagged {
         spans.push(Span::styled(
-            " broadcast lagged — refetching ",
+            " broadcast lagged; refetching ",
             Style::default().fg(theme.error),
         ));
     }
@@ -126,7 +126,7 @@ fn render_status(frame: &mut Frame, area: Rect, theme: &Theme, state: &CockpitVi
         let n = state.transcript.pending_approvals.len();
         spans.push(Span::styled(
             format!(
-                " {n} pending approval{} — Tab to focus ",
+                " {n} pending approval{}; Tab to focus ",
                 if n == 1 { "" } else { "s" }
             ),
             Style::default().fg(theme.error),
@@ -252,11 +252,24 @@ fn transcript_lines<'a>(
     }
     if out.is_empty() {
         out.push(Line::from(Span::styled(
-            "(no events yet — waiting for the agent…)",
+            "(no events yet, waiting for the agent…)",
             Style::default().add_modifier(Modifier::DIM),
         )));
     }
     out
+}
+
+/// Return the first `max_chars` characters of `s`, or `None` if `s`
+/// is already short enough. Char-safe so an LLM response that places a
+/// multi-byte codepoint at the truncation boundary doesn't panic the
+/// TUI (byte-slicing `&s[..N]` would).
+fn truncate_chars(s: &str, max_chars: usize) -> Option<String> {
+    let mut iter = s.char_indices();
+    if let Some((byte_idx, _)) = iter.nth(max_chars) {
+        Some(s[..byte_idx].to_string())
+    } else {
+        None
+    }
 }
 
 fn render_tool_lines(tool: &ToolCallRow) -> Vec<Line<'static>> {
@@ -275,10 +288,9 @@ fn render_tool_lines(tool: &ToolCallRow) -> Vec<Line<'static>> {
         Style::default().add_modifier(Modifier::BOLD),
     )));
     if !tool.args.is_empty() {
-        let truncated = if tool.args.len() > 200 {
-            format!("  $ {}…", &tool.args[..200])
-        } else {
-            format!("  $ {}", tool.args)
+        let truncated = match truncate_chars(&tool.args, 200) {
+            Some(head) => format!("  $ {head}…"),
+            None => format!("  $ {}", tool.args),
         };
         lines.push(Line::from(truncated));
     }
@@ -289,11 +301,8 @@ fn render_tool_lines(tool: &ToolCallRow) -> Vec<Line<'static>> {
             } else {
                 "  (tool failed; press `o` for details)".to_string()
             }
-        } else if completion.content.len() > 400 {
-            format!(
-                "  {}…\n  (output truncated; press `o` for full)",
-                &completion.content[..400]
-            )
+        } else if let Some(head) = truncate_chars(&completion.content, 400) {
+            format!("  {head}…\n  (output truncated; press `o` for full)")
         } else {
             completion
                 .content
@@ -360,5 +369,30 @@ mod tests {
         let short = vec![Line::from("a".repeat(20))];
         let long = vec![Line::from("a".repeat(200))];
         assert!(visual_line_count(&long, 40) > visual_line_count(&short, 40));
+    }
+
+    #[test]
+    fn truncate_chars_returns_none_when_already_short() {
+        assert_eq!(truncate_chars("hi", 10), None);
+    }
+
+    #[test]
+    fn truncate_chars_respects_utf8_codepoint_boundaries() {
+        // Regression for the byte-slice panic: a 4-byte codepoint
+        // straddling the requested byte boundary used to crash the
+        // TUI with `byte index N is not a char boundary`.
+        // 3 ASCII + 4-byte emoji (U+1F600) repeated; ask for 4 chars.
+        let s = "abc😀def😀ghi😀";
+        let head = truncate_chars(s, 4).expect("longer than 4 chars");
+        assert_eq!(head, "abc😀");
+        assert!(s.chars().count() > 4);
+    }
+
+    #[test]
+    fn truncate_chars_handles_pure_multibyte_input() {
+        // Pure non-ASCII (CJK ideographs are 3 bytes each in UTF-8).
+        let s = "日本語のテスト";
+        let head = truncate_chars(s, 3).expect("longer than 3 chars");
+        assert_eq!(head, "日本語");
     }
 }

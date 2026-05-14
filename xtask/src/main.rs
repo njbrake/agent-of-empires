@@ -31,6 +31,11 @@ fn main() {
 
 fn generate_cli_docs() {
     let markdown = clap_markdown::help_markdown::<agent_of_empires::cli::Cli>();
+    // clap-markdown hard-codes em-dashes as the bullet separator
+    // (`* `flag` — help text`). The project style rule forbids
+    // em-dashes in docs/comments, so rewrite them at the doc-gen
+    // boundary; any future flag additions inherit the rule for free.
+    let markdown = markdown.replace(" — ", " - ");
 
     let docs_dir = Path::new("docs/cli");
     fs::create_dir_all(docs_dir).expect("Failed to create docs/cli directory");

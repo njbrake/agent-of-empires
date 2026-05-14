@@ -263,7 +263,7 @@ status banner at the bottom of the screen shows the current focus.
 
 **Focus isolation.** Approval keys (`a`/`Shift+A`/`d`) only resolve
 when the approval card itself has focus. Typing "always allow" into
-the composer will never silently approve a pending tool — the
+the composer will never silently approve a pending tool; the
 composer captures every keystroke, including those letters.
 
 ### Cross-machine attach
@@ -281,7 +281,7 @@ aoe cockpit attach <session_id> --daemon-url https://aoe.example.com
 
 When `AOE_DAEMON_URL` is set, the TUI swaps the local home view for
 a remote-cockpit picker. Local-only operations (tmux attach,
-`aoe stop`, file edit) aren't available against a remote — for
+`aoe stop`, file edit) aren't available against a remote; for
 those, use the web dashboard or SSH into the host machine.
 
 The env override also retargets `aoe serve --status` and the

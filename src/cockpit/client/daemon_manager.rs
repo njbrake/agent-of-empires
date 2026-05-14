@@ -15,7 +15,7 @@
 //!    still works. Use `aoe serve --stop` to stop it.
 //!
 //! Build-namespace discipline (debug vs release) is enforced by
-//! `crate::session::get_app_dir` — the spawned daemon writes
+//! `crate::session::get_app_dir`: the spawned daemon writes
 //! `serve.pid` / `serve.url` to the same app dir we read from, so a
 //! debug client never picks up a release daemon (or vice versa).
 
@@ -27,6 +27,7 @@ use thiserror::Error;
 use tracing::{info, warn};
 
 use super::discovery::{discover, discover_env, DaemonEndpoint, DiscoveryError};
+use super::http::HttpError;
 
 /// How long [`ensure_daemon`] waits for a freshly-spawned daemon to
 /// write its `serve.url` file before giving up.
@@ -40,10 +41,16 @@ pub enum ManagerError {
         "AOE_DAEMON_URL is set but the daemon at that URL is unreachable; check the address or unset to use a local daemon"
     )]
     EnvOverrideUnreachable,
+    #[error(
+        "AOE_DAEMON_URL is set but the daemon rejected the bearer token; check AOE_DAEMON_TOKEN"
+    )]
+    EnvOverrideUnauthorized,
     #[error("failed to locate or spawn a local cockpit daemon: {0}")]
     Discovery(#[from] DiscoveryError),
     #[error("could not find the aoe executable to respawn: {0}")]
     NoExecutable(#[from] std::io::Error),
+    #[error("could not write the auto-spawn daemon log: {0}")]
+    LogFile(String),
     #[error("auto-spawned `aoe serve` exited before becoming ready (check `aoe serve` log)")]
     SpawnFailedFast,
     #[error("auto-spawned `aoe serve` did not become ready within {0:?}")]
@@ -62,11 +69,11 @@ pub async fn ensure_daemon() -> Result<DaemonEndpoint, ManagerError> {
         let endpoint = discover().map_err(|_| ManagerError::EnvOverrideUnreachable)?;
         let client = super::HttpClient::new(endpoint.clone())
             .map_err(|_| ManagerError::EnvOverrideUnreachable)?;
-        client
-            .health_check()
-            .await
-            .map_err(|_| ManagerError::EnvOverrideUnreachable)?;
-        return Ok(endpoint);
+        match client.health_check().await {
+            Ok(()) => return Ok(endpoint),
+            Err(HttpError::Unauthorized) => return Err(ManagerError::EnvOverrideUnauthorized),
+            Err(_) => return Err(ManagerError::EnvOverrideUnreachable),
+        }
     }
 
     if let Ok(endpoint) = discover() {
@@ -96,7 +103,9 @@ async fn spawn_local() -> Result<(), ManagerError> {
         .and_then(|p| std::fs::File::create(p).ok().map(|f| (p.clone(), f)))
     {
         Some((_, log_file)) => {
-            let stdout = log_file.try_clone().map_err(ManagerError::NoExecutable)?;
+            let stdout = log_file
+                .try_clone()
+                .map_err(|e| ManagerError::LogFile(e.to_string()))?;
             let stderr = log_file;
             cmd.stdout(Stdio::from(stdout)).stderr(Stdio::from(stderr));
         }

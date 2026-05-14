@@ -106,7 +106,16 @@ pub async fn run(
             render_error_screen(
                 terminal,
                 theme,
-                "AOE_DAEMON_URL is set but the daemon at that URL is unreachable.\n\nCheck the URL / token, or unset the env var to use a local daemon.",
+                "AOE_DAEMON_URL is set but the daemon at that URL is unreachable.\n\nCheck the URL, or unset the env var to use a local daemon.",
+            )?;
+            wait_for_dismiss(event_stream).await?;
+            return Ok(());
+        }
+        Err(ManagerError::EnvOverrideUnauthorized) => {
+            render_error_screen(
+                terminal,
+                theme,
+                "AOE_DAEMON_URL is set but the daemon rejected the bearer token.\n\nCheck AOE_DAEMON_TOKEN.",
             )?;
             wait_for_dismiss(event_stream).await?;
             return Ok(());

@@ -3,7 +3,7 @@
 //! One `HttpClient` per `DaemonEndpoint`; methods map 1:1 to the
 //! per-session cockpit REST surface (`/api/sessions/{id}/cockpit/*`).
 //! Auth: the endpoint's optional `token` is sent as
-//! `Authorization: Bearer <token>` on every request — never as a
+//! `Authorization: Bearer <token>` on every request, never as a
 //! query string, so it doesn't leak via logs or `ps`.
 
 use std::time::Duration;
@@ -127,7 +127,7 @@ impl HttpClient {
     /// reqwest transport errors) and `aoe serve --status` (renders
     /// remote daemon info instead of "Daemon: not running").
     ///
-    /// Hits `GET /api/sessions` — the cheapest authenticated endpoint
+    /// Hits `GET /api/sessions`, the cheapest authenticated endpoint
     /// in the surface; succeeds with 200 when the daemon is up *and*
     /// the token is valid, separates "host is down" (transport error)
     /// from "auth misconfigured" (401).
