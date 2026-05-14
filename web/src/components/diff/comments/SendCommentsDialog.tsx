@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Markdown } from "../../cockpit/Markdown";
 import { buildCommentsMarkdown, buildFullPrompt } from "./buildPrompt";
 import type { DiffComment } from "./types";
@@ -7,6 +7,12 @@ interface Props {
   sessionId: string;
   comments: DiffComment[];
   isMultiRepo: boolean;
+  /** Same gate as the banner Send button. Reflects
+   *  `cockpit_mode && cockpit_worker_state === "running"`. False
+   *  disables the Send button so prompts don't sink when the worker
+   *  isn't ready. */
+  sendEnabled: boolean;
+  sendDisabledReason?: string;
   introDraft: string;
   outroDraft: string;
   clearAfterSend: boolean;
@@ -26,6 +32,8 @@ export function SendCommentsDialog({
   sessionId,
   comments,
   isMultiRepo,
+  sendEnabled,
+  sendDisabledReason,
   introDraft,
   outroDraft,
   clearAfterSend,
@@ -37,33 +45,22 @@ export function SendCommentsDialog({
 }: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   const preview = useMemo(
     () => buildCommentsMarkdown(comments, { isMultiRepo }),
     [comments, isMultiRepo],
   );
 
-  // Trap Esc/Cmd+Enter at the document level so editing in the textareas
-  // doesn't intercept the dialog hotkeys.
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        e.preventDefault();
-        onClose();
-      } else if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
-        e.preventDefault();
-        void send();
-      }
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-    // `send` is stable enough; we rebuild this handler on any state
-    // change anyway so dependencies aren't load-bearing.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [introDraft, outroDraft, comments, busy]);
-
-  const send = async () => {
-    if (busy || comments.length === 0) return;
+  const send = useCallback(async () => {
+    if (busy || comments.length === 0 || !sendEnabled) return;
     setBusy(true);
     setError(null);
     const body = buildFullPrompt(comments, introDraft, outroDraft, {
@@ -79,18 +76,51 @@ export function SendCommentsDialog({
         },
       );
       if (!res.ok) {
-        const text = await res.text().catch(() => "");
-        setError(`Failed to send (${res.status}). ${text}`.trim());
+        const text = (await res.text().catch(() => "")).slice(0, 500);
+        if (mountedRef.current) {
+          setError(`Failed to send (${res.status}). ${text}`.trim());
+        }
         return;
       }
       onSent();
     } catch (e) {
       const message = e instanceof Error ? e.message : "Network error";
-      setError(`Failed to send: ${message}`);
+      if (mountedRef.current) {
+        setError(`Failed to send: ${message}`);
+      }
     } finally {
-      setBusy(false);
+      if (mountedRef.current) {
+        setBusy(false);
+      }
     }
-  };
+  }, [
+    busy,
+    comments,
+    introDraft,
+    outroDraft,
+    isMultiRepo,
+    sendEnabled,
+    sessionId,
+    onSent,
+  ]);
+
+  // Trap Esc/Cmd+Enter at the document level so editing in the textareas
+  // doesn't intercept the dialog hotkeys. Esc is blocked while a send
+  // is in flight so the user doesn't dismiss a request mid-flight.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        if (busy) return;
+        e.preventDefault();
+        onClose();
+      } else if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+        e.preventDefault();
+        void send();
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [busy, onClose, send]);
 
   return (
     <div
@@ -183,7 +213,8 @@ export function SendCommentsDialog({
             <button
               type="button"
               onClick={() => void send()}
-              disabled={busy || comments.length === 0}
+              disabled={busy || comments.length === 0 || !sendEnabled}
+              title={sendEnabled ? undefined : sendDisabledReason}
               className="text-[12px] px-3 py-1.5 rounded bg-brand-600 text-white hover:bg-brand-500 disabled:bg-surface-700 disabled:text-text-dim disabled:cursor-not-allowed cursor-pointer transition-colors"
             >
               {busy ? "Sending..." : "Send"}

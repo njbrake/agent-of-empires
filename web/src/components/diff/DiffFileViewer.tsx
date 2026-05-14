@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useMemo, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useState } from "react";
 import { useFileDiff } from "../../hooks/useFileDiff";
 import {
   useHighlightedLines,
@@ -185,11 +185,16 @@ function PlusButton({
     <button
       type="button"
       onClick={() => onClick(hunkIndex, side, lineNum)}
-      aria-label={`Add comment on line ${lineNum}`}
+      aria-label={`Add comment on ${side} line ${lineNum}`}
+      // `tabIndex={-1}` keeps the hover-revealed button out of the
+      // tab order; otherwise keyboard users would land on dozens of
+      // invisible buttons walking through the diff. v1 is mouse-only;
+      // a focus-driven flow can be added with a real row-focus model.
+      tabIndex={-1}
       className={`absolute left-0 top-0 h-full w-4 flex items-center justify-center text-white text-[11px] leading-none cursor-pointer transition-opacity ${
         active
           ? "bg-brand-600 opacity-100"
-          : "bg-brand-600 opacity-0 group-hover:opacity-100 hover:bg-brand-500"
+          : "bg-brand-600 opacity-0 group-hover:opacity-100 hover:bg-brand-500 focus-visible:opacity-100"
       }`}
     >
       +
@@ -269,6 +274,15 @@ export function DiffFileViewer({
 
   const [rangeStart, setRangeStart] = useState<RangeStart | null>(null);
   const [draft, setDraft] = useState<DraftRange | null>(null);
+
+  // Reset transient selection when the viewer switches to a different
+  // file / repo / session, or the diff refreshes. Without this an
+  // unfinished selection or open draft from file A would render in
+  // file B (and save the wrong filePath against the wrong snippet).
+  useEffect(() => {
+    setRangeStart(null);
+    setDraft(null);
+  }, [sessionId, repoName, filePath, revision]);
 
   const hunks = diff?.hunks ?? [];
   const comments = commentsStore?.comments ?? [];
@@ -471,7 +485,7 @@ export function DiffFileViewer({
               </p>
             </div>
           </div>
-        ) : diff.hunks.length === 0 ? (
+        ) : diff.hunks.length === 0 && staleComments.length === 0 ? (
           <div className="flex items-center justify-center h-full text-text-dim">
             <span className="text-sm">No changes in this file</span>
           </div>
@@ -492,6 +506,11 @@ export function DiffFileViewer({
                     onDelete={handleCommentDelete}
                   />
                 ))}
+              </div>
+            )}
+            {diff.hunks.length === 0 && (
+              <div className="px-3 py-4 text-center text-text-dim text-sm">
+                No changes in this file
               </div>
             )}
             {diff.hunks.map((hunk, hi) => (

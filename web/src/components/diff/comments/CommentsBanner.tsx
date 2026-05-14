@@ -29,7 +29,15 @@ export function CommentsBanner({
       <div className="ml-auto flex items-center gap-1.5">
         <button
           type="button"
-          onClick={onDiscardAll}
+          onClick={() => {
+            if (
+              window.confirm(
+                `Discard all ${count} diff comment${count === 1 ? "" : "s"}? This can't be undone.`,
+              )
+            ) {
+              onDiscardAll();
+            }
+          }}
           className="px-2 py-0.5 rounded text-text-dim hover:text-status-error hover:bg-surface-800 cursor-pointer transition-colors"
         >
           Discard all

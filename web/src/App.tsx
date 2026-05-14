@@ -228,7 +228,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
   const [sendDialogOpen, setSendDialogOpen] = useState(false);
 
   useEffect(() => {
-    if (!commentsEnabled) return;
+    if (!commentSendEnabled) return;
     const onKey = (e: KeyboardEvent) => {
       if (!((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "s")) {
         return;
@@ -243,7 +243,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [commentsEnabled, diffComments.count]);
+  }, [commentSendEnabled, diffComments.count]);
 
   useEffect(() => {
     if (!activeSessionId) {
@@ -665,6 +665,8 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
             sessionId={activeSessionId}
             comments={diffComments.comments}
             isMultiRepo={commentsIsMultiRepo}
+            sendEnabled={commentSendEnabled}
+            sendDisabledReason={commentSendDisabledReason}
             introDraft={diffComments.introDraft}
             outroDraft={diffComments.outroDraft}
             clearAfterSend={diffComments.clearAfterSend}
