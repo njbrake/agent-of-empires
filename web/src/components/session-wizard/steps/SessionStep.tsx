@@ -7,6 +7,9 @@ interface WizardData {
   title: string;
   worktreeBranch: string;
   useWorktree: boolean;
+  /** Attach to an existing branch's worktree instead of creating one.
+   *  Mirrors the TUI new-session toggle. See #969. */
+  attachExisting: boolean;
   baseBranch: string;
   group: string;
   tool: string;
@@ -84,7 +87,26 @@ export function SessionStep({ data, onChange }: Props) {
             className="w-full bg-surface-900 border border-surface-700 rounded-lg px-3 py-2.5 text-base font-mono text-text-primary placeholder:text-text-dim focus:border-brand-600 focus:outline-none"
           />
           <p className="text-xs text-text-dim mt-1">The branch name is also the worktree directory name. Leave blank to use the session title.</p>
-          <AdvancedWorktreeOptions data={data} onChange={onChange} />
+
+          <label
+            className="mt-3 flex items-center justify-between gap-3 p-3 bg-surface-900 border border-surface-700 rounded-lg cursor-pointer"
+            onClick={() => onChange("attachExisting", !data.attachExisting)}
+          >
+            <div className="flex-1">
+              <div className="text-sm font-medium text-text-primary">Attach to existing branch</div>
+              <div className="text-xs text-text-dim mt-0.5 leading-snug">
+                Re-use a branch + worktree that already exists. Off = create a new branch.
+              </div>
+            </div>
+            <Toggle
+              checked={data.attachExisting}
+              onChange={(v) => onChange("attachExisting", v)}
+            />
+          </label>
+
+          {!data.attachExisting && (
+            <AdvancedWorktreeOptions data={data} onChange={onChange} />
+          )}
         </div>
       )}
 

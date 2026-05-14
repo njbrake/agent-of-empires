@@ -3,7 +3,7 @@ import type { StepDef, StepId } from "../StepIndicator";
 import { getReviewSummary } from "../sessionNames";
 import { useServerDown, OFFLINE_TITLE } from "../../../lib/connectionState";
 
-interface WizardData { path: string; title: string; worktreeBranch: string; useWorktree: boolean; baseBranch: string; group: string; tool: string; profile: string; profileDirty: boolean; yoloMode: boolean; sandboxEnabled: boolean; sandboxImage: string; extraArgs: string; customInstruction: string; commandOverride: string; [key: string]: unknown; }
+interface WizardData { path: string; title: string; worktreeBranch: string; useWorktree: boolean; attachExisting: boolean; baseBranch: string; group: string; tool: string; profile: string; profileDirty: boolean; yoloMode: boolean; sandboxEnabled: boolean; sandboxImage: string; extraArgs: string; customInstruction: string; commandOverride: string; [key: string]: unknown; }
 interface Props { data: WizardData; onChange: (field: string, value: unknown) => void; isSubmitting: boolean; error: string | null; onSubmit: () => void; onJumpTo: (stepId: StepId) => void; steps: StepDef[]; }
 
 const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.userAgent);
@@ -134,7 +134,11 @@ export function ReviewStep({ data, onChange, isSubmitting, error, onSubmit, onJu
               onChange={(v) => onChange("worktreeBranch", v)}
               accent
             />
-            {data.baseBranch.trim() && (
+            <Row
+              label="Mode"
+              value={data.attachExisting ? "Attach to existing branch" : "Create new branch"}
+            />
+            {!data.attachExisting && data.baseBranch.trim() && (
               <Row label="Base branch" value={data.baseBranch.trim()} />
             )}
           </>

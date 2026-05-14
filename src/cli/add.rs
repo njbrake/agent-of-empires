@@ -202,50 +202,79 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
             let git_wt =
                 GitWorktree::new(main_repo_path.clone())?.with_init_submodules(init_submodules);
 
-            let session_id = uuid::Uuid::new_v4().to_string();
-            let session_id_short = &session_id[..8];
-
-            // Choose appropriate template based on repo type (bare vs regular)
-            // Use main_repo_path (not path) to correctly detect bare repos when running from a worktree
-            let template = if GitWorktree::is_bare_repo(&main_repo_path) {
-                &config.worktree.bare_repo_path_template
-            } else {
-                &config.worktree.path_template
-            };
-            let worktree_path = git_wt.compute_path(branch, template, session_id_short)?;
-
-            if worktree_path.exists() {
-                bail!(
-                    "Worktree already exists at {}\nTip: Use 'aoe add {}' to add the existing worktree",
-                    worktree_path.display(),
-                    worktree_path.display()
-                );
-            }
-
-            println!("Creating worktree at: {}", worktree_path.display());
-            let base = if args.create_branch {
-                args.base_branch.as_deref()
+            // Attach mode: when `-b` is not passed, mirror the TUI's "Attach
+            // to existing branch" behavior. If a worktree already exists
+            // for this branch, point the session at it instead of bailing.
+            // This closes the CLI half of #969 / matches builder.rs.
+            let attach_existing = !args.create_branch;
+            let existing_match = if attach_existing {
+                git_wt.list_worktrees().ok().and_then(|wts| {
+                    wts.into_iter()
+                        .find(|wt| wt.branch.as_deref() == Some(branch))
+                })
             } else {
                 None
             };
-            let warnings =
-                git_wt.create_worktree(branch, &worktree_path, args.create_branch, base)?;
 
-            path = worktree_path;
+            if let Some(existing) = existing_match {
+                println!(
+                    "Attaching to existing worktree: {}",
+                    existing.path.display()
+                );
+                path = existing.path;
+                worktree_info_opt = Some(WorktreeInfo {
+                    branch: branch.to_string(),
+                    main_repo_path: main_repo_path.to_string_lossy().to_string(),
+                    managed_by_aoe: false,
+                    created_at: Utc::now(),
+                    base_branch: None,
+                });
+            } else {
+                let session_id = uuid::Uuid::new_v4().to_string();
+                let session_id_short = &session_id[..8];
 
-            worktree_info_opt = Some(WorktreeInfo {
-                branch: branch.to_string(),
-                main_repo_path: main_repo_path.to_string_lossy().to_string(),
-                managed_by_aoe: true,
-                created_at: Utc::now(),
-                base_branch: base.map(|s| s.to_string()),
-            });
+                // Choose appropriate template based on repo type (bare vs regular)
+                // Use main_repo_path (not path) to correctly detect bare repos when running from a worktree
+                let template = if GitWorktree::is_bare_repo(&main_repo_path) {
+                    &config.worktree.bare_repo_path_template
+                } else {
+                    &config.worktree.path_template
+                };
+                let worktree_path = git_wt.compute_path(branch, template, session_id_short)?;
 
-            for w in &warnings {
-                eprintln!("⚠ {}", w);
+                if worktree_path.exists() {
+                    bail!(
+                        "Worktree already exists at {}\nTip: Use 'aoe add {}' to add the existing worktree",
+                        worktree_path.display(),
+                        worktree_path.display()
+                    );
+                }
+
+                println!("Creating worktree at: {}", worktree_path.display());
+                let base = if args.create_branch {
+                    args.base_branch.as_deref()
+                } else {
+                    None
+                };
+                let warnings =
+                    git_wt.create_worktree(branch, &worktree_path, args.create_branch, base)?;
+
+                path = worktree_path;
+
+                worktree_info_opt = Some(WorktreeInfo {
+                    branch: branch.to_string(),
+                    main_repo_path: main_repo_path.to_string_lossy().to_string(),
+                    managed_by_aoe: true,
+                    created_at: Utc::now(),
+                    base_branch: base.map(|s| s.to_string()),
+                });
+
+                for w in &warnings {
+                    eprintln!("⚠ {}", w);
+                }
+
+                println!("✓ Worktree created successfully");
             }
-
-            println!("✓ Worktree created successfully");
         }
     }
 

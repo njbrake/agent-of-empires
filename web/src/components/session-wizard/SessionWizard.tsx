@@ -17,6 +17,10 @@ export interface WizardData {
   worktreeBranch: string;
   worktreeBranchDirty: boolean;
   useWorktree: boolean;
+  /** When true, attach to an existing branch's worktree (`create_new_branch: false`
+   *  on the API). Mirrors the TUI new-session "Attach to existing branch"
+   *  toggle (`src/tui/dialogs/new_session/render.rs:851`). See #969. */
+  attachExisting: boolean;
   /** Optional base branch for the new worktree branch. Empty string =
    *  use the project's default branch. Lives under "Advanced" in the
    *  session step. See #948. */
@@ -65,7 +69,7 @@ type Action =
 
 const initialData: WizardData = {
   path: "", title: "", worktreeBranch: "", worktreeBranchDirty: false,
-  useWorktree: true, baseBranch: "",
+  useWorktree: true, attachExisting: false, baseBranch: "",
   group: "", tool: "claude", profile: "",
   yoloMode: false, sandboxEnabled: false, sandboxImage: "", extraEnv: [],
   extraRepoPaths: [],
@@ -220,9 +224,11 @@ export function SessionWizard({ onClose, onCreated, prefill, cockpitMasterEnable
       title: d.title || undefined, group: d.group || undefined,
       yolo_mode: d.yoloMode,
       worktree_branch: d.useWorktree ? getSubmittedBranch(d.title, d.worktreeBranch) : undefined,
-      create_new_branch: d.useWorktree,
+      create_new_branch: d.useWorktree && !d.attachExisting,
       base_branch:
-        d.useWorktree && d.baseBranch.trim() ? d.baseBranch.trim() : undefined,
+        d.useWorktree && !d.attachExisting && d.baseBranch.trim()
+          ? d.baseBranch.trim()
+          : undefined,
       sandbox: d.sandboxEnabled,
       sandbox_image: d.sandboxEnabled ? d.sandboxImage : undefined,
       extra_env: d.sandboxEnabled && d.extraEnv.length > 0 ? d.extraEnv.filter(Boolean) : undefined,
