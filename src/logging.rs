@@ -73,6 +73,46 @@ pub const KNOWN_SUB_TARGETS: &[&str] = &[
     "log.runtime",
 ];
 
+/// Apply a persisted `LoggingConfig` to the running subscriber + persist
+/// runtime_filter so cockpit runners pick it up via the notify watcher.
+/// Both the TUI save path and the web `PATCH /api/settings` path call
+/// this after `save_config`, so settings changes take effect live
+/// without a daemon restart.
+pub fn apply_persisted_config(
+    default_level: &str,
+    targets: &std::collections::BTreeMap<String, String>,
+    app_dir: &std::path::Path,
+) {
+    let Some(filter) = build_filter_from_config(default_level, targets) else {
+        return;
+    };
+    match set_filter(&filter) {
+        Ok(swap) => {
+            tracing::info!(
+                target: "log.runtime",
+                previous = %swap.previous,
+                current = %swap.current,
+                source = "settings",
+                "filter swapped"
+            );
+            persist_runtime_filter(&swap.current, app_dir);
+        }
+        Err(LogFilterError::Unavailable) => {
+            // No reload handle installed (e.g. TUI process). Still persist
+            // so a runner watching the file gets the update.
+            persist_runtime_filter(&filter, app_dir);
+        }
+        Err(e) => {
+            tracing::warn!(
+                target: "log.runtime",
+                error = %e,
+                filter = %filter,
+                "settings-driven filter swap failed"
+            );
+        }
+    }
+}
+
 /// Compose an EnvFilter directive from a baseline level + per-target overrides.
 /// Used both at startup (when no env var is set) and by the settings write path
 /// when a user updates `[logging]`.

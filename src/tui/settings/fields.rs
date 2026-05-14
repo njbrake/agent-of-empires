@@ -24,6 +24,7 @@ pub enum SettingsCategory {
     Hooks,
     Web,
     Cockpit,
+    Logging,
 }
 
 impl SettingsCategory {
@@ -39,6 +40,7 @@ impl SettingsCategory {
             Self::Hooks => "Hooks",
             Self::Web => "Web",
             Self::Cockpit => "Cockpit",
+            Self::Logging => "Logging",
         }
     }
 }
@@ -122,6 +124,11 @@ pub enum FieldKey {
     CockpitShowToolDurations,
     CockpitQueueDrainMode,
     CockpitMaxConcurrentResumes,
+    // Logging
+    LoggingDefaultLevel,
+    /// Per-target override; carries an index into `crate::logging::KNOWN_SUB_TARGETS`
+    /// so the FieldKey enum stays `Copy` without carrying owned strings.
+    LoggingTarget(u8),
 }
 
 /// Resolve a field value from global config and optional profile override.
@@ -284,7 +291,61 @@ pub fn build_fields_for_category(
         SettingsCategory::Hooks => build_hooks_fields(scope, global, profile),
         SettingsCategory::Web => build_web_fields(scope, global, profile),
         SettingsCategory::Cockpit => build_cockpit_fields(scope, global, profile),
+        SettingsCategory::Logging => build_logging_fields(global),
     }
+}
+
+const LOG_LEVEL_OPTIONS: &[&str] = &["trace", "debug", "info", "warn", "error"];
+const LOG_LEVEL_OVERRIDE_OPTIONS: &[&str] =
+    &["(default)", "trace", "debug", "info", "warn", "error"];
+
+fn level_index(level: &str, opts: &[&str]) -> usize {
+    opts.iter().position(|&o| o == level).unwrap_or(0)
+}
+
+fn build_logging_fields(global: &Config) -> Vec<SettingField> {
+    let mut fields = Vec::with_capacity(1 + crate::logging::KNOWN_SUB_TARGETS.len());
+
+    let default_idx = level_index(&global.logging.default_level, LOG_LEVEL_OPTIONS);
+    fields.push(SettingField {
+        key: FieldKey::LoggingDefaultLevel,
+        label: "Default level",
+        description: "Baseline applied to every known target root. Per-target overrides win.",
+        value: FieldValue::Select {
+            selected: default_idx,
+            options: LOG_LEVEL_OPTIONS.iter().map(|s| s.to_string()).collect(),
+        },
+        category: SettingsCategory::Logging,
+        has_override: false,
+        inherited_display: None,
+    });
+
+    for (i, target) in crate::logging::KNOWN_SUB_TARGETS.iter().enumerate() {
+        let current = global
+            .logging
+            .targets
+            .get(*target)
+            .map(|s| s.as_str())
+            .unwrap_or("(default)");
+        let idx = level_index(current, LOG_LEVEL_OVERRIDE_OPTIONS);
+        fields.push(SettingField {
+            key: FieldKey::LoggingTarget(i as u8),
+            label: target,
+            description: "Per-target override; (default) inherits the baseline.",
+            value: FieldValue::Select {
+                selected: idx,
+                options: LOG_LEVEL_OVERRIDE_OPTIONS
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect(),
+            },
+            category: SettingsCategory::Logging,
+            has_override: false,
+            inherited_display: None,
+        });
+    }
+
+    fields
 }
 
 fn build_cockpit_fields(
@@ -1859,6 +1920,22 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
         }
         (FieldKey::CockpitMaxConcurrentResumes, FieldValue::Number(v)) => {
             config.cockpit.max_concurrent_resumes = (*v).max(1).min(u32::MAX as u64) as u32
+        }
+        // Logging
+        (FieldKey::LoggingDefaultLevel, FieldValue::Select { selected, options }) => {
+            if let Some(level) = options.get(*selected) {
+                config.logging.default_level = level.clone();
+            }
+        }
+        (FieldKey::LoggingTarget(idx), FieldValue::Select { selected, options }) => {
+            if let Some(target) = crate::logging::KNOWN_SUB_TARGETS.get(*idx as usize) {
+                let level = options.get(*selected).cloned().unwrap_or_default();
+                if level.is_empty() || level == "(default)" {
+                    config.logging.targets.remove(*target);
+                } else {
+                    config.logging.targets.insert(target.to_string(), level);
+                }
+            }
         }
         _ => {}
     }
