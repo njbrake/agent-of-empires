@@ -174,7 +174,11 @@ impl TokenManager {
             write_secret_file(&app_dir.join("serve.token"), &new_token).await;
         }
 
-        info!("Auth token rotated (previous token valid for 5 more minutes)");
+        info!(
+            target: "auth.token",
+            grace_secs = 300,
+            "auth token rotated"
+        );
     }
 
     /// Spawn a background rotation task (only in remote mode).

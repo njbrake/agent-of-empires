@@ -117,7 +117,24 @@ impl RateLimiter {
 
         if record.count >= MAX_FAILURES {
             record.locked_until = Some(now + LOCKOUT_DURATION);
+            tracing::warn!(
+                target: "auth.rate_limit",
+                ip = %ip,
+                failures = record.count,
+                lockout_secs = LOCKOUT_DURATION.as_secs(),
+                "ip locked out after failed auth threshold"
+            );
             return true;
+        }
+
+        if record.count >= 3 {
+            tracing::info!(
+                target: "auth.rate_limit",
+                ip = %ip,
+                failures = record.count,
+                max = MAX_FAILURES,
+                "auth failures approaching lockout threshold"
+            );
         }
 
         false
