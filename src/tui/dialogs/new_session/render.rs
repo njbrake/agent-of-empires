@@ -111,7 +111,6 @@ impl NewSessionDialog {
 
         // Field index calculations (must match handle_key).
         // Field order: [profile], path, title, [tool], ...
-        // Path is first so browse → auto-fills title from folder basename.
         let base = if has_profile_selection { 1 } else { 0 };
         let title_field = base + 1;
         let mut fi = base + 2 + if has_tool_selection { 1 } else { 0 };
@@ -144,8 +143,8 @@ impl NewSessionDialog {
             ci += 1;
         }
 
-        // Path (rendered FIRST so the user browses to a directory, then
-        // the title auto-fills from the folder basename on the next chunk).
+        // Path (rendered first so the user picks the working directory
+        // before naming the session).
         let path_placeholder = if self.focused_field == self.path_field() {
             Some("(Ctrl+P to browse directories)")
         } else {
@@ -154,15 +153,14 @@ impl NewSessionDialog {
         self.render_path_field(frame, chunks[ci], path_placeholder, theme);
         ci += 1;
 
-        // Title (auto-populated from the path's folder basename when the
-        // user picks a path via the Ctrl+P browser and hasn't typed one).
+        // Title
         render_text_field(
             frame,
             chunks[ci],
             "Title:",
             &self.title,
             self.focused_field == title_field,
-            Some("(folder name)"),
+            Some("(random civ)"),
             theme,
         );
         ci += 1;

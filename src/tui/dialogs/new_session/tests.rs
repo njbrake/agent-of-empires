@@ -80,10 +80,10 @@ fn test_enter_preserves_custom_title() {
 #[test]
 fn test_tab_cycles_fields_single_tool() {
     let mut dialog = single_tool_dialog();
-    assert_eq!(dialog.focused_field, 0); // title (single profile, no profile field)
+    assert_eq!(dialog.focused_field, 0); // path (single profile, no profile field)
 
     dialog.handle_key(key(KeyCode::Tab));
-    assert_eq!(dialog.focused_field, 1); // path
+    assert_eq!(dialog.focused_field, 1); // title
 
     dialog.handle_key(key(KeyCode::Tab));
     assert_eq!(dialog.focused_field, 2); // yolo mode
@@ -104,10 +104,10 @@ fn test_tab_cycles_fields_single_tool_with_worktree() {
     // so the main form has the same tab stops as without worktree.
     let mut dialog = single_tool_dialog();
     dialog.worktree_enabled = true;
-    assert_eq!(dialog.focused_field, 0); // title
+    assert_eq!(dialog.focused_field, 0); // path
 
     dialog.handle_key(key(KeyCode::Tab));
-    assert_eq!(dialog.focused_field, 1); // path
+    assert_eq!(dialog.focused_field, 1); // title
 
     dialog.handle_key(key(KeyCode::Tab));
     assert_eq!(dialog.focused_field, 2); // yolo mode
@@ -125,10 +125,10 @@ fn test_tab_cycles_fields_single_tool_with_worktree() {
 #[test]
 fn test_tab_cycles_fields_multi_tool() {
     let mut dialog = multi_tool_dialog();
-    assert_eq!(dialog.focused_field, 0); // title
+    assert_eq!(dialog.focused_field, 0); // path
 
     dialog.handle_key(key(KeyCode::Tab));
-    assert_eq!(dialog.focused_field, 1); // path
+    assert_eq!(dialog.focused_field, 1); // title
 
     dialog.handle_key(key(KeyCode::Tab));
     assert_eq!(dialog.focused_field, 2); // tool selection
@@ -149,7 +149,7 @@ fn test_tab_cycles_fields_multi_tool() {
 #[test]
 fn test_backtab_cycles_fields_reverse() {
     let mut dialog = single_tool_dialog();
-    assert_eq!(dialog.focused_field, 0); // title
+    assert_eq!(dialog.focused_field, 0); // path
 
     dialog.handle_key(shift_key(KeyCode::BackTab));
     assert_eq!(dialog.focused_field, 4); // group (last field without worktree/docker)
@@ -161,10 +161,10 @@ fn test_backtab_cycles_fields_reverse() {
     assert_eq!(dialog.focused_field, 2); // yolo mode
 
     dialog.handle_key(shift_key(KeyCode::BackTab));
-    assert_eq!(dialog.focused_field, 1); // path
+    assert_eq!(dialog.focused_field, 1); // title
 
     dialog.handle_key(shift_key(KeyCode::BackTab));
-    assert_eq!(dialog.focused_field, 0); // title
+    assert_eq!(dialog.focused_field, 0); // path
 }
 
 #[test]

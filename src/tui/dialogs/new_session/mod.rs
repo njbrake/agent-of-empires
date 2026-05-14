@@ -539,9 +539,9 @@ impl NewSessionDialog {
     }
 
     /// The field index of the path field. Path comes BEFORE title in the
-    /// dialog so the user browses to a directory first and the title can
-    /// then auto-fill from the folder basename. Shifts based on whether
-    /// the profile picker is visible at field 0.
+    /// dialog so the user picks the working directory before naming the
+    /// session. Shifts based on whether the profile picker is visible at
+    /// field 0.
     fn path_field(&self) -> usize {
         if self.has_profile_selection() {
             1
@@ -550,9 +550,7 @@ impl NewSessionDialog {
         }
     }
 
-    /// The field index of the title field. Title sits one slot AFTER path
-    /// so the picker-flow lands on title with a sensible default already
-    /// filled in (or empty if the user typed the path manually).
+    /// The field index of the title field. Title sits one slot AFTER path.
     fn title_field(&self) -> usize {
         if self.has_profile_selection() {
             2
@@ -836,19 +834,6 @@ impl NewSessionDialog {
                             .and_then(path_input::compute_path_ghost);
                         self.workspace_repo_dir_picker_active = false;
                     } else {
-                        // Auto-fill title from folder basename when the user
-                        // hasn't typed one yet. The folder name is almost
-                        // always what they'd call the session anyway, and
-                        // making it the default removes a second step after
-                        // the browse picker selects a directory.
-                        if self.title.value().is_empty() {
-                            if let Some(basename) = std::path::Path::new(&path)
-                                .file_name()
-                                .and_then(|n| n.to_str())
-                            {
-                                self.title = Input::new(basename.to_string());
-                            }
-                        }
                         self.path = Input::new(path);
                         self.recompute_path_ghost();
                     }
@@ -867,7 +852,6 @@ impl NewSessionDialog {
         let has_sandbox = self.docker_available && !is_host_only;
         let has_yolo = !self.selected_tool_always_yolo();
         // Field order: [profile], path, title, [tool], [yolo], worktree, [sandbox], group
-        // Path is first so browse → auto-fills title from folder basename.
         // Worktree sub-options (new_branch, extra_repos) are in a Ctrl+P overlay.
         // Tool config (extra_args, command_override) is in a Ctrl+P overlay on tool field.
         // Sandbox sub-options are in a separate sandbox_config_mode overlay.
