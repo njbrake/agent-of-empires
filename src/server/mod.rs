@@ -148,7 +148,11 @@ impl TokenManager {
             write_secret_file(&app_dir.join("serve.token"), &new_token).await;
         }
 
-        info!("Auth token rotated (previous token valid for 5 more minutes)");
+        info!(
+            target: "auth.token",
+            grace_secs = 300,
+            "auth token rotated"
+        );
     }
 
     /// Spawn a background rotation task (only in remote mode).
@@ -983,6 +987,11 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/about", get(api::get_about))
         // Update status (latest release, available flag)
         .route("/api/system/update-status", get(api::get_update_status))
+        .route(
+            "/api/log-level",
+            get(api::get_log_level).patch(api::patch_log_level),
+        )
+        .route("/api/client-log", post(api::post_client_log))
         // Terminal WebSockets
         .route("/sessions/{id}/ws", get(ws::terminal_ws))
         .route("/sessions/{id}/terminal/ws", get(ws::paired_terminal_ws))

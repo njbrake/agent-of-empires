@@ -24,6 +24,7 @@ import { ThemeSettings } from "./settings/ThemeSettings";
 import { SoundSettings } from "./settings/SoundSettings";
 import { UpdateSettings } from "./settings/UpdateSettings";
 import { TmuxSettings } from "./settings/TmuxSettings";
+import { LoggingSettings } from "./settings/LoggingSettings";
 import { ProfileSelector } from "./settings/ProfileSelector";
 
 type TabId =
@@ -38,7 +39,8 @@ type TabId =
   | "terminal"
   | "security"
   | "devices"
-  | "cockpit";
+  | "cockpit"
+  | "logging";
 
 type SidebarItem =
   | { kind: "tab"; id: TabId; label: string }
@@ -60,6 +62,8 @@ function buildSidebar(): SidebarItem[] {
     { kind: "tab", id: "security", label: "Security" },
     { kind: "tab", id: "devices", label: "Devices" },
     { kind: "tab", id: "cockpit", label: "Cockpit" },
+    { kind: "divider", label: "Diagnostics" },
+    { kind: "tab", id: "logging", label: "Logging" },
   ];
 }
 
@@ -84,6 +88,7 @@ const ALL_TAB_IDS = new Set<TabId>([
   "security",
   "devices",
   "cockpit",
+  "logging",
 ]);
 
 function isTabId(value: unknown): value is TabId {
@@ -396,6 +401,8 @@ export function SettingsView({
         return <TmuxSettings settings={settings!} onSaveField={saveSubField} onUpdate={updateLocal} />;
       case "updates":
         return <UpdateSettings settings={settings!} onSaveField={saveSubField} onUpdate={updateLocal} />;
+      case "logging":
+        return <LoggingSettings settings={settings!} onSaveField={saveSubField} onUpdate={updateLocal} />;
 
       case "notifications":
         return (

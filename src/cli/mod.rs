@@ -8,6 +8,8 @@ pub mod definition;
 pub mod group;
 pub mod init;
 pub mod list;
+#[cfg(feature = "serve")]
+pub mod log_level;
 pub mod logs;
 pub mod output;
 pub mod profile;

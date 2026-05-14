@@ -241,7 +241,7 @@ pub async fn login_handler(
 
         let session_id = state.login_manager.create_session(client_ip).await;
 
-        tracing::info!(ip = %client_ip, "Login successful");
+        tracing::info!(target: "auth.passphrase", ip = %client_ip, "passphrase login successful");
 
         let cookie = build_login_cookie(&session_id, state.behind_tunnel);
         let mut response = Json(serde_json::json!({
@@ -257,7 +257,13 @@ pub async fn login_handler(
         response
     } else {
         let locked = state.rate_limiter.record_failure(client_ip).await;
-        tracing::warn!(ip = %client_ip, locked = locked, "Login failed: incorrect passphrase");
+        tracing::warn!(
+            target: "auth.passphrase",
+            ip = %client_ip,
+            locked = locked,
+            reason = "incorrect_passphrase",
+            "passphrase login failed"
+        );
 
         (
             StatusCode::UNAUTHORIZED,

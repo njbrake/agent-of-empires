@@ -132,17 +132,29 @@ pub async fn update_settings(
     .await;
 
     match result {
-        Ok(Ok(config)) => match serde_json::to_value(&config) {
-            Ok(val) => (StatusCode::OK, Json(val)).into_response(),
-            Err(e) => {
-                tracing::error!("Settings serialization failed: {}", e);
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    Json(serde_json::json!({"error": "serialize_failed", "message": "Failed to serialize settings"})),
-                )
-                    .into_response()
+        Ok(Ok(config)) => {
+            // Settings touched [logging]? Apply the new filter live to
+            // the daemon + persist runtime_filter so cockpit runners pick
+            // it up via the notify watcher.
+            if let Ok(app_dir) = crate::session::get_app_dir() {
+                crate::logging::apply_persisted_config(
+                    &config.logging.default_level,
+                    &config.logging.targets,
+                    &app_dir,
+                );
             }
-        },
+            match serde_json::to_value(&config) {
+                Ok(val) => (StatusCode::OK, Json(val)).into_response(),
+                Err(e) => {
+                    tracing::error!("Settings serialization failed: {}", e);
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({"error": "serialize_failed", "message": "Failed to serialize settings"})),
+                    )
+                        .into_response()
+                }
+            }
+        }
         Ok(Err(e)) => {
             tracing::warn!("Settings update failed: {}", e);
             (
@@ -688,17 +700,26 @@ pub async fn get_profile_settings(
         )
             .into_response();
     }
-    let result =
-        tokio::task::spawn_blocking(move || crate::session::load_profile_config(&name)).await;
+    let result = tokio::task::spawn_blocking(move || {
+        let profile = crate::session::load_profile_config(&name)?;
+        let global = crate::session::Config::load_or_warn();
+        let mut val = serde_json::to_value(&profile)?;
+        // The `logging` section lives on global Config (no profile
+        // override surface yet). Splice it into the response so the
+        // settings UI can render its current values from a single
+        // GET — without this the dropdowns would reset on every page
+        // load even after a successful PATCH.
+        if let Some(obj) = val.as_object_mut() {
+            obj.insert(
+                "logging".to_string(),
+                serde_json::to_value(&global.logging)?,
+            );
+        }
+        Ok::<_, anyhow::Error>(val)
+    })
+    .await;
     match result {
-        Ok(Ok(config)) => match serde_json::to_value(&config) {
-            Ok(val) => (StatusCode::OK, Json(val)).into_response(),
-            Err(e) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "serialize_failed", "message": e.to_string()})),
-            )
-                .into_response(),
-        },
+        Ok(Ok(val)) => (StatusCode::OK, Json(val)).into_response(),
         Ok(Err(e)) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({"error": "load_failed", "message": e.to_string()})),
@@ -750,6 +771,43 @@ pub async fn update_profile_settings(
     }
 
     let result = tokio::task::spawn_blocking(move || {
+        // The `logging` section is process-global (no profile overrides
+        // for v1), so peel it off the patch and write it into the
+        // global Config. Everything else stays a per-profile override.
+        let mut body = body;
+        let logging_patch = body.as_object_mut().and_then(|obj| obj.remove("logging"));
+        if let Some(patch) = logging_patch {
+            let global = crate::session::Config::load_or_warn();
+            let mut current = serde_json::to_value(&global)?;
+            if let Some(current_obj) = current.as_object_mut() {
+                match current_obj.get_mut("logging") {
+                    Some(existing) => {
+                        if let (Some(existing_obj), Some(new_obj)) =
+                            (existing.as_object_mut(), patch.as_object())
+                        {
+                            for (k, v) in new_obj {
+                                existing_obj.insert(k.clone(), v.clone());
+                            }
+                        } else {
+                            current_obj.insert("logging".to_string(), patch);
+                        }
+                    }
+                    None => {
+                        current_obj.insert("logging".to_string(), patch);
+                    }
+                }
+            }
+            let global: crate::session::Config = serde_json::from_value(current)?;
+            crate::session::save_config(&global)?;
+            if let Ok(app_dir) = crate::session::get_app_dir() {
+                crate::logging::apply_persisted_config(
+                    &global.logging.default_level,
+                    &global.logging.targets,
+                    &app_dir,
+                );
+            }
+        }
+
         let config = crate::session::load_profile_config(&name).unwrap_or_default();
         let mut current = serde_json::to_value(&config)?;
         if let (Some(current_obj), Some(update_obj)) = (current.as_object_mut(), body.as_object()) {

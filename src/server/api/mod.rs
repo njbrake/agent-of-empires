@@ -11,8 +11,11 @@
 pub(super) use super::AppState;
 
 #[cfg(feature = "serve")]
+mod client_log;
+#[cfg(feature = "serve")]
 mod cockpit;
 mod git;
+mod log_level;
 mod projects;
 mod sessions;
 mod system;
@@ -24,7 +27,10 @@ pub use cockpit::{
     shutdown_cockpit, spawn_cockpit,
 };
 
+#[cfg(feature = "serve")]
+pub use client_log::post_client_log;
 pub use git::{clone_repo, list_branches};
+pub use log_level::{get_log_level, patch_log_level};
 pub use projects::{create_project, delete_project, list_projects};
 pub use sessions::{
     create_session, delete_session, ensure_container_terminal, ensure_session, ensure_terminal,
@@ -60,6 +66,10 @@ pub(super) const ALLOWED_SETTINGS_SECTIONS: &[&str] = &[
     // (notifications_enabled, notify_on_waiting, notify_on_idle, notify_on_error).
     // No shell commands, no binary paths, no RCE surface.
     "web",
+    // logging: persistent tracing filter (default_level + per-target map).
+    // No shell commands, no binary paths. Values are validated against the
+    // EnvFilter parser before being written back to disk.
+    "logging",
 ];
 
 pub(super) const SESSION_BLOCKED_FIELDS: &[&str] = &[
@@ -168,6 +178,9 @@ mod tests {
             // (notifications_enabled, notify_on_waiting, notify_on_idle,
             // notify_on_error). No shell commands, no binary paths.
             "web",
+            // logging: persistent tracing filter. EnvFilter parser
+            // validates every value before save_config writes it back.
+            "logging",
         ];
         assert_eq!(
             ALLOWED_SETTINGS_SECTIONS.len(),

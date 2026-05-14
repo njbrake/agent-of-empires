@@ -236,6 +236,15 @@ pub async fn auth_middleware(
     // AuthenticatedTokenHash so handlers that extract the extension
     // still succeed; all no-auth clients share the same "owner" value.
     if state.token_manager.is_no_auth().await {
+        // Once per process: surface that auth is disabled. Helps when a
+        // user is confused why their token isn't being checked.
+        static NO_AUTH_LOGGED: std::sync::Once = std::sync::Once::new();
+        NO_AUTH_LOGGED.call_once(|| {
+            tracing::info!(
+                target: "auth.token",
+                "running in no-auth mode; requests pass through without token check"
+            );
+        });
         request
             .extensions_mut()
             .insert(AuthenticatedTokenHash([0u8; 32]));
@@ -244,6 +253,12 @@ pub async fn auth_middleware(
 
     // Rate limit check BEFORE token validation
     if let Some(remaining_secs) = state.rate_limiter.check_locked(client_ip).await {
+        tracing::warn!(
+            target: "auth.rate_limit",
+            ip = %client_ip,
+            remaining_secs,
+            "rejecting request from locked-out IP"
+        );
         return (
             StatusCode::TOO_MANY_REQUESTS,
             [("Retry-After", remaining_secs.to_string())],
@@ -292,6 +307,13 @@ pub async fn auth_middleware(
     if let Some(source) = matched_source {
         // Record success
         state.rate_limiter.record_success(client_ip).await;
+        tracing::trace!(
+            target: "auth.middleware",
+            ip = %client_ip,
+            path = %request.uri().path(),
+            source = ?source,
+            "auth accepted"
+        );
 
         // Stamp web activity so the push consumer can suppress
         // notifications when the dashboard is actively in use.
@@ -427,11 +449,19 @@ pub async fn auth_middleware(
     }
 
     let locked = state.rate_limiter.record_failure(client_ip).await;
+    let reason = if extract_tokens(&request).is_empty() && extract_ws_protocols(&request).is_empty()
+    {
+        "missing"
+    } else {
+        "invalid"
+    };
     tracing::warn!(
+        target: "auth.middleware",
         ip = %client_ip,
         path = %path,
         locked = locked,
-        "Authentication failed"
+        reason = %reason,
+        "auth rejected"
     );
 
     (

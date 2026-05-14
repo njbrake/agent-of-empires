@@ -16,6 +16,7 @@ use std::ffi::OsStr;
 use std::path::Path;
 
 pub mod cleanup;
+pub(crate) mod command;
 pub mod diff;
 pub mod error;
 mod remote;

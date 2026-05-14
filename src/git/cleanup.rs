@@ -308,10 +308,7 @@ pub fn deinit_submodules_if_present(worktree_path: &Path) {
     if !worktree_path.join(".gitmodules").exists() {
         return;
     }
-    let output = std::process::Command::new("git")
-        .args(["submodule", "deinit", "-f", "--all"])
-        .current_dir(worktree_path)
-        .output();
+    let output = super::command::run_git(worktree_path, ["submodule", "deinit", "-f", "--all"]);
     match output {
         Ok(o) if o.status.success() => {
             tracing::debug!(

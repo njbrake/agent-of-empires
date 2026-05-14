@@ -24,6 +24,7 @@ pub enum SettingsCategory {
     Hooks,
     Web,
     Cockpit,
+    Logging,
 }
 
 impl SettingsCategory {
@@ -39,6 +40,7 @@ impl SettingsCategory {
             Self::Hooks => "Hooks",
             Self::Web => "Web",
             Self::Cockpit => "Cockpit",
+            Self::Logging => "Logging",
         }
     }
 }
@@ -90,6 +92,7 @@ pub enum FieldKey {
     AgentStatusHooks,
     CustomAgents,
     AgentDetectAs,
+    HostEnvironment,
     // Sound
     SoundEnabled,
     SoundMode,
@@ -122,6 +125,11 @@ pub enum FieldKey {
     CockpitShowToolDurations,
     CockpitQueueDrainMode,
     CockpitMaxConcurrentResumes,
+    // Logging
+    LoggingDefaultLevel,
+    /// Per-target override; carries an index into `crate::logging::KNOWN_SUB_TARGETS`
+    /// so the FieldKey enum stays `Copy` without carrying owned strings.
+    LoggingTarget(u8),
 }
 
 /// Resolve a field value from global config and optional profile override.
@@ -284,7 +292,61 @@ pub fn build_fields_for_category(
         SettingsCategory::Hooks => build_hooks_fields(scope, global, profile),
         SettingsCategory::Web => build_web_fields(scope, global, profile),
         SettingsCategory::Cockpit => build_cockpit_fields(scope, global, profile),
+        SettingsCategory::Logging => build_logging_fields(global),
     }
+}
+
+const LOG_LEVEL_OPTIONS: &[&str] = &["trace", "debug", "info", "warn", "error"];
+const LOG_LEVEL_OVERRIDE_OPTIONS: &[&str] =
+    &["(default)", "trace", "debug", "info", "warn", "error"];
+
+fn level_index(level: &str, opts: &[&str]) -> usize {
+    opts.iter().position(|&o| o == level).unwrap_or(0)
+}
+
+fn build_logging_fields(global: &Config) -> Vec<SettingField> {
+    let mut fields = Vec::with_capacity(1 + crate::logging::KNOWN_SUB_TARGETS.len());
+
+    let default_idx = level_index(&global.logging.default_level, LOG_LEVEL_OPTIONS);
+    fields.push(SettingField {
+        key: FieldKey::LoggingDefaultLevel,
+        label: "Default level",
+        description: "Baseline applied to every known target root. Per-target overrides win.",
+        value: FieldValue::Select {
+            selected: default_idx,
+            options: LOG_LEVEL_OPTIONS.iter().map(|s| s.to_string()).collect(),
+        },
+        category: SettingsCategory::Logging,
+        has_override: false,
+        inherited_display: None,
+    });
+
+    for (i, target) in crate::logging::KNOWN_SUB_TARGETS.iter().enumerate() {
+        let current = global
+            .logging
+            .targets
+            .get(*target)
+            .map(|s| s.as_str())
+            .unwrap_or("(default)");
+        let idx = level_index(current, LOG_LEVEL_OVERRIDE_OPTIONS);
+        fields.push(SettingField {
+            key: FieldKey::LoggingTarget(i as u8),
+            label: target,
+            description: "Per-target override; (default) inherits the baseline.",
+            value: FieldValue::Select {
+                selected: idx,
+                options: LOG_LEVEL_OVERRIDE_OPTIONS
+                    .iter()
+                    .map(|s| s.to_string())
+                    .collect(),
+            },
+            category: SettingsCategory::Logging,
+            has_override: false,
+            inherited_display: None,
+        });
+    }
+
+    fields
 }
 
 fn build_cockpit_fields(
@@ -914,8 +976,8 @@ fn build_sandbox_fields(
         },
         SettingField {
             key: FieldKey::Environment,
-            label: "Environment",
-            description: "Env vars: bare KEY passes host value, KEY=VALUE sets explicitly",
+            label: "Sandbox Environment",
+            description: "Env vars injected into the container: KEY=value (literal, appears in argv), KEY=$VAR (passthrough from host, hidden from argv), KEY=$$literal (escape a leading $), or bare KEY (passthrough). For host (non-sandboxed) sessions, see Session > Host Environment instead.",
             value: FieldValue::List(environment),
             category: SettingsCategory::Sandbox,
             has_override: o4,
@@ -1202,6 +1264,12 @@ fn build_session_fields(
         session.and_then(|s| s.agent_status_hooks),
     );
 
+    let (host_environment, host_env_override) = resolve_value(
+        scope,
+        global.environment.clone(),
+        profile.environment.clone(),
+    );
+
     // Agent extra args: HashMap -> Vec<String> of "key=value" items for List field
     let (extra_args_map, extra_args_override) = resolve_value(
         scope,
@@ -1410,6 +1478,18 @@ fn build_session_fields(
             inherited_display: inherited_if(
                 status_hooks_override,
                 FieldValue::Bool(global.session.agent_status_hooks),
+            ),
+        },
+        SettingField {
+            key: FieldKey::HostEnvironment,
+            label: "Host Environment",
+            description: "Env vars injected into the host command line: KEY=value (literal), KEY=$VAR (passthrough from host), KEY=$$literal (escape a leading $), or bare KEY (passthrough). All forms resolve to a literal `KEY=value` arg in the spawned process, visible in `ps`; for secrets you want hidden from argv, configure Sandbox > Sandbox Environment instead. Profile value replaces the global list.",
+            value: FieldValue::List(host_environment),
+            category: SettingsCategory::Session,
+            has_override: host_env_override,
+            inherited_display: inherited_if(
+                host_env_override,
+                FieldValue::List(global.environment.clone()),
             ),
         },
     ]
@@ -1860,6 +1940,23 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
         (FieldKey::CockpitMaxConcurrentResumes, FieldValue::Number(v)) => {
             config.cockpit.max_concurrent_resumes = (*v).max(1).min(u32::MAX as u64) as u32
         }
+        // Logging
+        (FieldKey::LoggingDefaultLevel, FieldValue::Select { selected, options }) => {
+            if let Some(level) = options.get(*selected) {
+                config.logging.default_level = level.clone();
+            }
+        }
+        (FieldKey::LoggingTarget(idx), FieldValue::Select { selected, options }) => {
+            if let Some(target) = crate::logging::KNOWN_SUB_TARGETS.get(*idx as usize) {
+                let level = options.get(*selected).cloned().unwrap_or_default();
+                if level.is_empty() || level == "(default)" {
+                    config.logging.targets.remove(*target);
+                } else {
+                    config.logging.targets.insert(target.to_string(), level);
+                }
+            }
+        }
+        (FieldKey::HostEnvironment, FieldValue::List(v)) => config.environment = v.clone(),
         _ => {}
     }
 }
@@ -2200,6 +2297,11 @@ fn apply_field_to_profile(field: &SettingField, _global: &Config, config: &mut P
             set_profile_override(clamped, &mut config.cockpit, |s, val| {
                 s.max_concurrent_resumes = val
             });
+        }
+        (FieldKey::HostEnvironment, FieldValue::List(v)) => {
+            // Empty list clears the override (no env entries); otherwise store
+            // the list as the profile-scope replacement of the global list.
+            config.environment = if v.is_empty() { None } else { Some(v.clone()) };
         }
         _ => {}
     }

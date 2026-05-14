@@ -9,8 +9,6 @@ use nix::errno::Errno;
 use nix::sys::signal::{kill, Signal};
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 use nix::unistd::Pid;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
-use tracing::debug;
 
 #[cfg(target_os = "linux")]
 mod linux;
@@ -80,9 +78,14 @@ pub fn kill_process_tree(pid: u32) {
 /// graceful shutdown, then SIGKILL anything still alive.
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn kill_with_fallback(pids: &[u32]) {
-    debug!(descendants = ?pids, "Killing process tree");
+    tracing::debug!(
+        target: "process.tree",
+        descendants = ?pids,
+        "killing process tree"
+    );
 
     for &p in pids.iter().rev() {
+        tracing::debug!(target: "process.signal", pid = p, signal = "SIGTERM", "sending signal");
         let _ = kill(Pid::from_raw(p as i32), Signal::SIGTERM);
     }
 
@@ -90,7 +93,12 @@ fn kill_with_fallback(pids: &[u32]) {
 
     for &p in pids.iter().rev() {
         if process_exists(p) {
-            debug!(pid = p, "Process survived SIGTERM, sending SIGKILL");
+            tracing::warn!(
+                target: "process.reap",
+                pid = p,
+                "pid survived SIGTERM after 100ms; sending SIGKILL"
+            );
+            tracing::info!(target: "process.signal", pid = p, signal = "SIGKILL", "sending signal");
             let _ = kill(Pid::from_raw(p as i32), Signal::SIGKILL);
         }
     }
@@ -145,11 +153,22 @@ fn signal_process_tree(pid: u32, signal: Signal) {
     #[cfg(target_os = "macos")]
     let pids = macos::collect_pid_tree(pid);
 
-    debug!(descendants = ?pids, ?signal, "Signaling process tree");
+    tracing::debug!(
+        target: "process.tree",
+        descendants = ?pids,
+        ?signal,
+        "signaling process tree"
+    );
     for &p in pids.iter().rev() {
         if let Err(e) = kill(Pid::from_raw(p as i32), signal) {
             if e != Errno::ESRCH {
-                debug!(pid = p, ?signal, error = %e, "signal_process_tree: kill failed");
+                tracing::debug!(
+                    target: "process.signal",
+                    pid = p,
+                    ?signal,
+                    error = %e,
+                    "kill failed"
+                );
             }
         }
     }
