@@ -207,9 +207,10 @@ pub(crate) fn expand_tilde(path: &str) -> String {
 /// Build a shell-ready `KEY='value' KEY2='value2' ` prefix from a list of
 /// environment entries, suitable for prepending to a host command line.
 ///
-/// Entry grammar (same as `sandbox.environment`):
-/// - `KEY=value`: literal value. A leading `~` is expanded via `expand_tilde`.
-/// - `KEY=$VAR`: read VAR from the host env at spawn time.
+/// Entry grammar (identical to `sandbox.environment`):
+/// - `KEY=value`: literal value, passed through verbatim.
+/// - `KEY=$VAR`: read VAR from the host env at spawn time (skipped with a
+///   warning if VAR is not set).
 /// - `KEY=$$literal`: escape; emits `KEY='$literal'`.
 /// - bare `KEY`: passthrough from the host env (skipped with a warning if
 ///   the var is not set).
@@ -229,7 +230,7 @@ pub(crate) fn host_environment_prefix(entries: &[String]) -> String {
                     None => continue,
                 }
             } else {
-                Some(expand_tilde(value))
+                Some(value.to_string())
             };
             if let Some(v) = resolved {
                 out.push_str(&format!("{}={} ", key, shell_escape(&v)));
@@ -734,13 +735,13 @@ environment = ["GH_TOKEN=write_token"]
     }
 
     #[test]
-    fn test_host_environment_prefix_tilde_expansion() {
-        let Some(home) = dirs::home_dir() else {
-            return;
-        };
+    fn test_host_environment_prefix_tilde_is_literal() {
+        // No path-aware magic: `~` is passed through verbatim, matching
+        // sandbox.environment behavior. Users who want home-relative paths
+        // should either use absolute paths or pass `$HOME` (bare key) and
+        // resolve in their agent invocation.
         let prefix = host_environment_prefix(&["DIR=~/sub".to_string()]);
-        let expected = format!("DIR='{}' ", home.join("sub").display());
-        assert_eq!(prefix, expected);
+        assert_eq!(prefix, "DIR='~/sub' ");
     }
 
     #[test]
