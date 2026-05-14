@@ -35,6 +35,10 @@ pub const DEFAULT_TARGET_ROOTS: &[&str] = &[
     "git",
     "migrations",
     "web",
+    // `log` is the meta-target prefix for filter-swap audit events
+    // (`log.runtime`). Without this, `log.runtime` would be dropped
+    // under any expanded-level filter that has no global default.
+    "log",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
