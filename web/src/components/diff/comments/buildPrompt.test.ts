@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { buildCommentsMarkdown, buildFullPrompt } from "./buildPrompt";
+import {
+  buildCommentsMarkdown,
+  buildFullPrompt,
+  parseDiffCommentsSentinel,
+  stripDiffCommentsSentinel,
+} from "./buildPrompt";
 import type { DiffComment } from "./types";
 
 function mk(partial: Partial<DiffComment>): DiffComment {
@@ -115,7 +120,8 @@ describe("buildFullPrompt", () => {
 
   it("prepends intro when set", () => {
     const prompt = buildFullPrompt([mk({})], "Hey:", "", { isMultiRepo: false });
-    expect(prompt.startsWith("Hey:\n\n## Diff comments")).toBe(true);
+    const body = stripDiffCommentsSentinel(prompt);
+    expect(body.startsWith("Hey:\n\n## Diff comments")).toBe(true);
   });
 
   it("trims surrounding whitespace from intro/outro", () => {
@@ -125,14 +131,68 @@ describe("buildFullPrompt", () => {
       "   outro   ",
       { isMultiRepo: false },
     );
-    expect(prompt.startsWith("intro\n")).toBe(true);
-    expect(prompt).toMatch(/outro\n$/);
+    const body = stripDiffCommentsSentinel(prompt);
+    expect(body.startsWith("intro\n")).toBe(true);
+    expect(body).toMatch(/outro\n$/);
   });
 
   it("omits the comments section when no comments", () => {
     const prompt = buildFullPrompt([], "intro", "outro", { isMultiRepo: false });
     expect(prompt).not.toContain("## Diff comments");
+    expect(prompt).not.toContain("aoe:diff-comments");
     expect(prompt).toContain("intro");
     expect(prompt).toContain("outro");
+  });
+
+  it("prepends a sentinel header when comments are present", () => {
+    const prompt = buildFullPrompt([mk({})], "", "", { isMultiRepo: false });
+    expect(prompt.startsWith("<!-- aoe:diff-comments:v1 ")).toBe(true);
+    expect(prompt).toContain("\n## Diff comments\n");
+  });
+});
+
+describe("parseDiffCommentsSentinel", () => {
+  it("returns null when no sentinel", () => {
+    expect(parseDiffCommentsSentinel("hello world")).toBeNull();
+  });
+
+  it("round-trips a payload built by buildFullPrompt", () => {
+    const comment = mk({
+      body: "needs error handling",
+      capturedSnippet: "let x = 1;",
+    });
+    const prompt = buildFullPrompt([comment], "Take a look:", "Thanks.", {
+      isMultiRepo: false,
+    });
+    const payload = parseDiffCommentsSentinel(prompt);
+    expect(payload).not.toBeNull();
+    expect(payload!.intro).toBe("Take a look:");
+    expect(payload!.outro).toBe("Thanks.");
+    expect(payload!.isMultiRepo).toBe(false);
+    expect(payload!.comments).toHaveLength(1);
+    expect(payload!.comments[0]!.body).toBe("needs error handling");
+    expect(payload!.comments[0]!.capturedSnippet).toBe("let x = 1;");
+  });
+
+  it("survives snippets that contain `-->`", () => {
+    const c = mk({ capturedSnippet: "<!-- not allowed -->\nlet x = 1;" });
+    const prompt = buildFullPrompt([c], "", "", { isMultiRepo: false });
+    const payload = parseDiffCommentsSentinel(prompt);
+    expect(payload).not.toBeNull();
+    expect(payload!.comments[0]!.capturedSnippet).toContain("-->");
+  });
+
+  it("returns null for a malformed payload", () => {
+    const broken = "<!-- aoe:diff-comments:v1 not-base64!@# -->\nbody\n";
+    expect(parseDiffCommentsSentinel(broken)).toBeNull();
+  });
+
+  it("preserves the visible body for the agent", () => {
+    const prompt = buildFullPrompt([mk({})], "Intro:", "Outro.", {
+      isMultiRepo: false,
+    });
+    const body = stripDiffCommentsSentinel(prompt);
+    expect(body.startsWith("Intro:\n\n## Diff comments")).toBe(true);
+    expect(body).toMatch(/Outro\.\n$/);
   });
 });

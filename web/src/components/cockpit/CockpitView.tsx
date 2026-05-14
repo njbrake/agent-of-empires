@@ -31,6 +31,8 @@ import { Composer } from "./Composer";
 import { ContextPrimerBanner } from "./ContextPrimerBanner";
 import { Markdown } from "./Markdown";
 import { SubagentCard, ToolCard, ToolGroupCard } from "./ToolCards";
+import { DiffCommentsUserCard } from "../diff/comments/DiffCommentsUserCard";
+import { parseDiffCommentsSentinel } from "../diff/comments/buildPrompt";
 import {
   SPINNER_FRAMES,
   SPINNER_INTERVAL_MS,
@@ -313,19 +315,32 @@ function CockpitChrome({
 function UserMessage() {
   return (
     <MessagePrimitive.Root className="group mt-4 flex flex-col items-end gap-1">
-      <div className="max-w-[80%] min-w-0 rounded-2xl rounded-br-sm border border-surface-700 bg-surface-800/70 px-3 py-1.5 text-sm">
-        <MessagePrimitive.Parts
-          components={{
-            // User prompts get the same markdown pipeline as agent
-            // messages so fenced code blocks render with syntax
-            // highlighting instead of literal backticks. Smooth-reveal
-            // is off because user prompts arrive complete; the pacing
-            // only matters for streamed agent tokens. See #1108.
-            Text: ({ text }) => <Markdown text={text} smooth={false} />,
-          }}
-        />
-      </div>
+      <MessagePrimitive.Parts
+        components={{
+          Text: UserText,
+        }}
+      />
     </MessagePrimitive.Root>
+  );
+}
+
+/** Text-part renderer for user messages. Detects the diff-comments
+ *  sentinel header (prepended by `buildFullPrompt`) and swaps in the
+ *  structured `DiffCommentsUserCard`; falls back to the classic chat
+ *  bubble otherwise. */
+function UserText({ text }: { text: string }) {
+  const payload = parseDiffCommentsSentinel(text);
+  if (payload) {
+    return <DiffCommentsUserCard payload={payload} />;
+  }
+  // User prompts get the same markdown pipeline as agent messages so
+  // fenced code blocks render with syntax highlighting instead of
+  // literal backticks. Smooth-reveal is off because user prompts arrive
+  // complete; the pacing only matters for streamed agent tokens. See #1108.
+  return (
+    <div className="max-w-[80%] min-w-0 rounded-2xl rounded-br-sm border border-surface-700 bg-surface-800/70 px-3 py-1.5 text-sm">
+      <Markdown text={text} smooth={false} />
+    </div>
   );
 }
 
