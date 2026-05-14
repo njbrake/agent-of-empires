@@ -8,6 +8,7 @@ pub mod cockpit;
 pub mod containers;
 pub mod git;
 pub mod hooks;
+pub mod logging;
 pub mod migrations;
 pub mod process;
 #[cfg(feature = "serve")]
