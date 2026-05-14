@@ -59,9 +59,9 @@ pub struct ProfileConfig {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ClaudeConfigOverride {
     /// Directory that becomes `$CLAUDE_CONFIG_DIR` for sessions spawned
-    /// under this profile. Leading `~` and `$HOME` are expanded at spawn
-    /// time so TOML files stay portable across hosts. `None` (or an
-    /// empty string serialized as absent) means "inherit shell env".
+    /// under this profile. A leading `~` is expanded at spawn time so
+    /// TOML files stay portable across hosts. `None` (or an empty
+    /// string serialized as absent) means "inherit shell env".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_dir: Option<String>,
 }
@@ -309,35 +309,28 @@ pub fn profile_has_overrides(config: &ProfileConfig) -> bool {
 
 /// Resolve the effective Claude config directory for a profile. Returns
 /// `None` when the profile has no override (caller should fall back to
-/// the host's `$CLAUDE_CONFIG_DIR` or `$HOME/.claude`). Leading `~` and
-/// `$HOME` in the stored path are expanded against the runtime
-/// environment so TOML stays host-portable for the simple case.
+/// the host's `$CLAUDE_CONFIG_DIR` or `~/.claude`). Leading `~` in the
+/// stored path is expanded against the runtime environment so TOML
+/// stays host-portable for the simple case.
 pub fn resolve_claude_config_dir(profile: &ProfileConfig) -> Option<String> {
     let raw = profile.claude.as_ref()?.config_dir.as_ref()?;
     let trimmed = raw.trim();
     if trimmed.is_empty() {
         return None;
     }
-    Some(expand_home(trimmed))
-}
-
-fn expand_home(path: &str) -> String {
-    let Ok(home) = std::env::var("HOME") else {
-        return path.to_string();
-    };
-    if path == "~" {
-        return home;
+    let expanded = super::environment::expand_tilde(trimmed);
+    // `expand_tilde` returns the input unchanged when no home dir is
+    // available. If the user wrote `~/...` and we still have a literal
+    // `~` after expansion, Claude will receive a path it can't resolve;
+    // warn so the spawn failure is diagnosable.
+    if trimmed.starts_with('~') && expanded.starts_with('~') {
+        tracing::warn!(
+            "claude.config_dir is {:?} but no home directory is available; \
+             CLAUDE_CONFIG_DIR will be passed with a literal '~' and Claude will fail to find it",
+            trimmed
+        );
     }
-    if let Some(rest) = path.strip_prefix("~/") {
-        return format!("{}/{}", home.trim_end_matches('/'), rest);
-    }
-    if path == "$HOME" {
-        return home;
-    }
-    if let Some(rest) = path.strip_prefix("$HOME/") {
-        return format!("{}/{}", home.trim_end_matches('/'), rest);
-    }
-    path.to_string()
+    Some(expanded)
 }
 
 /// Load effective config for a profile (global + profile overrides merged)
@@ -1047,17 +1040,18 @@ mod tests {
 
     #[test]
     fn test_resolve_claude_config_dir_expansion() {
-        let home = std::env::var("HOME").unwrap_or_default();
-        if home.is_empty() {
+        let Some(home) = dirs::home_dir() else {
             return;
-        }
+        };
+        let home_str = home.to_string_lossy().to_string();
 
-        let cases = [
-            ("~", home.clone()),
-            ("~/foo", format!("{}/foo", home.trim_end_matches('/'))),
-            ("$HOME", home.clone()),
-            ("$HOME/bar", format!("{}/bar", home.trim_end_matches('/'))),
+        let cases: [(&str, String); 4] = [
+            ("~", home_str.clone()),
+            ("~/foo", home.join("foo").to_string_lossy().to_string()),
             ("/abs/path", "/abs/path".to_string()),
+            // `$HOME` is intentionally not expanded: TOML config paths use `~`,
+            // not shell-style variable references.
+            ("$HOME/bar", "$HOME/bar".to_string()),
         ];
 
         for (raw, expected) in cases {
@@ -1068,8 +1062,8 @@ mod tests {
                 ..Default::default()
             };
             assert_eq!(
-                resolve_claude_config_dir(&profile),
-                Some(expected.clone()),
+                resolve_claude_config_dir(&profile).as_deref(),
+                Some(expected.as_str()),
                 "expansion mismatch for input '{raw}'"
             );
         }

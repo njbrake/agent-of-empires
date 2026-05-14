@@ -511,8 +511,8 @@ impl Instance {
     }
 
     /// Resolve the effective profile's `CLAUDE_CONFIG_DIR` override, if
-    /// any. Returns the post-expansion absolute path string (with `~`
-    /// and `$HOME` resolved against the runtime environment).
+    /// any. Returns the post-expansion absolute path string (with a
+    /// leading `~` resolved against the runtime environment).
     fn profile_claude_config_dir(&self) -> Option<String> {
         let profile = self.effective_profile();
         let pc = super::profile_config::load_profile_config(&profile).ok()?;
@@ -1121,12 +1121,12 @@ impl Instance {
         let mut env_prefix = status_hook_env_prefix(&self.id, &self.tool, agent);
 
         // Profile-scoped CLAUDE_CONFIG_DIR override. Resolved against the
-        // session's effective profile; `~` and `$HOME` in the stored
-        // path are expanded against the runtime environment so the TOML
-        // stays host-portable. Sandboxed sessions intentionally skip
-        // this injection because the override path lives on the host
-        // and may not exist (or may not match) inside the container;
-        // sandbox users should forward the var via `sandbox.environment`
+        // session's effective profile; a leading `~` in the stored path
+        // is expanded against the runtime environment so the TOML stays
+        // host-portable. Sandboxed sessions intentionally skip this
+        // injection because the override path lives on the host and may
+        // not exist (or may not match) inside the container; sandbox
+        // users should forward the var via `sandbox.environment`
         // instead.
         if let Some(dir) = self.profile_claude_config_dir() {
             env_prefix = format!(

@@ -63,7 +63,7 @@ pub struct Config {
 /// settings can be added without bumping the TOML schema.
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ClaudeConfig {
-    /// Optional value for `$CLAUDE_CONFIG_DIR` (with `~` / `$HOME`
+    /// Optional value for `$CLAUDE_CONFIG_DIR` (with a leading `~`
     /// expanded at spawn time). `None` means "inherit shell env".
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub config_dir: Option<String>,

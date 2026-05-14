@@ -36,19 +36,7 @@ pub(super) fn collapse_tilde(path: &str) -> String {
     path.to_string()
 }
 
-/// Expand a leading `~` to the user's home directory.
-pub(super) fn expand_tilde(path: &str) -> String {
-    if path == "~" {
-        if let Some(home) = dirs::home_dir() {
-            return home.to_string_lossy().to_string();
-        }
-    } else if let Some(rest) = path.strip_prefix("~/") {
-        if let Some(home) = dirs::home_dir() {
-            return home.join(rest).to_string_lossy().to_string();
-        }
-    }
-    path.to_string()
-}
+pub(super) use crate::session::environment::expand_tilde;
 
 fn path_completion_base(parent_prefix: &str) -> Option<PathBuf> {
     if parent_prefix.is_empty() {

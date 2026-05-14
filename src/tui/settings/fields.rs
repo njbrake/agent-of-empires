@@ -310,7 +310,7 @@ fn build_claude_fields(
     vec![SettingField {
         key: FieldKey::ClaudeConfigDir,
         label: "Config dir",
-        description: "Directory exported as $CLAUDE_CONFIG_DIR when spawning Claude sessions under this profile. Leading `~` and `$HOME` are expanded at spawn time so the same TOML works across hosts. Empty (or unset) means inherit the shell's CLAUDE_CONFIG_DIR (or fall back to $HOME/.claude, Claude's own default). Not injected into sandboxed sessions; use sandbox.environment to forward it inside a container.",
+        description: "Directory exported as $CLAUDE_CONFIG_DIR when spawning Claude sessions under this profile. A leading `~` is expanded at spawn time so the same TOML works across hosts. Empty (or unset) means inherit the shell's CLAUDE_CONFIG_DIR (or fall back to ~/.claude, Claude's own default). Not injected into sandboxed sessions; use sandbox.environment to forward it inside a container.",
         value: FieldValue::OptionalText(config_dir),
         category: SettingsCategory::Claude,
         has_override: override_flag,
