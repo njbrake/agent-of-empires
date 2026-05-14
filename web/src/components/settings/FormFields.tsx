@@ -160,16 +160,29 @@ export function SelectField({
   value,
   onChange,
   options,
+  labelClassName,
 }: {
   label: string;
   description?: string;
   value: string;
   onChange: (v: string) => void;
   options: { value: string; label: string }[];
+  /** Override the default `text-sm text-text-dim mb-1` label classes
+   *  (used by the Logging panel to render brighter section labels).
+   *  Pass `""` to suppress the label element entirely. */
+  labelClassName?: string;
 }) {
   return (
     <div>
-      <label className="block text-sm text-text-dim mb-1">{label}</label>
+      {label && (
+        <label
+          className={
+            labelClassName ?? "block text-sm text-text-dim mb-1"
+          }
+        >
+          {label}
+        </label>
+      )}
       {description && (
         <div className="text-xs text-text-dim mb-1">{description}</div>
       )}

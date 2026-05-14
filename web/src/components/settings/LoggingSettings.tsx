@@ -91,6 +91,7 @@ export function LoggingSettings({ settings, onSaveField, onUpdate }: Props) {
 
       <SelectField
         label="Default level"
+        labelClassName="block text-sm font-semibold text-text-primary mb-1"
         description="Baseline applied to every known target root. Per-target overrides below win over this."
         value={defaultLevel}
         onChange={saveDefaultLevel}
@@ -98,7 +99,7 @@ export function LoggingSettings({ settings, onSaveField, onUpdate }: Props) {
       />
 
       <div className="space-y-4">
-        <h4 className="text-xs font-mono uppercase tracking-widest text-text-muted">
+        <h4 className="text-sm font-semibold text-text-primary">
           Per-target overrides
         </h4>
         <p className="text-xs text-text-dim">
@@ -106,7 +107,7 @@ export function LoggingSettings({ settings, onSaveField, onUpdate }: Props) {
         </p>
         {Object.entries(grouped).map(([group, items]) => (
           <div key={group} className="space-y-2">
-            <h5 className="text-xs font-mono uppercase tracking-widest text-text-muted opacity-70">
+            <h5 className="text-xs font-mono uppercase tracking-widest text-text-primary">
               {group}
             </h5>
             <div className="grid gap-3 sm:grid-cols-2">
