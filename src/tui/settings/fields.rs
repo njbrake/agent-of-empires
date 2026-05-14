@@ -130,6 +130,11 @@ pub enum FieldKey {
     /// Per-target override; carries an index into `crate::logging::KNOWN_SUB_TARGETS`
     /// so the FieldKey enum stays `Copy` without carrying owned strings.
     LoggingTarget(u8),
+    LoggingOutput,
+    LoggingFilePath,
+    LoggingRotation,
+    LoggingMaxSizeMib,
+    LoggingKeepCount,
 }
 
 /// Resolve a field value from global config and optional profile override.
@@ -299,6 +304,8 @@ pub fn build_fields_for_category(
 const LOG_LEVEL_OPTIONS: &[&str] = &["trace", "debug", "info", "warn", "error"];
 const LOG_LEVEL_OVERRIDE_OPTIONS: &[&str] =
     &["(default)", "trace", "debug", "info", "warn", "error"];
+const SINK_OPTIONS: &[&str] = &["file", "stdout"];
+const ROTATION_OPTIONS: &[&str] = &["size", "never"];
 
 fn level_index(level: &str, opts: &[&str]) -> usize {
     opts.iter().position(|&o| o == level).unwrap_or(0)
@@ -345,6 +352,80 @@ fn build_logging_fields(global: &Config) -> Vec<SettingField> {
             inherited_display: None,
         });
     }
+
+    // Sink-shape knobs. Changing any of these requires a process restart
+    // (the tracing subscriber is a global singleton; the rotating writer
+    // holds its policy + file handle for the life of the process).
+    let output_idx = level_index(
+        match global.logging.output {
+            crate::session::config::SinkKind::File => "file",
+            crate::session::config::SinkKind::Stdout => "stdout",
+        },
+        SINK_OPTIONS,
+    );
+    fields.push(SettingField {
+        key: FieldKey::LoggingOutput,
+        label: "Output (restart req.)",
+        description:
+            "Where tracing lands: file (default) or stdout. TUI / daemon child / runner coerce \
+             to file regardless. Restart aoe for changes to take effect.",
+        value: FieldValue::Select {
+            selected: output_idx,
+            options: SINK_OPTIONS.iter().map(|s| s.to_string()).collect(),
+        },
+        category: SettingsCategory::Logging,
+        has_override: false,
+        inherited_display: None,
+    });
+    fields.push(SettingField {
+        key: FieldKey::LoggingFilePath,
+        label: "File path (restart req.)",
+        description: "Log file location. Relative paths resolve under the app data dir; absolute \
+                      paths are used verbatim. Restart aoe for changes.",
+        value: FieldValue::Text(global.logging.file_path.clone()),
+        category: SettingsCategory::Logging,
+        has_override: false,
+        inherited_display: None,
+    });
+
+    let rotation_idx = level_index(
+        match global.logging.rotation {
+            crate::session::config::RotationKind::Size => "size",
+            crate::session::config::RotationKind::Never => "never",
+        },
+        ROTATION_OPTIONS,
+    );
+    fields.push(SettingField {
+        key: FieldKey::LoggingRotation,
+        label: "Rotation (restart req.)",
+        description: "size rotates when the live file crosses the threshold; never disables \
+                      rotation. Restart aoe for changes.",
+        value: FieldValue::Select {
+            selected: rotation_idx,
+            options: ROTATION_OPTIONS.iter().map(|s| s.to_string()).collect(),
+        },
+        category: SettingsCategory::Logging,
+        has_override: false,
+        inherited_display: None,
+    });
+    fields.push(SettingField {
+        key: FieldKey::LoggingMaxSizeMib,
+        label: "Max size MiB (restart req.)",
+        description: "Rotation threshold in MiB. Ignored when rotation = never.",
+        value: FieldValue::Number(global.logging.max_size_mib),
+        category: SettingsCategory::Logging,
+        has_override: false,
+        inherited_display: None,
+    });
+    fields.push(SettingField {
+        key: FieldKey::LoggingKeepCount,
+        label: "Keep count (restart req.)",
+        description: "How many rotated files to retain (.1 through .keep_count).",
+        value: FieldValue::Number(global.logging.keep_count as u64),
+        category: SettingsCategory::Logging,
+        has_override: false,
+        inherited_display: None,
+    });
 
     fields
 }
@@ -1955,6 +2036,36 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
                     config.logging.targets.insert(target.to_string(), level);
                 }
             }
+        }
+        (FieldKey::LoggingOutput, FieldValue::Select { selected, options }) => {
+            if let Some(value) = options.get(*selected) {
+                config.logging.output = match value.as_str() {
+                    "stdout" => crate::session::config::SinkKind::Stdout,
+                    _ => crate::session::config::SinkKind::File,
+                };
+            }
+        }
+        (FieldKey::LoggingFilePath, FieldValue::Text(v)) => {
+            let trimmed = v.trim();
+            config.logging.file_path = if trimmed.is_empty() {
+                "debug.log".to_string()
+            } else {
+                trimmed.to_string()
+            };
+        }
+        (FieldKey::LoggingRotation, FieldValue::Select { selected, options }) => {
+            if let Some(value) = options.get(*selected) {
+                config.logging.rotation = match value.as_str() {
+                    "never" => crate::session::config::RotationKind::Never,
+                    _ => crate::session::config::RotationKind::Size,
+                };
+            }
+        }
+        (FieldKey::LoggingMaxSizeMib, FieldValue::Number(v)) => {
+            config.logging.max_size_mib = (*v).max(1);
+        }
+        (FieldKey::LoggingKeepCount, FieldValue::Number(v)) => {
+            config.logging.keep_count = (*v).min(u8::MAX as u64) as u8;
         }
         (FieldKey::HostEnvironment, FieldValue::List(v)) => config.environment = v.clone(),
         _ => {}

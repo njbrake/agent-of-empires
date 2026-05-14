@@ -842,7 +842,13 @@ impl SettingsView {
             }
             // Logging is global-only for v1 (no profile overrides); the
             // "clear override" gesture is a no-op for these keys.
-            FieldKey::LoggingDefaultLevel | FieldKey::LoggingTarget(_) => {}
+            FieldKey::LoggingDefaultLevel
+            | FieldKey::LoggingTarget(_)
+            | FieldKey::LoggingOutput
+            | FieldKey::LoggingFilePath
+            | FieldKey::LoggingRotation
+            | FieldKey::LoggingMaxSizeMib
+            | FieldKey::LoggingKeepCount => {}
             FieldKey::HostEnvironment => {
                 config.environment = None;
             }

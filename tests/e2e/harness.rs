@@ -403,9 +403,11 @@ last_seen_version = "{}"
     /// isolation. Returns the `Output` (stdout, stderr, status).
     ///
     /// Clears `AGENT_OF_EMPIRES_DEBUG` and `AOE_LOG_LEVEL` from the inherited
-    /// env so tests run with a deterministic logging configuration: when
-    /// either is set, `aoe` truncates `debug.log` on startup, which would
-    /// silently destroy any fixture that an `aoe logs` test seeded.
+    /// env so tests run with a deterministic logging configuration. (aoe
+    /// itself appends to `debug.log` now rather than truncating, but a
+    /// child that opts in to file logging would still emit a marker line
+    /// and an "aoe started" event under the test fixture, perturbing
+    /// content-sensitive assertions.)
     pub fn run_cli(&self, args: &[&str]) -> Output {
         Command::new(&self.binary_path)
             .args(args)

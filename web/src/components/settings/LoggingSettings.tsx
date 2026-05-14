@@ -1,4 +1,4 @@
-import { SelectField } from "./FormFields";
+import { NumberField, SelectField, TextField } from "./FormFields";
 
 // Mirrors `KNOWN_SUB_TARGETS` in src/logging.rs. Keeping this list
 // hardcoded (rather than fetched) is intentional: it's the curated
@@ -45,6 +45,16 @@ const LEVELS = [
 
 const DEFAULT_LEVELS = LEVELS.filter((l) => l.value !== "");
 
+const SINK_OPTIONS = [
+  { value: "file", label: "file (default)" },
+  { value: "stdout", label: "stdout" },
+];
+
+const ROTATION_OPTIONS = [
+  { value: "size", label: "size (default)" },
+  { value: "never", label: "never" },
+];
+
 interface Props {
   settings: Record<string, unknown>;
   onSaveField: (section: string, field: string, value: unknown) => void;
@@ -55,6 +65,11 @@ export function LoggingSettings({ settings, onSaveField, onUpdate }: Props) {
   const logging = (settings.logging ?? {}) as Record<string, unknown>;
   const defaultLevel = (logging.default_level as string) ?? "info";
   const targets = (logging.targets ?? {}) as Record<string, string>;
+  const output = (logging.output as string) ?? "file";
+  const filePath = (logging.file_path as string) ?? "debug.log";
+  const rotation = (logging.rotation as string) ?? "size";
+  const maxSizeMib = (logging.max_size_mib as number) ?? 50;
+  const keepCount = (logging.keep_count as number) ?? 5;
 
   const saveDefaultLevel = (level: string) => {
     onUpdate({ logging: { ...logging, default_level: level } });
@@ -70,6 +85,11 @@ export function LoggingSettings({ settings, onSaveField, onUpdate }: Props) {
     }
     onUpdate({ logging: { ...logging, targets: next } });
     onSaveField("logging", "targets", next);
+  };
+
+  const saveSinkField = (field: string, value: unknown) => {
+    onUpdate({ logging: { ...logging, [field]: value } });
+    onSaveField("logging", field, value);
   };
 
   // Group targets by their first segment for the UI.
@@ -123,6 +143,55 @@ export function LoggingSettings({ settings, onSaveField, onUpdate }: Props) {
             </div>
           </div>
         ))}
+      </div>
+
+      <div className="space-y-3 border-t border-surface-700 pt-4">
+        <h4 className="text-sm font-semibold text-text-primary">
+          Sink &amp; rotation
+        </h4>
+        <p className="text-xs text-text-dim">
+          These fields change where logs land on disk and how they rotate. They are written to <code>config.toml</code> immediately but require restarting <code>aoe</code> to take effect (the tracing subscriber and rotating writer are installed once at process startup).
+        </p>
+        <SelectField
+          label="Output"
+          description="file (default) sends tracing to a log file. stdout is honored only for foreground aoe serve and env-overridden one-shot CLI; TUI / daemon child / cockpit runner coerce to file regardless."
+          value={output}
+          onChange={(v) => saveSinkField("output", v)}
+          options={SINK_OPTIONS}
+        />
+        <TextField
+          label="File path"
+          description="Relative paths resolve under the app data dir; absolute paths are used verbatim."
+          value={filePath}
+          onChange={(v) => saveSinkField("file_path", v.trim() === "" ? "debug.log" : v)}
+          placeholder="debug.log"
+          mono
+        />
+        <SelectField
+          label="Rotation"
+          description="size rotates when the live file crosses the threshold; never disables rotation."
+          value={rotation}
+          onChange={(v) => saveSinkField("rotation", v)}
+          options={ROTATION_OPTIONS}
+        />
+        <div className="grid gap-3 sm:grid-cols-2">
+          <NumberField
+            label="Max size (MiB)"
+            description="Rotation threshold. Ignored when rotation = never."
+            value={maxSizeMib}
+            onChange={(v) => saveSinkField("max_size_mib", v)}
+            min={1}
+            max={4096}
+          />
+          <NumberField
+            label="Keep count"
+            description="How many rotated files to retain (.1 through .keep_count)."
+            value={keepCount}
+            onChange={(v) => saveSinkField("keep_count", v)}
+            min={1}
+            max={20}
+          />
+        </div>
       </div>
     </div>
   );

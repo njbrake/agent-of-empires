@@ -171,6 +171,13 @@ pub const KNOWN_SUB_TARGETS: &[&str] = &[
 /// Both the TUI save path and the web `PATCH /api/settings` path call
 /// this after `save_config`, so settings changes take effect live
 /// without a daemon restart.
+///
+/// Only the filter (default_level plus per-target overrides) hot-swaps.
+/// Sink-shape knobs (output, file_path, rotation, max_size_mib, keep_count)
+/// require a process restart: the tracing subscriber is a global singleton
+/// installed once at startup, and the rotating writer holds its policy
+/// and file handle for the life of the process. The settings UI surfaces
+/// a restart hint when those fields change.
 pub fn apply_persisted_config(
     default_level: &str,
     targets: &std::collections::BTreeMap<String, String>,
@@ -587,7 +594,11 @@ impl SizeRotatingWriter {
             return Ok(());
         }
         self.bytes_since_stat = self.bytes_since_stat.saturating_add(line.len() as u64);
-        if self.bytes_since_stat >= STAT_TICK_BYTES || line.len() as u64 >= STAT_TICK_BYTES {
+        // Stat every STAT_TICK_BYTES OR when accumulated bytes start
+        // approaching the threshold (so a small max_size_bytes doesn't get
+        // overshot N× before the stat tick fires).
+        let tick = STAT_TICK_BYTES.min(self.policy.max_size_bytes / 4).max(1);
+        if self.bytes_since_stat >= tick || line.len() as u64 >= tick {
             let _ = self.check_rotation();
             self.bytes_since_stat = 0;
         }
@@ -1011,5 +1022,168 @@ mod tests {
                 LogFilterError::Invalid(_)
             ));
         });
+    }
+
+    fn make_cfg(rotation: RotationKind, max_mib: u64, keep: u8) -> LoggingConfig {
+        LoggingConfig {
+            default_level: "info".into(),
+            targets: Default::default(),
+            output: crate::session::config::SinkKind::File,
+            file_path: "debug.log".into(),
+            rotation,
+            max_size_mib: max_mib,
+            keep_count: keep,
+        }
+    }
+
+    #[test]
+    fn resolve_log_path_relative_joins_app_dir() {
+        let cfg = make_cfg(RotationKind::Size, 50, 5);
+        let dir = std::path::PathBuf::from("/tmp/aoe-test");
+        assert_eq!(resolve_log_path(&cfg, &dir), dir.join("debug.log"));
+    }
+
+    #[test]
+    fn resolve_log_path_absolute_used_verbatim() {
+        let mut cfg = make_cfg(RotationKind::Size, 50, 5);
+        cfg.file_path = "/var/log/aoe.log".into();
+        let dir = std::path::PathBuf::from("/tmp/aoe-test");
+        assert_eq!(
+            resolve_log_path(&cfg, &dir),
+            std::path::PathBuf::from("/var/log/aoe.log")
+        );
+    }
+
+    #[test]
+    fn resolve_sink_tui_with_stdout_coerces_to_file_with_warning() {
+        let mut cfg = make_cfg(RotationKind::Size, 50, 5);
+        cfg.output = crate::session::config::SinkKind::Stdout;
+        let dir = std::path::PathBuf::from("/tmp/aoe-test");
+        let r = resolve_sink(&cfg, &dir, ProcessContext::Tui);
+        assert!(matches!(r.target, SubscriberTarget::File(_, _)));
+        assert!(r.warning.is_some(), "coercion should surface a warning");
+    }
+
+    #[test]
+    fn resolve_sink_serve_foreground_honors_stdout() {
+        let mut cfg = make_cfg(RotationKind::Size, 50, 5);
+        cfg.output = crate::session::config::SinkKind::Stdout;
+        let dir = std::path::PathBuf::from("/tmp/aoe-test");
+        let r = resolve_sink(&cfg, &dir, ProcessContext::ServeForeground);
+        assert!(matches!(r.target, SubscriberTarget::Stdout));
+        assert!(r.warning.is_none());
+    }
+
+    #[test]
+    fn rotation_writer_rotates_at_threshold() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("debug.log");
+        // 4 KiB threshold so the test runs fast.
+        let policy = RotationPolicy {
+            kind: RotationKind::Size,
+            max_size_bytes: 4 * 1024,
+            keep_count: 3,
+        };
+        let mut w = SizeRotatingWriter::new(path.clone(), policy).unwrap();
+        // Write 5 KiB worth of one-line events; each line forces stat-on-tick
+        // when crossing 16 KiB but actual size check uses metadata so the
+        // 4 KiB threshold triggers on the first oversized stat.
+        for i in 0..200 {
+            writeln!(&mut w, "line {i:050}").unwrap();
+        }
+        w.flush().unwrap();
+        drop(w);
+        let rotated = path.with_extension("log.1");
+        assert!(rotated.exists(), "expected rotated file at {:?}", rotated);
+    }
+
+    #[test]
+    fn rotation_writer_keeps_at_most_keep_count() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("debug.log");
+        // Seed pre-existing rotated files to simulate prior rotations.
+        std::fs::write(path.with_extension("log.1"), b"old 1").unwrap();
+        std::fs::write(path.with_extension("log.2"), b"old 2").unwrap();
+        std::fs::write(path.with_extension("log.3"), b"old 3").unwrap();
+        // Threshold low enough to rotate on first emit.
+        let policy = RotationPolicy {
+            kind: RotationKind::Size,
+            max_size_bytes: 64,
+            keep_count: 3,
+        };
+        std::fs::write(&path, vec![b'x'; 200]).unwrap();
+        let mut w = SizeRotatingWriter::new(path.clone(), policy).unwrap();
+        writeln!(&mut w, "trigger rotation now padded out to be large enough").unwrap();
+        w.flush().unwrap();
+        drop(w);
+        // .1, .2, .3 should exist; .4 should NOT.
+        assert!(
+            !path.with_extension("log.4").exists(),
+            "keep_count=3 must drop .4"
+        );
+    }
+
+    #[test]
+    fn rotation_writer_never_keeps_file_alone_when_disabled() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("debug.log");
+        let policy = RotationPolicy {
+            kind: RotationKind::Never,
+            max_size_bytes: 64,
+            keep_count: 3,
+        };
+        let mut w = SizeRotatingWriter::new(path.clone(), policy).unwrap();
+        for _ in 0..100 {
+            writeln!(&mut w, "filler line that pushes well past 64 bytes here").unwrap();
+        }
+        w.flush().unwrap();
+        drop(w);
+        assert!(
+            !path.with_extension("log.1").exists(),
+            "rotation=never must not produce .1"
+        );
+        let size = std::fs::metadata(&path).unwrap().len();
+        assert!(size > 64, "file should have grown past threshold");
+    }
+
+    #[test]
+    fn rotation_writer_line_buffers_across_partial_writes() {
+        // Simulate the multi-write pattern from `tracing-subscriber::fmt`:
+        // two write() calls for the same logical event. Ensure both halves
+        // land in the same line (no rotation can split mid-line).
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("debug.log");
+        let policy = RotationPolicy {
+            kind: RotationKind::Size,
+            max_size_bytes: 1024 * 1024,
+            keep_count: 3,
+        };
+        let mut w = SizeRotatingWriter::new(path.clone(), policy).unwrap();
+        w.write_all(b"first half ").unwrap();
+        w.write_all(b"second half\n").unwrap();
+        w.flush().unwrap();
+        drop(w);
+        let contents = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            contents.contains("first half second half\n"),
+            "split write should re-coalesce in one line, got: {:?}",
+            contents
+        );
+    }
+
+    #[test]
+    fn rotation_writer_startup_rotates_oversize_existing_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("debug.log");
+        // Pre-seed oversized file.
+        std::fs::write(&path, vec![b'x'; 200]).unwrap();
+        let policy = RotationPolicy {
+            kind: RotationKind::Size,
+            max_size_bytes: 64,
+            keep_count: 3,
+        };
+        let _w = SizeRotatingWriter::new(path.clone(), policy).unwrap();
+        // .1 should now exist (startup rotation triggered in new()).
+        assert!(path.with_extension("log.1").exists());
     }
 }
