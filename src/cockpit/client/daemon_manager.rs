@@ -55,9 +55,18 @@ pub enum ManagerError {
 pub async fn ensure_daemon() -> Result<DaemonEndpoint, ManagerError> {
     // Env override path: never auto-spawn. The whole point of the
     // override is to attach to a *specific* daemon; silently starting
-    // a different local one would be the wrong answer.
+    // a different local one would be the wrong answer. Health-check
+    // the endpoint here so callers don't bubble up raw reqwest
+    // transport errors on every subsequent API call.
     if discover_env().is_some() {
-        return discover().map_err(|_| ManagerError::EnvOverrideUnreachable);
+        let endpoint = discover().map_err(|_| ManagerError::EnvOverrideUnreachable)?;
+        let client = super::HttpClient::new(endpoint.clone())
+            .map_err(|_| ManagerError::EnvOverrideUnreachable)?;
+        client
+            .health_check()
+            .await
+            .map_err(|_| ManagerError::EnvOverrideUnreachable)?;
+        return Ok(endpoint);
     }
 
     if let Ok(endpoint) = discover() {

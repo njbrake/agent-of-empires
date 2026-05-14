@@ -122,6 +122,29 @@ impl HttpClient {
         Ok(())
     }
 
+    /// Lightweight reachability probe used by `ensure_daemon` (when
+    /// `AOE_DAEMON_URL` is set, we fail loud before falling into raw
+    /// reqwest transport errors) and `aoe serve --status` (renders
+    /// remote daemon info instead of "Daemon: not running").
+    ///
+    /// Hits `GET /api/sessions` — the cheapest authenticated endpoint
+    /// in the surface; succeeds with 200 when the daemon is up *and*
+    /// the token is valid, separates "host is down" (transport error)
+    /// from "auth misconfigured" (401).
+    pub async fn health_check(&self) -> Result<(), HttpError> {
+        let url = format!("{}/api/sessions", self.endpoint.base_url);
+        let res = self.auth(self.http.get(&url)).send().await?;
+        let status = res.status();
+        if status.is_success() {
+            return Ok(());
+        }
+        let body = res.text().await.unwrap_or_default();
+        match status {
+            StatusCode::UNAUTHORIZED => Err(HttpError::Unauthorized),
+            _ => Err(HttpError::Server { status, body }),
+        }
+    }
+
     fn auth(&self, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
         match &self.endpoint.token {
             Some(token) => builder.header(header::AUTHORIZATION, format!("Bearer {token}")),

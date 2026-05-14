@@ -284,6 +284,12 @@ a remote-cockpit picker. Local-only operations (tmux attach,
 `aoe stop`, file edit) aren't available against a remote — for
 those, use the web dashboard or SSH into the host machine.
 
+The env override also retargets `aoe serve --status` and the
+`aoe cockpit *` verbs: with `AOE_DAEMON_URL` set, `--status` pings
+the remote endpoint and reports its reachability instead of inspecting
+the local `serve.pid` file. Unset the variable (or run `env -u
+AOE_DAEMON_URL aoe serve --status`) to fall back to local introspection.
+
 ### Headless CLI verbs
 
 For scripting and quick checks, every cockpit operation has a

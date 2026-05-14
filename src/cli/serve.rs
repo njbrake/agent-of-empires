@@ -269,7 +269,7 @@ pub async fn run(profile: &str, args: ServeArgs) -> Result<()> {
     }
 
     if args.status {
-        return print_status();
+        return print_status().await;
     }
 
     // Refuse to start a second instance (daemon or foreground) while another
@@ -621,7 +621,40 @@ async fn stop_daemon() -> Result<()> {
 /// Print the running daemon's PID, mode, URLs, and log path. Exits
 /// non-zero (via `bail!`) when no daemon is running so shell scripts
 /// can branch on it (`aoe serve --status && …`).
-fn print_status() -> Result<()> {
+async fn print_status() -> Result<()> {
+    // `AOE_DAEMON_URL` retargets every `aoe` invocation at a remote
+    // daemon (see docs/cockpit.md). `--status` follows the same rule:
+    // when the env override is set, report the remote endpoint's
+    // health instead of the local PID file.
+    if let Some(endpoint) = crate::cockpit::client::discovery::discover_env() {
+        let client = crate::cockpit::client::HttpClient::new(endpoint.clone())
+            .map_err(|e| anyhow::anyhow!("http client init failed: {e}"))?;
+        match client.health_check().await {
+            Ok(()) => {
+                println!("Daemon: reachable (remote via AOE_DAEMON_URL)");
+                println!("URL:    {}", endpoint.base_url);
+                println!(
+                    "Token:  {}",
+                    if endpoint.token.is_some() {
+                        "set"
+                    } else {
+                        "unset"
+                    }
+                );
+                Ok(())
+            }
+            Err(e) => bail!(
+                "AOE_DAEMON_URL is set but the daemon at {} is unreachable ({e}); \
+                 check the address or unset to use a local daemon",
+                endpoint.base_url
+            ),
+        }
+    } else {
+        print_local_status()
+    }
+}
+
+fn print_local_status() -> Result<()> {
     let Some(pid) = daemon_pid() else {
         bail!("Daemon: not running\nStart one with: aoe serve --daemon");
     };
