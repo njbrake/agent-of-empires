@@ -21,6 +21,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
+          prefix-key: "v1-rust"
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install tmux
         run: |
@@ -51,6 +52,7 @@ jobs:
           components: clippy
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
+          prefix-key: "v1-rust"
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - run: cargo clippy -- -D warnings
 
@@ -69,6 +71,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
+          prefix-key: "v1-rust"
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Check CLI docs are up-to-date
         run: |
@@ -84,6 +87,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
+          prefix-key: "v1-rust"
           save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Check skill file references valid CLI commands
         run: cargo xtask check-skill
