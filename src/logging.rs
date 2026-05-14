@@ -316,6 +316,105 @@ pub fn set_level(level: LogLevel) -> Result<SwapResult, LogFilterError> {
         .set_level(level)
 }
 
+/// Path of the shared runtime-filter file inside `app_dir`. Daemon writes
+/// here on every successful swap; cockpit runner subprocesses watch it
+/// with `notify` and apply the same filter to their own subscribers.
+pub fn runtime_filter_path(app_dir: &std::path::Path) -> std::path::PathBuf {
+    app_dir.join("runtime_filter")
+}
+
+/// Atomically persist a filter directive to `<app_dir>/runtime_filter`.
+/// Write-and-rename so concurrent readers never see a half-written file.
+/// Owner-only permissions match the other `serve.*` artifacts.
+pub fn persist_runtime_filter(directive: &str, app_dir: &std::path::Path) {
+    if let Err(e) = std::fs::create_dir_all(app_dir) {
+        tracing::warn!(target: "log.runtime", error = %e, "could not create app dir for runtime_filter");
+        return;
+    }
+    let path = runtime_filter_path(app_dir);
+    let tmp = app_dir.join("runtime_filter.tmp");
+    if let Err(e) = std::fs::write(&tmp, directive) {
+        tracing::warn!(target: "log.runtime", error = %e, "could not write runtime_filter.tmp");
+        return;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o600));
+    }
+    if let Err(e) = std::fs::rename(&tmp, &path) {
+        tracing::warn!(target: "log.runtime", error = %e, "could not rename runtime_filter");
+    }
+}
+
+/// Background task: watch `<app_dir>/runtime_filter` and apply changes
+/// to this process's `FilterController`. Used by the cockpit runner so
+/// the daemon's `aoe log-level` propagates to runners without restart.
+///
+/// notify watches the parent directory (the file may not exist yet);
+/// the task filters events to those touching our target file.
+pub async fn watch_runtime_filter(app_dir: std::path::PathBuf) {
+    use notify::{RecursiveMode, Watcher};
+    use std::sync::mpsc;
+
+    let target = runtime_filter_path(&app_dir);
+
+    let (tx, rx) = mpsc::channel::<notify::Result<notify::Event>>();
+    let mut watcher = match notify::recommended_watcher(move |res| {
+        let _ = tx.send(res);
+    }) {
+        Ok(w) => w,
+        Err(e) => {
+            tracing::warn!(target: "log.runtime", error = %e, "notify init failed; live propagation disabled");
+            return;
+        }
+    };
+    if let Err(e) = watcher.watch(&app_dir, RecursiveMode::NonRecursive) {
+        tracing::warn!(target: "log.runtime", error = %e, dir = %app_dir.display(), "notify watch failed");
+        return;
+    }
+
+    // Apply once at startup if the file is already there.
+    apply_filter_file(&target);
+
+    loop {
+        let evt = match tokio::task::block_in_place(|| rx.recv()) {
+            Ok(e) => e,
+            Err(_) => return,
+        };
+        let Ok(evt) = evt else { continue };
+        if evt.paths.iter().any(|p| p == &target) {
+            apply_filter_file(&target);
+        }
+    }
+}
+
+fn apply_filter_file(path: &std::path::Path) {
+    let directive = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(_) => return,
+    };
+    let directive = directive.trim();
+    if directive.is_empty() {
+        return;
+    }
+    match set_filter(directive) {
+        Ok(swap) => tracing::info!(
+            target: "log.runtime",
+            previous = %swap.previous,
+            current = %swap.current,
+            source = "file-watch",
+            "runner filter swapped"
+        ),
+        Err(e) => tracing::warn!(
+            target: "log.runtime",
+            error = %e,
+            directive = %directive,
+            "runner filter swap failed"
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

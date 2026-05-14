@@ -87,6 +87,9 @@ pub async fn patch_log_level(
                 source = "rest",
                 "filter swapped"
             );
+            if let Ok(app_dir) = crate::session::get_app_dir() {
+                logging::persist_runtime_filter(&swap.current, &app_dir);
+            }
             Ok(Json(LogLevelResponse {
                 previous: swap.previous,
                 current: swap.current,

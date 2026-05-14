@@ -108,6 +108,12 @@ pub async fn run(args: CockpitRunnerArgs) -> Result<()> {
     worker_registry::validate_session_id(&args.session_id).context("invalid --session-id")?;
     init_runner_logging(&args.session_id)?;
 
+    // Watch the shared runtime_filter file so `aoe log-level` from the
+    // daemon propagates to this runner subprocess without restart.
+    if let Ok(app_dir) = crate::session::get_app_dir() {
+        tokio::spawn(crate::logging::watch_runtime_filter(app_dir));
+    }
+
     info!(
         target: "cockpit.runner",
         session = %args.session_id,
