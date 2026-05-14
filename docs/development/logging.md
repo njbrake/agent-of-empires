@@ -1,6 +1,6 @@
 # Logging
 
-Agent of Empires uses the [`tracing`](https://docs.rs/tracing) crate. Both the main daemon and cockpit runner subprocesses share `src/logging.rs` so they agree on env-var resolution, default filter construction, and the reloadable subscriber handle. Daemon and runners append to the same file (`~/.agent-of-empires/debug.log`) so a single tail covers an entire session.
+Agent of Empires uses the [`tracing`](https://docs.rs/tracing) crate. The TUI, the `aoe serve` daemon, and the cockpit runner subprocesses all share `src/logging.rs` so they agree on env-var resolution, default filter construction, and the reloadable subscriber handle. TUI and runners append to the same `~/.agent-of-empires/debug.log` so a single tail covers an entire session; `aoe serve` writes to stdout (captured into `serve.log`).
 
 ## Targets
 
@@ -39,7 +39,17 @@ Resolved once at startup in `LogConfig::from_env`:
 | `AOE_ACP_TRACE` | Overlay: `agent_client_protocol=debug` + the JSON-RPC transport_actor at trace. |
 | `AOE_TERMINAL_TRACE` | Overlay: `terminal=trace` (per-byte firehose). |
 
-If no level env var is set and you're starting `aoe serve`, the daemon defaults to info-level stdout logging so the TUI Starting-screen log tail isn't empty. Outside of `aoe serve`, no subscriber is installed (TUI mode prints to ratatui's alt-screen; a tracing subscriber on stderr would garble it).
+## Sinks by process
+
+| Invocation | Filter source | Sink |
+|---|---|---|
+| Any `aoe` with env var set | env | `debug.log` |
+| `aoe serve`, no env | `[logging]` config, else info baseline | stdout (captured into `serve.log` by the daemon redirect) |
+| TUI (`aoe` with no subcommand), no env | `[logging]` config, else info baseline | `debug.log` |
+| Cockpit runner subprocess | env (inherited) → `[logging]` config → info baseline; then `runtime_filter` if the daemon writes one | `debug.log` |
+| Other one-shot CLI, no env | — | no subscriber installed (opt in via `AOE_LOG_LEVEL` if you need a trace of one) |
+
+The TUI writes to a file rather than stderr because ratatui owns the alt-screen and a stderr subscriber would corrupt it. Daemon + runners + TUI all append to the same `debug.log` so a single tail covers a whole session.
 
 ## Persistent configuration (`[logging]` in `config.toml`)
 
@@ -57,7 +67,7 @@ default_level = "info"
 
 `default_level` is the baseline; entries in `targets` override per target. The list of targets surfaced as dropdowns mirrors `KNOWN_SUB_TARGETS` in `src/logging.rs`. Anything else can still be set via raw EnvFilter syntax through the runtime endpoint or CLI.
 
-Precedence at startup: `AOE_LOG_LEVEL` env var → `[logging]` in config → built-in `info` fallback. Changes via the settings UI live-apply through the same `FilterController` swap that powers `aoe log-level`, including propagation to cockpit runners via the `runtime_filter` notify watcher. No daemon restart needed.
+Changes via the settings UI live-apply through the same `FilterController` swap that powers `aoe log-level`, including propagation to cockpit runners via the `runtime_filter` notify watcher. No daemon restart needed. (The startup precedence is shown in the *Sinks by process* table above: env wins, then `[logging]`, then the info baseline.)
 
 ## Runtime control
 
@@ -117,7 +127,7 @@ Not captured (intentional, v1): `console.error`. Wrapping it produces noisy dupl
 
 | Path | When it's written |
 |------|-------------------|
-| `~/.agent-of-empires/debug.log` | Both daemon and cockpit runner. Created when a log-level env var is set or via `aoe serve`. |
+| `~/.agent-of-empires/debug.log` | TUI, cockpit runners, and any `aoe` invocation with `AOE_LOG_LEVEL` set. `aoe serve` writes its own output to stdout (captured into `serve.log`). |
 | `~/.agent-of-empires/serve.log` | Daemon stdout/stderr tail captured by the `aoe serve --daemon` redirect. |
 | `~/.agent-of-empires/runtime_filter` | Atomically written on every successful `aoe log-level` swap; consumed by runner watchers. |
 | `~/.agent-of-empires/cockpit-workers/<session-id>.log` | Touched for compatibility; structured tracing now lands in the shared `debug.log`. |

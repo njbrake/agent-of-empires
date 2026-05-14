@@ -473,12 +473,13 @@ fn init_runner_logging(session_id: &str) -> Result<()> {
     open_log_file(&per_session)?;
 
     let shared_path = crate::session::get_app_dir()?.join("debug.log");
-    let env_cfg = crate::logging::LogConfig::from_env();
-    let filter = env_cfg.filter_string().unwrap_or_else(|| {
-        crate::logging::LogConfig::serve_default()
-            .filter_string()
-            .expect("serve_default sets a level")
-    });
+    // Same precedence as main.rs: env > [logging] in config.toml > info
+    // baseline. The notify watcher on runtime_filter still takes over
+    // for live swaps once the daemon writes one.
+    let filter = crate::logging::LogConfig::from_env()
+        .filter_string()
+        .or_else(crate::logging::load_persisted_filter)
+        .unwrap_or_else(crate::logging::serve_default_filter);
 
     let init = crate::logging::init_subscriber(
         crate::logging::SubscriberTarget::File(shared_path),

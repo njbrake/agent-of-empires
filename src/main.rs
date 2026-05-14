@@ -38,14 +38,21 @@ async fn main() -> Result<()> {
     //   AOE_ACP_TRACE=1                             (raw JSON-RPC firehose)
     //   AOE_TERMINAL_TRACE=1                        (per-byte WS firehose)
     //
-    // Level set → file logging to ~/.agent-of-empires/debug.log.
-    // Else `aoe serve` → stdout (captured into serve.log by the daemon
-    // redirect) so the TUI Starting-screen log tail isn't empty during
-    // cert provisioning.
-    // Else no subscriber installed.
+    // Sinks by process:
+    //   env set, any aoe → debug.log (file)
+    //   aoe serve, no env → stdout (captured into serve.log by the daemon
+    //     redirect; foreground serve writes to the user's terminal)
+    //   TUI (no subcommand), no env → debug.log (stderr would garble the
+    //     alt-screen, so we always write to file)
+    //   other one-shot CLI, no env → no subscriber (short-lived; opt in
+    //     via AOE_LOG_LEVEL if you need a trace of one)
     let env_cfg = LogConfig::from_env();
-    let (init, log_path_for_msg) = if let Some(filter) = env_cfg.filter_string() {
-        // Env-var wins. Writes file logs.
+    let env_filter = env_cfg.filter_string();
+    let is_serve = is_serve_command(&cli);
+    let is_tui = cli.command.is_none();
+    let (init, log_path_for_msg) = if let Some(filter) = env_filter {
+        // Env-var wins for every aoe invocation. Writes file logs so a
+        // foreground TUI isn't garbled.
         let log_path = agent_of_empires::session::get_app_dir().map(|d| d.join("debug.log"));
         match log_path.as_ref() {
             Ok(path) => {
@@ -63,25 +70,35 @@ async fn main() -> Result<()> {
                 None,
             ),
         }
-    } else if is_serve_command(&cli) {
-        // Persistent settings (config.toml [logging]) drive the serve filter
-        // when no env var is set. Falls back to serve_default if config not
-        // readable for any reason — daemon must always come up.
-        let cfg_filter = agent_of_empires::session::load_config()
-            .ok()
-            .flatten()
-            .and_then(|c| {
-                logging::build_filter_from_config(&c.logging.default_level, &c.logging.targets)
-            })
-            .unwrap_or_else(|| {
-                LogConfig::serve_default()
-                    .filter_string()
-                    .expect("serve_default sets a level")
-            });
+    } else if is_serve {
+        // Persistent settings (config.toml [logging]) drive the filter when
+        // no env var is set. Falls back to info baseline if the config can't
+        // be read — daemon must always come up.
+        let filter = logging::load_persisted_filter().unwrap_or_else(logging::serve_default_filter);
         (
-            logging::init_subscriber(SubscriberTarget::Stdout, cfg_filter),
+            logging::init_subscriber(SubscriberTarget::Stdout, filter),
             None,
         )
+    } else if is_tui {
+        // Same filter source as `aoe serve`, but sink is the shared
+        // debug.log because ratatui owns the alt-screen and a stderr
+        // subscriber would corrupt the UI. Daemon + runners + TUI all
+        // append to the same file so a single tail covers a session.
+        let filter = logging::load_persisted_filter().unwrap_or_else(logging::serve_default_filter);
+        let log_path = agent_of_empires::session::get_app_dir().map(|d| d.join("debug.log"));
+        match log_path.as_ref() {
+            Ok(path) => {
+                let res = logging::init_subscriber(SubscriberTarget::File(path.clone()), filter);
+                (res, Some(path.clone()))
+            }
+            Err(_) => (
+                logging::InitResult {
+                    controller: None,
+                    warning: None,
+                },
+                None,
+            ),
+        }
     } else {
         (
             logging::InitResult {

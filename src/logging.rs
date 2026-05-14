@@ -140,6 +140,24 @@ pub fn build_filter_from_config(
     Some(s)
 }
 
+/// Load `[logging]` from `config.toml` and build an EnvFilter directive.
+/// Returns `None` when no config file exists, when it fails to parse, or
+/// when the level value is unrecognised. Callers fall back to
+/// `serve_default_filter()` in that case.
+pub fn load_persisted_filter() -> Option<String> {
+    let config = crate::session::load_config().ok().flatten()?;
+    build_filter_from_config(&config.logging.default_level, &config.logging.targets)
+}
+
+/// Info-baseline filter directive. Used as the universal fallback when
+/// neither env nor config produce one — both `aoe serve` and the TUI
+/// must come up with *some* filter so the subscriber can be installed.
+pub fn serve_default_filter() -> String {
+    LogConfig::serve_default()
+        .filter_string()
+        .expect("serve_default sets a level")
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LogLevel {
     Trace,
