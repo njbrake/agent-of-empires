@@ -260,6 +260,18 @@ pub struct Instance {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notify_on_error: Option<bool>,
 
+    /// Per-session override for the diff base ref. Takes precedence
+    /// over `DiffConfig.default_branch` and the auto-detected default
+    /// branch. Set when the eventual PR target differs from the project
+    /// default (e.g. stacked PRs, hotfix off `release/*`). See #970.
+    ///
+    /// Accepts either a short branch name (`"main"`, `"release-1.2"`)
+    /// or a remote-qualified ref (`"upstream/main"`); the diff resolver
+    /// hands it straight to `compute_changed_files`, whose
+    /// `get_commit_from_ref` resolves both forms.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_branch_override: Option<String>,
+
     /// Whether this session uses the ACP cockpit instead of a tmux pane.
     /// When true, aoe spawns an ACP agent subprocess and renders structured
     /// events natively; tmux integration is bypassed for this session.
@@ -468,6 +480,7 @@ impl Instance {
             notify_on_waiting: None,
             notify_on_idle: None,
             notify_on_error: None,
+            base_branch_override: None,
             #[cfg(feature = "serve")]
             cockpit_mode: false,
             #[cfg(feature = "serve")]

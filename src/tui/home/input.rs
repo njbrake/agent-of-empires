@@ -867,7 +867,15 @@ impl HomeView {
                 };
 
                 let repo_path = std::path::PathBuf::from(&inst.project_path);
-                match DiffView::new(repo_path) {
+                let session_id_owned = inst.id.clone();
+                let profile = inst.source_profile.clone();
+                let base_override = inst.base_branch_override.clone();
+                match DiffView::new_for_session(
+                    repo_path,
+                    Some(session_id_owned),
+                    profile,
+                    base_override,
+                ) {
                     Ok(view) => self.diff_view = Some(view),
                     Err(e) => {
                         tracing::error!("Failed to open diff view: {}", e);

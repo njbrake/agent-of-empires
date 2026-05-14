@@ -28,6 +28,15 @@ pub struct DiffView {
     /// Path to the repository root
     pub(crate) repo_path: PathBuf,
 
+    /// Session id this diff view belongs to. None when opened in a
+    /// session-agnostic context (legacy `DiffView::new`); persistence
+    /// of the per-session base-branch override is skipped in that case.
+    pub(crate) session_id: Option<String>,
+
+    /// Profile the session belongs to, used to look up `Storage` when
+    /// persisting the base-branch override.
+    pub(crate) profile: String,
+
     /// Base branch to compare against
     pub(crate) base_branch: String,
 
@@ -72,15 +81,32 @@ pub struct DiffView {
 }
 
 impl DiffView {
-    /// Create a new diff view for a repository
+    /// Create a session-agnostic diff view. Selecting a different
+    /// branch through the picker only mutates in-memory state. Callers
+    /// that have a session id should use `new_for_session` so the
+    /// override persists.
     pub fn new(repo_path: PathBuf) -> anyhow::Result<Self> {
+        Self::new_for_session(repo_path, None, String::new(), None)
+    }
+
+    /// Create a diff view bound to a session. `base_override` (the
+    /// session's persisted `base_branch_override`) wins over the
+    /// profile default and auto-detection. Subsequent calls to
+    /// `select_branch` persist the new ref back to the session record.
+    pub fn new_for_session(
+        repo_path: PathBuf,
+        session_id: Option<String>,
+        profile: String,
+        base_override: Option<String>,
+    ) -> anyhow::Result<Self> {
         let config = Config::load_or_warn();
 
-        // Determine base branch
-        let base_branch = config
-            .diff
-            .default_branch
-            .clone()
+        let base_branch = base_override
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_string)
+            .or_else(|| config.diff.default_branch.clone())
             .or_else(|| get_default_base_ref(&repo_path).ok())
             .unwrap_or_else(|| "main".to_string());
 
@@ -91,6 +117,8 @@ impl DiffView {
 
         let mut view = Self {
             repo_path,
+            session_id,
+            profile,
             base_branch,
             files: Vec::new(),
             selected_file: 0,
@@ -168,15 +196,37 @@ impl DiffView {
         }
     }
 
-    /// Select a branch and refresh
+    /// Select a branch and refresh. When the view is bound to a
+    /// session, the choice is persisted as `base_branch_override` on
+    /// the session record so the next launch comes back to the same
+    /// comparison. Persistence failures only surface as a soft error
+    /// message; the in-memory switch still applies. See #970.
     pub fn select_branch(&mut self, branch: String) {
         self.base_branch = branch;
         self.branch_select = None;
         self.warning_dialog = check_merge_base_status(&self.repo_path, &self.base_branch)
             .map(|msg| InfoDialog::new("Warning", &msg));
+        if let Err(e) = self.persist_base_override() {
+            self.error_message = Some(format!("Failed to persist base branch: {e}"));
+        }
         if let Err(e) = self.refresh_files() {
             self.error_message = Some(format!("Failed to refresh: {}", e));
         }
+    }
+
+    fn persist_base_override(&self) -> anyhow::Result<()> {
+        let Some(session_id) = self.session_id.as_deref() else {
+            return Ok(());
+        };
+        let storage = crate::session::Storage::new(&self.profile)?;
+        let (mut instances, groups) = storage.load_with_groups()?;
+        let Some(inst) = instances.iter_mut().find(|i| i.id == session_id) else {
+            return Ok(());
+        };
+        inst.base_branch_override = Some(self.base_branch.clone());
+        let group_tree = crate::session::GroupTree::new_with_groups(&instances, &groups);
+        storage.save_with_groups(&instances, &group_tree)?;
+        Ok(())
     }
 
     /// Navigate to next file
@@ -251,6 +301,8 @@ impl DiffView {
     pub(crate) fn test_default() -> Self {
         Self {
             repo_path: std::path::PathBuf::from("/tmp/fake"),
+            session_id: None,
+            profile: String::new(),
             base_branch: "main".to_string(),
             files: Vec::new(),
             selected_file: 0,

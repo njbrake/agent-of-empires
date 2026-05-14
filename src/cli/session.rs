@@ -34,6 +34,13 @@ pub enum SessionCommands {
 
     /// Set agent session ID for a session
     SetSessionId(SetSessionIdArgs),
+
+    /// Set or clear the per-session diff base branch. The diff view
+    /// compares the worktree against this ref instead of the
+    /// auto-detected default. Useful when the PR target differs from
+    /// the project default (stacked PRs, hotfix off `release/*`,
+    /// renamed default branch). See #970.
+    SetBase(SetBaseArgs),
 }
 
 #[derive(Args)]
@@ -132,6 +139,20 @@ pub struct SetSessionIdArgs {
     session_id: String,
 }
 
+#[derive(Args)]
+pub struct SetBaseArgs {
+    /// Session ID or title
+    pub identifier: String,
+    /// Branch ref to diff against (short name like `main` or
+    /// remote-qualified like `upstream/main`). Required unless
+    /// `--clear` is passed.
+    pub branch: Option<String>,
+    /// Clear the override and fall back to the profile default /
+    /// auto-detected base.
+    #[arg(long, conflicts_with = "branch")]
+    pub clear: bool,
+}
+
 #[derive(Serialize)]
 struct SessionDetails {
     id: String,
@@ -157,6 +178,7 @@ pub async fn run(profile: &str, command: SessionCommands) -> Result<()> {
         SessionCommands::Rename(args) => rename_session(profile, args).await,
         SessionCommands::Current(args) => current_session(args).await,
         SessionCommands::SetSessionId(args) => set_session_id(profile, args).await,
+        SessionCommands::SetBase(args) => set_base(profile, args).await,
     }
 }
 
@@ -727,6 +749,45 @@ async fn set_session_id(profile: &str, args: SetSessionIdArgs) -> Result<()> {
     Ok(())
 }
 
+async fn set_base(profile: &str, args: SetBaseArgs) -> Result<()> {
+    if !args.clear && args.branch.is_none() {
+        bail!("Provide a branch ref or pass --clear to remove the override.");
+    }
+    let storage = Storage::new(profile)?;
+    let (mut instances, groups) = storage.load_with_groups()?;
+
+    let idx = instances
+        .iter()
+        .position(|i| {
+            i.id == args.identifier
+                || i.id.starts_with(&args.identifier)
+                || i.title == args.identifier
+        })
+        .ok_or_else(|| anyhow::anyhow!("Session not found: {}", args.identifier))?;
+
+    let new_value = if args.clear {
+        None
+    } else {
+        let trimmed = args.branch.as_deref().unwrap_or("").trim().to_string();
+        if trimmed.is_empty() {
+            bail!("Branch name is empty. Pass --clear to remove the override.");
+        }
+        Some(trimmed)
+    };
+
+    instances[idx].base_branch_override = new_value.clone();
+    let title = instances[idx].title.clone();
+
+    let group_tree = GroupTree::new_with_groups(&instances, &groups);
+    storage.save_with_groups(&instances, &group_tree)?;
+
+    match new_value {
+        Some(ref v) => println!("✓ Set diff base for '{}': {}", title, v),
+        None => println!("✓ Cleared diff base override for '{}'", title),
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod restart_args_tests {
     use super::SessionCommands;
@@ -784,6 +845,43 @@ mod restart_args_tests {
         assert!(
             result.is_err(),
             "passing both identifier and --all should error"
+        );
+    }
+
+    #[test]
+    fn set_base_with_branch_parses() {
+        let cli = Cli::try_parse_from(["aoe", "set-base", "claude-3", "upstream/main"])
+            .expect("set-base with branch must parse");
+        match cli.cmd {
+            SessionCommands::SetBase(args) => {
+                assert_eq!(args.identifier, "claude-3");
+                assert_eq!(args.branch.as_deref(), Some("upstream/main"));
+                assert!(!args.clear);
+            }
+            _ => panic!("wrong subcommand"),
+        }
+    }
+
+    #[test]
+    fn set_base_with_clear_parses() {
+        let cli = Cli::try_parse_from(["aoe", "set-base", "claude-3", "--clear"])
+            .expect("set-base --clear must parse");
+        match cli.cmd {
+            SessionCommands::SetBase(args) => {
+                assert_eq!(args.identifier, "claude-3");
+                assert!(args.branch.is_none());
+                assert!(args.clear);
+            }
+            _ => panic!("wrong subcommand"),
+        }
+    }
+
+    #[test]
+    fn set_base_branch_and_clear_conflicts() {
+        let result = Cli::try_parse_from(["aoe", "set-base", "claude-3", "main", "--clear"]);
+        assert!(
+            result.is_err(),
+            "passing both branch and --clear should error"
         );
     }
 }

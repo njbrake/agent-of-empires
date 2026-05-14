@@ -622,6 +622,26 @@ export async function setSessionNotifications(
   }
 }
 
+/** Set the per-session diff-base override. Pass `null` to clear the
+ *  override and fall back to the profile default / auto-detection.
+ *  See #970. */
+export async function setSessionDiffBase(
+  id: string,
+  baseBranch: string | null,
+): Promise<SessionResponse | null> {
+  try {
+    const res = await fetch(`/api/sessions/${id}/diff-base`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ base_branch: baseBranch }),
+    });
+    if (!res.ok) return null;
+    return (await res.json()) as SessionResponse;
+  } catch {
+    return null;
+  }
+}
+
 export interface DeleteSessionOptions {
   delete_worktree?: boolean;
   delete_branch?: boolean;

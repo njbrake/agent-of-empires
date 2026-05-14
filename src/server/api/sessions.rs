@@ -39,6 +39,12 @@ pub struct SessionResponse {
     /// or those that took the repo's default branch. See #948.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub base_branch: Option<String>,
+    /// Per-session override for the diff base, set via the web "vs &lt;ref&gt;"
+    /// picker, the TUI diff view's `b` keybind, or
+    /// `aoe session set-base`. Wins over `base_branch`, the profile
+    /// default, and auto-detection. See #970.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub base_branch_override: Option<String>,
     pub is_sandboxed: bool,
     pub has_managed_worktree: bool,
     pub has_terminal: bool,
@@ -178,6 +184,7 @@ impl SessionResponse {
                 .worktree_info
                 .as_ref()
                 .and_then(|w| w.base_branch.clone()),
+            base_branch_override: inst.base_branch_override.clone(),
             is_sandboxed: inst.is_sandboxed(),
             has_managed_worktree: inst
                 .worktree_info
@@ -522,6 +529,71 @@ pub async fn update_session_notifications(
             .collect();
         if let Err(e) = storage.save(&profile_instances) {
             tracing::error!("Failed to save after notification update: {e}");
+        }
+    }
+
+    (StatusCode::OK, Json(serde_json::json!(response)))
+}
+
+// --- Diff base override ---
+//
+// `PATCH /api/sessions/{id}/diff-base` sets / clears the per-session
+// override for the diff base ref. The web `vs <ref>` chip popover, the
+// TUI diff view's `b` keybind, and `aoe session set-base` all funnel
+// through this endpoint so the override is persisted alongside the
+// session record and survives restart. See #970.
+
+#[derive(Deserialize)]
+pub struct UpdateDiffBaseBody {
+    /// New override. `Some(non-empty)` sets the override; `Some("")` or
+    /// `None` clears it (the diff then falls back to the profile default
+    /// and then auto-detection).
+    #[serde(default)]
+    pub base_branch: Option<String>,
+}
+
+pub async fn update_session_diff_base(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(body): Json<UpdateDiffBaseBody>,
+) -> impl IntoResponse {
+    if state.read_only {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({
+                "error": "read_only",
+                "message": "Server is in read-only mode"
+            })),
+        );
+    }
+
+    let mut instances = state.instances.write().await;
+    let Some(inst) = instances.iter_mut().find(|i| i.id == id) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "message": "Session not found" })),
+        );
+    };
+
+    inst.base_branch_override = body
+        .base_branch
+        .as_deref()
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_string);
+
+    let response =
+        SessionResponse::from_instance(&*inst, crate::claude_settings::read_tui_fullscreen());
+    let profile = inst.source_profile.clone();
+
+    if let Ok(storage) = Storage::new(&profile) {
+        let profile_instances: Vec<_> = instances
+            .iter()
+            .filter(|i| i.source_profile == profile)
+            .cloned()
+            .collect();
+        if let Err(e) = storage.save(&profile_instances) {
+            tracing::error!("Failed to save after diff-base update: {e}");
         }
     }
 
@@ -1528,6 +1600,15 @@ struct DiffRepo {
     path: String,
 }
 
+struct DiffContext {
+    repos: Vec<DiffRepo>,
+    /// Per-session override for the diff base (set via
+    /// `PATCH /api/sessions/{id}/diff-base`, the `aoe session set-base`
+    /// CLI, or the TUI diff view's `b` keybind). Wins over the
+    /// profile-level default and the auto-detected ref. See #970.
+    base_branch_override: Option<String>,
+}
+
 /// Expand a session into the list of repos whose diffs the sidebar
 /// cares about. Workspace sessions iterate `workspace_info.repos`
 /// (each `worktree_path` becomes one entry); single-repo sessions
@@ -1536,7 +1617,7 @@ struct DiffRepo {
 async fn resolve_diff_repos(
     state: &AppState,
     id: &str,
-) -> Result<Vec<DiffRepo>, axum::response::Response> {
+) -> Result<DiffContext, axum::response::Response> {
     let instances = state.instances.read().await;
     let inst = instances.iter().find(|i| i.id == id).ok_or_else(|| {
         (
@@ -1545,44 +1626,70 @@ async fn resolve_diff_repos(
         )
             .into_response()
     })?;
-    if let Some(ws) = inst.workspace_info.as_ref() {
-        let repos = ws
-            .repos
+    let repos = if let Some(ws) = inst.workspace_info.as_ref() {
+        ws.repos
             .iter()
             .map(|r| DiffRepo {
                 name: Some(r.name.clone()),
                 path: r.worktree_path.clone(),
             })
-            .collect();
-        Ok(repos)
+            .collect()
     } else {
-        Ok(vec![DiffRepo {
+        vec![DiffRepo {
             name: None,
             path: inst.project_path.clone(),
-        }])
+        }]
+    };
+    Ok(DiffContext {
+        repos,
+        base_branch_override: inst.base_branch_override.clone(),
+    })
+}
+
+/// Resolve the diff base for one repo path. Override (per-session)
+/// wins over the profile's `DiffConfig.default_branch`, which wins
+/// over auto-detection (`get_default_base_ref`). See #970.
+fn resolve_diff_base(
+    override_value: Option<&str>,
+    config_default: Option<&str>,
+    repo_path: &std::path::Path,
+) -> String {
+    if let Some(v) = override_value.map(str::trim).filter(|v| !v.is_empty()) {
+        return v.to_string();
     }
+    if let Some(v) = config_default.map(str::trim).filter(|v| !v.is_empty()) {
+        return v.to_string();
+    }
+    crate::git::diff::get_default_base_ref(repo_path).unwrap_or_else(|_| "main".to_string())
 }
 
 pub async fn session_diff_files(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
-    let repos = match resolve_diff_repos(&state, &id).await {
-        Ok(r) => r,
+    let ctx = match resolve_diff_repos(&state, &id).await {
+        Ok(c) => c,
         Err(resp) => return resp,
     };
 
     let result = tokio::task::spawn_blocking(move || {
         use crate::git::diff;
 
+        let config_default = crate::session::Config::load_or_warn()
+            .diff
+            .default_branch
+            .clone();
         let mut all_files: Vec<RichDiffFileInfo> = Vec::new();
         let mut per_repo_bases: Vec<RepoBase> = Vec::new();
         let mut warnings: Vec<String> = Vec::new();
 
-        for repo in &repos {
+        for repo in &ctx.repos {
             let path = std::path::Path::new(&repo.path);
-            let base_branch =
-                diff::get_default_base_ref(path).unwrap_or_else(|_| "main".to_string());
+            let base_branch = resolve_diff_base(
+                ctx.base_branch_override.as_deref(),
+                config_default.as_deref(),
+                path,
+            );
             let warning = diff::check_merge_base_status(path, &base_branch);
             let changed = diff::compute_changed_files(path, &base_branch).unwrap_or_default();
 
@@ -1660,8 +1767,8 @@ pub async fn session_diff_file(
     Path(id): Path<String>,
     axum::extract::Query(query): axum::extract::Query<FileDiffQuery>,
 ) -> impl IntoResponse {
-    let repos = match resolve_diff_repos(&state, &id).await {
-        Ok(r) => r,
+    let ctx = match resolve_diff_repos(&state, &id).await {
+        Ok(c) => c,
         Err(resp) => return resp,
     };
 
@@ -1671,27 +1778,28 @@ pub async fn session_diff_file(
     // session's primary repo). When the named repo doesn't exist, the
     // request is rejected so a stale link doesn't quietly diff the
     // wrong repo. See #1047.
-    let selected_repo = match query.repo.as_deref() {
-        Some(name) => match repos.iter().find(|r| r.name.as_deref() == Some(name)) {
-            Some(r) => r.clone(),
-            None => {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(serde_json::json!({
-                        "error": "bad_request",
-                        "message": "unknown workspace repo"
-                    })),
-                )
-                    .into_response();
-            }
-        },
-        None => repos
-            .first()
-            .cloned()
-            .expect("resolve_diff_repos always returns at least one entry (single-repo fallback)"),
-    };
+    let selected_repo =
+        match query.repo.as_deref() {
+            Some(name) => match ctx.repos.iter().find(|r| r.name.as_deref() == Some(name)) {
+                Some(r) => r.clone(),
+                None => {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        Json(serde_json::json!({
+                            "error": "bad_request",
+                            "message": "unknown workspace repo"
+                        })),
+                    )
+                        .into_response();
+                }
+            },
+            None => ctx.repos.first().cloned().expect(
+                "resolve_diff_repos always returns at least one entry (single-repo fallback)",
+            ),
+        };
     let project_path = selected_repo.path;
     let selected_repo_name = selected_repo.name;
+    let base_branch_override = ctx.base_branch_override.clone();
 
     let result =
         tokio::task::spawn_blocking(move || -> Result<RichFileDiffResponse, DiffFileError> {
@@ -1701,8 +1809,15 @@ pub async fn session_diff_file(
             let repo_path = std::path::Path::new(&project_path);
             let file_path = std::path::Path::new(&query.path);
 
-            let base_branch =
-                diff::get_default_base_ref(repo_path).unwrap_or_else(|_| "main".to_string());
+            let config_default = crate::session::Config::load_or_warn()
+                .diff
+                .default_branch
+                .clone();
+            let base_branch = resolve_diff_base(
+                base_branch_override.as_deref(),
+                config_default.as_deref(),
+                repo_path,
+            );
 
             // Validate the requested path against the set of actually-changed files.
             // This is the primary security boundary: only files modified on this
@@ -1888,6 +2003,44 @@ mod tests {
                 .as_deref(),
             Some("feature/test")
         );
+    }
+
+    #[test]
+    fn session_response_surfaces_base_branch_override() {
+        let mut inst = make_test_instance();
+        // Default: no override -> field omitted from JSON.
+        let json = serde_json::to_value(SessionResponse::from_instance(&inst, false)).unwrap();
+        assert!(
+            json.get("base_branch_override").is_none(),
+            "base_branch_override should be omitted when None, got: {json}"
+        );
+
+        inst.base_branch_override = Some("upstream/main".to_string());
+        let resp = SessionResponse::from_instance(&inst, false);
+        assert_eq!(resp.base_branch_override.as_deref(), Some("upstream/main"));
+    }
+
+    #[test]
+    fn resolve_diff_base_prefers_override_then_config_then_auto() {
+        let tmp = tempfile::tempdir().unwrap();
+        // Override wins over everything.
+        assert_eq!(
+            resolve_diff_base(Some("release-1.2"), Some("develop"), tmp.path()),
+            "release-1.2"
+        );
+        // Config wins when no override; empty / whitespace override falls
+        // through to the next layer.
+        assert_eq!(
+            resolve_diff_base(Some("   "), Some("develop"), tmp.path()),
+            "develop"
+        );
+        assert_eq!(
+            resolve_diff_base(None, Some("develop"), tmp.path()),
+            "develop"
+        );
+        // Auto-detect when neither is set. The tmp dir is not a repo so
+        // `get_default_base_ref` returns Err -> "main" fallback.
+        assert_eq!(resolve_diff_base(None, None, tmp.path()), "main");
     }
 
     #[test]

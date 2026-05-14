@@ -43,6 +43,9 @@ interface Props {
   selectedFilePath: string | null;
   selectedRepoName: string | undefined;
   onSelectFile: (path: string, repoName?: string) => void;
+  /** Re-fetch the diff. Called after the user changes the per-session
+   *  base-branch override so the file list reflects the new comparison. */
+  onDiffRefresh: () => void;
 }
 
 type ShellMode = "host" | "container";
@@ -273,6 +276,7 @@ export function RightPanel({
   selectedFilePath,
   selectedRepoName,
   onSelectFile,
+  onDiffRefresh,
 }: Props) {
   const [shellMode, setShellMode] = useState<ShellMode>("host");
   const isSandboxed = session?.is_sandboxed ?? false;
@@ -369,6 +373,10 @@ export function RightPanel({
           selectedRepoName={selectedRepoName}
           loading={filesLoading}
           onSelectFile={onSelectFile}
+          sessionId={sessionId}
+          repoPath={session?.main_repo_path ?? session?.project_path ?? null}
+          baseBranchOverride={session?.base_branch_override ?? null}
+          onBaseBranchChanged={onDiffRefresh}
         />
       </div>
 

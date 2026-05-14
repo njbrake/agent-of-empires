@@ -24,6 +24,7 @@ This document contains the help content for the `aoe` command-line program.
 * [`aoe session capture`↴](#aoe-session-capture)
 * [`aoe session current`↴](#aoe-session-current)
 * [`aoe session set-session-id`↴](#aoe-session-set-session-id)
+* [`aoe session set-base`↴](#aoe-session-set-base)
 * [`aoe group`↴](#aoe-group)
 * [`aoe group list`↴](#aoe-group-list)
 * [`aoe group create`↴](#aoe-group-create)
@@ -290,6 +291,7 @@ Manage session lifecycle (start, stop, attach, etc.)
 * `capture` — Capture tmux pane output
 * `current` — Auto-detect current session
 * `set-session-id` — Set agent session ID for a session
+* `set-base` — Set or clear the per-session diff base branch. The diff view compares the worktree against this ref instead of the auto-detected default. Useful when the PR target differs from the project default (stacked PRs, hotfix off `release/*`, renamed default branch). See #970
 
 
 
@@ -424,6 +426,23 @@ Set agent session ID for a session
 
 * `<IDENTIFIER>` — Session ID or title
 * `<SESSION_ID>` — Agent session ID to set (pass empty string to clear)
+
+
+
+## `aoe session set-base`
+
+Set or clear the per-session diff base branch. The diff view compares the worktree against this ref instead of the auto-detected default. Useful when the PR target differs from the project default (stacked PRs, hotfix off `release/*`, renamed default branch). See #970
+
+**Usage:** `aoe session set-base [OPTIONS] <IDENTIFIER> [BRANCH]`
+
+###### **Arguments:**
+
+* `<IDENTIFIER>` — Session ID or title
+* `<BRANCH>` — Branch ref to diff against (short name like `main` or remote-qualified like `upstream/main`). Required unless `--clear` is passed
+
+###### **Options:**
+
+* `--clear` — Clear the override and fall back to the profile default / auto-detected base
 
 
 

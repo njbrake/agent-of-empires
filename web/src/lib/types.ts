@@ -21,6 +21,11 @@ export interface SessionResponse {
    *  creation. null for sessions attached to a pre-existing branch or
    *  those that took the repo's default branch. See #948. */
   base_branch?: string | null;
+  /** Per-session override for the diff base. When set, the sidebar
+   *  diff compares the worktree against this ref instead of the
+   *  auto-detected default. Edited via the `vs <ref>` chip in the
+   *  diff header. See #970. */
+  base_branch_override?: string | null;
   is_sandboxed: boolean;
   has_managed_worktree: boolean;
   has_terminal: boolean;

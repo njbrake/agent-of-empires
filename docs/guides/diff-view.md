@@ -31,10 +31,27 @@ After saving and exiting, the diff view refreshes automatically to show your cha
 
 | Key | Action |
 |-----|--------|
-| `b` | Change base branch |
+| `b` | Change base branch (persists per-session as `base_branch_override`) |
 | `r` | Refresh the diff |
 | `?` | Show help |
 | `Esc` | Close diff view |
+
+## Per-session base override
+
+Each session has an optional `base_branch_override` that takes
+precedence over the profile default and auto-detection. Use it when
+the eventual PR target differs from the project default (stacked PRs,
+hotfix off `release/*`, branch rename). The override is sticky across
+restarts and only affects the comparison, not the worktree itself
+(no rebase). See #970.
+
+- **Web dashboard**: click the `vs <ref>` chip in the diff header, pick
+  a branch from the typeahead (local + remote-only), or use
+  "Reset to auto-detected" to clear.
+- **TUI diff view**: press `b`, pick a branch; the choice is persisted
+  to `sessions.json` and restored on next launch.
+- **CLI**: `aoe session set-base <session> <branch>` to set,
+  `aoe session set-base <session> --clear` to clear.
 
 ## Configuration
 

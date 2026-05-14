@@ -209,6 +209,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
     warning,
     loading: diffFilesLoading,
     revision,
+    refresh: refreshDiffFiles,
   } = useDiffFiles(activeSessionId, !diffCollapsed);
 
   useEffect(() => {
@@ -614,6 +615,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
               selectedFilePath={selectedFilePath}
               selectedRepoName={selectedRepoName}
               onSelectFile={handleSelectFile}
+              onDiffRefresh={refreshDiffFiles}
             />
           }
         />
