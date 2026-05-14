@@ -126,10 +126,10 @@ fn cli_serve_daemon_starts_and_stops_cleanly() {
         wait_for_port(port, Duration::from_secs(10)),
         "daemon never bound port {} (child likely self-detected and exited).\n\
          pid file exists: {}\n\
-         serve.log:\n{}",
+         debug.log:\n{}",
         port,
         pid_path.exists(),
-        std::fs::read_to_string(pid_path.with_file_name("serve.log")).unwrap_or_default(),
+        std::fs::read_to_string(pid_path.with_file_name("debug.log")).unwrap_or_default(),
     );
 
     let pid: i32 = std::fs::read_to_string(&pid_path)

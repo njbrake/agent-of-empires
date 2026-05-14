@@ -249,7 +249,6 @@ pub fn daemon_pid() -> Option<u32> {
                 let _ = std::fs::remove_file(&path);
                 if let Ok(dir) = crate::session::get_app_dir() {
                     let _ = std::fs::remove_file(dir.join("serve.url"));
-                    let _ = std::fs::remove_file(dir.join("serve.log"));
                     let _ = std::fs::remove_file(dir.join("serve.mode"));
                     let _ = std::fs::remove_file(dir.join("serve.passphrase"));
                 }
@@ -429,7 +428,6 @@ pub async fn run(profile: &str, args: ServeArgs) -> Result<()> {
             let _ = tokio::fs::remove_file(&path).await;
             if let Ok(dir) = crate::session::get_app_dir() {
                 let _ = tokio::fs::remove_file(dir.join("serve.url")).await;
-                let _ = tokio::fs::remove_file(dir.join("serve.log")).await;
                 let _ = tokio::fs::remove_file(dir.join("serve.mode")).await;
                 let _ = tokio::fs::remove_file(dir.join("serve.passphrase")).await;
             }
@@ -441,9 +439,9 @@ pub async fn run(profile: &str, args: ServeArgs) -> Result<()> {
 
 /// Path the daemon's stdout/stderr are redirected to. Resolved from the
 /// configured `[logging].file_path` so panic backtraces interleave with
-/// the structured tracing stream rather than going to /dev/null or a
-/// separate `serve.log` (removed). The TUI serve dialog and `aoe logs`
-/// resolve this same path to tail the daemon.
+/// the structured tracing stream. Used by `start_daemon()` for the stdio
+/// redirect, by the TUI serve dialog for the tail pane, and by `aoe logs`
+/// for the viewer target.
 pub fn stdio_redirect_path() -> Result<PathBuf> {
     let dir = crate::session::get_app_dir()?;
     let log_cfg = crate::session::load_config()
@@ -452,12 +450,6 @@ pub fn stdio_redirect_path() -> Result<PathBuf> {
         .map(|c| c.logging)
         .unwrap_or_default();
     Ok(crate::logging::resolve_log_path(&log_cfg, &dir))
-}
-
-/// Deprecated alias retained until commit 7 (drop serve.log everywhere)
-/// removes the last call sites in `aoe logs` and the TUI serve dialog.
-pub fn daemon_log_path() -> Result<PathBuf> {
-    stdio_redirect_path()
 }
 
 fn start_daemon(profile: &str, args: &ServeArgs) -> Result<()> {
@@ -612,7 +604,6 @@ async fn stop_daemon() -> Result<()> {
             let _ = tokio::fs::remove_file(&path).await;
             if let Ok(dir) = crate::session::get_app_dir() {
                 let _ = tokio::fs::remove_file(dir.join("serve.url")).await;
-                let _ = tokio::fs::remove_file(dir.join("serve.log")).await;
                 let _ = tokio::fs::remove_file(dir.join("serve.mode")).await;
                 let _ = tokio::fs::remove_file(dir.join("serve.passphrase")).await;
             }
@@ -623,7 +614,6 @@ async fn stop_daemon() -> Result<()> {
             tokio::fs::remove_file(&path).await?;
             if let Ok(dir) = crate::session::get_app_dir() {
                 let _ = tokio::fs::remove_file(dir.join("serve.url")).await;
-                let _ = tokio::fs::remove_file(dir.join("serve.log")).await;
                 let _ = tokio::fs::remove_file(dir.join("serve.mode")).await;
                 let _ = tokio::fs::remove_file(dir.join("serve.passphrase")).await;
             }

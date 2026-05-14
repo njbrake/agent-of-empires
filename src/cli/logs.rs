@@ -1,28 +1,16 @@
-//! `aoe logs` - view AoE log files (debug.log, serve.log) with a pretty viewer.
+//! `aoe logs` - view the configured AoE log file with a pretty viewer.
 //!
-//! Resolves the right path under the app data dir, picks the best available
+//! Resolves the path from `[logging].file_path`, picks the best available
 //! viewer (lnav > bat > less > plain stdout), and prints a one-line tip when
 //! `lnav` is missing so users know there's a better experience available.
 
-use anyhow::{bail, Result};
+use anyhow::Result;
 use clap::Args;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 #[derive(Args)]
 pub struct LogsArgs {
-    /// View debug.log (default).
-    #[arg(long, conflicts_with_all = ["serve", "all"])]
-    pub debug: bool,
-
-    /// View serve.log (daemon stdout/stderr).
-    #[arg(long, conflicts_with_all = ["debug", "all"])]
-    pub serve: bool,
-
-    /// View both debug.log and serve.log, merged by timestamp.
-    #[arg(long, conflicts_with_all = ["debug", "serve"])]
-    pub all: bool,
-
     /// Live-tail the log.
     #[arg(short = 'f', long)]
     pub follow: bool,
@@ -35,7 +23,7 @@ pub struct LogsArgs {
     #[arg(long)]
     pub no_pager: bool,
 
-    /// Print the resolved log file path(s) and exit (no viewing).
+    /// Print the resolved log file path and exit (no viewing).
     #[arg(long)]
     pub path: bool,
 }
@@ -48,20 +36,14 @@ pub enum Viewer {
     PlainStdout,
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
-enum Mode {
-    Debug,
-    Serve,
-    All,
-}
-
-fn debug_log_path() -> Result<PathBuf> {
-    Ok(crate::session::get_app_dir()?.join("debug.log"))
-}
-
-#[cfg(feature = "serve")]
-fn serve_log_path() -> Result<PathBuf> {
-    crate::cli::serve::daemon_log_path()
+fn resolved_log_path() -> Result<PathBuf> {
+    let dir = crate::session::get_app_dir()?;
+    let cfg = crate::session::load_config()
+        .ok()
+        .flatten()
+        .map(|c| c.logging)
+        .unwrap_or_default();
+    Ok(crate::logging::resolve_log_path(&cfg, &dir))
 }
 
 pub fn detect_viewer(no_pager: bool) -> Viewer {
@@ -90,59 +72,16 @@ fn viewer_name(v: Viewer) -> &'static str {
 }
 
 pub async fn run(args: LogsArgs) -> Result<()> {
-    let mode = if args.serve {
-        Mode::Serve
-    } else if args.all {
-        Mode::All
-    } else {
-        Mode::Debug
-    };
-
-    #[cfg(not(feature = "serve"))]
-    if matches!(mode, Mode::Serve | Mode::All) {
-        bail!(
-            "--serve and --all need a build with the `serve` feature; \
-             this binary was built without it. Use `--debug` (default) for debug.log."
-        );
-    }
-
-    let paths = resolve_paths(mode)?;
+    let target_path = resolved_log_path()?;
 
     if args.path {
-        for p in &paths {
-            println!("{}", p.display());
-        }
+        println!("{}", target_path.display());
         return Ok(());
     }
 
-    if args.follow && mode == Mode::All {
-        bail!("--follow is not supported with --all; pick --debug or --serve.");
-    }
-
-    // For --all, materialize a merged stream into a temp file and view that.
-    // _guard keeps the tempfile alive for the duration of the viewer. If no
-    // source file exists, print does-not-exist hints rather than opening an
-    // empty viewer, matching the --debug/--serve behavior below.
-    let (target_path, _guard) = match mode {
-        Mode::All => {
-            if paths.iter().all(|p| !p.exists()) {
-                for p in &paths {
-                    eprintln!("{} does not exist (yet).", p.display());
-                }
-                eprintln!("Tip: run with AGENT_OF_EMPIRES_DEBUG=1 to generate debug.log.");
-                return Ok(());
-            }
-            let merged = merged_temp_file(&paths)?;
-            (merged.path().to_path_buf(), Some(merged))
-        }
-        _ => (paths[0].clone(), None),
-    };
-
     if !target_path.exists() {
         eprintln!("{} does not exist (yet).", target_path.display());
-        if mode == Mode::Debug {
-            eprintln!("Tip: run with AGENT_OF_EMPIRES_DEBUG=1 to generate debug.log.");
-        }
+        eprintln!("Tip: start `aoe` (TUI) or `aoe serve`, or run with AOE_LOG_LEVEL=debug.");
         return Ok(());
     }
 
@@ -156,38 +95,6 @@ pub async fn run(args: LogsArgs) -> Result<()> {
     }
 
     run_viewer(viewer, &target_path, &args)
-}
-
-fn resolve_paths(mode: Mode) -> Result<Vec<PathBuf>> {
-    match mode {
-        Mode::Debug => Ok(vec![debug_log_path()?]),
-        #[cfg(feature = "serve")]
-        Mode::Serve => Ok(vec![serve_log_path()?]),
-        #[cfg(feature = "serve")]
-        Mode::All => Ok(vec![debug_log_path()?, serve_log_path()?]),
-        #[cfg(not(feature = "serve"))]
-        Mode::Serve | Mode::All => unreachable!("bailed earlier when serve feature is off"),
-    }
-}
-
-#[cfg(feature = "serve")]
-fn merged_temp_file(paths: &[PathBuf]) -> Result<tempfile::NamedTempFile> {
-    use std::io::Write;
-    let debug_text = std::fs::read_to_string(&paths[0]).unwrap_or_default();
-    let serve_text = std::fs::read_to_string(&paths[1]).unwrap_or_default();
-    let merged = merge_by_timestamp(&debug_text, &serve_text);
-    let mut tmp = tempfile::Builder::new()
-        .prefix("aoe-logs-merged-")
-        .suffix(".log")
-        .tempfile()?;
-    tmp.write_all(merged.as_bytes())?;
-    tmp.flush()?;
-    Ok(tmp)
-}
-
-#[cfg(not(feature = "serve"))]
-fn merged_temp_file(_paths: &[PathBuf]) -> Result<tempfile::NamedTempFile> {
-    unreachable!("--all requires the serve feature; bailed earlier")
 }
 
 fn run_viewer(viewer: Viewer, path: &Path, args: &LogsArgs) -> Result<()> {
@@ -297,95 +204,6 @@ fn tail_pipe_into(path: &Path, lines: usize, viewer: &mut Command) -> Result<()>
     Ok(())
 }
 
-/// Merge two tracing-formatted log streams by leading ISO-8601 timestamp.
-/// Each emitted line is prefixed with `[debug]` / `[serve]` so the source
-/// is unambiguous after merging. Continuation lines (no leading timestamp,
-/// e.g. multi-line tracing payloads) ride along with their preceding head.
-pub fn merge_by_timestamp(debug: &str, serve: &str) -> String {
-    let mut entries: Vec<(Option<String>, String, &'static str)> = Vec::new();
-    for (ts, body) in group_entries(debug) {
-        entries.push((ts, body, "debug"));
-    }
-    for (ts, body) in group_entries(serve) {
-        entries.push((ts, body, "serve"));
-    }
-    // Stable sort: timestamps strict-ordered; entries without a timestamp
-    // (e.g. orphan continuation at file start) sink to the end.
-    entries.sort_by(|a, b| match (&a.0, &b.0) {
-        (Some(x), Some(y)) => x.cmp(y),
-        (Some(_), None) => std::cmp::Ordering::Less,
-        (None, Some(_)) => std::cmp::Ordering::Greater,
-        (None, None) => std::cmp::Ordering::Equal,
-    });
-
-    let mut out = String::new();
-    for (_ts, body, tag) in entries {
-        for line in body.lines() {
-            out.push('[');
-            out.push_str(tag);
-            out.push_str("] ");
-            out.push_str(line);
-            out.push('\n');
-        }
-    }
-    out
-}
-
-fn group_entries(text: &str) -> Vec<(Option<String>, String)> {
-    let mut out: Vec<(Option<String>, String)> = Vec::new();
-    for line in text.lines() {
-        if let Some(ts) = leading_timestamp(line) {
-            out.push((Some(ts), line.to_string()));
-        } else if let Some(last) = out.last_mut() {
-            last.1.push('\n');
-            last.1.push_str(line);
-        } else {
-            out.push((None, line.to_string()));
-        }
-    }
-    out
-}
-
-/// `tracing-subscriber`'s default formatter prefixes each event with an
-/// ISO-8601 timestamp like `2024-09-12T18:42:11.305812Z`. Detect that
-/// prefix conservatively: if the first 19 chars match the date-time
-/// skeleton, return the full token up to the first whitespace. Otherwise
-/// return None (continuation line, blank line, or non-tracing format).
-fn leading_timestamp(line: &str) -> Option<String> {
-    let bytes = line.as_bytes();
-    if bytes.len() < 19 {
-        return None;
-    }
-    let shape_ok = bytes[0].is_ascii_digit()
-        && bytes[1].is_ascii_digit()
-        && bytes[2].is_ascii_digit()
-        && bytes[3].is_ascii_digit()
-        && bytes[4] == b'-'
-        && bytes[5].is_ascii_digit()
-        && bytes[6].is_ascii_digit()
-        && bytes[7] == b'-'
-        && bytes[8].is_ascii_digit()
-        && bytes[9].is_ascii_digit()
-        && bytes[10] == b'T'
-        && bytes[11].is_ascii_digit()
-        && bytes[12].is_ascii_digit()
-        && bytes[13] == b':'
-        && bytes[14].is_ascii_digit()
-        && bytes[15].is_ascii_digit()
-        && bytes[16] == b':'
-        && bytes[17].is_ascii_digit()
-        && bytes[18].is_ascii_digit();
-    if !shape_ok {
-        return None;
-    }
-    let end = line[19..]
-        .char_indices()
-        .find(|(_, c)| c.is_whitespace())
-        .map(|(i, _)| 19 + i)
-        .unwrap_or(line.len());
-    Some(line[..end].to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -421,75 +239,5 @@ mod tests {
     #[test]
     fn last_n_lines_empty_input() {
         assert_eq!(last_n_lines("", 5), "");
-    }
-
-    #[test]
-    fn leading_timestamp_extracts_iso8601_with_microseconds() {
-        let ts = leading_timestamp("2024-09-12T18:42:11.305812Z  INFO foo: bar");
-        assert_eq!(ts.as_deref(), Some("2024-09-12T18:42:11.305812Z"));
-    }
-
-    #[test]
-    fn leading_timestamp_extracts_iso8601_no_fraction() {
-        let ts = leading_timestamp("2024-09-12T18:42:11Z  INFO foo");
-        assert_eq!(ts.as_deref(), Some("2024-09-12T18:42:11Z"));
-    }
-
-    #[test]
-    fn leading_timestamp_rejects_non_timestamp_lines() {
-        assert_eq!(leading_timestamp("    at src/foo.rs:42"), None);
-        assert_eq!(leading_timestamp(""), None);
-        assert_eq!(leading_timestamp("    panicked at..."), None);
-    }
-
-    #[test]
-    fn merge_by_timestamp_interleaves_two_streams_in_order() {
-        let dbg = "2024-01-01T00:00:01Z  INFO d1\n\
-                   2024-01-01T00:00:03Z  INFO d2\n";
-        let srv = "2024-01-01T00:00:02Z  INFO s1\n\
-                   2024-01-01T00:00:04Z  INFO s2\n";
-        let merged = merge_by_timestamp(dbg, srv);
-        let lines: Vec<&str> = merged.lines().collect();
-        assert_eq!(
-            lines,
-            vec![
-                "[debug] 2024-01-01T00:00:01Z  INFO d1",
-                "[serve] 2024-01-01T00:00:02Z  INFO s1",
-                "[debug] 2024-01-01T00:00:03Z  INFO d2",
-                "[serve] 2024-01-01T00:00:04Z  INFO s2",
-            ]
-        );
-    }
-
-    #[test]
-    fn merge_by_timestamp_preserves_continuation_lines_with_their_head() {
-        // Continuation lines have no leading timestamp; they should attach
-        // to the previous head and travel together when the heads are
-        // re-sorted. Use explicit `\n` to keep the indentation intact (a
-        // `\`-continued raw string would strip the indent).
-        let dbg = "2024-01-01T00:00:01Z  ERROR boom\n    at src/foo.rs:42\n    at src/bar.rs:7\n2024-01-01T00:00:03Z  INFO recover\n";
-        let srv = "2024-01-01T00:00:02Z  INFO between\n";
-        let merged = merge_by_timestamp(dbg, srv);
-        let lines: Vec<&str> = merged.lines().collect();
-        assert_eq!(
-            lines,
-            vec![
-                "[debug] 2024-01-01T00:00:01Z  ERROR boom",
-                "[debug]     at src/foo.rs:42",
-                "[debug]     at src/bar.rs:7",
-                "[serve] 2024-01-01T00:00:02Z  INFO between",
-                "[debug] 2024-01-01T00:00:03Z  INFO recover",
-            ]
-        );
-    }
-
-    #[test]
-    fn merge_by_timestamp_handles_empty_inputs() {
-        assert_eq!(merge_by_timestamp("", ""), "");
-        let only_dbg = "2024-01-01T00:00:01Z  INFO hi\n";
-        assert_eq!(
-            merge_by_timestamp(only_dbg, ""),
-            "[debug] 2024-01-01T00:00:01Z  INFO hi\n"
-        );
     }
 }

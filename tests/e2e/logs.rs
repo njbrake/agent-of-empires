@@ -18,15 +18,6 @@ fn seed_debug_log(h: &TuiTestHarness, content: &str) -> std::path::PathBuf {
     path
 }
 
-/// Write a fake serve.log under the harness's isolated app dir.
-fn seed_serve_log(h: &TuiTestHarness, content: &str) -> std::path::PathBuf {
-    let app_dir = app_dir_in(h.home_path());
-    std::fs::create_dir_all(&app_dir).expect("create app dir");
-    let path = app_dir.join("serve.log");
-    std::fs::write(&path, content).expect("write serve.log");
-    path
-}
-
 #[test]
 #[serial]
 fn logs_no_pager_prints_debug_log_to_stdout() {
@@ -68,7 +59,7 @@ fn logs_lines_returns_only_tail() {
 
 #[test]
 #[serial]
-fn logs_path_prints_debug_log_path() {
+fn logs_path_prints_configured_log_path() {
     let h = TuiTestHarness::new("logs_path");
     let path = seed_debug_log(&h, "");
 
@@ -80,91 +71,31 @@ fn logs_path_prints_debug_log_path() {
 
 #[test]
 #[serial]
-fn logs_path_all_prints_both_paths() {
-    // --all is gated on the `serve` feature; this test runs only when the
-    // binary was built with it. `cargo test --features serve` covers it;
-    // plain `cargo test` builds without the feature, so skip in that case.
-    if !cfg!(feature = "serve") {
-        eprintln!("Skipping: built without `serve` feature");
-        return;
-    }
-
-    let h = TuiTestHarness::new("logs_path_all");
-    let dbg = seed_debug_log(&h, "");
-    let srv = seed_serve_log(&h, "");
-
-    let out = h.run_cli(&["logs", "--all", "--path"]);
-    assert!(out.status.success());
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let lines: Vec<&str> = stdout.lines().collect();
-    assert_eq!(lines.len(), 2, "expected 2 paths, got: {stdout}");
-    assert_eq!(lines[0], dbg.to_string_lossy());
-    assert_eq!(lines[1], srv.to_string_lossy());
-}
-
-#[test]
-#[serial]
-fn logs_serve_no_pager_prints_serve_log() {
-    if !cfg!(feature = "serve") {
-        eprintln!("Skipping: built without `serve` feature");
-        return;
-    }
-
-    let h = TuiTestHarness::new("logs_serve");
-    seed_serve_log(&h, "serve daemon line\n");
-
+fn logs_serve_flag_rejected() {
+    // `--serve` and `--all` were removed when serve.log was dropped; the
+    // configured log file (debug.log by default) carries everything now.
+    let h = TuiTestHarness::new("logs_serve_removed");
     let out = h.run_cli(&["logs", "--serve", "--no-pager"]);
     assert!(
-        out.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
+        !out.status.success(),
+        "removed --serve flag should exit non-zero"
     );
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("serve daemon line"));
 }
 
 #[test]
 #[serial]
-fn logs_all_no_pager_merges_streams_with_tags() {
-    if !cfg!(feature = "serve") {
-        eprintln!("Skipping: built without `serve` feature");
-        return;
-    }
-
-    let h = TuiTestHarness::new("logs_all_merge");
-    seed_debug_log(
-        &h,
-        "2024-01-01T00:00:01Z  INFO debug-a\n\
-         2024-01-01T00:00:03Z  INFO debug-b\n",
-    );
-    seed_serve_log(
-        &h,
-        "2024-01-01T00:00:02Z  INFO serve-a\n\
-         2024-01-01T00:00:04Z  INFO serve-b\n",
-    );
-
+fn logs_all_flag_rejected() {
+    let h = TuiTestHarness::new("logs_all_removed");
     let out = h.run_cli(&["logs", "--all", "--no-pager"]);
     assert!(
-        out.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    let lines: Vec<&str> = stdout.lines().collect();
-    assert_eq!(
-        lines,
-        vec![
-            "[debug] 2024-01-01T00:00:01Z  INFO debug-a",
-            "[serve] 2024-01-01T00:00:02Z  INFO serve-a",
-            "[debug] 2024-01-01T00:00:03Z  INFO debug-b",
-            "[serve] 2024-01-01T00:00:04Z  INFO serve-b",
-        ]
+        !out.status.success(),
+        "removed --all flag should exit non-zero"
     );
 }
 
 #[test]
 #[serial]
-fn logs_missing_debug_log_exits_zero_with_hint() {
+fn logs_missing_file_exits_zero_with_hint() {
     let h = TuiTestHarness::new("logs_missing");
     // Don't seed: app dir + debug.log absent.
     let out = h.run_cli(&["logs", "--no-pager"]);
@@ -173,32 +104,5 @@ fn logs_missing_debug_log_exits_zero_with_hint() {
     assert!(
         stderr.contains("does not exist"),
         "stderr should explain missing file: {stderr}"
-    );
-}
-
-#[test]
-#[serial]
-fn logs_all_missing_both_files_exits_zero_with_hints() {
-    if !cfg!(feature = "serve") {
-        eprintln!("Skipping: built without `serve` feature");
-        return;
-    }
-
-    let h = TuiTestHarness::new("logs_all_missing");
-    // Don't seed either log file.
-    let out = h.run_cli(&["logs", "--all", "--no-pager"]);
-    assert!(
-        out.status.success(),
-        "should exit 0 when both files missing; stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    assert!(
-        stderr.matches("does not exist").count() >= 2,
-        "stderr should list both missing paths: {stderr}"
-    );
-    assert!(
-        String::from_utf8_lossy(&out.stdout).is_empty(),
-        "stdout should be empty when no viewer runs"
     );
 }

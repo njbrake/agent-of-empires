@@ -67,7 +67,7 @@ pub enum Commands {
     #[command(alias = "ls")]
     List(ListArgs),
 
-    /// View AoE log files (debug.log, serve.log) with a pretty viewer
+    /// View the configured AoE log file with a pretty viewer
     Logs(LogsArgs),
 
     /// Get or set the running daemon's log filter at runtime.
