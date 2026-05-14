@@ -92,7 +92,7 @@ async fn main() -> Result<()> {
                     .unwrap_or_default();
                 let resolution = logging::resolve_sink(&log_cfg, &app_dir, ctx);
                 let path_for_msg = match &resolution.target {
-                    SubscriberTarget::File(p) => Some(p.clone()),
+                    SubscriberTarget::File(p, _) => Some(p.clone()),
                     SubscriberTarget::Stdout => None,
                 };
                 let res = logging::init_subscriber(resolution.target, filter);
