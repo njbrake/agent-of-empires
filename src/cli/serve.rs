@@ -285,8 +285,10 @@ pub async fn run(profile: &str, args: ServeArgs) -> Result<()> {
     if let Some(existing) = daemon_pid() {
         if existing != std::process::id() {
             bail!(
-                "A serve daemon is already running (PID {}). \
-                 Stop it first with `aoe serve --stop`.",
+                "aoe serve daemon already running (PID {}).\n\n  \
+                 Status:  aoe serve --status\n  \
+                 Open UI: aoe url\n  \
+                 Stop:    aoe serve --stop",
                 existing
             );
         }
