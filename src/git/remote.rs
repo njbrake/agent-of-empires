@@ -30,6 +30,13 @@ pub fn clone_repo(url: &str, destination: &Path, shallow: bool) -> Result<()> {
 
     // Pipe stdin to /dev/null so SSH passphrase prompts fail immediately
     // instead of hanging the blocking thread.
+    let redacted_url = redact_url(url);
+    tracing::debug!(
+        target: "git.command",
+        args = ?["clone", "--shallow=", &redacted_url, dest_str],
+        shallow,
+        "spawning git clone"
+    );
     let mut child = std::process::Command::new("git")
         .args(&args)
         .stdin(std::process::Stdio::null())
@@ -80,6 +87,19 @@ pub fn clone_repo(url: &str, destination: &Path, shallow: bool) -> Result<()> {
             }
         }
     }
+}
+
+/// Strip userinfo (`user:token@`) from a URL so credentials don't reach logs.
+fn redact_url(url: &str) -> String {
+    if let Some(scheme_end) = url.find("://") {
+        let after = &url[scheme_end + 3..];
+        if let Some(at_off) = after.find('@') {
+            let prefix = &url[..scheme_end + 3];
+            let rest = &after[at_off + 1..];
+            return format!("{prefix}***@{rest}");
+        }
+    }
+    url.to_string()
 }
 
 /// Extract the owner (first path segment) from a git remote URL.

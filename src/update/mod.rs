@@ -109,6 +109,12 @@ pub async fn check_for_update(current_version: &str, force: bool) -> Result<Upda
             let current_is_newer = is_newer_version(current_version, &cache.latest_version);
 
             if age < max_age && !current_is_newer {
+                tracing::info!(
+                    target: "update.cache",
+                    age_hours = age.num_hours(),
+                    latest = %cache.latest_version,
+                    "update cache hit"
+                );
                 let available = is_newer_version(&cache.latest_version, current_version);
                 return Ok(UpdateInfo {
                     available,
@@ -116,6 +122,12 @@ pub async fn check_for_update(current_version: &str, force: bool) -> Result<Upda
                     latest_version: cache.latest_version,
                 });
             }
+            tracing::info!(
+                target: "update.cache",
+                age_hours = age.num_hours(),
+                current_is_newer,
+                "update cache miss; refetching"
+            );
         }
     }
 
@@ -179,6 +191,13 @@ pub async fn check_for_update(current_version: &str, force: bool) -> Result<Upda
     }
 
     let available = is_newer_version(&latest_version, current_version);
+    tracing::info!(
+        target: "update.parse",
+        current = %current_version,
+        latest = %latest_version,
+        available,
+        "version compared"
+    );
 
     Ok(UpdateInfo {
         available,
@@ -188,10 +207,19 @@ pub async fn check_for_update(current_version: &str, force: bool) -> Result<Upda
 }
 
 async fn fetch_releases(client: &reqwest::Client) -> Result<Vec<ReleaseInfo>> {
-    let response = client.get(github_api_releases_url()).send().await?;
+    let url = github_api_releases_url();
+    tracing::debug!(target: "update.fetch", %url, "GET releases");
+    let response = client.get(&url).send().await?;
+    let status = response.status();
+    tracing::debug!(
+        target: "update.fetch",
+        status = %status,
+        content_length = ?response.content_length(),
+        "releases response"
+    );
 
-    if !response.status().is_success() {
-        anyhow::bail!("Failed to fetch releases: HTTP {}", response.status());
+    if !status.is_success() {
+        anyhow::bail!("Failed to fetch releases: HTTP {}", status);
     }
 
     let github_releases: Vec<GitHubRelease> = response.json().await?;

@@ -153,7 +153,13 @@ impl GitWorktree {
         {
             Ok(child) => child,
             Err(e) => {
-                tracing::warn!("git fetch {remote}/{branch} spawn failed: {e}");
+                tracing::warn!(
+                    target: "git.command",
+                    remote = %remote,
+                    branch = %branch,
+                    error = %e,
+                    "git fetch spawn failed"
+                );
                 return Ok(());
             }
         };
@@ -371,10 +377,8 @@ impl GitWorktree {
             .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::InvalidInput, "Invalid path"))?;
 
         let t = std::time::Instant::now();
-        let output = std::process::Command::new("git")
-            .args(["worktree", "add", path_str, branch])
-            .current_dir(&self.repo_path)
-            .output()?;
+        let output =
+            super::command::run_git(&self.repo_path, ["worktree", "add", path_str, branch])?;
         let add_elapsed = t.elapsed();
 
         if !output.status.success() {
@@ -461,10 +465,7 @@ impl GitWorktree {
 
     /// Prune stale worktree entries whose directories no longer exist on disk.
     pub fn prune_worktrees(&self) -> Result<()> {
-        let output = std::process::Command::new("git")
-            .args(["worktree", "prune"])
-            .current_dir(&self.repo_path)
-            .output()?;
+        let output = super::command::run_git(&self.repo_path, ["worktree", "prune"])?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -527,10 +528,10 @@ impl GitWorktree {
             })
             .unwrap_or(0);
 
-        let output = std::process::Command::new("git")
-            .args(["submodule", "update", "--init", "--recursive"])
-            .current_dir(worktree_path)
-            .output()?;
+        let output = super::command::run_git(
+            worktree_path,
+            ["submodule", "update", "--init", "--recursive"],
+        )?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -640,10 +641,7 @@ impl GitWorktree {
         }
         args.push(path_str);
 
-        let output = std::process::Command::new("git")
-            .args(&args)
-            .current_dir(&self.repo_path)
-            .output()?;
+        let output = super::command::run_git(&self.repo_path, &args)?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -667,10 +665,7 @@ impl GitWorktree {
             repo = %self.repo_path.display(),
             "delete_branch: invoking `git branch -d`"
         );
-        let output = std::process::Command::new("git")
-            .args(["branch", "-d", branch])
-            .current_dir(&self.repo_path)
-            .output()?;
+        let output = super::command::run_git(&self.repo_path, ["branch", "-d", branch])?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -693,10 +688,8 @@ impl GitWorktree {
             }
             // If the branch has unmerged changes, try force delete
             if stderr.contains("not fully merged") {
-                let force_output = std::process::Command::new("git")
-                    .args(["branch", "-D", branch])
-                    .current_dir(&self.repo_path)
-                    .output()?;
+                let force_output =
+                    super::command::run_git(&self.repo_path, ["branch", "-D", branch])?;
 
                 if !force_output.status.success() {
                     let force_stderr = String::from_utf8_lossy(&force_output.stderr);
