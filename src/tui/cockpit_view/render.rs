@@ -58,11 +58,38 @@ fn render_transcript(frame: &mut Frame, area: Rect, theme: &Theme, state: &Cockp
     frame.render_widget(block, area);
 
     let lines = transcript_lines(&state.transcript, state.selected_approval, state.focus);
-    let scroll = compute_scroll(&lines, inner.height, state.scroll_offset);
+    // Clamp scroll against the *wrapped* visual row count, not
+    // `lines.len()`. Streaming `AgentMessage` rows grew text inside
+    // a single logical line — Paragraph's wrap inflated the
+    // rendered row count while `lines.len()` stayed constant, so
+    // `state.scroll_offset = u16::MAX` (stick to bottom) clipped
+    // short of the newest chunk. Tool calls didn't show the bug
+    // because each call adds whole new Line entries.
+    let total = visual_line_count(&lines, inner.width);
+    let max = total.saturating_sub(inner.height);
+    let scroll = (state.scroll_offset.min(max), 0);
     let para = Paragraph::new(lines)
         .wrap(Wrap { trim: false })
         .scroll(scroll);
     frame.render_widget(para, inner);
+}
+
+/// Estimate the number of terminal rows `lines` will occupy when
+/// rendered into a paragraph of width `width`. Each `Line`'s display
+/// width divided by the available columns, rounded up, summed. Used
+/// to keep `scroll_offset = u16::MAX` pinned to the bottom as
+/// streaming chunks grow inside a single logical line.
+fn visual_line_count(lines: &[Line], width: u16) -> u16 {
+    if width == 0 {
+        return lines.len() as u16;
+    }
+    let w = width as usize;
+    let mut total: usize = 0;
+    for line in lines {
+        let lw = line.width().max(1);
+        total = total.saturating_add(lw.div_ceil(w));
+    }
+    total.min(u16::MAX as usize) as u16
 }
 
 fn render_status(frame: &mut Frame, area: Rect, theme: &Theme, state: &CockpitViewState) {
@@ -282,15 +309,6 @@ fn render_tool_lines(tool: &ToolCallRow) -> Vec<Line<'static>> {
     lines
 }
 
-fn compute_scroll(lines: &[Line], height: u16, requested: u16) -> (u16, u16) {
-    // Clamp scroll so the user never scrolls past the bottom: the
-    // bottom-most visible line should always be the last row. Without
-    // this, j-spam at the bottom shows an empty pane.
-    let total = lines.len() as u16;
-    let max = total.saturating_sub(height);
-    (requested.min(max), 0)
-}
-
 fn border_style(theme: &Theme, state: &CockpitViewState, this_focus: Focus) -> Style {
     if state.focus == this_focus {
         Style::default().fg(theme.title)
@@ -304,5 +322,43 @@ fn help_hint(focus: Focus) -> &'static str {
         Focus::Composer => " Enter=send · Shift+Enter=newline · Esc=back · Ctrl-C=cancel ",
         Focus::Transcript => " j/k=scroll · i=compose · Tab=approvals · o=browser · Esc=exit ",
         Focus::Approval => " a=allow · A=always · d=deny · Esc=back ",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn visual_line_count_counts_wrapped_rows() {
+        // 40 chars at width 10 wraps to 4 visual rows.
+        let lines = vec![Line::from("a".repeat(40))];
+        assert_eq!(visual_line_count(&lines, 10), 4);
+    }
+
+    #[test]
+    fn visual_line_count_floors_empty_line_to_one() {
+        // A logical empty line still occupies one row.
+        let lines = vec![Line::default()];
+        assert_eq!(visual_line_count(&lines, 10), 1);
+    }
+
+    #[test]
+    fn visual_line_count_handles_zero_width() {
+        // Degenerate area (e.g. during teardown); fall back to logical
+        // line count so we don't divide by zero.
+        let lines = vec![Line::from("x"), Line::from("y")];
+        assert_eq!(visual_line_count(&lines, 0), 2);
+    }
+
+    #[test]
+    fn visual_line_count_streaming_growth_advances_max_scroll() {
+        // Regression for the agent-message auto-scroll bug: as a
+        // single logical line grows, the visual row count must
+        // grow so `scroll_offset = u16::MAX` keeps tracking the
+        // bottom.
+        let short = vec![Line::from("a".repeat(20))];
+        let long = vec![Line::from("a".repeat(200))];
+        assert!(visual_line_count(&long, 40) > visual_line_count(&short, 40));
     }
 }
