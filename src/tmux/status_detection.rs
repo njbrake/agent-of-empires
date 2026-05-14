@@ -341,15 +341,21 @@ pub fn detect_codex_status(raw_content: &str) -> Status {
         return Status::Waiting;
     }
 
-    if last_lines_lower.contains("esc to interrupt")
-        || last_lines_lower.contains("ctrl+c to interrupt")
-        || last_lines_lower.contains("working")
-        || last_lines_lower.contains("thinking")
+    if codex_has_live_running_status(&non_empty_lines) {
+        return Status::Running;
+    }
+
+    if codex_current_block_lines(&non_empty_lines)
+        .take(10)
+        .any(codex_line_starts_with_activity)
     {
         return Status::Running;
     }
 
-    if has_any_spinner(&lines) {
+    if codex_current_block_lines(&non_empty_lines)
+        .take(10)
+        .any(codex_line_has_activity_spinner)
+    {
         return Status::Running;
     }
 
@@ -367,10 +373,13 @@ pub fn detect_codex_status(raw_content: &str) -> Status {
         return Status::Waiting;
     }
 
-    for line in &lines {
+    for line in non_empty_lines.iter().rev().take(10) {
         let trimmed = line.trim();
-        if (trimmed.starts_with("❯") || trimmed.starts_with("›")) && trimmed.len() > 2 {
-            let after_cursor = trimmed.get(3..).unwrap_or("").trim_start();
+        let after_cursor = trimmed
+            .strip_prefix("❯")
+            .or_else(|| trimmed.strip_prefix("›"));
+        if let Some(rest) = after_cursor {
+            let after_cursor = rest.trim_start();
             if after_cursor.starts_with("1.")
                 || after_cursor.starts_with("2.")
                 || after_cursor.starts_with("3.")
@@ -380,11 +389,112 @@ pub fn detect_codex_status(raw_content: &str) -> Status {
         }
     }
 
+    if codex_has_input_prompt(&non_empty_lines) {
+        return Status::Waiting;
+    }
+
     if matches_input_prompt(&non_empty_lines, 10, &["codex>"]) {
         return Status::Waiting;
     }
 
     Status::Idle
+}
+
+fn codex_line_starts_with_activity(line: &str) -> bool {
+    let trimmed = codex_status_line_body(line);
+    ["working", "thinking", "processing", "generating"]
+        .iter()
+        .any(|activity| status_line_starts_with_phrase(trimmed, activity))
+}
+
+fn codex_line_starts_with_live_interrupt_activity(line: &str) -> bool {
+    let trimmed = codex_status_line_body(line);
+    [
+        "working",
+        "thinking",
+        "processing",
+        "generating",
+        "running command",
+        "starting mcp servers",
+    ]
+    .iter()
+    .any(|activity| status_line_starts_with_phrase(trimmed, activity))
+}
+
+fn codex_line_has_activity_spinner(line: &str) -> bool {
+    let trimmed = codex_status_line_body(line);
+    let Some(rest) = SPINNER_CHARS
+        .iter()
+        .find_map(|spinner| trimmed.strip_prefix(spinner))
+    else {
+        return false;
+    };
+
+    codex_line_starts_with_activity(rest)
+}
+
+fn codex_status_line_body(line: &str) -> &str {
+    let trimmed = line.trim_start();
+    trimmed
+        .strip_prefix("•")
+        .map(str::trim_start)
+        .unwrap_or(trimmed)
+}
+
+fn codex_has_live_running_status(non_empty_lines: &[&str]) -> bool {
+    for line in codex_current_block_lines(non_empty_lines) {
+        let trimmed = line.trim();
+        if trimmed == "esc to interrupt" || trimmed == "ctrl+c to interrupt" {
+            return true;
+        }
+
+        if codex_line_starts_with_live_interrupt_activity(trimmed)
+            && (trimmed.contains("esc to interrupt") || trimmed.contains("ctrl+c to interrupt"))
+        {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn codex_current_block_lines<'a>(
+    non_empty_lines: &'a [&'a str],
+) -> impl Iterator<Item = &'a str> + 'a {
+    non_empty_lines
+        .iter()
+        .rev()
+        .copied()
+        .take_while(|line| !codex_is_completed_work_divider(line.trim()))
+}
+
+fn codex_is_completed_work_divider(line: &str) -> bool {
+    line.trim_start_matches('─')
+        .trim_start()
+        .starts_with("worked for")
+}
+
+fn status_line_starts_with_phrase(line: &str, phrase: &str) -> bool {
+    let Some(rest) = line.strip_prefix(phrase) else {
+        return false;
+    };
+    rest.chars()
+        .next()
+        .is_none_or(|c| c.is_whitespace() || c == '.' || c == '…' || c == ':')
+}
+
+fn codex_has_input_prompt(non_empty_lines: &[&str]) -> bool {
+    non_empty_lines.iter().rev().take(5).any(|line| {
+        let trimmed = line.trim();
+        let Some(rest) = trimmed
+            .strip_prefix("›")
+            .or_else(|| trimmed.strip_prefix("❯"))
+        else {
+            return false;
+        };
+        let rest = rest.trim_start();
+        !rest.starts_with("1.") && !rest.starts_with("2.") && !rest.starts_with("3.")
+    })
 }
 
 /// Cursor agent status is detected via hooks (file-based), same as Claude Code.
@@ -952,6 +1062,14 @@ mod tests {
         );
         assert_eq!(detect_codex_status("working on task"), Status::Running);
         assert_eq!(detect_codex_status("generating ⠋"), Status::Running);
+        assert_eq!(
+            detect_codex_status("⠋ thinking about your request"),
+            Status::Running
+        );
+        assert_eq!(
+            detect_codex_status("• Working (4s • esc to interrupt)"),
+            Status::Running
+        );
     }
 
     #[test]
@@ -973,6 +1091,243 @@ mod tests {
     fn test_detect_codex_status_idle() {
         assert_eq!(detect_codex_status("file saved"), Status::Idle);
         assert_eq!(detect_codex_status("random output text"), Status::Idle);
+        assert_eq!(
+            detect_codex_status("based on your working example, aliases are safest"),
+            Status::Idle
+        );
+        assert_eq!(
+            detect_codex_status("braille spinner characters like ⠋, ⠙, etc."),
+            Status::Idle
+        );
+        assert_eq!(
+            detect_codex_status("• I found the shared API base and the routing map"),
+            Status::Idle
+        );
+        assert_eq!(
+            detect_codex_status("• Starting MCP servers can take a while"),
+            Status::Idle
+        );
+        assert_eq!(
+            detect_codex_status("• Running command examples can be misleading"),
+            Status::Idle
+        );
+    }
+
+    #[test]
+    fn test_detect_codex_status_waiting_after_interruption() {
+        let pane = r#"
+  If your API supports an array/operator filter like value_in, then this could be shorter,
+  but based on your working example, aliases are the safest GraphQL-native way to query all of them in one request.
+
+
+› asdasd
+
+
+■ Conversation interrupted - tell the model what to do differently. Something went wrong? Hit `/feedback` to report the issue.
+
+
+› dasdasd
+
+  gpt-5.5 medium · ~/tomatom/connector-plus-shopty/shopty
+"#;
+
+        assert_eq!(detect_codex_status(pane), Status::Waiting);
+    }
+
+    #[test]
+    fn test_detect_codex_status_waiting_after_completed_turn() {
+        let pane = r#"
+  Note: git status still shows MM src/tmux/status_detection.rs, meaning earlier staged changes exist and this latest fix is
+  unstaged on top.
+
+• Working (4s • esc to interrupt)
+
+─ Worked for 1m 22s ───────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+
+› asd
+
+
+• No action taken.
+
+  gpt-5.5 high · ~/appsSource/agent-of-empires
+"#;
+
+        assert_eq!(detect_codex_status(pane), Status::Waiting);
+    }
+
+    #[test]
+    fn test_detect_codex_status_waiting_with_spinner_examples_in_scrollback() {
+        let pane = r#"
+  tmux capture-pane -p -e -S -50
+
+  Then it strips ANSI and runs the detector for that agent.
+  See src/tmux/session.rs:290 and src/tmux/
+  status_detection.rs:38.
+
+  For Codex specifically, active work is detected from:
+
+  - esc to interrupt
+  - ctrl+c to interrupt
+  - recent status-like lines starting with working, thinking,
+    processing, or generating
+  - braille spinner characters like ⠋, ⠙, etc.
+
+  That logic is in src/tmux/status_detection.rs:344.
+
+  If those running signals are not present, it then checks
+  waiting signals like prompts, approvals, numbered choices,
+  or › .... If none match, it falls back to Idle.
+
+  So this is not OS process-state detection like “is the
+  process using CPU.” It is mostly agent UI/state detection
+  from hooks or tmux pane text.
+
+──────────────────────────────────────────────────────────────
+
+
+› Run /review on my current changes
+
+  gpt-5.5 high · ~/appsSource/agent-of-empires
+"#;
+
+        assert_eq!(detect_codex_status(pane), Status::Waiting);
+    }
+
+    #[test]
+    fn test_detect_codex_status_running_with_prompt_below_activity_line() {
+        let pane = r#"
+│ model:     gpt-5.4-mini medium   /model to change │
+│ directory: ~/tomatom/connector-plus-shopty/shopty │
+╰───────────────────────────────────────────────────╯
+
+  Tip: Start a fresh idea with /new; the previous session stays in history.
+
+Token usage: total=36,319 input=35,006 (+ 79,744 cached) output=1,313 (reasoning 234)
+To continue this session, run codex resume 019e270b-5139-7752-ac61-86fe4bb5170c
+
+
+› look into possible pain points in our api endpoints here
+
+
+• I’m going to inspect the API modules and their shared base classes first, then trace any authentication, response, and
+  routing patterns that could create recurring pain points. After that I’ll summarize the concrete risks with file references.
+
+• Explored
+  └ Search class .*ApiActions|BaseJsonApiActions|renderJsonResponse|requireAuthentication|api/|api[A-Z] in plugins
+
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+• I found the shared API base and the routing map; next I’m checking whether there are known project-specific caveats in memory
+  and then I’ll inspect the base class and a few representative endpoints for consistency problems.
+
+• Working (4s • esc to interrupt)
+
+
+› Summarize recent commits
+
+  gpt-5.4-mini medium · ~/tomatom/connector-plus-shopty/shopty
+"#;
+
+        assert_eq!(detect_codex_status(pane), Status::Running);
+    }
+
+    #[test]
+    fn test_detect_codex_status_running_with_verbose_command_output() {
+        let pane = r#"
+› Run the tests
+
+• Running command: cargo test (18s • esc to interrupt)
+  output line 01
+  output line 02
+  output line 03
+  output line 04
+  output line 05
+  output line 06
+  output line 07
+  output line 08
+  output line 09
+  output line 10
+  output line 11
+  output line 12
+  output line 13
+  output line 14
+  output line 15
+
+› Summarize recent commits
+
+  gpt-5.5 high · ~/appsSource/agent-of-empires
+"#;
+
+        assert_eq!(detect_codex_status(pane), Status::Running);
+    }
+
+    #[test]
+    fn test_detect_codex_status_running_while_starting_mcp_servers() {
+        let pane = r#"
+  Note: git status still shows MM src/tmux/status_detection.rs, meaning earlier staged changes exist and this latest fix is
+  unstaged on top.
+
+─ Worked for 1m 22s ───────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+
+› asd
+
+
+• No action taken.
+
+>> Code review started: staged changes <<
+
+• Ran git diff --staged --stat && git diff --staged --
+  └  src/tmux/status_detection.rs | 205 +++++++++++++++++++++++++++++++++++++++++--
+     1 file changed, 198 insertions(+), 7 deletions(-)
+    … +253 lines (ctrl + t to view transcript)
+
+         #[test]
+
+• Explored
+  └ Read status_detection.rs
+    Search ctrl+c to interrupt\|Running (\|Running command\|esc to interrupt\|Working ( in .
+
+• Starting MCP servers (1/2): sentry (31s • esc to interrupt) · 1 background terminal running · /ps to view · /stop to close
+
+
+› Run /review on my current changes
+
+  gpt-5.5 high · ~/appsSource/agent-of-empires
+"#;
+
+        assert_eq!(detect_codex_status(pane), Status::Running);
+    }
+
+    #[test]
+    fn test_detect_codex_status_running_with_verbose_mcp_startup_output() {
+        let pane = r#"
+› Run /review on my current changes
+
+• Starting MCP servers (1/2): sentry (31s • esc to interrupt) · 1 background terminal running · /ps to view · /stop to close
+  output line 01
+  output line 02
+  output line 03
+  output line 04
+  output line 05
+  output line 06
+  output line 07
+  output line 08
+  output line 09
+  output line 10
+  output line 11
+  output line 12
+  output line 13
+  output line 14
+  output line 15
+
+› Summarize recent commits
+
+  gpt-5.5 high · ~/appsSource/agent-of-empires
+"#;
+
+        assert_eq!(detect_codex_status(pane), Status::Running);
     }
 
     #[test]
