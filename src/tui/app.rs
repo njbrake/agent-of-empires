@@ -422,7 +422,16 @@ impl App {
                             // through handle_paste instead of dispatching them
                             // individually. Below the threshold we replay the
                             // captured keys as normal events.
-                            if Self::is_burst_candidate(&key) {
+                            //
+                            // Only fire when home accepts paste routing
+                            // (`wants_paste_burst`). Non-paste-aware dialogs
+                            // — command palette, profile picker, projects,
+                            // info, etc. — capture text via `handle_key`
+                            // only; bursting through them strands the input
+                            // in `pending_paste` and leaves the dialog empty.
+                            // CI caught this regression with e2e harnesses
+                            // that type fast enough to trip the burst.
+                            if self.home.wants_paste_burst() && Self::is_burst_candidate(&key) {
                                 let first_char = Self::burst_char_for(&key)
                                     .expect("is_burst_candidate guarantees burst_char_for returns Some");
                                 let mut burst_str = String::new();

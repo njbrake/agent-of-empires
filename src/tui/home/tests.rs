@@ -2894,3 +2894,43 @@ fn update_bar_renders_status_toast_without_update_info() {
         "expected the dismiss hint alongside the toast.\nFull buffer:\n{out}"
     );
 }
+
+/// Regression for the e2e CI failure (job 76034901940):
+/// `test_command_palette_fuzzy_search_settings` and
+/// `test_profile_picker_create_new_profile` failed because the harness types
+/// fast enough to trip the paste-burst detector, and the resulting "paste"
+/// got stashed in `pending_paste` instead of reaching the dialog's input.
+/// `wants_paste_burst` must be false for dialogs that capture keys via
+/// `handle_key` but do not implement `handle_paste`.
+#[test]
+#[serial]
+fn wants_paste_burst_only_for_paste_aware_dialogs() {
+    let mut env = create_test_env_empty();
+
+    // No dialog open: burst is needed (home shortcuts at risk).
+    assert!(
+        env.view.wants_paste_burst(),
+        "burst must be enabled when no dialog is open"
+    );
+
+    // Command palette: captures keys, no handle_paste. Burst would
+    // strand input in pending_paste — must be disabled.
+    env.view.handle_key(
+        KeyEvent::new(KeyCode::Char('k'), KeyModifiers::CONTROL),
+        None,
+    );
+    assert!(
+        env.view.command_palette.is_some(),
+        "Ctrl+K must open the command palette"
+    );
+    assert!(
+        !env.view.wants_paste_burst(),
+        "burst must be disabled when command palette is open"
+    );
+    env.view.handle_key(key(KeyCode::Esc), None);
+    assert!(env.view.command_palette.is_none());
+    assert!(
+        env.view.wants_paste_burst(),
+        "burst should re-enable after dialog closes"
+    );
+}

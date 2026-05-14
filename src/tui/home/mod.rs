@@ -1162,6 +1162,32 @@ impl HomeView {
             || self.diff_view.is_some()
     }
 
+    /// Whether the paste-burst detector should fire for incoming key events.
+    ///
+    /// The detector exists to solve the home-view shortcut-shadowing problem:
+    /// Mosh strips bracketed-paste markers, so a pasted stream of `KeyCode::Char`
+    /// events would fire `n`/`d`/`r`/etc. shortcuts on the home view. When a
+    /// dialog captures keys into a text input, those shortcuts don't fire —
+    /// but the dialog also won't receive a synthesized `Paste` event unless
+    /// it routes through `handle_paste`. Bursting through a dialog that only
+    /// handles `Key` events strands the text in `pending_paste` and leaves
+    /// the dialog's input empty.
+    ///
+    /// So: burst is safe when no dialog is open (home shortcuts at risk) or
+    /// when one of the four paste-routed dialogs is open (rename / send_message
+    /// / new / settings — each forwards to `handle_paste`). For every other
+    /// dialog (command palette, profile picker, projects, info, etc.) keys
+    /// must dispatch individually so the dialog input receives them.
+    pub fn wants_paste_burst(&self) -> bool {
+        if !self.has_dialog() {
+            return true;
+        }
+        self.rename_dialog.is_some()
+            || self.send_message_dialog.is_some()
+            || self.new_dialog.is_some()
+            || self.settings_view.is_some()
+    }
+
     pub fn shrink_list(&mut self) {
         self.list_width = self.list_width.saturating_sub(5).max(10);
         self.save_list_width();
