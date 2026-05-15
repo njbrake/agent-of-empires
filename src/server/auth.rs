@@ -185,6 +185,108 @@ fn extract_ws_protocols(request: &Request) -> Vec<String> {
     protocols
 }
 
+/// Whether a request path + method needs an elevated login session
+/// (step-up auth, 15-minute passphrase confirmation window). Covers
+/// surfaces that map to SSH-equivalent capabilities on the host:
+/// terminal attach, cockpit command/approval execution, session
+/// lifecycle (create, delete, send keystrokes, spawn terminal/cockpit),
+/// and worktree-mutating operations. Read-only GETs on the same
+/// resources stay open; this is an allow-list, not a default-deny, so
+/// adding a benign read endpoint never accidentally hides behind a
+/// passphrase prompt. See #1131.
+fn requires_elevation(method: &axum::http::Method, path: &str) -> bool {
+    use axum::http::Method;
+
+    // WebSocket upgrades always grant live shell or live cockpit
+    // streaming. Both terminal (`/ws`, `/ws-readonly`) and cockpit
+    // (`/cockpit/ws`) are sensitive enough to gate.
+    if path.contains("/ws") {
+        return true;
+    }
+
+    if method == Method::GET || method == Method::HEAD {
+        return false;
+    }
+
+    // Session lifecycle on the collection endpoint.
+    if path == "/api/sessions" && method == Method::POST {
+        return true;
+    }
+    if !path.starts_with("/api/sessions/") {
+        return false;
+    }
+
+    // Per-session mutations.
+    if method == Method::DELETE {
+        // DELETE /api/sessions/{id} or /api/sessions/{id}/cockpit.
+        return true;
+    }
+
+    let cockpit_prompt = path.ends_with("/cockpit/prompt");
+    let cockpit_cancel = path.ends_with("/cockpit/cancel");
+    let cockpit_force = path.ends_with("/cockpit/force_end_turn");
+    let cockpit_approval = path.contains("/cockpit/approvals/");
+    let cockpit_spawn = path.ends_with("/cockpit/spawn");
+    let cockpit_restart = path.ends_with("/cockpit/restart");
+    let cockpit_stop = path.ends_with("/cockpit/stop");
+    let cockpit_kill = path.ends_with("/cockpit/kill");
+    let cockpit_mode = path.ends_with("/cockpit/mode");
+    let cockpit_enable = path.ends_with("/cockpit/enable");
+    let cockpit_disable = path.ends_with("/cockpit/disable");
+    let session_send = path.ends_with("/send");
+    let session_terminal = path.ends_with("/terminal");
+    let container_terminal = path.ends_with("/container-terminal");
+
+    cockpit_prompt
+        || cockpit_cancel
+        || cockpit_force
+        || cockpit_approval
+        || cockpit_spawn
+        || cockpit_restart
+        || cockpit_stop
+        || cockpit_kill
+        || cockpit_mode
+        || cockpit_enable
+        || cockpit_disable
+        || session_send
+        || session_terminal
+        || container_terminal
+}
+
+/// Strip the leading `<prefix>.` from a subprotocol value when present,
+/// returning the suffix. Used to read prefixed values like
+/// `aoe-token.<token>` and `aoe-device.<base64url-secret>` from a
+/// `Sec-WebSocket-Protocol` header without confusing them with
+/// historically-bare token entries.
+fn strip_ws_prefix<'a>(proto: &'a str, prefix: &str) -> Option<&'a str> {
+    let with_dot = proto.strip_prefix(prefix)?;
+    with_dot.strip_prefix('.')
+}
+
+/// Extract the device binding secret presented by the client. Returns
+/// the decoded 32 raw bytes when present and well-formed; `None`
+/// otherwise. For REST the secret rides the `X-Aoe-Device-Binding`
+/// header; for WebSocket upgrades it rides as
+/// `Sec-WebSocket-Protocol: aoe-device.<base64url>` (never a query
+/// param, which would leak into proxy logs). See #1131.
+pub(crate) fn extract_device_binding(request: &Request) -> Option<Vec<u8>> {
+    if let Some(value) = request.headers().get("x-aoe-device-binding") {
+        if let Ok(s) = value.to_str() {
+            if let Some(bytes) = super::login::decode_binding_secret(s) {
+                return Some(bytes);
+            }
+        }
+    }
+    for proto in extract_ws_protocols(request) {
+        if let Some(secret) = strip_ws_prefix(&proto, "aoe-device") {
+            if let Some(bytes) = super::login::decode_binding_secret(secret) {
+                return Some(bytes);
+            }
+        }
+    }
+    None
+}
+
 #[derive(Debug, PartialEq)]
 enum TokenSource {
     Cookie,
@@ -291,14 +393,19 @@ pub async fn auth_middleware(
 
     // If cookie/query didn't match, try each WebSocket sub-protocol.
     // A client may send multiple protocols (e.g., "graphql-ws, <token>"),
-    // so we must check each one, not just the first.
+    // so we must check each one, not just the first. Accept either the
+    // legacy bare-token form (used by older PWA tabs) or the prefixed
+    // `aoe-token.<token>` form introduced alongside device binding so
+    // that subprotocol values are self-describing instead of relying on
+    // "try every entry as a token" coincidence. See #1131.
     if matched_source.is_none() {
         for proto in extract_ws_protocols(&request) {
-            let (valid, upgrade) = state.token_manager.validate(&proto).await;
+            let candidate = strip_ws_prefix(&proto, "aoe-token").unwrap_or(&proto);
+            let (valid, upgrade) = state.token_manager.validate(candidate).await;
             if valid {
                 matched_source = Some(TokenSource::WebSocketProtocol);
                 needs_upgrade = upgrade;
-                matched_token_hash = Some(super::push::sha256_token(&proto));
+                matched_token_hash = Some(super::push::sha256_token(candidate));
                 break;
             }
         }
@@ -335,11 +442,20 @@ pub async fn auth_middleware(
             .unwrap_or("unknown");
         record_device(&state, client_ip, user_agent).await;
 
-        // Login session check (second factor)
+        // Login session check (second factor). Validates both the
+        // session cookie and the per-device binding secret introduced
+        // in #1131. The IP is no longer consulted, mobile rotation is
+        // a normal pattern. Sensitive routes additionally require a
+        // step-up elevation timestamp (15-minute window) set via
+        // `POST /api/login/elevate`.
         if state.login_manager.is_enabled() {
             let path = request.uri().path();
 
-            // Allow login-related paths and static assets through without a session
+            // Allow login-related paths and static assets through without a session.
+            // `/api/login/elevate` IS exempt from the elevation requirement (it
+            // is the path that grants elevation) but NOT from the session +
+            // binding requirement (the elevate handler enforces both internally
+            // via the same middleware path).
             let is_login_exempt = path == "/login"
                 || path == "/api/login"
                 || path == "/api/login/status"
@@ -352,9 +468,13 @@ pub async fn auth_middleware(
 
             if !is_login_exempt {
                 let session_id = super::login::extract_login_session(&request);
-                let has_valid_session = match session_id {
-                    Some(ref id) => state.login_manager.validate_session(id, client_ip).await,
-                    None => false,
+                let presented_binding = extract_device_binding(&request);
+
+                let has_valid_session = match (&session_id, &presented_binding) {
+                    (Some(id), Some(binding)) => {
+                        state.login_manager.validate_session(id, binding).await
+                    }
+                    _ => false,
                 };
 
                 if !has_valid_session {
@@ -365,6 +485,7 @@ pub async fn auth_middleware(
                             ip = %client_ip,
                             path = %path,
                             had_session_cookie = session_id.is_some(),
+                            had_device_binding = presented_binding.is_some(),
                             "login session check failed; rejecting api/ws with 401"
                         );
                         return (
@@ -392,8 +513,32 @@ pub async fn auth_middleware(
                     }
                 }
 
-                // Session is valid. Refresh the sliding window cookie.
+                // Session + binding are valid.
                 let session_id = session_id.expect("valid session implies session_id exists");
+
+                // Step-up gate for sensitive routes (terminal attach, cockpit
+                // command execution, file writes). Returning 403 with a typed
+                // body lets the frontend pop the inline passphrase prompt
+                // (POST /api/login/elevate) and retry. See #1131.
+                if requires_elevation(request.method(), path)
+                    && !state.login_manager.is_elevated(&session_id).await
+                {
+                    tracing::info!(
+                        target: "auth.passphrase",
+                        ip = %client_ip,
+                        path = %path,
+                        "sensitive route required elevation; returning 403 elevation_required"
+                    );
+                    return (
+                        StatusCode::FORBIDDEN,
+                        axum::Json(serde_json::json!({
+                            "error": "elevation_required",
+                            "message": "Re-enter the passphrase to continue"
+                        })),
+                    )
+                        .into_response();
+                }
+
                 let mut response = next.run(request).await;
 
                 // Set token cookie/header if needed (including Bearer to
@@ -612,5 +757,105 @@ mod tests {
         let cookie = build_cookie("mytoken", true, 14400);
         assert!(cookie.contains("Secure"));
         assert!(cookie.contains("Max-Age=14400"));
+    }
+
+    #[test]
+    fn strip_ws_prefix_works() {
+        assert_eq!(strip_ws_prefix("aoe-token.abc", "aoe-token"), Some("abc"));
+        assert_eq!(strip_ws_prefix("aoe-device.xyz", "aoe-device"), Some("xyz"));
+        // No leading dot -> not a prefixed value, just a coincidentally
+        // matching string. Don't strip.
+        assert_eq!(strip_ws_prefix("aoe-tokenabc", "aoe-token"), None);
+        // Unrelated subprotocol.
+        assert_eq!(strip_ws_prefix("graphql-ws", "aoe-token"), None);
+    }
+
+    #[test]
+    fn extract_device_binding_from_header() {
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        use base64::Engine;
+        let raw = [0xAB; 32];
+        let encoded = URL_SAFE_NO_PAD.encode(raw);
+        let req = build_request_with_headers(vec![(
+            "x-aoe-device-binding",
+            Box::leak(encoded.into_boxed_str()),
+        )]);
+        let bytes = extract_device_binding(&req).expect("decodes");
+        assert_eq!(bytes, raw);
+    }
+
+    #[test]
+    fn extract_device_binding_from_ws_subprotocol() {
+        use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+        use base64::Engine;
+        let raw = [0xCD; 32];
+        let encoded = URL_SAFE_NO_PAD.encode(raw);
+        let proto = format!("aoe-token.tok123, aoe-device.{}", encoded);
+        let req = build_request_with_headers(vec![(
+            "sec-websocket-protocol",
+            Box::leak(proto.into_boxed_str()),
+        )]);
+        let bytes = extract_device_binding(&req).expect("decodes");
+        assert_eq!(bytes, raw);
+    }
+
+    #[test]
+    fn extract_device_binding_missing_returns_none() {
+        let req = build_request_with_headers(vec![]);
+        assert!(extract_device_binding(&req).is_none());
+    }
+
+    #[test]
+    fn extract_device_binding_rejects_malformed() {
+        let req = build_request_with_headers(vec![(
+            "x-aoe-device-binding",
+            "not-base64-and-wrong-length",
+        )]);
+        assert!(extract_device_binding(&req).is_none());
+    }
+
+    #[test]
+    fn requires_elevation_paths() {
+        use axum::http::Method;
+        // Sensitive: terminal WS attach.
+        assert!(requires_elevation(&Method::GET, "/api/sessions/abc/ws"));
+        assert!(requires_elevation(
+            &Method::GET,
+            "/api/sessions/abc/ws-readonly"
+        ));
+        // Sensitive: cockpit WS upgrade.
+        assert!(requires_elevation(&Method::GET, "/sessions/abc/cockpit/ws"));
+        // Sensitive: cockpit mutating endpoints.
+        assert!(requires_elevation(
+            &Method::POST,
+            "/api/sessions/abc/cockpit/prompt"
+        ));
+        assert!(requires_elevation(
+            &Method::POST,
+            "/api/sessions/abc/cockpit/cancel"
+        ));
+        assert!(requires_elevation(
+            &Method::POST,
+            "/api/sessions/abc/cockpit/approvals/nonce1"
+        ));
+        // Sensitive: session lifecycle.
+        assert!(requires_elevation(&Method::POST, "/api/sessions"));
+        assert!(requires_elevation(&Method::DELETE, "/api/sessions/abc"));
+        assert!(requires_elevation(&Method::POST, "/api/sessions/abc/send"));
+        // Read-only GETs are NOT gated even on per-session paths.
+        assert!(!requires_elevation(&Method::GET, "/api/sessions"));
+        assert!(!requires_elevation(&Method::GET, "/api/sessions/abc"));
+        assert!(!requires_elevation(
+            &Method::GET,
+            "/api/sessions/abc/cockpit/replay"
+        ));
+        assert!(!requires_elevation(
+            &Method::GET,
+            "/api/sessions/abc/diff/files"
+        ));
+        // Out-of-scope paths never gate.
+        assert!(!requires_elevation(&Method::GET, "/api/about"));
+        assert!(!requires_elevation(&Method::POST, "/api/login"));
+        assert!(!requires_elevation(&Method::POST, "/api/login/elevate"));
     }
 }

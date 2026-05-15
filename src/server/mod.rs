@@ -987,6 +987,7 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/push/test", post(push::test))
         // Login (second-factor auth)
         .route("/api/login", post(login::login_handler))
+        .route("/api/login/elevate", post(login::elevate_handler))
         .route("/api/logout", post(login::logout_handler))
         .route("/api/login/status", get(login::login_status_handler))
         // Devices
