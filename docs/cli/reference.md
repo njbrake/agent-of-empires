@@ -826,7 +826,9 @@ Start a web dashboard for remote session access
 * `--tunnel-url <TUNNEL_URL>` - Hostname for a named tunnel (e.g., aoe.example.com)
 * `--daemon` - Run as a background daemon (detach from terminal)
 * `--stop` - Stop a running daemon
-* `--status` - Print the running daemon's PID, mode, URLs, and log path. Exits non-zero when no daemon is running. Useful for shell scripts and for testing the cockpit auto-spawn flow without parsing `ps`
+* `--status` - Print the running daemon's PID, mode, URLs, and log path. Exits non-zero when no daemon is running. Useful for shell scripts and for testing the cockpit auto-spawn flow without parsing `ps`.
+
+   `--status` is read-only and incompatible with every flag that would change daemon state (`--stop`, `--daemon`, `--remote`) or the bind config of a fresh daemon (`--no-auth`, `--read-only`, `--passphrase`, `--port`, `--tunnel-name`, `--no-tailscale`, `--tunnel-url`, `--open`). Clap reports the misuse instead of silently ignoring the extras.
 * `--passphrase <PASSPHRASE>` - Require a passphrase for login (second-factor auth). Can also be set via AOE_SERVE_PASSPHRASE environment variable
 * `--open` - Open the dashboard URL in the default browser once the server is ready. Ignored under --daemon, --remote, SSH (SSH_CONNECTION/SSH_TTY), or when no display server is reachable on Linux/BSD
 
