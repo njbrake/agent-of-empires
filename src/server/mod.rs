@@ -984,9 +984,16 @@ fn build_router(state: Arc<AppState>) -> Router {
         )
         .route("/api/themes", get(api::list_themes))
         .route("/api/sounds", get(api::list_sounds))
-        // FUR-3957 Sub-C — avk-suite custom widgets (Linear + Sentry summary).
+        // FUR-3957 transplant — avk-suite custom widgets (5 endpoint).
+        // Contract: docs/aoe-transplant/02-widget-api-contract.md (Code-1 dondurucu).
         .route("/api/widgets/linear/summary", get(api::get_linear_summary))
         .route("/api/widgets/sentry/summary", get(api::get_sentry_summary))
+        .route(
+            "/api/widgets/github-actions/summary",
+            get(api::get_github_actions_summary),
+        )
+        .route("/api/widgets/vercel/summary", get(api::get_vercel_summary))
+        .route("/api/widgets/netdata/summary", get(api::get_netdata_summary))
         // Push notifications
         .route("/api/push/status", get(push::get_status))
         .route(

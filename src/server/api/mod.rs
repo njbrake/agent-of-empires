@@ -24,7 +24,10 @@ mod system;
 mod widgets;
 
 #[cfg(feature = "serve")]
-pub use widgets::{get_linear_summary, get_sentry_summary, WidgetCache};
+pub use widgets::{
+    get_github_actions_summary, get_linear_summary, get_netdata_summary, get_sentry_summary,
+    get_vercel_summary, WidgetCache,
+};
 
 #[cfg(feature = "serve")]
 pub use cockpit::{
