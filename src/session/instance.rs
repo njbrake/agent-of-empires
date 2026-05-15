@@ -337,6 +337,17 @@ pub struct Instance {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub base_branch_override: Option<String>,
 
+    /// Directory passed as `$CLAUDE_CONFIG_DIR` to a spawned Claude
+    /// session. `None` → inherit shell env (default behavior). Pinned
+    /// per-session at spawn time so the same project can host multiple
+    /// Claude sessions under different Claude config dirs without
+    /// touching the profile or the shell. Picker rows like
+    /// `claude → ForIT Main` set this; `claude` (plain) leaves it None.
+    /// `~` and `$HOME` are expanded at spawn time against the host env
+    /// so the value stays portable across machines.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_config_dir: Option<std::path::PathBuf>,
+
     /// Whether this session uses the ACP cockpit instead of a tmux pane.
     /// When true, aoe spawns an ACP agent subprocess and renders structured
     /// events natively; tmux integration is bypassed for this session.
@@ -646,6 +657,7 @@ impl Instance {
             notify_on_idle: None,
             notify_on_error: None,
             base_branch_override: None,
+            claude_config_dir: None,
             #[cfg(feature = "serve")]
             cockpit_mode: false,
             #[cfg(feature = "serve")]
@@ -1336,7 +1348,20 @@ impl Instance {
         // intentionally skip this injection because the entries are
         // host-side; sandbox users should configure `sandbox.environment`
         // for the in-container env list.
-        let host_env = self.profile_host_environment();
+        let mut host_env = self.profile_host_environment();
+        // Per-session Claude config dir, set by the new-session picker
+        // (`claude → ForIT Main` row) or an in-session account swap.
+        // Prepended (so a per-session override beats a profile-level
+        // entry with the same key). Skipped when the session is
+        // sandboxed because host paths usually don't exist inside the
+        // container — sandbox users should forward CLAUDE_CONFIG_DIR via
+        // `sandbox.environment` instead.
+        if self.sandbox_info.is_none() {
+            if let Some(ref dir) = self.claude_config_dir {
+                let resolved = expand_claude_config_dir(dir);
+                host_env.insert(0, format!("CLAUDE_CONFIG_DIR={}", resolved));
+            }
+        }
         if !host_env.is_empty() {
             env_prefix = format!(
                 "{}{}",
@@ -2418,6 +2443,32 @@ fn truncate_error_line(line: &str) -> String {
 /// Uses `shell_escape` (single-quote escaping) so the value is preserved
 /// verbatim when parsed by the inner `bash -c '...'` shell created by
 /// `wrap_command_ignore_suspend`.
+/// Expand `~` and `$HOME` in a Claude config-dir path to the live
+/// `HOME` value. Other variables are left alone — this is a narrow
+/// portability helper for picker rows whose path is typically absolute
+/// already; manual edits like `~/.claude-foo` get resolved at spawn
+/// time so the same `sessions.json` stays portable across hosts.
+fn expand_claude_config_dir(p: &std::path::Path) -> String {
+    let s = p.to_string_lossy().into_owned();
+    let home = match std::env::var("HOME") {
+        Ok(h) => h,
+        Err(_) => return s,
+    };
+    if let Some(rest) = s.strip_prefix("~/") {
+        return format!("{}/{}", home.trim_end_matches('/'), rest);
+    }
+    if s == "~" {
+        return home;
+    }
+    if let Some(rest) = s.strip_prefix("$HOME/") {
+        return format!("{}/{}", home.trim_end_matches('/'), rest);
+    }
+    if s == "$HOME" {
+        return home;
+    }
+    s
+}
+
 fn format_env_var_prefix(key: &str, value: &str, cmd: &str) -> String {
     let escaped = shell_escape(value);
     format!("{}={} {}", key, escaped, cmd)
@@ -3167,6 +3218,28 @@ mod tests {
         assert!(!json.contains("last_error"));
     }
 
+    #[test]
+    fn test_instance_claude_config_dir_roundtrip() {
+        let mut inst = Instance::new("Test", "/tmp/test");
+        inst.tool = "claude".to_string();
+        inst.claude_config_dir =
+            Some(std::path::PathBuf::from("$HOME/.claude-accounts/forit-main"));
+
+        let json = serde_json::to_string(&inst).unwrap();
+        assert!(json.contains("claude_config_dir"));
+        assert!(json.contains("forit-main"));
+
+        let deserialized: Instance = serde_json::from_str(&json).unwrap();
+        assert_eq!(deserialized.claude_config_dir, inst.claude_config_dir);
+
+        // None must round-trip without emitting the field.
+        let inst_none = Instance::new("Test", "/tmp/test");
+        let json_none = serde_json::to_string(&inst_none).unwrap();
+        assert!(!json_none.contains("claude_config_dir"));
+        let deserialized_none: Instance = serde_json::from_str(&json_none).unwrap();
+        assert_eq!(deserialized_none.claude_config_dir, None);
+    }
+
     #[cfg(feature = "serve")]
     #[test]
     fn test_instance_cockpit_acp_session_id_roundtrip() {
@@ -3589,6 +3662,77 @@ mod tests {
         let cmd = inst.build_host_command(crate::agents::get_agent("codex"), &None);
         assert!(cmd.is_some());
         assert!(cmd.as_ref().unwrap().contains("codex"));
+    }
+
+    #[test]
+    fn test_build_host_command_injects_claude_config_dir() {
+        let mut inst = Instance::new("test", "/tmp/test");
+        inst.tool = "claude".to_string();
+        inst.claude_config_dir =
+            Some(std::path::PathBuf::from("/tmp/aoe-claude-cfg-test"));
+        let cmd = inst
+            .build_host_command(crate::agents::get_agent("claude"), &None)
+            .unwrap();
+        assert!(
+            cmd.contains("CLAUDE_CONFIG_DIR=") && cmd.contains("/tmp/aoe-claude-cfg-test"),
+            "expected injected CLAUDE_CONFIG_DIR in command, got: {}",
+            cmd
+        );
+    }
+
+    #[test]
+    fn test_build_host_command_skips_claude_config_dir_when_sandboxed() {
+        let mut inst = Instance::new("test", "/tmp/test");
+        inst.tool = "claude".to_string();
+        inst.claude_config_dir = Some(std::path::PathBuf::from("/tmp/cfg-x"));
+        inst.sandbox_info = Some(SandboxInfo {
+            enabled: true,
+            container_id: None,
+            image: "x".into(),
+            container_name: "c".into(),
+            extra_env: None,
+            custom_instruction: None,
+        });
+        let cmd = inst
+            .build_host_command(crate::agents::get_agent("claude"), &None)
+            .unwrap();
+        assert!(
+            !cmd.contains("CLAUDE_CONFIG_DIR"),
+            "sandboxed sessions must not inject host CLAUDE_CONFIG_DIR, got: {}",
+            cmd
+        );
+    }
+
+    #[test]
+    fn test_expand_claude_config_dir() {
+        // Save and restore HOME so the test is hermetic.
+        let prev = std::env::var_os("HOME");
+        std::env::set_var("HOME", "/Users/picker-test");
+        assert_eq!(
+            expand_claude_config_dir(&std::path::PathBuf::from(
+                "~/.claude-accounts/forit-main"
+            )),
+            "/Users/picker-test/.claude-accounts/forit-main"
+        );
+        assert_eq!(
+            expand_claude_config_dir(&std::path::PathBuf::from(
+                "$HOME/.claude-accounts/wma-work"
+            )),
+            "/Users/picker-test/.claude-accounts/wma-work"
+        );
+        assert_eq!(
+            expand_claude_config_dir(&std::path::PathBuf::from("/absolute/path")),
+            "/absolute/path"
+        );
+        assert_eq!(expand_claude_config_dir(&std::path::PathBuf::from("~")), "/Users/picker-test");
+        assert_eq!(
+            expand_claude_config_dir(&std::path::PathBuf::from("$HOME")),
+            "/Users/picker-test"
+        );
+        match prev {
+            Some(v) => std::env::set_var("HOME", v),
+            None => std::env::remove_var("HOME"),
+        }
     }
 
     #[test]

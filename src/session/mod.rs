@@ -3,6 +3,7 @@
 pub mod builder;
 pub(crate) mod capture;
 pub mod civilizations;
+pub mod claude_accounts;
 pub mod config;
 pub(crate) mod container_config;
 pub mod deletion;
