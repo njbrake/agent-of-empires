@@ -19,6 +19,9 @@ You're in. Tap **Share → Add to Home Screen** (iOS) or **three-dot menu → In
 
 - **HTTPS end-to-end** via Tailscale or Cloudflare.
 - **Two factors**: the auth token embedded in the QR URL, plus the passphrase typed on the login page. Either alone is useless.
+- **Device-bound login session.** Each browser generates a high-entropy secret (`crypto.getRandomValues`) on first load and persists it in `localStorage`. After a successful passphrase login, every authenticated request to that browser must carry both the `aoe_session` cookie AND the device-binding secret. A stolen cookie alone is therefore not enough; the attacker also needs the binding secret. The session is no longer tied to your public IP, so mobile network rotation (Wi-Fi to cellular, Cloudflare CGNAT churn, iCloud Private Relay, VPN reconnect) does not log you out. Clearing site data or reinstalling the PWA generates a new secret and requires re-entering the passphrase once.
+- **Step-up confirmation for high-risk actions.** Opening a terminal, running a cockpit command, resolving an approval, or creating/deleting a session prompts for the passphrase again if it has been more than 15 minutes since the last confirmation. Read-only browsing (session list, replay, status polls) is never gated.
+- **Push notification on every new login.** When the dashboard accepts a passphrase, every device already subscribed to push notifications receives a "New aoe dashboard login" notice. If you ever see one you did not trigger, restart `aoe serve` with a new `--passphrase` (and re-launch the tunnel so the auth token in the QR URL rotates).
 - Tunnel stays up as a background daemon after you close the TUI. Press `R` again anytime to reattach, press `S` to stop, or run `aoe serve --stop` from a shell.
 
 Don't screenshot the QR and passphrase together, and stop the tunnel when you're done.

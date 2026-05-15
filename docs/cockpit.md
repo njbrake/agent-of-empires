@@ -540,6 +540,18 @@ Reinstalling the adapter does not help here; the adapter is fine, the cwd is gon
   longer holds events that far back, you'll see a `History
   truncated` notice and reloading is the cleanest way to resync.
 
+### Sensitive cockpit actions ask for the passphrase again
+
+When passphrase login is configured, sending a prompt, cancelling a
+turn, resolving an approval, switching mode, or restarting / killing
+the cockpit worker requires that your login session has been
+"elevated" within the last 15 minutes (#1131). The first such
+action after a fresh page load surfaces an inline passphrase prompt
+that calls `POST /api/login/elevate`. Subsequent actions inside the
+same 15-minute window go through without re-prompting. Read-only
+endpoints (replay, status, history, context primer) are never
+gated.
+
 ### WebSocket auto-reconnect and keepalive
 
 Mobile browsers and Cloudflare tunnels both close idle WebSocket
