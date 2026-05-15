@@ -881,7 +881,7 @@ function QueueSendButton({
           aria-hidden
           className={[
             "absolute -right-1.5 -top-1.5 inline-flex h-4 min-w-[16px] items-center justify-center",
-            "rounded-full bg-amber-500 px-1 text-[10px] font-semibold text-surface-900",
+            "rounded-full bg-sky-500 px-1 text-[10px] font-semibold text-surface-900",
             "ring-2 ring-surface-900",
           ].join(" ")}
         >
