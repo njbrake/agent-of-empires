@@ -385,6 +385,23 @@ pub async fn login_handler(
 
         tracing::info!(target: "auth.passphrase", ip = %client_ip, "passphrase login successful");
 
+        // Fire-and-forget push to every existing subscriber: a new
+        // device just signed in. This is the operational mitigation
+        // for the one attack neither device binding nor step-up auth
+        // can prevent: an attacker who has both the first-factor token
+        // URL AND the passphrase (e.g. shoulder-surf + URL share). The
+        // legitimate owner sees the notification on their existing
+        // device and can rotate credentials. See #1131.
+        let user_agent = headers
+            .get(axum::http::header::USER_AGENT)
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("unknown")
+            .to_string();
+        let state_for_push = state.clone();
+        tokio::spawn(async move {
+            trigger_new_login_push(&state_for_push, &user_agent).await;
+        });
+
         let cookie = build_login_cookie(&session_id, state.behind_tunnel);
         let mut response = Json(serde_json::json!({
             "ok": true
@@ -636,6 +653,72 @@ pub fn extract_login_session(request: &axum::extract::Request) -> Option<String>
         }
     }
     None
+}
+
+/// Fire a fire-and-forget web push to every existing subscriber that
+/// a new dashboard login just succeeded. Best-effort: any failure
+/// (no push state, no subscribers, network error, encryption error)
+/// is swallowed. The payload never includes the binding secret,
+/// session id, auth token, or passphrase; only the user-agent string
+/// truncated for display. See #1131.
+async fn trigger_new_login_push(state: &AppState, user_agent: &str) {
+    let Some(push) = state.push.as_ref() else {
+        return;
+    };
+    if !state.push_enabled {
+        return;
+    }
+    let subs = push.store.snapshot().await;
+    if subs.is_empty() {
+        return;
+    }
+    let truncated_ua = user_agent.chars().take(80).collect::<String>();
+    let payload = super::push_send::PushPayload {
+        title: "New aoe dashboard login".to_string(),
+        body: format!("New device signed in. UA: {truncated_ua}"),
+        url: "/".to_string(),
+        tag: "aoe-new-login".to_string(),
+        session_id: String::new(),
+    };
+    let client = match super::push_send::build_client() {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(target: "auth.passphrase", "build_client: {e}");
+            return;
+        }
+    };
+    let body_bytes = match serde_json::to_vec(&payload) {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::warn!(target: "auth.passphrase", "serialise payload: {e}");
+            return;
+        }
+    };
+    for sub in subs {
+        let auth_header = match super::push_send::vapid_auth_header(push, &sub.endpoint) {
+            Ok(h) => h,
+            Err(e) => {
+                tracing::warn!(target: "auth.passphrase", "vapid header: {e}");
+                continue;
+            }
+        };
+        let cipher = match super::push_send::encrypt_aes128gcm(&sub, &body_bytes) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::warn!(target: "auth.passphrase", "encrypt: {e}");
+                continue;
+            }
+        };
+        let _ = client
+            .post(&sub.endpoint)
+            .header("Authorization", &auth_header)
+            .header("Content-Encoding", "aes128gcm")
+            .header("Content-Type", "application/octet-stream")
+            .header("TTL", "60")
+            .body(cipher)
+            .send()
+            .await;
+    }
 }
 
 /// Build a Set-Cookie header for the login session.
