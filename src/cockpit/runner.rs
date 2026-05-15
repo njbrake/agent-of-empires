@@ -292,8 +292,17 @@ struct JsonRpcPeek {
 /// Method name we synthesize cancellations for. Other agent → daemon
 /// requests (fs/* etc.) can park too in principle, but their typed
 /// response shapes vary and synthesizing them safely would need
-/// per-method work — out of scope for the headline approval fix.
+/// per-method work, which is out of scope for the headline approval fix.
 const PERMISSION_METHOD: &str = "session/request_permission";
+
+/// Soft cap on `outstanding_requests`. Hit only if the daemon stops
+/// answering non-permission requests (which a healthy ACP daemon
+/// always does); a misbehaving daemon shouldn't be able to grow the
+/// map without bound across reconnects. When the cap trips we drop
+/// every non-permission entry so the permission-cancellation path
+/// stays accurate (those are the only ids we ever synthesize for) and
+/// log once at warn so the leak is visible.
+const MAX_OUTSTANDING_REQUESTS: usize = 1024;
 
 impl RunnerShared {
     fn new() -> Self {
@@ -314,7 +323,18 @@ impl RunnerShared {
         // before answering. Notifications (no id) and responses (id but
         // no method) are not requests; ignore them here.
         if let Some((id, method)) = parse_request(line) {
-            self.outstanding_requests.lock().await.insert(id, method);
+            let mut map = self.outstanding_requests.lock().await;
+            if map.len() >= MAX_OUTSTANDING_REQUESTS {
+                let before = map.len();
+                map.retain(|_, m| m.as_str() == PERMISSION_METHOD);
+                warn!(
+                    target: "cockpit.runner",
+                    before,
+                    after = map.len(),
+                    "outstanding_requests soft cap reached; evicted non-permission ids"
+                );
+            }
+            map.insert(id, method);
         }
 
         let mut guard = self.active_outbound.lock().await;
@@ -734,5 +754,49 @@ mod tests {
 "#;
         shared.note_daemon_response(resp).await;
         assert!(shared.outstanding_requests.lock().await.is_empty());
+    }
+
+    /// Soft-cap protection against an unanswered-non-permission flood.
+    /// Permission ids must survive the eviction; everything else is
+    /// fair game so the permission-cancellation path stays accurate.
+    #[tokio::test]
+    async fn outstanding_requests_evicts_non_permission_at_soft_cap() {
+        let shared = RunnerShared::new();
+        // One permission request that must survive.
+        let perm =
+            br#"{"jsonrpc":"2.0","id":9999,"method":"session/request_permission","params":{}}
+"#;
+        shared.deliver_line(perm).await;
+        // Pre-fill the map up to the cap with non-permission requests.
+        for id in 0..(MAX_OUTSTANDING_REQUESTS as i64 - 1) {
+            let line = format!(
+                "{{\"jsonrpc\":\"2.0\",\"id\":{id},\"method\":\"fs/read_text_file\",\"params\":{{}}}}\n"
+            );
+            shared.deliver_line(line.as_bytes()).await;
+        }
+        assert_eq!(
+            shared.outstanding_requests.lock().await.len(),
+            MAX_OUTSTANDING_REQUESTS
+        );
+        // One more push trips the eviction; only the permission entry
+        // and the just-inserted line remain.
+        let extra = br#"{"jsonrpc":"2.0","id":424242,"method":"fs/read_text_file","params":{}}
+"#;
+        shared.deliver_line(extra).await;
+        let map = shared.outstanding_requests.lock().await;
+        assert_eq!(
+            map.get(&9999),
+            Some(&"session/request_permission".to_string()),
+            "permission id must survive eviction"
+        );
+        assert_eq!(
+            map.get(&424242),
+            Some(&"fs/read_text_file".to_string()),
+            "the request that tripped the cap is inserted after the sweep"
+        );
+        assert!(
+            map.len() <= MAX_OUTSTANDING_REQUESTS,
+            "map stays within the cap after eviction"
+        );
     }
 }
