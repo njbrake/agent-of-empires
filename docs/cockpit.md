@@ -568,12 +568,19 @@ context where approvals legitimately take longer.
 
 When you run `/clear` in a cockpit session, the model's context is
 wiped on the adapter side but the visible transcript is preserved.
-The cockpit now appends a "Conversation cleared" divider, drops the
-cached slash-command / mode / plan state (the model has forgotten
-them), and folds every row above the divider behind a disclosure
-banner: `Show N earlier turns (cleared, not in the model's memory)`.
-Click the banner to expand the older transcript for your own
-reference; the model still won't see those turns. See #1101.
+The cockpit appends a "Conversation cleared" divider, resets the
+active plan, the current mode, any in-flight approvals, and the
+session usage snapshot, then folds every row above the divider
+behind a disclosure banner: `Show N earlier turns (cleared, not in
+the model's memory)`. Click the banner to expand the older transcript
+for your own reference; the model still won't see those turns. See
+#1101.
+
+The slash-command palette and mode picker stay populated across a
+`/clear`. `claude-agent-sdk` caches the supported command surface at
+Query init and does not rotate it when conversation context is reset,
+so the cached list stays authoritative for the lifetime of the
+cockpit's underlying agent process. See #1128.
 
 ### "Force end turn" button under the spinner
 

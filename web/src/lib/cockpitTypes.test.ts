@@ -736,10 +736,11 @@ describe("applyEvent / WakeupScheduled lifecycle", () => {
 
 describe("applyEvent / SessionCleared", () => {
   // /clear wipes the model's memory. The reducer appends a divider row
-  // so the renderer can fold pre-clear turns behind a disclosure, and
-  // drops session-scoped capability caches that the agent no longer
-  // recognises (slash palette, mode picker, plan strip, in-flight
-  // approvals). See #1101.
+  // so the renderer can fold pre-clear turns behind a disclosure
+  // (#1101), and resets only the per-turn / in-flight fields the
+  // cleared context invalidates. Capability caches (slash commands,
+  // modes) are preserved because claude-agent-sdk caches them at
+  // Query init and does not rotate them on /clear (#1128).
   it("appends a session_cleared divider row", () => {
     const next = applyEvent(emptyCockpitState(), {
       session_id: "s-1",
@@ -754,7 +755,7 @@ describe("applyEvent / SessionCleared", () => {
     expect(next.lastSeq).toBe(5);
   });
 
-  it("clears session-scoped capability caches", () => {
+  it("resets per-turn state but preserves capability caches (#1128)", () => {
     const seeded: CockpitState = {
       ...emptyCockpitState(),
       availableCommands: [
@@ -789,13 +790,16 @@ describe("applyEvent / SessionCleared", () => {
       seq: 7,
       event: "SessionCleared",
     });
-    expect(next.availableCommands).toEqual([]);
-    expect(next.availableModes).toEqual([]);
-    expect(next.currentModeId).toBeNull();
+    // Per-turn / in-flight state cleared:
     expect(next.plan).toBeNull();
     expect(next.mode).toBe("Default");
     expect(next.pendingApprovals).toEqual([]);
     expect(next.sessionUsage).toBeNull();
+    // Capability caches preserved (slash palette + mode picker keep
+    // working after /clear):
+    expect(next.availableCommands).toEqual(seeded.availableCommands);
+    expect(next.availableModes).toEqual(seeded.availableModes);
+    expect(next.currentModeId).toBe("m1");
   });
 });
 

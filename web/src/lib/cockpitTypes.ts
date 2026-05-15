@@ -401,11 +401,23 @@ export function applyEvent(
         },
       ];
     } else if (event === "SessionCleared") {
-      // /clear wiped the model's memory. Append a divider row and
-      // drop session-scoped capability caches; the UI groups all
-      // rows above the divider behind a collapsible disclosure so
-      // the user can still scroll back but won't reply on top of a
-      // conversation the model no longer has. See #1101.
+      // /clear wiped the model's memory. Append a divider row so the
+      // UI can fold pre-clear turns behind a disclosure (#1101), then
+      // drop only the per-turn / in-flight state that the cleared
+      // context invalidates: the active plan, the legacy mode enum,
+      // pending approvals, and the session usage snapshot.
+      //
+      // We deliberately preserve availableCommands, availableModes,
+      // and currentModeId. claude-agent-sdk caches the supported
+      // command surface at Query init and does not recreate the
+      // Query on /clear, so the cached list stays authoritative for
+      // the lifetime of the cockpit's underlying agent process. The
+      // prior over-clear (#1101 A.1) was based on an assumption that
+      // doesn't hold for this SDK; emptying availableCommands made
+      // the slash palette stay empty forever after the first /clear
+      // because no AvailableCommandsUpdated event arrives to refill
+      // it (tracked upstream at
+      // agentclientprotocol/claude-agent-acp#657). See #1128.
       next.activity = [
         ...next.activity,
         {
@@ -415,9 +427,6 @@ export function applyEvent(
           at: new Date().toISOString(),
         },
       ];
-      next.availableCommands = [];
-      next.availableModes = [];
-      next.currentModeId = null;
       next.plan = null;
       next.mode = "Default";
       next.pendingApprovals = [];
