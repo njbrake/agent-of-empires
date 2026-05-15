@@ -61,6 +61,14 @@ export interface CockpitContext {
   state: CockpitState;
   status: ReturnType<typeof useCockpit>["status"];
   hasEverOpened: boolean;
+  /** True while the auto-reconnect backoff is armed between a close
+   *  and the next dial. Drives the "Reconnecting (N/MAX) in Xs" copy
+   *  in SystemNotices. See #1130. */
+  reconnecting: boolean;
+  retryCount: number;
+  retryCountdown: number;
+  maxRetries: number;
+  manualReconnect: () => void;
   resolveApproval: (
     nonce: string,
     decision: ApprovalDecision,
@@ -131,6 +139,11 @@ export function CockpitRuntime({
         state: cockpit.state,
         status: cockpit.status,
         hasEverOpened: cockpit.hasEverOpened,
+        reconnecting: cockpit.reconnecting,
+        retryCount: cockpit.retryCount,
+        retryCountdown: cockpit.retryCountdown,
+        maxRetries: cockpit.maxRetries,
+        manualReconnect: cockpit.manualReconnect,
         resolveApproval: cockpit.resolveApproval,
         sendPrompt: cockpit.sendPrompt,
         forceEndTurn: cockpit.forceEndTurn,

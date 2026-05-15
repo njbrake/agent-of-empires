@@ -330,6 +330,23 @@ export type ConnectionStatus =
   | "closed"
   | "error";
 
+/** Reconnect backoff: 1s, 2s, 4s, 8s, 16s, 30s, 30s (cap). Seven
+ *  attempts cover the common mobile-background / Cloudflare-idle /
+ *  WiFi-flap recovery shapes without flooding the daemon when the
+ *  backend is genuinely down. After the cap, the UI surfaces a manual
+ *  "Tap to retry" affordance via `manualReconnect`. Mirrors the
+ *  retry envelope already used by `useTerminal` (#1009 / #1107). */
+const COCKPIT_MAX_RETRIES = 7;
+const COCKPIT_RETRY_BASE_MS = 1000;
+const COCKPIT_RETRY_CAP_MS = 30000;
+export function cockpitRetryDelayMs(attempt: number): number {
+  return Math.min(
+    COCKPIT_RETRY_CAP_MS,
+    COCKPIT_RETRY_BASE_MS * 2 ** Math.max(0, attempt - 1),
+  );
+}
+export const COCKPIT_MAX_RETRIES_EXPORT = COCKPIT_MAX_RETRIES;
+
 export function useCockpit(
   sessionId: string | null,
   /** Live cockpit worker lifecycle from `SessionResponse.cockpit_worker_state`.
@@ -383,6 +400,21 @@ export function useCockpit(
     if (sessionId) cacheSet(sessionId, state);
   }, [sessionId, state]);
   const wsRef = useRef<WebSocket | null>(null);
+  // Auto-reconnect machinery (#1130). retryCountRef is the persistent
+  // attempt counter across `onclose` -> scheduled `connect()` cycles;
+  // retryTimerRef holds the pending setTimeout so manualReconnect can
+  // cancel a backed-off retry without leaking it. countdownTimerRef
+  // drives the per-second `retryCountdown` decrement that the banner
+  // renders. connectRef is the stable indirection so listeners
+  // installed outside the connection effect (visibilitychange, online,
+  // pageshow) can dial without re-creating the listeners.
+  const retryCountRef = useRef(0);
+  const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const countdownTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const connectRef = useRef<(() => void) | null>(null);
+  const [reconnecting, setReconnecting] = useState(false);
+  const [retryCount, setRetryCount] = useState(0);
+  const [retryCountdown, setRetryCountdown] = useState(0);
   // Track lastSeq in a ref so the snapshot fetcher always sees the
   // latest value without re-running the effect when it changes.
   // The ref is updated inside an effect (not during render) to keep
@@ -483,97 +515,206 @@ export function useCockpit(
     });
     statusRef.current = "connecting";
     setStatus("connecting");
+    retryCountRef.current = 0;
+    setReconnecting(false);
+    setRetryCount(0);
+    setRetryCountdown(0);
 
     // Set up cancellation so the cleanup function can stop a pending
     // open if the effect re-runs (sessionId change) before the WS dial
     // completed. Without this, a fast session-switch could leak a WS
     // that fires onmessage into a now-stale reducer.
     let cancelled = false;
-    let ws: WebSocket | null = null;
 
-    (async () => {
-      // Order: replay first, then open WS. Today the server's WS
-      // on-connect drain and the REST replay endpoint read the same
-      // disk store; awaiting the replay before the dial gives the
-      // reducer a known-correct `lastSeq` so the WS subscribes from a
-      // settled cursor instead of racing two delivery paths. Without
-      // this, an event landing during the dial window could be
-      // delivered by both paths in different orders, and the dedupe
-      // would drop later applies, which is exactly the "Stopped never
-      // reaches the reducer" failure mode in #1100.
-      await fetchReplay(sessionId);
+    const clearRetryTimers = () => {
+      if (retryTimerRef.current) {
+        clearTimeout(retryTimerRef.current);
+        retryTimerRef.current = null;
+      }
+      if (countdownTimerRef.current) {
+        clearInterval(countdownTimerRef.current);
+        countdownTimerRef.current = null;
+      }
+    };
+
+    const scheduleReconnect = () => {
       if (cancelled) return;
+      if (retryCountRef.current >= COCKPIT_MAX_RETRIES) {
+        setReconnecting(false);
+        setRetryCount(retryCountRef.current);
+        setRetryCountdown(0);
+        return;
+      }
+      retryCountRef.current += 1;
+      const attempt = retryCountRef.current;
+      const delayMs = cockpitRetryDelayMs(attempt);
+      let countdown = Math.ceil(delayMs / 1000);
+      setReconnecting(true);
+      setRetryCount(attempt);
+      setRetryCountdown(countdown);
+      clearRetryTimers();
+      countdownTimerRef.current = setInterval(() => {
+        countdown -= 1;
+        if (countdown > 0) setRetryCountdown(countdown);
+      }, 1000);
+      retryTimerRef.current = setTimeout(() => {
+        if (countdownTimerRef.current) {
+          clearInterval(countdownTimerRef.current);
+          countdownTimerRef.current = null;
+        }
+        connectRef.current?.();
+      }, delayMs);
+    };
 
-      const token = getToken();
-      const protocol = window.location.protocol === "https:" ? "wss" : "ws";
-      // Pass `?since=<lastSeq>` so the server's on-connect drain only
-      // resends events newer than what we already have. Without this,
-      // a long-running session resends its full transcript on every
-      // reconnect (page refresh / mobile flap), which can be tens of
-      // MB at the retention cap.
-      const since = lastSeqRef.current;
-      const url = `${protocol}://${window.location.host}/sessions/${encodeURIComponent(sessionId)}/cockpit/ws?since=${since}`;
+    const connect = () => {
+      if (cancelled) return;
+      // Cancel any pending scheduled retry; a fresh dial supersedes it.
+      clearRetryTimers();
+      statusRef.current = "connecting";
+      setStatus("connecting");
+      void (async () => {
+        // Order: replay first, then open WS. Today the server's WS
+        // on-connect drain and the REST replay endpoint read the same
+        // disk store; awaiting the replay before the dial gives the
+        // reducer a known-correct `lastSeq` so the WS subscribes from a
+        // settled cursor instead of racing two delivery paths. Without
+        // this, an event landing during the dial window could be
+        // delivered by both paths in different orders, and the dedupe
+        // would drop later applies, which is exactly the "Stopped never
+        // reaches the reducer" failure mode in #1100.
+        await fetchReplay(sessionId);
+        if (cancelled) return;
 
-      ws = new WebSocket(url, token ? ["aoe-auth", token] : ["aoe-auth"]);
-      wsRef.current = ws;
+        const token = getToken();
+        const protocol =
+          window.location.protocol === "https:" ? "wss" : "ws";
+        // Pass `?since=<lastSeq>` so the server's on-connect drain only
+        // resends events newer than what we already have. Without this,
+        // a long-running session resends its full transcript on every
+        // reconnect (page refresh / mobile flap), which can be tens of
+        // MB at the retention cap.
+        const since = lastSeqRef.current;
+        const url = `${protocol}://${window.location.host}/sessions/${encodeURIComponent(sessionId)}/cockpit/ws?since=${since}`;
 
-      // Set the ref synchronously alongside setState so sendPrompt's
-      // gate (which reads the ref) doesn't race the next render. Without
-      // this, a click landing in the same event-loop tick as `onclose`
-      // could see statusRef.current === "open" and dispatch an
-      // optimistic prompt against a closed socket.
-      ws.onopen = () => {
-        statusRef.current = "open";
-        setStatus("open");
-        setHasEverOpened(true);
-      };
-      ws.onerror = () => {
-        statusRef.current = "error";
-        setStatus("error");
-      };
-      ws.onclose = () => {
-        statusRef.current = "closed";
-        setStatus("closed");
-      };
-      ws.onmessage = (ev) => {
-        try {
-          const data = JSON.parse(ev.data) as
-            | CockpitFrame
-            | { kind: "lagged"; skipped?: number };
-          if (
-            typeof data === "object" &&
-            data !== null &&
-            "kind" in data &&
-            (data as { kind?: unknown }).kind === "lagged"
-          ) {
-            const skipped =
-              ((data as unknown) as { skipped?: number }).skipped ?? 0;
-            dispatch({ kind: "lagged", skipped });
-            // Try to recover via the snapshot endpoint.
-            fetchReplay(sessionId);
+        const ws = new WebSocket(
+          url,
+          token ? ["aoe-auth", token] : ["aoe-auth"],
+        );
+        wsRef.current = ws;
+
+        // Set the ref synchronously alongside setState so sendPrompt's
+        // gate (which reads the ref) doesn't race the next render.
+        // Without this, a click landing in the same event-loop tick as
+        // `onclose` could see statusRef.current === "open" and dispatch
+        // an optimistic prompt against a closed socket.
+        ws.onopen = () => {
+          if (cancelled) {
+            try {
+              ws.close();
+            } catch {
+              // ignore
+            }
             return;
           }
-          if (
-            typeof data === "object" &&
-            data !== null &&
-            "session_id" in data &&
-            "event" in data
-          ) {
-            // Every incoming live frame is an "activity" tick for the
-            // force-end-turn watchdog: as long as the agent is
-            // streaming, the spinner stays "honest" and the escape
-            // hatch doesn't appear. See WorkingSpinner in CockpitView.
-            lastActivityRef.current = Date.now();
-            dispatch({ kind: "frame", frame: data as CockpitFrame });
+          statusRef.current = "open";
+          setStatus("open");
+          setHasEverOpened(true);
+          // A live socket is the right moment to reset the retry
+          // envelope: a future close from here is a genuinely new
+          // failure, not a continuation of the prior backoff chain.
+          retryCountRef.current = 0;
+          setReconnecting(false);
+          setRetryCount(0);
+          setRetryCountdown(0);
+        };
+        ws.onerror = () => {
+          if (cancelled) return;
+          statusRef.current = "error";
+          setStatus("error");
+        };
+        ws.onclose = () => {
+          if (cancelled) return;
+          statusRef.current = "closed";
+          setStatus("closed");
+          wsRef.current = null;
+          scheduleReconnect();
+        };
+        ws.onmessage = (ev) => {
+          try {
+            const data = JSON.parse(ev.data) as
+              | CockpitFrame
+              | { kind: "lagged"; skipped?: number };
+            if (
+              typeof data === "object" &&
+              data !== null &&
+              "kind" in data &&
+              (data as { kind?: unknown }).kind === "lagged"
+            ) {
+              const skipped =
+                ((data as unknown) as { skipped?: number }).skipped ?? 0;
+              dispatch({ kind: "lagged", skipped });
+              // Try to recover via the snapshot endpoint.
+              fetchReplay(sessionId);
+              return;
+            }
+            if (
+              typeof data === "object" &&
+              data !== null &&
+              "session_id" in data &&
+              "event" in data
+            ) {
+              // Every incoming live frame is an "activity" tick for the
+              // force-end-turn watchdog: as long as the agent is
+              // streaming, the spinner stays "honest" and the escape
+              // hatch doesn't appear. See WorkingSpinner in CockpitView.
+              lastActivityRef.current = Date.now();
+              dispatch({ kind: "frame", frame: data as CockpitFrame });
+            }
+          } catch {
+            // Ignore malformed frames; the server should never send them.
           }
-        } catch {
-          // Ignore malformed frames; the server should never send them.
-        }
-      };
-    })();
+        };
+      })();
+    };
+    connectRef.current = connect;
+
+    // Trigger an immediate reconnect when the tab returns to the
+    // foreground / the OS rejoins the network / bfcache restores the
+    // page. Mobile Chrome / Safari close idle WSs in the background
+    // (~30-60s), and Cloudflare's tunnel kills them at 100s; the
+    // standard recovery signal is the visibility event firing on
+    // foreground. iOS Safari batches these so `pageshow` is the
+    // backup. See #1130.
+    const tryAutoReconnect = () => {
+      const ws = wsRef.current;
+      const ready = ws?.readyState;
+      if (
+        ready === WebSocket.OPEN ||
+        ready === WebSocket.CONNECTING
+      ) {
+        return;
+      }
+      retryCountRef.current = 0;
+      setRetryCount(0);
+      setRetryCountdown(0);
+      clearRetryTimers();
+      connectRef.current?.();
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") tryAutoReconnect();
+    };
+    const onOnline = () => tryAutoReconnect();
+    const onPageShow = () => tryAutoReconnect();
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("online", onOnline);
+    window.addEventListener("pageshow", onPageShow);
+
+    connect();
 
     return () => {
       cancelled = true;
+      clearRetryTimers();
+      const ws = wsRef.current;
       if (ws) {
         try {
           ws.close();
@@ -582,6 +723,10 @@ export function useCockpit(
         }
       }
       wsRef.current = null;
+      connectRef.current = null;
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("online", onOnline);
+      window.removeEventListener("pageshow", onPageShow);
     };
   }, [sessionId, fetchReplay]);
 
@@ -833,9 +978,46 @@ export function useCockpit(
     dispatch({ kind: "clear_error" });
   }, []);
 
+  // Public manual-reconnect affordance. Surfaces in the SystemNotices
+  // banner once the auto-retry envelope is exhausted; resets the
+  // backoff counter and dials a fresh WS immediately. Idempotent
+  // against a live socket (the reconnect path checks readyState).
+  const manualReconnect = useCallback(() => {
+    if (retryTimerRef.current) {
+      clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = null;
+    }
+    if (countdownTimerRef.current) {
+      clearInterval(countdownTimerRef.current);
+      countdownTimerRef.current = null;
+    }
+    retryCountRef.current = 0;
+    setRetryCount(0);
+    setRetryCountdown(0);
+    setReconnecting(false);
+    connectRef.current?.();
+  }, []);
+
   return {
     state,
     status,
+    /** True between an `onclose` and the next successful dial / failure
+     *  to exhaust the retry envelope. Drives the banner's "Reconnecting
+     *  (N/MAX) in Xs" copy. See #1130. */
+    reconnecting,
+    /** Current attempt number; 0 while the live socket is healthy,
+     *  1..MAX while backing off. */
+    retryCount,
+    /** Seconds remaining before the next scheduled retry fires. The
+     *  banner reads this on each render to animate the countdown. */
+    retryCountdown,
+    /** Maximum retries before falling back to the manual reconnect
+     *  affordance. Exposed so the banner can render "N/MAX" without
+     *  re-importing the constant. */
+    maxRetries: COCKPIT_MAX_RETRIES,
+    /** User-triggered reconnect. Resets the retry counter and dials a
+     *  fresh socket immediately. */
+    manualReconnect,
     /** True once the WS has reached `onopen` at least once for the
      *  current session. Lets banner copy distinguish "first dial
      *  while the worker spawns" (no prior connection to recover) from

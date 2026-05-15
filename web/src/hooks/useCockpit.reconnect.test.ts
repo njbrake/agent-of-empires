@@ -1,0 +1,228 @@
+// @vitest-environment jsdom
+//
+// Tests for the cockpit WS auto-reconnect machinery added in #1130.
+// `cockpitRetryDelayMs` is unit-tested directly (pure function). The
+// full reconnect lifecycle is exercised end-to-end by mounting the
+// hook in jsdom with a fake WebSocket constructor that lets us drive
+// open/close/error events on a captured instance.
+
+import { act, renderHook } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+import {
+  COCKPIT_MAX_RETRIES_EXPORT,
+  cockpitRetryDelayMs,
+  useCockpit,
+} from "./useCockpit";
+
+describe("cockpitRetryDelayMs", () => {
+  it("returns 1s for the first attempt", () => {
+    expect(cockpitRetryDelayMs(1)).toBe(1000);
+  });
+
+  it("doubles for each attempt up to the 30s cap", () => {
+    expect(cockpitRetryDelayMs(2)).toBe(2000);
+    expect(cockpitRetryDelayMs(3)).toBe(4000);
+    expect(cockpitRetryDelayMs(4)).toBe(8000);
+    expect(cockpitRetryDelayMs(5)).toBe(16000);
+    expect(cockpitRetryDelayMs(6)).toBe(30000);
+    expect(cockpitRetryDelayMs(7)).toBe(30000);
+    expect(cockpitRetryDelayMs(100)).toBe(30000);
+  });
+
+  it("clamps non-positive inputs to the 1s base", () => {
+    expect(cockpitRetryDelayMs(0)).toBe(1000);
+    expect(cockpitRetryDelayMs(-5)).toBe(1000);
+  });
+});
+
+interface FakeSocket {
+  url: string;
+  protocols: string[] | string | undefined;
+  readyState: number;
+  onopen: ((ev: Event) => void) | null;
+  onclose: ((ev: CloseEvent) => void) | null;
+  onerror: ((ev: Event) => void) | null;
+  onmessage: ((ev: MessageEvent) => void) | null;
+  close: () => void;
+  send: (data: string | ArrayBufferLike | Blob | ArrayBufferView) => void;
+}
+
+const sockets: FakeSocket[] = [];
+let originalWebSocket: typeof WebSocket;
+
+class FakeWebSocket implements FakeSocket {
+  url: string;
+  protocols: string[] | string | undefined;
+  readyState: number = 0;
+  onopen: ((ev: Event) => void) | null = null;
+  onclose: ((ev: CloseEvent) => void) | null = null;
+  onerror: ((ev: Event) => void) | null = null;
+  onmessage: ((ev: MessageEvent) => void) | null = null;
+  static CONNECTING = 0;
+  static OPEN = 1;
+  static CLOSING = 2;
+  static CLOSED = 3;
+  constructor(url: string, protocols?: string | string[]) {
+    this.url = url;
+    this.protocols = protocols;
+    sockets.push(this);
+  }
+  close(): void {
+    this.readyState = FakeWebSocket.CLOSED;
+    if (this.onclose) {
+      this.onclose({
+        code: 1000,
+        reason: "test close",
+        wasClean: true,
+      } as CloseEvent);
+    }
+  }
+  send(): void {
+    /* no-op */
+  }
+}
+
+beforeEach(() => {
+  vi.useFakeTimers();
+  sockets.length = 0;
+  // Mock fetch so the `fetchReplay` call inside connect resolves
+  // without hitting a real network. The reconnect path runs after the
+  // fetch settles, so we need the promise to resolve quickly.
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () =>
+      new Response(
+        JSON.stringify({ frames: [], lost: false, highest_seq: 0 }),
+        { status: 200 },
+      ),
+    ),
+  );
+  originalWebSocket = global.WebSocket;
+  global.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
+});
+
+afterEach(() => {
+  global.WebSocket = originalWebSocket;
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+});
+
+async function flushAsync(): Promise<void> {
+  // Drain pending microtasks (fetch's resolution) so the connect
+  // closure progresses past the awaited fetchReplay and instantiates
+  // a FakeWebSocket.
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+}
+
+describe("useCockpit reconnect (#1130)", () => {
+  it("schedules a backoff retry on WS close and exposes the countdown", async () => {
+    const { result } = renderHook(() => useCockpit("sess-1"));
+    await flushAsync();
+    expect(sockets).toHaveLength(1);
+    const first = sockets[0]!;
+
+    // Close the socket; the hook should schedule a retry and surface
+    // reconnecting=true / retryCount=1 / retryCountdown >= 1.
+    act(() => {
+      first.readyState = FakeWebSocket.CLOSED;
+      first.onclose?.({
+        code: 1006,
+        reason: "",
+        wasClean: false,
+      } as CloseEvent);
+    });
+    expect(result.current.reconnecting).toBe(true);
+    expect(result.current.retryCount).toBe(1);
+    expect(result.current.retryCountdown).toBeGreaterThanOrEqual(1);
+
+    // Advance past the first backoff window (1s) and let the connect
+    // closure run; a second FakeWebSocket should be instantiated.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(cockpitRetryDelayMs(1));
+    });
+    await flushAsync();
+    expect(sockets).toHaveLength(2);
+  });
+
+  it("stops retrying after MAX_RETRIES and exposes manualReconnect", async () => {
+    const { result } = renderHook(() => useCockpit("sess-2"));
+    await flushAsync();
+
+    // Repeatedly close each new socket so the retry envelope walks
+    // through all attempts up to MAX_RETRIES.
+    for (let attempt = 1; attempt <= COCKPIT_MAX_RETRIES_EXPORT; attempt++) {
+      const sock = sockets[sockets.length - 1]!;
+      act(() => {
+        sock.readyState = FakeWebSocket.CLOSED;
+        sock.onclose?.({
+          code: 1006,
+          reason: "",
+          wasClean: false,
+        } as CloseEvent);
+      });
+      if (attempt < COCKPIT_MAX_RETRIES_EXPORT) {
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(
+            cockpitRetryDelayMs(attempt),
+          );
+        });
+        await flushAsync();
+      }
+    }
+    // One more close to push past MAX_RETRIES.
+    const lastSock = sockets[sockets.length - 1]!;
+    act(() => {
+      lastSock.readyState = FakeWebSocket.CLOSED;
+      lastSock.onclose?.({
+        code: 1006,
+        reason: "",
+        wasClean: false,
+      } as CloseEvent);
+    });
+    expect(result.current.reconnecting).toBe(false);
+    expect(result.current.retryCount).toBe(COCKPIT_MAX_RETRIES_EXPORT);
+    expect(typeof result.current.manualReconnect).toBe("function");
+
+    // manualReconnect should reset the counter and dial a fresh socket.
+    const socketsBefore = sockets.length;
+    act(() => {
+      result.current.manualReconnect();
+    });
+    await flushAsync();
+    expect(sockets.length).toBe(socketsBefore + 1);
+    expect(result.current.retryCount).toBe(0);
+  });
+
+  it("resets the retry counter once the socket opens successfully", async () => {
+    const { result } = renderHook(() => useCockpit("sess-3"));
+    await flushAsync();
+    const first = sockets[0]!;
+    // Force a close to bump retryCount to 1.
+    act(() => {
+      first.readyState = FakeWebSocket.CLOSED;
+      first.onclose?.({
+        code: 1006,
+        reason: "",
+        wasClean: false,
+      } as CloseEvent);
+    });
+    expect(result.current.retryCount).toBe(1);
+
+    // Run the scheduled retry; a second socket appears.
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(cockpitRetryDelayMs(1));
+    });
+    await flushAsync();
+    const second = sockets[1]!;
+    act(() => {
+      second.readyState = FakeWebSocket.OPEN;
+      second.onopen?.({} as Event);
+    });
+    expect(result.current.retryCount).toBe(0);
+    expect(result.current.reconnecting).toBe(false);
+  });
+});

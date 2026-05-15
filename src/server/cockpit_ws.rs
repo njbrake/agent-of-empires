@@ -15,6 +15,7 @@
 //! channel is the fast path; the store is the truth.
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use axum::extract::{
     ws::{Message, WebSocket, WebSocketUpgrade},
@@ -24,9 +25,25 @@ use axum::response::IntoResponse;
 use serde::Deserialize;
 use tokio::select;
 use tokio::sync::broadcast::error::RecvError;
+use tokio::time::Instant;
 use tracing::{debug, warn};
 
 use super::{AppState, CockpitBroadcastFrame};
+
+/// Cadence at which the server emits an application-level Ping. The
+/// browser's WebSocket auto-replies with a Pong; axum forwards that
+/// Pong to the recv loop where it resets `last_pong_at`. 30s sits
+/// comfortably under Cloudflare's 100s WebSocket idle timeout and the
+/// ~60s background-WS reaper used by mobile Chrome / Safari, so a
+/// quiet session stays connected indefinitely. See #1130.
+const PING_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Maximum gap allowed between Pongs before we tear down a stuck
+/// socket. With PING_INTERVAL of 30s, this tolerates two missed
+/// round-trips before closing. The frontend's auto-reconnect picks up
+/// from `?since=<lastSeq>` so a tear-down here is a transparent
+/// recovery, not a session loss.
+const PONG_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 
 /// Query parameters for the cockpit WS upgrade. Clients pass
 /// `?since=<lastSeq>` so the on-connect drain only resends events
@@ -96,19 +113,52 @@ async fn handle(mut socket: WebSocket, session_id: String, state: Arc<AppState>,
         "cockpit ws subscribed"
     );
 
+    let mut ping_interval = tokio::time::interval(PING_INTERVAL);
+    ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // First tick fires immediately; consume it so the first ping waits
+    // PING_INTERVAL rather than racing the upgrade handshake.
+    ping_interval.tick().await;
+    let mut last_pong_at = Instant::now();
+
     loop {
         select! {
             client_msg = socket.recv() => {
                 match client_msg {
                     Some(Ok(Message::Close(_))) | None => break,
+                    Some(Ok(Message::Pong(_))) => {
+                        // Browser ack of our keepalive Ping. Refresh the
+                        // pong watchdog; otherwise a quiet but live
+                        // session would get reaped at PONG_IDLE_TIMEOUT.
+                        last_pong_at = Instant::now();
+                        continue;
+                    }
                     // Inbound messages from the client are not used today.
                     // Clients post approval resolutions via REST, not the
-                    // WebSocket. Ignore everything we receive.
+                    // WebSocket. Ignore everything else we receive.
                     Some(Ok(_)) => continue,
                     Some(Err(e)) => {
                         warn!(target: "cockpit.ws", "client recv error: {e}");
                         break;
                     }
+                }
+            }
+            _ = ping_interval.tick() => {
+                if last_pong_at.elapsed() > PONG_IDLE_TIMEOUT {
+                    warn!(
+                        target: "cockpit.ws",
+                        session = %session_id,
+                        idle_secs = last_pong_at.elapsed().as_secs(),
+                        "cockpit ws idle reaper fired (no Pong from peer)"
+                    );
+                    break;
+                }
+                if socket
+                    .send(Message::Ping(Vec::new().into()))
+                    .await
+                    .is_err()
+                {
+                    debug!(target: "cockpit.ws", session = %session_id, "ws Ping send failed, peer gone");
+                    break;
                 }
             }
             event = rx.recv() => {
@@ -295,5 +345,40 @@ mod tests {
         // Sending to a channel with no receivers returns Err, but
         // publish() in this module deliberately discards the result.
         assert!(send_result.is_err() || send_result.is_ok());
+    }
+
+    /// PONG_IDLE_TIMEOUT must outrun PING_INTERVAL by enough margin to
+    /// tolerate at least one missed round-trip. A misconfiguration here
+    /// (interval >= timeout) would have the keepalive immediately
+    /// reaping every connection on its first tick. See #1130.
+    #[test]
+    fn keepalive_pong_timeout_exceeds_ping_interval() {
+        assert!(
+            PONG_IDLE_TIMEOUT > PING_INTERVAL,
+            "PONG_IDLE_TIMEOUT ({:?}) must be longer than PING_INTERVAL ({:?})",
+            PONG_IDLE_TIMEOUT,
+            PING_INTERVAL,
+        );
+        // Allow at least two missed round-trips: PONG_IDLE_TIMEOUT >= 2 *
+        // PING_INTERVAL keeps the watchdog forgiving on flaky mobile
+        // links without delaying recovery on a truly dead peer.
+        assert!(
+            PONG_IDLE_TIMEOUT >= PING_INTERVAL * 2,
+            "PONG_IDLE_TIMEOUT should tolerate two missed pings",
+        );
+    }
+
+    /// Both keepalive intervals must stay well under Cloudflare's
+    /// documented 100s WebSocket idle timeout. If either climbs above
+    /// it, idle cockpit sessions through a Cloudflare tunnel would be
+    /// dropped by the tunnel before the keepalive could fire.
+    #[test]
+    fn keepalive_under_cloudflare_idle_cap() {
+        const CLOUDFLARE_IDLE_CAP: Duration = Duration::from_secs(100);
+        assert!(
+            PING_INTERVAL < CLOUDFLARE_IDLE_CAP,
+            "PING_INTERVAL ({:?}) must be shorter than Cloudflare's 100s tunnel idle cap",
+            PING_INTERVAL,
+        );
     }
 }

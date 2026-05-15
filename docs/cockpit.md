@@ -524,6 +524,23 @@ Reinstalling the adapter does not help here; the adapter is fine, the cwd is gon
   longer holds events that far back, you'll see a `History
   truncated` notice and reloading is the cleanest way to resync.
 
+### WebSocket auto-reconnect and keepalive
+
+Mobile browsers and Cloudflare tunnels both close idle WebSocket
+connections aggressively (Chrome / Safari at ~30 to 60 seconds in the
+background, Cloudflare at 100 seconds), so the cockpit pairs an
+application-level keepalive with a client-side reconnect envelope.
+The server sends a Ping every 30 seconds and reaps any socket that
+goes 90 seconds without a Pong reply. On the client, the
+`useCockpit` hook re-dials the WebSocket on close with exponential
+backoff (1s, 2s, 4s, 8s, 16s, 30s, 30s), reset on the next successful
+`onopen`. The reconnect resumes from `?since={lastSeq}` so the
+transcript stays continuous. The cockpit banner shows
+`Reconnecting (N/7) in Xs...` while the auto-retry is armed, and a
+manual **Reconnect** button after the seven attempts exhaust.
+`visibilitychange`, `online`, and `pageshow` listeners trigger an
+immediate reconnect when the tab returns to the foreground.
+
 ### Approval card vanished without resolving
 
 Approvals expire after `approval_timeout_secs` (default 300). The

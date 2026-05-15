@@ -95,6 +95,11 @@ function CockpitChrome({
   state,
   status,
   hasEverOpened,
+  reconnecting,
+  retryCount,
+  retryCountdown,
+  maxRetries,
+  manualReconnect,
   resolveApproval,
   sendPrompt,
   forceEndTurn,
@@ -183,12 +188,17 @@ function CockpitChrome({
     <div className="flex h-full flex-col bg-surface-900 text-text-primary">
       <PlanStrip plan={state.plan} />
 
-      {(status !== "open" || state.lagged || state.rateLimit) && (
+      {(status !== "open" || state.lagged || state.rateLimit || reconnecting) && (
         <SystemNotices
           status={status}
           lagged={state.lagged}
           rateLimit={state.rateLimit}
           hasEverOpened={hasEverOpened}
+          reconnecting={reconnecting}
+          retryCount={retryCount}
+          retryCountdown={retryCountdown}
+          maxRetries={maxRetries}
+          manualReconnect={manualReconnect}
         />
       )}
 
@@ -943,28 +953,55 @@ function SystemNotices({
   lagged,
   rateLimit,
   hasEverOpened,
+  reconnecting,
+  retryCount,
+  retryCountdown,
+  maxRetries,
+  manualReconnect,
 }: {
   status: CockpitContext["status"];
   lagged: boolean;
   rateLimit: CockpitState["rateLimit"];
   hasEverOpened: boolean;
+  reconnecting: boolean;
+  retryCount: number;
+  retryCountdown: number;
+  maxRetries: number;
+  manualReconnect: () => void;
 }) {
   const messages: { kind: string; text: string }[] = [];
-  if (status === "connecting") {
+  // Retry envelope exhausted: the auto-reconnect chain stopped after
+  // `maxRetries` and we're sitting on a dead WS. Surface the manual
+  // affordance instead of a status line so the user has a clear path
+  // back to live. See #1130.
+  const retriesExhausted =
+    status !== "open" &&
+    hasEverOpened &&
+    !reconnecting &&
+    retryCount >= maxRetries;
+  if (reconnecting && status !== "open") {
+    // Auto-retry banner: "Reconnecting (3/7) in 4s". Replaces the bare
+    // "Reconnecting…" copy with concrete progress so the user knows
+    // the tab isn't frozen and roughly how long until the next dial.
+    const countdownPart =
+      retryCountdown > 0 ? ` in ${retryCountdown}s` : "";
+    messages.push({
+      kind: "warn",
+      text: `Cockpit disconnected. Reconnecting (${retryCount}/${maxRetries})${countdownPart}…`,
+    });
+  } else if (status === "connecting") {
     messages.push({
       kind: "info",
       text: hasEverOpened ? "Reconnecting to cockpit…" : "Starting cockpit…",
     });
-  }
-  if (status === "error") {
+  } else if (status === "error") {
     messages.push({
       kind: "warn",
       text: hasEverOpened
         ? "Cockpit reconnecting… showing cached transcript; new messages disabled."
         : "Starting cockpit worker… this can take a few seconds for new sessions.",
     });
-  }
-  if (status === "closed") {
+  } else if (status === "closed" && !retriesExhausted) {
     messages.push({
       kind: "warn",
       text: hasEverOpened
@@ -982,7 +1019,7 @@ function SystemNotices({
       text: `Rate-limited (${rateLimit.kind}); resets at ${reset}.`,
     });
   }
-  if (messages.length === 0) return null;
+  if (messages.length === 0 && !retriesExhausted) return null;
   return (
     <div className="border-b border-surface-800 px-4 py-2 space-y-1">
       {messages.map((m, i) => (
@@ -993,6 +1030,18 @@ function SystemNotices({
           {m.text}
         </div>
       ))}
+      {retriesExhausted && (
+        <div className="flex items-center justify-between gap-3 text-xs text-brand-400">
+          <span>Connection lost. Auto-retry stopped.</span>
+          <button
+            type="button"
+            onClick={manualReconnect}
+            className="shrink-0 rounded-md border border-brand-700 bg-brand-900/40 px-2 py-1 text-[10px] font-mono uppercase tracking-wide text-brand-100 hover:bg-brand-900/60"
+          >
+            Reconnect
+          </button>
+        </div>
+      )}
     </div>
   );
 }
