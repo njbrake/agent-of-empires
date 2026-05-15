@@ -397,6 +397,17 @@ restoration (Claude today), the model itself also retains conversation
 context across restarts; so a follow-up like "what did we just
 decide?" still works after a daemon restart.
 
+The web dashboard mirrors each session's reduced state into
+`localStorage` under the `aoe:cockpit-state:v1:<session_id>` key so a
+full page reload (mobile OS evicting the tab, Cloudflare tunnel
+re-auth, PWA cold start) hydrates the chat surface instantly from the
+last-known state and only fetches the seq-delta from the server. Entries
+expire after seven days; an oversized session that exceeds the
+per-origin quota falls back to the full server replay path without
+warning. `clearCockpitCache` and the session-delete handler drop the
+matching entry so a freshly-recreated session id doesn't briefly show
+the prior transcript.
+
 If context restoration fails (e.g., the agent's stored session is no
 longer available), cockpit falls back to a fresh session and renders
 an amber "Conversation context reset" callout in the transcript so

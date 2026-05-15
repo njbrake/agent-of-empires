@@ -17,6 +17,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   MessagePrimitive,
   ThreadPrimitive,
+  useMessage,
 } from "@assistant-ui/react";
 import { Check, ChevronDown, Clock, ListChecks, X } from "lucide-react";
 
@@ -347,11 +348,16 @@ function AssistantMessage() {
 }
 
 function AssistantText({ text }: { text: string }) {
+  // Smooth-reveal only the live streaming tail: an assistant message
+  // whose runtime status is `running` is the one the agent is
+  // actively chunking text into. Historical messages (loaded from
+  // the localStorage cache on reload, or replayed from the server on
+  // session switch) render with the Markdown default `smooth={false}`
+  // so the user doesn't watch the entire transcript type itself out
+  // again. See #1132.
+  const isRunning = useMessage((m) => m.status?.type === "running");
   if (!text) return null;
-  // MarkdownTextPrimitive (in Markdown.tsx) handles smooth
-  // streaming via its built-in `smooth` prop, so we don't need the
-  // hand-rolled char-budget reveal anymore.
-  return <Markdown text={text} />;
+  return <Markdown text={text} smooth={isRunning} />;
 }
 
 // assistant-ui's tool-call props are typed as JSON-only; in our app the

@@ -36,12 +36,18 @@ export type Action =
   | { kind: "clear_queue" }
   | { kind: "dismiss_primer" };
 
-// LRU-capped module cache keyed by cockpit session id. Survives
-// component unmount within the same page lifetime so the user can
-// navigate between cockpit sessions (or away from the dashboard and
-// back) and keep seeing the in-memory transcript while the
-// WebSocket reconnects in the background. Lost on full page reload
-// by design.
+// LRU-capped module cache keyed by cockpit session id. Mirrors the
+// per-session CockpitState into `localStorage` under
+// `aoe:cockpit-state:v1:<id>` so a full page reload (mobile OS evicts
+// the tab, user pulls down a Cloudflare re-auth, PWA cold start)
+// hydrates the reducer from the last-known state and only fetches
+// the seq-delta from the server instead of replaying the entire
+// transcript through the typewriter. See #1132.
+//
+// Versioned key prefix lets us invalidate stored entries when the
+// reducer schema changes meaningfully (bump to `v2:`); a TTL sweep
+// on first mount prunes entries older than STATE_TTL_MS so abandoned
+// sessions don't squat on the per-origin quota forever.
 //
 // The cap prevents long-running dashboards from accumulating state
 // for every cockpit session ever opened (Map.set with an existing
@@ -50,7 +56,122 @@ export type Action =
 // session-delete handler and logout flow can drop stale entries
 // instead of waiting for them to age out.
 const STATE_CACHE_CAP = 32;
+const STORAGE_KEY_PREFIX = "aoe:cockpit-state:v1:";
+const STATE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const stateCache = new Map<string, CockpitState>();
+
+interface PersistedEntry {
+  savedAt: number;
+  state: CockpitState;
+}
+
+function storageKey(sessionId: string): string {
+  return STORAGE_KEY_PREFIX + sessionId;
+}
+
+function persistState(sessionId: string, state: CockpitState): void {
+  if (typeof window === "undefined") return;
+  try {
+    const entry: PersistedEntry = { savedAt: Date.now(), state };
+    window.localStorage.setItem(storageKey(sessionId), JSON.stringify(entry));
+  } catch {
+    // Quota exceeded, private mode, or storage disabled. The in-memory
+    // cache still works; the next reload will fall back to the full
+    // replay path. Drop quietly so a single oversized session can't
+    // surface as a banner.
+  }
+}
+
+function loadPersistedState(sessionId: string): CockpitState | undefined {
+  if (typeof window === "undefined") return undefined;
+  try {
+    const raw = window.localStorage.getItem(storageKey(sessionId));
+    if (!raw) return undefined;
+    const parsed = JSON.parse(raw) as PersistedEntry | null;
+    if (
+      !parsed ||
+      typeof parsed.savedAt !== "number" ||
+      typeof parsed.state !== "object" ||
+      parsed.state === null
+    ) {
+      return undefined;
+    }
+    if (Date.now() - parsed.savedAt > STATE_TTL_MS) {
+      window.localStorage.removeItem(storageKey(sessionId));
+      return undefined;
+    }
+    const state = parsed.state as Partial<CockpitState>;
+    if (
+      typeof state.lastSeq !== "number" ||
+      !Array.isArray(state.activity) ||
+      !Array.isArray(state.queuedPrompts)
+    ) {
+      window.localStorage.removeItem(storageKey(sessionId));
+      return undefined;
+    }
+    return state as CockpitState;
+  } catch {
+    return undefined;
+  }
+}
+
+function dropPersistedState(sessionId: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.removeItem(storageKey(sessionId));
+  } catch {
+    // ignore
+  }
+}
+
+function dropAllPersistedState(): void {
+  if (typeof window === "undefined") return;
+  try {
+    const toRemove: string[] = [];
+    for (let i = 0; i < window.localStorage.length; i++) {
+      const k = window.localStorage.key(i);
+      if (k && k.startsWith(STORAGE_KEY_PREFIX)) toRemove.push(k);
+    }
+    for (const k of toRemove) window.localStorage.removeItem(k);
+  } catch {
+    // ignore
+  }
+}
+
+let sweptStorage = false;
+function sweepExpiredStorage(): void {
+  if (sweptStorage) return;
+  sweptStorage = true;
+  if (typeof window === "undefined") return;
+  try {
+    const toRemove: string[] = [];
+    const now = Date.now();
+    for (let i = 0; i < window.localStorage.length; i++) {
+      const k = window.localStorage.key(i);
+      if (!k || !k.startsWith(STORAGE_KEY_PREFIX)) continue;
+      const raw = window.localStorage.getItem(k);
+      if (!raw) {
+        toRemove.push(k);
+        continue;
+      }
+      try {
+        const parsed = JSON.parse(raw) as PersistedEntry | null;
+        if (
+          !parsed ||
+          typeof parsed.savedAt !== "number" ||
+          now - parsed.savedAt > STATE_TTL_MS
+        ) {
+          toRemove.push(k);
+        }
+      } catch {
+        toRemove.push(k);
+      }
+    }
+    for (const k of toRemove) window.localStorage.removeItem(k);
+  } catch {
+    // ignore
+  }
+}
 
 function cacheGet(sessionId: string): CockpitState | undefined {
   const value = stateCache.get(sessionId);
@@ -59,8 +180,19 @@ function cacheGet(sessionId: string): CockpitState | undefined {
     // insertion order.
     stateCache.delete(sessionId);
     stateCache.set(sessionId, value);
+    return value;
   }
-  return value;
+  const persisted = loadPersistedState(sessionId);
+  if (persisted !== undefined) {
+    stateCache.set(sessionId, persisted);
+    while (stateCache.size > STATE_CACHE_CAP) {
+      const oldest = stateCache.keys().next().value;
+      if (oldest === undefined) break;
+      stateCache.delete(oldest);
+    }
+    return persisted;
+  }
+  return undefined;
 }
 
 function cacheSet(sessionId: string, value: CockpitState): void {
@@ -71,6 +203,7 @@ function cacheSet(sessionId: string, value: CockpitState): void {
     if (oldest === undefined) break;
     stateCache.delete(oldest);
   }
+  persistState(sessionId, value);
 }
 
 /** Drop a session's cached state (or the entire cache when called
@@ -87,8 +220,10 @@ const REPLAY_OVERLAP = 50;
 export function clearCockpitCache(sessionId?: string): void {
   if (sessionId === undefined) {
     stateCache.clear();
+    dropAllPersistedState();
   } else {
     stateCache.delete(sessionId);
+    dropPersistedState(sessionId);
   }
 }
 
@@ -203,6 +338,10 @@ export function useCockpit(
    *  `"running"` so non-cockpit / pre-#1088 call sites keep working. */
   workerState: "absent" | "resuming" | "running" = "running",
 ) {
+  // Sweep stale persisted state entries on first hook mount in this
+  // module's lifetime. Idempotent (guarded by `sweptStorage`) so the
+  // cost is one full localStorage scan per page load.
+  sweepExpiredStorage();
   const [state, dispatch] = useReducer(reducer, sessionId, initialState);
   const [status, setStatus] = useState<ConnectionStatus>("connecting");
   // Mirror the worker state into a ref so the drain effect always sees

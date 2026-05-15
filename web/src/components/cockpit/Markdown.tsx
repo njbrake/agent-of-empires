@@ -30,9 +30,13 @@ import {
 interface Props {
   text: string;
   /** Enable the char-budget reveal that paces in newly-streamed
-   *  agent tokens. Default on for assistant output. Pass `false` for
-   *  user prompts (which arrive complete in one shot, so smoothing
-   *  adds nothing and would briefly delay the bubble rendering). */
+   *  agent tokens. Default off: historical messages (loaded from the
+   *  per-session persisted cache on reload, or hydrated from server
+   *  replay on session switch) would otherwise type out character-by-
+   *  character, which on a long transcript becomes 5-15 seconds of
+   *  unusable UI. Only the live streaming tail (an assistant message
+   *  whose runtime status is `running`) should pass `smooth={true}`.
+   *  See #1132. */
   smooth?: boolean;
 }
 
@@ -40,7 +44,7 @@ interface Props {
  * Render markdown text. Used for both assistant chunks and user
  * prompts; the smoothing pace is the only knob exposed.
  */
-export function Markdown({ text, smooth = true }: Props) {
+export function Markdown({ text, smooth = false }: Props) {
   return (
     <MarkdownTextPrimitive
       preprocess={() => text}
