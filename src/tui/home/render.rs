@@ -633,8 +633,10 @@ impl HomeView {
                 // identity a row is running under. Plain `claude` rows
                 // leave `claude_config_dir` as None and render nothing
                 // extra here.
-                if let Some(label) =
-                    inst.claude_config_dir.as_deref().and_then(claude_account_label_for_path)
+                if let Some(label) = inst
+                    .claude_config_dir
+                    .as_deref()
+                    .and_then(claude_account_label_for_path)
                 {
                     line_spans.push(Span::styled(
                         format!("  @{}", label),
