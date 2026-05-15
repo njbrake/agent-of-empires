@@ -433,6 +433,24 @@ pub const AGENTS: &[AgentDef] = &[
         send_keys_enter_delay_ms: 0,
         install_hint: "npm install -g @qwen-code/qwen-code",
     },
+    // FUR-3973 (avk fork) — Kimi (Moonshot) Level 1 stub.
+    // Pane parsing + hook integration follow-up (status always idle for now).
+    AgentDef {
+        name: "kimi",
+        binary: "kimi",
+        aliases: &["kimi-cli"],
+        detection: DetectionMethod::Which("kimi"),
+        yolo: None,
+        instruction_flag: None,
+        set_default_command: false,
+        detect_status: status_detection::detect_kimi_status,
+        container_env: &[],
+        hook_config: None,
+        resume_strategy: ResumeStrategy::Unsupported,
+        host_only: false,
+        send_keys_enter_delay_ms: 0,
+        install_hint: "see https://platform.moonshot.ai/docs",
+    },
 ];
 
 /// Look up an agent by canonical name.

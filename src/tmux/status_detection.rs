@@ -687,6 +687,12 @@ pub fn detect_kiro_status(_content: &str) -> Status {
     Status::Idle
 }
 
+/// Kimi (Moonshot) Level 1 stub — always idle. Pane parsing TBD when
+/// kimi CLI status surface stabilises. Sufficient for session create + attach.
+pub fn detect_kimi_status(_content: &str) -> Status {
+    Status::Idle
+}
+
 /// settl status is detected via hooks (TOML-based), not tmux pane parsing.
 /// This stub exists so the agent registry has a valid function pointer.
 pub fn detect_settl_status(_content: &str) -> Status {
