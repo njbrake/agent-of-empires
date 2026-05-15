@@ -96,8 +96,8 @@ pub trait BroadcastSink: Send + Sync + 'static {
 enum WorkerKind {
     /// Fresh spawn owned by this daemon. Watchdog respawns on crash
     /// within `MAX_RESPAWNS_IN_WINDOW`. Boxed because `SpawnConfig` is
-    /// significantly larger than the unit variants — keeping it inline
-    /// trips `clippy::large_enum_variant`.
+    /// significantly larger than the unit variants, and keeping it
+    /// inline trips `clippy::large_enum_variant`.
     Runner { spawn_config: Box<SpawnConfig> },
     /// Reattached to an already-running runner from a previous daemon
     /// (see `Supervisor::attach`). No auto-respawn from in-memory
@@ -958,7 +958,7 @@ impl<S: BroadcastSink> Supervisor<S> {
     /// queue can drain, then sends a best-effort `session/cancel` to
     /// the agent in case it really is mid-turn. Idempotent: a second
     /// call just publishes another (no-op for the reducer) Stopped.
-    pub async fn force_end_turn(&self, session_id: &str) -> Result<(), SupervisorError> {
+    pub async fn force_end_turn(&self, session_id: &str) {
         let seq = next_seq(&self.next_seqs, session_id);
         self.sink.publish(
             session_id,
@@ -974,7 +974,6 @@ impl<S: BroadcastSink> Supervisor<S> {
             let client = handle.client.lock().await;
             let _ = client.cancel_prompt().await;
         }
-        Ok(())
     }
 
     /// Set the active session mode via ACP session/set_mode.
