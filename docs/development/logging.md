@@ -103,6 +103,8 @@ Set `rotation = "never"` to disable the size threshold entirely. The file grows 
 
 This is filter-immune (it bypasses the tracing subscriber entirely) so it survives any `default_level` setting and gives forensic readers a hard boundary between process runs. A parallel `tracing::info!(target: "log.runtime", "aoe started")` is also emitted once the subscriber is live; it respects the user's filter.
 
+When the sink is stdout (foreground `aoe serve` with `output = "stdout"`, or env-overridden one-shot CLI), the marker is written to stdout too. Any tool piping or capturing the output will see the line before any structured event. That is intentional, so a captured stream is grep-compatible with a captured log file.
+
 The TUI serve dialog uses captured file-offset-before-spawn (not the marker) to bound its tail pane, so the marker is a forensic / `grep` convenience rather than UI-load-bearing.
 
 ## Runtime control

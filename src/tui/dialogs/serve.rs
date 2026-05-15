@@ -473,6 +473,13 @@ impl ServeView {
                             ServeAction::Continue
                         }
                         ServeMode::Local => {
+                            // Capture the offset before spawn so the tail
+                            // pane starts at the byte boundary just past any
+                            // pre-existing TUI/runner content; the new
+                            // daemon's startup marker and first events are
+                            // appended past this point and stream in via
+                            // append_new_log_lines.
+                            let offset = log_file_size();
                             match spawn_daemon(ServeMode::Local, None, None) {
                                 Ok(()) => {
                                     remember_last_mode(ServeMode::Local);
@@ -482,7 +489,7 @@ impl ServeView {
                                         passphrase: None,
                                         started_at: Instant::now(),
                                         log_tail: initial_log_tail(),
-                                        log_offset: log_file_size(),
+                                        log_offset: offset,
                                     };
                                 }
                                 Err(e) => dialog.state = ServeViewState::Error(e),
@@ -592,6 +599,9 @@ impl ServeView {
                         }
                         return ServeAction::Continue;
                     }
+                    // Capture offset before spawn so the tail pane streams in
+                    // only the new daemon's startup events.
+                    let offset = log_file_size();
                     match spawn_daemon(
                         ServeMode::Tunnel,
                         Some(&dialog.pending_passphrase),
@@ -605,7 +615,7 @@ impl ServeView {
                                 passphrase: Some(dialog.pending_passphrase.clone()),
                                 started_at: Instant::now(),
                                 log_tail: initial_log_tail(),
-                                log_offset: log_file_size(),
+                                log_offset: offset,
                             };
                         }
                         Err(e) => dialog.state = ServeViewState::Error(e),
@@ -813,6 +823,9 @@ impl ServeView {
         passphrase: Option<String>,
     ) {
         let pp_ref = passphrase.as_deref();
+        // Capture offset before restart so the tail pane streams in only
+        // the new daemon's events.
+        let offset = log_file_size();
         match restart_daemon(mode, pp_ref, transport) {
             Ok(()) => {
                 if let Some(ref pp) = passphrase {
@@ -832,7 +845,7 @@ impl ServeView {
                         passphrase,
                         opened_at: Instant::now(),
                         log_tail: initial_log_tail(),
-                        log_offset: log_file_size(),
+                        log_offset: offset,
                     };
                 } else {
                     self.state = ServeViewState::Starting {
@@ -841,7 +854,7 @@ impl ServeView {
                         passphrase,
                         started_at: Instant::now(),
                         log_tail: initial_log_tail(),
-                        log_offset: log_file_size(),
+                        log_offset: offset,
                     };
                 }
             }

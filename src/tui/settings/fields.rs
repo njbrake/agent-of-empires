@@ -2065,7 +2065,7 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
             config.logging.max_size_mib = (*v).max(1);
         }
         (FieldKey::LoggingKeepCount, FieldValue::Number(v)) => {
-            config.logging.keep_count = (*v).min(u8::MAX as u64) as u8;
+            config.logging.keep_count = (*v).clamp(1, u8::MAX as u64) as u8;
         }
         (FieldKey::HostEnvironment, FieldValue::List(v)) => config.environment = v.clone(),
         _ => {}

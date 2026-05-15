@@ -105,10 +105,13 @@ pub struct RotationPolicy {
 
 impl From<&LoggingConfig> for RotationPolicy {
     fn from(cfg: &LoggingConfig) -> Self {
+        // Defensive clamp: a hand-edited keep_count = 0 would otherwise yield
+        // a rotation that deletes the only copy. UI fields enforce >= 1; this
+        // makes the invariant hold for any path into the writer.
         Self {
             kind: cfg.rotation,
             max_size_bytes: cfg.max_size_mib.saturating_mul(1024 * 1024),
-            keep_count: cfg.keep_count,
+            keep_count: cfg.keep_count.max(1),
         }
     }
 }
@@ -646,7 +649,11 @@ impl SizeRotatingWriter {
         match lock_file.try_lock_exclusive() {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                // Another process is rotating; let them.
+                // Another process is rotating; let them. Bounded loss: our fd
+                // still references the file that the winner is about to
+                // rename, so events written before the next stat tick land in
+                // `.1` rather than fresh `debug.log`. The next `check_rotation`
+                // detects the inode mismatch and reopens.
                 return Ok(());
             }
             Err(e) => return Err(e),
@@ -657,18 +664,29 @@ impl SizeRotatingWriter {
         let size = std::fs::metadata(&self.path).map(|m| m.len()).unwrap_or(0);
         if size >= self.policy.max_size_bytes {
             let _ = self.file.sync_all();
-            let keep = self.policy.keep_count;
-            if keep >= 1 {
-                for i in (1..keep).rev() {
-                    let src = path_with_suffix(&self.path, &format!(".{i}"));
-                    let dst = path_with_suffix(&self.path, &format!(".{}", i + 1));
-                    let _ = std::fs::rename(&src, &dst);
+            let keep = self.policy.keep_count.max(1);
+            for i in (1..keep).rev() {
+                let src = path_with_suffix(&self.path, &format!(".{i}"));
+                let dst = path_with_suffix(&self.path, &format!(".{}", i + 1));
+                let _ = std::fs::rename(&src, &dst);
+            }
+            let dst = path_with_suffix(&self.path, ".1");
+            let _ = std::fs::rename(&self.path, &dst);
+            // Sweep orphan files above the current keep_count: if the user
+            // lowered the threshold between runs, the in-place rename chain
+            // doesn't touch indices > keep. Walk upward until two consecutive
+            // misses to keep the cost bounded.
+            let mut misses = 0;
+            let mut i = u32::from(keep) + 1;
+            while misses < 2 {
+                let p = path_with_suffix(&self.path, &format!(".{i}"));
+                if p.exists() {
+                    let _ = std::fs::remove_file(&p);
+                    misses = 0;
+                } else {
+                    misses += 1;
                 }
-                let dst = path_with_suffix(&self.path, ".1");
-                let _ = std::fs::rename(&self.path, &dst);
-            } else {
-                // keep_count == 0: drop the current file outright.
-                let _ = std::fs::remove_file(&self.path);
+                i += 1;
             }
             let (file, ino) = Self::open_and_stat(&self.path)?;
             self.file = file;
@@ -1185,5 +1203,51 @@ mod tests {
         let _w = SizeRotatingWriter::new(path.clone(), policy).unwrap();
         // .1 should now exist (startup rotation triggered in new()).
         assert!(path.with_extension("log.1").exists());
+    }
+
+    #[test]
+    fn rotation_writer_sweeps_orphans_when_keep_count_reduced() {
+        // User lowered keep_count from 5 to 2 between runs. The rename chain
+        // only touches indices 1..=keep, so .3, .4, .5 would orphan forever
+        // without the sweep.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("debug.log");
+        std::fs::write(path.with_extension("log.1"), b"old 1").unwrap();
+        std::fs::write(path.with_extension("log.2"), b"old 2").unwrap();
+        std::fs::write(path.with_extension("log.3"), b"old 3").unwrap();
+        std::fs::write(path.with_extension("log.4"), b"old 4").unwrap();
+        std::fs::write(path.with_extension("log.5"), b"old 5").unwrap();
+        let policy = RotationPolicy {
+            kind: RotationKind::Size,
+            max_size_bytes: 64,
+            keep_count: 2,
+        };
+        std::fs::write(&path, vec![b'x'; 200]).unwrap();
+        let _w = SizeRotatingWriter::new(path.clone(), policy).unwrap();
+        // After startup rotation: .1 (was current), .2 (was .1) survive.
+        assert!(path.with_extension("log.1").exists(), ".1 must exist");
+        assert!(path.with_extension("log.2").exists(), ".2 must exist");
+        assert!(
+            !path.with_extension("log.3").exists(),
+            ".3 must be swept by orphan sweep"
+        );
+        assert!(
+            !path.with_extension("log.4").exists(),
+            ".4 must be swept by orphan sweep"
+        );
+        assert!(
+            !path.with_extension("log.5").exists(),
+            ".5 must be swept by orphan sweep"
+        );
+    }
+
+    #[test]
+    fn rotation_policy_clamps_keep_count_zero_to_one() {
+        // Defense-in-depth: a hand-edited config with keep_count = 0 would
+        // otherwise yield a writer that deletes the only copy on rotation.
+        let mut cfg = make_cfg(RotationKind::Size, 50, 0);
+        cfg.keep_count = 0;
+        let policy = RotationPolicy::from(&cfg);
+        assert_eq!(policy.keep_count, 1, "keep_count=0 must clamp to 1");
     }
 }

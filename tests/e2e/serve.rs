@@ -166,3 +166,44 @@ fn cli_serve_daemon_starts_and_stops_cleanly() {
         pid_path.display()
     );
 }
+
+/// Regression guard for the sink consolidation (issue #1124): the daemon
+/// must write its tracing stream to the configured `debug.log`, and the
+/// retired `serve.log` must not reappear. Without this guard, a future
+/// change that misclassifies the daemon child as `ServeForeground` (or
+/// reintroduces the `serve.log` redirect) would slip through CI.
+#[test]
+#[serial]
+fn cli_serve_daemon_writes_marker_to_debug_log_not_serve_log() {
+    let h = TuiTestHarness::new("serve_daemon_logging_sinks");
+    let port = pick_free_port();
+    let port_s = port.to_string();
+
+    let start = h.run_cli(&["serve", "--daemon", "--port", &port_s, "--no-auth"]);
+    assert!(start.status.success(), "aoe serve --daemon failed");
+
+    assert!(
+        wait_for_port(port, Duration::from_secs(10)),
+        "daemon never bound port {}",
+        port
+    );
+
+    let app_dir = crate::harness::app_dir_in(h.home_path());
+    let debug_log = app_dir.join("debug.log");
+    let serve_log = app_dir.join("serve.log");
+
+    let debug_contents = std::fs::read_to_string(&debug_log)
+        .unwrap_or_else(|e| panic!("debug.log unreadable at {}: {}", debug_log.display(), e));
+    assert!(
+        debug_contents.contains("[AOE_START_MARKER]"),
+        "debug.log should carry the filter-immune startup marker; got: {:?}",
+        debug_contents
+    );
+    assert!(
+        !serve_log.exists(),
+        "serve.log must not be re-created post-consolidation, found at {}",
+        serve_log.display()
+    );
+
+    let _ = h.run_cli(&["serve", "--stop"]);
+}
