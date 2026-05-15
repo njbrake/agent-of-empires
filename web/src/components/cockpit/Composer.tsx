@@ -30,6 +30,53 @@ import { useFilesIndex, fuzzyFilter } from "./useFilesIndex";
 import type { CockpitState } from "../../lib/cockpitTypes";
 import { getDraft, setDraft } from "../../lib/cockpitDrafts";
 
+/** Decision returned by {@link decideEnterAction} for an Enter
+ *  keystroke on the cockpit composer textarea.
+ *  - `newline`: insert a newline natively, suppress the primitive's
+ *    Send. Used on touch-primary devices so multi-line drafting
+ *    matches WhatsApp / Slack / ChatGPT mobile conventions (#1129).
+ *  - `send`: dispatch via our custom send path; covers the
+ *    mid-turn queue branch (#1031) where ComposerPrimitive.Input
+ *    hard-blocks Enter on its own.
+ *  - `default`: let the primitive run its built-in keymap (desktop
+ *    Enter-to-send, Shift+Enter for newline, etc.). */
+export type EnterAction = "newline" | "send" | "default";
+
+/** Pure decision helper for the composer's Enter keystroke. Extracted
+ *  so the decision matrix can be unit-tested without mounting the
+ *  whole composer + assistant-ui runtime. The textarea handler reads
+ *  the same matrix at runtime. See #1129. */
+export function decideEnterAction(
+  event: {
+    key: string;
+    shiftKey: boolean;
+    ctrlKey: boolean;
+    metaKey: boolean;
+    isComposing: boolean;
+  },
+  ctx: { isMobile: boolean; turnActive: boolean },
+): EnterAction {
+  if (event.key !== "Enter") return "default";
+  if (event.isComposing) return "default";
+  if (event.shiftKey || event.ctrlKey || event.metaKey) return "default";
+  if (ctx.isMobile) return "newline";
+  if (ctx.turnActive) return "send";
+  return "default";
+}
+
+/** True when the current device is touch-primary AND no precise
+ *  pointer (mouse / trackpad / stylus tip) is also attached. An iPad
+ *  with a Bluetooth keyboard + Magic Keyboard trackpad reports both
+ *  `(pointer: coarse)` (touchscreen) and `(any-pointer: fine)`
+ *  (trackpad); treating that as desktop preserves Enter-to-send for
+ *  hardware-keyboard typing. See #1129 open questions. */
+function detectMobileInput(): boolean {
+  if (typeof window === "undefined" || !window.matchMedia) return false;
+  const coarse = window.matchMedia("(pointer: coarse)").matches;
+  const anyFine = window.matchMedia("(any-pointer: fine)").matches;
+  return coarse && !anyFine;
+}
+
 interface Props {
   sessionId: string;
   availableModes: CockpitState["availableModes"];
@@ -87,6 +134,24 @@ export function Composer({
 }: Props) {
   const taRef = useRef<HTMLTextAreaElement | null>(null);
   const { files } = useFilesIndex(sessionId);
+
+  // Touch-primary device flag for the Enter-key decision matrix.
+  // Re-evaluated on `(pointer: coarse)` / `(any-pointer: fine)`
+  // changes so plugging in a Bluetooth keyboard on an iPad flips
+  // behavior live without a refresh. See #1129.
+  const [isMobile, setIsMobile] = useState<boolean>(() => detectMobileInput());
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const coarseMql = window.matchMedia("(pointer: coarse)");
+    const fineMql = window.matchMedia("(any-pointer: fine)");
+    const onChange = () => setIsMobile(detectMobileInput());
+    coarseMql.addEventListener?.("change", onChange);
+    fineMql.addEventListener?.("change", onChange);
+    return () => {
+      coarseMql.removeEventListener?.("change", onChange);
+      fineMql.removeEventListener?.("change", onChange);
+    };
+  }, []);
 
   // Adapter for the @ file picker. We deliberately skip the
   // category step (return []) so the popover lands directly in
@@ -289,23 +354,37 @@ export function Composer({
               }
               onInput={onInput}
               onKeyDown={(e) => {
-                // Intercept Enter while the agent is running so the
-                // textarea can queue follow-ups; ComposerPrimitive.Input
-                // hard-blocks Enter when `thread.isRunning && !queue`
-                // (see ComposerInput.js in @assistant-ui/react). Without
-                // this the textarea would do nothing on Enter mid-turn.
-                // Capture-phase so our handler wins over the primitive's
-                // bubble-phase listener.
-                if (
-                  !turnActive ||
-                  e.key !== "Enter" ||
-                  e.shiftKey ||
-                  e.ctrlKey ||
-                  e.metaKey ||
-                  e.nativeEvent.isComposing
-                ) {
+                // Three-way Enter dispatch. See decideEnterAction for
+                // the full matrix; the inline branches below handle
+                // each outcome:
+                //   - "newline": touch-primary device, plain Enter.
+                //     Stop assistant-ui's bubble-phase Send and let
+                //     the textarea insert a newline natively (no
+                //     preventDefault). Mobile users tap the Send
+                //     button to dispatch.
+                //   - "send": desktop, mid-turn, plain Enter.
+                //     ComposerPrimitive.Input hard-blocks Enter while
+                //     thread.isRunning && !queue (#1031), so we
+                //     intercept and route through our queue path.
+                //   - "default": modifier keys, IME compose, non-Enter
+                //     keys, or desktop idle Enter; let the primitive's
+                //     built-in keymap run.
+                const action = decideEnterAction(
+                  {
+                    key: e.key,
+                    shiftKey: e.shiftKey,
+                    ctrlKey: e.ctrlKey,
+                    metaKey: e.metaKey,
+                    isComposing: e.nativeEvent.isComposing,
+                  },
+                  { isMobile, turnActive },
+                );
+                if (action === "default") return;
+                if (action === "newline") {
+                  e.stopPropagation();
                   return;
                 }
+                // action === "send"
                 e.preventDefault();
                 e.stopPropagation();
                 void sendFromTextarea(taRef, composerRuntime, enqueuePrompt);

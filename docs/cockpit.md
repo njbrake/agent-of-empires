@@ -270,6 +270,22 @@ when the approval card itself has focus. Typing "always allow" into
 the composer will never silently approve a pending tool; the
 composer captures every keystroke, including those letters.
 
+### Web composer Enter behavior
+
+On desktop, Enter sends the prompt and Shift+Enter inserts a
+newline, matching the TUI convention above.
+
+On touch-primary devices (phones, tablets without an attached
+keyboard), plain Enter inserts a newline and the explicit Send
+button on the right of the composer is the only path to dispatch.
+This matches the conventions of WhatsApp, Slack, ChatGPT mobile,
+and Claude.ai mobile, and avoids the common foot-gun of accidentally
+firing a partial multi-line prompt by reaching for a line break.
+An iPad with a Bluetooth keyboard (or any device that reports both
+`(pointer: coarse)` and `(any-pointer: fine)` to the browser) keeps
+the desktop Enter-to-send convention so hardware-keyboard typing
+feels natural. See #1129.
+
 ### Cross-machine attach
 
 Set `AOE_DAEMON_URL` (and optionally `AOE_DAEMON_TOKEN`) to point at
