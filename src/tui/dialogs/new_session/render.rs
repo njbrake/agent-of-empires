@@ -177,7 +177,11 @@ impl NewSessionDialog {
 
             let mut tool_spans = vec![Span::styled("Tool:", label_style), Span::raw(" ")];
 
-            let selected_name = &self.available_tools[self.tool_index];
+            let selected_name = super::tool_row_label(
+                &self.available_tools,
+                &self.available_tool_accounts,
+                self.tool_index,
+            );
             let total = self.available_tools.len();
             let dimmed = Style::default().fg(theme.dimmed);
             let accent = Style::default().fg(theme.accent).bold();
@@ -186,7 +190,7 @@ impl NewSessionDialog {
                 tool_spans.push(Span::styled("← ", dimmed));
             }
             tool_spans.push(Span::styled("● ", accent));
-            tool_spans.push(Span::styled(selected_name.as_str(), accent));
+            tool_spans.push(Span::styled(selected_name, accent));
             tool_spans.push(Span::styled(
                 format!("  [{}/{}]", self.tool_index + 1, total),
                 dimmed,

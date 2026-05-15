@@ -273,11 +273,11 @@ pub struct Instance {
     pub base_branch_override: Option<String>,
 
     /// Directory passed as `$CLAUDE_CONFIG_DIR` to a spawned Claude
-    /// session. `None` → inherit shell env (default behavior). Pinned
-    /// per-session at spawn time so the same project can host multiple
-    /// Claude sessions under different Claude config dirs without
-    /// touching the profile or the shell. Picker rows like
-    /// `claude → ForIT Main` set this; `claude` (plain) leaves it None.
+    /// session. `None` means inherit shell env (default behavior).
+    /// Pinned per-session at spawn time so the same project can host
+    /// multiple Claude sessions under different Claude config dirs
+    /// without touching the profile or the shell. Picker rows like
+    /// `claude => ForIT Main` set this; `claude` (plain) leaves it None.
     /// `~` and `$HOME` are expanded at spawn time against the host env
     /// so the value stays portable across machines.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1150,11 +1150,11 @@ impl Instance {
         // for the in-container env list.
         let mut host_env = self.profile_host_environment();
         // Per-session Claude config dir, set by the new-session picker
-        // (`claude → ForIT Main` row) or an in-session account swap.
-        // Prepended (so a per-session override beats a profile-level
-        // entry with the same key). Skipped when the session is
-        // sandboxed because host paths usually don't exist inside the
-        // container — sandbox users should forward CLAUDE_CONFIG_DIR via
+        // (account-bound row) or an in-session account swap. Prepended
+        // so a per-session override beats a profile-level entry with
+        // the same key. Skipped when the session is sandboxed, because
+        // host paths usually don't exist inside the container; sandbox
+        // users should forward CLAUDE_CONFIG_DIR via
         // `sandbox.environment` instead.
         if self.sandbox_info.is_none() {
             if let Some(ref dir) = self.claude_config_dir {
@@ -1941,9 +1941,9 @@ fn truncate_error_line(line: &str) -> String {
 /// verbatim when parsed by the inner `bash -c '...'` shell created by
 /// `wrap_command_ignore_suspend`.
 /// Expand `~` and `$HOME` in a Claude config-dir path to the live
-/// `HOME` value. Other variables are left alone — this is a narrow
+/// `HOME` value. Other variables are left alone; this is a narrow
 /// portability helper for picker rows whose path is typically absolute
-/// already; manual edits like `~/.claude-foo` get resolved at spawn
+/// already, with manual edits like `~/.claude-foo` resolved at spawn
 /// time so the same `sessions.json` stays portable across hosts.
 fn expand_claude_config_dir(p: &std::path::Path) -> String {
     let s = p.to_string_lossy().into_owned();

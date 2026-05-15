@@ -139,6 +139,7 @@ impl CreationPoller {
         // pick the right profile's overrides; if it's left blank they'd silently
         // fall back to the global default profile.
         instance.source_profile = profile.clone();
+        instance.claude_config_dir = data.claude_config_dir;
         let created_worktree = build_result.created_worktree;
         let created_workspace_worktrees = build_result.created_workspace_worktrees;
         let warnings = build_result.warnings;
