@@ -1746,8 +1746,21 @@ mod tests {
     /// Watchdog: after MAX_RESPAWNS_IN_WINDOW respawn attempts inside
     /// RESTART_WINDOW, `restart_decision` returns `BudgetBurned` so the
     /// drain task parks the session instead of hot-looping.
+    ///
+    /// `restart_decision` short-circuits to `UserStopped` for runner-
+    /// managed kinds when the on-disk registry entry is gone, so this
+    /// test isolates HOME and saves a live record so the budget path
+    /// is the one being exercised.
     #[tokio::test]
+    #[serial_test::serial]
     async fn restart_budget_burns_after_threshold() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        // SAFETY: serialised by `#[serial]`; subsequent serial tests
+        // reassign these env vars, which is the existing pattern.
+        unsafe {
+            std::env::set_var("HOME", tmp.path());
+            std::env::set_var("XDG_CONFIG_HOME", tmp.path().join(".config"));
+        }
         let sink = VecSink::new();
         let sup = Supervisor::new(sink);
         // Build a worker handle with a real-looking spawn_config so the
@@ -1758,14 +1771,29 @@ mod tests {
             description: "test fixture".into(),
             env_allowlist: None,
         };
+        let socket_path = tmp.path().join("budget.sock");
         let dummy_config = SpawnConfig {
             spec: dummy_spec,
             cwd: std::env::temp_dir(),
             additional_dirs: vec![],
             provider_env: vec![],
-            socket_path: None,
+            socket_path: Some(socket_path.clone()),
             stored_acp_session_id: None,
         };
+        // Save a registry record so the runner-managed `registry_gone`
+        // check returns false and we exercise the budget path.
+        let record = crate::cockpit::worker_registry::WorkerRecord::new(
+            "s-1".into(),
+            std::process::id(),
+            socket_path,
+            "claude-code".into(),
+            std::env::temp_dir(),
+            None,
+            vec![],
+            vec![],
+            None,
+        );
+        crate::cockpit::worker_registry::save(&record).unwrap();
         {
             let mut workers = sup.workers.lock().await;
             let (client, _tx) = AcpClient::fake_for_test(CockpitSessionId("s-1".into()));
