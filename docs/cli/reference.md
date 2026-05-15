@@ -10,6 +10,7 @@ This document contains the help content for the `aoe` command-line program.
 * [`aoe init`↴](#aoe-init)
 * [`aoe list`↴](#aoe-list)
 * [`aoe logs`↴](#aoe-logs)
+* [`aoe log-level`↴](#aoe-log-level)
 * [`aoe remove`↴](#aoe-remove)
 * [`aoe send`↴](#aoe-send)
 * [`aoe status`↴](#aoe-status)
@@ -62,6 +63,13 @@ This document contains the help content for the `aoe` command-line program.
 * [`aoe cockpit kill`↴](#aoe-cockpit-kill)
 * [`aoe cockpit logs`↴](#aoe-cockpit-logs)
 * [`aoe cockpit restart`↴](#aoe-cockpit-restart)
+* [`aoe cockpit history`↴](#aoe-cockpit-history)
+* [`aoe cockpit status`↴](#aoe-cockpit-status)
+* [`aoe cockpit prompt`↴](#aoe-cockpit-prompt)
+* [`aoe cockpit approve`↴](#aoe-cockpit-approve)
+* [`aoe cockpit cancel`↴](#aoe-cockpit-cancel)
+* [`aoe cockpit tail`↴](#aoe-cockpit-tail)
+* [`aoe cockpit attach`↴](#aoe-cockpit-attach)
 * [`aoe uninstall`↴](#aoe-uninstall)
 * [`aoe update`↴](#aoe-update)
 * [`aoe completion`↴](#aoe-completion)
@@ -81,6 +89,7 @@ Run without arguments to launch the TUI dashboard.
 * `init` — Initialize .agent-of-empires/config.toml in a repository
 * `list` — List all sessions
 * `logs` — View AoE log files (debug.log, serve.log) with a pretty viewer
+* `log-level` — Get or set the running daemon's log filter at runtime. Pass a bare level (debug/info/...) for the safe expansion, or `--filter <expr>` for raw EnvFilter syntax. `--get` prints the current filter. Changes are ephemeral and lost on daemon restart
 * `remove` — Remove a session
 * `send` — Send a message to a running agent session
 * `status` — Show session status summary
@@ -102,6 +111,7 @@ Run without arguments to launch the TUI dashboard.
 ###### **Options:**
 
 * `-p`, `--profile <PROFILE>` — Profile to use (separate workspace with its own sessions)
+* `--daemon-url <DAEMON_URL>` — Attach to a remote cockpit daemon instead of using the local session list. Equivalent to setting `AOE_DAEMON_URL`; pair with `AOE_DAEMON_TOKEN` for the bearer token. Only meaningful at the no-subcommand `aoe` invocation (the TUI dashboard); ignored otherwise
 
 
 
@@ -193,6 +203,23 @@ View AoE log files (debug.log, serve.log) with a pretty viewer
 * `-n`, `--lines <N>` — Show only the last N lines (fallback viewers; lnav handles its own)
 * `--no-pager` — Skip viewer detection; write plain log to stdout
 * `--path` — Print the resolved log file path(s) and exit (no viewing)
+
+
+
+## `aoe log-level`
+
+Get or set the running daemon's log filter at runtime. Pass a bare level (debug/info/...) for the safe expansion, or `--filter <expr>` for raw EnvFilter syntax. `--get` prints the current filter. Changes are ephemeral and lost on daemon restart
+
+**Usage:** `aoe log-level [OPTIONS] [LEVEL]`
+
+###### **Arguments:**
+
+* `<LEVEL>` — Bare level (trace|debug|info|warn|error). Expands to all known target roots, avoiding the firehose of dependency logs you would get from `RUST_LOG=debug`
+
+###### **Options:**
+
+* `--filter <FILTER>` — Raw EnvFilter directive. Use this for per-target tuning, e.g. `--filter cockpit.acp=trace,info`. Bare `--filter debug` is rejected; use the positional `level` form instead
+* `--get` — Print the current filter without changing it
 
 
 
@@ -799,6 +826,9 @@ Start a web dashboard for remote session access
 * `--tunnel-url <TUNNEL_URL>` — Hostname for a named tunnel (e.g., aoe.example.com)
 * `--daemon` — Run as a background daemon (detach from terminal)
 * `--stop` — Stop a running daemon
+* `--status` — Print the running daemon's PID, mode, URLs, and log path. Exits non-zero when no daemon is running. Useful for shell scripts that want to know whether a daemon is up without parsing `ps`.
+
+   `--status` is read-only and incompatible with every flag that would change daemon state (`--stop`, `--daemon`, `--remote`) or the bind config of a fresh daemon (`--no-auth`, `--read-only`, `--passphrase`, `--port`, `--tunnel-name`, `--no-tailscale`, `--tunnel-url`, `--open`). Clap reports the misuse instead of silently ignoring the extras.
 * `--passphrase <PASSPHRASE>` — Require a passphrase for login (second-factor auth). Can also be set via AOE_SERVE_PASSPHRASE environment variable
 * `--open` — Open the dashboard URL in the default browser once the server is ready. Ignored under --daemon, --remote, SSH (SSH_CONNECTION/SSH_TTY), or when no display server is reachable on Linux/BSD
 
@@ -832,6 +862,13 @@ Cockpit (ACP-based native agent rendering) management
 * `kill` — SIGKILL a worker immediately (use when `stop` doesn't take)
 * `logs` — Tail the runner's log file for a cockpit session
 * `restart` — Restart a wedged cockpit worker: stop the existing runner, then let the daemon's reconciler spawn a fresh one on the next tick
+* `history` — Print the persisted transcript for a cockpit session
+* `status` — Print live status for a cockpit session: highest/lowest seq, and whether the on-disk retention window has truncated history
+* `prompt` — Send a prompt to a cockpit session's agent
+* `approve` — Resolve a pending approval (default: allow). Use --always for a session-scoped allow-list entry, --deny to refuse the request
+* `cancel` — Cancel the in-flight prompt for a cockpit session
+* `tail` — Stream the cockpit broadcast for a session to stdout as JSON lines (one frame per line). Press Ctrl-C to stop
+* `attach` — Open the TUI cockpit view directly for a known session id. Combine with `AOE_DAEMON_URL` (+ `AOE_DAEMON_TOKEN`) to attach across machines without going through the home session list
 
 
 
@@ -921,6 +958,114 @@ Restart a wedged cockpit worker: stop the existing runner, then let the daemon's
 ###### **Arguments:**
 
 * `<SESSION>` — Session id whose worker to restart
+
+
+
+## `aoe cockpit history`
+
+Print the persisted transcript for a cockpit session
+
+**Usage:** `aoe cockpit history [OPTIONS] <SESSION>`
+
+###### **Arguments:**
+
+* `<SESSION>` — Cockpit session id
+
+###### **Options:**
+
+* `--since <SINCE>` — Skip events at or below this seq
+
+  Default value: `0`
+* `--json` — Emit raw frames as JSON (one frame per line)
+
+
+
+## `aoe cockpit status`
+
+Print live status for a cockpit session: highest/lowest seq, and whether the on-disk retention window has truncated history
+
+**Usage:** `aoe cockpit status [OPTIONS] <SESSION>`
+
+###### **Arguments:**
+
+* `<SESSION>` — Cockpit session id
+
+###### **Options:**
+
+* `--json` — Emit machine-readable JSON instead of a human report
+
+
+
+## `aoe cockpit prompt`
+
+Send a prompt to a cockpit session's agent
+
+**Usage:** `aoe cockpit prompt <SESSION> <TEXT>`
+
+###### **Arguments:**
+
+* `<SESSION>` — Cockpit session id
+* `<TEXT>` — Prompt text. Pass `-` to read from stdin
+
+
+
+## `aoe cockpit approve`
+
+Resolve a pending approval (default: allow). Use --always for a session-scoped allow-list entry, --deny to refuse the request
+
+**Usage:** `aoe cockpit approve [OPTIONS] <SESSION> <NONCE>`
+
+###### **Arguments:**
+
+* `<SESSION>` — Cockpit session id
+* `<NONCE>` — Approval nonce, as printed in the pending-approval banner
+
+###### **Options:**
+
+* `--always` — Allow this kind of operation for the rest of the session
+* `--deny` — Refuse the request
+
+
+
+## `aoe cockpit cancel`
+
+Cancel the in-flight prompt for a cockpit session
+
+**Usage:** `aoe cockpit cancel <SESSION>`
+
+###### **Arguments:**
+
+* `<SESSION>` — Cockpit session id
+
+
+
+## `aoe cockpit tail`
+
+Stream the cockpit broadcast for a session to stdout as JSON lines (one frame per line). Press Ctrl-C to stop
+
+**Usage:** `aoe cockpit tail [OPTIONS] <SESSION>`
+
+###### **Arguments:**
+
+* `<SESSION>` — Cockpit session id
+
+###### **Options:**
+
+* `--since <SINCE>` — Start at this seq (default 0 = full replay then live)
+
+  Default value: `0`
+
+
+
+## `aoe cockpit attach`
+
+Open the TUI cockpit view directly for a known session id. Combine with `AOE_DAEMON_URL` (+ `AOE_DAEMON_TOKEN`) to attach across machines without going through the home session list
+
+**Usage:** `aoe cockpit attach <SESSION>`
+
+###### **Arguments:**
+
+* `<SESSION>` — Cockpit session id
 
 
 

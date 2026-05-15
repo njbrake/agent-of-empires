@@ -150,6 +150,7 @@ impl SettingsView {
             SettingsCategory::Tmux,
             SettingsCategory::Sound,
             SettingsCategory::Web,
+            SettingsCategory::Logging,
         ];
 
         let mut view = Self {
@@ -299,6 +300,17 @@ impl SettingsView {
                 save_config(&self.global_config)?;
                 self.resolved_base =
                     merge_configs(self.global_config.clone(), &self.profile_config);
+                // Persist + live-apply the logging filter so a running
+                // `aoe serve` daemon (and its cockpit runners) pick up the
+                // change without a restart. No-ops when no controller is
+                // installed (TUI-only process).
+                if let Ok(app_dir) = crate::session::get_app_dir() {
+                    crate::logging::apply_persisted_config(
+                        &self.global_config.logging.default_level,
+                        &self.global_config.logging.targets,
+                        &app_dir,
+                    );
+                }
             }
             SettingsScope::Profile => {
                 save_profile_config(&self.profile, &self.profile_config)?;

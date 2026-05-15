@@ -78,12 +78,22 @@ pub fn run_migrations() -> Result<()> {
 
     for migration in MIGRATIONS {
         if migration.version > current {
+            let start = std::time::Instant::now();
             info!(
-                "Running migration v{:03}: {}",
-                migration.version, migration.name
+                target: "migrations",
+                version = migration.version,
+                name = migration.name,
+                "running migration"
             );
             (migration.run)()?;
             set_version(migration.version)?;
+            info!(
+                target: "migrations",
+                version = migration.version,
+                name = migration.name,
+                duration_ms = start.elapsed().as_millis() as u64,
+                "migration completed"
+            );
         }
     }
 

@@ -510,6 +510,13 @@ impl Instance {
         super::config::effective_profile(&self.source_profile)
     }
 
+    /// Resolve the effective `environment` list for this session's profile,
+    /// falling back to the global list when the profile has no override.
+    fn profile_host_environment(&self) -> Vec<String> {
+        let profile = self.effective_profile();
+        super::profile_config::resolve_config_or_warn(&profile).environment
+    }
+
     pub fn is_sub_session(&self) -> bool {
         self.parent_session_id.is_some()
     }
@@ -1109,7 +1116,21 @@ impl Instance {
         }
 
         // Prepend AOE_INSTANCE_ID env var if this agent supports hooks.
-        let env_prefix = status_hook_env_prefix(&self.id, &self.tool, agent);
+        let mut env_prefix = status_hook_env_prefix(&self.id, &self.tool, agent);
+
+        // Profile-scoped host environment entries (KEY=value, KEY=$VAR,
+        // KEY=$$literal, or bare KEY for passthrough). Sandboxed sessions
+        // intentionally skip this injection because the entries are
+        // host-side; sandbox users should configure `sandbox.environment`
+        // for the in-container env list.
+        let host_env = self.profile_host_environment();
+        if !host_env.is_empty() {
+            env_prefix = format!(
+                "{}{}",
+                super::environment::host_environment_prefix(&host_env),
+                env_prefix
+            );
+        }
 
         if self.command.is_empty() {
             crate::agents::get_agent(&self.tool).map(|a| {

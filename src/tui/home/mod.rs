@@ -181,6 +181,11 @@ pub struct HomeView {
     pub(super) send_message_dialog: Option<super::dialogs::SendMessageDialog>,
     /// Session to receive the message from the send dialog
     pub(super) pending_send_session: Option<String>,
+    /// Pasted text captured at the home view that we couldn't immediately
+    /// route (no session selected, cursor on a group header, etc.). Drained
+    /// into the next compose dialog the user opens, so voice/dictation never
+    /// gets thrown on the floor with a scolding info dialog.
+    pub(super) pending_paste: Option<String>,
     /// Session to attach after the custom instruction warning dialog is dismissed
     pub(super) pending_attach_after_warning: Option<String>,
     /// Session to stop after the confirmation dialog is accepted
@@ -360,6 +365,7 @@ impl HomeView {
             update_confirm_dialog: None,
             send_message_dialog: None,
             pending_send_session: None,
+            pending_paste: None,
             pending_attach_after_warning: None,
             pending_stop_session: None,
             pending_force_remove_session: None,
@@ -1154,6 +1160,32 @@ impl HomeView {
             || serve_open
             || self.settings_view.is_some()
             || self.diff_view.is_some()
+    }
+
+    /// Whether the paste-burst detector should fire for incoming key events.
+    ///
+    /// The detector exists to solve the home-view shortcut-shadowing problem:
+    /// Mosh strips bracketed-paste markers, so a pasted stream of `KeyCode::Char`
+    /// events would fire `n`/`d`/`r`/etc. shortcuts on the home view. When a
+    /// dialog captures keys into a text input, those shortcuts don't fire —
+    /// but the dialog also won't receive a synthesized `Paste` event unless
+    /// it routes through `handle_paste`. Bursting through a dialog that only
+    /// handles `Key` events strands the text in `pending_paste` and leaves
+    /// the dialog's input empty.
+    ///
+    /// So: burst is safe when no dialog is open (home shortcuts at risk) or
+    /// when one of the four paste-routed dialogs is open (rename / send_message
+    /// / new / settings — each forwards to `handle_paste`). For every other
+    /// dialog (command palette, profile picker, projects, info, etc.) keys
+    /// must dispatch individually so the dialog input receives them.
+    pub fn wants_paste_burst(&self) -> bool {
+        if !self.has_dialog() {
+            return true;
+        }
+        self.rename_dialog.is_some()
+            || self.send_message_dialog.is_some()
+            || self.new_dialog.is_some()
+            || self.settings_view.is_some()
     }
 
     pub fn shrink_list(&mut self) {

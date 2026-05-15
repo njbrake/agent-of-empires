@@ -205,8 +205,13 @@ impl HomeView {
             return;
         }
 
-        // Layout: main area + status bar + optional update bar at bottom
-        let constraints = if update_info.is_some() {
+        // Layout: main area + status bar + optional update bar at bottom.
+        // The update bar surfaces both persistent update-available banners
+        // (update_info) and transient toasts (update_status); we need a row
+        // for it whenever either is present, otherwise toasts fired without
+        // a pending update would never reach the screen.
+        let has_update_bar = update_info.is_some() || update_status.is_some();
+        let constraints = if has_update_bar {
             vec![
                 Constraint::Min(0),
                 Constraint::Length(1),
@@ -258,8 +263,8 @@ impl HomeView {
         }
         self.render_status_bar(frame, main_chunks[1], theme);
 
-        if let Some(info) = update_info {
-            self.render_update_bar(frame, main_chunks[2], theme, info, update_status);
+        if has_update_bar {
+            self.render_update_bar(frame, main_chunks[2], theme, update_info, update_status);
         }
 
         // Render dialogs on top
@@ -642,7 +647,10 @@ impl HomeView {
                 // the host terminal still works against the worktree.
                 let badge_text: Option<&'static str> =
                     if inst.is_cockpit_mode() && self.view_mode != ViewMode::Terminal {
-                        Some(" [web]")
+                        // Renamed from `[web]` now that the TUI renders
+                        // cockpit sessions natively; `[cockpit]` better
+                        // describes the substrate the badge marks.
+                        Some(" [cockpit]")
                     } else if self.view_mode == ViewMode::Terminal && inst.is_sandboxed() {
                         Some(match self.get_terminal_mode(id) {
                             TerminalMode::Container => " [container]",
@@ -1161,6 +1169,21 @@ impl HomeView {
             }
         }
 
+        // Pending-paste indicator: text was captured at the home view but
+        // couldn't be routed yet (no runnable session selected). Surface a
+        // high-priority hint so the user knows the paste/dictation didn't
+        // vanish — pressing `m` after selecting a runnable session drains
+        // pending_paste into the compose dialog.
+        if let Some(buf) = &self.pending_paste {
+            if !buf.is_empty() {
+                let key = if strict { "M" } else { "m" };
+                let desc = format!("send {} buffered", buf.chars().count());
+                let mut spans = mk(key, &desc);
+                spans[1] = Span::styled(desc, Style::default().fg(theme.running).bold());
+                groups.push((0, spans));
+            }
+        }
+
         groups.push((0, mk_key("j/k")));
 
         if let Some(enter_action_text) = match self.flat_items.get(self.cursor) {
@@ -1257,17 +1280,22 @@ impl HomeView {
         frame: &mut Frame,
         area: Rect,
         theme: &Theme,
-        info: &UpdateInfo,
+        info: Option<&UpdateInfo>,
         status: Option<&str>,
     ) {
         let update_style = Style::default().fg(theme.waiting).bold();
+        // Transient status takes precedence over the persistent update banner
+        // so users see the latest signal (e.g. "restart failed: ...") even
+        // when an update banner is also up.
         let text = if let Some(s) = status {
             format!(" {s}  [Ctrl+x] dismiss")
-        } else {
+        } else if let Some(info) = info {
             format!(
                 " update available {} → {}  [u] update  [Ctrl+x] dismiss",
                 info.current_version, info.latest_version
             )
+        } else {
+            return;
         };
         let bar = Paragraph::new(Line::from(Span::styled(text, update_style)))
             .style(Style::default().bg(theme.selection));

@@ -101,10 +101,21 @@ impl RuntimeBase {
         let mut cmd = self.command();
         cmd.args(self.pull_prefix);
         cmd.arg(image);
+        let start = std::time::Instant::now();
+        tracing::info!(target: "containers.image", runtime = %self.name, %image, "pulling image");
         let output = cmd.output()?;
+        let dur_ms = start.elapsed().as_millis() as u64;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
+            tracing::warn!(
+                target: "containers.image",
+                runtime = %self.name,
+                %image,
+                duration_ms = dur_ms,
+                stderr_summary = %stderr.trim().chars().take(200).collect::<String>(),
+                "image pull failed"
+            );
             return Err(DockerError::ImageNotFound(format!(
                 "{}: {}",
                 image,
@@ -112,6 +123,13 @@ impl RuntimeBase {
             )));
         }
 
+        tracing::info!(
+            target: "containers.image",
+            runtime = %self.name,
+            %image,
+            duration_ms = dur_ms,
+            "image pull completed"
+        );
         Ok(())
     }
 
@@ -244,6 +262,7 @@ impl RuntimeBase {
     }
 
     pub fn start_container(&self, name: &str) -> Result<()> {
+        tracing::info!(target: "containers.runtime", runtime = %self.name, %name, "starting container");
         let output = self.command().args(["start", name]).output()?;
 
         if !output.status.success() {
@@ -255,6 +274,7 @@ impl RuntimeBase {
     }
 
     pub fn stop_container(&self, name: &str) -> Result<()> {
+        tracing::info!(target: "containers.runtime", runtime = %self.name, %name, "stopping container");
         let output = self.command().args(["stop", name]).output()?;
 
         if !output.status.success() {
@@ -280,6 +300,7 @@ impl RuntimeBase {
         }
         args.push(name.to_string());
 
+        tracing::debug!(target: "containers.runtime", runtime = %self.name, %name, %force, "removing container");
         let output = self.command().args(&args).output()?;
 
         if !output.status.success() {

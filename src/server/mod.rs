@@ -32,38 +32,12 @@ use self::push::{PushState, StatusChange, STATUS_CHANNEL_CAPACITY};
 #[cfg(feature = "serve")]
 const COCKPIT_CHANNEL_CAPACITY: usize = 256;
 
-/// One frame on the per-AppState cockpit broadcast channel: the cockpit
-/// session id plus the typed cockpit Event. Subscribed WebSocket
-/// clients filter on the session id and serialise to JSON only at the
-/// WS write boundary; in-process consumers (status listener,
-/// acp_session_id listener) match on the typed enum directly so a
-/// rename of an `Event` variant breaks the build instead of silently
-/// breaking listener behaviour.
-///
-/// `Arc<Event>` so the broadcast clone-per-subscriber stays cheap even
-/// as the number of WS clients grows.
+/// Re-export of the broadcast frame defined in `crate::cockpit::protocol`,
+/// kept under `crate::server::` so existing supervisor/WS call sites keep
+/// resolving without churn. The canonical definition lives in protocol.rs
+/// so the daemon and any client share a single source of truth.
 #[cfg(feature = "serve")]
-#[derive(Debug, Clone)]
-pub struct CockpitBroadcastFrame {
-    pub session_id: String,
-    pub seq: u64,
-    pub event: Arc<crate::cockpit::Event>,
-}
-
-#[cfg(feature = "serve")]
-impl serde::Serialize for CockpitBroadcastFrame {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        // Custom impl so the wire format stays the same (untagged
-        // event JSON) without forcing every consumer to round-trip
-        // through serde_json::Value.
-        use serde::ser::SerializeStruct;
-        let mut s = serializer.serialize_struct("CockpitBroadcastFrame", 3)?;
-        s.serialize_field("session_id", &self.session_id)?;
-        s.serialize_field("seq", &self.seq)?;
-        s.serialize_field("event", &*self.event)?;
-        s.end()
-    }
-}
+pub use crate::cockpit::protocol::CockpitBroadcastFrame;
 
 use crate::session::Instance;
 use crate::session::Status;
@@ -174,7 +148,11 @@ impl TokenManager {
             write_secret_file(&app_dir.join("serve.token"), &new_token).await;
         }
 
-        info!("Auth token rotated (previous token valid for 5 more minutes)");
+        info!(
+            target: "auth.token",
+            grace_secs = 300,
+            "auth token rotated"
+        );
     }
 
     /// Spawn a background rotation task (only in remote mode).
@@ -1017,6 +995,11 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/about", get(api::get_about))
         // Update status (latest release, available flag)
         .route("/api/system/update-status", get(api::get_update_status))
+        .route(
+            "/api/log-level",
+            get(api::get_log_level).patch(api::patch_log_level),
+        )
+        .route("/api/client-log", post(api::post_client_log))
         // Terminal WebSockets
         .route("/sessions/{id}/ws", get(ws::terminal_ws))
         .route("/sessions/{id}/terminal/ws", get(ws::paired_terminal_ws))

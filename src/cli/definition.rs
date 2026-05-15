@@ -12,6 +12,8 @@ use super::cockpit::CockpitCommands;
 use super::group::GroupCommands;
 use super::init::InitArgs;
 use super::list::ListArgs;
+#[cfg(feature = "serve")]
+use super::log_level::LogLevelArgs;
 use super::logs::LogsArgs;
 use super::profile::ProfileCommands;
 use super::project::ProjectCommands;
@@ -46,6 +48,14 @@ pub struct Cli {
     #[arg(short = 'p', long, global = true, env = "AGENT_OF_EMPIRES_PROFILE")]
     pub profile: Option<String>,
 
+    /// Attach to a remote cockpit daemon instead of using the local
+    /// session list. Equivalent to setting `AOE_DAEMON_URL`; pair with
+    /// `AOE_DAEMON_TOKEN` for the bearer token. Only meaningful at the
+    /// no-subcommand `aoe` invocation (the TUI dashboard); ignored
+    /// otherwise.
+    #[arg(long, global = true, env = "AOE_DAEMON_URL")]
+    pub daemon_url: Option<String>,
+
     #[command(subcommand)]
     pub command: Option<Commands>,
 }
@@ -67,6 +77,13 @@ pub enum Commands {
 
     /// View AoE log files (debug.log, serve.log) with a pretty viewer
     Logs(LogsArgs),
+
+    /// Get or set the running daemon's log filter at runtime.
+    /// Pass a bare level (debug/info/...) for the safe expansion, or
+    /// `--filter <expr>` for raw EnvFilter syntax. `--get` prints the
+    /// current filter. Changes are ephemeral and lost on daemon restart.
+    #[cfg(feature = "serve")]
+    LogLevel(LogLevelArgs),
 
     /// Remove a session
     #[command(alias = "rm")]

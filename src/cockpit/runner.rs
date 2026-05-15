@@ -109,6 +109,12 @@ pub async fn run(args: CockpitRunnerArgs) -> Result<()> {
     worker_registry::validate_session_id(&args.session_id).context("invalid --session-id")?;
     init_runner_logging(&args.session_id)?;
 
+    // Watch the shared runtime_filter file so `aoe log-level` from the
+    // daemon propagates to this runner subprocess without restart.
+    if let Ok(app_dir) = crate::session::get_app_dir() {
+        tokio::spawn(crate::logging::watch_runtime_filter(app_dir));
+    }
+
     info!(
         target: "cockpit.runner",
         session = %args.session_id,
@@ -637,23 +643,28 @@ async fn wait_for_shutdown() {
 }
 
 fn init_runner_logging(session_id: &str) -> Result<()> {
-    let log_path = worker_registry::log_path_for(session_id)?;
-    open_log_file(&log_path)?;
-    // tracing-subscriber may already be initialised by main; try_init
-    // silently no-ops in that case. If we're a fresh process (we are,
-    // when invoked as `aoe __cockpit-runner`), this wires the file
-    // writer so runner logs go to the per-session log file.
-    if let Ok(file) = std::fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&log_path)
-    {
-        tracing_subscriber::fmt()
-            .with_env_filter("cockpit=info,agent_of_empires=info")
-            .with_writer(std::sync::Mutex::new(file))
-            .with_ansi(false)
-            .try_init()
-            .ok();
+    // Keep the per-session log file path created so `aoe cockpit logs
+    // --session <id>` and any external tail works. The actual tracing
+    // output goes to the shared `debug.log` so daemon + every runner
+    // appear in one timeline; runner spans add `session_id` for filtering.
+    let per_session = worker_registry::log_path_for(session_id)?;
+    open_log_file(&per_session)?;
+
+    let shared_path = crate::session::get_app_dir()?.join("debug.log");
+    // Same precedence as main.rs: env > [logging] in config.toml > info
+    // baseline. The notify watcher on runtime_filter still takes over
+    // for live swaps once the daemon writes one.
+    let filter = crate::logging::LogConfig::from_env()
+        .filter_string()
+        .or_else(crate::logging::load_persisted_filter)
+        .unwrap_or_else(crate::logging::serve_default_filter);
+
+    let init = crate::logging::init_subscriber(
+        crate::logging::SubscriberTarget::File(shared_path),
+        filter,
+    );
+    if let Some(c) = init.controller {
+        crate::logging::install_controller(c);
     }
     Ok(())
 }

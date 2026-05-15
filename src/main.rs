@@ -1,6 +1,7 @@
 //! Agent of Empires - Terminal session manager for AI coding agents
 
 use agent_of_empires::cli::{self, Cli, Commands};
+use agent_of_empires::logging::{self, LogConfig, SubscriberTarget};
 use agent_of_empires::migrations;
 use agent_of_empires::tui;
 use anyhow::Result;
@@ -24,6 +25,21 @@ fn is_serve_command(_cli: &Cli) -> bool {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
+    // If the user passed --daemon-url, mirror the value into the env
+    // var so the cockpit::client::discovery layer (used by both the
+    // remote TUI home and the `aoe cockpit *` verbs) picks it up
+    // through the same code path the env-only path uses. This avoids a
+    // second "is the flag set?" check in every callsite.
+    if let Some(url) = &cli.daemon_url {
+        // SAFETY: single-threaded at this point — we haven't entered
+        // the tokio runtime's worker pool yet (the runtime is owned by
+        // the `#[tokio::main]` wrapper that called us, and clap's
+        // parsing was synchronous).
+        unsafe {
+            std::env::set_var("AOE_DAEMON_URL", url);
+        }
+    }
+
     // Detect drift between release-build state and dev-build state BEFORE
     // anything below calls `get_app_dir()` (which would auto-create the dev
     // dir and silently flip the trigger condition for the rest of this
@@ -31,112 +47,94 @@ async fn main() -> Result<()> {
     let debug_namespace_drift = agent_of_empires::session::debug_namespace_drift();
 
     let mut debug_log_warning: Option<String> = None;
-    // File-logging gate. Two env vars are accepted:
+    // Logging gate. Env-var matrix lives in `LogConfig::from_env`:
+    //   AOE_LOG_LEVEL=trace|debug|info|warn|error   (preferred)
+    //   AGENT_OF_EMPIRES_DEBUG=1                    (legacy alias for debug)
+    //   AOE_ACP_TRACE=1                             (raw JSON-RPC firehose)
+    //   AOE_TERMINAL_TRACE=1                        (per-byte WS firehose)
     //
-    //   AOE_LOG_LEVEL=trace|debug|info|warn|error  (preferred)
-    //   AGENT_OF_EMPIRES_DEBUG=1                   (legacy alias for
-    //                                               AOE_LOG_LEVEL=debug)
-    //
-    // Either var on its own creates ~/.agent-of-empires-dev/debug.log
-    // (release: ~/.agent-of-empires/debug.log) and configures
-    // tracing-subscriber to write to it. The level is applied to
-    // `agent_of_empires=*` and `cockpit=*` together; the ACP
-    // framework's own tracing is OFF by default at every level so
-    // even AOE_LOG_LEVEL=trace stays focused on our code rather
-    // than dumping every JSON-RPC frame.
-    //
-    //   AOE_ACP_TRACE=1                            (orthogonal opt-in
-    //                                               for raw JSON-RPC
-    //                                               firehose)
-    //
-    // Adds `agent_client_protocol=debug` plus the JSON-RPC
-    // transport_actor at TRACE so every raw inbound/outbound frame
-    // lands in the log. Useful for chasing schema mismatches against
-    // newer adapter versions, but extremely chatty.
-    let log_level: Option<&'static str> = std::env::var("AOE_LOG_LEVEL")
-        .ok()
-        .and_then(|v| match v.to_ascii_lowercase().as_str() {
-            "trace" => Some("trace"),
-            "debug" => Some("debug"),
-            "info" => Some("info"),
-            "warn" | "warning" => Some("warn"),
-            "error" => Some("error"),
-            _ => None,
-        })
-        .or_else(|| {
-            if std::env::var("AGENT_OF_EMPIRES_DEBUG").is_ok() {
-                Some("debug")
-            } else {
-                None
-            }
-        });
-    if let Some(level) = log_level {
-        // Log to file to avoid corrupting the TUI on stderr.
+    // Sinks by process:
+    //   env set, any aoe → debug.log (file)
+    //   aoe serve, no env → stdout (captured into serve.log by the daemon
+    //     redirect; foreground serve writes to the user's terminal)
+    //   TUI (no subcommand), no env → debug.log (stderr would garble the
+    //     alt-screen, so we always write to file)
+    //   other one-shot CLI, no env → no subscriber (short-lived; opt in
+    //     via AOE_LOG_LEVEL if you need a trace of one)
+    let env_cfg = LogConfig::from_env();
+    let env_filter = env_cfg.filter_string();
+    let is_serve = is_serve_command(&cli);
+    let is_tui = cli.command.is_none();
+    let (init, log_path_for_msg) = if let Some(filter) = env_filter {
+        // Env-var wins for every aoe invocation. Writes file logs so a
+        // foreground TUI isn't garbled.
         let log_path = agent_of_empires::session::get_app_dir().map(|d| d.join("debug.log"));
-        let log_file = log_path
-            .as_ref()
-            .ok()
-            .and_then(|p| std::fs::File::create(p).ok());
-        if let Some(file) = log_file {
-            // Cockpit code uses custom log targets like `cockpit.acp`,
-            // `cockpit.supervisor`, `cockpit.acp.stderr`, etc., which
-            // don't match the `agent_of_empires` crate prefix. The web
-            // terminal WS handler uses `terminal.ws` and the per-byte
-            // firehose uses `terminal.ws.bytes`. List them explicitly so
-            // debug.log captures the full picture when chasing a crashed
-            // agent. Add new top-level targets here when introducing them.
-            let mut filter = format!("agent_of_empires={level},cockpit={level},terminal={level}");
-            if std::env::var("AOE_ACP_TRACE").is_ok() {
-                filter.push_str(
-                    ",agent_client_protocol=debug,\
-                     agent_client_protocol::jsonrpc::transport_actor=trace",
-                );
+        match log_path.as_ref() {
+            Ok(path) => {
+                let res = logging::init_subscriber(SubscriberTarget::File(path.clone()), filter);
+                (res, Some(path.clone()))
             }
-            // Per-WS-message byte firehose for the terminal relay, hidden
-            // behind its own opt-in. The bytes target (`terminal.ws.bytes`)
-            // logs at trace, so we only need to bump the `terminal` target
-            // up to trace when the user explicitly wants the firehose;
-            // a busy claude session emits thousands of frames/min and
-            // would drown the lifecycle signal otherwise. The duplicate
-            // directive overrides the baseline `terminal={level}` above
-            // (EnvFilter is last-wins per target).
-            if std::env::var("AOE_TERMINAL_TRACE").is_ok() {
-                filter.push_str(",terminal=trace");
-            }
-            tracing_subscriber::fmt()
-                .with_env_filter(filter)
-                .with_writer(std::sync::Mutex::new(file))
-                .with_ansi(false)
-                .init();
-            tracing::info!(
-                "Debug logging at {} to {}",
-                level,
-                log_path.unwrap().display()
-            );
-        } else {
-            debug_log_warning = Some(
-                "Log level requested but debug log file could not be created. File logging is disabled.".to_string(),
-            );
+            Err(_) => (
+                logging::InitResult {
+                    controller: None,
+                    warning: Some(
+                        "Log level requested but app dir unavailable; file logging disabled."
+                            .to_string(),
+                    ),
+                },
+                None,
+            ),
         }
-    } else if is_serve_command(&cli) {
-        // `aoe serve` writes info-level tracing to stdout so the daemon
-        // path (which redirects child stdout/stderr into serve.log) can
-        // capture progress for the TUI's Starting-screen log tail.
-        // Without this, serve.log would be empty and the user would
-        // stare at "(waiting for daemon output...)" for 30-60s during
-        // cert provisioning. Foreground `aoe serve` just prints to
-        // the user's terminal; that's fine and matches other CLIs.
-        //
-        // `terminal=info` mirrors the file logger's target list so a
-        // default serve (no AOE_LOG_LEVEL set) still captures
-        // `terminal.ws` warn/error lines in serve.log. Without this,
-        // dead-pane warnings, idle-reaper firings, and ws send/recv
-        // errors would be silently dropped in production.
-        tracing_subscriber::fmt()
-            .with_env_filter("agent_of_empires=info,cockpit=info,terminal=info")
-            .with_ansi(false)
-            .try_init()
-            .ok();
+    } else if is_serve {
+        // Persistent settings (config.toml [logging]) drive the filter when
+        // no env var is set. Falls back to info baseline if the config can't
+        // be read — daemon must always come up.
+        let filter = logging::load_persisted_filter().unwrap_or_else(logging::serve_default_filter);
+        (
+            logging::init_subscriber(SubscriberTarget::Stdout, filter),
+            None,
+        )
+    } else if is_tui {
+        // Same filter source as `aoe serve`, but sink is the shared
+        // debug.log because ratatui owns the alt-screen and a stderr
+        // subscriber would corrupt the UI. Daemon + runners + TUI all
+        // append to the same file so a single tail covers a session.
+        let filter = logging::load_persisted_filter().unwrap_or_else(logging::serve_default_filter);
+        let log_path = agent_of_empires::session::get_app_dir().map(|d| d.join("debug.log"));
+        match log_path.as_ref() {
+            Ok(path) => {
+                let res = logging::init_subscriber(SubscriberTarget::File(path.clone()), filter);
+                (res, Some(path.clone()))
+            }
+            Err(_) => (
+                logging::InitResult {
+                    controller: None,
+                    warning: None,
+                },
+                None,
+            ),
+        }
+    } else {
+        (
+            logging::InitResult {
+                controller: None,
+                warning: None,
+            },
+            None,
+        )
+    };
+    if let Some(c) = init.controller.clone() {
+        logging::install_controller(c);
+    }
+    if let Some(msg) = init.warning {
+        debug_log_warning = Some(msg);
+    }
+    if let (Some(_), Some(path), Some(lvl)) = (
+        init.controller.as_ref(),
+        log_path_for_msg.as_ref(),
+        env_cfg.level,
+    ) {
+        tracing::info!("Debug logging at {} to {}", lvl.as_str(), path.display());
     }
 
     // CLI invocations get the dev-namespace drift warning on stderr right
@@ -168,6 +166,8 @@ async fn main() -> Result<()> {
         }
         Some(Commands::Agents) => return cli::agents::run(),
         Some(Commands::Logs(args)) => return cli::logs::run(args).await,
+        #[cfg(feature = "serve")]
+        Some(Commands::LogLevel(args)) => return cli::log_level::run(args).await,
         Some(Commands::Sounds { command }) => return cli::sounds::run(command).await,
         Some(Commands::Theme { command }) => {
             use cli::theme::ThemeCommands;

@@ -31,8 +31,13 @@ allow = [
 exceptions = [
     # UEFI-only crate, not linked into the final binary on Linux/macOS
     { allow = ["LGPL-2.1-or-later"], crate = "r-efi" },
-    # CDLA-Permissive-2.0 is a permissive data license
+    # CDLA-Permissive-2.0 is a permissive data license. Both crates
+    # ship Mozilla's CA bundle under that license; the project tree
+    # ends up with whichever one the dependency happens to pull in
+    # (`reqwest` uses `webpki-root-certs`; `tokio-tungstenite` uses
+    # `webpki-roots`).
     { allow = ["CDLA-Permissive-2.0"], crate = "webpki-root-certs" },
+    { allow = ["CDLA-Permissive-2.0"], crate = "webpki-roots" },
 ]
 
 [licenses.private]

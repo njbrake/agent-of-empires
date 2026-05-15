@@ -581,6 +581,36 @@ impl EventStore {
         max
     }
 
+    /// Return the lowest seq still stored for `session_id`, or `None`
+    /// if the session has no events on disk (either never wrote any, or
+    /// the retention cap has evicted them all). Used by `/cockpit/replay`
+    /// to compute whether a client's `since` cursor falls below the
+    /// pruned floor so the response can signal `lost = true`.
+    pub fn lowest_seq(&self, session_id: &str) -> Option<u64> {
+        let conn = match self.conn.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        let min = match conn
+            .query_row(
+                "SELECT MIN(seq) FROM cockpit_events WHERE session_id = ?1",
+                params![session_id],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .optional()
+        {
+            Ok(Some(Some(m))) => Some(m as u64),
+            _ => None,
+        };
+        trace!(
+            target: "cockpit.event_store",
+            session = %session_id,
+            lowest_seq = ?min,
+            "lowest_seq query"
+        );
+        min
+    }
+
     /// Return every session_id that has at least one event stored, with
     /// its highest seq. Used at startup to pre-seed `next_seqs` in one
     /// query rather than racing per-session lookups.
@@ -845,6 +875,35 @@ mod tests {
         store.record("s-1", 1, &Event::ThinkingStarted).unwrap();
         store.record("s-1", 2, &Event::ThinkingEnded).unwrap();
         assert_eq!(store.highest_seq("s-1"), 2);
+    }
+
+    #[test]
+    fn lowest_seq_none_on_empty() {
+        let (_tmp, store) = open_store(1000);
+        assert_eq!(store.lowest_seq("s-1"), None);
+    }
+
+    #[test]
+    fn lowest_seq_reflects_oldest_remaining_seq() {
+        let (_tmp, store) = open_store(1000);
+        store.record("s-1", 5, &Event::ThinkingStarted).unwrap();
+        store.record("s-1", 7, &Event::ThinkingEnded).unwrap();
+        assert_eq!(store.lowest_seq("s-1"), Some(5));
+    }
+
+    #[test]
+    fn lowest_seq_climbs_with_retention_prune() {
+        // After the retention prune evicts the early transcript seqs,
+        // `lowest_seq` must reflect the new floor so callers can detect
+        // a client `since` cursor that's fallen below it.
+        let (_tmp, store) = open_store(3);
+        for i in 1..=20 {
+            store.record("s-1", i, &Event::ThinkingStarted).unwrap();
+        }
+        // Cap is 3 transcript events; with no snapshot rows, only seqs
+        // 18, 19, 20 remain.
+        let low = store.lowest_seq("s-1").expect("some events stored");
+        assert!(low > 1, "lowest_seq did not advance after prune: {low}");
     }
 
     #[test]
