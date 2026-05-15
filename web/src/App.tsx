@@ -149,6 +149,23 @@ export default function App() {
   );
 }
 
+/** Walk from the event target up to the document root looking for any
+ *  text-input surface, so global hotkeys don't fire when the user is
+ *  typing in an `<input>`, `<textarea>`, or contenteditable element
+ *  (or any contenteditable ancestor of a deeper rich-text widget). */
+function isInsideEditable(target: EventTarget | null): boolean {
+  let el: HTMLElement | null =
+    target instanceof HTMLElement ? target : null;
+  while (el) {
+    const tag = el.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || el.isContentEditable) {
+      return true;
+    }
+    el = el.parentElement;
+  }
+  return false;
+}
+
 function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLogout: () => void }) {
   const navigate = useNavigate();
   const idleDecayWindowMs = useIdleDecayWindowMs();
@@ -233,10 +250,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
       if (!((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "s")) {
         return;
       }
-      const tgt = e.target as HTMLElement | null;
-      const tag = tgt?.tagName;
-      const editable = tgt?.isContentEditable;
-      if (tag === "INPUT" || tag === "TEXTAREA" || editable) return;
+      if (isInsideEditable(e.target)) return;
       if (diffComments.count === 0) return;
       e.preventDefault();
       setSendDialogOpen(true);

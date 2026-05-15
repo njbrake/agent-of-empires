@@ -23,18 +23,18 @@ export function extractSnippetFromHunks(
   startLine: number,
   endLine: number,
 ): Extraction | null {
-  const lo = Math.min(startLine, endLine);
-  const hi = Math.max(startLine, endLine);
+  const rangeLo = Math.min(startLine, endLine);
+  const rangeHi = Math.max(startLine, endLine);
   const lineKey = side === "new" ? "new_line_num" : "old_line_num";
 
-  for (let hi_idx = 0; hi_idx < hunks.length; hi_idx++) {
-    const hunk = hunks[hi_idx];
+  for (let hunkIdx = 0; hunkIdx < hunks.length; hunkIdx++) {
+    const hunk = hunks[hunkIdx];
     if (!hunk) continue;
     const hunkStart = side === "new" ? hunk.new_start : hunk.old_start;
     const hunkEnd =
       hunkStart + (side === "new" ? hunk.new_lines : hunk.old_lines) - 1;
-    if (hunkEnd < lo || hunkStart > hi) continue;
-    if (hunkStart > lo || hunkEnd < hi) {
+    if (hunkEnd < rangeLo || hunkStart > rangeHi) continue;
+    if (hunkStart > rangeLo || hunkEnd < rangeHi) {
       // Range straddles the hunk's boundary; reject to keep extraction
       // single-hunk and avoid silently merging unrelated context.
       return null;
@@ -48,19 +48,19 @@ export function extractSnippetFromHunks(
       if (!line) continue;
       const num = line[lineKey];
       if (num == null) continue;
-      if (num < lo || num > hi) continue;
+      if (num < rangeLo || num > rangeHi) continue;
       seen.add(num);
       lines.push(stripTrailingNewline(line.content));
       endRowIndex = row;
     }
 
-    for (let n = lo; n <= hi; n++) {
+    for (let n = rangeLo; n <= rangeHi; n++) {
       if (!seen.has(n)) return null;
     }
 
     return {
       snippet: lines.join("\n"),
-      hunkIndex: hi_idx,
+      hunkIndex: hunkIdx,
       endRowIndex,
     };
   }

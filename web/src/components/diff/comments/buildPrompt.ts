@@ -1,4 +1,5 @@
 import type { DiffComment } from "./types";
+import { isWellFormed } from "./storage";
 
 interface BuildOpts {
   /** When true, prefix each heading with `[repoName]`. Tests pass this
@@ -55,7 +56,18 @@ export function parseDiffCommentsSentinel(
     if (typeof obj.intro !== "string") return null;
     if (typeof obj.outro !== "string") return null;
     if (typeof obj.isMultiRepo !== "boolean") return null;
-    return obj as unknown as DiffCommentsSentinelPayload;
+    // Drop malformed inner comments rather than crashing the card.
+    // A future producer may add fields we don't recognize yet, but
+    // missing required fields means the renderer can't render the
+    // entry safely. Keeping only well-formed entries also matches
+    // how `loadComments` cleans the localStorage envelope.
+    const comments = obj.comments.filter(isWellFormed);
+    return {
+      intro: obj.intro,
+      outro: obj.outro,
+      isMultiRepo: obj.isMultiRepo,
+      comments,
+    };
   } catch {
     return null;
   }

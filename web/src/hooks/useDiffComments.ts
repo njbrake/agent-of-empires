@@ -52,13 +52,34 @@ export function useDiffComments(
     }
   }, [sessionId]);
 
+  // Debounce write-through to localStorage so typing in the intro /
+  // outro textareas (which live in the same state object) doesn't
+  // JSON.stringify + setItem on every keystroke. 200 ms is below
+  // human-perceivable lag for losing a few in-flight keystrokes on a
+  // tab close, and trims write volume by ~10-20x during composition.
   useEffect(() => {
     if (!sessionId) return;
     if (initialMountRef.current) {
       initialMountRef.current = false;
       return;
     }
-    saveComments(sessionId, state);
+    const handle = window.setTimeout(() => {
+      saveComments(sessionId, state);
+    }, 200);
+    return () => window.clearTimeout(handle);
+  }, [sessionId, state]);
+
+  // Flush any pending debounced write before the tab closes / hides
+  // so the user doesn't lose the last keystrokes on a refresh.
+  useEffect(() => {
+    if (!sessionId) return;
+    const flush = () => saveComments(sessionId, state);
+    window.addEventListener("beforeunload", flush);
+    window.addEventListener("pagehide", flush);
+    return () => {
+      window.removeEventListener("beforeunload", flush);
+      window.removeEventListener("pagehide", flush);
+    };
   }, [sessionId, state]);
 
   const addComment = useCallback(

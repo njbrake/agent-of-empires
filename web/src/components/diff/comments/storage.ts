@@ -55,7 +55,7 @@ export function saveComments(
   }
 }
 
-function isWellFormed(c: unknown): c is DiffComment {
+export function isWellFormed(c: unknown): c is DiffComment {
   if (!c || typeof c !== "object") return false;
   const o = c as Record<string, unknown>;
   return (

@@ -619,6 +619,17 @@ pub fn get_default_base_ref(repo_path: &Path) -> Result<String> {
     Ok(git_wt.detect_default_branch_info()?.qualified_ref())
 }
 
+/// Returns `Ok(())` when `reference` resolves to a commit in the repo at
+/// `repo_path` using the same resolution chain (`local branch`,
+/// `origin/<ref>` tracking branch, `revparse_single`) that
+/// `compute_changed_files` consults. Used by the CLI to validate
+/// user-provided refs (e.g. `aoe session set-base`) before persisting
+/// a per-session diff base override. See #970.
+pub fn validate_ref(repo_path: &Path, reference: &str) -> Result<()> {
+    let repo = git2::Repository::open(repo_path)?;
+    get_commit_from_ref(&repo, reference).map(|_| ())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -981,6 +992,30 @@ mod tests {
         // Should return the current branch (usually "master" for git init)
         let branch = get_default_branch(dir.path());
         assert!(branch.is_ok());
+    }
+
+    #[test]
+    fn test_validate_ref_accepts_existing_branch() {
+        let (dir, repo) = setup_test_repo();
+        let head_name = repo.head().unwrap().shorthand().unwrap().to_string();
+        validate_ref(dir.path(), &head_name).expect("HEAD branch should resolve");
+    }
+
+    #[test]
+    fn test_validate_ref_rejects_missing_branch() {
+        let (dir, _repo) = setup_test_repo();
+        let err = validate_ref(dir.path(), "definitely-does-not-exist");
+        assert!(err.is_err(), "missing ref should not resolve");
+    }
+
+    #[test]
+    fn test_validate_ref_rejects_non_repo() {
+        let dir = TempDir::new().unwrap();
+        let err = validate_ref(dir.path(), "main");
+        assert!(
+            err.is_err(),
+            "validate_ref against non-repo path should error"
+        );
     }
 
     #[test]

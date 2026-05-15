@@ -102,6 +102,10 @@ function HighlightedSnippet({
   }, [code, language, filePath]);
 
   if (html) {
+    // Shiki HTML-escapes the user-supplied `code` before tokenizing, so
+    // the only attacker-controlled values reach the DOM as text nodes
+    // inside `<span>` tags with locally-generated style attributes.
+    // Same trust boundary as the cockpit Markdown renderer's code blocks.
     return (
       <div
         className="overflow-x-auto border-b border-surface-700/40 bg-surface-950 px-3 py-2 text-[12px] [&_pre]:!bg-transparent [&_pre]:!m-0 [&_pre]:!p-0"

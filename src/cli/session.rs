@@ -754,7 +754,7 @@ async fn set_base(profile: &str, args: SetBaseArgs) -> Result<()> {
         bail!("Provide a branch ref or pass --clear to remove the override.");
     }
     let storage = Storage::new(profile)?;
-    let (mut instances, groups) = storage.load_with_groups()?;
+    let mut instances = storage.load()?;
 
     let idx = instances
         .iter()
@@ -772,14 +772,33 @@ async fn set_base(profile: &str, args: SetBaseArgs) -> Result<()> {
         if trimmed.is_empty() {
             bail!("Branch name is empty. Pass --clear to remove the override.");
         }
+        // Validate the ref against the same resolution chain the diff
+        // resolver uses, so users see a clear error at set-time rather
+        // than a silent fallback when the diff is next computed. For
+        // workspace sessions, validate against the first repo's
+        // worktree (each repo will resolve the ref the same way).
+        let validate_path = instances[idx]
+            .workspace_info
+            .as_ref()
+            .and_then(|w| w.repos.first().map(|r| r.worktree_path.clone()))
+            .unwrap_or_else(|| instances[idx].project_path.clone());
+        if let Err(e) =
+            crate::git::diff::validate_ref(std::path::Path::new(&validate_path), &trimmed)
+        {
+            bail!(
+                "Branch '{}' does not resolve in {}: {}",
+                trimmed,
+                validate_path,
+                e
+            );
+        }
         Some(trimmed)
     };
 
     instances[idx].base_branch_override = new_value.clone();
     let title = instances[idx].title.clone();
 
-    let group_tree = GroupTree::new_with_groups(&instances, &groups);
-    storage.save_with_groups(&instances, &group_tree)?;
+    storage.save(&instances)?;
 
     match new_value {
         Some(ref v) => println!("✓ Set diff base for '{}': {}", title, v),

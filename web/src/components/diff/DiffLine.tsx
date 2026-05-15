@@ -1,6 +1,8 @@
-import { memo, type ReactNode } from "react";
+import { memo } from "react";
 import type { SyntaxToken } from "../../hooks/useHighlightedLines";
 import type { RichDiffLine } from "../../lib/types";
+
+type PlusSide = "old" | "new";
 
 interface Props {
   line: RichDiffLine;
@@ -11,10 +13,17 @@ interface Props {
    *  diffs (e.g. the cockpit Edit card) where snippet line numbers add
    *  more clutter than signal. */
   hideLineNumbers?: boolean;
-  /** Optional overlay rendered inside the line-number gutter (in front of
-   *  the numbers). Used by the diff comments feature to surface a "+"
-   *  button on hover without resizing the row. See #928. */
-  leadingSlot?: ReactNode;
+  /** Render the hover-revealed "+" gutter button for the diff-comments
+   *  feature (#928). Props are primitives instead of a ReactNode slot
+   *  so `React.memo`'s shallow comparison succeeds across parent
+   *  re-renders — passing a fresh `<PlusButton/>` JSX node per row
+   *  would bust memo on every range-selection state change. */
+  plusEnabled?: boolean;
+  plusHunkIndex?: number;
+  plusSide?: PlusSide;
+  plusLineNum?: number;
+  plusActive?: boolean;
+  onPlusClick?: (hunkIndex: number, side: PlusSide, lineNum: number) => void;
   /** Tint the row to indicate it's part of the active comment range. */
   isHighlighted?: boolean;
   /** Mark the row as the start/end endpoint of a range with a stronger
@@ -27,7 +36,12 @@ function DiffLineImpl({
   tokens,
   highlightPending,
   hideLineNumbers,
-  leadingSlot,
+  plusEnabled,
+  plusHunkIndex,
+  plusSide,
+  plusLineNum,
+  plusActive,
+  onPlusClick,
   isHighlighted,
   isRangeEndpoint,
 }: Props) {
@@ -65,6 +79,13 @@ function DiffLineImpl({
     return content || " ";
   };
 
+  const showPlus =
+    plusEnabled === true &&
+    plusSide != null &&
+    plusLineNum != null &&
+    plusHunkIndex != null &&
+    onPlusClick != null;
+
   return (
     <div
       className={`group flex ${bgClass}${highlightOverlay}${endpointBorder} hover:brightness-110 transition-[filter] duration-75`}
@@ -72,7 +93,26 @@ function DiffLineImpl({
       {!hideLineNumbers && (
         <>
           <span className="shrink-0 w-[50px] text-right pr-2 font-mono text-[11px] text-text-dim select-none border-r border-surface-700/30 relative">
-            {leadingSlot}
+            {showPlus && (
+              <button
+                type="button"
+                onClick={() => onPlusClick(plusHunkIndex, plusSide, plusLineNum)}
+                aria-label={`Add comment on ${plusSide} line ${plusLineNum}`}
+                // `tabIndex={-1}` keeps the hover-revealed button out of
+                // the tab order; otherwise keyboard users would land on
+                // dozens of invisible buttons walking through the diff.
+                // v1 is mouse-only; a focus-driven flow can be added
+                // with a real row-focus model.
+                tabIndex={-1}
+                className={`absolute left-0 top-0 h-full w-4 flex items-center justify-center text-white text-[11px] leading-none cursor-pointer transition-opacity ${
+                  plusActive
+                    ? "bg-brand-600 opacity-100"
+                    : "bg-brand-600 opacity-0 group-hover:opacity-100 hover:bg-brand-500 focus-visible:opacity-100"
+                }`}
+              >
+                +
+              </button>
+            )}
             {line.old_line_num ?? ""}
           </span>
           <span className="shrink-0 w-[50px] text-right pr-2 font-mono text-[11px] text-text-dim select-none border-r border-surface-700/30">
@@ -95,6 +135,7 @@ function DiffLineImpl({
 }
 
 /** Memoized so range-selection state changes in the parent don't
- *  re-render every line. Callers should pass stable props (no inline
- *  object/function allocations per render) to keep memo effective. */
+ *  re-render every line. All props are primitives (or stable callback
+ *  references via `useCallback`) so the default shallow comparison is
+ *  effective; passing a fresh JSX node per row would defeat memo. */
 export const DiffLine = memo(DiffLineImpl);

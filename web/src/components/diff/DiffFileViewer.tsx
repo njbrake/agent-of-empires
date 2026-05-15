@@ -116,21 +116,14 @@ function HunkView({
         const rowKey = `h${hunkIndex}-r${i}`;
         const { isHighlighted, isRangeEndpoint, side, lineNum } =
           highlightForRow(line, hunkIndex, rangeStart, draft);
-        const leadingSlot =
-          commentsEnabled && lineNum != null && side != null ? (
-            <PlusButton
-              hunkIndex={hunkIndex}
-              side={side}
-              lineNum={lineNum}
-              onClick={onPlusClick}
-              active={
-                rangeStart != null &&
-                rangeStart.hunkIndex === hunkIndex &&
-                rangeStart.side === side &&
-                rangeStart.line === lineNum
-              }
-            />
-          ) : null;
+        const plusEnabled =
+          commentsEnabled && lineNum != null && side != null;
+        const plusActive =
+          plusEnabled &&
+          rangeStart != null &&
+          rangeStart.hunkIndex === hunkIndex &&
+          rangeStart.side === side &&
+          rangeStart.line === lineNum;
         const cards = cardsByEndRow.get(i);
         const showForm = formRowIndex === i && draft != null;
         return (
@@ -139,7 +132,12 @@ function HunkView({
               line={line}
               tokens={lineTokens?.[i]}
               highlightPending={highlightPending}
-              leadingSlot={leadingSlot}
+              plusEnabled={plusEnabled}
+              plusHunkIndex={hunkIndex}
+              plusSide={side ?? undefined}
+              plusLineNum={lineNum ?? undefined}
+              plusActive={plusActive}
+              onPlusClick={onPlusClick}
               isHighlighted={isHighlighted}
               isRangeEndpoint={isRangeEndpoint}
             />
@@ -165,40 +163,6 @@ function HunkView({
         );
       })}
     </div>
-  );
-}
-
-function PlusButton({
-  hunkIndex,
-  side,
-  lineNum,
-  onClick,
-  active,
-}: {
-  hunkIndex: number;
-  side: DiffSide;
-  lineNum: number;
-  onClick: (hunkIndex: number, side: DiffSide, lineNum: number) => void;
-  active: boolean;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={() => onClick(hunkIndex, side, lineNum)}
-      aria-label={`Add comment on ${side} line ${lineNum}`}
-      // `tabIndex={-1}` keeps the hover-revealed button out of the
-      // tab order; otherwise keyboard users would land on dozens of
-      // invisible buttons walking through the diff. v1 is mouse-only;
-      // a focus-driven flow can be added with a real row-focus model.
-      tabIndex={-1}
-      className={`absolute left-0 top-0 h-full w-4 flex items-center justify-center text-white text-[11px] leading-none cursor-pointer transition-opacity ${
-        active
-          ? "bg-brand-600 opacity-100"
-          : "bg-brand-600 opacity-0 group-hover:opacity-100 hover:bg-brand-500 focus-visible:opacity-100"
-      }`}
-    >
-      +
-    </button>
   );
 }
 
