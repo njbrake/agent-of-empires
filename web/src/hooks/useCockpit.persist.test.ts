@@ -3,12 +3,16 @@
 // Tests for the localStorage-backed CockpitState persistence
 // added in #1132. The persistence helpers are module-private; we
 // exercise them through the public `clearCockpitCache` API plus the
-// observable side effect on `window.localStorage`.
+// observable side effect on `window.localStorage`. The round-trip
+// hydration test additionally mounts the hook against a fake
+// WebSocket so it can read the `?since=<lastSeq>` query parameter
+// on the resume URL.
 
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { act, renderHook } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { emptyCockpitState, type CockpitState } from "../lib/cockpitTypes";
-import { clearCockpitCache } from "./useCockpit";
+import { clearCockpitCache, useCockpit } from "./useCockpit";
 
 const KEY_PREFIX = "aoe:cockpit-state:v1:";
 const TTL_MS = 7 * 24 * 60 * 60 * 1000;
@@ -79,5 +83,141 @@ describe("useCockpit / persisted state", () => {
     } finally {
       spy.mockRestore();
     }
+  });
+});
+
+// Round-trip test: pre-populate a persisted entry with a non-zero
+// lastSeq, mount the hook, and assert the WebSocket dial URL carries
+// `?since=<that lastSeq>`. This locks in the whole point of #1132 -
+// reload-then-resume - which the storage-only tests above don't reach.
+interface FakeSocket {
+  url: string;
+  readyState: number;
+  onopen: ((ev: Event) => void) | null;
+  onclose: ((ev: CloseEvent) => void) | null;
+  onerror: ((ev: Event) => void) | null;
+  onmessage: ((ev: MessageEvent) => void) | null;
+  close: () => void;
+  send: () => void;
+}
+
+const sockets: FakeSocket[] = [];
+let originalWebSocket: typeof WebSocket;
+
+class FakeWebSocket implements FakeSocket {
+  url: string;
+  readyState: number = 0;
+  onopen: ((ev: Event) => void) | null = null;
+  onclose: ((ev: CloseEvent) => void) | null = null;
+  onerror: ((ev: Event) => void) | null = null;
+  onmessage: ((ev: MessageEvent) => void) | null = null;
+  static CONNECTING = 0;
+  static OPEN = 1;
+  static CLOSING = 2;
+  static CLOSED = 3;
+  constructor(url: string) {
+    this.url = url;
+    sockets.push(this);
+  }
+  close(): void {
+    this.readyState = FakeWebSocket.CLOSED;
+  }
+  send(): void {
+    /* no-op */
+  }
+}
+
+describe("useCockpit / hydration round-trip", () => {
+  // The hook's fetchReplay path treats `highest_seq < since` as a
+  // server-side seq reset (session deleted + recreated with the same
+  // id) and dispatches a state reset, zeroing lastSeq. So tests that
+  // mount the hook with a non-zero persisted lastSeq need to mock the
+  // replay endpoint with a matching highest_seq so the resume cursor
+  // survives.
+  let mockReplayHighestSeq = 0;
+  beforeEach(() => {
+    vi.useFakeTimers();
+    sockets.length = 0;
+    mockReplayHighestSeq = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = typeof input === "string" ? input : input.toString();
+        if (url.includes("/api/login/status")) {
+          return new Response(
+            JSON.stringify({
+              required: false,
+              authenticated: true,
+              elevated: true,
+              elevated_until_secs: null,
+            }),
+            { status: 200 },
+          );
+        }
+        return new Response(
+          JSON.stringify({
+            frames: [],
+            lost: false,
+            highest_seq: mockReplayHighestSeq,
+          }),
+          { status: 200 },
+        );
+      }),
+    );
+    originalWebSocket = global.WebSocket;
+    global.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
+  });
+
+  afterEach(() => {
+    global.WebSocket = originalWebSocket;
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  async function flushAsync(): Promise<void> {
+    await act(async () => {
+      for (let i = 0; i < 6; i++) {
+        await Promise.resolve();
+      }
+    });
+  }
+
+  it("hydrates lastSeq from localStorage and resumes the WS from that cursor", async () => {
+    const persisted: CockpitState = {
+      ...emptyCockpitState(),
+      lastSeq: 4242,
+    };
+    writeEntry("sess-resume", persisted, Date.now());
+    // Replay endpoint reports the same highest_seq so the reset-on-
+    // backwards-seq guard in fetchReplay does not zero the cursor.
+    mockReplayHighestSeq = 4242;
+
+    renderHook(() => useCockpit("sess-resume"));
+    await flushAsync();
+
+    expect(sockets).toHaveLength(1);
+    expect(sockets[0]!.url).toContain("/cockpit/ws?since=4242");
+  });
+
+  it("falls back to since=0 when no persisted entry exists", async () => {
+    renderHook(() => useCockpit("sess-fresh"));
+    await flushAsync();
+
+    expect(sockets).toHaveLength(1);
+    expect(sockets[0]!.url).toContain("/cockpit/ws?since=0");
+  });
+
+  it("ignores a persisted entry that is older than the TTL", async () => {
+    const persisted: CockpitState = {
+      ...emptyCockpitState(),
+      lastSeq: 999,
+    };
+    writeEntry("sess-stale", persisted, Date.now() - TTL_MS - 1000);
+
+    renderHook(() => useCockpit("sess-stale"));
+    await flushAsync();
+
+    expect(sockets).toHaveLength(1);
+    expect(sockets[0]!.url).toContain("/cockpit/ws?since=0");
   });
 });

@@ -410,10 +410,19 @@ export function useCockpit(
   // renders. connectRef is the stable indirection so listeners
   // installed outside the connection effect (visibilitychange, online,
   // pageshow) can dial without re-creating the listeners.
+  //
+  // dialGenRef is a monotonic generation counter. Every connect() call
+  // bumps it; each in-flight IIFE captures its generation at entry and
+  // bails (or no-ops in its WS handlers) once the current generation
+  // moves past it. Without this, a visibilitychange / manualReconnect
+  // that fires while a prior IIFE is mid-`await fetchReplay` allocates
+  // a second WS, and the orphaned first WS's onclose still nulls
+  // wsRef.current and schedules a retry on top of a healthy socket.
   const retryCountRef = useRef(0);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const countdownTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const connectRef = useRef<(() => void) | null>(null);
+  const dialGenRef = useRef(0);
   const [reconnecting, setReconnecting] = useState(false);
   const [retryCount, setRetryCount] = useState(0);
   const [retryCountdown, setRetryCountdown] = useState(0);
@@ -572,6 +581,22 @@ export function useCockpit(
       if (cancelled) return;
       // Cancel any pending scheduled retry; a fresh dial supersedes it.
       clearRetryTimers();
+      // Close any prior socket synchronously so its handlers fire (and
+      // get filtered out by the generation check below) before the new
+      // dial starts. Without this, the orphan's `onclose` can land
+      // after the new WS opens and re-arm scheduleReconnect on top of
+      // a healthy connection.
+      if (wsRef.current) {
+        try {
+          wsRef.current.close();
+        } catch {
+          // ignore
+        }
+        wsRef.current = null;
+      }
+      dialGenRef.current += 1;
+      const myGen = dialGenRef.current;
+      const isCurrentDial = () => !cancelled && dialGenRef.current === myGen;
       statusRef.current = "connecting";
       setStatus("connecting");
       void (async () => {
@@ -585,7 +610,7 @@ export function useCockpit(
         // would drop later applies, which is exactly the "Stopped never
         // reaches the reducer" failure mode in #1100.
         await fetchReplay(sessionId);
-        if (cancelled) return;
+        if (!isCurrentDial()) return;
 
         // WS upgrades to sensitive routes (the cockpit live channel
         // qualifies) hide their HTTP response body from JS. Pre-flight
@@ -593,7 +618,7 @@ export function useCockpit(
         // 15-minute window pops the inline passphrase prompt instead
         // of silently failing the socket handshake. See #1131.
         const cleared = await preflightElevationForSensitiveWs();
-        if (cancelled) return;
+        if (!isCurrentDial()) return;
         if (!cleared) {
           // Elevation prompt is open; back off and try again shortly.
           statusRef.current = "closed";
@@ -640,8 +665,13 @@ export function useCockpit(
         // Without this, a click landing in the same event-loop tick as
         // `onclose` could see statusRef.current === "open" and dispatch
         // an optimistic prompt against a closed socket.
+        //
+        // Every handler additionally checks `isCurrentDial()`: an
+        // orphaned WS from a superseded connect() must not flip status,
+        // null wsRef.current, or schedule a retry on top of the new
+        // healthy socket.
         ws.onopen = () => {
-          if (cancelled) {
+          if (!isCurrentDial()) {
             try {
               ws.close();
             } catch {
@@ -661,18 +691,19 @@ export function useCockpit(
           setRetryCountdown(0);
         };
         ws.onerror = () => {
-          if (cancelled) return;
+          if (!isCurrentDial()) return;
           statusRef.current = "error";
           setStatus("error");
         };
         ws.onclose = () => {
-          if (cancelled) return;
+          if (!isCurrentDial()) return;
           statusRef.current = "closed";
           setStatus("closed");
           wsRef.current = null;
           scheduleReconnect();
         };
         ws.onmessage = (ev) => {
+          if (!isCurrentDial()) return;
           try {
             const data = JSON.parse(ev.data) as
               | CockpitFrame
@@ -746,6 +777,9 @@ export function useCockpit(
 
     return () => {
       cancelled = true;
+      // Bump the generation so any in-flight IIFE / pending WS handlers
+      // from this effect's lifetime see themselves as stale.
+      dialGenRef.current += 1;
       clearRetryTimers();
       const ws = wsRef.current;
       if (ws) {

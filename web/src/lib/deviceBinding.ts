@@ -10,6 +10,16 @@
 // is no longer part of the session identity on the server side. See
 // #1131.
 //
+// Generation timing: the secret is created on the FIRST authenticated
+// fetch, not at login. `fetchInterceptor.attachAuthHeader` calls
+// `getOrCreateDeviceBindingSecret()` for every same-origin request,
+// and `loginStatus()` runs before the login page renders. So by the
+// time the user submits the passphrase, the secret already exists in
+// localStorage and the `device_binding_secret` field on the POST body
+// is just re-reading it. Intentional: the binding is per-browser, not
+// per-session, and rotating it with each login would force every PWA
+// tab open on this browser to re-authenticate at the same moment.
+//
 // This module deliberately stays small so that a future hardening
 // pass (WebCrypto non-extractable keys + per-request signatures) can
 // replace the storage and accessor without touching the call sites.

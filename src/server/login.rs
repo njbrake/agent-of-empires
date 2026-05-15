@@ -59,7 +59,24 @@ struct LoginSession {
     /// session can browse the dashboard but cannot reach the
     /// high-risk routes guarded by `is_elevated`. See #1131.
     elevated_until: Option<Instant>,
+    /// Per-session failed elevation attempts since the last reset.
+    /// Bound to the session id (not the client IP) so an attacker who
+    /// holds session + binding cannot defeat the rate limiter by
+    /// rotating IPs (mobile carrier, Tor, residential proxies).
+    /// Reset on a successful elevation or full lockout expiry.
+    elevation_failures: u32,
+    /// Lockout deadline that gates further `/api/login/elevate`
+    /// attempts for this session. `None` outside an active lockout.
+    elevation_locked_until: Option<Instant>,
 }
+
+/// Threshold for the per-session elevation rate limiter. Tighter than
+/// the per-IP limiter on `/api/login` because the attacker must
+/// already hold a valid session + binding to even reach the elevate
+/// endpoint, so each failed attempt is a stronger signal of brute
+/// force. Three attempts trips a 15-minute lockout.
+const MAX_ELEVATION_FAILURES: u32 = 3;
+const ELEVATION_LOCKOUT: Duration = Duration::from_secs(15 * 60);
 
 /// Manages passphrase verification and login session lifecycle.
 pub struct LoginManager {
@@ -124,6 +141,8 @@ impl LoginManager {
             expires_at: Instant::now() + SESSION_LIFETIME,
             binding_hash: hash_binding_secret(binding_secret_bytes),
             elevated_until: None,
+            elevation_failures: 0,
+            elevation_locked_until: None,
         };
 
         let mut sessions = self.sessions.write().await;
@@ -180,7 +199,9 @@ impl LoginManager {
 
     /// Mark a session as elevated (passphrase confirmed) for
     /// `ELEVATION_LIFETIME`. Caller is responsible for verifying the
-    /// passphrase before calling. See #1131.
+    /// passphrase before calling. Also resets the per-session
+    /// elevation failure counter, since a successful confirmation
+    /// proves the legitimate user is driving the prompt.
     pub async fn elevate_session(&self, session_id: &str) -> bool {
         if session_id.is_empty() {
             return false;
@@ -193,7 +214,62 @@ impl LoginManager {
             return false;
         }
         session.elevated_until = Some(Instant::now() + ELEVATION_LIFETIME);
+        session.elevation_failures = 0;
+        session.elevation_locked_until = None;
         true
+    }
+
+    /// Whether the session's elevation endpoint is locked out. Returns
+    /// the remaining seconds on the lockout window when active. Bound
+    /// to the session id (not IP) so an attacker who holds session +
+    /// binding can't defeat the limiter by rotating IPs. See #1131.
+    pub async fn elevation_lockout_remaining(&self, session_id: &str) -> Option<u64> {
+        if session_id.is_empty() {
+            return None;
+        }
+        let sessions = self.sessions.read().await;
+        let session = sessions.get(session_id)?;
+        let locked_until = session.elevation_locked_until?;
+        let now = Instant::now();
+        if now >= locked_until {
+            return None;
+        }
+        Some(locked_until.saturating_duration_since(now).as_secs().max(1))
+    }
+
+    /// Record a failed passphrase entry on `/api/login/elevate` for
+    /// this session. Increments the per-session counter and arms a
+    /// `ELEVATION_LOCKOUT` window when the threshold is crossed.
+    /// Returns true when this call triggered a fresh lockout.
+    pub async fn record_elevation_failure(&self, session_id: &str) -> bool {
+        if session_id.is_empty() {
+            return false;
+        }
+        let mut sessions = self.sessions.write().await;
+        let Some(session) = sessions.get_mut(session_id) else {
+            return false;
+        };
+        let now = Instant::now();
+        // Existing lockout still in force: ignore the attempt.
+        if let Some(deadline) = session.elevation_locked_until {
+            if now < deadline {
+                return false;
+            }
+            session.elevation_failures = 0;
+            session.elevation_locked_until = None;
+        }
+        session.elevation_failures = session.elevation_failures.saturating_add(1);
+        if session.elevation_failures >= MAX_ELEVATION_FAILURES {
+            session.elevation_locked_until = Some(now + ELEVATION_LOCKOUT);
+            tracing::warn!(
+                target: "auth.passphrase",
+                failures = session.elevation_failures,
+                lockout_secs = ELEVATION_LOCKOUT.as_secs(),
+                "session elevation lockout armed after threshold"
+            );
+            return true;
+        }
+        false
     }
 
     /// Read elevation state. Returns `(elevated, elevated_until_secs)`:
@@ -478,6 +554,30 @@ pub async fn elevate_handler(
             .into_response();
     };
 
+    // Two rate limiters guard this endpoint:
+    //   - Per-IP via `state.rate_limiter`, shared with `/api/login`.
+    //   - Per-session via `LoginManager::elevation_lockout_remaining`,
+    //     so an attacker who already holds session + binding can't
+    //     defeat the per-IP limiter by rotating IPs (mobile carrier,
+    //     Tor, residential proxies). See #1131.
+    // The session lockout is checked first so a locked session shows
+    // a consistent message regardless of the caller's IP.
+    if let Some(remaining) = state
+        .login_manager
+        .elevation_lockout_remaining(&session_id)
+        .await
+    {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            [("Retry-After", remaining.to_string())],
+            Json(serde_json::json!({
+                "error": "rate_limited",
+                "message": format!("Too many failed attempts. Try again in {} seconds.", remaining)
+            })),
+        )
+            .into_response();
+    }
+
     if let Some(remaining) = state.rate_limiter.check_locked(client_ip).await {
         return (
             StatusCode::TOO_MANY_REQUESTS,
@@ -509,11 +609,16 @@ pub async fn elevate_handler(
         .login_manager
         .verify_passphrase(&elevate_req.passphrase)
     {
-        let locked = state.rate_limiter.record_failure(client_ip).await;
+        let ip_locked = state.rate_limiter.record_failure(client_ip).await;
+        let session_locked = state
+            .login_manager
+            .record_elevation_failure(&session_id)
+            .await;
         tracing::warn!(
             target: "auth.passphrase",
             ip = %client_ip,
-            locked = locked,
+            ip_locked = ip_locked,
+            session_locked = session_locked,
             reason = "incorrect_passphrase_on_elevate",
             "elevation failed"
         );
@@ -844,6 +949,46 @@ mod tests {
         let mgr = LoginManager::new(Some("test"));
         assert!(!mgr.elevate_session("nope").await);
         assert!(!mgr.is_elevated("nope").await);
+    }
+
+    #[tokio::test]
+    async fn elevation_lockout_arms_after_threshold() {
+        // Regression for #1131 follow-up: per-session lockout so an
+        // attacker with stolen session + binding can't rotate IPs to
+        // defeat the per-IP rate limit while brute-forcing elevation.
+        let mgr = LoginManager::new(Some("test"));
+        let secret = binding(0x77);
+        let session_id = mgr.create_session(&secret).await;
+        assert!(mgr.elevation_lockout_remaining(&session_id).await.is_none());
+        for _ in 0..(MAX_ELEVATION_FAILURES - 1) {
+            assert!(!mgr.record_elevation_failure(&session_id).await);
+        }
+        // Threshold-crossing failure arms the lockout.
+        assert!(mgr.record_elevation_failure(&session_id).await);
+        assert!(mgr.elevation_lockout_remaining(&session_id).await.is_some());
+        // Additional failures while locked don't extend the window.
+        assert!(!mgr.record_elevation_failure(&session_id).await);
+    }
+
+    #[tokio::test]
+    async fn elevation_success_clears_failure_counter() {
+        let mgr = LoginManager::new(Some("test"));
+        let secret = binding(0x88);
+        let session_id = mgr.create_session(&secret).await;
+        assert!(!mgr.record_elevation_failure(&session_id).await);
+        assert!(mgr.elevate_session(&session_id).await);
+        // Counter reset; the next failure budget starts fresh.
+        for _ in 0..(MAX_ELEVATION_FAILURES - 1) {
+            assert!(!mgr.record_elevation_failure(&session_id).await);
+        }
+        assert!(mgr.elevation_lockout_remaining(&session_id).await.is_none());
+    }
+
+    #[tokio::test]
+    async fn elevation_failure_unknown_session_is_noop() {
+        let mgr = LoginManager::new(Some("test"));
+        assert!(!mgr.record_elevation_failure("nope").await);
+        assert!(mgr.elevation_lockout_remaining("nope").await.is_none());
     }
 
     #[tokio::test]

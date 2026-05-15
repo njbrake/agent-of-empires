@@ -145,11 +145,11 @@ export function Composer({
     const coarseMql = window.matchMedia("(pointer: coarse)");
     const fineMql = window.matchMedia("(any-pointer: fine)");
     const onChange = () => setIsMobile(detectMobileInput());
-    coarseMql.addEventListener?.("change", onChange);
-    fineMql.addEventListener?.("change", onChange);
+    coarseMql.addEventListener("change", onChange);
+    fineMql.addEventListener("change", onChange);
     return () => {
-      coarseMql.removeEventListener?.("change", onChange);
-      fineMql.removeEventListener?.("change", onChange);
+      coarseMql.removeEventListener("change", onChange);
+      fineMql.removeEventListener("change", onChange);
     };
   }, []);
 

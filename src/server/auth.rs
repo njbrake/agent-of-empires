@@ -304,6 +304,30 @@ fn requires_elevation(method: &axum::http::Method, path: &str) -> bool {
         return true;
     }
 
+    // Settings and profile mutations. The persisted config controls
+    // the Docker image, environment, volume mounts, and worktree
+    // path templates that the next session spawn uses. The spawn
+    // itself is elevation-gated, but it runs with the legitimate
+    // user's elevation, not the attacker's, so an attacker with
+    // stolen session + binding could persist a malicious image and
+    // wait for the owner's next legitimate spawn to execute it.
+    // Gate the writes too. See #1131 / #1137 post-review.
+    if path == "/api/settings" && method == Method::PATCH {
+        return true;
+    }
+    if path == "/api/default-profile" && method == Method::PATCH {
+        return true;
+    }
+    if path == "/api/profiles" && method == Method::POST {
+        return true;
+    }
+    if path.starts_with("/api/profiles/") {
+        // Per-profile writes: PATCH /api/profiles/{name}/settings,
+        // PATCH .../rename, DELETE /api/profiles/{name}. Read GETs
+        // were filtered out by the GET/HEAD bypass above.
+        return true;
+    }
+
     false
 }
 
@@ -912,6 +936,23 @@ mod tests {
         // Sensitive: push subscription mutations.
         assert!(requires_elevation(&Method::POST, "/api/push/subscribe"));
         assert!(requires_elevation(&Method::POST, "/api/push/unsubscribe"));
+        // Sensitive: settings / profile mutations. These persist the
+        // Docker image, env, volume mounts, and worktree templates
+        // that the owner's next legitimate session spawn will use, so
+        // an attacker who skipped the elevation gate on the writes
+        // could plant a malicious config and wait. See #1131 / #1137.
+        assert!(requires_elevation(&Method::PATCH, "/api/settings"));
+        assert!(requires_elevation(&Method::PATCH, "/api/default-profile"));
+        assert!(requires_elevation(&Method::POST, "/api/profiles"));
+        assert!(requires_elevation(
+            &Method::PATCH,
+            "/api/profiles/work/settings"
+        ));
+        assert!(requires_elevation(
+            &Method::PATCH,
+            "/api/profiles/work/rename"
+        ));
+        assert!(requires_elevation(&Method::DELETE, "/api/profiles/work"));
         // Trailing slash must not bypass the gate.
         assert!(requires_elevation(
             &Method::POST,
@@ -929,16 +970,17 @@ mod tests {
             "/api/sessions/abc/diff/files"
         ));
         assert!(!requires_elevation(&Method::GET, "/api/push/status"));
+        assert!(!requires_elevation(&Method::GET, "/api/settings"));
+        assert!(!requires_elevation(&Method::GET, "/api/profiles"));
+        assert!(!requires_elevation(
+            &Method::GET,
+            "/api/profiles/work/settings"
+        ));
         // Coincidental substring must not match the WS suffix.
         assert!(!requires_elevation(&Method::GET, "/api/debug/ws-status"));
         // Out-of-scope paths never gate.
         assert!(!requires_elevation(&Method::GET, "/api/about"));
         assert!(!requires_elevation(&Method::POST, "/api/login"));
         assert!(!requires_elevation(&Method::POST, "/api/login/elevate"));
-        // Settings / profiles / themes were intentionally left ungated
-        // for v1 (their writes are local config, not host-affecting).
-        // Document the choice in tests so a future maintainer thinks
-        // twice before adding sensitive operations there.
-        assert!(!requires_elevation(&Method::PATCH, "/api/settings"));
     }
 }
