@@ -733,3 +733,126 @@ describe("applyEvent / WakeupScheduled lifecycle", () => {
     expect(state.nextWakeupReason).toBeNull();
   });
 });
+
+describe("applyEvent / SessionCleared", () => {
+  // /clear wipes the model's memory. The reducer appends a divider row
+  // so the renderer can fold pre-clear turns behind a disclosure, and
+  // drops session-scoped capability caches that the agent no longer
+  // recognises (slash palette, mode picker, plan strip, in-flight
+  // approvals). See #1101.
+  it("appends a session_cleared divider row", () => {
+    const next = applyEvent(emptyCockpitState(), {
+      session_id: "s-1",
+      seq: 5,
+      event: "SessionCleared",
+    });
+    expect(next.activity).toHaveLength(1);
+    expect(next.activity[0]).toMatchObject({
+      id: "cleared-5",
+      kind: "session_cleared",
+    });
+    expect(next.lastSeq).toBe(5);
+  });
+
+  it("clears session-scoped capability caches", () => {
+    const seeded: CockpitState = {
+      ...emptyCockpitState(),
+      availableCommands: [
+        { name: "foo", description: "", accepts_input: false },
+      ],
+      availableModes: [{ id: "m1", name: "Mode One" }],
+      currentModeId: "m1",
+      plan: {
+        plan_id: "p-1",
+        version: 1,
+        steps: [{ id: "s-1", title: "step", status: "Pending" }],
+      },
+      mode: "Plan",
+      pendingApprovals: [
+        {
+          nonce: "n-1",
+          tool_call: {
+            id: "tc-1",
+            name: "Bash",
+            kind: "execute",
+            args_preview: "ls",
+            started_at: new Date().toISOString(),
+          },
+          destructive: false,
+          requested_at: new Date().toISOString(),
+        },
+      ],
+      sessionUsage: { used: 10, size: 200_000 },
+    };
+    const next = applyEvent(seeded, {
+      session_id: "s-1",
+      seq: 7,
+      event: "SessionCleared",
+    });
+    expect(next.availableCommands).toEqual([]);
+    expect(next.availableModes).toEqual([]);
+    expect(next.currentModeId).toBeNull();
+    expect(next.plan).toBeNull();
+    expect(next.mode).toBe("Default");
+    expect(next.pendingApprovals).toEqual([]);
+    expect(next.sessionUsage).toBeNull();
+  });
+});
+
+describe("applyEvent / ConversationCompacted", () => {
+  // /compact is NOT memory loss: the model retains continuity through
+  // the summary. The primer banner (which nudges the user to pre-fill
+  // a recap) is therefore inappropriate here, so this event variant
+  // exists as a separate signal from SessionContextReset and leaves
+  // contextPrimerAvailable alone. See #1109.
+  it("appends a compacted divider row and drops the stale usage snapshot", () => {
+    const seeded: CockpitState = {
+      ...emptyCockpitState(),
+      sessionUsage: { used: 100, size: 200_000 },
+    };
+    const next = applyEvent(seeded, {
+      session_id: "s-1",
+      seq: 9,
+      event: "ConversationCompacted",
+    });
+    expect(next.activity).toHaveLength(1);
+    expect(next.activity[0]).toMatchObject({
+      id: "compacted-9",
+      kind: "compacted",
+    });
+    expect(next.sessionUsage).toBeNull();
+  });
+
+  it("does not arm the primer banner", () => {
+    // Regression: /compact previously routed through SessionContextReset
+    // and the primer banner offered to pre-fill duplicate content the
+    // model already had summarised. Verify the new variant doesn't
+    // re-introduce that behaviour.
+    const next = applyEvent(emptyCockpitState(), {
+      session_id: "s-1",
+      seq: 3,
+      event: "ConversationCompacted",
+    });
+    expect(next.contextPrimerAvailable).toBeNull();
+  });
+});
+
+describe("cockpitHookReducer / dismiss_primer", () => {
+  // Banner dismiss used to live in component-local useState and
+  // re-armed itself on every session switch. Moved into the reducer so
+  // the dismissal survives mount/unmount; the next SessionContextReset
+  // re-seeds contextPrimerAvailable with a new resetSeq so a later
+  // incident still surfaces the banner. See #1110.
+  it("clears contextPrimerAvailable", async () => {
+    const { cockpitHookReducer } = await import("../hooks/useCockpit");
+    const seeded: CockpitState = {
+      ...emptyCockpitState(),
+      contextPrimerAvailable: {
+        resetSeq: 12,
+        reason: "Conversation context reset; agent transcript was unavailable.",
+      },
+    };
+    const next = cockpitHookReducer(seeded, { kind: "dismiss_primer" });
+    expect(next.contextPrimerAvailable).toBeNull();
+  });
+});
