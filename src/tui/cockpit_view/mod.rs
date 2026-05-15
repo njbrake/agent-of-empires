@@ -26,7 +26,7 @@ use tokio::time::Instant;
 use self::input::{Focus, Intent};
 use self::state::{CockpitViewState, ToastBanner, ToastKind};
 use crate::cockpit::client::{
-    ensure_daemon, ws_connect, DaemonEndpoint, HttpClient, ManagerError, WsError, WsMessage,
+    require_daemon, ws_connect, DaemonEndpoint, HttpClient, ManagerError, WsError, WsMessage,
 };
 use crate::cockpit::protocol::ApprovalDecisionWire;
 use crate::tui::styles::Theme;
@@ -100,7 +100,7 @@ pub async fn run(
     theme: &Theme,
     session_id: &str,
 ) -> Result<()> {
-    let endpoint = match ensure_daemon().await {
+    let endpoint = match require_daemon().await {
         Ok(e) => e,
         Err(ManagerError::EnvOverrideUnreachable) => {
             render_error_screen(
@@ -120,11 +120,15 @@ pub async fn run(
             wait_for_dismiss(event_stream).await?;
             return Ok(());
         }
-        Err(e) => {
+        Err(e @ ManagerError::NoDaemonRunning(_)) => {
+            // Carries the multi-line "start one with..." hint from the
+            // error variant. Render as-is so the user sees the choice
+            // between localhost/Tailscale/Cloudflare without having to
+            // dig through docs.
             render_error_screen(
                 terminal,
                 theme,
-                &format!("Failed to start cockpit daemon:\n\n{e}\n\nPress any key to return."),
+                &format!("{e}\n\nPress any key to return to the session list."),
             )?;
             wait_for_dismiss(event_stream).await?;
             return Ok(());
@@ -135,9 +139,9 @@ pub async fn run(
 
 /// Same as [`run`] but the caller has already located the daemon
 /// endpoint (e.g. the remote-home picker that ran a session discovery
-/// step against a fixed `AOE_DAEMON_URL`). Skips `ensure_daemon` so the
-/// view never silently auto-spawns a local daemon when the user
-/// explicitly chose a remote one.
+/// step against a fixed `AOE_DAEMON_URL`). Skips `require_daemon` so
+/// the view doesn't re-run discovery / health-check when the caller
+/// has already done it.
 pub async fn run_for_endpoint(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     event_stream: &mut EventStream,

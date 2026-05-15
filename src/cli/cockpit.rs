@@ -671,11 +671,11 @@ fn truncate(s: &str, n: usize) -> String {
 // daemon is the only path to the disk-backed event store; there's no
 // useful read against "no daemon".
 
-use crate::cockpit::client::{ensure_daemon, HttpClient, HttpError, WsMessage};
+use crate::cockpit::client::{require_daemon, HttpClient, HttpError, WsMessage};
 use crate::cockpit::protocol::ApprovalDecisionWire;
 
 async fn history(session: &str, since: u64, json: bool) -> Result<()> {
-    let endpoint = ensure_daemon().await?;
+    let endpoint = require_daemon().await?;
     let client = HttpClient::new(endpoint)?;
     let resp = client.replay(session, since).await.map_err(map_http)?;
     if resp.lost {
@@ -707,7 +707,7 @@ async fn history(session: &str, since: u64, json: bool) -> Result<()> {
 }
 
 async fn status(session: &str, json: bool) -> Result<()> {
-    let endpoint = ensure_daemon().await?;
+    let endpoint = require_daemon().await?;
     let client = HttpClient::new(endpoint.clone())?;
     // since=highest_seq returns an empty frames vec but keeps the
     // highest/lowest/lost summary intact. Cheaper than full replay.
@@ -745,7 +745,7 @@ async fn status(session: &str, json: bool) -> Result<()> {
 
 async fn prompt(session: &str, text: &str) -> Result<()> {
     let body = read_text_arg(text)?;
-    let endpoint = ensure_daemon().await?;
+    let endpoint = require_daemon().await?;
     let client = HttpClient::new(endpoint)?;
     client.prompt(session, &body).await.map_err(map_http)?;
     println!("prompt accepted ({} bytes)", body.len());
@@ -758,7 +758,7 @@ async fn approve(session: &str, nonce: &str, always: bool, deny: bool) -> Result
         (true, false) => ApprovalDecisionWire::AllowAlways,
         (false, false) => ApprovalDecisionWire::Allow,
     };
-    let endpoint = ensure_daemon().await?;
+    let endpoint = require_daemon().await?;
     let client = HttpClient::new(endpoint)?;
     client
         .resolve_approval(session, nonce, decision)
@@ -769,7 +769,7 @@ async fn approve(session: &str, nonce: &str, always: bool, deny: bool) -> Result
 }
 
 async fn cancel(session: &str) -> Result<()> {
-    let endpoint = ensure_daemon().await?;
+    let endpoint = require_daemon().await?;
     let client = HttpClient::new(endpoint)?;
     client.cancel(session).await.map_err(map_http)?;
     println!("cancel sent");
@@ -781,7 +781,7 @@ async fn attach(session: &str) -> Result<()> {
 }
 
 async fn tail(session: &str, since: u64) -> Result<()> {
-    let endpoint = ensure_daemon().await?;
+    let endpoint = require_daemon().await?;
     let mut handle = crate::cockpit::client::ws_connect(&endpoint, session, since).await?;
     while let Some(msg) = handle.recv().await {
         match msg {

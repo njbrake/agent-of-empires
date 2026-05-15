@@ -134,7 +134,7 @@ impl HttpClient {
         Ok(res.json::<Vec<T>>().await?)
     }
 
-    /// Lightweight reachability probe used by `ensure_daemon` (when
+    /// Lightweight reachability probe used by `require_daemon` (when
     /// `AOE_DAEMON_URL` is set, we fail loud before falling into raw
     /// reqwest transport errors) and `aoe serve --status` (renders
     /// remote daemon info instead of "Daemon: not running").

@@ -218,10 +218,13 @@ state are always in sync.
 
 - **Sessions started in cockpit mode** appear in the TUI session list
   with a `[cockpit]` badge. Pressing Enter opens the native cockpit
-  view (auto-spawning `aoe serve` on loopback if it's not already
-  running). The daemon stays alive after you close the TUI so the
-  "create in TUI, drive from a phone later" flow works; stop it
-  with `aoe serve --stop`.
+  view, which requires an `aoe serve` daemon to be already running.
+  If one isn't, the view renders an actionable error pointing at
+  `aoe serve --daemon` (localhost), `aoe serve --daemon --remote`
+  (Tailscale/Cloudflare), or `AOE_DAEMON_URL` (attach to a remote
+  daemon you already have running). The TUI intentionally does not
+  start a daemon on your behalf, so you keep the choice between
+  localhost, tunnel, and named tunnel explicit.
 - **Sessions started in tmux mode** work in both surfaces as before.
   The TUI attaches to the pane; the dashboard renders the pane via
   xterm.js.
@@ -305,10 +308,13 @@ matching `aoe cockpit <verb>` that talks to the same daemon:
 | `aoe cockpit tail <id>`           | Stream broadcast frames to stdout as JSON lines             |
 | `aoe cockpit attach <id>`         | Open the TUI cockpit view directly for this session id      |
 
-All verbs auto-spawn an `aoe serve` daemon on loopback if none is
-running, unless `AOE_DAEMON_URL` is set (in which case they fail loud
-when the remote is unreachable instead of accidentally attaching to a
-local fallback).
+Every verb (including `attach`) requires an `aoe serve` daemon to be
+already running, and exits with an actionable hint if none is found.
+Start one with `aoe serve --daemon` (localhost) or
+`aoe serve --daemon --remote` (Tailscale/Cloudflare), or set
+`AOE_DAEMON_URL` to attach to a remote daemon. The CLI deliberately
+does not spawn a daemon on your behalf so the localhost-vs-tunnel
+choice stays explicit.
 
 ## Tool compatibility
 

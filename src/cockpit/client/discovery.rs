@@ -8,9 +8,10 @@
 //!    The loopback alternate is preferred over the primary line so
 //!    clients on the same box don't round-trip through a tunnel.
 //!
-//! Returns `Err(NoLocalDaemon)` when neither resolves. Callers that
-//! want auto-spawn behaviour should pair this with
-//! [`super::daemon_manager::ensure_daemon`].
+//! Returns `Err(NoLocalDaemon)` when neither resolves.
+//! [`super::daemon_manager::require_daemon`] wraps this with a
+//! health-check on the env override and a friendlier no-daemon error
+//! variant whose message tells the user how to start one.
 
 use std::env;
 

@@ -1,39 +1,29 @@
-//! Auto-spawn an `aoe serve` daemon on first cockpit interaction.
+//! Locate the cockpit daemon the caller should talk to.
 //!
-//! Rules (see plan-cockpit-inside-tui.md commit 2):
+//! Rules:
 //!
-//! 1. If `AOE_DAEMON_URL` is set, never auto-spawn. Discovery fails
-//!    loud so the caller doesn't accidentally attach to the wrong
-//!    daemon.
-//! 2. If a live local daemon exists, use it. Stale PID files are
-//!    cleaned up by [`crate::cli::serve::daemon_pid`] before we get
-//!    here.
-//! 3. Otherwise spawn a fresh daemon bound to loopback (127.0.0.1),
-//!    no tunnel, no tailscale, no browser. The spawned daemon is
-//!    long-lived; killing this process does not kill it, so the
-//!    maintainer's "create in TUI, drive from road via web" flow
-//!    still works. Use `aoe serve --stop` to stop it.
+//! 1. If `AOE_DAEMON_URL` is set, point at it and health-check the
+//!    endpoint. Never silently fall back to a local daemon: the whole
+//!    point of the env override is to attach to a *specific* daemon.
+//! 2. If a live local daemon exists (`serve.pid` + reachable
+//!    `serve.url`), use it.
+//! 3. Otherwise return [`ManagerError::NoDaemonRunning`] with an
+//!    actionable hint. Auto-spawn is intentionally not provided:
+//!    starting a loopback daemon by side-effect hides the choice
+//!    between localhost, Tailscale, and Cloudflare from the user and
+//!    leaves an `aoe serve` process behind that they did not ask for.
+//!    The caller is expected to render the hint and bail.
 //!
 //! Build-namespace discipline (debug vs release) is enforced by
-//! `crate::session::get_app_dir`: the spawned daemon writes
-//! `serve.pid` / `serve.url` to the same app dir we read from, so a
-//! debug client never picks up a release daemon (or vice versa).
-
-use std::path::PathBuf;
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+//! `crate::session::get_app_dir`: discovery reads `serve.pid` /
+//! `serve.url` from the same app dir an `aoe serve` of the same build
+//! would have written, so a debug client never picks up a release
+//! daemon (or vice versa).
 
 use thiserror::Error;
-use tracing::{info, warn};
 
 use super::discovery::{discover, discover_env, DaemonEndpoint, DiscoveryError};
 use super::http::HttpError;
-
-/// How long [`ensure_daemon`] waits for a freshly-spawned daemon to
-/// write its `serve.url` file before giving up.
-const SPAWN_READY_TIMEOUT: Duration = Duration::from_secs(10);
-/// Polling interval while waiting for `serve.url`.
-const SPAWN_POLL_INTERVAL: Duration = Duration::from_millis(150);
 
 #[derive(Debug, Error)]
 pub enum ManagerError {
@@ -45,159 +35,35 @@ pub enum ManagerError {
         "AOE_DAEMON_URL is set but the daemon rejected the bearer token; check AOE_DAEMON_TOKEN"
     )]
     EnvOverrideUnauthorized,
-    #[error("failed to locate or spawn a local cockpit daemon: {0}")]
-    Discovery(#[from] DiscoveryError),
-    #[error("could not find the aoe executable to respawn: {0}")]
-    NoExecutable(#[from] std::io::Error),
-    #[error("could not write the auto-spawn daemon log: {0}")]
-    LogFile(String),
-    #[error("auto-spawned `aoe serve` exited before becoming ready (check `aoe serve` log)")]
-    SpawnFailedFast,
-    #[error("auto-spawned `aoe serve` did not become ready within {0:?}")]
-    SpawnTimeout(Duration),
+    /// No daemon was reachable and no env override was set. Carries
+    /// the underlying discovery error so callers can distinguish "no
+    /// `serve.pid` at all" from "stale PID" if they care; most
+    /// callers just render the user-facing hint.
+    #[error(
+        "no cockpit daemon is running.\n\nStart one with one of:\n  aoe serve --daemon                 (localhost only, recommended for solo dev)\n  aoe serve --daemon --remote        (Tailscale Funnel or Cloudflare quick tunnel)\n  aoe serve --daemon --tunnel-name … (named Cloudflare Tunnel)\n\nOr attach to an existing remote daemon with:\n  AOE_DAEMON_URL=<url> AOE_DAEMON_TOKEN=<token> aoe …"
+    )]
+    NoDaemonRunning(#[from] DiscoveryError),
 }
 
-/// Locate a daemon, spawning one if no local daemon is running and
-/// `AOE_DAEMON_URL` is unset. Returns the resolved endpoint.
-pub async fn ensure_daemon() -> Result<DaemonEndpoint, ManagerError> {
-    // Env override path: never auto-spawn. The whole point of the
-    // override is to attach to a *specific* daemon; silently starting
-    // a different local one would be the wrong answer. Health-check
-    // the endpoint here so callers don't bubble up raw reqwest
-    // transport errors on every subsequent API call.
+/// Locate the daemon the caller should talk to. Does *not* spawn one;
+/// returns [`ManagerError::NoDaemonRunning`] if neither the env
+/// override nor a live local daemon resolves, so the caller can
+/// surface the message and let the user decide how to start the
+/// server.
+pub async fn require_daemon() -> Result<DaemonEndpoint, ManagerError> {
     if discover_env().is_some() {
+        // Resolve through `discover()` so the parsing/redaction
+        // applied to local endpoints is also applied here, then
+        // health-check before returning so callers don't bubble up
+        // raw reqwest transport errors on every subsequent API call.
         let endpoint = discover().map_err(|_| ManagerError::EnvOverrideUnreachable)?;
         let client = super::HttpClient::new(endpoint.clone())
             .map_err(|_| ManagerError::EnvOverrideUnreachable)?;
-        match client.health_check().await {
-            Ok(()) => return Ok(endpoint),
-            Err(HttpError::Unauthorized) => return Err(ManagerError::EnvOverrideUnauthorized),
-            Err(_) => return Err(ManagerError::EnvOverrideUnreachable),
-        }
+        return match client.health_check().await {
+            Ok(()) => Ok(endpoint),
+            Err(HttpError::Unauthorized) => Err(ManagerError::EnvOverrideUnauthorized),
+            Err(_) => Err(ManagerError::EnvOverrideUnreachable),
+        };
     }
-
-    if let Ok(endpoint) = discover() {
-        return Ok(endpoint);
-    }
-
-    spawn_local().await?;
-    discover().map_err(ManagerError::Discovery)
-}
-
-async fn spawn_local() -> Result<(), ManagerError> {
-    let exe = std::env::current_exe()?;
-    info!(
-        target: "cockpit.client.daemon_manager",
-        exe = %exe.display(),
-        "spawning local cockpit daemon"
-    );
-    let port = default_port();
-
-    let mut cmd = Command::new(&exe);
-    cmd.args(["serve", "--host", "127.0.0.1", "--port", &port.to_string()]);
-    cmd.stdin(Stdio::null());
-
-    let log_path = daemon_log_path();
-    match log_path
-        .as_ref()
-        .and_then(|p| std::fs::File::create(p).ok().map(|f| (p.clone(), f)))
-    {
-        Some((_, log_file)) => {
-            let stdout = log_file
-                .try_clone()
-                .map_err(|e| ManagerError::LogFile(e.to_string()))?;
-            let stderr = log_file;
-            cmd.stdout(Stdio::from(stdout)).stderr(Stdio::from(stderr));
-        }
-        None => {
-            cmd.stdout(Stdio::null()).stderr(Stdio::null());
-        }
-    }
-
-    // Detach so the daemon outlives this process: new session via
-    // setsid() so SIGHUP from a closing terminal doesn't kill it.
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        // SAFETY: setsid() is async-signal-safe per POSIX, which is the
-        // only requirement for pre_exec closures.
-        unsafe {
-            cmd.pre_exec(|| {
-                nix::unistd::setsid().map_err(std::io::Error::other)?;
-                Ok(())
-            });
-        }
-    }
-
-    let mut child = cmd.spawn().map_err(ManagerError::NoExecutable)?;
-    let pid = child.id();
-
-    let deadline = Instant::now() + SPAWN_READY_TIMEOUT;
-    loop {
-        if discover().is_ok() {
-            info!(
-                target: "cockpit.client.daemon_manager",
-                pid,
-                "local cockpit daemon ready"
-            );
-            return Ok(());
-        }
-        match child.try_wait() {
-            Ok(Some(status)) => {
-                warn!(
-                    target: "cockpit.client.daemon_manager",
-                    ?status,
-                    "auto-spawned aoe serve exited before becoming ready"
-                );
-                return Err(ManagerError::SpawnFailedFast);
-            }
-            Ok(None) => {}
-            Err(e) => {
-                warn!(
-                    target: "cockpit.client.daemon_manager",
-                    error = %e,
-                    "try_wait on auto-spawned daemon failed"
-                );
-            }
-        }
-        if Instant::now() >= deadline {
-            warn!(
-                target: "cockpit.client.daemon_manager",
-                "auto-spawned aoe serve timed out before writing serve.url"
-            );
-            return Err(ManagerError::SpawnTimeout(SPAWN_READY_TIMEOUT));
-        }
-        tokio::time::sleep(SPAWN_POLL_INTERVAL).await;
-    }
-}
-
-fn default_port() -> u16 {
-    // Match `aoe serve`'s convention so the auto-spawned daemon binds
-    // to the same default port a user-launched `aoe serve` would.
-    if cfg!(debug_assertions) {
-        8081
-    } else {
-        8080
-    }
-}
-
-fn daemon_log_path() -> Option<PathBuf> {
-    let dir = crate::session::get_app_dir().ok()?;
-    Some(dir.join("serve.log"))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn default_port_matches_namespace() {
-        // Debug builds ship a separate namespace + port to avoid
-        // colliding with an installed release daemon.
-        if cfg!(debug_assertions) {
-            assert_eq!(default_port(), 8081);
-        } else {
-            assert_eq!(default_port(), 8080);
-        }
-    }
+    discover().map_err(ManagerError::NoDaemonRunning)
 }

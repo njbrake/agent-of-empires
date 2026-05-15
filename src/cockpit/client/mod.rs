@@ -16,17 +16,18 @@
 //! 1. `AOE_DAEMON_URL` (+ optional `AOE_DAEMON_TOKEN`).
 //! 2. Local `<app_dir>/serve.url` paired with a live `serve.pid`.
 //!
-//! [`daemon_manager::ensure_daemon`] adds an auto-spawn fallback that
-//! starts a fresh loopback daemon when neither resolves; the spawned
-//! daemon is long-lived and survives the spawning process so the
-//! maintainer's "create in TUI, drive from road via web" flow works.
+//! [`daemon_manager::require_daemon`] returns
+//! [`daemon_manager::ManagerError::NoDaemonRunning`] when neither
+//! resolves; callers render the contained hint and bail rather than
+//! starting a daemon by side-effect, so the user keeps the choice
+//! between localhost, Tailscale, and Cloudflare explicit.
 
 pub mod daemon_manager;
 pub mod discovery;
 pub mod http;
 pub mod ws;
 
-pub use daemon_manager::{ensure_daemon, ManagerError};
+pub use daemon_manager::{require_daemon, ManagerError};
 pub use discovery::{discover, DaemonEndpoint, DiscoveryError, Source};
 pub use http::{HttpClient, HttpError};
 pub use ws::{connect as ws_connect, WsError, WsHandle, WsMessage};
