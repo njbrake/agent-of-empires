@@ -86,17 +86,31 @@ class FakeWebSocket implements FakeSocket {
 beforeEach(() => {
   vi.useFakeTimers();
   sockets.length = 0;
-  // Mock fetch so the `fetchReplay` call inside connect resolves
-  // without hitting a real network. The reconnect path runs after the
-  // fetch settles, so we need the promise to resolve quickly.
+  // Mock fetch so both the `fetchReplay` call AND the elevation
+  // pre-flight (`/api/login/status`) inside connect resolve without
+  // hitting a real network. The status response must look like
+  // `required: false` so preflight clears immediately and the
+  // FakeWebSocket dials.
   vi.stubGlobal(
     "fetch",
-    vi.fn(async () =>
-      new Response(
+    vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.includes("/api/login/status")) {
+        return new Response(
+          JSON.stringify({
+            required: false,
+            authenticated: true,
+            elevated: true,
+            elevated_until_secs: null,
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response(
         JSON.stringify({ frames: [], lost: false, highest_seq: 0 }),
         { status: 200 },
-      ),
-    ),
+      );
+    }),
   );
   originalWebSocket = global.WebSocket;
   global.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
@@ -109,12 +123,15 @@ afterEach(() => {
 });
 
 async function flushAsync(): Promise<void> {
-  // Drain pending microtasks (fetch's resolution) so the connect
-  // closure progresses past the awaited fetchReplay and instantiates
-  // a FakeWebSocket.
+  // Drain pending microtasks so the connect closure progresses past
+  // the awaited fetchReplay AND the elevation pre-flight (which also
+  // calls `fetch` internally via `loginStatus()`) and instantiates a
+  // FakeWebSocket. Each `await Promise.resolve()` advances exactly
+  // one microtask; we need several to cover the chain.
   await act(async () => {
-    await Promise.resolve();
-    await Promise.resolve();
+    for (let i = 0; i < 6; i++) {
+      await Promise.resolve();
+    }
   });
 }
 

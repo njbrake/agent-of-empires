@@ -17,6 +17,7 @@ import {
   type CockpitState,
   type QueuedPrompt,
 } from "../lib/cockpitTypes";
+import { preflightElevationForSensitiveWs } from "../lib/api";
 import { useCockpitPrefs } from "../lib/cockpitPrefs";
 import { getOrCreateDeviceBindingSecret } from "../lib/deviceBinding";
 import { getToken } from "../lib/token";
@@ -585,6 +586,21 @@ export function useCockpit(
         // reaches the reducer" failure mode in #1100.
         await fetchReplay(sessionId);
         if (cancelled) return;
+
+        // WS upgrades to sensitive routes (the cockpit live channel
+        // qualifies) hide their HTTP response body from JS. Pre-flight
+        // the elevation gate via REST so a session that has lapsed its
+        // 15-minute window pops the inline passphrase prompt instead
+        // of silently failing the socket handshake. See #1131.
+        const cleared = await preflightElevationForSensitiveWs();
+        if (cancelled) return;
+        if (!cleared) {
+          // Elevation prompt is open; back off and try again shortly.
+          statusRef.current = "closed";
+          setStatus("closed");
+          scheduleReconnect();
+          return;
+        }
 
         const token = getToken();
         const protocol =

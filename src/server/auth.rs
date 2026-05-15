@@ -185,22 +185,45 @@ fn extract_ws_protocols(request: &Request) -> Vec<String> {
     protocols
 }
 
+/// Strip a possible trailing slash from a path so suffix matches are
+/// not bypassed by `/api/sessions/123/cockpit/prompt/` (axum routes
+/// both forms to the same handler). Cheap and explicit.
+fn normalize_path(path: &str) -> &str {
+    path.strip_suffix('/').unwrap_or(path)
+}
+
 /// Whether a request path + method needs an elevated login session
 /// (step-up auth, 15-minute passphrase confirmation window). Covers
-/// surfaces that map to SSH-equivalent capabilities on the host:
-/// terminal attach, cockpit command/approval execution, session
-/// lifecycle (create, delete, send keystrokes, spawn terminal/cockpit),
-/// and worktree-mutating operations. Read-only GETs on the same
-/// resources stay open; this is an allow-list, not a default-deny, so
-/// adding a benign read endpoint never accidentally hides behind a
-/// passphrase prompt. See #1131.
+/// surfaces that map to SSH-equivalent capabilities or that could
+/// redirect notifications / write to disk:
+///
+/// - Terminal attach + cockpit live WS upgrades.
+/// - Session lifecycle (create, delete, rename, send keystrokes,
+///   spawn terminal/cockpit, set notifications).
+/// - Cockpit mutating endpoints (prompt, cancel, force end turn,
+///   approval resolution, spawn/restart/stop/kill, mode, enable,
+///   disable).
+/// - Filesystem-mutating endpoints outside the session tree
+///   (`/api/git/clone`, project create/delete).
+/// - Push subscription mutation (an attacker could redirect
+///   notifications to their own endpoint).
+///
+/// Read-only `GET`/`HEAD` on the same resources stay open; this is
+/// an allow-list, not a default-deny, so adding a benign read
+/// endpoint never accidentally hides behind a passphrase prompt.
+/// When adding a new mutating REST surface in the future, add it
+/// here AND add a corresponding test in `requires_elevation_paths`.
+/// See #1131.
 fn requires_elevation(method: &axum::http::Method, path: &str) -> bool {
     use axum::http::Method;
 
-    // WebSocket upgrades always grant live shell or live cockpit
-    // streaming. Both terminal (`/ws`, `/ws-readonly`) and cockpit
-    // (`/cockpit/ws`) are sensitive enough to gate.
-    if path.contains("/ws") {
+    let path = normalize_path(path);
+
+    // WebSocket upgrades grant live shell / live cockpit streaming.
+    // Match specific suffixes rather than `.contains("/ws")` so a
+    // future path like `/api/debug/ws-status` does not get gated by
+    // accident.
+    if path.ends_with("/ws") || path.ends_with("/ws-readonly") || path.ends_with("/cockpit/ws") {
         return true;
     }
 
@@ -212,45 +235,76 @@ fn requires_elevation(method: &axum::http::Method, path: &str) -> bool {
     if path == "/api/sessions" && method == Method::POST {
         return true;
     }
-    if !path.starts_with("/api/sessions/") {
+
+    // Per-session mutations. Includes DELETE /api/sessions/{id} and
+    // DELETE /api/sessions/{id}/cockpit (cockpit shutdown).
+    if path.starts_with("/api/sessions/") {
+        if method == Method::DELETE {
+            return true;
+        }
+        let cockpit_prompt = path.ends_with("/cockpit/prompt");
+        let cockpit_cancel = path.ends_with("/cockpit/cancel");
+        let cockpit_force = path.ends_with("/cockpit/force_end_turn");
+        let cockpit_approval = path.contains("/cockpit/approvals/");
+        let cockpit_spawn = path.ends_with("/cockpit/spawn");
+        let cockpit_restart = path.ends_with("/cockpit/restart");
+        let cockpit_stop = path.ends_with("/cockpit/stop");
+        let cockpit_kill = path.ends_with("/cockpit/kill");
+        let cockpit_mode = path.ends_with("/cockpit/mode");
+        let cockpit_enable = path.ends_with("/cockpit/enable");
+        let cockpit_disable = path.ends_with("/cockpit/disable");
+        let session_send = path.ends_with("/send");
+        let session_terminal = path.ends_with("/terminal");
+        let container_terminal = path.ends_with("/container-terminal");
+        let session_rename_or_patch = method == Method::PATCH;
+        let session_ensure = path.ends_with("/ensure") && method == Method::POST;
+        let session_notifications = path.ends_with("/notifications") && method == Method::PATCH;
+
+        if cockpit_prompt
+            || cockpit_cancel
+            || cockpit_force
+            || cockpit_approval
+            || cockpit_spawn
+            || cockpit_restart
+            || cockpit_stop
+            || cockpit_kill
+            || cockpit_mode
+            || cockpit_enable
+            || cockpit_disable
+            || session_send
+            || session_terminal
+            || container_terminal
+            || session_rename_or_patch
+            || session_ensure
+            || session_notifications
+        {
+            return true;
+        }
         return false;
     }
 
-    // Per-session mutations.
-    if method == Method::DELETE {
-        // DELETE /api/sessions/{id} or /api/sessions/{id}/cockpit.
+    // Filesystem mutations outside `/api/sessions/`. `git/clone`
+    // writes a fresh worktree to disk; project create/delete touch
+    // the on-disk project registry. Push subscribe / unsubscribe is
+    // gated because an attacker could redirect approval / new-login
+    // notifications away from the legitimate owner.
+    if path == "/api/git/clone" && method == Method::POST {
+        return true;
+    }
+    if path == "/api/projects" && method == Method::POST {
+        return true;
+    }
+    if path.starts_with("/api/projects/") && method == Method::DELETE {
+        return true;
+    }
+    if path == "/api/push/subscribe" && method == Method::POST {
+        return true;
+    }
+    if path == "/api/push/unsubscribe" && method == Method::POST {
         return true;
     }
 
-    let cockpit_prompt = path.ends_with("/cockpit/prompt");
-    let cockpit_cancel = path.ends_with("/cockpit/cancel");
-    let cockpit_force = path.ends_with("/cockpit/force_end_turn");
-    let cockpit_approval = path.contains("/cockpit/approvals/");
-    let cockpit_spawn = path.ends_with("/cockpit/spawn");
-    let cockpit_restart = path.ends_with("/cockpit/restart");
-    let cockpit_stop = path.ends_with("/cockpit/stop");
-    let cockpit_kill = path.ends_with("/cockpit/kill");
-    let cockpit_mode = path.ends_with("/cockpit/mode");
-    let cockpit_enable = path.ends_with("/cockpit/enable");
-    let cockpit_disable = path.ends_with("/cockpit/disable");
-    let session_send = path.ends_with("/send");
-    let session_terminal = path.ends_with("/terminal");
-    let container_terminal = path.ends_with("/container-terminal");
-
-    cockpit_prompt
-        || cockpit_cancel
-        || cockpit_force
-        || cockpit_approval
-        || cockpit_spawn
-        || cockpit_restart
-        || cockpit_stop
-        || cockpit_kill
-        || cockpit_mode
-        || cockpit_enable
-        || cockpit_disable
-        || session_send
-        || session_terminal
-        || container_terminal
+    false
 }
 
 /// Strip the leading `<prefix>.` from a subprotocol value when present,
@@ -842,6 +896,27 @@ mod tests {
         assert!(requires_elevation(&Method::POST, "/api/sessions"));
         assert!(requires_elevation(&Method::DELETE, "/api/sessions/abc"));
         assert!(requires_elevation(&Method::POST, "/api/sessions/abc/send"));
+        assert!(requires_elevation(&Method::PATCH, "/api/sessions/abc"));
+        assert!(requires_elevation(
+            &Method::POST,
+            "/api/sessions/abc/ensure"
+        ));
+        assert!(requires_elevation(
+            &Method::PATCH,
+            "/api/sessions/abc/notifications"
+        ));
+        // Sensitive: filesystem / project mutations outside sessions.
+        assert!(requires_elevation(&Method::POST, "/api/git/clone"));
+        assert!(requires_elevation(&Method::POST, "/api/projects"));
+        assert!(requires_elevation(&Method::DELETE, "/api/projects/myproj"));
+        // Sensitive: push subscription mutations.
+        assert!(requires_elevation(&Method::POST, "/api/push/subscribe"));
+        assert!(requires_elevation(&Method::POST, "/api/push/unsubscribe"));
+        // Trailing slash must not bypass the gate.
+        assert!(requires_elevation(
+            &Method::POST,
+            "/api/sessions/abc/cockpit/prompt/"
+        ));
         // Read-only GETs are NOT gated even on per-session paths.
         assert!(!requires_elevation(&Method::GET, "/api/sessions"));
         assert!(!requires_elevation(&Method::GET, "/api/sessions/abc"));
@@ -853,9 +928,17 @@ mod tests {
             &Method::GET,
             "/api/sessions/abc/diff/files"
         ));
+        assert!(!requires_elevation(&Method::GET, "/api/push/status"));
+        // Coincidental substring must not match the WS suffix.
+        assert!(!requires_elevation(&Method::GET, "/api/debug/ws-status"));
         // Out-of-scope paths never gate.
         assert!(!requires_elevation(&Method::GET, "/api/about"));
         assert!(!requires_elevation(&Method::POST, "/api/login"));
         assert!(!requires_elevation(&Method::POST, "/api/login/elevate"));
+        // Settings / profiles / themes were intentionally left ungated
+        // for v1 (their writes are local config, not host-affecting).
+        // Document the choice in tests so a future maintainer thinks
+        // twice before adding sensitive operations there.
+        assert!(!requires_elevation(&Method::PATCH, "/api/settings"));
     }
 }

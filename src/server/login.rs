@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use axum::extract::State;
+use axum::extract::{FromRequest, State};
 use axum::http::{header, StatusCode};
 use axum::response::IntoResponse;
 use axum::Json;
@@ -490,35 +490,20 @@ pub async fn elevate_handler(
             .into_response();
     }
 
-    // Body is a small JSON object; read it eagerly. The middleware
-    // already authenticated the request so we can safely buffer it.
-    let body_bytes = match axum::body::to_bytes(request.into_body(), 4096).await {
-        Ok(b) => b,
-        Err(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({
-                    "error": "bad_request",
-                    "message": "Could not read request body"
-                })),
-            )
-                .into_response();
-        }
-    };
-
-    let elevate_req: ElevateRequest = match serde_json::from_slice(&body_bytes) {
-        Ok(r) => r,
-        Err(_) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({
-                    "error": "bad_request",
-                    "message": "Missing or invalid passphrase field"
-                })),
-            )
-                .into_response();
-        }
-    };
+    let elevate_req: ElevateRequest =
+        match axum::Json::<ElevateRequest>::from_request(request, &()).await {
+            Ok(axum::Json(req)) => req,
+            Err(_) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({
+                        "error": "bad_request",
+                        "message": "Missing or invalid passphrase field"
+                    })),
+                )
+                    .into_response();
+            }
+        };
 
     if !state
         .login_manager
