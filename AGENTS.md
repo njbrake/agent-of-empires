@@ -110,9 +110,10 @@ Keep the script ephemeral unless promoted to `web/tests/` with a mobile Playwrig
   - `serve.pid`: daemon PID for `--stop` and reattach detection.
   - `serve.url`: primary URL (includes the auth token) plus alternates.
   - `serve.mode`: `tunnel` / `tailscale` / `local`.
-  - `serve.log`: daemon stdout/stderr tail.
   - `serve.passphrase`: plaintext Tunnel passphrase, so the TUI can show it on reopen across restarts.
   - `serve.last_mode`, `serve.last_port`: picker defaults across launches.
+
+Daemon tracing and stdout/stderr now land in the configured `[logging].file_path` (default `~/.agent-of-empires/debug.log`) alongside the TUI and cockpit runners; see `docs/development/logging.md` for sinks and rotation.
 
 ## Data Migrations
 

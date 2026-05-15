@@ -24,8 +24,6 @@ AOE_ACP_TRACE=1 cargo run            # Plus raw ACP JSON-RPC firehose; useful fo
                                      # it links a child tool call to a parent Task.
 AOE_TERMINAL_TRACE=1 cargo run       # Plus per-message bytes for the web terminal WS (spammy)
 aoe logs                       # View debug.log via lnav/bat/less (auto-detects)
-aoe logs --serve               # View serve.log (daemon stdout/stderr)
-aoe logs --all --no-pager      # Merge both logs, plain stdout
 aoe logs --path                # Print the resolved log file path
 ```
 
@@ -44,8 +42,7 @@ collisions on sessions, settings, the tmux server, or `aoe serve`.
 | `tmux` session prefix | `aoe_` | `aoe_dev_` |
 | `aoe serve` default port | `8080` | `8081` |
 
-`debug.log` and `serve.log` live inside the app dir, so they are isolated
-automatically. Debug builds start with an empty namespace on first run, so
+`debug.log` lives inside the app dir, so it is isolated automatically. Debug builds start with an empty namespace on first run, so
 nothing migrates from your real `~/.agent-of-empires`. Wipe dev state any
 time with `rm -rf ~/.agent-of-empires-dev` (or the Linux XDG equivalent);
 release data is untouched.

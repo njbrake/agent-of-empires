@@ -694,9 +694,10 @@ fn print_local_status() -> Result<()> {
 
     let mode = read_serve_mode_label().unwrap_or("unknown");
     let urls = read_serve_urls();
-    let log_path = crate::session::get_app_dir()
-        .ok()
-        .map(|d| d.join("serve.log"));
+    // Resolve the configured log path (default debug.log under app_dir).
+    // The daemon's tracing and stdout/stderr both land here post-consolidation;
+    // `serve.log` is retired.
+    let log_path = stdio_redirect_path().ok();
 
     println!("Daemon: running (PID {})", pid);
     println!("Mode:   {}", mode);

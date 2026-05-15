@@ -823,9 +823,9 @@ fn spawn_runner_detached(
     }
 
     // Redirect stdio: the runner writes its own log file. Inheriting our
-    // stdio would (a) pollute serve.log with the per-session noise and
-    // (b) keep a pipe open to the daemon, which then closes when we die,
-    // making the runner observe EOF on its own stdin/stdout.
+    // stdio would (a) pollute the shared debug.log with the per-session
+    // noise and (b) keep a pipe open to the daemon, which then closes
+    // when we die, making the runner observe EOF on its own stdin/stdout.
     cmd.stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null());

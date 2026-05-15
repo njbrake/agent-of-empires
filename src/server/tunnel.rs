@@ -257,10 +257,10 @@ impl TunnelHandle {
 
         // Spawn drain tasks for both streams. Tailscale emits progress
         // on stderr (most useful for diagnosing hangs); logged at info!
-        // so daemons writing to serve.log show it in the TUI Starting
-        // screen without needing AGENT_OF_EMPIRES_DEBUG=1. Stdout stays
-        // at debug! because Tailscale rarely prints there and the lines
-        // that do appear are noisier.
+        // so the TUI Starting screen surfaces it when tailing the
+        // configured log file, without needing AGENT_OF_EMPIRES_DEBUG=1.
+        // Stdout stays at debug! because Tailscale rarely prints there
+        // and the lines that do appear are noisier.
         //
         // Do NOT override the `target` on these log macros: the
         // EnvFilter uses `agent_of_empires=debug`, which matches the

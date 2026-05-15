@@ -23,7 +23,8 @@
 //!
 //! Logging: the runner appends to
 //! `<app_dir>/cockpit-workers/<session_id>.log` so `aoe cockpit logs
-//! --session <id> --follow` can tail it independently of `serve.log`.
+//! --session <id> --follow` can tail it independently of the shared
+//! `debug.log` that all aoe processes append to.
 //!
 //! ## Why a shim and not "let the agent bind the socket"
 //!
