@@ -993,7 +993,10 @@ fn build_router(state: Arc<AppState>) -> Router {
             get(api::get_github_actions_summary),
         )
         .route("/api/widgets/vercel/summary", get(api::get_vercel_summary))
-        .route("/api/widgets/netdata/summary", get(api::get_netdata_summary))
+        .route(
+            "/api/widgets/netdata/summary",
+            get(api::get_netdata_summary),
+        )
         // Push notifications
         .route("/api/push/status", get(push::get_status))
         .route(

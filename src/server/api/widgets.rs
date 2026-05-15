@@ -240,7 +240,9 @@ async fn fetch_linear(api_key: &str) -> Result<LinearSummary, String> {
         return Err(format!("Linear GraphQL error: {msg}"));
     }
 
-    let data = parsed.data.ok_or_else(|| "Linear data missing".to_string())?;
+    let data = parsed
+        .data
+        .ok_or_else(|| "Linear data missing".to_string())?;
 
     Ok(LinearSummary {
         in_progress: LinearCount {
@@ -372,8 +374,8 @@ async fn fetch_sentry(
         return Err(format!("Sentry API {status}: {text}"));
     }
 
-    let raw: Vec<SentryRaw> = serde_json::from_str(&text)
-        .map_err(|e| format!("Sentry JSON parse error: {e}"))?;
+    let raw: Vec<SentryRaw> =
+        serde_json::from_str(&text).map_err(|e| format!("Sentry JSON parse error: {e}"))?;
 
     let unresolved: Vec<&SentryRaw> = raw.iter().filter(|r| r.status == "unresolved").collect();
     let total = raw.len();
@@ -407,9 +409,7 @@ pub async fn get_sentry_summary(
     let project = env::var("SENTRY_PROJECT_SLUG").ok();
 
     let (auth, org, project) = match (auth, org, project) {
-        (Some(a), Some(o), Some(p)) if !a.is_empty() && !o.is_empty() && !p.is_empty() => {
-            (a, o, p)
-        }
+        (Some(a), Some(o), Some(p)) if !a.is_empty() && !o.is_empty() && !p.is_empty() => (a, o, p),
         _ => {
             return Err((
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -527,7 +527,9 @@ async fn fetch_github_actions(
     }
     for r in repos {
         if !valid_repo_slug(r) {
-            return Err(format!("Repo slug geçersiz: {r} (owner/name alfanümerik + _-. izinli)"));
+            return Err(format!(
+                "Repo slug geçersiz: {r} (owner/name alfanümerik + _-. izinli)"
+            ));
         }
     }
 
@@ -742,8 +744,8 @@ async fn fetch_vercel(
         return Err(format!("Vercel API {status}: {text}"));
     }
 
-    let parsed: VercelDeploymentsResp = serde_json::from_str(&text)
-        .map_err(|e| format!("Vercel JSON parse error: {e}"))?;
+    let parsed: VercelDeploymentsResp =
+        serde_json::from_str(&text).map_err(|e| format!("Vercel JSON parse error: {e}"))?;
 
     let mut counts = VercelStateCounts {
         ready: 0,
@@ -882,8 +884,8 @@ async fn fetch_netdata(base_url: &str) -> Result<NetdataSummary, String> {
         return Err(format!("Netdata API {status}: {text}"));
     }
 
-    let info: NetdataInfoResp = serde_json::from_str(&text)
-        .map_err(|e| format!("Netdata JSON parse error: {e}"))?;
+    let info: NetdataInfoResp =
+        serde_json::from_str(&text).map_err(|e| format!("Netdata JSON parse error: {e}"))?;
 
     let host = info
         .hostname
@@ -939,7 +941,9 @@ mod tests {
 
     #[test]
     fn parse_repos_handles_whitespace_and_filters() {
-        let v = parse_repos(" furkangurr/ajan-sistemi ,  furkangurr/avukatadanis-online , , bad-no-slash ,  ");
+        let v = parse_repos(
+            " furkangurr/ajan-sistemi ,  furkangurr/avukatadanis-online , , bad-no-slash ,  ",
+        );
         assert_eq!(
             v,
             vec![
