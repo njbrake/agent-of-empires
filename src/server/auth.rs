@@ -292,6 +292,95 @@ enum TokenSource {
 #[derive(Clone, Copy, Debug)]
 pub struct AuthenticatedTokenHash(pub [u8; 32]);
 
+/// Passphrase login wall used when the token gate is disabled
+/// (`--auth=passphrase`). Mirrors the session + device-binding check
+/// inside the token-auth path, but skips every token-cookie
+/// operation since there is no token to refresh.
+async fn run_passphrase_wall(
+    state: &AppState,
+    request: Request,
+    client_ip: IpAddr,
+    next: Next,
+) -> Response {
+    let path = request.uri().path().to_string();
+    let method = request.method().clone();
+
+    let is_login_exempt = path == "/login"
+        || path == "/api/login"
+        || path == "/api/login/status"
+        || path == "/api/logout"
+        || path.starts_with("/assets/")
+        || path == "/manifest.json"
+        || path == "/sw.js"
+        || path.starts_with("/icon-")
+        || path.starts_with("/fonts/");
+
+    if is_login_exempt {
+        return next.run(request).await;
+    }
+
+    let session_id = super::login::extract_login_session(&request);
+    let presented_binding = extract_device_binding(&request);
+
+    let has_valid_session = match (&session_id, &presented_binding) {
+        (Some(id), Some(binding)) => state.login_manager.validate_session(id, binding).await,
+        _ => false,
+    };
+
+    if !has_valid_session {
+        if path.starts_with("/api/") || path.contains("/ws") {
+            tracing::warn!(
+                target: "auth",
+                ip = %client_ip,
+                path = %path,
+                had_session_cookie = session_id.is_some(),
+                had_device_binding = presented_binding.is_some(),
+                "passphrase wall: rejecting api/ws with 401"
+            );
+            return (
+                StatusCode::UNAUTHORIZED,
+                axum::Json(serde_json::json!({
+                    "error": "login_required",
+                    "message": "Passphrase login required"
+                })),
+            )
+                .into_response();
+        }
+        return axum::response::Redirect::temporary("/login").into_response();
+    }
+
+    let session_id = session_id.expect("valid session implies session_id exists");
+
+    if requires_elevation(&method, &path) && !state.login_manager.is_elevated(&session_id).await {
+        tracing::info!(
+            target: "auth.passphrase",
+            ip = %client_ip,
+            path = %path,
+            "passphrase wall: sensitive route required elevation; returning 403"
+        );
+        return (
+            StatusCode::FORBIDDEN,
+            axum::Json(serde_json::json!({
+                "error": "elevation_required",
+                "message": "Re-enter the passphrase to continue"
+            })),
+        )
+            .into_response();
+    }
+
+    let mut response = next.run(request).await;
+
+    // Refresh login session cookie (sliding window). No token cookie
+    // refresh: there is no token in this auth mode.
+    let login_cookie = super::login::build_login_cookie(&session_id, state.behind_tunnel);
+    response.headers_mut().append(
+        header::SET_COOKIE,
+        login_cookie.parse().expect("cookie format must be valid"),
+    );
+
+    response
+}
+
 pub async fn auth_middleware(
     State(state): State<Arc<AppState>>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
@@ -324,13 +413,25 @@ pub async fn auth_middleware(
         );
     }
 
-    // No-auth mode: pass everything through. Insert a zeroed
-    // AuthenticatedTokenHash so handlers that extract the extension
-    // still succeed; all no-auth clients share the same "owner" value.
+    // Token gate disabled (--auth=none or --auth=passphrase). Insert a
+    // zeroed AuthenticatedTokenHash so handlers that extract the
+    // extension still succeed; all token-less clients share the same
+    // "owner" value. Then either bypass entirely (--auth=none) or
+    // hand off to the passphrase wall (--auth=passphrase).
     if state.token_manager.is_no_auth().await {
-        // Once per process: surface that auth is disabled. Helps when a
-        // user is confused why their token isn't being checked.
         static NO_AUTH_LOGGED: std::sync::Once = std::sync::Once::new();
+        if state.login_manager.is_enabled() {
+            NO_AUTH_LOGGED.call_once(|| {
+                tracing::info!(
+                    target: "auth.token",
+                    "token gate disabled (--auth=passphrase); passphrase login wall remains active"
+                );
+            });
+            request
+                .extensions_mut()
+                .insert(AuthenticatedTokenHash([0u8; 32]));
+            return run_passphrase_wall(&state, request, client_ip, next).await;
+        }
         NO_AUTH_LOGGED.call_once(|| {
             tracing::info!(
                 target: "auth.token",

@@ -1,9 +1,34 @@
 //! `aoe serve` command -- start a web dashboard for remote session access
 
 use anyhow::{bail, Result};
-use clap::Args;
+use clap::{Args, ValueEnum};
 use std::path::PathBuf;
 use std::sync::Mutex;
+
+/// How the dashboard authenticates HTTP/WS requests.
+///
+/// `Token` is the historical default: a random URL token gates every
+/// request. `Passphrase` drops the token gate but keeps the passphrase
+/// login wall as the sole human gate (useful behind a reverse proxy
+/// where pasting a token URL on mobile is too high friction).
+/// `None` disables both, equivalent to legacy `--no-auth`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "lowercase")]
+pub enum AuthMode {
+    Token,
+    Passphrase,
+    None,
+}
+
+impl AuthMode {
+    fn as_cli_str(self) -> &'static str {
+        match self {
+            AuthMode::Token => "token",
+            AuthMode::Passphrase => "passphrase",
+            AuthMode::None => "none",
+        }
+    }
+}
 
 #[derive(Args)]
 pub struct ServeArgs {
@@ -16,9 +41,26 @@ pub struct ServeArgs {
     #[arg(long, default_value = "127.0.0.1")]
     pub host: String,
 
-    /// Disable authentication (only allowed with localhost binding)
+    /// Authentication mode: `token` (default, random URL token),
+    /// `passphrase` (no token URL, passphrase login wall only),
+    /// or `none` (no auth at all, loopback-only unless --behind-proxy).
+    /// Mutually exclusive with --no-auth (which aliases --auth=none).
+    #[arg(long, value_enum, conflicts_with = "no_auth")]
+    pub auth: Option<AuthMode>,
+
+    /// Disable authentication (only allowed with localhost binding).
+    /// Alias for --auth=none.
     #[arg(long)]
     pub no_auth: bool,
+
+    /// Mark this server as sitting behind a reverse proxy that
+    /// terminates TLS upstream. Sets cookies as `; Secure` and trusts
+    /// the `X-Forwarded-For` / `cf-connecting-ip` headers from
+    /// loopback peers. Does NOT auto-spawn a tunnel (unlike --remote).
+    /// Required when --auth=passphrase or --auth=none is combined with
+    /// a non-loopback bind.
+    #[arg(long)]
+    pub behind_proxy: bool,
 
     /// Read-only mode: view terminals but cannot send keystrokes
     #[arg(long)]
@@ -59,15 +101,16 @@ pub struct ServeArgs {
     ///
     /// `--status` is read-only and incompatible with every flag that
     /// would change daemon state (`--stop`, `--daemon`, `--remote`) or
-    /// the bind config of a fresh daemon (`--no-auth`, `--read-only`,
-    /// `--passphrase`, `--port`, `--tunnel-name`, `--no-tailscale`,
-    /// `--tunnel-url`, `--open`). Clap reports the misuse instead of
-    /// silently ignoring the extras.
+    /// the bind config of a fresh daemon (`--no-auth`, `--auth`,
+    /// `--behind-proxy`, `--read-only`, `--passphrase`, `--port`,
+    /// `--tunnel-name`, `--no-tailscale`, `--tunnel-url`, `--open`).
+    /// Clap reports the misuse instead of silently ignoring the extras.
     #[arg(
         long,
         conflicts_with_all = [
             "stop", "daemon", "remote",
-            "no_auth", "read_only", "passphrase", "port",
+            "no_auth", "auth", "behind_proxy",
+            "read_only", "passphrase", "port",
             "tunnel_name", "no_tailscale", "tunnel_url", "open",
         ],
     )]
@@ -321,21 +364,71 @@ pub async fn run(profile: &str, args: ServeArgs) -> Result<()> {
             .parse::<std::net::IpAddr>()
             .is_ok_and(|ip| ip.is_loopback());
 
-    // Block dangerous combination: no auth on a network-accessible server
-    if args.no_auth && !is_localhost {
+    // Resolve the chosen auth mode. `--no-auth` is an alias for
+    // `--auth=none`; clap's `conflicts_with` already rejects the pair.
+    let auth_mode = match (args.auth, args.no_auth) {
+        (Some(mode), false) => mode,
+        (None, true) => AuthMode::None,
+        (None, false) => AuthMode::Token,
+        (Some(_), true) => unreachable!("clap conflicts_with prevents this"),
+    };
+
+    // --auth=passphrase needs a passphrase: passphrase is the sole
+    // human gate, an empty wall means no auth at all.
+    if matches!(auth_mode, AuthMode::Passphrase) && args.passphrase.is_none() {
         bail!(
-            "Refusing to start without authentication on {}.\n\
-             --no-auth is only allowed with localhost (127.0.0.1).\n\
-             For remote access, use token auth (the default) over a VPN like Tailscale.",
+            "--auth=passphrase requires --passphrase <VALUE> or AOE_SERVE_PASSPHRASE.\n\
+             Without a passphrase there is no gate. Use --auth=none if that is intended."
+        );
+    }
+
+    // --auth=none silently discarding a provided passphrase is the
+    // current misleading behavior of `--no-auth --passphrase`; reject
+    // explicitly so the user picks the mode they actually want.
+    if matches!(auth_mode, AuthMode::None) && args.passphrase.is_some() {
+        bail!("--auth=none does not honor --passphrase; use --auth=passphrase instead.");
+    }
+
+    // Reduced-auth modes on a non-loopback bind require an upstream
+    // proxy that terminates TLS. Same shape as the legacy --no-auth
+    // localhost guard, extended to passphrase-only.
+    if matches!(auth_mode, AuthMode::None | AuthMode::Passphrase)
+        && !is_localhost
+        && !args.behind_proxy
+    {
+        bail!(
+            "Refusing to start with --auth={} on {}.\n\
+             Reduced-auth modes on a non-loopback bind require --behind-proxy,\n\
+             which signals that an upstream reverse proxy terminates TLS and\n\
+             forwards the client IP via X-Forwarded-For / cf-connecting-ip.",
+            auth_mode.as_cli_str(),
             args.host
         );
     }
 
-    // Block --no-auth with --remote (tunnel makes localhost publicly accessible)
-    if args.no_auth && args.remote {
+    // Block reduced-auth with --remote: --remote auto-spawns a public
+    // ingress and mandates token + passphrase. Collapsing the token
+    // away (or dropping auth entirely) on a publicly-reachable tunnel
+    // is never the intent.
+    if matches!(auth_mode, AuthMode::None | AuthMode::Passphrase) && args.remote {
         bail!(
-            "Refusing to start without authentication in remote mode.\n\
-             --no-auth with --remote would expose unauthenticated shell access to the internet."
+            "Refusing to start with --auth={} in remote mode.\n\
+             --remote exposes the dashboard to the public internet and requires\n\
+             both token auth and a passphrase. If you have an external reverse\n\
+             proxy, use --behind-proxy instead of --remote.",
+            auth_mode.as_cli_str()
+        );
+    }
+
+    // --behind-proxy + --remote is meaningless: --remote manages its
+    // own ingress, --behind-proxy assumes an external one. Warn but
+    // do not hard-fail; --remote wins for the tunnel-spawn decision
+    // and both set behind_tunnel anyway.
+    if args.behind_proxy && args.remote {
+        eprintln!(
+            "Note: --behind-proxy is ignored when --remote is set; \
+             --remote already enables the equivalent cookie-Secure and \
+             trusted-XFF behavior and manages its own ingress."
         );
     }
 
@@ -429,7 +522,7 @@ pub async fn run(profile: &str, args: ServeArgs) -> Result<()> {
         profile,
         host: &host,
         port: args.resolved_port(),
-        no_auth: args.no_auth,
+        no_auth: matches!(auth_mode, AuthMode::Passphrase | AuthMode::None),
         read_only: args.read_only,
         remote: args.remote,
         tunnel_name: args.tunnel_name.as_deref(),
@@ -437,6 +530,7 @@ pub async fn run(profile: &str, args: ServeArgs) -> Result<()> {
         no_tailscale: args.no_tailscale,
         is_daemon: false,
         passphrase: args.passphrase.as_deref(),
+        behind_proxy: args.behind_proxy,
         open_browser: args.open,
     })
     .await;
@@ -494,6 +588,12 @@ fn start_daemon(profile: &str, args: &ServeArgs) -> Result<()> {
 
     if args.no_auth {
         cmd.arg("--no-auth");
+    }
+    if let Some(mode) = args.auth {
+        cmd.args(["--auth", mode.as_cli_str()]);
+    }
+    if args.behind_proxy {
+        cmd.arg("--behind-proxy");
     }
     if args.read_only {
         cmd.arg("--read-only");
