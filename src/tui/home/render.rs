@@ -128,6 +128,18 @@ fn format_relative_age(ts: Option<DateTime<Utc>>) -> String {
     format!("{}mo", months)
 }
 
+/// Pretty-print the account row label for a dashboard cell. Takes the
+/// path stored in `Instance.claude_config_dir`, extracts the basename
+/// (e.g. `forit-main`), and runs it through the shared acronym table so
+/// `forit-main` renders as `ForIT Main` consistently with the picker.
+fn claude_account_label_for_path(path: &std::path::Path) -> Option<String> {
+    let name = path.file_name()?.to_str()?;
+    if name.is_empty() {
+        return None;
+    }
+    Some(crate::session::claude_accounts::display_label(name))
+}
+
 /// Width of the last-activity label slot itself: 5 chars for the value
 /// (e.g. `"<1m"`, `"30mo"`) + 1 char of left padding inside the slot.
 const LAST_ACTIVITY_SLOT: usize = 6;
@@ -613,6 +625,21 @@ impl HomeView {
                             Style::default().fg(theme.branch),
                         ));
                     }
+                }
+
+                // When the session is pinned to a specific Claude config
+                // dir (picker row like `claude => ForIT Main`), surface
+                // the account label so the dashboard reveals which Claude
+                // identity a row is running under. Plain `claude` rows
+                // leave `claude_config_dir` as None and render nothing
+                // extra here.
+                if let Some(label) =
+                    inst.claude_config_dir.as_deref().and_then(claude_account_label_for_path)
+                {
+                    line_spans.push(Span::styled(
+                        format!("  @{}", label),
+                        Style::default().fg(theme.dimmed),
+                    ));
                 }
 
                 // Right edge of the row: optional terminal-mode badge, and
@@ -1310,6 +1337,30 @@ mod tests {
     #[test]
     fn format_relative_age_none_returns_empty() {
         assert_eq!(format_relative_age(None), "");
+    }
+
+    #[test]
+    fn claude_account_label_strips_path_and_pretty_prints() {
+        let p = std::path::PathBuf::from("/home/u/.claude-accounts/forit-main");
+        assert_eq!(
+            claude_account_label_for_path(&p),
+            Some("ForIT Main".to_string())
+        );
+    }
+
+    #[test]
+    fn claude_account_label_handles_unknown_dirs() {
+        let p = std::path::PathBuf::from("/tmp/alice-personal");
+        assert_eq!(
+            claude_account_label_for_path(&p),
+            Some("Alice Personal".to_string())
+        );
+    }
+
+    #[test]
+    fn claude_account_label_returns_none_for_empty_path() {
+        let p = std::path::PathBuf::new();
+        assert_eq!(claude_account_label_for_path(&p), None);
     }
 
     #[test]
