@@ -1027,7 +1027,11 @@ impl Instance {
     ///
     /// Repo hooks go through trust verification; global/profile hooks are
     /// implicitly trusted. Returns `None` when skipped or no hooks are configured.
-    fn resolve_on_launch_hooks(&self, skip_on_launch: bool, profile: &str) -> Option<Vec<String>> {
+    pub(crate) fn resolve_on_launch_hooks(
+        &self,
+        skip_on_launch: bool,
+        profile: &str,
+    ) -> Option<Vec<String>> {
         if skip_on_launch {
             return None;
         }

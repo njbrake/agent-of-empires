@@ -1016,6 +1016,7 @@ pub async fn create_session(
                     instance.cockpit_model.clone(),
                     instance.project_path.clone(),
                     instance.cockpit_acp_session_id.clone(),
+                    instance.source_profile.clone(),
                 ))
             } else {
                 None
@@ -1025,8 +1026,15 @@ pub async fn create_session(
             drop(instances);
 
             #[cfg(feature = "serve")]
-            if let Some((id, tool, agent_override, model, project_path, stored_acp_session_id)) =
-                cockpit_spawn_target
+            if let Some((
+                id,
+                tool,
+                agent_override,
+                model,
+                project_path,
+                stored_acp_session_id,
+                source_profile,
+            )) = cockpit_spawn_target
             {
                 let agent = state
                     .cockpit_supervisor
@@ -1036,6 +1044,24 @@ pub async fn create_session(
                 let supervisor = state.cockpit_supervisor.clone();
                 let state_for_check = state.clone();
                 tokio::spawn(async move {
+                    let sandbox_info = match crate::cockpit::sandbox::ensure_container_for_session(
+                        &state_for_check.instances,
+                        &id,
+                    )
+                    .await
+                    {
+                        Ok(info) => info,
+                        Err(e) => {
+                            let message = format!("sandbox container ensure failed: {e}");
+                            tracing::warn!(
+                                target: "cockpit.supervisor",
+                                session = %id,
+                                "auto-spawn after create failed: {message}"
+                            );
+                            supervisor.publish_startup_error(&id, message);
+                            return;
+                        }
+                    };
                     if let Err(e) = supervisor
                         .spawn(crate::cockpit::supervisor::SpawnRequest {
                             session_id: id.clone(),
@@ -1045,6 +1071,8 @@ pub async fn create_session(
                             provider_env: vec![],
                             model,
                             stored_acp_session_id,
+                            sandbox_info,
+                            source_profile,
                         })
                         .await
                     {

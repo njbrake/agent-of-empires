@@ -123,6 +123,18 @@ pub async fn spawn_cockpit(
     let model = req.model.or_else(|| instance.cockpit_model.clone());
     let stored_acp_session_id = instance.cockpit_acp_session_id.clone();
 
+    let sandbox_info =
+        match crate::cockpit::sandbox::ensure_container_for_session(&state.instances, &id).await {
+            Ok(info) => info,
+            Err(e) => {
+                return (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("sandbox container ensure failed: {e}"),
+                )
+                    .into_response();
+            }
+        };
+    let source_profile = instance.source_profile.clone();
     let agent_for_response = agent.clone();
     match state
         .cockpit_supervisor
@@ -134,6 +146,8 @@ pub async fn spawn_cockpit(
             provider_env,
             model,
             stored_acp_session_id,
+            sandbox_info,
+            source_profile,
         })
         .await
     {
@@ -431,6 +445,24 @@ pub async fn cockpit_enable(
     let session_id = id.clone();
     let model = instance.cockpit_model.clone();
     let stored_acp_session_id = instance.cockpit_acp_session_id.clone();
+    let source_profile = profile.clone();
+    let sandbox_info = match crate::cockpit::sandbox::ensure_container_for_session(
+        &state.instances,
+        &session_id,
+    )
+    .await
+    {
+        Ok(info) => info,
+        Err(e) => {
+            tracing::warn!(target: "cockpit.switch", session = %session_id, "container ensure failed: {e}");
+            supervisor.publish_startup_error(&session_id, format!("container start failed: {e}"));
+            return Json(SubstrateSwitchResponse {
+                session_id: id,
+                cockpit_mode: true,
+            })
+            .into_response();
+        }
+    };
     tokio::spawn(async move {
         if let Err(e) = supervisor
             .spawn(crate::cockpit::supervisor::SpawnRequest {
@@ -441,6 +473,8 @@ pub async fn cockpit_enable(
                 provider_env: vec![],
                 model,
                 stored_acp_session_id,
+                sandbox_info,
+                source_profile,
             })
             .await
         {

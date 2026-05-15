@@ -12,7 +12,7 @@
 //! mpsc channel into ACP requests until shutdown.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
 
@@ -35,13 +35,14 @@ use tracing::{debug, error, info, warn};
 
 use super::agent_registry::AgentSpec;
 use super::approvals::{is_destructive, ApprovalDecision, Nonce};
-use super::fs_handler::{self, FsPolicy};
+use super::fs_handler::{self, FsPolicy, SandboxPathMap};
 use super::permissions::build_approval;
 use super::state::{
     AvailableCommand, CockpitSessionId, DiffPreview, Event, ModeInfo, Plan, PlanStep,
     PlanStepStatus, SessionMode, SessionUsage, ToolCall, UsageCost,
 };
 use super::terminal_handler::TerminalManager;
+use crate::session::SandboxInfo;
 
 #[derive(Debug, Error)]
 pub enum AcpError {
@@ -103,12 +104,11 @@ pub struct SpawnConfig {
     pub additional_dirs: Vec<PathBuf>,
     /// Provider env vars to forward (after applying the agent's allowlist).
     pub provider_env: Vec<(String, String)>,
-    /// When set, aoe creates a unix socket at this path BEFORE spawning
-    /// the agent and exports `AOE_ACP_SOCKET=<path>` to the agent's env.
-    /// The agent connects to the socket instead of using stdio. Used
-    /// for sandboxed cockpit sessions: the same socket path is bind-
-    /// mounted into the container so the in-container agent can reach
-    /// the host-side aoe.
+    /// Reserved for a future agent-in-container that natively speaks
+    /// the socket transport. The current cockpit sandbox path runs
+    /// `docker exec` from the host-side runner (which already holds the
+    /// daemon↔runner socket) and proxies the agent's stdio across the
+    /// container boundary, so no bind-mount is needed today.
     pub socket_path: Option<PathBuf>,
     /// ACP session id from a previous run, captured during the last
     /// `session/new` and persisted on `Instance.cockpit_acp_session_id`.
@@ -118,6 +118,15 @@ pub struct SpawnConfig {
     /// load failure the task falls back to `session/new` and emits a
     /// `SessionContextReset` event.
     pub stored_acp_session_id: Option<String>,
+    /// When `Some`, the agent runs inside the named Docker container.
+    /// Daemon-side spawn wraps the argv in `docker exec` and the
+    /// fs/terminal handlers route across the container boundary using
+    /// the container_workdir / mount map.
+    pub sandbox_info: Option<SandboxInfo>,
+    /// Source profile of the session. Used together with `sandbox_info`
+    /// to resolve profile-level `sandbox.environment` entries so the
+    /// cockpit sandbox env mirrors the tmux substrate.
+    pub source_profile: String,
 }
 
 /// Commands sent from `AcpClient` methods to the background connection task.
@@ -219,6 +228,44 @@ pub struct AcpClient {
     _child: Option<Arc<Mutex<tokio::process::Child>>>,
 }
 
+/// Sandbox handles a connection task needs to route ACP fs/* and
+/// terminal/* requests across the container boundary.
+#[derive(Debug, Clone)]
+pub struct SessionSandbox {
+    pub container_name: String,
+    pub container_workdir: PathBuf,
+}
+
+impl SessionSandbox {
+    /// Build a `SessionSandbox` + `SandboxPathMap` from a `SandboxInfo`
+    /// and the session's host-side project_path / source_profile.
+    /// Returns `None` for the non-sandboxed case so the caller can use
+    /// `Option::map`/`?` flows.
+    pub fn from_info(
+        sandbox: &SandboxInfo,
+        project_path: &Path,
+        source_profile: &str,
+    ) -> Result<(Self, SandboxPathMap), AcpError> {
+        let project_path_str = project_path.to_string_lossy().to_string();
+        let (volumes, workdir) =
+            crate::session::container_config::compute_volume_paths(project_path, &project_path_str)
+                .map_err(|e| AcpError::Spawn(format!("compute container workdir: {e}")))?;
+        // Avoid an "unused" warning when the field becomes meaningful later.
+        let _ = source_profile;
+        let mounts: Vec<(PathBuf, PathBuf)> = volumes
+            .into_iter()
+            .map(|v| (PathBuf::from(v.container_path), PathBuf::from(v.host_path)))
+            .collect();
+        Ok((
+            Self {
+                container_name: sandbox.container_name.clone(),
+                container_workdir: PathBuf::from(workdir),
+            },
+            SandboxPathMap::new(mounts),
+        ))
+    }
+}
+
 /// Per-session resources the connection task uses to handle ACP fs/* and
 /// terminal/* requests delegated by the agent.
 #[derive(Clone)]
@@ -227,6 +274,7 @@ struct SessionResources {
     terminals: TerminalManager,
     cwd: PathBuf,
     label: String,
+    sandbox: Option<SessionSandbox>,
 }
 
 impl AcpClient {
@@ -278,6 +326,15 @@ impl AcpClient {
         let mode = ConnectMode::Fresh {
             stored_acp_session_id: config.stored_acp_session_id.clone(),
         };
+        let sandbox_pair = if let Some(info) = &config.sandbox_info {
+            Some(SessionSandbox::from_info(
+                info,
+                config.cwd.as_path(),
+                &config.source_profile,
+            )?)
+        } else {
+            None
+        };
         if let Some(socket_path) = config.socket_path.clone() {
             spawn_runner_detached(&config, &socket_path, session_id.0.clone())?;
             return Self::connect_via_socket(
@@ -291,6 +348,7 @@ impl AcpClient {
                 cmd_rx,
                 event_tx,
                 event_rx,
+                sandbox_pair,
             )
             .await;
         }
@@ -308,6 +366,7 @@ impl AcpClient {
             cmd_rx,
             event_tx,
             event_rx,
+            sandbox_pair,
         )
         .await
     }
@@ -324,6 +383,7 @@ impl AcpClient {
         cmd_rx: mpsc::Receiver<ClientCmd>,
         event_tx: mpsc::Sender<Event>,
         event_rx: mpsc::Receiver<Event>,
+        sandbox: Option<(SessionSandbox, SandboxPathMap)>,
     ) -> Result<Self, AcpError> {
         let (stdin, stdout) = {
             let mut guard = child.lock().await;
@@ -346,11 +406,19 @@ impl AcpClient {
         // Allowed fs roots: cwd + any explicit additional directories.
         let mut roots = vec![cwd.clone()];
         roots.extend(additional_dirs);
+        let (sandbox_handle, fs_policy) = match sandbox {
+            Some((handle, path_map)) => (
+                Some(handle),
+                Arc::new(FsPolicy::with_sandbox_map(roots, path_map)),
+            ),
+            None => (None, Arc::new(FsPolicy::new(roots))),
+        };
         let resources = SessionResources {
-            fs_policy: Arc::new(FsPolicy::new(roots)),
+            fs_policy,
             terminals: TerminalManager::new(),
             cwd: cwd.clone(),
             label: session_label.clone(),
+            sandbox: sandbox_handle,
         };
 
         let (ready_tx, ready_rx) = oneshot::channel::<Result<(), AcpError>>();
@@ -398,6 +466,7 @@ impl AcpClient {
         cmd_rx: mpsc::Receiver<ClientCmd>,
         event_tx: mpsc::Sender<Event>,
         event_rx: mpsc::Receiver<Event>,
+        sandbox: Option<(SessionSandbox, SandboxPathMap)>,
     ) -> Result<Self, AcpError> {
         // Poll for the runner to finish binding the socket. The runner
         // binds before it spawns the agent so this is usually fast (a
@@ -409,11 +478,19 @@ impl AcpClient {
 
         let mut roots = vec![cwd.clone()];
         roots.extend(additional_dirs);
+        let (sandbox_handle, fs_policy) = match sandbox {
+            Some((handle, path_map)) => (
+                Some(handle),
+                Arc::new(FsPolicy::with_sandbox_map(roots, path_map)),
+            ),
+            None => (None, Arc::new(FsPolicy::new(roots))),
+        };
         let resources = SessionResources {
-            fs_policy: Arc::new(FsPolicy::new(roots)),
+            fs_policy,
             terminals: TerminalManager::new(),
             cwd: cwd.clone(),
             label: session_id.0.clone(),
+            sandbox: sandbox_handle,
         };
 
         let session_label = session_id.0.clone();
@@ -474,6 +551,7 @@ impl AcpClient {
         stored_acp_session_id: String,
         in_flight_turn: bool,
         session_id: CockpitSessionId,
+        sandbox: Option<(SessionSandbox, SandboxPathMap)>,
     ) -> Result<Self, AcpError> {
         let (cmd_tx, cmd_rx) = mpsc::channel::<ClientCmd>(16);
         let (event_tx, event_rx) = mpsc::channel::<Event>(64);
@@ -493,6 +571,7 @@ impl AcpClient {
             cmd_rx,
             event_tx,
             event_rx,
+            sandbox,
         )
         .await
     }
@@ -738,15 +817,29 @@ fn spawn_runner_detached(
         let _ = std::fs::create_dir_all(parent);
     }
 
+    // Sandboxed sessions wrap the agent in `docker exec`. Host-side
+    // PATH resolution is skipped because the agent binary lives inside
+    // the container; the container's own PATH resolves it.
+    let sandbox_argv = if let Some(sandbox) = &config.sandbox_info {
+        Some(build_sandbox_docker_argv(config, sandbox)?)
+    } else {
+        None
+    };
+
     // Resolve the agent binary against PATH + known node-manager dirs so
     // the runner spawns the right binary even when the daemon's frozen
     // PATH doesn't contain it. See #1048. The resolved bin dir is also
     // prepended to PATH below so the adapter's own `node`/`npx`
     // subprocesses land in the same install.
-    let resolved = resolve_agent_command(&config.spec.command);
-    let (spawn_command, extra_path_dir) = match &resolved {
-        Some((abs, dir)) => (abs.to_string_lossy().into_owned(), Some(dir.clone())),
-        None => (config.spec.command.clone(), None),
+    let resolved = if sandbox_argv.is_some() {
+        None
+    } else {
+        resolve_agent_command(&config.spec.command)
+    };
+    let (spawn_command, extra_path_dir) = match (&sandbox_argv, &resolved) {
+        (Some(s), _) => (s.docker_binary.clone(), None),
+        (None, Some((abs, dir))) => (abs.to_string_lossy().into_owned(), Some(dir.clone())),
+        (None, None) => (config.spec.command.clone(), None),
     };
 
     let mut cmd = StdCommand::new(&current_exe);
@@ -759,6 +852,9 @@ fn spawn_runner_detached(
         .arg(&config.spec.command)
         .arg("--cwd")
         .arg(&config.cwd);
+    if let Some(s) = &sandbox_argv {
+        cmd.arg("--sandbox-container-name").arg(&s.container_name);
+    }
     if !config.additional_dirs.is_empty() {
         cmd.arg("--additional-dirs").arg(
             config
@@ -781,12 +877,19 @@ fn spawn_runner_detached(
         cmd.arg("--stored-acp-session-id").arg(stored);
     }
     cmd.arg("--");
-    // Pass the resolved absolute path (or fall back to the bare command).
-    // The runner spawns whatever it receives, so an absolute path bypasses
-    // any PATH lookup inside the runner.
-    cmd.arg(&spawn_command);
-    for a in &config.spec.args {
-        cmd.arg(a);
+    if let Some(s) = &sandbox_argv {
+        cmd.arg(&s.docker_binary);
+        for a in &s.docker_args {
+            cmd.arg(a);
+        }
+    } else {
+        // Pass the resolved absolute path (or fall back to the bare command).
+        // The runner spawns whatever it receives, so an absolute path bypasses
+        // any PATH lookup inside the runner.
+        cmd.arg(&spawn_command);
+        for a in &config.spec.args {
+            cmd.arg(a);
+        }
     }
 
     // Env: apply the same allowlist + provider_env filtering that the
@@ -796,6 +899,15 @@ fn spawn_runner_detached(
     // either process.
     cmd.env_clear();
     apply_env_filter(&mut cmd, config);
+    if let Some(s) = &sandbox_argv {
+        // The agent runs inside the container; docker reads each
+        // `-e KEY` flag's value from its own process env. Set the
+        // corresponding values on the runner so docker (its child)
+        // can forward them across the container boundary.
+        for (key, value) in &s.inherit_env {
+            cmd.env(key, value);
+        }
+    }
     if let Some(extra) = &extra_path_dir {
         // Prepend the resolved bin dir to the PATH we just forwarded so
         // the adapter's own `node`/`npx` lookups land in the same install
@@ -852,6 +964,116 @@ fn spawn_runner_detached(
     // wait on drop, so the runner stays alive. setsid + nohup-equivalent
     // make this an actual detach.
     Ok(())
+}
+
+/// Result of constructing the `docker exec` argv for a sandboxed cockpit
+/// spawn. `docker_binary` and `docker_args` together form the full
+/// command; `inherit_env` is the set of (key, value) pairs the parent
+/// process must export so docker can forward them across the container
+/// boundary via the matching `-e KEY` flags already in `docker_args`.
+struct SandboxArgv {
+    docker_binary: String,
+    docker_args: Vec<String>,
+    container_name: String,
+    inherit_env: Vec<(String, String)>,
+}
+
+/// Build the `docker exec` argv for a sandboxed cockpit spawn. The
+/// resulting command is what the runner executes; docker proxies the
+/// agent's stdio across the container boundary. Mirrors the tmux
+/// substrate's env handling so the same `sandbox.environment` and
+/// `extra_env` entries take effect.
+fn build_sandbox_docker_argv(
+    config: &SpawnConfig,
+    sandbox: &SandboxInfo,
+) -> Result<SandboxArgv, AcpError> {
+    use crate::containers::container_interface::EnvEntry;
+
+    let runtime = crate::containers::get_container_runtime();
+    let docker_binary = runtime.base.binary.to_string();
+
+    let project_path = config.cwd.as_path();
+    let project_path_str = config.cwd.to_string_lossy().to_string();
+    let (_, container_workdir) =
+        crate::session::container_config::compute_volume_paths(project_path, &project_path_str)
+            .map_err(|e| AcpError::Spawn(format!("compute container workdir: {e}")))?;
+
+    let sandbox_config =
+        crate::session::environment::resolved_sandbox_config(&config.source_profile, project_path);
+    let env_entries = crate::session::environment::collect_environment(&sandbox_config, sandbox);
+
+    let mut docker_args: Vec<String> =
+        vec!["exec".into(), "-i".into(), "-w".into(), container_workdir];
+    let mut inherit_env: Vec<(String, String)> = Vec::new();
+    let mut seen_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    for entry in env_entries {
+        match entry {
+            EnvEntry::Inherit { key, value } => {
+                if seen_keys.insert(key.clone()) {
+                    docker_args.push("-e".into());
+                    docker_args.push(key.clone());
+                    inherit_env.push((key, value));
+                }
+            }
+            EnvEntry::Literal { key, value } => {
+                if seen_keys.insert(key.clone()) {
+                    docker_args.push("-e".into());
+                    docker_args.push(format!("{}={}", key, value));
+                }
+            }
+        }
+    }
+
+    // Provider auth keys (ANTHROPIC_API_KEY, CLAUDE_*): forward into the
+    // container only when set on the host AND not already in the
+    // sandbox env list. The agent inside the container needs these to
+    // call out; the host needs to keep them in argv-invisible form.
+    const PROVIDER_AUTH_KEYS: &[&str] = &[
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "CLAUDE_CONFIG_DIR",
+    ];
+    for &key in PROVIDER_AUTH_KEYS {
+        if seen_keys.contains(key) {
+            continue;
+        }
+        if let Ok(value) = std::env::var(key) {
+            seen_keys.insert(key.to_string());
+            docker_args.push("-e".into());
+            docker_args.push(key.into());
+            inherit_env.push((key.into(), value));
+        }
+    }
+
+    // Per-spawn provider_env entries (the request's auth payload).
+    for (key, value) in &config.provider_env {
+        if provider_env_denyreason(key).is_some() {
+            continue;
+        }
+        if seen_keys.insert(key.clone()) {
+            docker_args.push("-e".into());
+            docker_args.push(key.clone());
+            inherit_env.push((key.clone(), value.clone()));
+        }
+    }
+
+    // Model override (AOE_AGENT_MODEL): the supervisor folds the
+    // requested model into provider_env above, so it's already covered.
+
+    docker_args.push(sandbox.container_name.clone());
+    docker_args.push(config.spec.command.clone());
+    for a in &config.spec.args {
+        docker_args.push(a.clone());
+    }
+
+    Ok(SandboxArgv {
+        docker_binary,
+        docker_args,
+        container_name: sandbox.container_name.clone(),
+        inherit_env,
+    })
 }
 
 /// Apply the env_clear + allowlist + provider_env filtering used by both
@@ -2532,9 +2754,21 @@ async fn handle_create_terminal(
             "terminal cwd outside session roots: {e}"
         )));
     }
+    let terminal_sandbox = res
+        .sandbox
+        .as_ref()
+        .map(|s| super::terminal_handler::TerminalSandbox {
+            container_name: s.container_name.clone(),
+        });
     match res
         .terminals
-        .create_and_run(&res.label, &request.command, request.args.clone(), cwd)
+        .create_and_run(
+            &res.label,
+            &request.command,
+            request.args.clone(),
+            cwd,
+            terminal_sandbox.as_ref(),
+        )
         .await
     {
         Ok(id) => responder.respond(CreateTerminalResponse::new(TerminalId::new(id))),
@@ -2703,6 +2937,63 @@ mod tests {
         assert!(matches!(event, Event::ThinkingStarted));
     }
 
+    /// Sandboxed cockpit spawn must wrap the agent command in
+    /// `docker exec` argv with `-i`, the container workdir, an `-e`
+    /// flag per env entry, then the container name, then the agent
+    /// argv. The docker binary must be argv[0]. Mirrors the tmux
+    /// substrate's wrap so the same `claude-agent-acp` invocation
+    /// goes inside the container instead of running on the host.
+    #[test]
+    fn build_sandbox_docker_argv_wraps_agent_in_docker_exec() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = tmp.path().to_path_buf();
+        let sandbox = SandboxInfo {
+            enabled: true,
+            container_id: None,
+            image: "alpine:latest".into(),
+            container_name: "aoe-sandbox-abc12345".into(),
+            extra_env: Some(vec!["MY_LITERAL=hello".into()]),
+            custom_instruction: None,
+        };
+        let config = SpawnConfig {
+            spec: AgentSpec {
+                command: "claude-agent-acp".into(),
+                args: vec!["--stdio".into()],
+                description: "test".into(),
+                env_allowlist: None,
+            },
+            cwd,
+            additional_dirs: vec![],
+            provider_env: vec![],
+            socket_path: None,
+            stored_acp_session_id: None,
+            sandbox_info: Some(sandbox.clone()),
+            source_profile: String::new(),
+        };
+        let argv = build_sandbox_docker_argv(&config, &sandbox).expect("docker argv built");
+        assert!(
+            argv.docker_binary == "docker" || argv.docker_binary == "podman",
+            "expected docker/podman binary, got {:?}",
+            argv.docker_binary
+        );
+        assert_eq!(argv.docker_args[0], "exec");
+        assert_eq!(argv.docker_args[1], "-i");
+        assert_eq!(argv.docker_args[2], "-w");
+        let cn_idx = argv
+            .docker_args
+            .iter()
+            .position(|a| a == "aoe-sandbox-abc12345")
+            .expect("container name in argv");
+        let cmd_idx = cn_idx + 1;
+        assert_eq!(argv.docker_args[cmd_idx], "claude-agent-acp");
+        assert_eq!(argv.docker_args[cmd_idx + 1], "--stdio");
+        // Literal env entry lands as `-e KEY=VALUE`.
+        assert!(
+            argv.docker_args.iter().any(|a| a == "MY_LITERAL=hello"),
+            "literal env entry must be propagated as `-e KEY=VALUE`"
+        );
+    }
+
     #[tokio::test]
     async fn spawn_with_nonexistent_command_errors_cleanly() {
         let config = SpawnConfig {
@@ -2717,6 +3008,8 @@ mod tests {
             provider_env: vec![],
             socket_path: None,
             stored_acp_session_id: None,
+            sandbox_info: None,
+            source_profile: String::new(),
         };
         let result = AcpClient::spawn(config, CockpitSessionId("s-1".into())).await;
         assert!(matches!(result, Err(AcpError::Spawn(_))));
@@ -2744,6 +3037,8 @@ mod tests {
             provider_env: vec![],
             socket_path: None,
             stored_acp_session_id: None,
+            sandbox_info: None,
+            source_profile: String::new(),
         };
         let result = AcpClient::spawn(config, CockpitSessionId("s-1".into())).await;
         match result {

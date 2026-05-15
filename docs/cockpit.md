@@ -472,13 +472,30 @@ destructive_require_double_confirm = true
   reads/writes on their behalf and enforces sandbox roots (the
   session's worktree + any explicit `--repo` paths).
 - Terminal commands use ACP's `terminal/*`. The shell command runs in
-  aoe's process, in the session's worktree (or sandboxed Docker
-  container if applicable).
+  aoe's process, in the session's worktree (or inside the sandbox
+  container when sandbox is enabled, via `docker exec`).
 - Approval nonces are server-generated and single-use. A compromised
   agent process cannot synthesise approvals; aoe never reveals the
   nonce to the agent.
 - Auth tokens (`AOE_TOKEN`) are explicitly *not* forwarded to the
   agent subprocess.
+
+### Sandbox containers
+
+Cockpit sessions honor the wizard's **Run in a safe container** toggle.
+When enabled, the ACP agent runs inside the same `aoe-sandbox-<id>`
+Docker container the tmux substrate uses. The daemon stays on the host
+and wraps the agent argv in `docker exec`, so the agent never sees host
+paths. `fs/*` requests are translated from container paths (e.g.
+`/workspace/proj/foo.rs`) back to host paths before the inside-roots
+check; `terminal/*` commands run via `docker exec`, so a `pwd` from the
+agent returns the container's working directory, not the host's.
+
+The unix socket between the daemon and the per-session runner stays on
+the host. The runner proxies the agent's stdio across the container
+boundary, so there is no bind-mount of the daemon's socket into the
+container — that path is reserved for a future agent that natively
+speaks the socket transport.
 
 ## Troubleshooting
 
@@ -652,5 +669,6 @@ These are tracked for follow-up releases:
 - Default `cockpit.enabled = true`: once the default-cockpit-on-web
   flow has burned in for one release, the master switch flips on by
   default and the wizard shows the substrate picker out of the box.
-- Docker sandbox unix-socket transport for cockpit sessions running
-  inside containers.
+- Native unix-socket transport for in-container agents that natively
+  speak the socket protocol. Today the sandbox path uses `docker exec`
+  to keep stdio-only agents working without upstream changes.

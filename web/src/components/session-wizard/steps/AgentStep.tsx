@@ -35,7 +35,16 @@ interface Props {
   cockpitMasterEnabled: boolean;
 }
 
-function SubstrateNotice({ tool, acpCapable }: { tool: string; acpCapable: boolean }) {
+function SubstrateNotice({
+  tool,
+  acpCapable,
+  sandboxEnabled,
+}: {
+  tool: string;
+  acpCapable: boolean;
+  sandboxEnabled: boolean;
+}) {
+  const sandboxedCockpit = acpCapable && sandboxEnabled;
   return (
     <div className="mb-5 rounded-lg border border-surface-700 bg-surface-950 px-3 py-2.5">
       <div className="flex items-center gap-2">
@@ -53,7 +62,9 @@ function SubstrateNotice({ tool, acpCapable }: { tool: string; acpCapable: boole
         </span>
       </div>
       <p className="mt-1 text-xs text-text-dim leading-snug">
-        {acpCapable
+        {sandboxedCockpit
+          ? "Cockpit + container: the agent runs inside the sandbox container, so its file and terminal access stay inside the container's mounts."
+          : acpCapable
           ? "Cockpit is enabled, so this session will run in the structured cockpit UI. Switch to terminal substrate from the session view if needed."
           : `${tool} has no ACP adapter yet, so this session falls back to the tmux terminal. Pick a tool with cockpit support (e.g. claude, opencode, gemini) to use the structured UI.`}
       </p>
@@ -175,6 +186,7 @@ export function AgentStep({ data, onChange, agents, profiles, dockerAvailable, o
         <SubstrateNotice
           tool={data.tool}
           acpCapable={ACP_CAPABLE_TOOLS.has(data.tool)}
+          sandboxEnabled={data.sandboxEnabled}
         />
       )}
 

@@ -33,6 +33,7 @@ use super::acp_client::{AcpClient, AcpError, SpawnConfig};
 use super::agent_registry::{AgentRegistry, AgentSpec};
 use super::approvals::{ApprovalDecision, Nonce};
 use super::state::{CockpitSessionId, Event};
+use crate::session::SandboxInfo;
 
 /// Maximum number of post-startup respawns within `RESTART_WINDOW`.
 /// After this many crashes the session is parked and an
@@ -255,6 +256,18 @@ pub struct SpawnRequest {
     /// advertises `load_session = true`, the spawn calls
     /// `LoadSessionRequest` instead of `NewSessionRequest`.
     pub stored_acp_session_id: Option<String>,
+    /// When `Some`, the agent runs inside the named Docker container.
+    /// The supervisor wraps the agent argv in `docker exec` and the
+    /// daemon-side fs/terminal handlers route across the container
+    /// boundary using the container_workdir / mount map derived from
+    /// `Instance`'s container_config. `None` keeps the legacy host
+    /// spawn behavior.
+    pub sandbox_info: Option<SandboxInfo>,
+    /// Source profile of the session. Used (with `sandbox_info`) to
+    /// resolve profile-level `sandbox.environment` so cockpit-sandbox
+    /// env matches the tmux substrate. Empty string for non-sandboxed
+    /// sessions is fine.
+    pub source_profile: String,
 }
 
 impl<S: BroadcastSink> Supervisor<S> {
@@ -472,6 +485,8 @@ impl<S: BroadcastSink> Supervisor<S> {
             provider_env,
             model,
             stored_acp_session_id,
+            sandbox_info,
+            source_profile,
         } = req;
         let _reservation = {
             let workers = self.workers.lock().await;
@@ -579,6 +594,8 @@ impl<S: BroadcastSink> Supervisor<S> {
             provider_env: env,
             socket_path: Some(socket_path),
             stored_acp_session_id: stored_acp_session_id.clone(),
+            sandbox_info,
+            source_profile,
         };
 
         debug!(
@@ -1167,6 +1184,7 @@ impl<S: BroadcastSink> Supervisor<S> {
         cwd: PathBuf,
         additional_dirs: Vec<PathBuf>,
         in_flight_turn: bool,
+        sandbox: Option<(SandboxInfo, String /* source_profile */)>,
     ) -> Result<(), SupervisorError> {
         let record = match super::worker_registry::load(&session_id)
             .map_err(|e| SupervisorError::Acp(AcpError::Spawn(format!("registry load: {e}"))))?
@@ -1217,6 +1235,14 @@ impl<S: BroadcastSink> Supervisor<S> {
         };
 
         let cockpit_session_id = CockpitSessionId(session_id.clone());
+        let sandbox_resources = match sandbox {
+            Some((info, profile)) => Some(super::acp_client::SessionSandbox::from_info(
+                &info,
+                cwd.as_path(),
+                &profile,
+            )?),
+            None => None,
+        };
         let mut client = AcpClient::attach(
             record.socket_path.clone(),
             cwd,
@@ -1224,6 +1250,7 @@ impl<S: BroadcastSink> Supervisor<S> {
             stored_acp_session_id,
             in_flight_turn,
             cockpit_session_id,
+            sandbox_resources,
         )
         .await?;
         super::worker_registry::mark_attached(&session_id);
@@ -1695,6 +1722,8 @@ mod tests {
                 provider_env: vec![],
                 model: None,
                 stored_acp_session_id: None,
+                sandbox_info: None,
+                source_profile: String::new(),
             })
             .await;
         assert!(matches!(result, Err(SupervisorError::UnknownAgent(_))));
@@ -1730,6 +1759,8 @@ mod tests {
                 provider_env: vec![],
                 model: None,
                 stored_acp_session_id: None,
+                sandbox_info: None,
+                source_profile: String::new(),
             })
             .await;
         assert!(matches!(result, Err(SupervisorError::AlreadyRunning(_))));
@@ -1779,6 +1810,8 @@ mod tests {
             provider_env: vec![],
             socket_path: Some(socket_path.clone()),
             stored_acp_session_id: None,
+            sandbox_info: None,
+            source_profile: String::new(),
         };
         // Save a registry record so the runner-managed `registry_gone`
         // check returns false and we exercise the budget path.
@@ -1791,6 +1824,7 @@ mod tests {
             None,
             vec![],
             vec![],
+            None,
             None,
         );
         crate::cockpit::worker_registry::save(&record).unwrap();
@@ -1863,6 +1897,8 @@ mod tests {
             provider_env: vec![],
             socket_path: Some(tmp.path().join("dummy.sock")),
             stored_acp_session_id: None,
+            sandbox_info: None,
+            source_profile: String::new(),
         };
         {
             let mut workers = sup.workers.lock().await;
@@ -1932,6 +1968,8 @@ mod tests {
             provider_env: vec![],
             socket_path: Some(tmp.path().join("dummy.sock")),
             stored_acp_session_id: None,
+            sandbox_info: None,
+            source_profile: String::new(),
         };
         {
             let mut workers = sup.workers.lock().await;
@@ -2001,6 +2039,8 @@ mod tests {
             provider_env: vec![],
             socket_path: Some(tmp.path().join("dummy.sock")),
             stored_acp_session_id: None,
+            sandbox_info: None,
+            source_profile: String::new(),
         };
         {
             let mut workers = sup.workers.lock().await;
@@ -2124,6 +2164,8 @@ mod tests {
             provider_env: vec![],
             socket_path: Some(tmp.path().join("dummy.sock")),
             stored_acp_session_id: None,
+            sandbox_info: None,
+            source_profile: String::new(),
         };
         {
             let mut workers = sup.workers.lock().await;
@@ -2418,6 +2460,8 @@ mod tests {
                 provider_env: vec![],
                 model: None,
                 stored_acp_session_id: None,
+                sandbox_info: None,
+                source_profile: String::new(),
             })
             .await;
         match result {
@@ -2466,6 +2510,7 @@ mod tests {
             vec![],
             vec![],
             None,
+            None,
         );
         crate::cockpit::worker_registry::save(&record).unwrap();
 
@@ -2485,6 +2530,8 @@ mod tests {
                 provider_env: vec![],
                 model: None,
                 stored_acp_session_id: None,
+                sandbox_info: None,
+                source_profile: String::new(),
             })
             .await;
         match result {
@@ -2705,6 +2752,8 @@ mod tests {
                 provider_env: vec![],
                 model: None,
                 stored_acp_session_id: None,
+                sandbox_info: None,
+                source_profile: String::new(),
             })
             .await;
         match result {
@@ -2753,6 +2802,8 @@ mod tests {
                 provider_env: vec![],
                 model: None,
                 stored_acp_session_id: None,
+                sandbox_info: None,
+                source_profile: String::new(),
             })
             .await;
         match result {

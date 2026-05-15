@@ -400,7 +400,7 @@ pub(crate) fn collect_environment(
 /// Resolve the effective sandbox config by merging global + the given profile + repo.
 /// An empty `profile` falls back to the user's globally configured default profile
 /// via [`super::config::effective_profile`].
-fn resolved_sandbox_config(
+pub(crate) fn resolved_sandbox_config(
     profile: &str,
     project_path: &std::path::Path,
 ) -> super::config::SandboxConfig {
