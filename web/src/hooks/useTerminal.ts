@@ -7,6 +7,7 @@ import type {
   ResizeMessage,
   ResumeOutputMessage,
 } from "../lib/types";
+import { getOrCreateDeviceBindingSecret } from "../lib/deviceBinding";
 import { getToken } from "../lib/token";
 import { useWebSettings } from "./useWebSettings";
 
@@ -488,9 +489,21 @@ export function useTerminal(
         tokenPresent: !!token,
         attempt: retryCountRef.current,
       });
-      const ws = token
-        ? new WebSocket(url, ["aoe-auth", token])
-        : new WebSocket(url);
+      // Carry the device-binding secret as a subprotocol so the
+      // middleware can authenticate the WS upgrade (passphrase
+      // second factor) in addition to the token. See #1131.
+      let bindingSecret: string | null = null;
+      try {
+        bindingSecret = getOrCreateDeviceBindingSecret();
+      } catch {
+        // Storage/crypto unavailable; let the server reject so the
+        // login page surfaces the failure rather than booting into a
+        // broken terminal.
+      }
+      const protocols: string[] = ["aoe-auth"];
+      if (token) protocols.push(token);
+      if (bindingSecret) protocols.push(`aoe-device.${bindingSecret}`);
+      const ws = new WebSocket(url, protocols);
       ws.binaryType = "arraybuffer";
       wsRef.current = ws;
 

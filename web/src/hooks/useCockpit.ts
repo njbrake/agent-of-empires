@@ -18,6 +18,7 @@ import {
   type QueuedPrompt,
 } from "../lib/cockpitTypes";
 import { useCockpitPrefs } from "../lib/cockpitPrefs";
+import { getOrCreateDeviceBindingSecret } from "../lib/deviceBinding";
 import { getToken } from "../lib/token";
 
 export type Action =
@@ -596,10 +597,26 @@ export function useCockpit(
         const since = lastSeqRef.current;
         const url = `${protocol}://${window.location.host}/sessions/${encodeURIComponent(sessionId)}/cockpit/ws?since=${since}`;
 
-        const ws = new WebSocket(
-          url,
-          token ? ["aoe-auth", token] : ["aoe-auth"],
-        );
+        // Subprotocols carry both factors on a WS upgrade:
+        //   - `aoe-auth` is the legacy signalling protocol the server
+        //     expects to see.
+        //   - the bare `<token>` is the first-factor auth token
+        //     (kept for backward compatibility with PWA tabs that
+        //     loaded before the prefixed format landed).
+        //   - `aoe-device.<binding-secret>` is the device-binding
+        //     second factor introduced in #1131. The middleware
+        //     enforces this when passphrase login is configured.
+        let bindingSecret: string | null = null;
+        try {
+          bindingSecret = getOrCreateDeviceBindingSecret();
+        } catch {
+          // Storage / crypto unavailable; the server will reject this
+          // upgrade with 401 and the login page will surface the cause.
+        }
+        const protocols: string[] = ["aoe-auth"];
+        if (token) protocols.push(token);
+        if (bindingSecret) protocols.push(`aoe-device.${bindingSecret}`);
+        const ws = new WebSocket(url, protocols);
         wsRef.current = ws;
 
         // Set the ref synchronously alongside setState so sendPrompt's

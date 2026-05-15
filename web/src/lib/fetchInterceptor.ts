@@ -1,4 +1,5 @@
 import { isServerDown } from "./connectionState";
+import { getOrCreateDeviceBindingSecret } from "./deviceBinding";
 import { reportError } from "./toastBus";
 import { clearToken, getToken, saveToken } from "./token";
 
@@ -10,6 +11,12 @@ export const TOKEN_EXPIRED_EVENT = "aoe:token-expired";
  *  session is missing or expired. App.tsx listens to show the LoginPage
  *  instead of the TokenEntryPage, so a valid token isn't wrongly cleared. */
 export const LOGIN_REQUIRED_EVENT = "aoe:login-required";
+
+/** Dispatched on `window` when an authenticated request hits a sensitive
+ *  route whose login session is not currently elevated (the server
+ *  returns `403 elevation_required`). Cockpit/terminal hooks listen for
+ *  this to pop an inline passphrase prompt. See #1131. */
+export const ELEVATION_REQUIRED_EVENT = "aoe:elevation-required";
 
 /** Classify a 401 body as `login_required` or `unauthorized`. Clones the
  *  response so downstream readers (fetchJson, etc.) can still parse the
@@ -80,6 +87,19 @@ export function installFetchErrorToasts(): void {
           handleTokenAuthFailure();
         }
       }
+      if (res.status === 403 && isApi) {
+        // `elevation_required` signals a sensitive route called without
+        // a current 15-min passphrase confirmation. The cockpit/terminal
+        // surfaces listen for this and pop the inline prompt.
+        try {
+          const data = (await res.clone().json()) as { error?: unknown };
+          if (data && data.error === "elevation_required") {
+            window.dispatchEvent(new CustomEvent(ELEVATION_REQUIRED_EVENT));
+          }
+        } catch {
+          // body not JSON; ignore.
+        }
+      }
       if (isApi && res.status >= 500 && !isServerDown()) {
         reportError(`Server error ${res.status} from ${path}`);
       }
@@ -133,19 +153,31 @@ export function resetTokenExpired(): void {
   loginRequiredDispatched = false;
 }
 
-// Inject Authorization header without clobbering anything the caller set.
-// Skips cross-origin URLs so we never leak the token off-site.
+// Inject Authorization + device-binding headers without clobbering
+// anything the caller set. Skips cross-origin URLs so we never leak
+// either credential off-site.
 function attachAuthHeader(
   sameOrigin: boolean,
   init: RequestInit | undefined,
 ): RequestInit | undefined {
   if (!sameOrigin) return init;
   const token = getToken();
-  if (!token) return init;
+  let bindingSecret: string | null = null;
+  try {
+    bindingSecret = getOrCreateDeviceBindingSecret();
+  } catch {
+    // Storage / crypto unavailable; login page will surface the error.
+    // Leave the header off so the server's bad-request branch fires
+    // instead of a silently broken auth state.
+  }
+  if (!token && !bindingSecret) return init;
 
   const headers = new Headers(init?.headers);
-  if (!headers.has("Authorization")) {
+  if (token && !headers.has("Authorization")) {
     headers.set("Authorization", `Bearer ${token}`);
+  }
+  if (bindingSecret && !headers.has("X-Aoe-Device-Binding")) {
+    headers.set("X-Aoe-Device-Binding", bindingSecret);
   }
   return { ...(init ?? {}), headers };
 }

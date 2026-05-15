@@ -526,14 +526,27 @@ export async function cloneRepo(
 
 // --- Login ---
 
-export async function loginStatus(): Promise<{
+export interface LoginStatus {
   required: boolean;
   authenticated: boolean;
-}> {
+  /** Whether the session currently sits inside the 15-minute step-up
+   *  window. Sensitive routes (terminal attach, cockpit prompt /
+   *  approval / file mutations) only execute while this is true.
+   *  See #1131. */
+  elevated: boolean;
+  /** Seconds remaining on the current elevation window, or null when
+   *  not elevated. */
+  elevated_until_secs: number | null;
+}
+
+export async function loginStatus(): Promise<LoginStatus> {
   return (
-    (await fetchJson<{ required: boolean; authenticated: boolean }>(
-      "/api/login/status",
-    )) ?? { required: false, authenticated: true }
+    (await fetchJson<LoginStatus>("/api/login/status")) ?? {
+      required: false,
+      authenticated: true,
+      elevated: true,
+      elevated_until_secs: null,
+    }
   );
 }
 
@@ -554,17 +567,71 @@ export async function verifyToken(): Promise<boolean> {
 export async function login(
   passphrase: string,
 ): Promise<{ ok: boolean; error?: string }> {
+  let deviceBindingSecret: string;
+  try {
+    // Imported lazily to keep this module's load cost small; the
+    // helper itself is sync. Generates on first call.
+    const { getOrCreateDeviceBindingSecret } = await import(
+      "./deviceBinding"
+    );
+    deviceBindingSecret = getOrCreateDeviceBindingSecret();
+  } catch (err) {
+    return {
+      ok: false,
+      error:
+        err instanceof Error
+          ? err.message
+          : "Could not create device binding for this browser",
+    };
+  }
   try {
     const res = await fetch("/api/login", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ passphrase }),
+      body: JSON.stringify({
+        passphrase,
+        device_binding_secret: deviceBindingSecret,
+      }),
     });
     if (res.ok) return { ok: true };
     const data = await res.json().catch(() => null);
     return {
       ok: false,
       error: data?.message ?? `Login failed (${res.status})`,
+    };
+  } catch {
+    return { ok: false, error: "Network error" };
+  }
+}
+
+/**
+ * Re-verify the passphrase to open a fresh 15-minute elevation
+ * window. Required before the cockpit/terminal can perform
+ * SSH-equivalent actions when the prior window has lapsed. See
+ * #1131.
+ */
+export async function elevateLogin(
+  passphrase: string,
+): Promise<{ ok: boolean; error?: string; elevated_until_secs?: number }> {
+  try {
+    const res = await fetch("/api/login/elevate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ passphrase }),
+    });
+    if (res.ok) {
+      const data = (await res.json().catch(() => null)) as {
+        elevated_until_secs?: number;
+      } | null;
+      return {
+        ok: true,
+        elevated_until_secs: data?.elevated_until_secs,
+      };
+    }
+    const data = await res.json().catch(() => null);
+    return {
+      ok: false,
+      error: data?.message ?? `Elevation failed (${res.status})`,
     };
   } catch {
     return { ok: false, error: "Network error" };
