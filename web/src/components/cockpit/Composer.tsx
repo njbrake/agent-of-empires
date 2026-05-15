@@ -509,8 +509,16 @@ function insertSlashCommand(
 
 /** Insert `text` at the textarea's caret and re-focus. The toolbar
  *  buttons use this to inject `@` or `/` so the trigger popover opens
- *  without forcing the user to grab the keyboard. */
-function insertAtCaret(
+ *  without forcing the user to grab the keyboard.
+ *
+ *  Exported for tests. We dispatch a real `InputEvent` (not a generic
+ *  `Event`) so assistant-ui's `Unstable_TriggerPopover` sees the
+ *  `inputType: "insertText"` + `data: text` fields it relies on for
+ *  trigger detection. Without those, the popover library treats the
+ *  toolbar-injected character as untracked text and a subsequent
+ *  `removeOnExecute` cannot find the trigger to strip, leaving a
+ *  duplicate `@@` / `//` in the input (#1149). */
+export function insertAtCaret(
   ref: React.RefObject<HTMLTextAreaElement | null>,
   text: string,
 ) {
@@ -529,7 +537,13 @@ function insertAtCaret(
     "value",
   )?.set;
   setter?.call(ta, next);
-  ta.dispatchEvent(new Event("input", { bubbles: true }));
+  ta.dispatchEvent(
+    new InputEvent("input", {
+      bubbles: true,
+      inputType: "insertText",
+      data: text,
+    }),
+  );
   const pos = before.length + needsSpace.length + text.length;
   ta.focus();
   ta.setSelectionRange(pos, pos);
