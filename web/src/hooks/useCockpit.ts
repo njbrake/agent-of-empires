@@ -256,8 +256,8 @@ export function useCockpit(
   // Flips true the first time the WS opens for this session and
   // resets on session change. Lets the SystemNotices banner copy
   // distinguish "first connect, worker still spawning" from
-  // "reconnecting after a real drop" — the prior wording was
-  // misleading on brand-new sessions. See #1106.
+  // "reconnecting after a real drop". The prior wording was misleading
+  // on brand-new sessions; see #1106.
   const [hasEverOpened, setHasEverOpened] = useState(false);
   useEffect(() => {
     setHasEverOpened(false);
@@ -360,8 +360,8 @@ export function useCockpit(
       // settled cursor instead of racing two delivery paths. Without
       // this, an event landing during the dial window could be
       // delivered by both paths in different orders, and the dedupe
-      // would drop later applies — exactly the "Stopped never reaches
-      // the reducer" failure mode in #1100.
+      // would drop later applies, which is exactly the "Stopped never
+      // reaches the reducer" failure mode in #1100.
       await fetchReplay(sessionId);
       if (cancelled) return;
 
