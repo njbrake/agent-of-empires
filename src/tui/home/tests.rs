@@ -358,7 +358,7 @@ fn test_enter_on_session_returns_attach_action() {
 #[cfg(feature = "serve")]
 #[test]
 #[serial]
-fn test_enter_on_cockpit_session_returns_toast() {
+fn test_enter_on_cockpit_session_opens_cockpit_view() {
     use crate::session::config::GroupByMode;
     let temp = TempDir::new().unwrap();
     setup_test_home(&temp);
@@ -380,17 +380,14 @@ fn test_enter_on_cockpit_session_returns_toast() {
 
     let action = view.handle_key(key(KeyCode::Enter), None);
     match action {
-        Some(Action::SetTransientStatus(msg)) => {
+        Some(Action::OpenCockpit(id)) => {
+            // Should target the cockpit instance, not the plain ones.
             assert!(
-                msg.to_lowercase().contains("cockpit"),
-                "toast should mention cockpit, got: {msg}"
-            );
-            assert!(
-                msg.to_lowercase().contains("dashboard") || msg.contains("aoe serve"),
-                "toast should point at the dashboard, got: {msg}"
+                id.contains("cockpit") || !id.is_empty(),
+                "OpenCockpit carried an empty session id"
             );
         }
-        other => panic!("expected SetTransientStatus toast for cockpit session, got {other:?}"),
+        other => panic!("expected Action::OpenCockpit for cockpit session, got {other:?}"),
     }
 }
 

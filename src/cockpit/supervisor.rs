@@ -77,6 +77,40 @@ pub trait BroadcastSink: Send + Sync + 'static {
     fn approval_requested(&self, _session_id: &str, _approval_title: &str, _destructive: bool) {
         // Default: no-op. The server impl fires a push notification.
     }
+    /// Approval nonces from `ApprovalRequested` events on disk with no
+    /// matching `ApprovalResolved`. Used by `Supervisor::attach` to
+    /// cancel approvals whose responder died with the previous daemon.
+    /// Default returns empty so test sinks without an event store opt
+    /// out cleanly.
+    fn unresolved_approval_nonces(&self, _session_id: &str) -> Vec<Nonce> {
+        Vec::new()
+    }
+}
+
+/// How this supervisor acquired the worker. Drives both reap (which
+/// kinds the user-stop poller treats as runner-managed) and respawn
+/// (only `Runner` carries a `SpawnConfig` and participates in the
+/// restart budget). Replaces an older `spawn_config: Option<...>` plus
+/// `socket_path.is_some()` filter that conflated "runner-managed" with
+/// "auto-respawnable" and missed attached workers in both filters.
+enum WorkerKind {
+    /// Fresh spawn owned by this daemon. Watchdog respawns on crash
+    /// within `MAX_RESPAWNS_IN_WINDOW`. Boxed because `SpawnConfig` is
+    /// significantly larger than the unit variants, and keeping it
+    /// inline trips `clippy::large_enum_variant`.
+    Runner { spawn_config: Box<SpawnConfig> },
+    /// Reattached to an already-running runner from a previous daemon
+    /// (see `Supervisor::attach`). No auto-respawn from in-memory
+    /// state; the reconciler handles a fresh spawn on its next tick.
+    /// Still backed by a runner-registry entry, so user-stop detection
+    /// via the registry-gone signal applies.
+    Attached,
+    /// In-process stdio fixture inserted by tests. No registry, no
+    /// auto-respawn. The reap poller skips this kind so legacy stdio
+    /// fixtures aren't torn down on every tick. Test-only: production
+    /// spawn always passes through a runner socket.
+    #[cfg(test)]
+    Stdio,
 }
 
 struct WorkerHandle {
@@ -89,11 +123,7 @@ struct WorkerHandle {
     /// `MAX_RESPAWNS_IN_WINDOW`. Empty on first spawn so the initial
     /// boot doesn't consume the budget.
     restart_history: Vec<Instant>,
-    /// Stored so the watchdog can respawn the worker when its ACP
-    /// connection task exits (subprocess crash, transport break).
-    /// Populated for real workers; left as `None` for fake workers
-    /// inserted by tests.
-    spawn_config: Option<SpawnConfig>,
+    kind: WorkerKind,
 }
 
 /// Per-session monotonically-increasing seq counter. Lives at the
@@ -371,10 +401,23 @@ impl<S: BroadcastSink> Supervisor<S> {
     /// the user's side of the conversation in the same stream as agent
     /// chunks; otherwise a reconnecting client sees only assistant text
     /// and every turn concatenates into one giant message.
+    ///
+    /// Also detects `/clear` (claude-agent-acp's reset-conversation
+    /// command) and emits a follow-up `Event::SessionCleared` so the
+    /// UI can fold the pre-clear transcript and drop now-stale
+    /// session-scoped capability caches. The adapter sends no
+    /// structured signal for `/clear` (text-only `agent_message_chunk`
+    /// notifications), so this is a deliberate server-side detection.
+    /// See #1101.
     pub fn publish_user_prompt(&self, session_id: &str, text: String) {
+        let is_clear = is_clear_command(&text);
         let seq = next_seq(&self.next_seqs, session_id);
         self.sink
             .publish(session_id, seq, &Event::UserPromptSent { text });
+        if is_clear {
+            let seq = next_seq(&self.next_seqs, session_id);
+            self.sink.publish(session_id, seq, &Event::SessionCleared);
+        }
     }
 
     /// Drop per-session bookkeeping (replay seq counter). Called when
@@ -607,7 +650,9 @@ impl<S: BroadcastSink> Supervisor<S> {
                 // entry; budget burns when entries-in-window exceed
                 // MAX_RESPAWNS_IN_WINDOW.
                 restart_history: vec![],
-                spawn_config: Some(config),
+                kind: WorkerKind::Runner {
+                    spawn_config: Box::new(config),
+                },
             },
         );
         Ok(())
@@ -640,14 +685,15 @@ impl<S: BroadcastSink> Supervisor<S> {
                         Event::AcpSessionAssigned { acp_session_id } => {
                             let mut guard = workers.lock().await;
                             if let Some(handle) = guard.get_mut(&session_id) {
-                                if let Some(cfg) = handle.spawn_config.as_mut() {
+                                if let WorkerKind::Runner { spawn_config } = &mut handle.kind {
                                     info!(
                                         target: "cockpit.supervisor",
                                         session = %session_id,
                                         acp_session_id = %acp_session_id,
                                         "caching agent-assigned id for future respawn"
                                     );
-                                    cfg.stored_acp_session_id = Some(acp_session_id.clone());
+                                    spawn_config.stored_acp_session_id =
+                                        Some(acp_session_id.clone());
                                 }
                             }
                             // Mirror into the on-disk registry so a fresh
@@ -661,14 +707,14 @@ impl<S: BroadcastSink> Supervisor<S> {
                         Event::SessionContextReset { reason } => {
                             let mut guard = workers.lock().await;
                             if let Some(handle) = guard.get_mut(&session_id) {
-                                if let Some(cfg) = handle.spawn_config.as_mut() {
+                                if let WorkerKind::Runner { spawn_config } = &mut handle.kind {
                                     info!(
                                         target: "cockpit.supervisor",
                                         session = %session_id,
                                         %reason,
                                         "clearing cached id after session/load failure"
                                     );
-                                    cfg.stored_acp_session_id = None;
+                                    spawn_config.stored_acp_session_id = None;
                                 }
                             }
                             super::worker_registry::update_stored_acp_session_id(&session_id, None);
@@ -905,6 +951,31 @@ impl<S: BroadcastSink> Supervisor<S> {
         Ok(())
     }
 
+    /// Escape hatch for the "spinner stuck because we never saw the
+    /// agent's `Stopped`" failure mode (#1100). Publishes a synthetic
+    /// `Stopped { reason: "user_forced" }` through the sink so every
+    /// connected UI flips `turnActive` off and any client-side prompt
+    /// queue can drain, then sends a best-effort `session/cancel` to
+    /// the agent in case it really is mid-turn. Idempotent: a second
+    /// call just publishes another (no-op for the reducer) Stopped.
+    pub async fn force_end_turn(&self, session_id: &str) {
+        let seq = next_seq(&self.next_seqs, session_id);
+        self.sink.publish(
+            session_id,
+            seq,
+            &Event::Stopped {
+                reason: "user_forced".into(),
+            },
+        );
+        // Best-effort cancel; ignore UnknownSession because the headline
+        // intent is "free the UI", which the publish above already did.
+        let workers = self.workers.lock().await;
+        if let Some(handle) = workers.get(session_id) {
+            let client = handle.client.lock().await;
+            let _ = client.cancel_prompt().await;
+        }
+    }
+
     /// Set the active session mode via ACP session/set_mode.
     pub async fn set_mode(&self, session_id: &str, mode_id: &str) -> Result<(), SupervisorError> {
         self.wait_for_worker(session_id, std::time::Duration::from_secs(10))
@@ -955,6 +1026,26 @@ impl<S: BroadcastSink> Supervisor<S> {
             // we also delete the registry entry here to handle the
             // case where the runner is wedged.
             terminate_runner_for_session(session_id);
+            // Publish `Stopped` so the UI clears any "thinking" state
+            // and renders the reconnect banner immediately, instead of
+            // waiting for the next reap tick. Skipped for stdio test
+            // fixtures since they have no UI to update and the seq
+            // counter is shared with respawn-budget tests.
+            let should_publish = match &handle.kind {
+                WorkerKind::Runner { .. } | WorkerKind::Attached => true,
+                #[cfg(test)]
+                WorkerKind::Stdio => false,
+            };
+            if should_publish {
+                let seq = next_seq(&self.next_seqs, session_id);
+                self.sink.publish(
+                    session_id,
+                    seq,
+                    &Event::Stopped {
+                        reason: "user_stopped".into(),
+                    },
+                );
+            }
             return Ok(());
         }
         // No in-memory worker, but there may still be a detached
@@ -1154,11 +1245,12 @@ impl<S: BroadcastSink> Supervisor<S> {
                 client,
                 drain_task,
                 restart_history: vec![],
-                // No respawn config — if the worker dies, the drain
-                // task will see EOF and we'll let the reconciler spawn
-                // a fresh runner on the next tick rather than auto-
-                // respawning from this in-memory state.
-                spawn_config: None,
+                // Attached: if the worker dies, the drain task sees
+                // EOF and we let the reconciler spawn a fresh runner
+                // on the next tick rather than auto-respawning from
+                // this in-memory state. Registry-backed, so user-stop
+                // detection still applies.
+                kind: WorkerKind::Attached,
             },
         );
         info!(
@@ -1168,7 +1260,60 @@ impl<S: BroadcastSink> Supervisor<S> {
             pid = record.pid,
             "reattached to existing cockpit worker"
         );
+        drop(workers);
+
+        self.cancel_orphaned_approvals(&session_id);
         Ok(())
+    }
+
+    /// Cancel approvals that were on screen when the previous daemon
+    /// died. The responder oneshot was parked in the old daemon's
+    /// `pending_responders` map and dropped with the process. Without
+    /// this sweep, clicking allow/deny in the UI races the new daemon's
+    /// empty map and 404s, leaving the agent wedged on the original
+    /// JSON-RPC request id. Emit a synthetic `ApprovalResolved {
+    /// decision: Cancelled }` per dead nonce so the frontend reducer
+    /// drops the card, then a single synthetic `Stopped { reason:
+    /// "approval_cancelled_on_restart" }` so the sidebar dot flips to
+    /// Idle and the in-cockpit "Working" spinner clears (the turn the
+    /// approval was parked on is over; the agent was unblocked by a
+    /// synthetic Cancelled response when the previous daemon died).
+    /// The reason string is distinct so it does NOT trip the
+    /// "Stopped" / "Restarting…" banners (those gate on
+    /// reason="user_stopped" / "restart_pending"). The agent-side
+    /// wedge (parked `session/request_permission`) is unblocked
+    /// separately by the runner's outstanding-request cancellation on
+    /// detach. No-op when there are no stale nonces.
+    fn cancel_orphaned_approvals(&self, session_id: &str) {
+        let stale_nonces = self.sink.unresolved_approval_nonces(session_id);
+        if stale_nonces.is_empty() {
+            return;
+        }
+        info!(
+            target: "cockpit.supervisor",
+            session = %session_id,
+            stale = stale_nonces.len(),
+            "cancelling approvals orphaned by daemon restart"
+        );
+        for nonce in stale_nonces {
+            let seq = next_seq(&self.next_seqs, session_id);
+            self.sink.publish(
+                session_id,
+                seq,
+                &Event::ApprovalResolved {
+                    nonce,
+                    decision: ApprovalDecision::Cancelled,
+                },
+            );
+        }
+        let seq = next_seq(&self.next_seqs, session_id);
+        self.sink.publish(
+            session_id,
+            seq,
+            &Event::Stopped {
+                reason: "approval_cancelled_on_restart".to_string(),
+            },
+        );
     }
 
     /// Whether this session has a running cockpit worker, or a resume
@@ -1228,12 +1373,7 @@ impl<S: BroadcastSink> Supervisor<S> {
             let workers = self.workers.lock().await;
             workers
                 .iter()
-                .filter(|(_, h)| {
-                    h.spawn_config
-                        .as_ref()
-                        .map(|c| c.socket_path.is_some())
-                        .unwrap_or(false)
-                })
+                .filter(|(_, h)| matches!(h.kind, WorkerKind::Runner { .. } | WorkerKind::Attached))
                 .map(|(id, _)| id.clone())
                 .filter(|id| matches!(super::worker_registry::load(id), Ok(None)))
                 .collect()
@@ -1342,16 +1482,15 @@ async fn restart_decision(
     // emit a non-crash `Stopped` so the UI clears any "thinking" state
     // instead of showing the budget-burned red banner.
     //
-    // Only consult the registry for runner-mediated workers (those have
-    // a `socket_path` in their cached spawn_config). The in-proc stdio
-    // path used by legacy tests has no registry entry by construction,
-    // so the "gone" check would always fire and break unrelated test
-    // fixtures.
-    let runner_managed = handle
-        .spawn_config
-        .as_ref()
-        .map(|c| c.socket_path.is_some())
-        .unwrap_or(false);
+    // Both `Runner` (fresh spawn) and `Attached` (reattached to an
+    // existing runner) are backed by a runner-registry entry, so the
+    // registry-gone signal is meaningful for both. `Stdio` test
+    // fixtures have no registry entry by construction and must be
+    // skipped here so the "gone" check doesn't tear them down.
+    let runner_managed = matches!(
+        handle.kind,
+        WorkerKind::Runner { .. } | WorkerKind::Attached
+    );
     if runner_managed {
         let registry_gone = matches!(super::worker_registry::load(session_id), Ok(None));
         if registry_gone {
@@ -1382,13 +1521,33 @@ async fn restart_decision(
     if count > MAX_RESPAWNS_IN_WINDOW {
         return RestartDecision::BudgetBurned;
     }
-    match handle.spawn_config.clone() {
-        Some(cfg) => RestartDecision::Respawn(Box::new(cfg)),
-        // Test handles inserted via fake_for_test: the entry exists but
-        // we have no real spawn config. Treat as budget-burned so the
-        // drain task exits cleanly.
-        None => RestartDecision::BudgetBurned,
+    match &handle.kind {
+        WorkerKind::Runner { spawn_config } => RestartDecision::Respawn(spawn_config.clone()),
+        // Attached: the previous daemon owned the runner and we have
+        // no spawn config to respawn from. The reconciler will pick
+        // this session back up on the next tick if it's still
+        // `cockpit_mode = true`.
+        WorkerKind::Attached => RestartDecision::BudgetBurned,
+        // Stdio: in-proc test fixture with no subprocess to respawn.
+        #[cfg(test)]
+        WorkerKind::Stdio => RestartDecision::BudgetBurned,
     }
+}
+
+/// True when the user prompt is a `/clear` invocation. Matches `/clear`
+/// exact or `/clear ...flags`, tolerates surrounding whitespace.
+/// Conservative on purpose: a false positive renders an extra divider
+/// (harmless), a false negative leaves the UI showing stale capability
+/// state (the current bug we're fixing). claude-agent-acp doesn't emit
+/// a structured boundary event for `/clear`, so this is text-match
+/// detection. See #1101.
+fn is_clear_command(text: &str) -> bool {
+    let trimmed = text.trim();
+    trimmed == "/clear"
+        || trimmed
+            .strip_prefix("/clear")
+            .map(|rest| rest.starts_with(char::is_whitespace))
+            .unwrap_or(false)
 }
 
 /// Increment and return the per-session seq counter. Lives at the
@@ -1472,6 +1631,10 @@ impl BroadcastSink for ChannelSink {
     fn approval_requested(&self, session_id: &str, approval_title: &str, destructive: bool) {
         (self.on_approval)(session_id, approval_title, destructive);
     }
+
+    fn unresolved_approval_nonces(&self, session_id: &str) -> Vec<Nonce> {
+        self.event_store.unresolved_approval_nonces(session_id)
+    }
 }
 
 #[cfg(test)]
@@ -1482,12 +1645,21 @@ mod tests {
     struct VecSink {
         frames: std::sync::Mutex<Vec<(String, u64, Event)>>,
         approvals: std::sync::Mutex<Vec<(String, String, bool)>>,
+        stale_nonces: std::sync::Mutex<Vec<Nonce>>,
     }
     impl VecSink {
         fn new() -> Arc<Self> {
             Arc::new(Self {
                 frames: std::sync::Mutex::new(Vec::new()),
                 approvals: std::sync::Mutex::new(Vec::new()),
+                stale_nonces: std::sync::Mutex::new(Vec::new()),
+            })
+        }
+        fn with_stale_nonces(nonces: Vec<Nonce>) -> Arc<Self> {
+            Arc::new(Self {
+                frames: std::sync::Mutex::new(Vec::new()),
+                approvals: std::sync::Mutex::new(Vec::new()),
+                stale_nonces: std::sync::Mutex::new(nonces),
             })
         }
     }
@@ -1504,6 +1676,9 @@ mod tests {
                 title.to_string(),
                 destructive,
             ));
+        }
+        fn unresolved_approval_nonces(&self, _session_id: &str) -> Vec<Nonce> {
+            self.stale_nonces.lock().unwrap().clone()
         }
     }
 
@@ -1541,7 +1716,7 @@ mod tests {
                 client: Arc::new(Mutex::new(client)),
                 drain_task: drain,
                 restart_history: vec![Instant::now()],
-                spawn_config: None,
+                kind: WorkerKind::Stdio,
             },
         );
         drop(workers);
@@ -1571,8 +1746,21 @@ mod tests {
     /// Watchdog: after MAX_RESPAWNS_IN_WINDOW respawn attempts inside
     /// RESTART_WINDOW, `restart_decision` returns `BudgetBurned` so the
     /// drain task parks the session instead of hot-looping.
+    ///
+    /// `restart_decision` short-circuits to `UserStopped` for runner-
+    /// managed kinds when the on-disk registry entry is gone, so this
+    /// test isolates HOME and saves a live record so the budget path
+    /// is the one being exercised.
     #[tokio::test]
+    #[serial_test::serial]
     async fn restart_budget_burns_after_threshold() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        // SAFETY: serialised by `#[serial]`; subsequent serial tests
+        // reassign these env vars, which is the existing pattern.
+        unsafe {
+            std::env::set_var("HOME", tmp.path());
+            std::env::set_var("XDG_CONFIG_HOME", tmp.path().join(".config"));
+        }
         let sink = VecSink::new();
         let sup = Supervisor::new(sink);
         // Build a worker handle with a real-looking spawn_config so the
@@ -1583,14 +1771,29 @@ mod tests {
             description: "test fixture".into(),
             env_allowlist: None,
         };
+        let socket_path = tmp.path().join("budget.sock");
         let dummy_config = SpawnConfig {
             spec: dummy_spec,
             cwd: std::env::temp_dir(),
             additional_dirs: vec![],
             provider_env: vec![],
-            socket_path: None,
+            socket_path: Some(socket_path.clone()),
             stored_acp_session_id: None,
         };
+        // Save a registry record so the runner-managed `registry_gone`
+        // check returns false and we exercise the budget path.
+        let record = crate::cockpit::worker_registry::WorkerRecord::new(
+            "s-1".into(),
+            std::process::id(),
+            socket_path,
+            "claude-code".into(),
+            std::env::temp_dir(),
+            None,
+            vec![],
+            vec![],
+            None,
+        );
+        crate::cockpit::worker_registry::save(&record).unwrap();
         {
             let mut workers = sup.workers.lock().await;
             let (client, _tx) = AcpClient::fake_for_test(CockpitSessionId("s-1".into()));
@@ -1601,7 +1804,9 @@ mod tests {
                     client: Arc::new(Mutex::new(client)),
                     drain_task: drain,
                     restart_history: vec![],
-                    spawn_config: Some(dummy_config),
+                    kind: WorkerKind::Runner {
+                        spawn_config: Box::new(dummy_config),
+                    },
                 },
             );
         }
@@ -1628,9 +1833,9 @@ mod tests {
     /// `BudgetBurned` (which would surface the scary red banner the
     /// user originally hit).
     ///
-    /// The gate is "spawn_config.socket_path is Some" (runner-managed)
-    /// + registry entry absent; we explicitly populate `socket_path`
-    /// here so the production code path fires.
+    /// The gate is `WorkerKind::Runner | Attached` (runner-managed)
+    /// + registry entry absent; we install a `Runner` kind here so the
+    /// production code path fires.
     #[tokio::test]
     #[serial_test::serial]
     async fn restart_decision_returns_user_stopped_when_registry_deleted() {
@@ -1669,7 +1874,9 @@ mod tests {
                     client: Arc::new(Mutex::new(client)),
                     drain_task: drain,
                     restart_history: vec![],
-                    spawn_config: Some(dummy_config),
+                    kind: WorkerKind::Runner {
+                        spawn_config: Box::new(dummy_config),
+                    },
                 },
             );
         }
@@ -1736,7 +1943,9 @@ mod tests {
                     client: Arc::new(Mutex::new(client)),
                     drain_task: drain,
                     restart_history: vec![],
-                    spawn_config: Some(dummy_config),
+                    kind: WorkerKind::Runner {
+                        spawn_config: Box::new(dummy_config),
+                    },
                 },
             );
         }
@@ -1803,7 +2012,9 @@ mod tests {
                     client: Arc::new(Mutex::new(client)),
                     drain_task: drain,
                     restart_history: vec![],
-                    spawn_config: Some(dummy_config),
+                    kind: WorkerKind::Runner {
+                        spawn_config: Box::new(dummy_config),
+                    },
                 },
             );
         }
@@ -1847,12 +2058,52 @@ mod tests {
     }
 
     /// `reap_user_stopped` must NOT touch stdio-only workers: those have
-    /// no registry entry by construction (the runner-managed socket path
-    /// isn't set on `SpawnConfig`), so the registry-gone check would
-    /// always fire and tear down every legacy test fixture.
+    /// no registry entry by construction, so the registry-gone check
+    /// would always fire and tear down every legacy test fixture.
+    /// `WorkerKind::Stdio` is the explicit gate.
     #[tokio::test]
     #[serial_test::serial]
     async fn reap_user_stopped_skips_stdio_workers() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        unsafe {
+            std::env::set_var("HOME", tmp.path());
+            std::env::set_var("XDG_CONFIG_HOME", tmp.path().join(".config"));
+        }
+        let sink = VecSink::new();
+        let sup = Supervisor::new(sink.clone());
+        {
+            let mut workers = sup.workers.lock().await;
+            let (client, _tx) = AcpClient::fake_for_test(CockpitSessionId("s-stdio".into()));
+            let drain = tokio::spawn(async {});
+            workers.insert(
+                "s-stdio".into(),
+                WorkerHandle {
+                    client: Arc::new(Mutex::new(client)),
+                    drain_task: drain,
+                    restart_history: vec![],
+                    kind: WorkerKind::Stdio,
+                },
+            );
+        }
+        sup.reap_user_stopped().await;
+        assert!(
+            sup.workers.lock().await.contains_key("s-stdio"),
+            "stdio worker must survive the reaper"
+        );
+        assert!(
+            sink.frames.lock().unwrap().is_empty(),
+            "reaper must not publish for stdio workers"
+        );
+    }
+
+    /// `Supervisor::shutdown` against a live runner-kind worker must
+    /// publish `Stopped { reason: "user_stopped" }` synchronously so
+    /// the dashboard clears any "thinking" state immediately instead
+    /// of waiting for the next reap tick. Covers the REST stop path
+    /// (issue #1095 (C)).
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn shutdown_publishes_stopped_event() {
         let tmp = tempfile::TempDir::new().unwrap();
         unsafe {
             std::env::set_var("HOME", tmp.path());
@@ -1866,15 +2117,55 @@ mod tests {
             description: "test fixture".into(),
             env_allowlist: None,
         };
-        // No socket_path → not runner-managed → reaper skips.
         let dummy_config = SpawnConfig {
             spec: dummy_spec,
             cwd: std::env::temp_dir(),
             additional_dirs: vec![],
             provider_env: vec![],
-            socket_path: None,
+            socket_path: Some(tmp.path().join("dummy.sock")),
             stored_acp_session_id: None,
         };
+        {
+            let mut workers = sup.workers.lock().await;
+            let (client, _tx) = AcpClient::fake_for_test(CockpitSessionId("s-stop".into()));
+            let drain = tokio::spawn(async {});
+            workers.insert(
+                "s-stop".into(),
+                WorkerHandle {
+                    client: Arc::new(Mutex::new(client)),
+                    drain_task: drain,
+                    restart_history: vec![],
+                    kind: WorkerKind::Runner {
+                        spawn_config: Box::new(dummy_config),
+                    },
+                },
+            );
+        }
+
+        sup.shutdown("s-stop")
+            .await
+            .expect("shutdown should succeed");
+
+        let frames = sink.frames.lock().unwrap();
+        let stopped = frames
+            .iter()
+            .find(|(id, _, _)| id == "s-stop")
+            .expect("shutdown must publish a frame for the stopped session");
+        match &stopped.2 {
+            Event::Stopped { reason } => {
+                assert_eq!(reason, "user_stopped");
+            }
+            other => panic!("expected Event::Stopped, got {other:?}"),
+        }
+    }
+
+    /// `Supervisor::shutdown` against an `Stdio` test fixture must NOT
+    /// publish a `Stopped` event (the seq counter is shared with
+    /// budget-tally tests; spurious publishes corrupt their assertions).
+    #[tokio::test]
+    async fn shutdown_does_not_publish_for_stdio_workers() {
+        let sink = VecSink::new();
+        let sup = Supervisor::new(sink.clone());
         {
             let mut workers = sup.workers.lock().await;
             let (client, _tx) = AcpClient::fake_for_test(CockpitSessionId("s-stdio".into()));
@@ -1885,19 +2176,66 @@ mod tests {
                     client: Arc::new(Mutex::new(client)),
                     drain_task: drain,
                     restart_history: vec![],
-                    spawn_config: Some(dummy_config),
+                    kind: WorkerKind::Stdio,
                 },
             );
         }
-        sup.reap_user_stopped().await;
-        assert!(
-            sup.workers.lock().await.contains_key("s-stdio"),
-            "stdio worker must survive the reaper"
-        );
+        sup.shutdown("s-stdio")
+            .await
+            .expect("shutdown should succeed");
         assert!(
             sink.frames.lock().unwrap().is_empty(),
-            "reaper must not publish for stdio workers"
+            "shutdown must not publish for stdio fixtures"
         );
+    }
+
+    /// `is_clear_command` matches the user's `/clear` invocation in
+    /// the shapes the adapter accepts: bare, with flags, surrounded
+    /// by whitespace. Anything else falls through so a prompt that
+    /// merely mentions /clear (e.g. quoting a help string) doesn't
+    /// trip the divider. See #1101.
+    #[test]
+    fn is_clear_command_matches_invocations() {
+        assert!(is_clear_command("/clear"));
+        assert!(is_clear_command(" /clear "));
+        assert!(is_clear_command("/clear\n"));
+        assert!(is_clear_command("/clear --foo"));
+        assert!(!is_clear_command("clear"));
+        assert!(!is_clear_command("/cleart"));
+        assert!(!is_clear_command("hello /clear world"));
+        assert!(!is_clear_command(""));
+    }
+
+    /// `publish_user_prompt` emits a synthetic `SessionCleared` event
+    /// immediately after the `UserPromptSent` for a `/clear`
+    /// invocation, so the UI can fold the pre-clear transcript and
+    /// drop stale capability caches without waiting for an upstream
+    /// signal the adapter doesn't send. See #1101.
+    #[tokio::test]
+    async fn publish_user_prompt_emits_session_cleared_for_clear_command() {
+        let sink = VecSink::new();
+        let sup = Supervisor::new(sink.clone());
+        sup.publish_user_prompt("s-1", "/clear".into());
+        let frames = sink.frames.lock().unwrap().clone();
+        assert_eq!(frames.len(), 2);
+        assert!(matches!(
+            &frames[0].2,
+            Event::UserPromptSent { text } if text == "/clear"
+        ));
+        assert!(matches!(&frames[1].2, Event::SessionCleared));
+        assert_eq!(frames[1].1, 2, "SessionCleared must use the next seq");
+    }
+
+    /// A regular user prompt must not emit `SessionCleared`. Sanity
+    /// check that the detection isn't trigger-happy.
+    #[tokio::test]
+    async fn publish_user_prompt_does_not_emit_session_cleared_for_normal_prompts() {
+        let sink = VecSink::new();
+        let sup = Supervisor::new(sink.clone());
+        sup.publish_user_prompt("s-1", "tell me about /clear".into());
+        let frames = sink.frames.lock().unwrap().clone();
+        assert_eq!(frames.len(), 1);
+        assert!(matches!(&frames[0].2, Event::UserPromptSent { .. }));
     }
 
     /// `next_seq` increments per-session and is independent of the
@@ -2066,7 +2404,7 @@ mod tests {
                 client: Arc::new(Mutex::new(client)),
                 drain_task: drain,
                 restart_history: vec![],
-                spawn_config: None,
+                kind: WorkerKind::Stdio,
             },
         );
         drop(workers);
@@ -2428,5 +2766,70 @@ mod tests {
             }
             other => panic!("unexpected error path: {other:?}"),
         }
+    }
+
+    /// Orphaned-approval sweep must publish one `ApprovalResolved {
+    /// decision: Cancelled }` per stale nonce AND a terminal
+    /// `Stopped { reason: "approval_cancelled_on_restart" }`. Without
+    /// the Stopped, the latest status-affecting event in the store
+    /// stays at the pre-restart `ApprovalRequested` / `UserPromptSent`,
+    /// so the sidebar dot keeps spinning green and the in-cockpit
+    /// "Working" rattle keeps running until the next user prompt.
+    /// The reason string must be distinct from "user_stopped" /
+    /// "restart_pending" so the WorkerStoppedBanner / WorkerRestarting
+    /// banners do not fire.
+    #[tokio::test]
+    async fn cancel_orphaned_approvals_publishes_resolved_and_stopped() {
+        let sink =
+            VecSink::with_stale_nonces(vec![Nonce("nonce-a".into()), Nonce("nonce-b".into())]);
+        let sup = Supervisor::new(sink.clone());
+        sup.cancel_orphaned_approvals("s-attach");
+        let frames = sink.frames.lock().unwrap().clone();
+        assert_eq!(
+            frames.len(),
+            3,
+            "expected 2 ApprovalResolved + 1 Stopped, got {frames:?}"
+        );
+        match &frames[0].2 {
+            Event::ApprovalResolved { nonce, decision } => {
+                assert_eq!(nonce.0, "nonce-a");
+                assert!(matches!(decision, ApprovalDecision::Cancelled));
+            }
+            other => panic!("frame 0: expected ApprovalResolved, got {other:?}"),
+        }
+        match &frames[1].2 {
+            Event::ApprovalResolved { nonce, decision } => {
+                assert_eq!(nonce.0, "nonce-b");
+                assert!(matches!(decision, ApprovalDecision::Cancelled));
+            }
+            other => panic!("frame 1: expected ApprovalResolved, got {other:?}"),
+        }
+        match &frames[2].2 {
+            Event::Stopped { reason } => {
+                assert_eq!(reason, "approval_cancelled_on_restart");
+            }
+            other => panic!("frame 2: expected Stopped, got {other:?}"),
+        }
+        // Seqs must be strictly monotonic per session.
+        assert!(
+            frames[0].1 < frames[1].1 && frames[1].1 < frames[2].1,
+            "seqs must be monotonic, got {:?}",
+            frames.iter().map(|f| f.1).collect::<Vec<_>>()
+        );
+    }
+
+    /// Empty stale-nonce list must be a no-op: do NOT publish a stray
+    /// Stopped, because the session may have been mid-turn with no
+    /// pending approvals and a real Stopped is still expected from the
+    /// agent. Publishing here would clobber the in-flight spinner.
+    #[tokio::test]
+    async fn cancel_orphaned_approvals_noop_when_empty() {
+        let sink = VecSink::new();
+        let sup = Supervisor::new(sink.clone());
+        sup.cancel_orphaned_approvals("s-attach");
+        assert!(
+            sink.frames.lock().unwrap().is_empty(),
+            "no nonces means no published frames"
+        );
     }
 }

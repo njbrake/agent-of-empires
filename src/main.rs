@@ -42,6 +42,21 @@ fn is_serve_daemon_child(_cli: &Cli) -> bool {
 async fn main() -> Result<()> {
     let cli = Cli::parse();
 
+    // If the user passed --daemon-url, mirror the value into the env
+    // var so the cockpit::client::discovery layer (used by both the
+    // remote TUI home and the `aoe cockpit *` verbs) picks it up
+    // through the same code path the env-only path uses. This avoids a
+    // second "is the flag set?" check in every callsite.
+    if let Some(url) = &cli.daemon_url {
+        // SAFETY: single-threaded at this point — we haven't entered
+        // the tokio runtime's worker pool yet (the runtime is owned by
+        // the `#[tokio::main]` wrapper that called us, and clap's
+        // parsing was synchronous).
+        unsafe {
+            std::env::set_var("AOE_DAEMON_URL", url);
+        }
+    }
+
     // Detect drift between release-build state and dev-build state BEFORE
     // anything below calls `get_app_dir()` (which would auto-create the dev
     // dir and silently flip the trigger condition for the rest of this

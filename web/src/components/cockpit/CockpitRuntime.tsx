@@ -47,18 +47,29 @@ interface Props {
    *  Threaded through to `useCockpit` so the drain effect parks queued
    *  prompts while the reconciler is mid-resume. See #1088. */
   cockpitWorkerState?: "absent" | "resuming" | "running";
+  /** When true, every row is rendered including those preceding the
+   *  most recent `/clear`. When false (the default), rows before the
+   *  latest `session_cleared` divider are folded out of the message
+   *  tree so the user doesn't reply on top of a transcript the model
+   *  has forgotten. The `ClearedTurnsBanner` in `CockpitView` provides
+   *  the toggle. See #1101. */
+  showClearedTurns?: boolean;
   children: (ctx: CockpitContext) => ReactNode;
 }
 
 export interface CockpitContext {
   state: CockpitState;
   status: ReturnType<typeof useCockpit>["status"];
+  hasEverOpened: boolean;
   resolveApproval: (
     nonce: string,
     decision: ApprovalDecision,
   ) => Promise<void>;
   sendPrompt: (text: string) => Promise<void>;
+  forceEndTurn: () => Promise<void>;
+  lastActivityRef: ReturnType<typeof useCockpit>["lastActivityRef"];
   dismissError: () => void;
+  dismissPrimer: () => void;
   removeQueuedPrompt: (id: string) => void;
   editQueuedPrompt: (id: string, text: string) => void;
   clearQueue: () => void;
@@ -73,6 +84,7 @@ export interface CockpitContext {
 export function CockpitRuntime({
   sessionId,
   cockpitWorkerState = "running",
+  showClearedTurns = false,
   children,
 }: Props) {
   const cockpit = useCockpit(sessionId, cockpitWorkerState);
@@ -81,10 +93,15 @@ export function CockpitRuntime({
   // per turn, and produces brand-new message objects. Without
   // useMemo, every parent re-render (e.g. WS heartbeat, hover state)
   // re-builds the entire transcript and assistant-ui treats every
-  // message as changed. Memo on the two inputs the function reads.
+  // message as changed. Memo on the inputs the function reads.
   const messages = useMemo(
-    () => activityToThreadMessages(cockpit.state.activity, cockpit.state.turnActive),
-    [cockpit.state.activity, cockpit.state.turnActive],
+    () =>
+      activityToThreadMessages(
+        cockpit.state.activity,
+        cockpit.state.turnActive,
+        showClearedTurns,
+      ),
+    [cockpit.state.activity, cockpit.state.turnActive, showClearedTurns],
   );
 
   const runtime = useExternalStoreRuntime<ThreadMessageLike>({
@@ -113,9 +130,13 @@ export function CockpitRuntime({
       {children({
         state: cockpit.state,
         status: cockpit.status,
+        hasEverOpened: cockpit.hasEverOpened,
         resolveApproval: cockpit.resolveApproval,
         sendPrompt: cockpit.sendPrompt,
+        forceEndTurn: cockpit.forceEndTurn,
+        lastActivityRef: cockpit.lastActivityRef,
         dismissError: cockpit.dismissError,
+        dismissPrimer: cockpit.dismissPrimer,
         removeQueuedPrompt: cockpit.removeQueuedPrompt,
         editQueuedPrompt: cockpit.editQueuedPrompt,
         clearQueue: cockpit.clearQueue,
@@ -138,7 +159,27 @@ export function CockpitRuntime({
 export function activityToThreadMessages(
   rows: readonly ActivityRow[],
   turnActive: boolean,
+  showClearedTurns = false,
 ): ThreadMessageLike[] {
+  // Fold pre-clear turns by default. When the user has run `/clear`,
+  // earlier rows describe a conversation the model has forgotten; the
+  // banner in CockpitView surfaces a count + "show" toggle that lifts
+  // `showClearedTurns` to true. We pin to the LAST clear so multiple
+  // /clears collapse cumulatively. See #1101.
+  let effectiveRows: readonly ActivityRow[] = rows;
+  if (!showClearedTurns) {
+    let lastClearIndex = -1;
+    for (let i = rows.length - 1; i >= 0; i -= 1) {
+      if (rows[i]!.kind === "session_cleared") {
+        lastClearIndex = i;
+        break;
+      }
+    }
+    if (lastClearIndex >= 0) {
+      effectiveRows = rows.slice(lastClearIndex);
+    }
+  }
+
   const messages: ThreadMessageLike[] = [];
   let currentAssistant: AssistantBuilder | null = null;
 
@@ -148,7 +189,22 @@ export function activityToThreadMessages(
     currentAssistant = null;
   };
 
-  for (const row of rows) {
+  for (const row of effectiveRows) {
+    if (row.kind === "session_cleared") {
+      flushAssistant();
+      messages.push({
+        id: `assistant-${row.id}`,
+        role: "assistant",
+        content: [
+          {
+            type: "text",
+            text: `> ⚠️ **Conversation cleared**; ${row.text.replace(/^Conversation cleared,?\s*/, "")}`,
+          },
+        ],
+        createdAt: parseDate(row.at),
+      });
+      continue;
+    }
     if (row.kind === "user_prompt") {
       flushAssistant();
       messages.push({
@@ -161,29 +217,40 @@ export function activityToThreadMessages(
     }
 
     if (row.kind === "context_reset") {
-      // Two senders share this row kind:
-      //   - `session/load` fallback after an `aoe serve` restart (model's
-      //     window is empty even though we replay the prior transcript)
-      //   - `/compact` completion: model's window has been replaced by a
-      //     summary while the rendered transcript stays put (#1050)
-      // Both want the same amber-callout shape; only the header differs.
-      // The Rust side sets the reason text; we sniff the compact case
-      // off its leading word so the divider names what actually changed.
+      // `session/load` fallback after an `aoe serve` restart: model's
+      // window is empty even though we replay the prior transcript.
+      // Renders the amber-callout divider; the parallel
+      // ContextPrimerBanner offers the recovery affordance.
       flushAssistant();
-      const isCompact = row.text.startsWith("Conversation compacted");
-      const header = isCompact
-        ? "Conversation compacted"
-        : "Conversation context reset";
-      const body = isCompact
-        ? row.text.replace(/^Conversation compacted\s*[;,—-]?\s*/, "")
-        : row.text;
       messages.push({
         id: `assistant-${row.id}`,
         role: "assistant",
         content: [
           {
             type: "text",
-            text: `> ⚠️ **${header}**; ${body}`,
+            text: `> ⚠️ **Conversation context reset**; ${row.text}`,
+          },
+        ],
+        createdAt: parseDate(row.at),
+      });
+      continue;
+    }
+
+    if (row.kind === "compacted") {
+      // `/compact` completion: the model's window has been replaced
+      // by a summary while the rendered transcript stays put. Same
+      // amber-callout shape as a true context reset, different
+      // header. No primer banner fires (see #1109); the model still
+      // has continuity through the summary.
+      flushAssistant();
+      const body = row.text.replace(/^Conversation compacted[;,]?\s*/, "");
+      messages.push({
+        id: `assistant-${row.id}`,
+        role: "assistant",
+        content: [
+          {
+            type: "text",
+            text: `> ⚠️ **Conversation compacted**; ${body}`,
           },
         ],
         createdAt: parseDate(row.at),

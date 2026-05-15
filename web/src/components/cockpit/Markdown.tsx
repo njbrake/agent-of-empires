@@ -29,17 +29,22 @@ import {
 
 interface Props {
   text: string;
+  /** Enable the char-budget reveal that paces in newly-streamed
+   *  agent tokens. Default on for assistant output. Pass `false` for
+   *  user prompts (which arrive complete in one shot, so smoothing
+   *  adds nothing and would briefly delay the bubble rendering). */
+  smooth?: boolean;
 }
 
 /**
- * Render assistant markdown. The text prop is the raw markdown body;
- * the primitive parses + renders it with our overrides.
+ * Render markdown text. Used for both assistant chunks and user
+ * prompts; the smoothing pace is the only knob exposed.
  */
-export function Markdown({ text }: Props) {
+export function Markdown({ text, smooth = true }: Props) {
   return (
     <MarkdownTextPrimitive
       preprocess={() => text}
-      smooth
+      smooth={smooth}
       remarkPlugins={[remarkGfm]}
       className="cockpit-markdown text-sm leading-relaxed"
       components={{

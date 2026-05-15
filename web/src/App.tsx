@@ -638,10 +638,15 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
     () => ({
       showToolDurations: serverAbout?.cockpit_show_tool_durations ?? true,
       queueDrainMode: serverAbout?.cockpit_queue_drain_mode ?? "combined",
+      forceEndTurnThresholdSecs:
+        serverAbout?.cockpit_force_end_turn_threshold_secs ?? 30,
+      replayEvents: serverAbout?.cockpit_replay_events ?? 0,
     }),
     [
       serverAbout?.cockpit_show_tool_durations,
       serverAbout?.cockpit_queue_drain_mode,
+      serverAbout?.cockpit_force_end_turn_threshold_secs,
+      serverAbout?.cockpit_replay_events,
     ],
   );
 

@@ -256,6 +256,16 @@ export interface ServerAbout {
    *  spawns/attaches the reconciler runs on `aoe serve` cold start.
    *  See #1088. */
   cockpit_max_concurrent_resumes: number;
+  /** Resolved `cockpit.force_end_turn_threshold_secs` from the active
+   *  profile's config. Seconds of streaming inactivity after which
+   *  the cockpit web UI offers a "Force end turn" button. See #1100. */
+  cockpit_force_end_turn_threshold_secs: number;
+  /** Resolved `cockpit.replay_events` from the active profile's
+   *  config. Per-session retention cap on the cockpit event log;
+   *  0 means unlimited. Mirrored onto the in-memory activity buffer
+   *  so the rendered transcript matches the user's chosen ceiling
+   *  instead of clipping at a hard-coded frontend constant. See #1111. */
+  cockpit_replay_events: number;
 }
 
 export async function setCockpitMaster(

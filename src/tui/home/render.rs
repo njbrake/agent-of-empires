@@ -647,7 +647,10 @@ impl HomeView {
                 // the host terminal still works against the worktree.
                 let badge_text: Option<&'static str> =
                     if inst.is_cockpit_mode() && self.view_mode != ViewMode::Terminal {
-                        Some(" [web]")
+                        // Renamed from `[web]` now that the TUI renders
+                        // cockpit sessions natively; `[cockpit]` better
+                        // describes the substrate the badge marks.
+                        Some(" [cockpit]")
                     } else if self.view_mode == ViewMode::Terminal && inst.is_sandboxed() {
                         Some(match self.get_terminal_mode(id) {
                             TerminalMode::Container => " [container]",

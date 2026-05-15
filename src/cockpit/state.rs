@@ -392,6 +392,27 @@ pub enum Event {
         at: DateTime<Utc>,
         reason: Option<String>,
     },
+    /// User invoked `/clear` (claude-agent-acp's reset-conversation
+    /// slash command). The adapter rotates its internal session so the
+    /// model truly forgets earlier turns; aoe's transcript is now a
+    /// stale historical artifact. Reducer drops session-scoped
+    /// capabilities (`availableCommands`, `availableModes`, `plan`,
+    /// `mode`) and cancels any open approvals; UI collapses rows above
+    /// the divider behind a disclosure. Distinct from
+    /// `SessionContextReset` (which fires only on `session/load`
+    /// failure now) and `ConversationCompacted` because the
+    /// user-experience contract differs: cleared is "the model has
+    /// forgotten", reset is "the model has empty context", compacted
+    /// is "the model has a summary". See #1101.
+    SessionCleared,
+    /// `/compact` cycle completed: the model's context window has been
+    /// replaced with a summary of the prior turns. The model still
+    /// has continuity through the summary, so unlike
+    /// `SessionContextReset` there is no recovery to offer; the
+    /// reducer drops the now-stale usage snapshot and the UI renders
+    /// an inline divider but does NOT surface the context-primer
+    /// banner. See #1109.
+    ConversationCompacted,
 }
 
 impl CockpitState {
@@ -483,6 +504,26 @@ impl CockpitState {
                 // usage snapshot so the composer footer doesn't keep
                 // showing the old "75k / 200k" until the new session
                 // emits its first UsageUpdate.
+                self.usage = None;
+            }
+            Event::SessionCleared => {
+                // /clear truly wipes the model's memory. Drop
+                // session-scoped capability caches and the usage
+                // snapshot so the UI doesn't keep showing stale data
+                // referencing a conversation the model has forgotten.
+                self.usage = None;
+                self.available_commands = Vec::new();
+                self.current_plan = None;
+                self.mode = SessionMode::Default;
+                self.pending_approvals = Vec::new();
+            }
+            Event::ConversationCompacted => {
+                // /compact replaces the model's context with a summary
+                // of the prior turns. The usage snapshot for the old
+                // raw turns no longer matches what the model holds;
+                // clear it so the next UsageUpdate seeds the new
+                // (compacted) value. Plan/mode/commands persist:
+                // unlike /clear, the model still has continuity here.
                 self.usage = None;
             }
             // Persistent state for "scheduled wakeup" lives in the

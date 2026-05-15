@@ -129,11 +129,27 @@ const FENCE_ALIASES: Record<string, string> = {
   // fish has no separate grammar in the bundled langs; reuse bash so
   // we at least get colored prompts/keywords instead of plain text.
   fish: "bash",
+  // Long-form names that markdown fences commonly use, mapped to the
+  // short EXT_TO_LANG keys above. Without these, ```rust``` resolves
+  // to lang="rust" which is neither registered in our EXT_TO_LANG nor
+  // recognised by Shiki at codeToHtml time, so the highlighter throws
+  // and we fall through to the plain-pre branch.
+  rust: "rs",
+  python: "py",
+  ruby: "rb",
+  typescript: "ts",
+  javascript: "js",
+  golang: "go",
+  csharp: "cs",
+  "c#": "cs",
+  cplusplus: "cpp",
+  "c++": "cpp",
+  kotlin: "kt",
+  haskell: "hs",
+  shellscript: "bash",
+  markdown: "md",
   // Common typos / casing that the markdown side surfaces.
   yml: "yaml",
-  rs: "rust",
-  py: "python",
-  rb: "ruby",
 };
 
 /**

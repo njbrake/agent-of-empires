@@ -840,6 +840,11 @@ impl SettingsView {
                     c.max_concurrent_resumes = None;
                 }
             }
+            FieldKey::CockpitForceEndTurnThresholdSecs => {
+                if let Some(c) = config.cockpit.as_mut() {
+                    c.force_end_turn_threshold_secs = None;
+                }
+            }
             // Logging is global-only for v1 (no profile overrides); the
             // "clear override" gesture is a no-op for these keys.
             FieldKey::LoggingDefaultLevel

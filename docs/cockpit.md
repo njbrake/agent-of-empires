@@ -154,11 +154,12 @@ approval_timeout_secs = 300
 destructive_require_double_confirm = true
 max_concurrent_workers = 5
 max_concurrent_resumes = 4  # cap on parallel cold-start spawns/attaches (#1088)
-replay_events = 0  # 0 = unlimited history; set a positive value to cap per-session rows
+replay_events = 0  # 0 = unlimited history; set a positive value to cap per-session rows (also caps the web client's in-memory activity buffer, #1111)
 replay_bytes = 5_242_880
 node_path = ""
 show_tool_durations = true  # per-tool elapsed-time label in the web UI
 queue_drain_mode = "combined"  # how the composer drains client-side queued prompts: "combined" | "serial" (#1031)
+force_end_turn_threshold_secs = 30  # seconds of streaming silence before the spinner offers a "Force end turn" button (#1100)
 ```
 
 `max_concurrent_resumes` bounds how many cockpit workers the reconciler
@@ -211,13 +212,20 @@ explicit operator action.
 
 ## TUI vs web dashboard
 
-Cockpit is a **web-dashboard surface**. The TUI does not render the
-structured cockpit view today.
+Cockpit renders natively in the TUI alongside the web dashboard.
+Both consume the same `aoe serve` daemon over the same HTTP/WS
+surface, so the conversation log, pending approvals, and worker
+state are always in sync.
 
 - **Sessions started in cockpit mode** appear in the TUI session list
-  with a `[web]` badge. Pressing Enter opens an info dialog telling
-  the user to switch to the dashboard; it does *not* attach to a tmux
-  pane (cockpit sessions don't have one).
+  with a `[cockpit]` badge. Pressing Enter opens the native cockpit
+  view, which requires an `aoe serve` daemon to be already running.
+  If one isn't, the view renders an actionable error pointing at
+  `aoe serve --daemon` (localhost), `aoe serve --daemon --remote`
+  (Tailscale/Cloudflare), or `AOE_DAEMON_URL` (attach to a remote
+  daemon you already have running). The TUI intentionally does not
+  start a daemon on your behalf, so you keep the choice between
+  localhost, tunnel, and named tunnel explicit.
 - **Sessions started in tmux mode** work in both surfaces as before.
   The TUI attaches to the pane; the dashboard renders the pane via
   xterm.js.
@@ -230,9 +238,84 @@ structured cockpit view today.
   as Idle/Active in the TUI session list, since cockpit health is
   observed via the ACP event stream rather than tmux pane probing.
 
-A future release will either render a read-only cockpit transcript
-inside the TUI, or grow a richer "open this in the dashboard"
-affordance. Both are tracked as deferred work below.
+### TUI cockpit view keybinds
+
+The TUI cockpit view has three focusable regions: composer (where
+you type prompts), transcript (the activity feed), and approval
+cards (one per pending tool authorization). Tab cycles focus; the
+status banner at the bottom of the screen shows the current focus.
+
+| Focus       | Key             | Action                                                |
+| ----------- | --------------- | ----------------------------------------------------- |
+| Composer    | `Enter`         | Send the buffered text as a prompt                    |
+| Composer    | `Shift+Enter`   | Insert a newline (multi-line prompts)                 |
+| Composer    | `Esc`           | Return focus to the transcript                        |
+| Transcript  | `j` / `↓`       | Scroll down one line                                  |
+| Transcript  | `k` / `↑`       | Scroll up one line                                    |
+| Transcript  | `PgDn` / `PgUp` | Scroll ten lines                                      |
+| Transcript  | `g` / `G`       | Jump to top / bottom                                  |
+| Transcript  | `i`             | Focus the composer                                    |
+| Transcript  | `Tab`           | Cycle to the approval card (if any pending)           |
+| Transcript  | `o`             | Open this session in the web dashboard                |
+| Transcript  | `Esc`           | Close the cockpit view and return to the session list |
+| Approval    | `a`             | Allow once                                            |
+| Approval    | `Shift+A`       | Allow always (session-scoped allow-list entry)        |
+| Approval    | `d`             | Deny                                                  |
+| Approval    | `Esc`           | Return focus to the transcript                        |
+| Any         | `Ctrl+C`        | Cancel the in-flight prompt                           |
+| Any         | `Ctrl+O`        | Open the session in the web dashboard                 |
+
+**Focus isolation.** Approval keys (`a`/`Shift+A`/`d`) only resolve
+when the approval card itself has focus. Typing "always allow" into
+the composer will never silently approve a pending tool; the
+composer captures every keystroke, including those letters.
+
+### Cross-machine attach
+
+Set `AOE_DAEMON_URL` (and optionally `AOE_DAEMON_TOKEN`) to point at
+a remote `aoe serve` daemon, then either:
+
+```sh
+# Browse the remote daemon's cockpit sessions and pick one.
+AOE_DAEMON_URL=https://aoe.example.com AOE_DAEMON_TOKEN=… aoe
+
+# Or jump straight into a known session id.
+aoe cockpit attach <session_id> --daemon-url https://aoe.example.com
+```
+
+When `AOE_DAEMON_URL` is set, the TUI swaps the local home view for
+a remote-cockpit picker. Local-only operations (tmux attach,
+`aoe stop`, file edit) aren't available against a remote; for
+those, use the web dashboard or SSH into the host machine.
+
+The env override also retargets `aoe serve --status` and the
+`aoe cockpit *` verbs: with `AOE_DAEMON_URL` set, `--status` pings
+the remote endpoint and reports its reachability instead of inspecting
+the local `serve.pid` file. Unset the variable (or run `env -u
+AOE_DAEMON_URL aoe serve --status`) to fall back to local introspection.
+
+### Headless CLI verbs
+
+For scripting and quick checks, every cockpit operation has a
+matching `aoe cockpit <verb>` that talks to the same daemon:
+
+| Verb                              | What it does                                                |
+| --------------------------------- | ----------------------------------------------------------- |
+| `aoe cockpit history <id>`        | Dump the persisted transcript                               |
+| `aoe cockpit status <id>`         | Print highest/lowest seq and the daemon source              |
+| `aoe cockpit prompt <id> <text>`  | Send a prompt (`-` reads from stdin)                        |
+| `aoe cockpit approve <id> <nonce> [--always\|--deny]` | Resolve a pending approval        |
+| `aoe cockpit cancel <id>`         | Cancel the in-flight prompt                                 |
+| `aoe cockpit tail <id>`           | Stream broadcast frames to stdout as JSON lines             |
+| `aoe cockpit attach <id>`         | Open the TUI cockpit view directly for this session id      |
+
+Every verb (including `attach`) requires an `aoe serve` daemon to be
+already running, and exits with an actionable hint if none is found.
+Start one with `aoe serve --daemon` (localhost) or
+`aoe serve --daemon --remote` (Tailscale/Cloudflare), or set
+`AOE_DAEMON_URL` to attach to a remote daemon. The CLI deliberately
+does not spawn a daemon on your behalf so the localhost-vs-tunnel
+choice stays explicit.
 
 ## Tool compatibility
 
@@ -436,6 +519,28 @@ Approvals expire after `approval_timeout_secs` (default 300). The
 agent receives a structured cancellation; you'll typically see a
 follow-up message asking again. Bump the timeout if you're in a
 context where approvals legitimately take longer.
+
+### `/clear` collapsed earlier turns
+
+When you run `/clear` in a cockpit session, the model's context is
+wiped on the adapter side but the visible transcript is preserved.
+The cockpit now appends a "Conversation cleared" divider, drops the
+cached slash-command / mode / plan state (the model has forgotten
+them), and folds every row above the divider behind a disclosure
+banner: `Show N earlier turns (cleared, not in the model's memory)`.
+Click the banner to expand the older transcript for your own
+reference; the model still won't see those turns. See #1101.
+
+### "Force end turn" button under the spinner
+
+If the agent finished a turn but the cockpit's working spinner is
+still rattling (no streaming chunks landed for a while), a small
+"Force end turn" button appears beneath it. Clicking it clears the
+local spinner immediately and asks the daemon to publish a synthetic
+`Stopped` plus a best-effort `session/cancel` to the agent. Pure
+recovery affordance for a missed-event race (#1100); during a healthy
+turn it never shows. Configure the inactivity threshold with
+`cockpit.force_end_turn_threshold_secs` (default 30s).
 
 ### Sharing debug logs
 

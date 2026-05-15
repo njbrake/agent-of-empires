@@ -49,6 +49,11 @@ const twarn = (...args: unknown[]) => {
 const MAX_RETRIES = 7;
 const RETRY_BASE_MS = 1000;
 const RETRY_CAP_MS = 30000;
+/** Server-side close code that signals "PTY relay permanently broken,
+ *  stop retrying immediately." Mirrors `CLOSE_CODE_PTY_DEAD` in
+ *  `src/server/ws.rs`. Picked from the application-reserved 4000-4999
+ *  range. See #1107. */
+const CLOSE_CODE_PTY_DEAD = 4001;
 const retryDelayMs = (attempt: number) =>
   Math.min(RETRY_CAP_MS, RETRY_BASE_MS * 2 ** (attempt - 1));
 const MIN_FONT_SIZE = 6;
@@ -489,13 +494,19 @@ export function useTerminal(
       ws.binaryType = "arraybuffer";
       wsRef.current = ws;
 
+      // Per-connection flag: flipped on the first message received so
+      // the retry counter only resets when the relay is demonstrably
+      // alive end-to-end. WS handshake completion (`onopen`) is not
+      // proof: a permanently broken pane accepts the upgrade and
+      // closes within milliseconds, and resetting on `onopen` made
+      // the retry counter loop at (1/MAX) forever. See #1107.
+      let hasReceivedData = false;
       ws.onopen = () => {
         tdbg("ws.onopen", {
           sessionId,
           readyState: ws.readyState,
           protocol: ws.protocol,
         });
-        retryCountRef.current = 0;
         // Reset the dedup baseline so the first resize on a fresh
         // connection always reaches the server, even if it matches
         // the size we last sent on the previous (now-closed) socket.
@@ -513,8 +524,6 @@ export function useTerminal(
           ...prev,
           connected: true,
           reconnecting: false,
-          retryCount: 0,
-          retryCountdown: 0,
           isPrimary: true,
         }));
         if (autoFocus) term.focus();
@@ -547,6 +556,15 @@ export function useTerminal(
       };
 
       ws.onmessage = (event: MessageEvent) => {
+        if (!hasReceivedData) {
+          // First payload byte: relay is alive end-to-end. Reset the
+          // retry counter here (not in `onopen`) so a server that
+          // accepts the upgrade then immediately closes can't keep
+          // the counter pinned at 1 forever. See #1107.
+          hasReceivedData = true;
+          retryCountRef.current = 0;
+          setState((prev) => ({ ...prev, retryCount: 0, retryCountdown: 0 }));
+        }
         if (event.data instanceof ArrayBuffer) {
           term.write(new Uint8Array(event.data));
         } else if (typeof event.data === "string") {
@@ -574,6 +592,15 @@ export function useTerminal(
           attempt: retryCountRef.current,
         };
         setState((prev) => ({ ...prev, connected: false }));
+        // Server-signalled "stop retrying" (close code 4001): the PTY
+        // relay is permanently broken (pane killed, tmux session
+        // destroyed, etc.) and another reconnect would just immediately
+        // close again. Jump straight to the retries-exhausted state so
+        // the user sees the manual reconnect banner instead of a
+        // silent retry loop. See #1107.
+        if (event.code === CLOSE_CODE_PTY_DEAD) {
+          retryCountRef.current = MAX_RETRIES;
+        }
         if (retryCountRef.current < MAX_RETRIES) {
           retryCountRef.current += 1;
           const count = retryCountRef.current;

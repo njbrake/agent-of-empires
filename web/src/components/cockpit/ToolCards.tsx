@@ -170,13 +170,20 @@ function statusFor(result?: ActivityRow): Status {
   return result.kind === "tool_error" ? "err" : "ok";
 }
 
-function StatusDot({ status }: { status: Status }) {
+function StatusDot({ status, neutral }: { status: Status; neutral?: boolean }) {
+  // Group cards opt into a neutral dot once every child has settled
+  // because a single child error doesn't make the whole group "failed"
+  // and rolling errors up overstates the signal. The actionable status
+  // stays visible on the per-child cards inside the expanded body.
+  // See #1102.
   const cls =
     status === "running"
       ? "bg-brand-400 animate-pulse"
-      : status === "ok"
-        ? "bg-status-running"
-        : "bg-status-error";
+      : neutral
+        ? "bg-text-dim/60"
+        : status === "ok"
+          ? "bg-status-running"
+          : "bg-status-error";
   return <span className={`h-2 w-2 shrink-0 rounded-full ${cls}`} />;
 }
 
@@ -204,6 +211,13 @@ interface CardChromeProps {
   expanded: boolean;
   onToggle?: () => void;
   body?: React.ReactNode;
+  /** When true and the card has settled (`status !== "running"`),
+   *  render a neutral dot and omit the status badge. Used by
+   *  `ToolGroupCard` so a single child error doesn't roll up to a
+   *  red header for the whole group; the actionable error signal
+   *  stays on the per-child cards inside the expanded body. See
+   *  #1102. */
+  neutralOnDone?: boolean;
   /** ISO-8601 start timestamp for the underlying tool call. When set
    *  with `endedAt` (completed call) or alone (in-flight call), the
    *  header shows a duration label next to the status badge (#1060).
@@ -247,9 +261,12 @@ function CardChrome({
   body,
   startedAt,
   endedAt,
+  neutralOnDone,
 }: CardChromeProps) {
   const { showToolDurations } = useCockpitPrefs();
   const Header = onToggle ? "button" : "div";
+  const settled = status !== "running";
+  const showNeutral = neutralOnDone === true && settled;
   return (
     <div className="my-1 overflow-hidden rounded-md border border-surface-700 bg-surface-800/50 text-sm">
       <Header
@@ -260,7 +277,7 @@ function CardChrome({
           onToggle ? "cursor-pointer hover:bg-surface-800" : "",
         ].join(" ")}
       >
-        <StatusDot status={status} />
+        <StatusDot status={status} neutral={showNeutral} />
         <span className="text-text-dim">{icon}</span>
         <span className="text-[11px] uppercase tracking-wider text-text-dim">
           {label}
@@ -272,7 +289,7 @@ function CardChrome({
         {showToolDurations && startedAt && (
           <DurationLabel startedAt={startedAt} endedAt={endedAt} />
         )}
-        <StatusBadge status={status} />
+        {!showNeutral && <StatusBadge status={status} />}
         {onToggle && (
           <ChevronDown
             className={[
@@ -1059,10 +1076,12 @@ export function ToolGroupCard({ items }: { items: ToolGroupItem[] }) {
   const errorCount = items.filter(
     (i) => i.result && i.result.kind === "tool_error",
   ).length;
-  const status: Status =
-    runningCount > 0 ? "running" : errorCount > 0 ? "err" : "ok";
+  // No err rollup on the group header. A single failed child in an
+  // 11-step investigation doesn't make the whole investigation
+  // failed; per-child status stays on the inner cards. See #1102.
+  const status: Status = runningCount > 0 ? "running" : "ok";
 
-  const breakdown = summariseKinds(items);
+  const breakdown = summariseKinds(items, errorCount);
 
   // Group duration spans the earliest start across children → latest
   // completion. Still-running calls leave `endedAt` undefined so the
@@ -1084,6 +1103,7 @@ export function ToolGroupCard({ items }: { items: ToolGroupItem[] }) {
       status={status}
       startedAt={startedAt}
       endedAt={endedAt}
+      neutralOnDone
       icon={<Layers className="h-3.5 w-3.5" />}
       label="actions"
       primary={
@@ -1141,14 +1161,17 @@ export function SubagentCard({ tool, result, children }: SubagentProps) {
     pickStr(args, "description", "_aoe_title") ?? tool.name ?? "Subagent task";
 
   const runningChildren = children.filter((c) => !c.result).length;
-  const errorChildren = children.filter(
-    (c) => c.result && c.result.kind === "tool_error",
-  ).length;
   const parentDone = result !== undefined;
+  const parentErrored = result?.kind === "tool_error";
+  // Only the parent Task's own error rolls up to the header. A child
+  // tool inside a successful subagent run errored is the same noise
+  // as #1102 spotted on tool groups; let the per-child card carry
+  // the actionable signal instead of marking the whole subagent
+  // "failed".
   const status: Status =
     !parentDone || runningChildren > 0
       ? "running"
-      : errorChildren > 0
+      : parentErrored
         ? "err"
         : "ok";
 
@@ -1212,7 +1235,10 @@ export function SubagentCard({ tool, result, children }: SubagentProps) {
   );
 }
 
-function summariseKinds(items: ToolGroupItem[]): string | null {
+function summariseKinds(
+  items: ToolGroupItem[],
+  errorCount: number = 0,
+): string | null {
   const counts = new Map<string, number>();
   for (const i of items) {
     const k = labelForKind(i.kind);
@@ -1220,7 +1246,14 @@ function summariseKinds(items: ToolGroupItem[]): string | null {
   }
   if (counts.size === 0) return null;
   const entries = Array.from(counts.entries()).sort((a, b) => b[1] - a[1]);
-  return entries.map(([k, n]) => `${k} ${n}`).join(" · ");
+  const kinds = entries.map(([k, n]) => `${k} ${n}`).join(" · ");
+  // Append an error count when present. The group header drops its
+  // err rollup (#1102), so this is the only collapsed-state surface
+  // that still tells the user something went wrong inside.
+  if (errorCount > 0) {
+    return `${kinds} · ${errorCount} error${errorCount === 1 ? "" : "s"}`;
+  }
+  return kinds;
 }
 
 function labelForKind(kind: string): string {

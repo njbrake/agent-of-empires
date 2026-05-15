@@ -15,11 +15,13 @@
 pub mod acp_client;
 pub mod agent_registry;
 pub mod approvals;
+pub mod client;
 pub mod context_primer;
 pub mod event_store;
 pub mod fs_handler;
 pub mod node;
 pub mod permissions;
+pub mod protocol;
 pub mod runner;
 pub mod state;
 pub mod supervisor;

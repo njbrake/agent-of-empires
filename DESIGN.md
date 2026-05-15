@@ -224,6 +224,7 @@ The web dashboard (`web/`) is a utility that sits between a developer and a term
 - **Accent teal** appears on secondary affordances: branch names in breadcrumbs, diff file count badges, keyboard shortcut pills in the help overlay.
 - **Surfaces** are neutral zinc (`--color-surface-700` through `--color-surface-950` in `web/src/index.css`), not the warm navy from the brand system. Neutral surfaces keep xterm's ANSI colors legible and prevent the "everything is orange-tinted" feeling that a warm surface palette produces behind a terminal.
 - **Status colors** (running, waiting, idle, error, starting, stopped) are defined as semantic tokens in `web/src/index.css` and are the only non-brand/non-accent colors allowed in the dashboard chrome.
+- **Text contrast.** Every text token in the ramp (`text-primary` through `text-dim`) must clear WCAG AA body contrast (4.5:1) against both `surface-900` and `surface-800`; that's the surface set body copy lives on. The `text-dim` slot is the floor: tertiary descriptive copy under settings controls, helper hints next to inputs, status info rows. Decorative non-text uses that need to read quieter (separator hairlines, faint chrome) can drop to a surface token directly rather than darkening the text ramp.
 
 ### Density and motion
 

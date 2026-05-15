@@ -53,6 +53,26 @@ pub struct ServeArgs {
     #[arg(long)]
     pub stop: bool,
 
+    /// Print the running daemon's PID, mode, URLs, and log path. Exits
+    /// non-zero when no daemon is running. Useful for shell scripts
+    /// that want to know whether a daemon is up without parsing `ps`.
+    ///
+    /// `--status` is read-only and incompatible with every flag that
+    /// would change daemon state (`--stop`, `--daemon`, `--remote`) or
+    /// the bind config of a fresh daemon (`--no-auth`, `--read-only`,
+    /// `--passphrase`, `--port`, `--tunnel-name`, `--no-tailscale`,
+    /// `--tunnel-url`, `--open`). Clap reports the misuse instead of
+    /// silently ignoring the extras.
+    #[arg(
+        long,
+        conflicts_with_all = [
+            "stop", "daemon", "remote",
+            "no_auth", "read_only", "passphrase", "port",
+            "tunnel_name", "no_tailscale", "tunnel_url", "open",
+        ],
+    )]
+    pub status: bool,
+
     /// Require a passphrase for login (second-factor auth).
     /// Can also be set via AOE_SERVE_PASSPHRASE environment variable.
     #[arg(long, env = "AOE_SERVE_PASSPHRASE")]
@@ -269,6 +289,10 @@ pub async fn run(profile: &str, args: ServeArgs) -> Result<()> {
         return stop_daemon().await;
     }
 
+    if args.status {
+        return print_status().await;
+    }
+
     // Refuse to start a second instance (daemon or foreground) while another
     // aoe serve is already running. Without this gate, a foreground
     // `aoe serve` would overwrite the existing daemon's PID file in the
@@ -282,8 +306,10 @@ pub async fn run(profile: &str, args: ServeArgs) -> Result<()> {
     if let Some(existing) = daemon_pid() {
         if existing != std::process::id() {
             bail!(
-                "A serve daemon is already running (PID {}). \
-                 Stop it first with `aoe serve --stop`.",
+                "aoe serve daemon already running (PID {}).\n\n  \
+                 Status:  aoe serve --status\n  \
+                 Open UI: aoe url\n  \
+                 Stop:    aoe serve --stop",
                 existing
             );
         }
@@ -622,6 +648,70 @@ async fn stop_daemon() -> Result<()> {
         Err(e) => bail!("Failed to stop daemon (PID {}): {}", pid, e),
     }
 
+    Ok(())
+}
+
+/// Print the running daemon's PID, mode, URLs, and log path. Exits
+/// non-zero (via `bail!`) when no daemon is running so shell scripts
+/// can branch on it (`aoe serve --status && …`).
+async fn print_status() -> Result<()> {
+    // `AOE_DAEMON_URL` retargets every `aoe` invocation at a remote
+    // daemon (see docs/cockpit.md). `--status` follows the same rule:
+    // when the env override is set, report the remote endpoint's
+    // health instead of the local PID file.
+    if let Some(endpoint) = crate::cockpit::client::discovery::discover_env() {
+        let client = crate::cockpit::client::HttpClient::new(endpoint.clone())
+            .map_err(|e| anyhow::anyhow!("http client init failed: {e}"))?;
+        match client.health_check().await {
+            Ok(()) => {
+                println!("Daemon: reachable (remote via AOE_DAEMON_URL)");
+                println!("URL:    {}", endpoint.base_url);
+                println!(
+                    "Token:  {}",
+                    if endpoint.token.is_some() {
+                        "set"
+                    } else {
+                        "unset"
+                    }
+                );
+                Ok(())
+            }
+            Err(e) => bail!(
+                "AOE_DAEMON_URL is set but the daemon at {} is unreachable ({e}); \
+                 check the address or unset to use a local daemon",
+                endpoint.base_url
+            ),
+        }
+    } else {
+        print_local_status()
+    }
+}
+
+fn print_local_status() -> Result<()> {
+    let Some(pid) = daemon_pid() else {
+        bail!("Daemon: not running\nStart one with: aoe serve --daemon");
+    };
+
+    let mode = read_serve_mode_label().unwrap_or("unknown");
+    let urls = read_serve_urls();
+    let log_path = crate::session::get_app_dir()
+        .ok()
+        .map(|d| d.join("serve.log"));
+
+    println!("Daemon: running (PID {})", pid);
+    println!("Mode:   {}", mode);
+    if let Some(primary) = urls.first() {
+        println!("URL:    {}", primary.url);
+        for u in urls.iter().skip(1) {
+            let label = u.label.as_deref().unwrap_or("alt");
+            println!("        {} {}", label, u.url);
+        }
+    } else {
+        println!("URL:    (serve.url missing)");
+    }
+    if let Some(p) = log_path {
+        println!("Log:    {}", p.display());
+    }
     Ok(())
 }
 

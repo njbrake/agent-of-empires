@@ -54,6 +54,7 @@ use chrono::{DateTime, Utc};
 use rusqlite::{params, Connection, OptionalExtension};
 use tracing::{debug, trace, warn};
 
+use super::approvals::Nonce;
 use super::state::{Event, Plan};
 
 /// SQLite-backed cockpit event log. One row per (session_id, seq).
@@ -580,6 +581,36 @@ impl EventStore {
         max
     }
 
+    /// Return the lowest seq still stored for `session_id`, or `None`
+    /// if the session has no events on disk (either never wrote any, or
+    /// the retention cap has evicted them all). Used by `/cockpit/replay`
+    /// to compute whether a client's `since` cursor falls below the
+    /// pruned floor so the response can signal `lost = true`.
+    pub fn lowest_seq(&self, session_id: &str) -> Option<u64> {
+        let conn = match self.conn.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        let min = match conn
+            .query_row(
+                "SELECT MIN(seq) FROM cockpit_events WHERE session_id = ?1",
+                params![session_id],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .optional()
+        {
+            Ok(Some(Some(m))) => Some(m as u64),
+            _ => None,
+        };
+        trace!(
+            target: "cockpit.event_store",
+            session = %session_id,
+            lowest_seq = ?min,
+            "lowest_seq query"
+        );
+        min
+    }
+
     /// Return every session_id that has at least one event stored, with
     /// its highest seq. Used at startup to pre-seed `next_seqs` in one
     /// query rather than racing per-session lookups.
@@ -615,6 +646,84 @@ impl EventStore {
             "all_session_seqs hydration"
         );
         collected
+    }
+
+    /// Latest event for `session_id` that the sidebar status derivation
+    /// cares about. Used at daemon startup to seed `Instance.status`
+    /// from history: the in-memory status writes that fire on live
+    /// cockpit events don't survive restart, so without this scan a
+    /// session that was mid-turn when the previous daemon died would
+    /// render Idle until the next lifecycle event arrived. See #1103.
+    pub fn latest_status_event(&self, session_id: &str) -> Option<Event> {
+        let conn = match self.conn.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        let json: Option<String> = conn
+            .query_row(
+                "SELECT event_json FROM cockpit_events
+                 WHERE session_id = ?1
+                   AND (json_extract(event_json, '$.UserPromptSent') IS NOT NULL
+                     OR json_extract(event_json, '$.ApprovalRequested') IS NOT NULL
+                     OR json_extract(event_json, '$.ApprovalResolved') IS NOT NULL
+                     OR json_extract(event_json, '$.Stopped') IS NOT NULL
+                     OR json_extract(event_json, '$.AgentStartupError') IS NOT NULL)
+                 ORDER BY seq DESC
+                 LIMIT 1",
+                params![session_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .unwrap_or_else(|e| {
+                warn!(
+                    target: "cockpit.event_store",
+                    "latest_status_event query for {session_id}: {e}"
+                );
+                None
+            });
+        json.and_then(|s| serde_json::from_str(&s).ok())
+    }
+
+    /// Nonces of `ApprovalRequested` events for the session that lack a
+    /// later `ApprovalResolved` with the same nonce. Used on reattach
+    /// to surface "this approval card is dead, the previous daemon's
+    /// responder oneshot died with it" so the supervisor can publish a
+    /// synthetic `ApprovalResolved { decision: Cancelled }` and the UI
+    /// clears the now-404 card. See #1099.
+    pub fn unresolved_approval_nonces(&self, session_id: &str) -> Vec<Nonce> {
+        let conn = match self.conn.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        let mut stmt = match conn.prepare(
+            "SELECT json_extract(event_json, '$.ApprovalRequested.approval.nonce') AS nonce
+             FROM cockpit_events
+             WHERE session_id = ?1
+               AND json_extract(event_json, '$.ApprovalRequested') IS NOT NULL
+               AND json_extract(event_json, '$.ApprovalRequested.approval.nonce') NOT IN (
+                   SELECT json_extract(event_json, '$.ApprovalResolved.nonce')
+                   FROM cockpit_events
+                   WHERE session_id = ?1
+                     AND json_extract(event_json, '$.ApprovalResolved') IS NOT NULL
+               )",
+        ) {
+            Ok(s) => s,
+            Err(e) => {
+                warn!(target: "cockpit.event_store", "prepare unresolved_approval_nonces for {session_id}: {e}");
+                return Vec::new();
+            }
+        };
+        let rows = match stmt.query_map(params![session_id], |row| {
+            let nonce: String = row.get(0)?;
+            Ok(Nonce(nonce))
+        }) {
+            Ok(r) => r,
+            Err(e) => {
+                warn!(target: "cockpit.event_store", "query unresolved_approval_nonces for {session_id}: {e}");
+                return Vec::new();
+            }
+        };
+        rows.filter_map(|r| r.ok()).collect()
     }
 
     /// True iff the session has a `UserPromptSent` whose turn never
@@ -730,6 +839,8 @@ fn event_kind(event: &Event) -> &'static str {
         Event::UserPromptSent { .. } => "user_prompt_sent",
         Event::AcpSessionAssigned { .. } => "acp_session_assigned",
         Event::SessionContextReset { .. } => "session_context_reset",
+        Event::SessionCleared => "session_cleared",
+        Event::ConversationCompacted => "conversation_compacted",
         Event::WakeupScheduled { .. } => "wakeup_scheduled",
     }
 }
@@ -764,6 +875,35 @@ mod tests {
         store.record("s-1", 1, &Event::ThinkingStarted).unwrap();
         store.record("s-1", 2, &Event::ThinkingEnded).unwrap();
         assert_eq!(store.highest_seq("s-1"), 2);
+    }
+
+    #[test]
+    fn lowest_seq_none_on_empty() {
+        let (_tmp, store) = open_store(1000);
+        assert_eq!(store.lowest_seq("s-1"), None);
+    }
+
+    #[test]
+    fn lowest_seq_reflects_oldest_remaining_seq() {
+        let (_tmp, store) = open_store(1000);
+        store.record("s-1", 5, &Event::ThinkingStarted).unwrap();
+        store.record("s-1", 7, &Event::ThinkingEnded).unwrap();
+        assert_eq!(store.lowest_seq("s-1"), Some(5));
+    }
+
+    #[test]
+    fn lowest_seq_climbs_with_retention_prune() {
+        // After the retention prune evicts the early transcript seqs,
+        // `lowest_seq` must reflect the new floor so callers can detect
+        // a client `since` cursor that's fallen below it.
+        let (_tmp, store) = open_store(3);
+        for i in 1..=20 {
+            store.record("s-1", i, &Event::ThinkingStarted).unwrap();
+        }
+        // Cap is 3 transcript events; with no snapshot rows, only seqs
+        // 18, 19, 20 remain.
+        let low = store.lowest_seq("s-1").expect("some events stored");
+        assert!(low > 1, "lowest_seq did not advance after prune: {low}");
     }
 
     #[test]
@@ -1303,5 +1443,135 @@ mod tests {
         let replay = store.replay_from("s-1", 0);
         assert_eq!(replay.len(), 2);
         assert_eq!(store.highest_seq("s-1"), 2);
+    }
+
+    /// `latest_status_event` returns the most recent lifecycle event the
+    /// sidebar status derivation cares about. Used by the startup
+    /// seeding pass (#1103) so a session that was mid-turn when the
+    /// previous daemon died renders Running on cold start.
+    #[test]
+    fn latest_status_event_returns_most_recent_lifecycle_event() {
+        let (_tmp, store) = open_store(1000);
+        store
+            .record("s-1", 1, &Event::UserPromptSent { text: "hi".into() })
+            .unwrap();
+        store.record("s-1", 2, &Event::ThinkingStarted).unwrap();
+        store.record("s-1", 3, &Event::ThinkingEnded).unwrap();
+        // Most recent matching event is the UserPromptSent at seq 1.
+        let latest = store.latest_status_event("s-1");
+        assert!(matches!(
+            latest,
+            Some(Event::UserPromptSent { text }) if text == "hi"
+        ));
+
+        // Stopped at seq 4 takes over as the most recent lifecycle event.
+        store
+            .record(
+                "s-1",
+                4,
+                &Event::Stopped {
+                    reason: "prompt_complete".into(),
+                },
+            )
+            .unwrap();
+        let latest = store.latest_status_event("s-1");
+        assert!(matches!(latest, Some(Event::Stopped { reason }) if reason == "prompt_complete"));
+
+        // Session with no lifecycle events → None.
+        store.record("s-2", 1, &Event::ThinkingStarted).unwrap();
+        assert!(store.latest_status_event("s-2").is_none());
+
+        // Unknown session → None.
+        assert!(store.latest_status_event("nope").is_none());
+    }
+
+    /// `unresolved_approval_nonces` finds `ApprovalRequested` rows whose
+    /// nonce never saw a matching `ApprovalResolved`. Used by
+    /// `Supervisor::attach` to clear approval cards orphaned by daemon
+    /// restart (#1099).
+    #[test]
+    fn unresolved_approval_nonces_finds_orphaned_requests() {
+        use crate::cockpit::approvals::{Approval, ApprovalDecision, Nonce};
+        use crate::cockpit::state::ToolCall;
+
+        let (_tmp, store) = open_store(1000);
+        let tool_call = ToolCall {
+            id: "tc-1".into(),
+            name: "Bash".into(),
+            kind: "execute".into(),
+            args_preview: "ls".into(),
+            started_at: Utc::now(),
+            parent_tool_call_id: None,
+        };
+        let nonce_a = Nonce("aaaa".into());
+        let nonce_b = Nonce("bbbb".into());
+        let nonce_c = Nonce("cccc".into());
+        let approval_a = Approval {
+            nonce: nonce_a.clone(),
+            tool_call: tool_call.clone(),
+            destructive: false,
+            requested_at: Utc::now(),
+            resolved: None,
+        };
+        let approval_b = Approval {
+            nonce: nonce_b.clone(),
+            tool_call: tool_call.clone(),
+            destructive: false,
+            requested_at: Utc::now(),
+            resolved: None,
+        };
+        let approval_c = Approval {
+            nonce: nonce_c.clone(),
+            tool_call,
+            destructive: false,
+            requested_at: Utc::now(),
+            resolved: None,
+        };
+        // A is requested and resolved. B and C are requested but never
+        // resolved (orphans).
+        store
+            .record(
+                "s-1",
+                1,
+                &Event::ApprovalRequested {
+                    approval: approval_a,
+                },
+            )
+            .unwrap();
+        store
+            .record(
+                "s-1",
+                2,
+                &Event::ApprovalResolved {
+                    nonce: nonce_a,
+                    decision: ApprovalDecision::Allow,
+                },
+            )
+            .unwrap();
+        store
+            .record(
+                "s-1",
+                3,
+                &Event::ApprovalRequested {
+                    approval: approval_b,
+                },
+            )
+            .unwrap();
+        store
+            .record(
+                "s-1",
+                4,
+                &Event::ApprovalRequested {
+                    approval: approval_c,
+                },
+            )
+            .unwrap();
+
+        let mut orphans = store.unresolved_approval_nonces("s-1");
+        orphans.sort_by(|a, b| a.0.cmp(&b.0));
+        assert_eq!(orphans, vec![nonce_b, nonce_c]);
+
+        // Unrelated session must not bleed into the query.
+        assert!(store.unresolved_approval_nonces("s-2").is_empty());
     }
 }

@@ -4,7 +4,11 @@
 // side can add new variants without breaking the UI as long as the
 // component renders unknown frames gracefully.
 
-export type ApprovalDecision = "Allow" | "AllowAlways" | "Deny";
+export type ApprovalDecision =
+  | "Allow"
+  | "AllowAlways"
+  | "Deny"
+  | "Cancelled";
 
 export type SessionMode =
   | "Default"
@@ -146,6 +150,8 @@ export type CockpitEvent =
     }
   | { ApprovalRequested: { approval: Approval } }
   | { ApprovalResolved: { nonce: string; decision: ApprovalDecision } }
+  | "SessionCleared"
+  | "ConversationCompacted"
   | { DiffEmitted: { diff: DiffPreview } }
   | "ThinkingStarted"
   | "ThinkingEnded"
@@ -294,7 +300,9 @@ export interface ActivityRow {
     | "thinking"
     | "user_prompt"
     | "empty_output"
-    | "context_reset";
+    | "context_reset"
+    | "session_cleared"
+    | "compacted";
   text: string;
   toolCallId?: string;
   /** Full ToolCall payload, present on tool_start rows so the UI can
@@ -304,7 +312,22 @@ export interface ActivityRow {
   at: string; // ISO-8601
 }
 
-const ACTIVITY_LIMIT = 200;
+/** Module-level mirror of `cockpit.replay_events`. Set by the
+ *  `useCockpit` hook from `useCockpitPrefs` so the reducer (which
+ *  can't read React context) sees the user's chosen retention cap.
+ *  0 means unlimited. Default 0 matches `cockpit.replay_events`'
+ *  default after #1065 made server-side retention unlimited; without
+ *  this mirror, a frontend-only 200-row cap clipped the rendered
+ *  transcript regardless of what the user set on the server side.
+ *  See #1111. */
+let activityLimit = 0;
+
+/** Set the activity buffer cap. Called by `useCockpit` whenever the
+ *  resolved prefs change so the reducer's `pushActivity` honours
+ *  the current setting. Visible for tests that need to pin the cap. */
+export function setActivityLimit(limit: number): void {
+  activityLimit = Math.max(0, Math.floor(limit));
+}
 
 export function emptyCockpitState(): CockpitState {
   return {
@@ -359,6 +382,46 @@ export function applyEvent(
       next.turnHasOutput = true;
     } else if (event === "ThinkingEnded") {
       next.thinking = false;
+    } else if (event === "ConversationCompacted") {
+      // /compact replaced the model's context with a summary. The
+      // model still has continuity through the summary so no primer
+      // affordance is appropriate; just drop the now-stale usage
+      // snapshot and append a divider row. The renderer maps the
+      // `compacted` kind to a "Conversation compacted" divider that
+      // makes the boundary visible without nudging the user toward
+      // pre-filling duplicate context. See #1109.
+      next.sessionUsage = null;
+      next.activity = [
+        ...next.activity,
+        {
+          id: `compacted-${frame.seq}`,
+          kind: "compacted",
+          text: "Conversation compacted; earlier turns above are summarised in the model's context.",
+          at: new Date().toISOString(),
+        },
+      ];
+    } else if (event === "SessionCleared") {
+      // /clear wiped the model's memory. Append a divider row and
+      // drop session-scoped capability caches; the UI groups all
+      // rows above the divider behind a collapsible disclosure so
+      // the user can still scroll back but won't reply on top of a
+      // conversation the model no longer has. See #1101.
+      next.activity = [
+        ...next.activity,
+        {
+          id: `cleared-${frame.seq}`,
+          kind: "session_cleared",
+          text: "Conversation cleared, the model no longer remembers earlier turns.",
+          at: new Date().toISOString(),
+        },
+      ];
+      next.availableCommands = [];
+      next.availableModes = [];
+      next.currentModeId = null;
+      next.plan = null;
+      next.mode = "Default";
+      next.pendingApprovals = [];
+      next.sessionUsage = null;
     }
     return next;
   }
@@ -709,8 +772,8 @@ export function applyEvent(
 
 function pushActivity(rows: ActivityRow[], row: ActivityRow): ActivityRow[] {
   const next = rows.concat(row);
-  if (next.length > ACTIVITY_LIMIT) {
-    return next.slice(next.length - ACTIVITY_LIMIT);
+  if (activityLimit > 0 && next.length > activityLimit) {
+    return next.slice(next.length - activityLimit);
   }
   return next;
 }

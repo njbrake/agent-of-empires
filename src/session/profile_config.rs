@@ -81,6 +81,8 @@ pub struct CockpitConfigOverride {
     pub queue_drain_mode: Option<crate::session::config::QueueDrainMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_concurrent_resumes: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub force_end_turn_threshold_secs: Option<u32>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -544,6 +546,9 @@ pub fn merge_configs(mut global: Config, profile: &ProfileConfig) -> Config {
         }
         if let Some(v) = cockpit_override.max_concurrent_resumes {
             global.cockpit.max_concurrent_resumes = v;
+        }
+        if let Some(v) = cockpit_override.force_end_turn_threshold_secs {
+            global.cockpit.force_end_turn_threshold_secs = v;
         }
     }
 

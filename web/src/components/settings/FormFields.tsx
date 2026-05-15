@@ -123,7 +123,7 @@ export function TextField({
   const cls = `w-full bg-surface-900 border border-surface-700 rounded-md px-3 py-2 text-sm text-text-primary placeholder:text-text-dim focus:border-brand-600 focus:outline-none ${mono ? "font-mono" : ""}`;
   return (
     <div>
-      <label className="block text-sm text-text-dim mb-1">{label}</label>
+      <label className="block text-sm text-text-bright mb-1">{label}</label>
       {description && (
         <div className="text-xs text-text-dim mb-1">{description}</div>
       )}
@@ -167,8 +167,8 @@ export function SelectField({
   value: string;
   onChange: (v: string) => void;
   options: { value: string; label: string }[];
-  /** Override the default `text-sm text-text-dim mb-1` label classes
-   *  (used by the Logging panel to render brighter section labels).
+  /** Override the default `text-sm text-text-bright mb-1` label classes
+   *  (used by the Logging panel to render heavier section labels).
    *  Pass `""` to suppress the label element entirely. */
   labelClassName?: string;
 }) {
@@ -177,7 +177,7 @@ export function SelectField({
       {label && (
         <label
           className={
-            labelClassName ?? "block text-sm text-text-dim mb-1"
+            labelClassName ?? "block text-sm text-text-bright mb-1"
           }
         >
           {label}
@@ -229,7 +229,7 @@ export function NumberField({
 
   return (
     <div>
-      <label className="block text-sm text-text-dim mb-1">{label}</label>
+      <label className="block text-sm text-text-bright mb-1">{label}</label>
       {description && (
         <div className="text-xs text-text-dim mb-1">{description}</div>
       )}
@@ -270,7 +270,7 @@ export function SliderField({
   return (
     <div>
       <div className="flex items-center justify-between mb-1">
-        <label className="text-sm text-text-dim">{label}</label>
+        <label className="text-sm text-text-bright">{label}</label>
         <span className="text-sm font-mono text-text-primary">
           {formatValue ? formatValue(value) : value}
         </span>
@@ -333,7 +333,7 @@ export function ListField({
   return (
     <div>
       <div className="flex items-center justify-between mb-1">
-        <label className="text-sm text-text-dim">{label}</label>
+        <label className="text-sm text-text-bright">{label}</label>
         {!adding && (
           <button
             onClick={() => setAdding(true)}

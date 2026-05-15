@@ -1137,6 +1137,11 @@ fn pick_option_id(
             PermissionOptionKind::RejectOnce,
             PermissionOptionKind::RejectAlways,
         ][..],
+        // Synthetic decision emitted by the daemon-restart rehydration
+        // sweep. Has no agent option to map to (the agent never sees
+        // it); the caller falls through to `RequestPermissionOutcome::
+        // Cancelled` when this returns None.
+        ApprovalDecision::Cancelled => &[][..],
     };
     for kind in preferred_kinds {
         if let Some(opt) = options.iter().find(|o| &o.kind == kind) {
@@ -1370,11 +1375,7 @@ fn map_update_to_events(update: SessionUpdate) -> Vec<Event> {
                     text: text.text.clone(),
                 }];
                 if is_compact_completion(&text.text) {
-                    events.push(Event::SessionContextReset {
-                        reason: "Conversation compacted; earlier turns above \
-                                 are summarised in the model's context."
-                            .into(),
-                    });
+                    events.push(Event::ConversationCompacted);
                     // /compact wipes the model's tool-state alongside the
                     // chat history, so any TodoWrite plan it was tracking
                     // is gone from its perspective. The cockpit plan strip

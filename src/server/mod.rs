@@ -32,38 +32,12 @@ use self::push::{PushState, StatusChange, STATUS_CHANNEL_CAPACITY};
 #[cfg(feature = "serve")]
 const COCKPIT_CHANNEL_CAPACITY: usize = 256;
 
-/// One frame on the per-AppState cockpit broadcast channel: the cockpit
-/// session id plus the typed cockpit Event. Subscribed WebSocket
-/// clients filter on the session id and serialise to JSON only at the
-/// WS write boundary; in-process consumers (status listener,
-/// acp_session_id listener) match on the typed enum directly so a
-/// rename of an `Event` variant breaks the build instead of silently
-/// breaking listener behaviour.
-///
-/// `Arc<Event>` so the broadcast clone-per-subscriber stays cheap even
-/// as the number of WS clients grows.
+/// Re-export of the broadcast frame defined in `crate::cockpit::protocol`,
+/// kept under `crate::server::` so existing supervisor/WS call sites keep
+/// resolving without churn. The canonical definition lives in protocol.rs
+/// so the daemon and any client share a single source of truth.
 #[cfg(feature = "serve")]
-#[derive(Debug, Clone)]
-pub struct CockpitBroadcastFrame {
-    pub session_id: String,
-    pub seq: u64,
-    pub event: Arc<crate::cockpit::Event>,
-}
-
-#[cfg(feature = "serve")]
-impl serde::Serialize for CockpitBroadcastFrame {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        // Custom impl so the wire format stays the same (untagged
-        // event JSON) without forcing every consumer to round-trip
-        // through serde_json::Value.
-        use serde::ser::SerializeStruct;
-        let mut s = serializer.serialize_struct("CockpitBroadcastFrame", 3)?;
-        s.serialize_field("session_id", &self.session_id)?;
-        s.serialize_field("seq", &self.seq)?;
-        s.serialize_field("event", &*self.event)?;
-        s.end()
-    }
-}
+pub use crate::cockpit::protocol::CockpitBroadcastFrame;
 
 use crate::session::Instance;
 use crate::session::Status;
@@ -765,6 +739,14 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
         None
     };
 
+    // Seed cockpit sessions' status from the on-disk event log before
+    // any background task runs. The status_poll_loop overlay reads
+    // `state.instances` and the cockpit_event_listener only sees
+    // live transitions, so a session that was mid-turn when the
+    // previous daemon died otherwise renders Idle until the next
+    // lifecycle event arrives. See #1103.
+    seed_cockpit_statuses(state.clone()).await;
+
     // Spawn background tasks
     let poll_state = state.clone();
     tokio::spawn(async move {
@@ -1038,6 +1020,10 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route(
             "/api/sessions/{id}/cockpit/cancel",
             post(api::cockpit_cancel),
+        )
+        .route(
+            "/api/sessions/{id}/cockpit/force_end_turn",
+            post(api::cockpit_force_end_turn),
         )
         .route("/api/sessions/{id}/cockpit/files", get(api::cockpit_files))
         .route(
@@ -1616,12 +1602,48 @@ async fn cockpit_event_listener(state: Arc<AppState>) {
     }
 }
 
+/// Seed each cockpit-enabled session's `Instance.status` from the most
+/// recent lifecycle event in the on-disk event log. Runs once at
+/// daemon startup, before the status poll loop and the cockpit event
+/// listener start, so a session that was mid-turn when the previous
+/// daemon died doesn't render Idle until the next live event arrives.
+/// Acts via the same `apply_status_intent` path as the live listener
+/// so push subscribers and the broadcast channel see the seeded
+/// transitions as ordinary StatusChange events. See #1103 (B).
+#[cfg(feature = "serve")]
+pub(crate) async fn seed_cockpit_statuses(state: Arc<AppState>) {
+    let cockpit_ids: Vec<String> = state
+        .instances
+        .read()
+        .await
+        .iter()
+        .filter(|i| i.cockpit_mode)
+        .map(|i| i.id.clone())
+        .collect();
+    if cockpit_ids.is_empty() {
+        return;
+    }
+    for id in cockpit_ids {
+        let Some(event) = state.cockpit_event_store.latest_status_event(&id) else {
+            continue;
+        };
+        let intent = derive_cockpit_status(&event);
+        if intent.is_none() {
+            continue;
+        }
+        let mut instances = state.instances.write().await;
+        if let Some(inst) = instances.iter_mut().find(|i| i.id == id) {
+            apply_status_intent(inst, intent, &state.status_tx);
+        }
+    }
+}
+
 /// Fold a derived `StatusIntent` into an `Instance`. Pure mutation;
 /// callers hold the write lock. Sends a `StatusChange` on
 /// `status_tx` so push notifications and the dashboard see the
 /// transition like any tmux-driven one.
 #[cfg(feature = "serve")]
-fn apply_status_intent(
+pub(crate) fn apply_status_intent(
     inst: &mut Instance,
     intent: Option<StatusIntent>,
     status_tx: &broadcast::Sender<StatusChange>,
@@ -1735,13 +1757,13 @@ fn derive_acp_session_change(event: &crate::cockpit::Event) -> Option<AcpSession
 /// without clobbering an in-progress Running/Waiting turn).
 #[cfg(feature = "serve")]
 #[derive(Debug, PartialEq, Eq)]
-enum StatusIntent {
+pub(crate) enum StatusIntent {
     Set(Status),
     HealError,
 }
 
 #[cfg(feature = "serve")]
-fn derive_cockpit_status(event: &crate::cockpit::Event) -> Option<StatusIntent> {
+pub(crate) fn derive_cockpit_status(event: &crate::cockpit::Event) -> Option<StatusIntent> {
     use crate::cockpit::Event;
     match event {
         Event::UserPromptSent { .. } | Event::ApprovalResolved { .. } => {

@@ -11,11 +11,20 @@ use std::time::{Duration, Instant};
 
 use axum::{
     extract::{
-        ws::{Message, WebSocket},
+        ws::{CloseFrame, Message, WebSocket},
         Path, State, WebSocketUpgrade,
     },
     response::IntoResponse,
 };
+
+/// Close code we send when the PTY relay exited with the underlying
+/// pane gone (`tmux attach-session` failed, tmux session was destroyed,
+/// PTY EOF before any byte reached the browser). The web terminal hook
+/// treats this as "stop retrying immediately, surface the manual
+/// reconnect banner" rather than burning the retry budget against a
+/// permanently broken pane. Picked from the application-reserved
+/// 4000-4999 range; not used elsewhere. See #1107.
+const CLOSE_CODE_PTY_DEAD: u16 = 4001;
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
 use tokio::sync::RwLock;
 use tracing::{debug, error, info, trace, warn};
@@ -105,15 +114,36 @@ async fn respawn_paired_if_dead(
 
     let mut inst_for_blocking = inst.clone();
     let tmux_name_clone = tmux_name.clone();
+    // Two failure modes the user can land in:
+    //   1. Pane is dead but the tmux session still exists (shell exit
+    //      under `remain-on-exit on`). `kill_terminal_if_dead` clears
+    //      the tombstone, then we respawn.
+    //   2. The whole tmux session is gone (`tmux kill-session`, daemon
+    //      reaped on aoe restart, etc). `kill_terminal_if_dead`
+    //      returns false here because there's nothing to kill, but the
+    //      next `tmux attach-session` will fail with "can't find
+    //      session" and the WS will close with code 4001. Recreate
+    //      the session in that case too so the retry click recovers
+    //      instead of hot-looping. See #1107 follow-up.
     let respawned = tokio::task::spawn_blocking(move || -> anyhow::Result<bool> {
-        if !inst_for_blocking.kill_terminal_if_dead()? {
+        let killed_dead = inst_for_blocking.kill_terminal_if_dead()?;
+        let session_missing = !inst_for_blocking.terminal_tmux_session()?.exists();
+        if !killed_dead && !session_missing {
             return Ok(false);
         }
-        tracing::warn!(
-            target: "terminal.ws",
-            tmux = %tmux_name_clone,
-            "paired terminal pane dead at WS upgrade, killing and respawning"
-        );
+        if killed_dead {
+            tracing::warn!(
+                target: "terminal.ws",
+                tmux = %tmux_name_clone,
+                "paired terminal pane dead at WS upgrade, killing and respawning"
+            );
+        } else {
+            tracing::warn!(
+                target: "terminal.ws",
+                tmux = %tmux_name_clone,
+                "paired terminal session missing at WS upgrade, recreating"
+            );
+        }
         inst_for_blocking.start_terminal()?;
         Ok(true)
     })
@@ -196,15 +226,31 @@ async fn respawn_container_if_dead(
     // No in-memory cache to update for container terminal: `has_container_terminal()`
     // queries tmux directly, so unlike the paired variant we don't need to write
     // back a `terminal_info` flag after a successful respawn.
+    //
+    // See `respawn_paired_if_dead` for the missing-session branch: a
+    // `tmux kill-session` on a paired container terminal also has to
+    // recreate from scratch, not just kill-then-respawn the pane.
     let _respawned = tokio::task::spawn_blocking(move || -> anyhow::Result<bool> {
-        if !inst_for_blocking.kill_container_terminal_if_dead()? {
+        let killed_dead = inst_for_blocking.kill_container_terminal_if_dead()?;
+        let session_missing = !inst_for_blocking
+            .container_terminal_tmux_session()?
+            .exists();
+        if !killed_dead && !session_missing {
             return Ok(false);
         }
-        tracing::warn!(
-            target: "terminal.ws",
-            tmux = %tmux_name_clone,
-            "container terminal pane dead at WS upgrade, killing and respawning"
-        );
+        if killed_dead {
+            tracing::warn!(
+                target: "terminal.ws",
+                tmux = %tmux_name_clone,
+                "container terminal pane dead at WS upgrade, killing and respawning"
+            );
+        } else {
+            tracing::warn!(
+                target: "terminal.ws",
+                tmux = %tmux_name_clone,
+                "container terminal session missing at WS upgrade, recreating"
+            );
+        }
         inst_for_blocking.start_container_terminal_with_size(None)?;
         Ok(true)
     })
@@ -596,7 +642,20 @@ async fn handle_terminal_ws(
             reason = exit_reason,
             "send task exiting, sending Close frame"
         );
-        let _ = ws_sender.send(Message::Close(None)).await;
+        // Tell the browser to stop retrying when the PTY relay died
+        // (tmux attach failed, pane was killed, etc.). The auto-respawn
+        // at WS upgrade catches the common cases; an exit here that
+        // close on the heels of the upgrade is almost always a
+        // permanently broken pane that retrying won't fix. See #1107.
+        let close_frame = if exit_reason == "pty_output_channel_closed" {
+            Some(CloseFrame {
+                code: CLOSE_CODE_PTY_DEAD,
+                reason: "pty_dead".into(),
+            })
+        } else {
+            None
+        };
+        let _ = ws_sender.send(Message::Close(close_frame)).await;
     });
 
     // Task 3: WebSocket receiver -> PTY stdin (and resize)

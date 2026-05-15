@@ -13,7 +13,7 @@
 // CockpitRuntime.tsx. We never let assistant-ui own the chat state; it
 // only renders what we feed it and surfaces user actions back.
 
-import { useEffect, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   MessagePrimitive,
   ThreadPrimitive,
@@ -37,6 +37,7 @@ import {
   VERB_INTERVAL_MS,
   chooseVerb,
 } from "../../lib/cockpitRattle";
+import { useCockpitPrefs } from "../../lib/cockpitPrefs";
 import type {
   Approval,
   ApprovalDecision,
@@ -61,15 +62,23 @@ const STARTER_PROMPTS = [
 ];
 
 export function CockpitView({ sessionId, cockpitWorkerState }: Props) {
+  // Folds rows above the most recent `/clear` divider out of the
+  // thread by default; the disclosure banner toggles this. Lives on
+  // the view (not the reducer) because it's a UI preference, not
+  // event-log state. See #1101.
+  const [showClearedTurns, setShowClearedTurns] = useState(false);
   return (
     <CockpitRuntime
       sessionId={sessionId}
       cockpitWorkerState={cockpitWorkerState}
+      showClearedTurns={showClearedTurns}
     >
       {(ctx) => (
         <CockpitChrome
           sessionId={sessionId}
           cockpitWorkerState={cockpitWorkerState}
+          showClearedTurns={showClearedTurns}
+          onToggleClearedTurns={() => setShowClearedTurns((v) => !v)}
           {...ctx}
         />
       )}
@@ -80,33 +89,105 @@ export function CockpitView({ sessionId, cockpitWorkerState }: Props) {
 function CockpitChrome({
   sessionId,
   cockpitWorkerState,
+  showClearedTurns,
+  onToggleClearedTurns,
   state,
   status,
+  hasEverOpened,
   resolveApproval,
   sendPrompt,
+  forceEndTurn,
+  lastActivityRef,
   dismissError,
+  dismissPrimer,
   removeQueuedPrompt,
   editQueuedPrompt,
   clearQueue,
 }: CockpitContext & {
   sessionId: string;
   cockpitWorkerState: "absent" | "resuming" | "running";
+  showClearedTurns: boolean;
+  onToggleClearedTurns: () => void;
 }) {
+  // Count how many activity rows precede the latest `session_cleared`
+  // divider so the banner can say "12 earlier turns hidden". The
+  // reducer always appends the divider as the last row at clear time,
+  // so the count is `lastClearIndex` (rows before it are the cleared
+  // history). See #1101.
+  const clearedSummary = (() => {
+    let lastClearIndex = -1;
+    for (let i = state.activity.length - 1; i >= 0; i -= 1) {
+      if (state.activity[i]!.kind === "session_cleared") {
+        lastClearIndex = i;
+        break;
+      }
+    }
+    if (lastClearIndex < 0) return null;
+    return { hiddenCount: lastClearIndex };
+  })();
   // Composer prefill keyed for re-fires; set by the
   // ContextPrimerBanner on click. Local rather than on CockpitState
   // because it's a one-shot UI action, not part of the event log.
   const [primerPrefill, setPrimerPrefill] = useState<
     { id: string; text: string } | null
   >(null);
+
+  // Re-pin the chat viewport to the bottom when the composer (or any
+  // sibling below it: queued strip, primer banner) grows. assistant-ui's
+  // `autoScroll` only re-pins on message updates, not on viewport
+  // height shrinks; without this, typing multi-line prompts slides the
+  // visible bottom of the chat up by the height the composer just
+  // grew. See #1104.
+  //
+  // We sample "is the viewport pinned to the bottom?" on every scroll
+  // event into a ref. By the time the ResizeObserver fires the layout
+  // has already settled at the smaller viewport height, so reading
+  // pinned-ness after the fact would always be false for the very
+  // case we want to catch (composer grew, scroll content now overflows
+  // the shrunk viewport by exactly the grow amount). The scroll-time
+  // sample captures the pre-resize state; the RO callback consumes it.
+  const viewportRef = useRef<HTMLDivElement | null>(null);
+  const belowViewportRef = useRef<HTMLDivElement | null>(null);
+  const wasAtBottomRef = useRef<boolean>(true);
+  useLayoutEffect(() => {
+    const vp = viewportRef.current;
+    const below = belowViewportRef.current;
+    if (!vp || !below) return;
+    // Treat "within 16px of the bottom" as pinned. assistant-ui's
+    // own stick-to-bottom uses a similar slop; sub-pixel rounding
+    // and momentary content reflows otherwise drop us out of the
+    // pinned state for one frame.
+    const sampleAtBottom = () => {
+      wasAtBottomRef.current =
+        vp.scrollTop + vp.clientHeight >= vp.scrollHeight - 16;
+    };
+    sampleAtBottom();
+    vp.addEventListener("scroll", sampleAtBottom, { passive: true });
+    let prevHeight = below.offsetHeight;
+    const ro = new ResizeObserver(() => {
+      const nextHeight = below.offsetHeight;
+      if (nextHeight === prevHeight) return;
+      prevHeight = nextHeight;
+      if (wasAtBottomRef.current) {
+        vp.scrollTop = vp.scrollHeight;
+      }
+    });
+    ro.observe(below);
+    return () => {
+      ro.disconnect();
+      vp.removeEventListener("scroll", sampleAtBottom);
+    };
+  }, []);
   return (
     <div className="flex h-full flex-col bg-surface-900 text-text-primary">
-      <PlanStrip plan={state.plan} mode={state.mode} />
+      <PlanStrip plan={state.plan} />
 
       {(status !== "open" || state.lagged || state.rateLimit) && (
         <SystemNotices
           status={status}
           lagged={state.lagged}
           rateLimit={state.rateLimit}
+          hasEverOpened={hasEverOpened}
         />
       )}
 
@@ -122,7 +203,8 @@ function CockpitChrome({
       {cockpitWorkerState === "resuming" &&
         !state.startupError &&
         !state.workerStopped &&
-        !state.workerRestarting && <WorkerResumingBanner />}
+        !state.workerRestarting &&
+        (state.lastSeq === 0 ? <SpawningBanner /> : <WorkerResumingBanner />)}
       {state.nextWakeupAt &&
         !state.turnActive &&
         !state.startupError &&
@@ -143,12 +225,21 @@ function CockpitChrome({
       <ThreadPrimitive.Root className="flex flex-1 flex-col min-h-0">
         <ThreadPrimitive.Viewport
           autoScroll
+          ref={viewportRef}
           className="flex-1 overflow-y-auto"
         >
           <div className="mx-auto max-w-3xl xl:max-w-4xl 2xl:max-w-5xl px-4 py-6">
             <ThreadPrimitive.Empty>
               <EmptyState onPick={sendPrompt} />
             </ThreadPrimitive.Empty>
+
+            {clearedSummary && clearedSummary.hiddenCount > 0 && (
+              <ClearedTurnsBanner
+                hiddenCount={clearedSummary.hiddenCount}
+                expanded={showClearedTurns}
+                onToggle={onToggleClearedTurns}
+              />
+            )}
 
             <ThreadPrimitive.Messages
               components={{
@@ -162,6 +253,8 @@ function CockpitChrome({
                 <WorkingSpinner
                   thinking={state.thinking}
                   tool={state.inFlightTool?.name ?? null}
+                  lastActivityRef={lastActivityRef}
+                  onForceEndTurn={forceEndTurn}
                 />
               </div>
             </ThreadPrimitive.If>
@@ -176,37 +269,40 @@ function CockpitChrome({
           </div>
         </ThreadPrimitive.Viewport>
 
-        <QueuedPromptsStrip
-          queued={state.queuedPrompts}
-          onRemove={removeQueuedPrompt}
-          onEdit={editQueuedPrompt}
-          onClear={clearQueue}
-        />
+        <div ref={belowViewportRef}>
+          <QueuedPromptsStrip
+            queued={state.queuedPrompts}
+            onRemove={removeQueuedPrompt}
+            onEdit={editQueuedPrompt}
+            onClear={clearQueue}
+          />
 
-        <ContextPrimerBanner
-          sessionId={sessionId}
-          available={state.contextPrimerAvailable}
-          onInsertPrimer={(text) =>
-            setPrimerPrefill({
-              id: `primer-${state.contextPrimerAvailable?.resetSeq ?? 0}-${Date.now()}`,
-              text,
-            })
-          }
-        />
+          <ContextPrimerBanner
+            sessionId={sessionId}
+            available={state.contextPrimerAvailable}
+            onInsertPrimer={(text) =>
+              setPrimerPrefill({
+                id: `primer-${state.contextPrimerAvailable?.resetSeq ?? 0}-${Date.now()}`,
+                text,
+              })
+            }
+            onDismiss={dismissPrimer}
+          />
 
-        <Composer
-          sessionId={sessionId}
-          availableModes={state.availableModes}
-          currentModeId={state.currentModeId}
-          legacyMode={state.mode}
-          sessionUsage={state.sessionUsage}
-          availableCommands={state.availableCommands}
-          connected={status === "open" && !state.workerStopped && !state.workerRestarting}
-          turnActive={state.turnActive}
-          queuedCount={state.queuedPrompts.length}
-          enqueuePrompt={sendPrompt}
-          primerPrefill={primerPrefill}
-        />
+          <Composer
+            sessionId={sessionId}
+            availableModes={state.availableModes}
+            currentModeId={state.currentModeId}
+            legacyMode={state.mode}
+            sessionUsage={state.sessionUsage}
+            availableCommands={state.availableCommands}
+            connected={status === "open" && !state.workerStopped && !state.workerRestarting}
+            turnActive={state.turnActive}
+            queuedCount={state.queuedPrompts.length}
+            enqueuePrompt={sendPrompt}
+            primerPrefill={primerPrefill}
+          />
+        </div>
       </ThreadPrimitive.Root>
     </div>
   );
@@ -217,10 +313,15 @@ function CockpitChrome({
 function UserMessage() {
   return (
     <MessagePrimitive.Root className="group mt-4 flex flex-col items-end gap-1">
-      <div className="max-w-[80%] rounded-2xl rounded-br-sm border border-surface-700 bg-surface-800/70 px-3 py-1.5 text-sm whitespace-pre-wrap">
+      <div className="max-w-[80%] min-w-0 rounded-2xl rounded-br-sm border border-surface-700 bg-surface-800/70 px-3 py-1.5 text-sm">
         <MessagePrimitive.Parts
           components={{
-            Text: ({ text }) => <>{text}</>,
+            // User prompts get the same markdown pipeline as agent
+            // messages so fenced code blocks render with syntax
+            // highlighting instead of literal backticks. Smooth-reveal
+            // is off because user prompts arrive complete; the pacing
+            // only matters for streamed agent tokens. See #1108.
+            Text: ({ text }) => <Markdown text={text} smooth={false} />,
           }}
         />
       </div>
@@ -570,17 +671,72 @@ function EmptyState({
   );
 }
 
+/* ── Cleared turns disclosure ────────────────────────────────────── */
+
+function ClearedTurnsBanner({
+  hiddenCount,
+  expanded,
+  onToggle,
+}: {
+  hiddenCount: number;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      className="mb-4 w-full flex items-center gap-2 px-3 py-2 rounded-md border border-surface-700 bg-surface-800 text-text-secondary hover:bg-surface-700 hover:text-text-primary cursor-pointer text-sm"
+      aria-expanded={expanded}
+    >
+      <ChevronDown
+        size={14}
+        className={`shrink-0 transition-transform ${expanded ? "" : "-rotate-90"}`}
+        aria-hidden="true"
+      />
+      <span className="flex-1 text-left">
+        {expanded ? "Hide" : "Show"} {hiddenCount} earlier turn
+        {hiddenCount === 1 ? "" : "s"}
+        <span className="text-text-dim"> (cleared, not in the model's memory)</span>
+      </span>
+    </button>
+  );
+}
+
+/** Render a "Xm Ys" / "Ys" elapsed-time string for the
+ *  WorkingSpinner's "waiting on model" badge. Seconds-only under one
+ *  minute, minutes + seconds otherwise. Single-digit seconds zero-pad
+ *  in the minute case so "1m 09s" doesn't visually jump to "1m 10s"
+ *  width-wise during the live tick. */
+function formatElapsed(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const rem = seconds % 60;
+  return `${minutes}m ${rem.toString().padStart(2, "0")}s`;
+}
+
 /* ── Working spinner (rattle) ────────────────────────────────────── */
 
 function WorkingSpinner({
   thinking,
   tool,
+  lastActivityRef,
+  onForceEndTurn,
 }: {
   thinking: boolean;
   tool: string | null;
+  lastActivityRef: React.RefObject<number>;
+  onForceEndTurn: () => Promise<void>;
 }) {
   const [frame, setFrame] = useState(0);
   const [seed, setSeed] = useState(() => Math.floor(Math.random() * 0xffffffff));
+  // 1s-tick clock for the force-end-turn watchdog. We compare against
+  // `lastActivityRef.current` (a ref bumped on every incoming frame)
+  // and surface the escape hatch when the gap exceeds the configured
+  // threshold. Polling here, not on every event, so the rest of the
+  // tree isn't perturbed by activity bookkeeping. See #1100.
+  const [stalledSecs, setStalledSecs] = useState(0);
+  const { forceEndTurnThresholdSecs } = useCockpitPrefs();
 
   useEffect(() => {
     const t = window.setInterval(() => {
@@ -596,22 +752,63 @@ function WorkingSpinner({
     return () => window.clearInterval(t);
   }, []);
 
+  useEffect(() => {
+    // The hook starts the ref at 0 to avoid a render-time `Date.now()`
+    // (react-hooks/purity). If we land here while it's still the
+    // sentinel (e.g. mounting against a cached `turnActive=true`
+    // state without yet receiving a fresh frame), pin it to now so
+    // the watchdog clock isn't instantly tripped.
+    if (lastActivityRef.current === 0) {
+      lastActivityRef.current = Date.now();
+    }
+    const t = window.setInterval(() => {
+      const last = lastActivityRef.current;
+      setStalledSecs(Math.floor((Date.now() - last) / 1000));
+    }, 1000);
+    return () => window.clearInterval(t);
+  }, [lastActivityRef]);
+
   const state: "thinking" | "tool" | "working" = thinking
     ? "thinking"
     : tool
       ? "tool"
       : "working";
-  const label = chooseVerb(state, seed, tool);
+  // Swap the rattle verb for an explicit "waiting on model" badge
+  // with a live elapsed counter once the inactivity gap is clearly
+  // longer than normal TTFT. The user can then distinguish "model
+  // is taking a while" from "everything is wedged" without watching
+  // logs. Threshold reuses the force-end-turn config so users who
+  // want a more sensitive signal lower one knob and get both. See
+  // #1112.
+  const showStalled = stalledSecs >= forceEndTurnThresholdSecs;
+  const label = showStalled
+    ? `Waiting on model… ${formatElapsed(stalledSecs)}`
+    : chooseVerb(state, seed, tool);
+  const showForceEnd = showStalled;
 
   return (
-    <div className="flex items-center gap-2 text-sm italic text-text-muted">
-      <span
-        className="inline-block w-3 text-center font-mono text-brand-500"
-        aria-hidden="true"
-      >
-        {SPINNER_FRAMES[frame]}
-      </span>
-      <span>{label}</span>
+    <div className="flex flex-col gap-2 text-sm italic text-text-muted">
+      <div className="flex items-center gap-2">
+        <span
+          className="inline-block w-3 text-center font-mono text-brand-500"
+          aria-hidden="true"
+        >
+          {SPINNER_FRAMES[frame]}
+        </span>
+        <span>{label}</span>
+      </div>
+      {showForceEnd ? (
+        <button
+          type="button"
+          onClick={() => {
+            void onForceEndTurn();
+          }}
+          className="self-start text-xs not-italic px-2 py-1 rounded-md border border-surface-700 bg-surface-800 text-text-secondary hover:bg-surface-700 hover:text-text-primary cursor-pointer"
+          title={`No streaming activity for ${stalledSecs}s. Clears the spinner and sends a best-effort cancel to the agent.`}
+        >
+          Force end turn
+        </button>
+      ) : null}
     </div>
   );
 }
@@ -620,14 +817,16 @@ function WorkingSpinner({
 
 interface PlanStripProps {
   plan: Plan | null;
-  mode: CockpitState["mode"];
 }
 
-function PlanStrip({ plan, mode }: PlanStripProps) {
+function PlanStrip({ plan }: PlanStripProps) {
   const [expanded, setExpanded] = useState(false);
-  // Hide entirely on the most common case: no plan, default mode.
-  // The mode picker now lives in the composer footer.
-  if (!plan && mode === "Default") return null;
+  // Hide entirely when there are no steps to show. The mode picker
+  // now lives in the composer footer, so the strip only earns its
+  // pixels when there's a plan with at least one step. An agent that
+  // emits an empty `plan.steps` array otherwise leaves a clickable
+  // banner reading "0/0" with nothing under the disclosure.
+  if (!plan || plan.steps.length === 0) return null;
 
   // Pick the active step: prefer an explicit `InProgress` (Claude's
   // ExitPlanMode bridge sets this), otherwise fall back to the first
@@ -635,14 +834,12 @@ function PlanStrip({ plan, mode }: PlanStripProps) {
   // arrive with all entries Pending). Mirrors the server-side
   // `plan_summary_from_plan` logic so the strip and sidebar agree.
   const current =
-    plan?.steps.find((s) => s.status === "InProgress") ??
-    plan?.steps.find(
-      (s) => s.status !== "Done" && s.status !== "Cancelled",
-    );
-  const completed = plan?.steps.filter((s) => s.status === "Done").length ?? 0;
-  const totalSteps = plan?.steps.length ?? 0;
-  const pct = totalSteps > 0 ? Math.round((completed / totalSteps) * 100) : 0;
-  const allDone = totalSteps > 0 && completed === totalSteps;
+    plan.steps.find((s) => s.status === "InProgress") ??
+    plan.steps.find((s) => s.status !== "Done" && s.status !== "Cancelled");
+  const completed = plan.steps.filter((s) => s.status === "Done").length;
+  const totalSteps = plan.steps.length;
+  const pct = Math.round((completed / totalSteps) * 100);
+  const allDone = completed === totalSteps;
 
   return (
     <div className="border-b border-surface-800 bg-surface-900/95 backdrop-blur">
@@ -655,28 +852,26 @@ function PlanStrip({ plan, mode }: PlanStripProps) {
         <span className="truncate text-text-primary">
           {current?.title ?? (allDone ? "all steps complete" : "…")}
         </span>
-        {plan && (
-          <span className="ml-auto flex items-center gap-2">
-            <span className="text-[11px] tabular-nums text-text-dim">
-              {completed}/{totalSteps}
-            </span>
-            <span className="hidden sm:block h-1 w-16 overflow-hidden rounded-full bg-surface-800">
-              <span
-                className="block h-full bg-brand-500 transition-[width] duration-300"
-                style={{ width: `${pct}%` }}
-              />
-            </span>
-            <ChevronDown
-              className={[
-                "h-3.5 w-3.5 text-text-dim transition-transform",
-                expanded ? "rotate-180" : "",
-              ].join(" ")}
+        <span className="ml-auto flex items-center gap-2">
+          <span className="text-[11px] tabular-nums text-text-dim">
+            {completed}/{totalSteps}
+          </span>
+          <span className="hidden sm:block h-1 w-16 overflow-hidden rounded-full bg-surface-800">
+            <span
+              className="block h-full bg-brand-500 transition-[width] duration-300"
+              style={{ width: `${pct}%` }}
             />
           </span>
-        )}
+          <ChevronDown
+            className={[
+              "h-3.5 w-3.5 text-text-dim transition-transform",
+              expanded ? "rotate-180" : "",
+            ].join(" ")}
+          />
+        </span>
       </button>
 
-      {expanded && plan && (
+      {expanded && (
         <div className="max-h-64 overflow-y-auto border-t border-surface-800 px-4 py-2 text-sm">
           <ul className="space-y-1">
             {plan.steps.map((step) => (
@@ -741,25 +936,34 @@ function SystemNotices({
   status,
   lagged,
   rateLimit,
+  hasEverOpened,
 }: {
   status: CockpitContext["status"];
   lagged: boolean;
   rateLimit: CockpitState["rateLimit"];
+  hasEverOpened: boolean;
 }) {
   const messages: { kind: string; text: string }[] = [];
   if (status === "connecting") {
-    messages.push({ kind: "info", text: "Connecting to cockpit…" });
+    messages.push({
+      kind: "info",
+      text: hasEverOpened ? "Reconnecting to cockpit…" : "Starting cockpit…",
+    });
   }
   if (status === "error") {
     messages.push({
       kind: "warn",
-      text: "Cockpit reconnecting… showing cached transcript; new messages disabled.",
+      text: hasEverOpened
+        ? "Cockpit reconnecting… showing cached transcript; new messages disabled."
+        : "Starting cockpit worker… this can take a few seconds for new sessions.",
     });
   }
   if (status === "closed") {
     messages.push({
       kind: "warn",
-      text: "Cockpit disconnected. Showing cached transcript; new messages disabled.",
+      text: hasEverOpened
+        ? "Cockpit disconnected. Showing cached transcript; new messages disabled."
+        : "Cockpit not ready yet. Retrying…",
     });
   }
   if (lagged) {
@@ -828,6 +1032,25 @@ function WorkerRestartingBanner() {
       <span>
         Restarting cockpit worker… the daemon will respawn the agent with
         your existing transcript shortly.
+      </span>
+    </div>
+  );
+}
+
+/** First-spawn variant of `WorkerResumingBanner` shown when the
+ *  session has no prior transcript (`lastSeq === 0`). The "cached
+ *  transcript still available" copy is wrong there since there's
+ *  nothing to be still-available. See #1106. */
+function SpawningBanner() {
+  return (
+    <div className="flex items-center gap-2 border-b border-amber-900/60 bg-amber-950/40 px-4 py-2 text-xs text-amber-200">
+      <span
+        className="inline-block h-2 w-2 animate-pulse rounded-full bg-amber-400"
+        aria-hidden
+      />
+      <span>
+        Starting cockpit worker for new session… this can take a few
+        seconds.
       </span>
     </div>
   );
