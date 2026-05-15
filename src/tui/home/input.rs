@@ -21,6 +21,20 @@ use crate::tui::dialogs::{
 use crate::tui::diff::{DiffAction, DiffView};
 use crate::tui::settings::{SettingsAction, SettingsView};
 
+fn resolve_hook_install_agent(
+    tool_name: &str,
+    session_config: &crate::session::config::SessionConfig,
+) -> Option<&'static crate::agents::AgentDef> {
+    crate::agents::get_agent(tool_name)
+        .or_else(|| {
+            session_config
+                .agent_detect_as
+                .get(tool_name)
+                .and_then(|detect_as| crate::agents::get_agent(detect_as))
+        })
+        .filter(|agent| agent.hook_config.is_some())
+}
+
 impl HomeView {
     pub fn is_diff_open(&self) -> bool {
         self.diff_view.is_some()
@@ -307,23 +321,23 @@ impl HomeView {
                     } else {
                         data.tool.clone()
                     };
-                    let has_hooks = crate::agents::get_agent(&tool_name)
-                        .and_then(|a| a.hook_config.as_ref())
-                        .is_some();
 
-                    if has_hooks {
+                    let resolved_config = resolve_config_or_warn(&data.profile);
+                    if let Some(hook_agent) =
+                        resolve_hook_install_agent(&tool_name, &resolved_config.session)
+                    {
                         let config = crate::session::config::load_config().ok().flatten();
-                        let hooks_enabled = config
-                            .as_ref()
-                            .map(|c| c.session.agent_status_hooks)
-                            .unwrap_or(true);
+                        let hooks_enabled = resolved_config.session.agent_status_hooks;
                         let acknowledged = config
                             .as_ref()
                             .map(|c| c.app_state.has_acknowledged_agent_hooks)
                             .unwrap_or(false);
 
                         if hooks_enabled && !acknowledged {
-                            self.hooks_install_dialog = Some(HooksInstallDialog::new(&tool_name));
+                            self.hooks_install_dialog = Some(HooksInstallDialog::new_for_profile(
+                                hook_agent.name,
+                                Some(&data.profile),
+                            ));
                             self.pending_hooks_install_data = Some(data);
                             return None;
                         }
@@ -1844,5 +1858,43 @@ impl HomeView {
             // Everything else passes through unchanged (navigation, ?, /, Enter, etc.)
             _ => Some(key),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_hook_install_agent;
+    use crate::session::config::SessionConfig;
+
+    #[test]
+    fn hook_install_agent_uses_detect_as_for_custom_codex_wrapper() {
+        let mut config = SessionConfig::default();
+        config
+            .agent_detect_as
+            .insert("wrapped-codex".to_string(), "codex".to_string());
+
+        let agent = resolve_hook_install_agent("wrapped-codex", &config).unwrap();
+
+        assert_eq!(agent.name, "codex");
+    }
+
+    #[test]
+    fn hook_install_agent_keeps_builtin_agent_resolution_first() {
+        let mut config = SessionConfig::default();
+        config
+            .agent_detect_as
+            .insert("opencode".to_string(), "codex".to_string());
+
+        assert!(resolve_hook_install_agent("opencode", &config).is_none());
+    }
+
+    #[test]
+    fn hook_install_agent_ignores_unknown_detect_as_target() {
+        let mut config = SessionConfig::default();
+        config
+            .agent_detect_as
+            .insert("wrapped-agent".to_string(), "missing-agent".to_string());
+
+        assert!(resolve_hook_install_agent("wrapped-agent", &config).is_none());
     }
 }

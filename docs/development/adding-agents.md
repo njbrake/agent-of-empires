@@ -36,7 +36,7 @@ Requires: `AgentDef` entry + stub `detect_status` function.
 
 Requires: a `detect_<agent>_status(content: &str) -> Status` function that parses tmux pane content.
 
-Examples: OpenCode, Codex, Vibe, Copilot, Pi, Droid.
+Examples: OpenCode, Vibe, Copilot, Pi, Droid.
 
 ### Level 3: Status Detection via Hooks
 
@@ -44,9 +44,9 @@ Examples: OpenCode, Codex, Vibe, Copilot, Pi, Droid.
 - Most reliable; survives UI changes
 - Requires the agent to support a hook/event system
 
-Requires: either using the generic `hook_config` (if the agent uses the same JSON format as Claude/Cursor/Gemini) or a custom `install_<agent>_hooks()` function.
+Requires: `hook_config` for the status events and config path, plus either the generic `install_hooks()` path for Claude-style JSON or a custom `install_<agent>_hooks()` function for another format.
 
-Examples: Claude, Cursor, Gemini (generic), Hermes (custom YAML), Kiro (custom JSON).
+Examples: Claude, Cursor, Gemini (generic), Codex (custom TOML), Hermes (custom YAML), Kiro (custom JSON).
 
 ### Level 4: Session Resume
 
@@ -226,6 +226,26 @@ cargo build
 ```
 
 Set `hook_config: Some(AgentHookConfig { ... })` in the agent def; the generic `install_hooks()` handles it.
+
+### Codex (custom TOML)
+
+Codex stores AoE status hooks in the `[hooks]` table in `.codex/config.toml`:
+
+```toml
+[[hooks.PreToolUse]]
+
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = "sh -c '...'"
+
+[[hooks.Stop]]
+
+[[hooks.Stop.hooks]]
+type = "command"
+command = "sh -c '...'"
+```
+
+Set `hook_config: Some(AgentHookConfig { settings_rel_path: ".codex/config.toml", ... })` in the agent def. Host installs still use `install_codex_hooks()` so `CODEX_HOME`, existing `[hooks.state]` trust data, and `[features].hooks = false` are respected.
 
 ### Hermes (custom YAML)
 
