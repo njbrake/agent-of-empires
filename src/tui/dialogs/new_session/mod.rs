@@ -304,11 +304,7 @@ fn append_claude_account_rows(
     tools: &mut Vec<String>,
     tool_accounts: &mut Vec<Option<ClaudeAccount>>,
 ) {
-    if std::env::var("AOE_CLAUDE_ACCOUNTS_PICKER")
-        .ok()
-        .as_deref()
-        != Some("1")
-    {
+    if std::env::var("AOE_CLAUDE_ACCOUNTS_PICKER").ok().as_deref() != Some("1") {
         return;
     }
     if !tools.iter().any(|t| t == "claude") {

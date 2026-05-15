@@ -3222,8 +3222,9 @@ mod tests {
     fn test_instance_claude_config_dir_roundtrip() {
         let mut inst = Instance::new("Test", "/tmp/test");
         inst.tool = "claude".to_string();
-        inst.claude_config_dir =
-            Some(std::path::PathBuf::from("$HOME/.claude-accounts/forit-main"));
+        inst.claude_config_dir = Some(std::path::PathBuf::from(
+            "$HOME/.claude-accounts/forit-main",
+        ));
 
         let json = serde_json::to_string(&inst).unwrap();
         assert!(json.contains("claude_config_dir"));
@@ -3668,8 +3669,7 @@ mod tests {
     fn test_build_host_command_injects_claude_config_dir() {
         let mut inst = Instance::new("test", "/tmp/test");
         inst.tool = "claude".to_string();
-        inst.claude_config_dir =
-            Some(std::path::PathBuf::from("/tmp/aoe-claude-cfg-test"));
+        inst.claude_config_dir = Some(std::path::PathBuf::from("/tmp/aoe-claude-cfg-test"));
         let cmd = inst
             .build_host_command(crate::agents::get_agent("claude"), &None)
             .unwrap();
@@ -3709,22 +3709,21 @@ mod tests {
         let prev = std::env::var_os("HOME");
         std::env::set_var("HOME", "/Users/picker-test");
         assert_eq!(
-            expand_claude_config_dir(&std::path::PathBuf::from(
-                "~/.claude-accounts/forit-main"
-            )),
+            expand_claude_config_dir(&std::path::PathBuf::from("~/.claude-accounts/forit-main")),
             "/Users/picker-test/.claude-accounts/forit-main"
         );
         assert_eq!(
-            expand_claude_config_dir(&std::path::PathBuf::from(
-                "$HOME/.claude-accounts/wma-work"
-            )),
+            expand_claude_config_dir(&std::path::PathBuf::from("$HOME/.claude-accounts/wma-work")),
             "/Users/picker-test/.claude-accounts/wma-work"
         );
         assert_eq!(
             expand_claude_config_dir(&std::path::PathBuf::from("/absolute/path")),
             "/absolute/path"
         );
-        assert_eq!(expand_claude_config_dir(&std::path::PathBuf::from("~")), "/Users/picker-test");
+        assert_eq!(
+            expand_claude_config_dir(&std::path::PathBuf::from("~")),
+            "/Users/picker-test"
+        );
         assert_eq!(
             expand_claude_config_dir(&std::path::PathBuf::from("$HOME")),
             "/Users/picker-test"

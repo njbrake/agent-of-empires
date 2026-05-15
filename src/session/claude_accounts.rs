@@ -24,11 +24,7 @@ use std::path::{Path, PathBuf};
 /// Acronym pretty-print table. Lower-case keyword => display form.
 /// Matched per dash-separated segment of the account directory name so
 /// `forit-main` => `ForIT Main`, `wma-work` => `WMA Work`.
-const ACRONYMS: &[(&str, &str)] = &[
-    ("forit", "ForIT"),
-    ("wma", "WMA"),
-    ("cs", "CS"),
-];
+const ACRONYMS: &[(&str, &str)] = &[("forit", "ForIT"), ("wma", "WMA"), ("cs", "CS")];
 
 /// One discovered Claude account.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -128,7 +124,9 @@ fn format_segment(segment: &str) -> String {
 fn title_case(s: &str) -> String {
     let mut chars = s.chars();
     match chars.next() {
-        Some(first) => first.to_ascii_uppercase().to_string() + &chars.as_str().to_ascii_lowercase(),
+        Some(first) => {
+            first.to_ascii_uppercase().to_string() + &chars.as_str().to_ascii_lowercase()
+        }
         None => String::new(),
     }
 }
@@ -178,8 +176,10 @@ mod tests {
         make_account(tmp.path(), "forit-main");
         make_account(tmp.path(), "pivot-main");
 
-        let names: Vec<String> =
-            discover_accounts(tmp.path()).into_iter().map(|a| a.name).collect();
+        let names: Vec<String> = discover_accounts(tmp.path())
+            .into_iter()
+            .map(|a| a.name)
+            .collect();
         assert_eq!(names, vec!["forit-main", "pivot-main", "wma-work"]);
     }
 
