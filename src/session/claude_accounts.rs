@@ -9,21 +9,21 @@
 //! ```text
 //!   claude
 //!   ──────
-//!   claude → ForIT Main
-//!   claude → ForIT Work
+//!   claude => ForIT Main
+//!   claude => ForIT Work
 //! ```
 //!
 //! Selection writes the chosen account's directory path into
 //! `Instance.claude_config_dir`; spawn-time injection prepends
 //! `CLAUDE_CONFIG_DIR=<expanded>` to the host env prefix. The plain `claude`
-//! row leaves `claude_config_dir` as `None` (inherit shell env — today's
+//! row leaves `claude_config_dir` as `None` (inherit shell env, the
 //! default behavior).
 
 use std::path::{Path, PathBuf};
 
-/// Acronym pretty-print table. Lower-case keyword → display form.
+/// Acronym pretty-print table. Lower-case keyword => display form.
 /// Matched per dash-separated segment of the account directory name so
-/// `forit-main` → `ForIT Main`, `wma-work` → `WMA Work`.
+/// `forit-main` => `ForIT Main`, `wma-work` => `WMA Work`.
 const ACRONYMS: &[(&str, &str)] = &[
     ("forit", "ForIT"),
     ("wma", "WMA"),
@@ -36,7 +36,7 @@ pub struct ClaudeAccount {
     /// Directory basename (e.g. `"forit-main"`). Used as the stable
     /// identifier and as the input to `display_label`.
     pub name: String,
-    /// Absolute path to the account directory — what gets injected as
+    /// Absolute path to the account directory, injected as
     /// `$CLAUDE_CONFIG_DIR`. Persisted to `Instance.claude_config_dir`.
     pub config_dir: PathBuf,
 }
@@ -59,7 +59,7 @@ pub fn default_root() -> Option<PathBuf> {
 /// - is not dotted (`.foo`),
 /// - contains a `settings.json` file or symlink.
 ///
-/// Missing root or unreadable root → empty vector (no panic). Entries are
+/// Missing root or unreadable root => empty vector (no panic). Entries are
 /// sorted alphabetically by name for stable picker ordering.
 pub fn discover_accounts(root: &Path) -> Vec<ClaudeAccount> {
     let Ok(entries) = std::fs::read_dir(root) else {
@@ -104,10 +104,10 @@ fn has_settings_json(dir: &Path) -> bool {
 /// Segments are joined with a single space.
 ///
 /// Examples:
-/// - `forit-main`   → `ForIT Main`
-/// - `wma-work`     → `WMA Work`
-/// - `pivot-main`   → `Pivot Main`
-/// - `forit-backup` → `ForIT Backup`
+/// - `forit-main`   => `ForIT Main`
+/// - `wma-work`     => `WMA Work`
+/// - `pivot-main`   => `Pivot Main`
+/// - `forit-backup` => `ForIT Backup`
 pub fn display_label(name: &str) -> String {
     name.split('-')
         .map(format_segment)

@@ -52,6 +52,7 @@ impl HomeView {
         )?;
         let mut instance = build_result.instance;
         instance.source_profile = target_profile.clone();
+        instance.claude_config_dir = data.claude_config_dir;
         let session_id = instance.id.clone();
 
         // Ensure target profile storage exists

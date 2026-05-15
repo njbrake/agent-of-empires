@@ -14,6 +14,7 @@ use tui_input::Input;
 
 use super::DialogResult;
 use crate::containers::{self, ContainerRuntimeInterface};
+use crate::session::claude_accounts::{self, ClaudeAccount};
 use crate::session::config::{load_config, save_config, DefaultTerminalMode, SandboxConfig};
 use crate::session::profile_config::resolve_config_or_warn;
 use crate::session::repo_config::HookProgress;
@@ -103,6 +104,10 @@ pub struct NewSessionData {
     pub extra_args: String,
     /// Command override for the agent binary (replaces the default binary)
     pub command_override: String,
+    /// Per-session `CLAUDE_CONFIG_DIR` override picked from an
+    /// account-bound row (e.g. `claude => ForIT Main`). `None` for the
+    /// plain `claude` row and for non-Claude tools.
+    pub claude_config_dir: Option<std::path::PathBuf>,
 }
 
 pub struct NewSessionDialog {
@@ -115,6 +120,12 @@ pub struct NewSessionDialog {
     pub(super) tool_index: usize,
     pub(super) focused_field: usize,
     pub(super) available_tools: Vec<String>,
+    /// Parallel to `available_tools`: when a row is the account-bound
+    /// `claude => <Label>` variant, the matching entry is `Some(account)`
+    /// so submit knows which `CLAUDE_CONFIG_DIR` to attach. `None` for
+    /// the plain `claude` row and for every non-Claude tool. Always the
+    /// same length as `available_tools`.
+    pub(super) available_tool_accounts: Vec<Option<ClaudeAccount>>,
     pub(super) worktree_enabled: bool,
     pub(super) worktree_branch: Input,
     pub(super) create_new_branch: bool,
@@ -283,6 +294,48 @@ fn handle_editable_list_key(
 }
 
 /// Build label/value pairs for non-default inherited sandbox settings.
+/// Discover Claude account dirs and append one `claude` row per account
+/// to the tool list, with the matching `ClaudeAccount` in the parallel
+/// `tool_accounts` vector. Gated behind `AOE_CLAUDE_ACCOUNTS_PICKER=1`
+/// during the first rollout so the upstream-PR-target default behavior
+/// is unchanged for anyone who has not opted in. Caller passes the
+/// pre-populated `tools` (with `None` filler in `tool_accounts`).
+fn append_claude_account_rows(
+    tools: &mut Vec<String>,
+    tool_accounts: &mut Vec<Option<ClaudeAccount>>,
+) {
+    if std::env::var("AOE_CLAUDE_ACCOUNTS_PICKER")
+        .ok()
+        .as_deref()
+        != Some("1")
+    {
+        return;
+    }
+    if !tools.iter().any(|t| t == "claude") {
+        return; // No plain `claude` row means Claude is unavailable; no point adding accounts.
+    }
+    let Some(root) = claude_accounts::default_root() else {
+        return;
+    };
+    for acct in claude_accounts::discover_accounts(&root) {
+        tools.push("claude".to_string());
+        tool_accounts.push(Some(acct));
+    }
+}
+
+/// Render the tool name for the row at `index`. Account-bound rows show
+/// `claude => ForIT Main`; everything else shows the bare tool name.
+pub(super) fn tool_row_label(
+    tools: &[String],
+    tool_accounts: &[Option<ClaudeAccount>],
+    index: usize,
+) -> String {
+    match tool_accounts.get(index) {
+        Some(Some(acct)) => format!("{} => {}", tools[index], acct.display_label()),
+        _ => tools.get(index).cloned().unwrap_or_default(),
+    }
+}
+
 fn build_inherited_settings(sandbox: &SandboxConfig) -> Vec<(String, String)> {
     let mut settings = Vec::new();
     if sandbox.mount_ssh {
@@ -323,7 +376,10 @@ impl NewSessionDialog {
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
 
-        let available_tools: Vec<String> = tools.available_list().to_vec();
+        let mut available_tools: Vec<String> = tools.available_list().to_vec();
+        let mut available_tool_accounts: Vec<Option<ClaudeAccount>> =
+            vec![None; available_tools.len()];
+        append_claude_account_rows(&mut available_tools, &mut available_tool_accounts);
         let docker_available = containers::get_container_runtime().is_available();
 
         // Load resolved config (global + profile + repo overrides from cwd)
@@ -389,6 +445,7 @@ impl NewSessionDialog {
             tool_index,
             focused_field: 0,
             available_tools,
+            available_tool_accounts,
             existing_groups,
             group_picker: ListPicker::new("Select Group"),
             branch_picker: ListPicker::new("Select Branch"),
@@ -644,6 +701,7 @@ impl NewSessionDialog {
             tool_index,
             focused_field: 0,
             available_tools: tools,
+            available_tool_accounts: Vec::new(),
             existing_groups: Vec::new(),
             group_picker: ListPicker::new("Select Group"),
             branch_picker: ListPicker::new("Select Branch"),
@@ -707,6 +765,7 @@ impl NewSessionDialog {
             tool_index: 0,
             focused_field: 0,
             available_tools: tools.iter().map(|s| s.to_string()).collect(),
+            available_tool_accounts: Vec::new(),
             existing_groups: Vec::new(),
             group_picker: ListPicker::new("Select Group"),
             branch_picker: ListPicker::new("Select Branch"),
@@ -1590,6 +1649,11 @@ impl NewSessionDialog {
             path: self.path.value().trim().to_string(),
             group: self.group.value().trim().to_string(),
             tool: self.available_tools[self.tool_index].clone(),
+            claude_config_dir: self
+                .available_tool_accounts
+                .get(self.tool_index)
+                .and_then(|slot| slot.as_ref())
+                .map(|acct| acct.config_dir.clone()),
             worktree_enabled: self.worktree_enabled,
             worktree_branch,
             create_new_branch: self.create_new_branch,
