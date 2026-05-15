@@ -550,46 +550,6 @@ export async function loginStatus(): Promise<LoginStatus> {
   );
 }
 
-/**
- * Pre-flight elevation check before opening a sensitive WebSocket
- * (terminal attach, cockpit live updates). The browser WebSocket API
- * hides HTTP upgrade response bodies from JS, so a server-side
- * `403 elevation_required` on a WS upgrade would otherwise produce
- * a silent `onerror` with no path to the inline passphrase prompt.
- * Calling this from the connect closure dispatches the elevation
- * event explicitly when the session needs a fresh step-up window.
- * See #1131.
- *
- * Returns `true` when the caller is clear to open the WebSocket and
- * `false` when an elevation prompt has been opened; in the latter
- * case, the caller should NOT dial the socket and should retry
- * after the user confirms (or give up if they cancel).
- */
-export async function preflightElevationForSensitiveWs(): Promise<boolean> {
-  let status: LoginStatus;
-  try {
-    status = await loginStatus();
-  } catch {
-    // Could not read status (network failure). Don't block the WS;
-    // the server will reject the upgrade and the auto-reconnect path
-    // will surface the failure separately.
-    return true;
-  }
-  if (!status.required) return true;
-  if (!status.authenticated) {
-    // The login session itself is gone; LoginPage handling kicks in
-    // elsewhere. Don't open the socket.
-    return false;
-  }
-  if (status.elevated) return true;
-  // Lazy import keeps the event constant in one place without a
-  // top-level circular import between api.ts and fetchInterceptor.ts.
-  void import("./fetchInterceptor").then(({ ELEVATION_REQUIRED_EVENT }) => {
-    window.dispatchEvent(new CustomEvent(ELEVATION_REQUIRED_EVENT));
-  });
-  return false;
-}
-
 /** Verify the auth token via a session-exempt endpoint (`/api/login/status`).
  *  Returning `true` means the token authenticated; the caller still has to
  *  consult `loginStatus()` to decide between the main app and LoginPage.

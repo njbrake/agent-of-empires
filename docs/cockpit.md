@@ -540,17 +540,26 @@ Reinstalling the adapter does not help here; the adapter is fine, the cwd is gon
   longer holds events that far back, you'll see a `History
   truncated` notice and reloading is the cleanest way to resync.
 
-### Sensitive cockpit actions ask for the passphrase again
+### Editing settings asks for the passphrase again
 
-When passphrase login is configured, sending a prompt, cancelling a
-turn, resolving an approval, switching mode, or restarting / killing
-the cockpit worker requires that your login session has been
-"elevated" within the last 15 minutes (#1131). The first such
-action after a fresh page load surfaces an inline passphrase prompt
-that calls `POST /api/login/elevate`. Subsequent actions inside the
-same 15-minute window go through without re-prompting. Read-only
-endpoints (replay, status, history, context primer) are never
-gated.
+When passphrase login is configured, the daily-use cockpit flows
+(sending prompts, cancelling turns, resolving approvals, switching
+mode, restarting workers, attaching terminals) do NOT prompt for the
+passphrase again. Your session cookie plus the device-binding
+secret are sufficient, the same way an SSH session stays open after
+the initial authentication. See #1137.
+
+Editing the persisted config IS gated. Saving the global settings
+panel, creating / deleting / renaming a profile, editing a profile's
+settings, or changing the default profile requires that your login
+session has been "elevated" within the last 15 minutes via `POST
+/api/login/elevate`. The first such action after a fresh page load
+surfaces an inline passphrase prompt; subsequent edits inside the
+same 15-minute window go through without re-prompting. The narrow
+scope catches the persisted-tamper attack (an attacker with stolen
+session + binding plants a malicious Docker image, worktree
+template, or profile, then waits for the owner to spawn a session
+that runs it) without putting friction on the conversation surface.
 
 ### WebSocket auto-reconnect and keepalive
 

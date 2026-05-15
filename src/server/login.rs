@@ -3,7 +3,9 @@
 //! When a passphrase is configured, users must enter it after token auth
 //! to access the dashboard. Login sessions are tracked server-side with
 //! a device-binding secret (replaces the prior strict IP binding, see
-//! #1131) and a 30-day sliding expiry window.
+//! #1131) and a 24-hour sliding expiry window. Active use refreshes
+//! the deadline; one day of inactivity logs the device out and
+//! requires re-entering the passphrase. See #1137 for the rationale.
 //!
 //! The device-binding model: the client generates 32 random bytes via
 //! `crypto.getRandomValues`, stores them in `localStorage`, and presents
@@ -29,8 +31,12 @@ use tokio::sync::RwLock;
 use super::auth::resolve_client_ip;
 use super::AppState;
 
-/// 30-day session lifetime (sliding window).
-const SESSION_LIFETIME: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+/// Session lifetime (sliding window). Refreshes on every
+/// authenticated request, so an active user never sees it; the
+/// effective behavior is "log out after 24 hours of inactivity",
+/// matching the SSH-equivalent model the user expects on a single-
+/// owner deployment. See #1137.
+const SESSION_LIFETIME: Duration = Duration::from_secs(24 * 60 * 60);
 
 /// Step-up elevation window. Required for high-risk operations
 /// (terminal attach, cockpit command execution, file writes,

@@ -193,125 +193,37 @@ fn normalize_path(path: &str) -> &str {
 }
 
 /// Whether a request path + method needs an elevated login session
-/// (step-up auth, 15-minute passphrase confirmation window). Covers
-/// surfaces that map to SSH-equivalent capabilities or that could
-/// redirect notifications / write to disk:
+/// (step-up auth, 15-minute passphrase confirmation window).
 ///
-/// - Terminal attach + cockpit live WS upgrades.
-/// - Session lifecycle (create, delete, rename, send keystrokes,
-///   spawn terminal/cockpit, set notifications).
-/// - Cockpit mutating endpoints (prompt, cancel, force end turn,
-///   approval resolution, spawn/restart/stop/kill, mode, enable,
-///   disable).
-/// - Filesystem-mutating endpoints outside the session tree
-///   (`/api/git/clone`, project create/delete).
-/// - Push subscription mutation (an attacker could redirect
-///   notifications to their own endpoint).
+/// Scope is intentionally narrow: only persistent-config writes that
+/// can plant code for the owner's next session spawn. Daily-use
+/// surfaces (cockpit prompt, terminal attach, session lifecycle,
+/// approval resolution) rely on the session cookie + device binding
+/// alone, matching the SSH model the user wanted. See discussion on
+/// #1137. The protected attack class is the persisted-tamper pattern:
+/// an attacker with stolen session and binding plants a malicious
+/// Docker image, worktree template, or profile, then waits for the
+/// owner to spawn a session that runs it. The writes must be gated
+/// even though the spawn itself is not, because the spawn runs with
+/// the legitimate owner's elevation, not the attacker's.
 ///
-/// Read-only `GET`/`HEAD` on the same resources stay open; this is
-/// an allow-list, not a default-deny, so adding a benign read
-/// endpoint never accidentally hides behind a passphrase prompt.
-/// When adding a new mutating REST surface in the future, add it
-/// here AND add a corresponding test in `requires_elevation_paths`.
-/// See #1131.
+/// Read-only `GET`/`HEAD` on these resources stay open; this is an
+/// allow-list, not a default-deny, so adding a benign read endpoint
+/// never accidentally hides behind a passphrase prompt. When adding
+/// a new mutating settings/profile surface, add it here AND a case
+/// in `requires_elevation_paths`.
 fn requires_elevation(method: &axum::http::Method, path: &str) -> bool {
     use axum::http::Method;
 
     let path = normalize_path(path);
 
-    // WebSocket upgrades grant live shell / live cockpit streaming.
-    // Match specific suffixes rather than `.contains("/ws")` so a
-    // future path like `/api/debug/ws-status` does not get gated by
-    // accident.
-    if path.ends_with("/ws") || path.ends_with("/ws-readonly") || path.ends_with("/cockpit/ws") {
-        return true;
-    }
-
     if method == Method::GET || method == Method::HEAD {
         return false;
     }
 
-    // Session lifecycle on the collection endpoint.
-    if path == "/api/sessions" && method == Method::POST {
-        return true;
-    }
-
-    // Per-session mutations. Includes DELETE /api/sessions/{id} and
-    // DELETE /api/sessions/{id}/cockpit (cockpit shutdown).
-    if path.starts_with("/api/sessions/") {
-        if method == Method::DELETE {
-            return true;
-        }
-        let cockpit_prompt = path.ends_with("/cockpit/prompt");
-        let cockpit_cancel = path.ends_with("/cockpit/cancel");
-        let cockpit_force = path.ends_with("/cockpit/force_end_turn");
-        let cockpit_approval = path.contains("/cockpit/approvals/");
-        let cockpit_spawn = path.ends_with("/cockpit/spawn");
-        let cockpit_restart = path.ends_with("/cockpit/restart");
-        let cockpit_stop = path.ends_with("/cockpit/stop");
-        let cockpit_kill = path.ends_with("/cockpit/kill");
-        let cockpit_mode = path.ends_with("/cockpit/mode");
-        let cockpit_enable = path.ends_with("/cockpit/enable");
-        let cockpit_disable = path.ends_with("/cockpit/disable");
-        let session_send = path.ends_with("/send");
-        let session_terminal = path.ends_with("/terminal");
-        let container_terminal = path.ends_with("/container-terminal");
-        let session_rename_or_patch = method == Method::PATCH;
-        let session_ensure = path.ends_with("/ensure") && method == Method::POST;
-        let session_notifications = path.ends_with("/notifications") && method == Method::PATCH;
-
-        if cockpit_prompt
-            || cockpit_cancel
-            || cockpit_force
-            || cockpit_approval
-            || cockpit_spawn
-            || cockpit_restart
-            || cockpit_stop
-            || cockpit_kill
-            || cockpit_mode
-            || cockpit_enable
-            || cockpit_disable
-            || session_send
-            || session_terminal
-            || container_terminal
-            || session_rename_or_patch
-            || session_ensure
-            || session_notifications
-        {
-            return true;
-        }
-        return false;
-    }
-
-    // Filesystem mutations outside `/api/sessions/`. `git/clone`
-    // writes a fresh worktree to disk; project create/delete touch
-    // the on-disk project registry. Push subscribe / unsubscribe is
-    // gated because an attacker could redirect approval / new-login
-    // notifications away from the legitimate owner.
-    if path == "/api/git/clone" && method == Method::POST {
-        return true;
-    }
-    if path == "/api/projects" && method == Method::POST {
-        return true;
-    }
-    if path.starts_with("/api/projects/") && method == Method::DELETE {
-        return true;
-    }
-    if path == "/api/push/subscribe" && method == Method::POST {
-        return true;
-    }
-    if path == "/api/push/unsubscribe" && method == Method::POST {
-        return true;
-    }
-
-    // Settings and profile mutations. The persisted config controls
-    // the Docker image, environment, volume mounts, and worktree
-    // path templates that the next session spawn uses. The spawn
-    // itself is elevation-gated, but it runs with the legitimate
-    // user's elevation, not the attacker's, so an attacker with
-    // stolen session + binding could persist a malicious image and
-    // wait for the owner's next legitimate spawn to execute it.
-    // Gate the writes too. See #1131 / #1137 post-review.
+    // Settings + profile mutations. These persist the Docker image,
+    // environment, volume mounts, and worktree templates the owner's
+    // next session spawn uses.
     if path == "/api/settings" && method == Method::PATCH {
         return true;
     }
@@ -895,52 +807,12 @@ mod tests {
     #[test]
     fn requires_elevation_paths() {
         use axum::http::Method;
-        // Sensitive: terminal WS attach.
-        assert!(requires_elevation(&Method::GET, "/api/sessions/abc/ws"));
-        assert!(requires_elevation(
-            &Method::GET,
-            "/api/sessions/abc/ws-readonly"
-        ));
-        // Sensitive: cockpit WS upgrade.
-        assert!(requires_elevation(&Method::GET, "/sessions/abc/cockpit/ws"));
-        // Sensitive: cockpit mutating endpoints.
-        assert!(requires_elevation(
-            &Method::POST,
-            "/api/sessions/abc/cockpit/prompt"
-        ));
-        assert!(requires_elevation(
-            &Method::POST,
-            "/api/sessions/abc/cockpit/cancel"
-        ));
-        assert!(requires_elevation(
-            &Method::POST,
-            "/api/sessions/abc/cockpit/approvals/nonce1"
-        ));
-        // Sensitive: session lifecycle.
-        assert!(requires_elevation(&Method::POST, "/api/sessions"));
-        assert!(requires_elevation(&Method::DELETE, "/api/sessions/abc"));
-        assert!(requires_elevation(&Method::POST, "/api/sessions/abc/send"));
-        assert!(requires_elevation(&Method::PATCH, "/api/sessions/abc"));
-        assert!(requires_elevation(
-            &Method::POST,
-            "/api/sessions/abc/ensure"
-        ));
-        assert!(requires_elevation(
-            &Method::PATCH,
-            "/api/sessions/abc/notifications"
-        ));
-        // Sensitive: filesystem / project mutations outside sessions.
-        assert!(requires_elevation(&Method::POST, "/api/git/clone"));
-        assert!(requires_elevation(&Method::POST, "/api/projects"));
-        assert!(requires_elevation(&Method::DELETE, "/api/projects/myproj"));
-        // Sensitive: push subscription mutations.
-        assert!(requires_elevation(&Method::POST, "/api/push/subscribe"));
-        assert!(requires_elevation(&Method::POST, "/api/push/unsubscribe"));
-        // Sensitive: settings / profile mutations. These persist the
+        // Sensitive: settings + profile writes. These persist the
         // Docker image, env, volume mounts, and worktree templates
-        // that the owner's next legitimate session spawn will use, so
-        // an attacker who skipped the elevation gate on the writes
-        // could plant a malicious config and wait. See #1131 / #1137.
+        // that the owner's next session spawn will use, so an
+        // attacker with stolen session + binding could plant a
+        // malicious config and wait for the owner to spawn. See
+        // #1137 (settings-only step-up scope).
         assert!(requires_elevation(&Method::PATCH, "/api/settings"));
         assert!(requires_elevation(&Method::PATCH, "/api/default-profile"));
         assert!(requires_elevation(&Method::POST, "/api/profiles"));
@@ -954,30 +826,63 @@ mod tests {
         ));
         assert!(requires_elevation(&Method::DELETE, "/api/profiles/work"));
         // Trailing slash must not bypass the gate.
+        assert!(requires_elevation(&Method::PATCH, "/api/settings/"));
         assert!(requires_elevation(
+            &Method::PATCH,
+            "/api/profiles/work/settings/"
+        ));
+
+        // NOT gated: daily-use surfaces. Device binding + session
+        // cookie alone authenticate these. See #1137.
+        assert!(!requires_elevation(&Method::GET, "/api/sessions/abc/ws"));
+        assert!(!requires_elevation(
+            &Method::GET,
+            "/api/sessions/abc/ws-readonly"
+        ));
+        assert!(!requires_elevation(
+            &Method::GET,
+            "/sessions/abc/cockpit/ws"
+        ));
+        assert!(!requires_elevation(
             &Method::POST,
-            "/api/sessions/abc/cockpit/prompt/"
-        ));
-        // Read-only GETs are NOT gated even on per-session paths.
-        assert!(!requires_elevation(&Method::GET, "/api/sessions"));
-        assert!(!requires_elevation(&Method::GET, "/api/sessions/abc"));
-        assert!(!requires_elevation(
-            &Method::GET,
-            "/api/sessions/abc/cockpit/replay"
+            "/api/sessions/abc/cockpit/prompt"
         ));
         assert!(!requires_elevation(
-            &Method::GET,
-            "/api/sessions/abc/diff/files"
+            &Method::POST,
+            "/api/sessions/abc/cockpit/cancel"
         ));
-        assert!(!requires_elevation(&Method::GET, "/api/push/status"));
+        assert!(!requires_elevation(
+            &Method::POST,
+            "/api/sessions/abc/cockpit/approvals/nonce1"
+        ));
+        assert!(!requires_elevation(&Method::POST, "/api/sessions"));
+        assert!(!requires_elevation(&Method::DELETE, "/api/sessions/abc"));
+        assert!(!requires_elevation(&Method::POST, "/api/sessions/abc/send"));
+        assert!(!requires_elevation(&Method::PATCH, "/api/sessions/abc"));
+        assert!(!requires_elevation(
+            &Method::POST,
+            "/api/sessions/abc/ensure"
+        ));
+        assert!(!requires_elevation(
+            &Method::PATCH,
+            "/api/sessions/abc/notifications"
+        ));
+        assert!(!requires_elevation(&Method::POST, "/api/git/clone"));
+        assert!(!requires_elevation(&Method::POST, "/api/projects"));
+        assert!(!requires_elevation(&Method::DELETE, "/api/projects/myproj"));
+        assert!(!requires_elevation(&Method::POST, "/api/push/subscribe"));
+        assert!(!requires_elevation(&Method::POST, "/api/push/unsubscribe"));
+
+        // Read-only GETs are NOT gated even on settings/profile paths.
         assert!(!requires_elevation(&Method::GET, "/api/settings"));
         assert!(!requires_elevation(&Method::GET, "/api/profiles"));
         assert!(!requires_elevation(
             &Method::GET,
             "/api/profiles/work/settings"
         ));
-        // Coincidental substring must not match the WS suffix.
-        assert!(!requires_elevation(&Method::GET, "/api/debug/ws-status"));
+        assert!(!requires_elevation(&Method::GET, "/api/sessions"));
+        assert!(!requires_elevation(&Method::GET, "/api/sessions/abc"));
+
         // Out-of-scope paths never gate.
         assert!(!requires_elevation(&Method::GET, "/api/about"));
         assert!(!requires_elevation(&Method::POST, "/api/login"));

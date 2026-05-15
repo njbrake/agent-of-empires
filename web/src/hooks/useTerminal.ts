@@ -7,7 +7,6 @@ import type {
   ResizeMessage,
   ResumeOutputMessage,
 } from "../lib/types";
-import { preflightElevationForSensitiveWs } from "../lib/api";
 import { getOrCreateDeviceBindingSecret } from "../lib/deviceBinding";
 import { getToken } from "../lib/token";
 import { useWebSettings } from "./useWebSettings";
@@ -477,20 +476,7 @@ export function useTerminal(
 
     connectRef.current = connect;
     function connect() {
-      // WS upgrades to sensitive routes (terminal attach is one) hide
-      // their HTTP response body from JS, so a lapsed elevation window
-      // would otherwise silently fail the socket. Pre-flight elevation
-      // via REST and pop the inline passphrase prompt if needed. See
-      // #1131.
-      void preflightElevationForSensitiveWs().then((cleared) => {
-        if (!cleared) {
-          // ElevationPrompt is open. Bail out of this connect attempt;
-          // the existing retry envelope (or a fresh user action) will
-          // dial again once the prompt completes.
-          return;
-        }
-        openSocket();
-      });
+      openSocket();
     }
     function openSocket() {
       const proto = location.protocol === "https:" ? "wss:" : "ws:";

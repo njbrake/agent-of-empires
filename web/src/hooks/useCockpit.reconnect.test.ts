@@ -214,50 +214,33 @@ describe("useCockpit reconnect (#1130)", () => {
     expect(result.current.retryCount).toBe(0);
   });
 
-  it("backs off without dialing the WS when the elevation preflight is unmet", async () => {
-    // Re-stub fetch so /api/login/status reports an unelevated session.
-    // The hook's preflight should dispatch the elevation event and
-    // scheduleReconnect() instead of opening a WebSocket. The first
-    // dial attempt produces zero FakeWebSocket instances; once the
-    // preflight clears on a subsequent attempt, the dial proceeds.
-    let preflightCalls = 0;
-    vi.stubGlobal(
-      "fetch",
-      vi.fn(async (input: RequestInfo | URL) => {
-        const url = typeof input === "string" ? input : input.toString();
-        if (url.includes("/api/login/status")) {
-          preflightCalls += 1;
-          return new Response(
-            JSON.stringify({
-              required: true,
-              authenticated: true,
-              elevated: preflightCalls > 1,
-              elevated_until_secs: preflightCalls > 1 ? 900 : null,
-            }),
-            { status: 200 },
-          );
-        }
-        return new Response(
-          JSON.stringify({ frames: [], lost: false, highest_seq: 0 }),
-          { status: 200 },
+  it("does not call /api/login/status before dialing (cockpit WS is not elevation-gated)", async () => {
+    // Regression for #1137: the cockpit WS upgrade no longer requires
+    // step-up elevation. The hook must NOT preflight `/api/login/status`
+    // before opening the socket, because (a) it adds latency every
+    // visibilitychange + reconnect, and (b) the elevation gate was
+    // narrowed to settings/profile writes only.
+    const fetchSpy = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.includes("/api/login/status")) {
+        throw new Error(
+          "cockpit dial should not preflight /api/login/status; the WS is no longer elevation-gated",
         );
-      }),
-    );
-
-    const { result } = renderHook(() => useCockpit("sess-elev"));
-    await flushAsync();
-    // First attempt: preflight returned elevated=false, no WS dialed.
-    expect(sockets).toHaveLength(0);
-    expect(result.current.reconnecting).toBe(true);
-    expect(result.current.retryCount).toBe(1);
-
-    // Advance past the first backoff window; second attempt now sees
-    // elevated=true and dials the WS.
-    await act(async () => {
-      await vi.advanceTimersByTimeAsync(cockpitRetryDelayMs(1));
+      }
+      return new Response(
+        JSON.stringify({ frames: [], lost: false, highest_seq: 0 }),
+        { status: 200 },
+      );
     });
+    vi.stubGlobal("fetch", fetchSpy);
+
+    renderHook(() => useCockpit("sess-no-preflight"));
     await flushAsync();
     expect(sockets).toHaveLength(1);
+    for (const call of fetchSpy.mock.calls) {
+      const url = String(call[0]);
+      expect(url).not.toContain("/api/login/status");
+    }
   });
 
   it("resets the retry counter once the socket opens successfully", async () => {
