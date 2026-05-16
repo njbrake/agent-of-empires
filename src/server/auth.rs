@@ -218,6 +218,44 @@ fn is_login_session_exempt(path: &str) -> bool {
         || path.starts_with("/fonts/")
 }
 
+/// Outcome of combining the two-factor check into a single auth
+/// decision. Pure function, named so the design intent has a
+/// regression handle in tests.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub(crate) enum AuthOutcome {
+    /// Neither a valid token nor a valid device-bound session
+    /// presented; the request must be rejected (or, for non-API
+    /// paths, served the SPA shell so the frontend can try to
+    /// re-authenticate via localStorage).
+    Failed,
+    /// A valid token was presented. This is the steady-state path
+    /// once a device has refreshed its token cookie.
+    TokenAuthenticated,
+    /// No valid token, but the device presented a valid passphrase
+    /// session + device binding. The token check is bypassed and
+    /// the response carries the current token so the client picks
+    /// it up and the next request takes the fast token path. Only
+    /// reachable when passphrase login is enabled. See #1167.
+    SessionBypass,
+}
+
+/// Combine token + session validity into the auth outcome the
+/// middleware acts on. A bound device authenticates via either
+/// factor; an unbound or partially-authenticated request fails.
+pub(crate) fn decide_auth(
+    token_authenticated: bool,
+    login_enabled: bool,
+    session_valid: bool,
+) -> AuthOutcome {
+    if token_authenticated {
+        AuthOutcome::TokenAuthenticated
+    } else if login_enabled && session_valid {
+        AuthOutcome::SessionBypass
+    } else {
+        AuthOutcome::Failed
+    }
+}
+
 /// Whether a request path + method needs an elevated login session
 /// (step-up auth, 15-minute passphrase confirmation window).
 ///
@@ -489,9 +527,10 @@ pub async fn auth_middleware(
     };
 
     let token_authenticated = matched_source.is_some();
-    let session_bypass = !token_authenticated && login_enabled && session_valid;
+    let outcome = decide_auth(token_authenticated, login_enabled, session_valid);
+    let session_bypass = outcome == AuthOutcome::SessionBypass;
 
-    if !token_authenticated && !session_bypass {
+    if outcome == AuthOutcome::Failed {
         // Auth failed on both factors.
         //
         // For API and WebSocket routes, return 401. For everything
@@ -580,6 +619,16 @@ pub async fn auth_middleware(
     //     Push the current so the next request takes the fast
     //     token path instead of re-running the session-bypass
     //     round-trip.
+    //
+    // For WebSocket upgrades the `Set-Cookie` header on the 101
+    // response is processed by the browser, so the `aoe_token`
+    // cookie refreshes correctly. The companion `x-aoe-token`
+    // header on the 101 response is NOT exposed to the WebSocket
+    // API, so the SPA's localStorage cache stays stale until the
+    // next regular HTTP request (which will refresh it). That's
+    // self-healing because the SPA always makes HTTP calls
+    // alongside its WS, but worth noting if a future WS-only flow
+    // is added.
     let should_attach_token = session_bypass
         || matches!(
             matched_source,
@@ -928,31 +977,83 @@ mod tests {
         assert!(!is_login_session_exempt("/logins"));
     }
 
-    // Session-bypass: when passphrase login is enabled and a bound
-    // device presents a valid session + binding, the device should
-    // authenticate even with a missing/stale token. The
-    // `LoginManager::validate_session` call (covered by tests in
-    // `login.rs`) is the load-bearing primitive; this test asserts
-    // the lifetime knob is wide enough to deliver the user-visible
-    // behavior the design promises (30 days idle, GitHub-style).
+    // Pin the session lifetime to 30 days. Catches a silent
+    // regression to the old 24h window: that broke the
+    // "rarely-log-out" UX the device-bound design promises (see
+    // #1167). The test asserts both the server-side constant and
+    // the cookie's advertised Max-Age stay in sync, since a
+    // mismatch between the two creates a confusing client/server
+    // disagreement (browser thinks the cookie is fresh, server
+    // 401s it).
     #[tokio::test]
     async fn login_session_lifetime_is_thirty_days_sliding() {
-        use crate::server::login::LoginManager;
+        use crate::server::login::{LoginManager, SESSION_LIFETIME};
+        use std::time::Duration;
+
+        // Direct pin on the server-side TTL. Any future edit that
+        // shortens this without updating the test (and the docs in
+        // `docs/guides/remote-phone-access.md`) will fail here.
+        assert_eq!(
+            SESSION_LIFETIME,
+            Duration::from_secs(30 * 24 * 60 * 60),
+            "SESSION_LIFETIME must be 30 days; see #1167"
+        );
+
+        // Cookie's advertised Max-Age must equal the server TTL so
+        // the browser and server agree on when the session is gone.
         let mgr = LoginManager::new(Some("test"));
         let binding = vec![0xAB; 32];
         let session_id = mgr.create_session(&binding).await;
-        // Newly minted session validates.
         assert!(mgr.validate_session(&session_id, &binding).await);
-        // Sliding window keeps validating on repeated access. We
-        // can't time-travel 30 days in a unit test, but the
-        // `cleanup_expired_removes_stale` test in `login.rs`
-        // already exercises the boundary by hand-rewinding
-        // `expires_at`. This test just guards against an accidental
-        // re-introduction of the old 24h lifetime by ensuring the
-        // cookie's advertised Max-Age (30 days) matches the
-        // server-side window the user expects.
+
         let cookie = super::super::login::build_login_cookie(&session_id, false);
-        assert!(cookie.contains("Max-Age=2592000"));
+        let expected = format!("Max-Age={}", SESSION_LIFETIME.as_secs());
+        assert!(
+            cookie.contains(&expected),
+            "cookie {cookie:?} must advertise {expected} to match server TTL"
+        );
+    }
+
+    // Session-bypass decision: a bound device authenticates via
+    // EITHER a valid token OR (passphrase enabled AND valid
+    // session+binding). This is the core design property added
+    // by #1167; the table-driven test below pins every combination
+    // so a future refactor that flips a condition trips here
+    // instead of silently shipping a regression.
+    #[test]
+    fn decide_auth_outcome_table() {
+        // login disabled, token valid -> token path.
+        assert_eq!(
+            decide_auth(true, false, false),
+            AuthOutcome::TokenAuthenticated
+        );
+        // login disabled, no token -> failed (single-factor mode).
+        assert_eq!(decide_auth(false, false, false), AuthOutcome::Failed);
+        // login disabled never reaches session-bypass even when
+        // session_valid happens to be true (defensive; the caller
+        // only sets session_valid when login is enabled, but the
+        // helper enforces the invariant on its own).
+        assert_eq!(decide_auth(false, false, true), AuthOutcome::Failed);
+
+        // login enabled, both factors valid -> token path takes
+        // priority. We don't want to skip the token rotation
+        // refresh logic just because the session was also valid.
+        assert_eq!(
+            decide_auth(true, true, true),
+            AuthOutcome::TokenAuthenticated
+        );
+        // login enabled, token only -> token path.
+        assert_eq!(
+            decide_auth(true, true, false),
+            AuthOutcome::TokenAuthenticated
+        );
+        // login enabled, session only -> session bypass. This is
+        // the load-bearing case from #1167: a PWA whose token has
+        // rotated past the 4h window still authenticates via the
+        // session cookie + binding.
+        assert_eq!(decide_auth(false, true, true), AuthOutcome::SessionBypass);
+        // login enabled, neither factor -> failed.
+        assert_eq!(decide_auth(false, true, false), AuthOutcome::Failed);
     }
 
     #[test]

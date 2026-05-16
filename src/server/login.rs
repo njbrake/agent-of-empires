@@ -43,7 +43,10 @@ use super::AppState;
 /// server-side TTL with the client-side hint. See #1137 (initial
 /// 24h window) and #1167 (extension rationale: bound devices stay
 /// signed in independent of token rotation).
-const SESSION_LIFETIME: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+///
+/// `pub(crate)` so cross-module tests can pin the value and catch
+/// a silent regression to the old 24h window.
+pub(crate) const SESSION_LIFETIME: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 
 /// Step-up elevation window. Required for high-risk operations
 /// (terminal attach, cockpit command execution, file writes,
