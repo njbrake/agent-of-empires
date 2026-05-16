@@ -15,6 +15,7 @@ import {
   applyEvent,
   emptyCockpitState,
   isTurnActive,
+  normaliseTurnCounters,
   type CockpitFrame,
   type CockpitState,
 } from "./cockpitTypes";
@@ -28,9 +29,12 @@ function frame(seq: number, text: string): CockpitFrame {
 }
 
 function withOptimisticPrompt(state: CockpitState, text: string): CockpitState {
-  // Mirrors the optimistic dispatch in useCockpit.sendPrompt — the
-  // row id includes the wall-clock timestamp, distinct from the
-  // `user-seq-N` form the reducer assigns when the server echoes.
+  // Mirrors the optimistic dispatch in useCockpit.sendPrompt: row id
+  // includes the wall-clock timestamp (distinct from the `user-seq-N`
+  // form the reducer assigns when the server echoes), and
+  // `pendingUserPromptSeq` bumps so a subsequent server echo on the
+  // matching row doesn't double-count. See #1170.
+  const pendingUserPromptSeq = state.pendingUserPromptSeq + 1;
   return {
     ...state,
     activity: state.activity.concat({
@@ -39,7 +43,8 @@ function withOptimisticPrompt(state: CockpitState, text: string): CockpitState {
       text,
       at: new Date().toISOString(),
     }),
-    turnActive: true,
+    pendingUserPromptSeq,
+    turnActive: pendingUserPromptSeq > state.lastStoppedSeq,
   };
 }
 
@@ -996,6 +1001,83 @@ describe("turnActive derivation from prompt/stop counters (#1170)", () => {
     expect(state.lastStoppedSeq).toBe(1);
     expect(state.turnActive).toBe(false);
     expect(state.startupError).toBe("boom");
+  });
+
+  it("optimistic-match UserPromptSent resets per-turn flags (turnHasOutput, worker banners, wakeup)", () => {
+    // The optimistic-match branch used to early-return after just
+    // promoting the row id, leaving `turnHasOutput`, `workerStopped`,
+    // `workerRestarting`, and the wakeup countdown stale from the
+    // prior turn. With #1170's race-safe semantics that desync can
+    // suppress the empty-output notice on a follow-up that produces
+    // nothing, so the resets now run on BOTH UserPromptSent branches.
+    const stale: CockpitState = {
+      ...withOptimisticPrompt(emptyCockpitState(), "follow-up"),
+      turnHasOutput: true,
+      workerStopped: true,
+      workerRestarting: true,
+      nextWakeupAt: new Date(Date.now() - 1_000).toISOString(),
+      nextWakeupReason: "tick",
+    };
+    const next = applyEvent(stale, {
+      session_id: "s-1",
+      seq: 9,
+      event: { UserPromptSent: { text: "follow-up" } },
+    });
+    expect(next.activity).toHaveLength(1);
+    expect(next.activity[0].id).toBe("user-seq-9");
+    expect(next.turnHasOutput).toBe(false);
+    expect(next.workerStopped).toBe(false);
+    expect(next.workerRestarting).toBe(false);
+    expect(next.nextWakeupAt).toBeNull();
+    expect(next.nextWakeupReason).toBeNull();
+    // pendingUserPromptSeq must NOT double-count: withOptimisticPrompt
+    // bumped it to 1, the server echo matched the optimistic row, so
+    // it stays at 1.
+    expect(next.pendingUserPromptSeq).toBe(1);
+    expect(next.turnActive).toBe(true);
+  });
+});
+
+describe("normaliseTurnCounters (#1170 persisted-state backfill)", () => {
+  it("backfills counters from cached turnActive=true", () => {
+    const cached = {
+      ...emptyCockpitState(),
+      turnActive: true,
+    } as CockpitState & { pendingUserPromptSeq?: number; lastStoppedSeq?: number };
+    delete cached.pendingUserPromptSeq;
+    delete cached.lastStoppedSeq;
+    const normalised = normaliseTurnCounters(cached);
+    expect(normalised.pendingUserPromptSeq).toBe(1);
+    expect(normalised.lastStoppedSeq).toBe(0);
+    expect(normalised.turnActive).toBe(true);
+  });
+
+  it("backfills counters from cached turnActive=false", () => {
+    const cached = {
+      ...emptyCockpitState(),
+      turnActive: false,
+    } as CockpitState & { pendingUserPromptSeq?: number; lastStoppedSeq?: number };
+    delete cached.pendingUserPromptSeq;
+    delete cached.lastStoppedSeq;
+    const normalised = normaliseTurnCounters(cached);
+    expect(normalised.pendingUserPromptSeq).toBe(0);
+    expect(normalised.lastStoppedSeq).toBe(0);
+    expect(normalised.turnActive).toBe(false);
+  });
+
+  it("passes through entries that already carry counters", () => {
+    const fresh: CockpitState = {
+      ...emptyCockpitState(),
+      pendingUserPromptSeq: 5,
+      lastStoppedSeq: 3,
+      turnActive: false,
+    };
+    const normalised = normaliseTurnCounters(fresh);
+    expect(normalised.pendingUserPromptSeq).toBe(5);
+    expect(normalised.lastStoppedSeq).toBe(3);
+    // Even if the cached `turnActive` boolean was stale, the derived
+    // value wins so the spinner gate matches the counters.
+    expect(normalised.turnActive).toBe(true);
   });
 });
 

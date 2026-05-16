@@ -12,6 +12,7 @@ import {
   applyEvent,
   emptyCockpitState,
   isTurnActive,
+  normaliseTurnCounters,
   setActivityLimit,
   type ApprovalDecision,
   type CockpitFrame,
@@ -113,30 +114,9 @@ function loadPersistedState(sessionId: string): CockpitState | undefined {
       return undefined;
     }
     // Backfill the seq-counter pair introduced by #1170 for entries
-    // persisted before the schema change. Treat any cached
-    // `turnActive=true` as one outstanding prompt (counter=1, stop=0)
-    // so the spinner gate stays consistent across the reload; otherwise
-    // start the counters at zero. The counters are the source of truth
-    // for `turnActive` from this point forward.
-    const pendingUserPromptSeq =
-      typeof state.pendingUserPromptSeq === "number"
-        ? state.pendingUserPromptSeq
-        : state.turnActive
-          ? 1
-          : 0;
-    const lastStoppedSeq =
-      typeof state.lastStoppedSeq === "number"
-        ? state.lastStoppedSeq
-        : state.turnActive
-          ? 0
-          : pendingUserPromptSeq;
-    const normalised: CockpitState = {
-      ...(state as CockpitState),
-      pendingUserPromptSeq,
-      lastStoppedSeq,
-      turnActive: pendingUserPromptSeq > lastStoppedSeq,
-    };
-    return normalised;
+    // persisted before the schema change; see `normaliseTurnCounters`
+    // for the rules.
+    return normaliseTurnCounters(state as CockpitState);
   } catch {
     return undefined;
   }

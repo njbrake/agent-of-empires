@@ -668,6 +668,15 @@ export function applyEvent(
     // flag is flipped by every output-producing handler and reset by
     // UserPromptSent, so this check is O(1) instead of walking the
     // full activity array on every Stopped.
+    //
+    // `state.turnActive` is read on the PRE-event state. Under the
+    // counter derivation it means "at least one outstanding prompt
+    // hasn't been retired yet," which is exactly what we want: it
+    // skips spurious Stopped frames (no open turn to attribute the
+    // notice to) and fires for the turn this Stopped is actually
+    // retiring. In the race case, `turnHasOutput` still reflects the
+    // turn being retired because UserPromptSent (which resets it) for
+    // the follow-up hasn't been applied yet.
     if (state.turnActive && !state.turnHasOutput) {
       next.activity = pushActivity(next.activity, {
         id: `empty-${frame.seq}`,
@@ -708,31 +717,38 @@ export function applyEvent(
         !r.id.startsWith("user-seq-"),
     );
     if (matchIdx >= 0) {
+      // Optimistic-match path: promote the placeholder's id. The
+      // client's `user_prompt` action already bumped
+      // `pendingUserPromptSeq`, so we don't bump again here. The
+      // per-turn resets below STILL apply: `turnHasOutput`, the
+      // worker banners, and the wakeup countdown all reset on every
+      // server-confirmed UserPromptSent regardless of which branch
+      // promoted the row. See #1170.
       const match = next.activity[matchIdx];
       if (match) {
         const updated = next.activity.slice();
         updated[matchIdx] = { ...match, id: `user-seq-${frame.seq}` };
         next.activity = updated;
-        return next;
       }
+    } else {
+      // No optimistic row matched: this is a server-confirmed prompt
+      // the client didn't dispatch (replay path, server-initiated, or
+      // user action without optimistic local dispatch). Append a fresh
+      // row and bump the prompt counter so `turnActive` derives true.
+      // The optimistic-match branch above is reached when the client's
+      // `user_prompt` action already bumped the counter; bumping again
+      // here would double-count. See #1170.
+      next.activity = pushActivity(next.activity, {
+        id: `user-seq-${frame.seq}`,
+        kind: "user_prompt",
+        text,
+        at: new Date().toISOString(),
+      });
+      next.pendingUserPromptSeq = next.pendingUserPromptSeq + 1;
     }
-    next.activity = pushActivity(next.activity, {
-      id: `user-seq-${frame.seq}`,
-      kind: "user_prompt",
-      text,
-      at: new Date().toISOString(),
-    });
     next.assistantMessage = "";
     next.startupError = null;
     next.lastError = null;
-    // No optimistic row matched: this is a server-confirmed prompt the
-    // client didn't dispatch (replay path, server-initiated, or user
-    // action without optimistic local dispatch). Bump the prompt
-    // counter so `turnActive` derives true. The optimistic-match branch
-    // above already covered the case where the client's `user_prompt`
-    // action bumped the counter; bumping again here would double-count.
-    // See #1170.
-    next.pendingUserPromptSeq = next.pendingUserPromptSeq + 1;
     next.turnActive = isTurnActive(next);
     // New turn; reset the no-output detector so Stopped fires the
     // empty-output notice if the agent produces nothing.
@@ -839,9 +855,47 @@ function pushActivity(rows: ActivityRow[], row: ActivityRow): ActivityRow[] {
 /** Derived `turnActive` from the prompt / stop seq counters. Exported
  *  so any new consumer can compute it from the counters directly; the
  *  reducer also calls this to keep `state.turnActive` in lockstep so
- *  existing `state.turnActive` reads stay correct. See #1170. */
+ *  existing `state.turnActive` reads stay correct. See #1170.
+ *
+ *  Invariant: `lastStoppedSeq <= pendingUserPromptSeq` always holds.
+ *  Both counters start at 0; `pendingUserPromptSeq` increments by one
+ *  on every dispatched user prompt, and `lastStoppedSeq` advances by
+ *  one per `Stopped` / `AgentStartupError` but is capped at
+ *  `pendingUserPromptSeq` so spurious extra Stopped frames cannot
+ *  poison a future turn. */
 export function isTurnActive(
   state: Pick<CockpitState, "pendingUserPromptSeq" | "lastStoppedSeq">,
 ): boolean {
   return state.pendingUserPromptSeq > state.lastStoppedSeq;
+}
+
+/** Normalise a partial CockpitState so the turn counters are populated.
+ *  Used by the localStorage loader after the #1170 schema change: pre-
+ *  schema persisted entries have no counters, so we backfill from the
+ *  cached `turnActive` boolean (true → one outstanding prompt, false →
+ *  fully retired) and re-derive `turnActive` from the counters. */
+export function normaliseTurnCounters(
+  state: CockpitState & {
+    pendingUserPromptSeq?: number;
+    lastStoppedSeq?: number;
+  },
+): CockpitState {
+  const pendingUserPromptSeq =
+    typeof state.pendingUserPromptSeq === "number"
+      ? state.pendingUserPromptSeq
+      : state.turnActive
+        ? 1
+        : 0;
+  const lastStoppedSeq =
+    typeof state.lastStoppedSeq === "number"
+      ? state.lastStoppedSeq
+      : state.turnActive
+        ? 0
+        : pendingUserPromptSeq;
+  return {
+    ...state,
+    pendingUserPromptSeq,
+    lastStoppedSeq,
+    turnActive: isTurnActive({ pendingUserPromptSeq, lastStoppedSeq }),
+  };
 }
