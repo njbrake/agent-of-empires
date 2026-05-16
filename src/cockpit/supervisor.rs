@@ -265,9 +265,10 @@ pub struct SpawnRequest {
     pub sandbox_info: Option<SandboxInfo>,
     /// Source profile of the session. Used (with `sandbox_info`) to
     /// resolve profile-level `sandbox.environment` so cockpit-sandbox
-    /// env matches the tmux substrate. Empty string for non-sandboxed
-    /// sessions is fine.
-    pub source_profile: String,
+    /// env matches the tmux substrate. `None` for non-sandboxed
+    /// sessions; falls back to the user's default profile when set
+    /// to `Some("")`.
+    pub source_profile: Option<String>,
 }
 
 impl<S: BroadcastSink> Supervisor<S> {
@@ -1722,7 +1723,7 @@ mod tests {
                 model: None,
                 stored_acp_session_id: None,
                 sandbox_info: None,
-                source_profile: String::new(),
+                source_profile: None,
             })
             .await;
         assert!(matches!(result, Err(SupervisorError::UnknownAgent(_))));
@@ -1759,7 +1760,7 @@ mod tests {
                 model: None,
                 stored_acp_session_id: None,
                 sandbox_info: None,
-                source_profile: String::new(),
+                source_profile: None,
             })
             .await;
         assert!(matches!(result, Err(SupervisorError::AlreadyRunning(_))));
@@ -1810,7 +1811,7 @@ mod tests {
             socket_path: Some(socket_path.clone()),
             stored_acp_session_id: None,
             sandbox_info: None,
-            source_profile: String::new(),
+            source_profile: None,
         };
         // Save a registry record so the runner-managed `registry_gone`
         // check returns false and we exercise the budget path.
@@ -1896,7 +1897,7 @@ mod tests {
             socket_path: Some(tmp.path().join("dummy.sock")),
             stored_acp_session_id: None,
             sandbox_info: None,
-            source_profile: String::new(),
+            source_profile: None,
         };
         {
             let mut workers = sup.workers.lock().await;
@@ -1967,7 +1968,7 @@ mod tests {
             socket_path: Some(tmp.path().join("dummy.sock")),
             stored_acp_session_id: None,
             sandbox_info: None,
-            source_profile: String::new(),
+            source_profile: None,
         };
         {
             let mut workers = sup.workers.lock().await;
@@ -2038,7 +2039,7 @@ mod tests {
             socket_path: Some(tmp.path().join("dummy.sock")),
             stored_acp_session_id: None,
             sandbox_info: None,
-            source_profile: String::new(),
+            source_profile: None,
         };
         {
             let mut workers = sup.workers.lock().await;
@@ -2163,7 +2164,7 @@ mod tests {
             socket_path: Some(tmp.path().join("dummy.sock")),
             stored_acp_session_id: None,
             sandbox_info: None,
-            source_profile: String::new(),
+            source_profile: None,
         };
         {
             let mut workers = sup.workers.lock().await;
@@ -2459,7 +2460,7 @@ mod tests {
                 model: None,
                 stored_acp_session_id: None,
                 sandbox_info: None,
-                source_profile: String::new(),
+                source_profile: None,
             })
             .await;
         match result {
@@ -2528,7 +2529,7 @@ mod tests {
                 model: None,
                 stored_acp_session_id: None,
                 sandbox_info: None,
-                source_profile: String::new(),
+                source_profile: None,
             })
             .await;
         match result {
@@ -2750,7 +2751,7 @@ mod tests {
                 model: None,
                 stored_acp_session_id: None,
                 sandbox_info: None,
-                source_profile: String::new(),
+                source_profile: None,
             })
             .await;
         match result {
@@ -2800,7 +2801,7 @@ mod tests {
                 model: None,
                 stored_acp_session_id: None,
                 sandbox_info: None,
-                source_profile: String::new(),
+                source_profile: None,
             })
             .await;
         match result {

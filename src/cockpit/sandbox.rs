@@ -10,8 +10,10 @@
 //! (auto-spawn after create, substrate switch, manual `POST /spawn`,
 //! reconciler reattach fallback) goes through the same code path.
 
+use std::sync::Arc;
+
 use anyhow::{Context, Result};
-use tokio::sync::RwLock;
+use tokio::sync::{Mutex, RwLock};
 
 use crate::session::{Instance, SandboxInfo};
 
@@ -23,19 +25,30 @@ use crate::session::{Instance, SandboxInfo};
 /// point (substrate switch, manual `/spawn`, reconciler resume)
 /// passes `false` so hooks don't re-run on every reattach.
 ///
-/// Docker work runs on a blocking thread; the in-memory `Instance`
-/// is only locked for a short read + a short write (to stamp the
-/// resolved `container_id` back onto its `SandboxInfo`).
+/// `instance_lock` is the per-session `state.instance_lock(id)`
+/// mutex. We hold it for the duration of the call so a concurrent
+/// `delete_session` (which acquires the same mutex) can't tear down
+/// the instance mid-create and leave us with an orphan docker
+/// container. Docker work runs on a blocking thread; the in-memory
+/// `Instance` is otherwise locked only for a short read snapshot
+/// and a short write to stamp the resolved `container_id`.
 ///
 /// Returns the session's `sandbox_info` (with `container_id`
-/// populated) for non-sandboxed sessions it returns `None`.
+/// populated); for non-sandboxed sessions it returns `None`.
 pub async fn ensure_container_for_session(
     instances: &RwLock<Vec<Instance>>,
+    instance_lock: &Arc<Mutex<()>>,
     session_id: &str,
     run_on_launch_hooks: bool,
 ) -> Result<Option<SandboxInfo>> {
-    // Phase 1: short read lock. Clone the Instance so the docker work
-    // can run on a blocking thread without holding any tokio lock.
+    // Hold the per-session mutex for the whole call so delete_session
+    // (which acquires the same lock) cannot interleave between the
+    // existence check and the container create.
+    let _guard = instance_lock.lock().await;
+
+    // Phase 1: short read on the instance list. Clone the Instance so
+    // the docker work can run on a blocking thread without holding
+    // any tokio lock.
     let mut instance_clone = {
         let guard = instances.read().await;
         let Some(inst) = guard.iter().find(|i| i.id == session_id) else {
@@ -82,10 +95,11 @@ pub async fn ensure_container_for_session(
         }
     }
 
-    // Phase 4: run on_launch hooks outside any lock. Hooks are shell
-    // commands that can themselves take seconds, so wrap in
-    // spawn_blocking too. Best-effort: failures are logged and the
-    // spawn proceeds.
+    // Phase 4: run on_launch hooks outside the instances lock (the
+    // per-session mutex is still held for the call's lifetime). Hooks
+    // are shell commands that can themselves take seconds, so wrap in
+    // spawn_blocking. Best-effort: failures are logged and the spawn
+    // proceeds.
     if let (Some(cmds), Some(info)) = (hooks, sandbox_info.as_ref()) {
         if !cmds.is_empty() {
             let container_name = info.container_name.clone();

@@ -123,20 +123,27 @@ pub async fn spawn_cockpit(
     let model = req.model.or_else(|| instance.cockpit_model.clone());
     let stored_acp_session_id = instance.cockpit_acp_session_id.clone();
 
-    let sandbox_info =
-        match crate::cockpit::sandbox::ensure_container_for_session(&state.instances, &id, false)
-            .await
-        {
-            Ok(info) => info,
-            Err(e) => {
-                return (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("sandbox container ensure failed: {e}"),
-                )
-                    .into_response();
-            }
-        };
-    let source_profile = instance.source_profile.clone();
+    let inst_lock = state.instance_lock(&id).await;
+    let sandbox_info = match crate::cockpit::sandbox::ensure_container_for_session(
+        &state.instances,
+        &inst_lock,
+        &id,
+        false,
+    )
+    .await
+    {
+        Ok(info) => info,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("sandbox container ensure failed: {e}"),
+            )
+                .into_response();
+        }
+    };
+    let source_profile = sandbox_info
+        .as_ref()
+        .map(|_| instance.source_profile.clone());
     let agent_for_response = agent.clone();
     match state
         .cockpit_supervisor
@@ -449,11 +456,13 @@ pub async fn cockpit_enable(
     let session_id = id.clone();
     let model = instance.cockpit_model.clone();
     let stored_acp_session_id = instance.cockpit_acp_session_id.clone();
-    let source_profile = profile.clone();
+    let profile_for_spawn = profile.clone();
     let state_for_spawn = state.clone();
     tokio::spawn(async move {
+        let inst_lock = state_for_spawn.instance_lock(&session_id).await;
         let sandbox_info = match crate::cockpit::sandbox::ensure_container_for_session(
             &state_for_spawn.instances,
+            &inst_lock,
             &session_id,
             false,
         )
@@ -467,6 +476,7 @@ pub async fn cockpit_enable(
                 return;
             }
         };
+        let source_profile = sandbox_info.as_ref().map(|_| profile_for_spawn);
         if let Err(e) = supervisor
             .spawn(crate::cockpit::supervisor::SpawnRequest {
                 session_id: session_id.clone(),

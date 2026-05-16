@@ -1049,8 +1049,10 @@ pub async fn create_session(
                     // path is preserved (tmux fires on_launch from
                     // `instance.start()` at creation, then never
                     // again).
+                    let inst_lock = state_for_check.instance_lock(&id).await;
                     let sandbox_info = match crate::cockpit::sandbox::ensure_container_for_session(
                         &state_for_check.instances,
+                        &inst_lock,
                         &id,
                         true,
                     )
@@ -1068,6 +1070,8 @@ pub async fn create_session(
                             return;
                         }
                     };
+                    let source_profile_for_spawn =
+                        sandbox_info.as_ref().map(|_| source_profile.clone());
                     if let Err(e) = supervisor
                         .spawn(crate::cockpit::supervisor::SpawnRequest {
                             session_id: id.clone(),
@@ -1078,7 +1082,7 @@ pub async fn create_session(
                             model,
                             stored_acp_session_id,
                             sandbox_info,
-                            source_profile,
+                            source_profile: source_profile_for_spawn,
                         })
                         .await
                     {

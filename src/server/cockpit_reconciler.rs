@@ -334,23 +334,29 @@ async fn resume_one(state: Arc<AppState>, target: ResumeTarget) -> ResumeOutcome
         .await;
     let cwd = PathBuf::from(project_path);
 
-    let sandbox_info =
-        match crate::cockpit::sandbox::ensure_container_for_session(&state.instances, &id, false)
-            .await
-        {
-            Ok(info) => info,
-            Err(e) => {
-                let message = format!("sandbox container ensure failed: {e}");
-                tracing::warn!(
-                    target: "cockpit.supervisor",
-                    session = %id,
-                    "reconciler container ensure failed: {message}"
-                );
-                supervisor.publish_startup_error(&id, message);
-                return ResumeOutcome::SpawnFinished;
-            }
-        };
+    let inst_lock = state.instance_lock(&id).await;
+    let sandbox_info = match crate::cockpit::sandbox::ensure_container_for_session(
+        &state.instances,
+        &inst_lock,
+        &id,
+        false,
+    )
+    .await
+    {
+        Ok(info) => info,
+        Err(e) => {
+            let message = format!("sandbox container ensure failed: {e}");
+            tracing::warn!(
+                target: "cockpit.supervisor",
+                session = %id,
+                "reconciler container ensure failed: {message}"
+            );
+            supervisor.publish_startup_error(&id, message);
+            return ResumeOutcome::SpawnFinished;
+        }
+    };
 
+    let source_profile_for_spawn = sandbox_info.as_ref().map(|_| source_profile.clone());
     let spawn_result = supervisor
         .spawn(crate::cockpit::supervisor::SpawnRequest {
             session_id: id.clone(),
@@ -361,7 +367,7 @@ async fn resume_one(state: Arc<AppState>, target: ResumeTarget) -> ResumeOutcome
             model,
             stored_acp_session_id,
             sandbox_info,
-            source_profile,
+            source_profile: source_profile_for_spawn,
         })
         .await;
     if let Err(e) = spawn_result {

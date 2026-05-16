@@ -125,8 +125,9 @@ pub struct SpawnConfig {
     pub sandbox_info: Option<SandboxInfo>,
     /// Source profile of the session. Used together with `sandbox_info`
     /// to resolve profile-level `sandbox.environment` entries so the
-    /// cockpit sandbox env mirrors the tmux substrate.
-    pub source_profile: String,
+    /// cockpit sandbox env mirrors the tmux substrate. `None` for
+    /// non-sandboxed sessions.
+    pub source_profile: Option<String>,
 }
 
 /// Commands sent from `AcpClient` methods to the background connection task.
@@ -329,8 +330,9 @@ impl AcpClient {
         } else {
             None
         };
+        let runner_sandbox = sandbox_pair.as_ref().map(|(handle, _)| handle);
         if let Some(socket_path) = config.socket_path.clone() {
-            spawn_runner_detached(&config, &socket_path, session_id.0.clone())?;
+            spawn_runner_detached(&config, &socket_path, session_id.0.clone(), runner_sandbox)?;
             return Self::connect_via_socket(
                 socket_path,
                 config.cwd,
@@ -801,6 +803,7 @@ fn spawn_runner_detached(
     config: &SpawnConfig,
     socket_path: &std::path::Path,
     session_id: String,
+    session_sandbox: Option<&SessionSandbox>,
 ) -> Result<(), AcpError> {
     use std::process::Command as StdCommand;
     let current_exe =
@@ -813,11 +816,23 @@ fn spawn_runner_detached(
 
     // Sandboxed sessions wrap the agent in `docker exec`. Host-side
     // PATH resolution is skipped because the agent binary lives inside
-    // the container; the container's own PATH resolves it.
-    let sandbox_argv = if let Some(sandbox) = &config.sandbox_info {
-        Some(build_sandbox_docker_argv(config, sandbox)?)
-    } else {
-        None
+    // the container; the container's own PATH resolves it. The
+    // container_workdir is reused from the SessionSandbox built upstream
+    // so we don't redo `compute_volume_paths`.
+    let sandbox_argv = match (&config.sandbox_info, session_sandbox) {
+        (Some(sandbox), Some(handle)) => Some(build_sandbox_docker_argv(
+            config,
+            sandbox,
+            handle.container_workdir.to_string_lossy().as_ref(),
+        )?),
+        (Some(_), None) => {
+            return Err(AcpError::Spawn(
+                "sandbox_info set but SessionSandbox handle missing; \
+                 SessionSandbox::from_info must run before spawn_runner_detached"
+                    .into(),
+            ));
+        }
+        (None, _) => None,
     };
 
     // Resolve the agent binary against PATH + known node-manager dirs so
@@ -974,9 +989,14 @@ struct SandboxArgv {
 /// agent's stdio across the container boundary. Mirrors the tmux
 /// substrate's env handling so the same `sandbox.environment` and
 /// `extra_env` entries take effect.
+///
+/// `container_workdir` is the in-container working directory for the
+/// session, pre-computed by `SessionSandbox::from_info` and passed
+/// through to avoid re-running `compute_volume_paths`.
 fn build_sandbox_docker_argv(
     config: &SpawnConfig,
     sandbox: &SandboxInfo,
+    container_workdir: &str,
 ) -> Result<SandboxArgv, AcpError> {
     use crate::containers::container_interface::EnvEntry;
 
@@ -984,17 +1004,17 @@ fn build_sandbox_docker_argv(
     let docker_binary = runtime.base.binary.to_string();
 
     let project_path = config.cwd.as_path();
-    let project_path_str = config.cwd.to_string_lossy().to_string();
-    let (_, container_workdir) =
-        crate::session::container_config::compute_volume_paths(project_path, &project_path_str)
-            .map_err(|e| AcpError::Spawn(format!("compute container workdir: {e}")))?;
-
+    let profile_for_env = config.source_profile.as_deref().unwrap_or("");
     let sandbox_config =
-        crate::session::environment::resolved_sandbox_config(&config.source_profile, project_path);
+        crate::session::environment::resolved_sandbox_config(profile_for_env, project_path);
     let env_entries = crate::session::environment::collect_environment(&sandbox_config, sandbox);
 
-    let mut docker_args: Vec<String> =
-        vec!["exec".into(), "-i".into(), "-w".into(), container_workdir];
+    let mut docker_args: Vec<String> = vec![
+        "exec".into(),
+        "-i".into(),
+        "-w".into(),
+        container_workdir.to_string(),
+    ];
     let mut inherit_env: Vec<(String, String)> = Vec::new();
     let mut seen_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
 
@@ -2960,9 +2980,10 @@ mod tests {
             socket_path: None,
             stored_acp_session_id: None,
             sandbox_info: Some(sandbox.clone()),
-            source_profile: String::new(),
+            source_profile: None,
         };
-        let argv = build_sandbox_docker_argv(&config, &sandbox).expect("docker argv built");
+        let argv = build_sandbox_docker_argv(&config, &sandbox, "/workspace/proj")
+            .expect("docker argv built");
         assert!(
             argv.docker_binary == "docker" || argv.docker_binary == "podman",
             "expected docker/podman binary, got {:?}",
@@ -3023,9 +3044,10 @@ mod tests {
             socket_path: None,
             stored_acp_session_id: None,
             sandbox_info: Some(sandbox.clone()),
-            source_profile: String::new(),
+            source_profile: None,
         };
-        let argv = build_sandbox_docker_argv(&config, &sandbox).expect("docker argv built");
+        let argv = build_sandbox_docker_argv(&config, &sandbox, "/workspace/proj")
+            .expect("docker argv built");
         // The `-e KEY` flag (without value) must appear consecutively.
         let key_flag_idx = argv
             .docker_args
@@ -3056,10 +3078,15 @@ mod tests {
     /// it must NOT be auto-forwarded into the container even when set
     /// on the host. The agent's config dir is bind-mounted at the
     /// canonical container path by `AGENT_CONFIG_MOUNTS`.
+    ///
+    /// Tagged `#[serial]` because the test mutates the process-wide
+    /// env; parallel readers of `std::env::var` would race.
     #[test]
+    #[serial_test::serial]
     fn build_sandbox_docker_argv_drops_host_only_claude_config_dir() {
         // Set the env var to simulate the host having it; the function
         // under test must still skip it.
+        let prev = std::env::var("CLAUDE_CONFIG_DIR").ok();
         std::env::set_var("CLAUDE_CONFIG_DIR", "/Users/operator/.claude");
         let tmp = tempfile::tempdir().unwrap();
         let sandbox = SandboxInfo {
@@ -3083,10 +3110,14 @@ mod tests {
             socket_path: None,
             stored_acp_session_id: None,
             sandbox_info: Some(sandbox.clone()),
-            source_profile: String::new(),
+            source_profile: None,
         };
-        let argv = build_sandbox_docker_argv(&config, &sandbox).expect("docker argv built");
-        std::env::remove_var("CLAUDE_CONFIG_DIR");
+        let argv = build_sandbox_docker_argv(&config, &sandbox, "/workspace/proj")
+            .expect("docker argv built");
+        match prev {
+            Some(v) => std::env::set_var("CLAUDE_CONFIG_DIR", v),
+            None => std::env::remove_var("CLAUDE_CONFIG_DIR"),
+        }
         assert!(
             !argv.docker_args.iter().any(|a| a == "CLAUDE_CONFIG_DIR"),
             "CLAUDE_CONFIG_DIR is a host path and must not be forwarded as `-e KEY`"
@@ -3122,7 +3153,7 @@ mod tests {
             socket_path: None,
             stored_acp_session_id: None,
             sandbox_info: None,
-            source_profile: String::new(),
+            source_profile: None,
         };
         let result = AcpClient::spawn(config, CockpitSessionId("s-1".into())).await;
         assert!(matches!(result, Err(AcpError::Spawn(_))));
@@ -3151,7 +3182,7 @@ mod tests {
             socket_path: None,
             stored_acp_session_id: None,
             sandbox_info: None,
-            source_profile: String::new(),
+            source_profile: None,
         };
         let result = AcpClient::spawn(config, CockpitSessionId("s-1".into())).await;
         match result {
