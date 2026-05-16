@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useState } from "react";
 import type { Workspace, RepoGroup } from "../lib/types";
+import { compareWorkspaces, groupCreatedAt } from "../lib/workspaceSort";
 
 const COLLAPSED_KEY_PREFIX = "aoe-repo-collapsed-";
 export const MULTI_REPO_GROUP_ID = "__multi_repo__";
@@ -14,29 +15,6 @@ function loadCollapsed(id: string): boolean {
 
 function isMultiRepoWorkspace(ws: Workspace): boolean {
   return ws.sessions.some((s) => (s.workspace_repos?.length ?? 0) > 1);
-}
-
-// ISO-8601 strings compare lexicographically the same as chronologically.
-function workspaceActivityKey(ws: Workspace): string {
-  let best = "";
-  for (const s of ws.sessions) {
-    const t = s.last_accessed_at ?? "";
-    if (t > best) best = t;
-    const i = s.idle_entered_at ?? "";
-    if (i > best) best = i;
-    const c = s.created_at ?? "";
-    if (c > best) best = c;
-  }
-  return best;
-}
-
-function groupActivityKey(workspaces: Workspace[]): string {
-  let best = "";
-  for (const ws of workspaces) {
-    const k = workspaceActivityKey(ws);
-    if (k > best) best = k;
-  }
-  return best;
 }
 
 export function useRepoGroups(workspaces: Workspace[]): {
@@ -63,13 +41,7 @@ export function useRepoGroups(workspaces: Workspace[]): {
     }
 
     const sortWorkspaces = (list: Workspace[]) =>
-      [...list].sort((a, b) => {
-        if (a.status === "active" && b.status !== "active") return -1;
-        if (a.status !== "active" && b.status === "active") return 1;
-        const cmp = workspaceActivityKey(b).localeCompare(workspaceActivityKey(a));
-        if (cmp !== 0) return cmp;
-        return a.id.localeCompare(b.id);
-      });
+      [...list].sort(compareWorkspaces);
 
     const repoGroups: RepoGroup[] = [];
 
@@ -112,12 +84,9 @@ export function useRepoGroups(workspaces: Workspace[]): {
     repoGroups.sort((a, b) => {
       if (a.id === MULTI_REPO_GROUP_ID) return 1;
       if (b.id === MULTI_REPO_GROUP_ID) return -1;
-      if (a.status === "active" && b.status !== "active") return -1;
-      if (a.status !== "active" && b.status === "active") return 1;
-      const cmp = groupActivityKey(b.workspaces).localeCompare(
-        groupActivityKey(a.workspaces),
-      );
-      if (cmp !== 0) return cmp;
+      const ak = groupCreatedAt(a.workspaces);
+      const bk = groupCreatedAt(b.workspaces);
+      if (ak !== bk) return bk.localeCompare(ak);
       return a.repoPath.localeCompare(b.repoPath);
     });
 

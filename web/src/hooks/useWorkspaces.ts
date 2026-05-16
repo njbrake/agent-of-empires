@@ -8,6 +8,11 @@ function normalizePath(p: string): string {
   return p.replace(/\/+$/, "");
 }
 
+// Sort order is intentionally not applied here: every consumer either
+// looks up workspaces by id (App.tsx uses `.find`) or hands the list to
+// `useRepoGroups`, which sorts via the shared comparator in
+// `lib/workspaceSort.ts`. Keeping a second sort site is what produced the
+// reshuffle bug in #1169.
 export function useWorkspaces(sessions: SessionResponse[]): Workspace[] {
   const idleDecayWindowMs = useIdleDecayWindowMs();
 
@@ -66,12 +71,6 @@ export function useWorkspaces(sessions: SessionResponse[]): Workspace[] {
         sessions: groupSessions,
       });
     }
-
-    workspaces.sort((a, b) => {
-      if (a.status === "active" && b.status !== "active") return -1;
-      if (a.status !== "active" && b.status === "active") return 1;
-      return 0;
-    });
 
     return workspaces;
   }, [idleDecayWindowMs, sessions]);
