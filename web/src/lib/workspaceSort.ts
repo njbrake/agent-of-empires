@@ -14,6 +14,40 @@ export function workspaceCreatedAt(ws: Workspace): string {
   return earliest;
 }
 
+// Compares two workspaces by the derived "birth" key. Newest first, with
+// `id` as the tiebreak. Used as the fallback when neither workspace has an
+// explicit position in the user-defined ordering.
+export function compareByBirth(a: Workspace, b: Workspace): number {
+  const ak = workspaceCreatedAt(a);
+  const bk = workspaceCreatedAt(b);
+  if (ak !== bk) return bk.localeCompare(ak);
+  return a.id.localeCompare(b.id);
+}
+
+// `workspaceOrdering` is the user-configured display order, persisted
+// server-side via `/api/workspace-ordering` so it syncs across devices.
+// IDs present in the ordering pin to their rank (lower index sorts
+// first); IDs absent fall back to `compareByBirth` and sort after every
+// pinned row. See #1169.
+export function makeCompareWorkspaces(
+  workspaceOrdering: readonly string[],
+): (a: Workspace, b: Workspace) => number {
+  const rank = new Map<string, number>();
+  workspaceOrdering.forEach((id, i) => rank.set(id, i));
+
+  return (a, b) => {
+    const ar = rank.get(a.id);
+    const br = rank.get(b.id);
+    if (ar !== undefined && br !== undefined) return ar - br;
+    if (ar !== undefined) return -1;
+    if (br !== undefined) return 1;
+    return compareByBirth(a, b);
+  };
+}
+
+// Earliest workspace birth across the group, used for repo-group sorting.
+// Group ordering is not yet user-configurable; that's a separate change
+// once per-workspace ordering has proven out.
 export function groupCreatedAt(workspaces: Workspace[]): string {
   let earliest = "";
   for (const ws of workspaces) {
@@ -22,20 +56,4 @@ export function groupCreatedAt(workspaces: Workspace[]): string {
     if (!earliest || k < earliest) earliest = k;
   }
   return earliest;
-}
-
-// Stable comparator. Sorts by workspace birth descending (newest at top),
-// with `id` as the tiebreak. Never references `status` or any
-// last-accessed timestamp, so a session flipping active/idle does not
-// reshuffle the list. See #1169.
-//
-// This is a derived order, not a user-configurable one. The follow-up
-// work for drag-to-reorder (#TODO) will introduce a server-side
-// `display_order` field; this comparator will then become the fallback
-// for workspaces without an explicit order rather than the primary key.
-export function compareWorkspaces(a: Workspace, b: Workspace): number {
-  const ak = workspaceCreatedAt(a);
-  const bk = workspaceCreatedAt(b);
-  if (ak !== bk) return bk.localeCompare(ak);
-  return a.id.localeCompare(b.id);
 }

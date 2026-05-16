@@ -44,7 +44,7 @@ pub use repo_config::{
     resolve_config_with_repo_or_warn, save_repo_config, trust_repo, HookTrustStatus, HooksConfig,
     RepoConfig,
 };
-pub use storage::Storage;
+pub use storage::{load_workspace_ordering, save_workspace_ordering, Storage, WorkspaceOrdering};
 
 use anyhow::Result;
 use std::fs;

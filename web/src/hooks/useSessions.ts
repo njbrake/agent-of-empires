@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { SessionResponse } from "../lib/types";
-import { fetchSessions } from "../lib/api";
+import { fetchSessions, type SessionsEnvelope } from "../lib/api";
 import { setServerDown } from "../lib/connectionState";
 
 const POLL_INTERVAL = 3000;
 
 export function useSessions() {
   const [sessions, setSessions] = useState<SessionResponse[]>([]);
+  const [workspaceOrdering, setWorkspaceOrdering] = useState<string[]>([]);
   const [error, setError] = useState(false);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -17,9 +18,10 @@ export function useSessions() {
     });
   }, []);
 
-  const applyResult = useCallback((data: SessionResponse[] | null) => {
+  const applyResult = useCallback((data: SessionsEnvelope | null) => {
     if (data !== null) {
-      setSessions(data);
+      setSessions(data.sessions);
+      setWorkspaceOrdering(data.workspace_ordering);
       setError(false);
       setServerDown(false);
     } else {
@@ -47,5 +49,13 @@ export function useSessions() {
     setSessions((prev) => prev.map((s) => s.id === id ? { ...s, status } : s));
   }, []);
 
-  return { sessions, error, refresh, injectSession, setSessionStatus };
+  return {
+    sessions,
+    workspaceOrdering,
+    setWorkspaceOrdering,
+    error,
+    refresh,
+    injectSession,
+    setSessionStatus,
+  };
 }

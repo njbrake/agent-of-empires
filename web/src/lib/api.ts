@@ -24,8 +24,26 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T | null> 
 
 // --- Sessions ---
 
-export function fetchSessions(): Promise<SessionResponse[] | null> {
-  return fetchJson<SessionResponse[]>("/api/sessions");
+export interface SessionsEnvelope {
+  sessions: SessionResponse[];
+  workspace_ordering: string[];
+}
+
+export function fetchSessions(): Promise<SessionsEnvelope | null> {
+  return fetchJson<SessionsEnvelope>("/api/sessions");
+}
+
+export async function updateWorkspaceOrdering(order: string[]): Promise<boolean> {
+  try {
+    const res = await fetch("/api/workspace-ordering", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ order }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
 }
 
 export interface EnsureSessionResult {

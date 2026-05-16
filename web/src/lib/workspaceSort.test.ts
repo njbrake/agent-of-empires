@@ -1,10 +1,16 @@
 import { describe, expect, it } from "vitest";
 import type { SessionResponse, Workspace } from "./types";
 import {
-  compareWorkspaces,
+  compareByBirth,
   groupCreatedAt,
+  makeCompareWorkspaces,
   workspaceCreatedAt,
 } from "./workspaceSort";
+
+// With no user-defined ordering, `makeCompareWorkspaces([])` reduces to
+// the birth-key comparator. We test the default contract here; the
+// ordering-priority contract gets its own block below.
+const compareWorkspaces = makeCompareWorkspaces([]);
 
 function mkSession(overrides: Partial<SessionResponse> = {}): SessionResponse {
   return {
@@ -145,6 +151,55 @@ describe("compareWorkspaces (sidebar stable order, #1169)", () => {
 
     const order = [wsEmpty, wsReal].sort(compareWorkspaces).map((w) => w.id);
     expect(order).toEqual(["real", "empty"]);
+  });
+});
+
+describe("makeCompareWorkspaces (user-defined ordering)", () => {
+  function ws(id: string, createdAt: string): Workspace {
+    return mkWorkspace(id, "idle", [mkSession({ id: `s-${id}`, created_at: createdAt })]);
+  }
+
+  it("ranks workspaces by their position in the ordering list (lower index sorts first)", () => {
+    const w1 = ws("a", "2025-01-01T00:00:00Z");
+    const w2 = ws("b", "2025-04-01T00:00:00Z");
+    const w3 = ws("c", "2025-02-01T00:00:00Z");
+
+    const cmp = makeCompareWorkspaces(["c", "a", "b"]);
+    const order = [w1, w2, w3].sort(cmp).map((w) => w.id);
+    expect(order).toEqual(["c", "a", "b"]);
+  });
+
+  it("sorts unranked workspaces after ranked ones, falling back to birth-key order", () => {
+    const ranked1 = ws("ranked-1", "2025-01-01T00:00:00Z");
+    const ranked2 = ws("ranked-2", "2025-02-01T00:00:00Z");
+    const newest = ws("new", "2025-12-01T00:00:00Z");
+    const middle = ws("mid", "2025-06-01T00:00:00Z");
+
+    const cmp = makeCompareWorkspaces(["ranked-1", "ranked-2"]);
+    const order = [newest, middle, ranked2, ranked1].sort(cmp).map((w) => w.id);
+    // Ranked first (in ordering-list order), then unranked newest-first.
+    expect(order).toEqual(["ranked-1", "ranked-2", "new", "mid"]);
+  });
+
+  it("matches the birth-key comparator when the ordering is empty", () => {
+    const wsOld = ws("old", "2025-01-01T00:00:00Z");
+    const wsNew = ws("new", "2025-05-01T00:00:00Z");
+    const cmp = makeCompareWorkspaces([]);
+    const order = [wsOld, wsNew].sort(cmp).map((w) => w.id);
+    const expected = [wsOld, wsNew].sort(compareByBirth).map((w) => w.id);
+    expect(order).toEqual(expected);
+    expect(order).toEqual(["new", "old"]);
+  });
+
+  it("ignores stale entries (ids in the ordering that aren't current workspaces)", () => {
+    const wsA = ws("a", "2025-01-01T00:00:00Z");
+    const wsB = ws("b", "2025-02-01T00:00:00Z");
+
+    // "ghost" is in the ordering but not in the sort input. The
+    // comparator must not crash and must still order live workspaces.
+    const cmp = makeCompareWorkspaces(["ghost", "b", "a"]);
+    const order = [wsA, wsB].sort(cmp).map((w) => w.id);
+    expect(order).toEqual(["b", "a"]);
   });
 });
 

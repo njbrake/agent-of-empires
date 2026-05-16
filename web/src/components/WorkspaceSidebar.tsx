@@ -2,6 +2,22 @@ import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
 import { Pencil } from "lucide-react";
+import {
+  DndContext,
+  MouseSensor,
+  TouchSensor,
+  useSensor,
+  useSensors,
+  closestCenter,
+  type DragEndEvent,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  useSortable,
+  verticalListSortingStrategy,
+  arrayMove,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import type {
   RepoGroup,
   SessionResponse,
@@ -39,6 +55,7 @@ function closeOtherContextMenus() {
 
 interface Props {
   groups: RepoGroup[];
+  onReorderWorkspaces: (newOrder: string[]) => void;
   activeId: string | null;
   open: boolean;
   onToggle: () => void;
@@ -209,6 +226,71 @@ function isPlainLeftClick(event: React.MouseEvent<HTMLAnchorElement>): boolean {
     !event.altKey &&
     !event.ctrlKey &&
     !event.shiftKey
+  );
+}
+
+// Wraps a SessionRow with @dnd-kit sortable plumbing. The row's whole
+// click target keeps working because the drag listeners live on a
+// separate handle (`<button aria-label="Drag…">`). On mobile the handle
+// is the only way to start a drag, so long-press on the row still opens
+// the context menu without contention. See #1169.
+function SortableSessionRow(props: {
+  workspace: Workspace;
+  isActive: boolean;
+  onClick: () => void;
+  onDelete?: (workspaceId: string) => void;
+  readOnly?: boolean;
+}) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
+    useSortable({ id: props.workspace.id });
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.4 : 1,
+  } as const;
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      className="flex items-stretch"
+    >
+      <button
+        type="button"
+        {...attributes}
+        {...listeners}
+        aria-label={`Drag to reorder ${props.workspace.displayName}`}
+        className="flex shrink-0 items-center px-1 cursor-grab active:cursor-grabbing text-text-dim/40 hover:text-text-dim/80 touch-none"
+        // Suppress click-through; the button only exists for drag.
+        onClick={(e) => e.preventDefault()}
+      >
+        <GripVerticalIcon />
+      </button>
+      <div className="flex-1 min-w-0">
+        <SessionRow {...props} indented />
+      </div>
+    </div>
+  );
+}
+
+// Tiny inline grip glyph — lucide's GripVertical is 24x24 by default
+// and visually heavy in a dense sidebar; a 6-dot 2x3 grid at 12px reads
+// as a handle without competing with the status glyph.
+function GripVerticalIcon() {
+  return (
+    <svg
+      width="10"
+      height="14"
+      viewBox="0 0 10 14"
+      fill="currentColor"
+      aria-hidden="true"
+    >
+      <circle cx="3" cy="3" r="1" />
+      <circle cx="3" cy="7" r="1" />
+      <circle cx="3" cy="11" r="1" />
+      <circle cx="7" cy="3" r="1" />
+      <circle cx="7" cy="7" r="1" />
+      <circle cx="7" cy="11" r="1" />
+    </svg>
   );
 }
 
@@ -662,6 +744,7 @@ function workspaceMatchesFilter(ws: Workspace, q: string): boolean {
 
 export function WorkspaceSidebar({
   groups,
+  onReorderWorkspaces,
   activeId,
   open,
   onToggle,
@@ -680,6 +763,49 @@ export function WorkspaceSidebar({
   const [filterQuery, setFilterQuery] = useState("");
   const filterRef = useRef<HTMLInputElement>(null);
   const dragging = useRef(false);
+
+  // Sensors are scoped to the explicit grip handle on each row (see
+  // SortableSessionRow), so the activation constraints are conservative
+  // mostly to suppress spurious drags from a slow click. MouseSensor's
+  // `distance` prevents click-then-no-movement from registering; the
+  // TouchSensor delay leaves room for the SessionRow long-press context
+  // menu (which fires at ~500ms) before the user feels stuck.
+  const sensors = useSensors(
+    useSensor(MouseSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 200, tolerance: 5 } }),
+  );
+
+  const handleDragEnd = useCallback(
+    (e: DragEndEvent) => {
+      const { active, over } = e;
+      if (!over || active.id === over.id) return;
+
+      // Drag is constrained to within a single repo group (each group
+      // has its own SortableContext), so finding the active group and
+      // reordering inside it is sufficient.
+      const groupIndex = groups.findIndex((g) =>
+        g.workspaces.some((w) => w.id === active.id),
+      );
+      const group = groups[groupIndex];
+      if (groupIndex < 0 || !group) return;
+      const oldIndex = group.workspaces.findIndex((w) => w.id === active.id);
+      const newIndex = group.workspaces.findIndex((w) => w.id === over.id);
+      if (oldIndex < 0 || newIndex < 0) return;
+
+      // Build the new full visual order by replacing the affected
+      // group's local order, then concat in the existing group order.
+      // We persist the full flat list so cross-device clients can render
+      // the same layout without re-deriving per-group ordering.
+      const reordered = arrayMove(group.workspaces, oldIndex, newIndex);
+      const flat: string[] = [];
+      groups.forEach((g, i) => {
+        const ws = i === groupIndex ? reordered : g.workspaces;
+        ws.forEach((w) => flat.push(w.id));
+      });
+      onReorderWorkspaces(flat);
+    },
+    [groups, onReorderWorkspaces],
+  );
 
   const q = filterQuery.trim().toLowerCase();
 
@@ -831,39 +957,50 @@ export function WorkspaceSidebar({
         )}
 
         <div className="flex-1 overflow-y-auto overflow-x-hidden">
-          {filteredGroups.map((group) => {
-            const showExpanded = q ? true : !group.collapsed;
-            const hasActiveChild = group.workspaces.some(
-              (ws) => ws.id === activeId,
-            );
-            return (
-              <div key={group.id}>
-                <RepoGroupHeader
-                  group={{ ...group, collapsed: !showExpanded }}
-                  hasActiveChild={!showExpanded && hasActiveChild}
-                  onClick={() => !q && onToggleRepo(group.id)}
-                  onNewSession={() =>
-                    group.id === MULTI_REPO_GROUP_ID
-                      ? onNew()
-                      : onCreateSession(group.repoPath)
-                  }
-                  offline={offline}
-                />
-                {showExpanded &&
-                  group.workspaces.map((ws) => (
-                    <SessionRow
-                      key={ws.id}
-                      workspace={ws}
-                      isActive={ws.id === activeId}
-                      onClick={() => onSelect(ws.id)}
-                      onDelete={onDeleteSession}
-                      readOnly={readOnly}
-                      indented
-                    />
-                  ))}
-              </div>
-            );
-          })}
+          <DndContext
+            sensors={sensors}
+            collisionDetection={closestCenter}
+            onDragEnd={handleDragEnd}
+          >
+            {filteredGroups.map((group) => {
+              const showExpanded = q ? true : !group.collapsed;
+              const hasActiveChild = group.workspaces.some(
+                (ws) => ws.id === activeId,
+              );
+              return (
+                <div key={group.id}>
+                  <RepoGroupHeader
+                    group={{ ...group, collapsed: !showExpanded }}
+                    hasActiveChild={!showExpanded && hasActiveChild}
+                    onClick={() => !q && onToggleRepo(group.id)}
+                    onNewSession={() =>
+                      group.id === MULTI_REPO_GROUP_ID
+                        ? onNew()
+                        : onCreateSession(group.repoPath)
+                    }
+                    offline={offline}
+                  />
+                  {showExpanded && (
+                    <SortableContext
+                      items={group.workspaces.map((ws) => ws.id)}
+                      strategy={verticalListSortingStrategy}
+                    >
+                      {group.workspaces.map((ws) => (
+                        <SortableSessionRow
+                          key={ws.id}
+                          workspace={ws}
+                          isActive={ws.id === activeId}
+                          onClick={() => onSelect(ws.id)}
+                          onDelete={onDeleteSession}
+                          readOnly={readOnly}
+                        />
+                      ))}
+                    </SortableContext>
+                  )}
+                </div>
+              );
+            })}
+          </DndContext>
 
           {!hasResults && filterQuery && (
             <div className="px-4 py-8 text-center">

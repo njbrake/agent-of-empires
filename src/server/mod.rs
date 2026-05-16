@@ -921,13 +921,17 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
 }
 
 fn build_router(state: Arc<AppState>) -> Router {
-    use axum::routing::{delete, get, patch, post};
+    use axum::routing::{delete, get, patch, post, put};
 
     let app = Router::new()
         // Sessions
         .route(
             "/api/sessions",
             get(api::list_sessions).post(api::create_session),
+        )
+        .route(
+            "/api/workspace-ordering",
+            put(api::update_workspace_ordering),
         )
         .route(
             "/api/sessions/{id}",

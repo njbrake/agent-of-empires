@@ -37,26 +37,29 @@ async function mockApis(page: Page) {
   await page.route("**/api/sessions", (r) => {
     if (r.request().method() === "GET") {
       return r.fulfill({
-        json: [
-          {
-            id: "seed-session",
-            title: "seed",
-            project_path: "/tmp/example",
-            group_path: "/tmp",
-            tool: "claude",
-            status: "Idle",
-            yolo_mode: false,
-            created_at: new Date().toISOString(),
-            last_accessed_at: null,
-            last_error: null,
-            branch: null,
-            main_repo_path: null,
-            is_sandboxed: false,
-            has_terminal: true,
-            profile: "default",
-            workspace_repos: [],
-          },
-        ],
+        json: {
+          sessions: [
+            {
+              id: "seed-session",
+              title: "seed",
+              project_path: "/tmp/example",
+              group_path: "/tmp",
+              tool: "claude",
+              status: "Idle",
+              yolo_mode: false,
+              created_at: new Date().toISOString(),
+              last_accessed_at: null,
+              last_error: null,
+              branch: null,
+              main_repo_path: null,
+              is_sandboxed: false,
+              has_terminal: true,
+              profile: "default",
+              workspace_repos: [],
+            },
+          ],
+          workspace_ordering: [],
+        },
       });
     }
     return r.fulfill({ json: { session: { id: "new-session" } } });

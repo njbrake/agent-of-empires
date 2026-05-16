@@ -260,7 +260,18 @@ fn truncate_title(s: &str, max: usize) -> String {
     out
 }
 
-pub async fn list_sessions(State(state): State<Arc<AppState>>) -> Json<Vec<SessionResponse>> {
+// Envelope for `GET /api/sessions`. Wraps the sessions list with the
+// user's persisted workspace ordering so the client can render the
+// sidebar in the requested order on the first paint, with no extra
+// round-trip. The order is a list of workspace ids; ids not present
+// fall back to the client's default newest-first ordering. See #1169.
+#[derive(serde::Serialize)]
+pub struct SessionsEnvelope {
+    pub sessions: Vec<SessionResponse>,
+    pub workspace_ordering: Vec<String>,
+}
+
+pub async fn list_sessions(State(state): State<Arc<AppState>>) -> Json<SessionsEnvelope> {
     let instances = state.instances.read().await;
     let claude_fullscreen = crate::claude_settings::read_tui_fullscreen();
     // Snapshot the supervisor's worker lifecycle map once per request
@@ -386,7 +397,46 @@ pub async fn list_sessions(State(state): State<Arc<AppState>>) -> Json<Vec<Sessi
         }
     }
 
-    Json(sessions)
+    let workspace_ordering = crate::session::load_workspace_ordering()
+        .map(|w| w.order)
+        .unwrap_or_default();
+
+    Json(SessionsEnvelope {
+        sessions,
+        workspace_ordering,
+    })
+}
+
+// --- Workspace ordering ---
+//
+// `PUT /api/workspace-ordering` overwrites the persisted workspace order
+// with a fresh client-supplied list. Workspaces are a client construct
+// (a group of sessions keyed on `repoPath::branch`), so the server
+// treats the entries as opaque strings. The list is a partial order:
+// any workspace id not in the list falls back to the client's default
+// newest-first ordering. Persisted globally (not per-profile) because
+// the sidebar shows sessions across all profiles. See #1169.
+
+#[derive(Deserialize)]
+pub struct UpdateWorkspaceOrderingBody {
+    pub order: Vec<String>,
+}
+
+pub async fn update_workspace_ordering(
+    Json(body): Json<UpdateWorkspaceOrderingBody>,
+) -> impl IntoResponse {
+    let ordering = crate::session::WorkspaceOrdering { order: body.order };
+    if let Err(e) = crate::session::save_workspace_ordering(&ordering) {
+        tracing::error!("Failed to persist workspace ordering: {e}");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "message": "Failed to persist ordering" })),
+        );
+    }
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({ "order": ordering.order })),
+    )
 }
 
 // --- Rename session ---

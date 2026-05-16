@@ -17,26 +17,29 @@ export async function mockTerminalApis(page: Page): Promise<MockHandle> {
   await page.route("**/api/sessions", (r) => {
     if (r.request().method() === "POST") return r.fulfill({ status: 400 });
     return r.fulfill({
-      json: [
-        {
-          id: "pinch-test",
-          title: "pinch-test",
-          project_path: "/tmp/pinch-test",
-          group_path: "/tmp",
-          tool: "claude",
-          status: "Running",
-          yolo_mode: false,
-          created_at: new Date().toISOString(),
-          last_accessed_at: null,
-          last_error: null,
-          branch: null,
-          main_repo_path: null,
-          is_sandboxed: false,
-          has_terminal: true,
-          profile: "default",
-          workspace_repos: [],
-        },
-      ],
+      json: {
+        sessions: [
+          {
+            id: "pinch-test",
+            title: "pinch-test",
+            project_path: "/tmp/pinch-test",
+            group_path: "/tmp",
+            tool: "claude",
+            status: "Running",
+            yolo_mode: false,
+            created_at: new Date().toISOString(),
+            last_accessed_at: null,
+            last_error: null,
+            branch: null,
+            main_repo_path: null,
+            is_sandboxed: false,
+            has_terminal: true,
+            profile: "default",
+            workspace_repos: [],
+          },
+        ],
+        workspace_ordering: [],
+      },
     });
   });
   await page.route("**/api/sessions/*/ensure", (r) =>

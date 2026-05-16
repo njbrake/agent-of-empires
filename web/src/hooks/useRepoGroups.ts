@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useState } from "react";
 import type { Workspace, RepoGroup } from "../lib/types";
-import { compareWorkspaces, groupCreatedAt } from "../lib/workspaceSort";
+import { groupCreatedAt, makeCompareWorkspaces } from "../lib/workspaceSort";
 
 const COLLAPSED_KEY_PREFIX = "aoe-repo-collapsed-";
 export const MULTI_REPO_GROUP_ID = "__multi_repo__";
@@ -17,13 +17,18 @@ function isMultiRepoWorkspace(ws: Workspace): boolean {
   return ws.sessions.some((s) => (s.workspace_repos?.length ?? 0) > 1);
 }
 
-export function useRepoGroups(workspaces: Workspace[]): {
+export function useRepoGroups(
+  workspaces: Workspace[],
+  workspaceOrdering: readonly string[] = [],
+): {
   groups: RepoGroup[];
   toggleRepoCollapsed: (repoId: string) => void;
 } {
   const [collapsedMap, setCollapsedMap] = useState<Record<string, boolean>>({});
 
   const groups = useMemo(() => {
+    const compareWorkspaces = makeCompareWorkspaces(workspaceOrdering);
+
     const byRepo = new Map<string, Workspace[]>();
     const multiRepo: Workspace[] = [];
 
@@ -91,7 +96,7 @@ export function useRepoGroups(workspaces: Workspace[]): {
     });
 
     return repoGroups;
-  }, [workspaces, collapsedMap]);
+  }, [workspaces, workspaceOrdering, collapsedMap]);
 
   const toggleRepoCollapsed = useCallback((repoId: string) => {
     setCollapsedMap((prev) => {
