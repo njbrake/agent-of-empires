@@ -27,6 +27,7 @@ pub enum ThemeCommands {
     Dir,
 }
 
+#[tracing::instrument(target = "cli.session", skip_all)]
 pub fn run_list() {
     let themes = available_themes();
 
@@ -53,6 +54,7 @@ pub fn run_list() {
     );
 }
 
+#[tracing::instrument(target = "cli.session", skip_all, fields(name = %name))]
 pub fn run_export(name: &str, output: Option<&str>) -> Result<()> {
     let all = available_themes();
     if !all.iter().any(|t| t == name) {
@@ -97,6 +99,7 @@ pub fn run_export(name: &str, output: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+#[tracing::instrument(target = "cli.session", skip_all)]
 pub fn run_dir() -> Result<()> {
     match custom_themes_dir() {
         Some(dir) => {

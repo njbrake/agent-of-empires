@@ -21,6 +21,7 @@ pub struct UrlArgs {
     pub token_only: bool,
 }
 
+#[tracing::instrument(target = "cli.serve", skip_all)]
 pub fn run(args: UrlArgs) -> Result<()> {
     if daemon_pid().is_none() {
         bail!(

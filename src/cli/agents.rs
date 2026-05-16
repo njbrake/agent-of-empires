@@ -5,6 +5,7 @@
 
 use anyhow::Result;
 
+#[tracing::instrument(target = "cli.agents", skip_all)]
 pub fn run() -> Result<()> {
     let available = crate::tmux::AvailableTools::detect();
     let available_list = available.available_list();

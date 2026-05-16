@@ -410,6 +410,7 @@ pub fn daemon_pid() -> Option<u32> {
     }
 }
 
+#[tracing::instrument(target = "cli.serve", skip_all, fields(profile = %profile))]
 pub async fn run(profile: &str, args: ServeArgs) -> Result<()> {
     if args.stop {
         return stop_daemon().await;

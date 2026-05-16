@@ -115,6 +115,7 @@ pub struct AddArgs {
     model: Option<String>,
 }
 
+#[tracing::instrument(target = "cli.add", skip_all, fields(profile = %profile))]
 pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
     let mut path = if args.path.as_os_str() == "." {
         std::env::current_dir()?

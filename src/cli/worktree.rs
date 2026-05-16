@@ -27,6 +27,7 @@ pub enum WorktreeCommands {
     },
 }
 
+#[tracing::instrument(target = "cli.session", skip_all, fields(profile = %profile))]
 pub async fn run(profile: &str, command: WorktreeCommands) -> Result<()> {
     match command {
         WorktreeCommands::List => list_worktrees().await,

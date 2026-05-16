@@ -131,6 +131,7 @@ pub enum CockpitCommands {
     },
 }
 
+#[tracing::instrument(target = "cli.cockpit", skip_all)]
 pub async fn run(command: CockpitCommands) -> Result<()> {
     match command {
         CockpitCommands::Doctor { json, fix } => doctor(json, fix).await,
