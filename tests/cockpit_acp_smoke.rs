@@ -59,6 +59,8 @@ async fn shim_agent_round_trips_prompt() {
         provider_env: vec![],
         socket_path: None,
         stored_acp_session_id: None,
+        sandbox_info: None,
+        source_profile: None,
     };
 
     let mut client = AcpClient::spawn(config, CockpitSessionId("smoke".into()))
@@ -180,6 +182,8 @@ async fn shim_agent_round_trips_approval_allow() {
         provider_env: vec![],
         socket_path: None,
         stored_acp_session_id: None,
+        sandbox_info: None,
+        source_profile: None,
     };
 
     let mut client = AcpClient::spawn(config, CockpitSessionId("approve".into()))
@@ -276,6 +280,8 @@ async fn shim_agent_round_trips_fs() {
         provider_env: vec![],
         socket_path: None,
         stored_acp_session_id: None,
+        sandbox_info: None,
+        source_profile: None,
     };
 
     let mut client = AcpClient::spawn(config, CockpitSessionId("fs".into()))
@@ -346,6 +352,8 @@ async fn shim_agent_round_trips_terminal() {
         provider_env: vec![],
         socket_path: None,
         stored_acp_session_id: None,
+        sandbox_info: None,
+        source_profile: None,
     };
 
     let mut client = AcpClient::spawn(config, CockpitSessionId("term".into()))
@@ -429,6 +437,8 @@ async fn shim_agent_set_mode_emits_current_mode_changed() {
         provider_env: vec![],
         socket_path: None,
         stored_acp_session_id: None,
+        sandbox_info: None,
+        source_profile: None,
     };
 
     let mut client = AcpClient::spawn(config, CockpitSessionId("set-mode".into()))

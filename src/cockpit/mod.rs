@@ -23,6 +23,8 @@ pub mod node;
 pub mod permissions;
 pub mod protocol;
 pub mod runner;
+#[cfg(feature = "serve")]
+pub mod sandbox;
 pub mod state;
 pub mod supervisor;
 pub mod terminal_handler;

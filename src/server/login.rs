@@ -3,9 +3,12 @@
 //! When a passphrase is configured, users must enter it after token auth
 //! to access the dashboard. Login sessions are tracked server-side with
 //! a device-binding secret (replaces the prior strict IP binding, see
-//! #1131) and a 24-hour sliding expiry window. Active use refreshes
-//! the deadline; one day of inactivity logs the device out and
-//! requires re-entering the passphrase. See #1137 for the rationale.
+//! #1131) and a 30-day sliding expiry window. Active use refreshes
+//! the deadline; 30 days of inactivity logs the device out and
+//! requires re-entering the passphrase. See #1137 for the rationale,
+//! and #1163 / #1167 for the lifetime extension (matches the
+//! "rarely-ever-log-out" experience users expect from a single-owner
+//! dev tool).
 //!
 //! The device-binding model: the client generates 32 random bytes via
 //! `crypto.getRandomValues`, stores them in `localStorage`, and presents
@@ -33,10 +36,17 @@ use super::AppState;
 
 /// Session lifetime (sliding window). Refreshes on every
 /// authenticated request, so an active user never sees it; the
-/// effective behavior is "log out after 24 hours of inactivity",
-/// matching the SSH-equivalent model the user expects on a single-
-/// owner deployment. See #1137.
-const SESSION_LIFETIME: Duration = Duration::from_secs(24 * 60 * 60);
+/// effective behavior is "log out after 30 days of inactivity",
+/// matching the rarely-prompt experience users expect from a tool
+/// they live in (GitHub-style, not banking-style). The cookie's
+/// `Max-Age=2592000` already advertised 30 days; this aligns the
+/// server-side TTL with the client-side hint. See #1137 (initial
+/// 24h window) and #1167 (extension rationale: bound devices stay
+/// signed in independent of token rotation).
+///
+/// `pub(crate)` so cross-module tests can pin the value and catch
+/// a silent regression to the old 24h window.
+pub(crate) const SESSION_LIFETIME: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 
 /// Step-up elevation window. Required for high-risk operations
 /// (terminal attach, cockpit command execution, file writes,

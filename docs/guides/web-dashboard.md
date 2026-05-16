@@ -125,14 +125,46 @@ aoe prints a notice when it falls back to this path so you don't accidentally in
 |------|---------|-------------|
 | `--port` | 8080 | Port to listen on |
 | `--host` | 127.0.0.1 | Bind address. Use `0.0.0.0` for LAN/VPN access |
+| `--auth` | `token` | Auth mode: `token` (URL token, default), `passphrase` (passphrase login wall only), `none` (no auth, loopback only unless `--behind-proxy`) |
+| `--passphrase` | | Passphrase for the login wall. Valid with `--auth=token` (token + passphrase) and `--auth=passphrase`. Also reads `AOE_SERVE_PASSPHRASE` |
+| `--behind-proxy` | off | Server sits behind an external reverse proxy that terminates TLS. Sets cookies as `; Secure` and trusts `X-Forwarded-For` / `cf-connecting-ip` from loopback peers; does NOT spawn a tunnel |
+| `--no-auth` | off | Alias for `--auth=none` (kept for backwards compatibility) |
 | `--remote` | off | Expose over HTTPS tunnel (Tailscale Funnel if available, else Cloudflare quick tunnel) |
 | `--tunnel-name` | | Use a named Cloudflare tunnel (requires `--remote`; overrides Tailscale auto-detection) |
 | `--no-tailscale` | off | Skip Tailscale Funnel auto-detection and use Cloudflare (requires `--remote`) |
 | `--tunnel-url` | | Hostname for a named tunnel (requires `--tunnel-name`) |
-| `--no-auth` | off | Disable token auth (localhost only) |
 | `--read-only` | off | View terminals but cannot send keystrokes |
 | `--daemon` | off | Fork to background and detach from terminal |
 | `--stop` | | Stop a running daemon |
+
+### Auth mode matrix
+
+| Mode | Token URL | Passphrase wall | Use case |
+|------|-----------|-----------------|----------|
+| `--auth=token` (default) | required | optional (`--passphrase`) | Standard local / VPN / Tailscale deployments |
+| `--auth=passphrase --passphrase X` | none | required | Reverse-proxy deployments where pasting a token URL on mobile is too high friction |
+| `--auth=none` (alias `--no-auth`) | none | none | Localhost-only quick testing |
+
+Notes:
+
+- `--auth=passphrase` and `--auth=none` on a non-loopback bind require `--behind-proxy`. The flag asserts that an upstream reverse proxy terminates TLS and forwards the client IP. Without it, reduced-auth modes refuse to bind to a routable address.
+- `--auth=passphrase` requires `--passphrase <VALUE>` (or `AOE_SERVE_PASSPHRASE`) since the passphrase becomes the only human gate.
+- `--auth=none --passphrase X` is rejected explicitly; the previous silent acceptance of `--no-auth --passphrase` was a footgun. Use `--auth=passphrase` if the passphrase wall is what you want.
+- `--remote` is incompatible with `--auth=none` and `--auth=passphrase`; the public tunnel mandates both token auth and a passphrase.
+
+### Behind a reverse proxy
+
+When TLS is terminated by an external reverse proxy (Traefik, nginx, Caddy) that forwards traffic to `aoe serve` on loopback (often through an SSH reverse tunnel), use `--behind-proxy` so cookies carry `; Secure` and the rate limiter keys requests by the real client IP:
+
+```bash
+# Loopback bind, passphrase login wall, TLS terminated upstream.
+aoe serve \
+  --host 127.0.0.1 --port 42041 \
+  --auth=passphrase --passphrase "$AOE_PASSPHRASE" \
+  --behind-proxy
+```
+
+The upstream proxy must set `X-Forwarded-For` (or `cf-connecting-ip`); aoe reads the last value as the client IP. The trust check fires only when the socket peer is loopback, so a misconfigured upstream that lets requests reach aoe directly cannot spoof the IP.
 
 ## Security
 
@@ -140,8 +172,9 @@ aoe prints a notice when it falls back to this path so you don't accidentally in
 
 ### Authentication
 
-- **Token auth:** A random 256-bit token is generated on startup and stored at `~/.config/agent-of-empires/serve.token` (Linux) or `~/.agent-of-empires/serve.token` (macOS). The token is passed via URL on first visit, then stored as an `HttpOnly; SameSite=Strict` cookie.
-- **Rate limiting:** 5 failed auth attempts from an IP trigger a 15-minute lockout. Uses `Cf-Connecting-IP` when behind a Cloudflare tunnel to prevent IP spoofing.
+- **Token auth** (`--auth=token`, default): A random 256-bit token is generated on startup and stored at `~/.config/agent-of-empires/serve.token` (Linux) or `~/.agent-of-empires/serve.token` (macOS). The token is passed via URL on first visit, then stored as an `HttpOnly; SameSite=Strict` cookie.
+- **Passphrase wall** (`--auth=passphrase`, or combined with token via `--passphrase`): An argon2-hashed passphrase gates `/login`. Sessions are bound to a per-device secret stored in the client's `localStorage`; a leaked session cookie alone is insufficient.
+- **Rate limiting:** 5 failed login attempts from an IP trigger a 15-minute lockout. Uses `Cf-Connecting-IP` / `X-Forwarded-For` from loopback peers (covers `--remote` tunnel mode and `--behind-proxy` reverse-proxy mode) to prevent IP spoofing.
 - **Token rotation:** In `--remote` mode, the token rotates every 4 hours with a 5-minute grace period for active sessions.
 - **Device tracking:** Connected devices (IP, browser, last seen) are visible in Settings > Security.
 
@@ -154,13 +187,14 @@ The server sets `X-Frame-Options: DENY` (prevents clickjacking), `X-Content-Type
 - **Localhost** (`aoe serve`): Same security as the TUI. Fine.
 - **Remote via tunnel** (`aoe serve --remote`): Encrypted via HTTPS. Recommended for phone access.
 - **Over Tailscale/WireGuard** (`aoe serve --host 0.0.0.0`): The VPN encrypts traffic.
+- **Behind a reverse proxy** (`aoe serve --auth=passphrase --passphrase ... --behind-proxy`): TLS terminated upstream by Traefik / nginx / Caddy. Passphrase is the only human gate.
 - **Read-only** (`aoe serve --remote --read-only`): Monitor sessions without input capability.
 
 ### Dangerous
 
 - `aoe serve --host 0.0.0.0` on public WiFi without a VPN: traffic is unencrypted HTTP
-- `aoe serve --no-auth --host 0.0.0.0`: blocked (refuses to start)
-- `aoe serve --no-auth --remote`: blocked (refuses to start)
+- `aoe serve --auth=none --host 0.0.0.0` (or alias `--no-auth --host 0.0.0.0`): blocked (refuses to start without `--behind-proxy`)
+- `aoe serve --auth=none --remote` or `--auth=passphrase --remote`: blocked (refuses to start)
 
 ## Installing as a PWA
 

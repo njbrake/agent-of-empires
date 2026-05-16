@@ -26,7 +26,7 @@ export const SPINNER_FRAMES = [
 export const SPINNER_INTERVAL_MS = 80;
 
 /** Verb cycle interval — how often the working label rotates. */
-export const VERB_INTERVAL_MS = 4_000;
+export const VERB_INTERVAL_MS = 18_000;
 
 /**
  * General "agent is working" pool. Used when there's no thinking/tool

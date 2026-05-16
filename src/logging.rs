@@ -143,6 +143,7 @@ pub const DEFAULT_TARGET_ROOTS: &[&str] = &[
 pub const KNOWN_SUB_TARGETS: &[&str] = &[
     "cockpit.acp",
     "cockpit.acp.stderr",
+    "cockpit.acp.tool_dispatch",
     "cockpit.supervisor",
     "cockpit.event_store",
     "cockpit.runner",

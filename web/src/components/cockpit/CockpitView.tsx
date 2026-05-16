@@ -1448,7 +1448,7 @@ function QueuedPromptsStrip({
             <button
               type="button"
               onClick={onClear}
-              className="text-text-dim hover:text-rose-300 transition-colors"
+              className="text-text-dim hover:text-text-secondary transition-colors"
             >
               Clear all
             </button>
@@ -1485,8 +1485,8 @@ function QueuedPromptRow({
   const [editing, setEditing] = useState(false);
 
   return (
-    <li className="group flex items-start gap-2 rounded-lg border border-amber-700/30 bg-amber-950/15 px-2.5 py-1.5">
-      <span className="mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-amber-500/20 text-[10px] font-semibold text-amber-300">
+    <li className="group flex items-start gap-2 rounded-lg border border-sky-700/30 bg-sky-950/15 px-2.5 py-1.5">
+      <span className="mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-sky-500/20 text-[10px] font-semibold text-sky-300">
         ⏱
       </span>
       {editing ? (
@@ -1514,7 +1514,7 @@ function QueuedPromptRow({
         type="button"
         onClick={onRemove}
         title="Drop this queued message"
-        className="shrink-0 rounded p-1 text-text-dim hover:bg-surface-800 hover:text-rose-300"
+        className="shrink-0 rounded p-1 text-text-dim hover:bg-surface-800 hover:text-text-secondary"
       >
         <X className="h-3.5 w-3.5" />
       </button>

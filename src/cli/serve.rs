@@ -1,9 +1,38 @@
 //! `aoe serve` command -- start a web dashboard for remote session access
 
 use anyhow::{bail, Result};
-use clap::Args;
+use clap::{Args, ValueEnum};
 use std::path::PathBuf;
 use std::sync::Mutex;
+
+/// How the dashboard authenticates HTTP/WS requests.
+///
+/// `Token` is the historical default: a random URL token gates every
+/// request. `Passphrase` drops the token gate but keeps the passphrase
+/// login wall as the sole human gate (useful behind a reverse proxy
+/// where pasting a token URL on mobile is too high friction).
+/// `None` disables both, equivalent to legacy `--no-auth`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+#[value(rename_all = "lowercase")]
+pub enum AuthMode {
+    Token,
+    Passphrase,
+    None,
+}
+
+impl AuthMode {
+    /// CLI string form, matching what `--auth=<MODE>` accepts. The
+    /// match arms are kept in lockstep with clap's `value(rename_all =
+    /// "lowercase")` derive by the `auth_mode_cli_str_matches_clap`
+    /// unit test, which round-trips each string through `ValueEnum`.
+    fn as_cli_str(self) -> &'static str {
+        match self {
+            AuthMode::Token => "token",
+            AuthMode::Passphrase => "passphrase",
+            AuthMode::None => "none",
+        }
+    }
+}
 
 #[derive(Args)]
 pub struct ServeArgs {
@@ -16,9 +45,26 @@ pub struct ServeArgs {
     #[arg(long, default_value = "127.0.0.1")]
     pub host: String,
 
-    /// Disable authentication (only allowed with localhost binding)
+    /// Authentication mode: `token` (default, random URL token),
+    /// `passphrase` (no token URL, passphrase login wall only),
+    /// or `none` (no auth at all, loopback-only unless --behind-proxy).
+    /// Mutually exclusive with --no-auth (which aliases --auth=none).
+    #[arg(long, value_enum, conflicts_with = "no_auth")]
+    pub auth: Option<AuthMode>,
+
+    /// Disable authentication (only allowed with localhost binding).
+    /// Alias for --auth=none.
     #[arg(long)]
     pub no_auth: bool,
+
+    /// Mark this server as sitting behind a reverse proxy that
+    /// terminates TLS upstream. Sets cookies as `; Secure` and trusts
+    /// the `X-Forwarded-For` / `cf-connecting-ip` headers from
+    /// loopback peers. Does NOT auto-spawn a tunnel (unlike --remote).
+    /// Required when --auth=passphrase or --auth=none is combined with
+    /// a non-loopback bind.
+    #[arg(long)]
+    pub behind_proxy: bool,
 
     /// Read-only mode: view terminals but cannot send keystrokes
     #[arg(long)]
@@ -59,15 +105,16 @@ pub struct ServeArgs {
     ///
     /// `--status` is read-only and incompatible with every flag that
     /// would change daemon state (`--stop`, `--daemon`, `--remote`) or
-    /// the bind config of a fresh daemon (`--no-auth`, `--read-only`,
-    /// `--passphrase`, `--port`, `--tunnel-name`, `--no-tailscale`,
-    /// `--tunnel-url`, `--open`). Clap reports the misuse instead of
-    /// silently ignoring the extras.
+    /// the bind config of a fresh daemon (`--no-auth`, `--auth`,
+    /// `--behind-proxy`, `--read-only`, `--passphrase`, `--port`,
+    /// `--tunnel-name`, `--no-tailscale`, `--tunnel-url`, `--open`).
+    /// Clap reports the misuse instead of silently ignoring the extras.
     #[arg(
         long,
         conflicts_with_all = [
             "stop", "daemon", "remote",
-            "no_auth", "read_only", "passphrase", "port",
+            "no_auth", "auth", "behind_proxy",
+            "read_only", "passphrase", "port",
             "tunnel_name", "no_tailscale", "tunnel_url", "open",
         ],
     )]
@@ -102,6 +149,85 @@ impl ServeArgs {
         self.port
             .unwrap_or(if cfg!(debug_assertions) { 8081 } else { 8080 })
     }
+}
+
+/// Pure check used by both the CLI validator and its unit tests.
+fn host_is_localhost(host: &str) -> bool {
+    host == "localhost"
+        || host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback())
+}
+
+/// Resolve the effective `AuthMode` from the two CLI surfaces
+/// (`--auth=<mode>` and the legacy `--no-auth` alias). Clap's
+/// `conflicts_with` already rejects passing both, so the
+/// `(Some, true)` arm is unreachable in practice.
+fn resolve_auth_mode(auth: Option<AuthMode>, no_auth: bool) -> AuthMode {
+    match (auth, no_auth) {
+        (Some(mode), false) => mode,
+        (None, true) => AuthMode::None,
+        (None, false) => AuthMode::Token,
+        (Some(_), true) => unreachable!("clap conflicts_with prevents this"),
+    }
+}
+
+/// Reject mode + flag combinations that the daemon refuses to start
+/// with. Pure for unit testing; produces the same `anyhow::Error`
+/// shape as the inline guards used to.
+fn validate_auth_combination(
+    auth_mode: AuthMode,
+    has_passphrase: bool,
+    is_localhost: bool,
+    behind_proxy: bool,
+    remote: bool,
+    host: &str,
+) -> Result<()> {
+    // --auth=passphrase needs a passphrase: passphrase is the sole
+    // human gate, an empty wall means no auth at all.
+    if matches!(auth_mode, AuthMode::Passphrase) && !has_passphrase {
+        bail!(
+            "--auth=passphrase requires --passphrase <VALUE> or AOE_SERVE_PASSPHRASE.\n\
+             Without a passphrase there is no gate. Use --auth=none if that is intended."
+        );
+    }
+
+    // --auth=none silently discarding a provided passphrase is the
+    // legacy misleading behavior of `--no-auth --passphrase`; reject
+    // explicitly so the user picks the mode they actually want.
+    if matches!(auth_mode, AuthMode::None) && has_passphrase {
+        bail!("--auth=none does not honor --passphrase; use --auth=passphrase instead.");
+    }
+
+    // Reduced-auth modes on a non-loopback bind require an upstream
+    // proxy that terminates TLS.
+    if matches!(auth_mode, AuthMode::None | AuthMode::Passphrase) && !is_localhost && !behind_proxy
+    {
+        bail!(
+            "Refusing to start with --auth={} on {}.\n\
+             Reduced-auth modes on a non-loopback bind require --behind-proxy,\n\
+             which signals that an upstream reverse proxy terminates TLS and\n\
+             forwards the client IP via X-Forwarded-For / cf-connecting-ip.",
+            auth_mode.as_cli_str(),
+            host
+        );
+    }
+
+    // Block reduced-auth with --remote: --remote auto-spawns a public
+    // ingress and mandates token + passphrase. Collapsing the token
+    // away (or dropping auth entirely) on a publicly-reachable tunnel
+    // is never the intent.
+    if matches!(auth_mode, AuthMode::None | AuthMode::Passphrase) && remote {
+        bail!(
+            "Refusing to start with --auth={} in remote mode.\n\
+             --remote exposes the dashboard to the public internet and requires\n\
+             both token auth and a passphrase. If you have an external reverse\n\
+             proxy, use --behind-proxy instead of --remote.",
+            auth_mode.as_cli_str()
+        );
+    }
+
+    Ok(())
 }
 
 /// True when `aoe serve --remote` will route through Cloudflare and therefore
@@ -315,28 +441,31 @@ pub async fn run(profile: &str, args: ServeArgs) -> Result<()> {
         }
     }
 
-    let is_localhost = args.host == "localhost"
-        || args
-            .host
-            .parse::<std::net::IpAddr>()
-            .is_ok_and(|ip| ip.is_loopback());
+    let is_localhost = host_is_localhost(&args.host);
 
-    // Block dangerous combination: no auth on a network-accessible server
-    if args.no_auth && !is_localhost {
-        bail!(
-            "Refusing to start without authentication on {}.\n\
-             --no-auth is only allowed with localhost (127.0.0.1).\n\
-             For remote access, use token auth (the default) over a VPN like Tailscale.",
-            args.host
-        );
-    }
+    let auth_mode = resolve_auth_mode(args.auth, args.no_auth);
 
-    // Block --no-auth with --remote (tunnel makes localhost publicly accessible)
-    if args.no_auth && args.remote {
-        bail!(
-            "Refusing to start without authentication in remote mode.\n\
-             --no-auth with --remote would expose unauthenticated shell access to the internet."
-        );
+    validate_auth_combination(
+        auth_mode,
+        args.passphrase.is_some(),
+        is_localhost,
+        args.behind_proxy,
+        args.remote,
+        &args.host,
+    )?;
+
+    // --behind-proxy + --remote is meaningless: --remote manages its
+    // own ingress, --behind-proxy assumes an external one. Warn but
+    // do not hard-fail; --remote wins for the tunnel-spawn decision
+    // and both set behind_tunnel anyway. Emit on both stderr (for
+    // foreground users) and the tracing pipeline (for daemon users
+    // whose stderr lands inside debug.log unread).
+    if args.behind_proxy && args.remote {
+        let msg = "--behind-proxy is ignored when --remote is set; \
+             --remote already enables the equivalent cookie-Secure and \
+             trusted-XFF behavior and manages its own ingress.";
+        eprintln!("Note: {msg}");
+        tracing::warn!(target: "serve", "{msg}");
     }
 
     // Named tunnel requires --tunnel-url
@@ -429,7 +558,7 @@ pub async fn run(profile: &str, args: ServeArgs) -> Result<()> {
         profile,
         host: &host,
         port: args.resolved_port(),
-        no_auth: args.no_auth,
+        no_auth: matches!(auth_mode, AuthMode::Passphrase | AuthMode::None),
         read_only: args.read_only,
         remote: args.remote,
         tunnel_name: args.tunnel_name.as_deref(),
@@ -437,6 +566,7 @@ pub async fn run(profile: &str, args: ServeArgs) -> Result<()> {
         no_tailscale: args.no_tailscale,
         is_daemon: false,
         passphrase: args.passphrase.as_deref(),
+        behind_proxy: args.behind_proxy,
         open_browser: args.open,
     })
     .await;
@@ -494,6 +624,12 @@ fn start_daemon(profile: &str, args: &ServeArgs) -> Result<()> {
 
     if args.no_auth {
         cmd.arg("--no-auth");
+    }
+    if let Some(mode) = args.auth {
+        cmd.args(["--auth", mode.as_cli_str()]);
+    }
+    if args.behind_proxy {
+        cmd.arg("--behind-proxy");
     }
     if args.read_only {
         cmd.arg("--read-only");
@@ -741,5 +877,164 @@ mod tests {
     #[test]
     fn cloudflared_required_when_tailscale_unavailable() {
         assert!(cloudflared_required(false, false, false));
+    }
+
+    #[test]
+    fn host_is_localhost_accepts_loopback_forms() {
+        assert!(host_is_localhost("localhost"));
+        assert!(host_is_localhost("127.0.0.1"));
+        assert!(host_is_localhost("::1"));
+    }
+
+    #[test]
+    fn host_is_localhost_rejects_routable_addresses() {
+        assert!(!host_is_localhost("0.0.0.0"));
+        assert!(!host_is_localhost("192.168.1.1"));
+        assert!(!host_is_localhost("aoe.example.com"));
+    }
+
+    #[test]
+    fn resolve_auth_mode_defaults_to_token() {
+        assert_eq!(resolve_auth_mode(None, false), AuthMode::Token);
+    }
+
+    #[test]
+    fn resolve_auth_mode_no_auth_alias_maps_to_none() {
+        assert_eq!(resolve_auth_mode(None, true), AuthMode::None);
+    }
+
+    #[test]
+    fn resolve_auth_mode_explicit_wins() {
+        assert_eq!(
+            resolve_auth_mode(Some(AuthMode::Passphrase), false),
+            AuthMode::Passphrase
+        );
+        assert_eq!(
+            resolve_auth_mode(Some(AuthMode::None), false),
+            AuthMode::None
+        );
+    }
+
+    #[test]
+    fn validate_token_mode_loopback_ok() {
+        assert!(
+            validate_auth_combination(AuthMode::Token, false, true, false, false, "127.0.0.1")
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn validate_passphrase_without_passphrase_fails() {
+        let err =
+            validate_auth_combination(AuthMode::Passphrase, false, true, false, false, "127.0.0.1")
+                .unwrap_err();
+        assert!(err.to_string().contains("--auth=passphrase requires"));
+    }
+
+    #[test]
+    fn validate_passphrase_with_passphrase_loopback_ok() {
+        assert!(validate_auth_combination(
+            AuthMode::Passphrase,
+            true,
+            true,
+            false,
+            false,
+            "127.0.0.1"
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn validate_none_with_passphrase_rejected() {
+        let err = validate_auth_combination(AuthMode::None, true, true, false, false, "127.0.0.1")
+            .unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("--auth=none does not honor --passphrase"));
+        assert!(msg.contains("--auth=passphrase"));
+    }
+
+    #[test]
+    fn validate_passphrase_non_loopback_needs_behind_proxy() {
+        let err =
+            validate_auth_combination(AuthMode::Passphrase, true, false, false, false, "0.0.0.0")
+                .unwrap_err();
+        assert!(err.to_string().contains("--behind-proxy"));
+    }
+
+    #[test]
+    fn validate_passphrase_non_loopback_with_behind_proxy_ok() {
+        assert!(validate_auth_combination(
+            AuthMode::Passphrase,
+            true,
+            false,
+            true,
+            false,
+            "0.0.0.0"
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn validate_none_non_loopback_needs_behind_proxy() {
+        let err = validate_auth_combination(AuthMode::None, false, false, false, false, "0.0.0.0")
+            .unwrap_err();
+        assert!(err.to_string().contains("--behind-proxy"));
+    }
+
+    #[test]
+    fn validate_none_loopback_ok() {
+        // Regression: --no-auth (== --auth=none) on loopback must still
+        // start, matching the legacy --no-auth behavior.
+        assert!(
+            validate_auth_combination(AuthMode::None, false, true, false, false, "127.0.0.1")
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn validate_passphrase_with_remote_rejected() {
+        let err =
+            validate_auth_combination(AuthMode::Passphrase, true, true, false, true, "127.0.0.1")
+                .unwrap_err();
+        assert!(err.to_string().contains("in remote mode"));
+    }
+
+    #[test]
+    fn validate_none_with_remote_rejected() {
+        let err = validate_auth_combination(AuthMode::None, false, true, false, true, "127.0.0.1")
+            .unwrap_err();
+        assert!(err.to_string().contains("in remote mode"));
+    }
+
+    #[test]
+    fn validate_token_with_remote_ok() {
+        // --remote requires token + passphrase; the passphrase requirement
+        // is enforced separately. Token + remote alone is the existing
+        // valid combination and must keep passing.
+        assert!(
+            validate_auth_combination(AuthMode::Token, true, true, false, true, "127.0.0.1")
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn auth_mode_cli_str_matches_clap() {
+        // Drift guard: `as_cli_str()` and clap's `value(rename_all =
+        // "lowercase")` derive must agree. If someone renames a variant
+        // or changes the rename_all rule without updating the match,
+        // this round-trip fails. Catches the silent split where
+        // `--auth=passphrase` parses but the daemon respawn emits
+        // `--auth Passphrase`.
+        for variant in <AuthMode as ValueEnum>::value_variants() {
+            let cli_str = variant.as_cli_str();
+            let parsed = AuthMode::from_str(cli_str, true).unwrap_or_else(|_| {
+                panic!("clap rejects as_cli_str() output {:?}", cli_str);
+            });
+            assert_eq!(parsed, *variant);
+            let pv = variant
+                .to_possible_value()
+                .expect("non-skipped variant has a PossibleValue");
+            assert_eq!(pv.get_name(), cli_str);
+        }
     }
 }

@@ -39,17 +39,78 @@ pub enum FsError {
     SymlinkInPath(PathBuf),
 }
 
+/// Host↔container path translation for sandboxed sessions.
+///
+/// When the agent runs inside a Docker container it reports paths in
+/// the container's mount namespace (e.g. `/workspace/proj/foo.rs`).
+/// The daemon's fs handlers run on the host and need the host-side
+/// path (`/Users/.../proj/foo.rs`) to actually read/write. Each entry
+/// is `(container_prefix, host_prefix)` derived from the container's
+/// volume mounts.
+#[derive(Debug, Clone, Default)]
+pub struct SandboxPathMap {
+    pub mounts: Vec<(PathBuf, PathBuf)>,
+}
+
+impl SandboxPathMap {
+    pub fn new(mounts: Vec<(PathBuf, PathBuf)>) -> Self {
+        Self { mounts }
+    }
+
+    /// If `path` is rooted at one of the container-side prefixes,
+    /// rewrite it to the matching host-side prefix. Otherwise return
+    /// `path` unchanged. Longest container prefix wins so a nested
+    /// mount doesn't get masked by a shallower one.
+    pub fn translate_to_host(&self, path: &Path) -> PathBuf {
+        let mut best: Option<(&Path, &Path)> = None;
+        for (container, host) in &self.mounts {
+            if path.starts_with(container)
+                && best
+                    .map(|(c, _)| container.as_os_str().len() > c.as_os_str().len())
+                    .unwrap_or(true)
+            {
+                best = Some((container, host));
+            }
+        }
+        match best {
+            Some((container, host)) => {
+                let rel = path
+                    .strip_prefix(container)
+                    .unwrap_or_else(|_| Path::new(""));
+                if rel.as_os_str().is_empty() {
+                    host.to_path_buf()
+                } else {
+                    host.join(rel)
+                }
+            }
+            None => path.to_path_buf(),
+        }
+    }
+}
+
 /// Per-session allowed-roots policy. The session's worktree path plus any
 /// additional dirs declared at `session/new` time.
 #[derive(Debug, Clone)]
 pub struct FsPolicy {
     pub allowed_roots: Vec<PathBuf>,
+    /// When set, agent-reported paths are translated through this map
+    /// before the inside-roots check. The agent lives inside the
+    /// container; allowed_roots are host paths.
+    pub sandbox_map: Option<SandboxPathMap>,
 }
 
 impl FsPolicy {
     pub fn new(roots: Vec<PathBuf>) -> Self {
         Self {
             allowed_roots: roots,
+            sandbox_map: None,
+        }
+    }
+
+    pub fn with_sandbox_map(roots: Vec<PathBuf>, map: SandboxPathMap) -> Self {
+        Self {
+            allowed_roots: roots,
+            sandbox_map: Some(map),
         }
     }
 
@@ -67,6 +128,16 @@ impl FsPolicy {
         if !path.is_absolute() {
             return Err(FsError::NotAbsolute(path.to_path_buf()));
         }
+        // Sandboxed cockpit: agent sees container paths; rewrite to the
+        // host-side equivalent before canonicalization so the existing
+        // roots check (host-rooted) keeps working.
+        let translated: PathBuf;
+        let path = if let Some(map) = &self.sandbox_map {
+            translated = map.translate_to_host(path);
+            translated.as_path()
+        } else {
+            path
+        };
         let canonical = if path.exists() {
             path.canonicalize()?
         } else if let Some(parent) = path.parent() {
@@ -252,6 +323,55 @@ mod tests {
         std::os::unix::fs::symlink("/no/such/path", &dangling).unwrap();
         let result = handle_write(&policy, "s-1", &dangling, "x");
         assert!(matches!(result, Err(FsError::SymlinkInPath(_))));
+    }
+
+    #[test]
+    fn sandbox_path_map_translates_root_mount() {
+        let map = SandboxPathMap::new(vec![(
+            PathBuf::from("/workspace/proj"),
+            PathBuf::from("/Users/me/proj"),
+        )]);
+        let translated = map.translate_to_host(Path::new("/workspace/proj/src/main.rs"));
+        assert_eq!(translated, PathBuf::from("/Users/me/proj/src/main.rs"));
+    }
+
+    #[test]
+    fn sandbox_path_map_picks_longest_prefix() {
+        let map = SandboxPathMap::new(vec![
+            (PathBuf::from("/workspace"), PathBuf::from("/Users/me/all")),
+            (
+                PathBuf::from("/workspace/proj"),
+                PathBuf::from("/Users/me/proj"),
+            ),
+        ]);
+        let translated = map.translate_to_host(Path::new("/workspace/proj/src/main.rs"));
+        assert_eq!(translated, PathBuf::from("/Users/me/proj/src/main.rs"));
+    }
+
+    #[test]
+    fn sandbox_path_map_passes_through_unmatched() {
+        let map = SandboxPathMap::new(vec![(
+            PathBuf::from("/workspace/proj"),
+            PathBuf::from("/Users/me/proj"),
+        )]);
+        let translated = map.translate_to_host(Path::new("/etc/hosts"));
+        assert_eq!(translated, PathBuf::from("/etc/hosts"));
+    }
+
+    /// FsPolicy with a sandbox path map: agent reports container paths;
+    /// the policy must rewrite to the host side before the inside-roots
+    /// check (host-rooted).
+    #[test]
+    fn fs_policy_resolves_container_path_via_sandbox_map() {
+        let temp = tempfile::tempdir().unwrap();
+        let host_root = temp.path().to_path_buf();
+        std::fs::write(host_root.join("file.txt"), "ok").unwrap();
+        let map = SandboxPathMap::new(vec![(PathBuf::from("/workspace/proj"), host_root.clone())]);
+        let policy = FsPolicy::with_sandbox_map(vec![host_root.clone()], map);
+        let resolved = policy
+            .resolve_inside(Path::new("/workspace/proj/file.txt"))
+            .expect("should resolve via sandbox map");
+        assert!(resolved.starts_with(host_root.canonicalize().unwrap()));
     }
 
     /// Belt-and-suspenders: even if a symlink races into place between

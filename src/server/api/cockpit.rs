@@ -124,6 +124,27 @@ pub async fn spawn_cockpit(
     let stored_acp_session_id = instance.cockpit_acp_session_id.clone();
     let yolo_mode = instance.yolo_mode;
 
+    let inst_lock = state.instance_lock(&id).await;
+    let sandbox_info = match crate::cockpit::sandbox::ensure_container_for_session(
+        &state.instances,
+        &inst_lock,
+        &id,
+        false,
+    )
+    .await
+    {
+        Ok(info) => info,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("sandbox container ensure failed: {e}"),
+            )
+                .into_response();
+        }
+    };
+    let source_profile = sandbox_info
+        .as_ref()
+        .map(|_| instance.source_profile.clone());
     let agent_for_response = agent.clone();
     match state
         .cockpit_supervisor
@@ -135,6 +156,8 @@ pub async fn spawn_cockpit(
             provider_env,
             model,
             stored_acp_session_id,
+            sandbox_info,
+            source_profile,
             yolo_mode,
         })
         .await
@@ -428,13 +451,35 @@ pub async fn cockpit_enable(
     // Spawn the cockpit worker. If this fails the supervisor publishes
     // an AgentStartupError that the UI surfaces as the red banner; we
     // still return 200 because the substrate swap itself succeeded.
+    // Container ensure runs inside the spawned task so the HTTP
+    // response isn't held open through a docker pull/create.
     let cwd = std::path::PathBuf::from(&instance.project_path);
     let supervisor = state.cockpit_supervisor.clone();
     let session_id = id.clone();
     let model = instance.cockpit_model.clone();
     let stored_acp_session_id = instance.cockpit_acp_session_id.clone();
     let yolo_mode = instance.yolo_mode;
+    let profile_for_spawn = profile.clone();
+    let state_for_spawn = state.clone();
     tokio::spawn(async move {
+        let inst_lock = state_for_spawn.instance_lock(&session_id).await;
+        let sandbox_info = match crate::cockpit::sandbox::ensure_container_for_session(
+            &state_for_spawn.instances,
+            &inst_lock,
+            &session_id,
+            false,
+        )
+        .await
+        {
+            Ok(info) => info,
+            Err(e) => {
+                let message = format!("container start failed: {e}");
+                tracing::warn!(target: "cockpit.switch", session = %session_id, "container ensure failed: {e}");
+                supervisor.publish_startup_error(&session_id, message);
+                return;
+            }
+        };
+        let source_profile = sandbox_info.as_ref().map(|_| profile_for_spawn);
         if let Err(e) = supervisor
             .spawn(crate::cockpit::supervisor::SpawnRequest {
                 session_id: session_id.clone(),
@@ -444,6 +489,8 @@ pub async fn cockpit_enable(
                 provider_env: vec![],
                 model,
                 stored_acp_session_id,
+                sandbox_info,
+                source_profile,
                 yolo_mode,
             })
             .await

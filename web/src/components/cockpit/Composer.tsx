@@ -29,6 +29,7 @@ import {
 import { useFilesIndex, fuzzyFilter } from "./useFilesIndex";
 import type { CockpitState } from "../../lib/cockpitTypes";
 import { getDraft, setDraft } from "../../lib/cockpitDrafts";
+import { useMobileKeyboard } from "../../hooks/useMobileKeyboard";
 
 /** Decision returned by {@link decideEnterAction} for an Enter
  *  keystroke on the cockpit composer textarea.
@@ -62,6 +63,28 @@ export function decideEnterAction(
   if (ctx.isMobile) return "newline";
   if (ctx.turnActive) return "send";
   return "default";
+}
+
+/** Wrapper class + inline style for the composer's outer <div>. When the
+ *  soft keyboard is open we drop the bottom padding and apply a negative
+ *  bottom margin equal to the App root's safe-area-inset-bottom so the
+ *  composer sits flush with the top of the keyboard instead of leaving a
+ *  visible gap (the home-indicator inset is physically occluded by the
+ *  keyboard anyway). Extracted as a pure helper so the layout decision
+ *  can be unit-tested without mounting the whole composer. See #1143. */
+export function composerWrapperLayout(opts: { keyboardOpen: boolean }): {
+  className: string;
+  style: React.CSSProperties | undefined;
+} {
+  return {
+    className: [
+      "border-t border-surface-800 bg-surface-900 px-4 pt-3",
+      opts.keyboardOpen ? "pb-0" : "pb-3",
+    ].join(" "),
+    style: opts.keyboardOpen
+      ? { marginBottom: "calc(-1 * env(safe-area-inset-bottom))" }
+      : undefined,
+  };
 }
 
 /** True when the current device is touch-primary AND no precise
@@ -134,6 +157,13 @@ export function Composer({
 }: Props) {
   const taRef = useRef<HTMLTextAreaElement | null>(null);
   const { files } = useFilesIndex(sessionId);
+
+  // When the soft keyboard is up the App root's safe-area-inset-bottom
+  // padding reserves space for the iOS home indicator that the keyboard
+  // already physically occludes, leaving a visible gap between the
+  // composer and the top of the keyboard. Cancel that reservation and
+  // drop our own bottom padding while the keyboard is open. See #1143.
+  const { keyboardOpen } = useMobileKeyboard();
 
   // Touch-primary device flag for the Enter-key decision matrix.
   // Re-evaluated on `(pointer: coarse)` / `(any-pointer: fine)`
@@ -304,8 +334,9 @@ export function Composer({
     };
   }, []);
 
+  const wrapperLayout = composerWrapperLayout({ keyboardOpen });
   return (
-    <div className="border-t border-surface-800 bg-surface-900 px-4 pt-3 pb-3">
+    <div className={wrapperLayout.className} style={wrapperLayout.style}>
       <div className="mx-auto max-w-3xl xl:max-w-4xl 2xl:max-w-5xl">
         <ComposerPrimitive.Unstable_TriggerPopoverRoot>
           <ComposerPrimitive.Root
@@ -509,8 +540,16 @@ function insertSlashCommand(
 
 /** Insert `text` at the textarea's caret and re-focus. The toolbar
  *  buttons use this to inject `@` or `/` so the trigger popover opens
- *  without forcing the user to grab the keyboard. */
-function insertAtCaret(
+ *  without forcing the user to grab the keyboard.
+ *
+ *  Exported for tests. We dispatch a real `InputEvent` (not a generic
+ *  `Event`) so assistant-ui's `Unstable_TriggerPopover` sees the
+ *  `inputType: "insertText"` + `data: text` fields it relies on for
+ *  trigger detection. Without those, the popover library treats the
+ *  toolbar-injected character as untracked text and a subsequent
+ *  `removeOnExecute` cannot find the trigger to strip, leaving a
+ *  duplicate `@@` / `//` in the input (#1149). */
+export function insertAtCaret(
   ref: React.RefObject<HTMLTextAreaElement | null>,
   text: string,
 ) {
@@ -529,7 +568,13 @@ function insertAtCaret(
     "value",
   )?.set;
   setter?.call(ta, next);
-  ta.dispatchEvent(new Event("input", { bubbles: true }));
+  ta.dispatchEvent(
+    new InputEvent("input", {
+      bubbles: true,
+      inputType: "insertText",
+      data: text,
+    }),
+  );
   const pos = before.length + needsSpace.length + text.length;
   ta.focus();
   ta.setSelectionRange(pos, pos);
@@ -881,7 +926,7 @@ function QueueSendButton({
           aria-hidden
           className={[
             "absolute -right-1.5 -top-1.5 inline-flex h-4 min-w-[16px] items-center justify-center",
-            "rounded-full bg-amber-500 px-1 text-[10px] font-semibold text-surface-900",
+            "rounded-full bg-sky-500 px-1 text-[10px] font-semibold text-surface-900",
             "ring-2 ring-surface-900",
           ].join(" ")}
         >
