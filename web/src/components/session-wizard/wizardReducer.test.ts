@@ -119,4 +119,32 @@ describe("SessionWizard reducer / APPLY_PROFILE_DEFAULTS (#1142)", () => {
     expect(next.data.yoloMode).toBe(true);
     expect(next.data.profileDirty).toBe(false);
   });
+
+  it("marks dirty on user toggles even without a profile selected", () => {
+    // The dirty guard initially only fired when state.data.profile was
+    // truthy, which left no-prefill / no-active-profile users exposed
+    // to a race: a fast yoloMode toggle before /api/settings resolved
+    // wouldn't set profileDirty, so the late APPLY_PROFILE_DEFAULTS
+    // with skipIfDirty: true would still stomp the edit. Now any
+    // SET_FIELD on yoloMode/sandboxEnabled/tool/extraEnv marks dirty.
+    const fresh = reducer(makeState(), {
+      type: "SET_FIELD",
+      field: "yoloMode",
+      value: true,
+    });
+    expect(fresh.data.profile).toBe("");
+    expect(fresh.data.profileDirty).toBe(true);
+
+    // Verify the dirty flag protects against the late mount fetch.
+    const late = reducer(fresh, {
+      type: "APPLY_PROFILE_DEFAULTS",
+      yoloMode: false,
+      sandboxEnabled: false,
+      tool: "claude",
+      extraEnv: [],
+      skipIfDirty: true,
+    });
+    expect(late).toBe(fresh);
+    expect(late.data.yoloMode).toBe(true);
+  });
 });

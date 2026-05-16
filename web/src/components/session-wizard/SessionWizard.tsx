@@ -12,8 +12,6 @@ import { ReviewStep } from "./steps/ReviewStep";
 import { getSubmittedBranch } from "./sessionNames";
 import { initialData, reducer, type WizardData } from "./wizardReducer";
 
-export type { WizardData } from "./wizardReducer";
-
 // Wizard: project path → session (title + worktree) → agent → review
 function computeSteps(_data: WizardData): StepDef[] {
   return [

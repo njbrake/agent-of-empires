@@ -103,8 +103,16 @@ export function reducer(state: WizardState, action: Action): WizardState {
         newData.worktreeBranch = override.worktreeBranch;
         newData.worktreeBranchDirty = override.worktreeBranchDirty;
       }
-      // Mark as dirty when user manually edits agent-step fields after a profile was chosen
-      if (state.data.profile && ["yoloMode", "sandboxEnabled", "tool", "extraEnv"].includes(action.field)) {
+      // Mark dirty whenever the user manually edits an agent-step
+      // field. Guarded against `state.data.profile` previously, but the
+      // mount-time seeder (#1142) also needs the flag with no profile
+      // set: a user who toggles yoloMode before the late /api/settings
+      // response resolves would otherwise have their edit stomped, since
+      // APPLY_PROFILE_DEFAULTS dispatches with skipIfDirty: true and the
+      // no-profile guard would leave profileDirty false. The picker
+      // path's window.confirm() also benefits: picking a profile after
+      // unprofiled edits now prompts before overwriting.
+      if (["yoloMode", "sandboxEnabled", "tool", "extraEnv"].includes(action.field)) {
         newData.profileDirty = true;
       }
       return { ...state, data: newData, error: null };
