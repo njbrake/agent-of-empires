@@ -11,6 +11,7 @@ import { useCallback, useEffect, useReducer, useRef, useState } from "react";
 import {
   applyEvent,
   emptyCockpitState,
+  isTurnActive,
   setActivityLimit,
   type ApprovalDecision,
   type CockpitFrame,
@@ -111,7 +112,31 @@ function loadPersistedState(sessionId: string): CockpitState | undefined {
       window.localStorage.removeItem(storageKey(sessionId));
       return undefined;
     }
-    return state as CockpitState;
+    // Backfill the seq-counter pair introduced by #1170 for entries
+    // persisted before the schema change. Treat any cached
+    // `turnActive=true` as one outstanding prompt (counter=1, stop=0)
+    // so the spinner gate stays consistent across the reload; otherwise
+    // start the counters at zero. The counters are the source of truth
+    // for `turnActive` from this point forward.
+    const pendingUserPromptSeq =
+      typeof state.pendingUserPromptSeq === "number"
+        ? state.pendingUserPromptSeq
+        : state.turnActive
+          ? 1
+          : 0;
+    const lastStoppedSeq =
+      typeof state.lastStoppedSeq === "number"
+        ? state.lastStoppedSeq
+        : state.turnActive
+          ? 0
+          : pendingUserPromptSeq;
+    const normalised: CockpitState = {
+      ...(state as CockpitState),
+      pendingUserPromptSeq,
+      lastStoppedSeq,
+      turnActive: pendingUserPromptSeq > lastStoppedSeq,
+    };
+    return normalised;
   } catch {
     return undefined;
   }
@@ -275,6 +300,13 @@ function reducer(state: CockpitState, action: Action): CockpitState {
     return action.state;
   }
   if (action.kind === "user_prompt") {
+    // Bump `pendingUserPromptSeq` rather than touching `turnActive`
+    // directly. `turnActive` derives from `pendingUserPromptSeq >
+    // lastStoppedSeq`; the derived alias is recomputed here so any
+    // existing `state.turnActive` reads stay consistent without a
+    // selector hop. Without this the late `Stopped` from the prior
+    // turn could clobber the spinner mid follow-up. See #1170.
+    const pendingUserPromptSeq = state.pendingUserPromptSeq + 1;
     return {
       ...state,
       activity: state.activity.concat({
@@ -288,7 +320,11 @@ function reducer(state: CockpitState, action: Action): CockpitState {
       // they're trying again, so don't keep nagging them.
       startupError: null,
       lastError: null,
-      turnActive: true,
+      pendingUserPromptSeq,
+      turnActive: isTurnActive({
+        pendingUserPromptSeq,
+        lastStoppedSeq: state.lastStoppedSeq,
+      }),
     };
   }
   if (action.kind === "enqueue_prompt") {

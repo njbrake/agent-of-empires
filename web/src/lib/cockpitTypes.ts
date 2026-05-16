@@ -220,8 +220,26 @@ export interface CockpitState {
   /** True between sending a user prompt and receiving the
    *  `Stopped { reason: "prompt_complete" }` event. Drives the global
    *  "working" spinner so the UI feels alive even when the agent
-   *  isn't streaming text or running a tool yet. */
+   *  isn't streaming text or running a tool yet.
+   *
+   *  Derived from `pendingUserPromptSeq > lastStoppedSeq`; never
+   *  written directly. Keeping it on the state shape (instead of
+   *  exporting a selector) lets all the existing `state.turnActive`
+   *  reads stay unchanged. The counter pair is the source of truth so
+   *  a late `Stopped` from a prior turn can't clobber a fresh
+   *  follow-up that's already incremented `pendingUserPromptSeq`.
+   *  See #1170. */
   turnActive: boolean;
+  /** Monotonic count of user prompts the client has dispatched (either
+   *  via the optimistic `user_prompt` action or via a server-confirmed
+   *  `UserPromptSent` echo that didn't match an outstanding optimistic
+   *  row). Source of truth for `turnActive`; never decremented. */
+  pendingUserPromptSeq: number;
+  /** Snapshot of `pendingUserPromptSeq` at the moment the most recent
+   *  `Stopped` (or `AgentStartupError`) arrived. `turnActive` derives
+   *  to false only when no further prompt has bumped
+   *  `pendingUserPromptSeq` past this snapshot. */
+  lastStoppedSeq: number;
   /** Real ACP-advertised modes from the agent's NewSessionResponse,
    *  plus the agent's currently-active mode id. Empty until the
    *  agent reports them; the picker falls back to the hard-coded
@@ -348,6 +366,8 @@ export function emptyCockpitState(): CockpitState {
     startupError: null,
     lastError: null,
     turnActive: false,
+    pendingUserPromptSeq: 0,
+    lastStoppedSeq: 0,
     availableModes: [],
     currentModeId: null,
     availableCommands: [],
@@ -608,10 +628,23 @@ export function applyEvent(
   }
   if ("Stopped" in event) {
     // Final marker; nothing to mutate, but reset the inflight tool just
-    // in case the agent forgot to emit a completion. Also clears the
-    // turn-active flag so the global "working" spinner stops.
+    // in case the agent forgot to emit a completion.
+    //
+    // `turnActive` is derived from `pendingUserPromptSeq > lastStoppedSeq`;
+    // we advance `lastStoppedSeq` by one (capped at `pendingUserPromptSeq`)
+    // so this Stopped only retires ONE turn's worth of activity. If a
+    // fresh user prompt landed client-side between the turn this Stopped
+    // is closing and now, `pendingUserPromptSeq` was already bumped past
+    // the cap and `turnActive` stays true. Without this, a late Stopped
+    // would clobber the spinner mid follow-up and reorder the user's
+    // optimistic message above any still-arriving prior-turn agent
+    // chunks. See #1170.
     next.inFlightTool = null;
-    next.turnActive = false;
+    next.lastStoppedSeq = Math.min(
+      next.lastStoppedSeq + 1,
+      next.pendingUserPromptSeq,
+    );
+    next.turnActive = isTurnActive(next);
     // The "user_stopped" / "restart_pending" reasons are published by
     // the supervisor's reap_user_stopped pass when it detects an
     // out-of-band CLI teardown. Surface a distinct UI state for each:
@@ -648,7 +681,15 @@ export function applyEvent(
   if ("AgentStartupError" in event) {
     next.startupError = event.AgentStartupError.message;
     next.inFlightTool = null;
-    next.turnActive = false;
+    // Same race-safe semantics as `Stopped`: advance `lastStoppedSeq`
+    // by one so a startup failure for the prior turn doesn't kill the
+    // spinner for a freshly-typed follow-up the user has already
+    // submitted. See #1170.
+    next.lastStoppedSeq = Math.min(
+      next.lastStoppedSeq + 1,
+      next.pendingUserPromptSeq,
+    );
+    next.turnActive = isTurnActive(next);
     return next;
   }
   if ("UserPromptSent" in event) {
@@ -684,7 +725,15 @@ export function applyEvent(
     next.assistantMessage = "";
     next.startupError = null;
     next.lastError = null;
-    next.turnActive = true;
+    // No optimistic row matched: this is a server-confirmed prompt the
+    // client didn't dispatch (replay path, server-initiated, or user
+    // action without optimistic local dispatch). Bump the prompt
+    // counter so `turnActive` derives true. The optimistic-match branch
+    // above already covered the case where the client's `user_prompt`
+    // action bumped the counter; bumping again here would double-count.
+    // See #1170.
+    next.pendingUserPromptSeq = next.pendingUserPromptSeq + 1;
+    next.turnActive = isTurnActive(next);
     // New turn; reset the no-output detector so Stopped fires the
     // empty-output notice if the agent produces nothing.
     next.turnHasOutput = false;
@@ -785,4 +834,14 @@ function pushActivity(rows: ActivityRow[], row: ActivityRow): ActivityRow[] {
     return next.slice(next.length - activityLimit);
   }
   return next;
+}
+
+/** Derived `turnActive` from the prompt / stop seq counters. Exported
+ *  so any new consumer can compute it from the counters directly; the
+ *  reducer also calls this to keep `state.turnActive` in lockstep so
+ *  existing `state.turnActive` reads stay correct. See #1170. */
+export function isTurnActive(
+  state: Pick<CockpitState, "pendingUserPromptSeq" | "lastStoppedSeq">,
+): boolean {
+  return state.pendingUserPromptSeq > state.lastStoppedSeq;
 }
