@@ -60,7 +60,7 @@ pub async fn get_settings(
         Ok(config) => match serde_json::to_value(&config) {
             Ok(val) => (StatusCode::OK, Json(val)).into_response(),
             Err(e) => {
-                tracing::error!("Settings serialization failed: {}", e);
+                tracing::error!(target: "http.api.system", "Settings serialization failed: {}", e);
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(serde_json::json!({"error": "serialize_failed", "message": "Failed to serialize settings"})),
@@ -69,7 +69,7 @@ pub async fn get_settings(
             }
         },
         Err(e) => {
-            tracing::error!("Settings load failed: {}", e);
+            tracing::error!(target: "http.api.system", "Settings load failed: {}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": "load_failed", "message": "Failed to load settings"})),
@@ -146,7 +146,7 @@ pub async fn update_settings(
             match serde_json::to_value(&config) {
                 Ok(val) => (StatusCode::OK, Json(val)).into_response(),
                 Err(e) => {
-                    tracing::error!("Settings serialization failed: {}", e);
+                    tracing::error!(target: "http.api.system", "Settings serialization failed: {}", e);
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
                         Json(serde_json::json!({"error": "serialize_failed", "message": "Failed to serialize settings"})),
@@ -156,7 +156,7 @@ pub async fn update_settings(
             }
         }
         Ok(Err(e)) => {
-            tracing::warn!("Settings update failed: {}", e);
+            tracing::warn!(target: "http.api.system", "Settings update failed: {}", e);
             (
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({"error": "update_failed", "message": "Failed to update settings"})),
@@ -164,7 +164,7 @@ pub async fn update_settings(
                 .into_response()
         }
         Err(e) => {
-            tracing::error!("Settings update panicked: {}", e);
+            tracing::error!(target: "http.api.system", "Settings update panicked: {}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": "internal", "message": "Internal server error"})),

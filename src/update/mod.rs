@@ -140,7 +140,7 @@ pub async fn check_for_update(current_version: &str, force: bool) -> Result<Upda
     let releases = match fetch_releases(&client).await {
         Ok(r) => r,
         Err(e) => {
-            tracing::debug!("Failed to fetch releases: {e}");
+            tracing::debug!(target: "update.fetch", "Failed to fetch releases: {e}");
             Vec::new()
         }
     };

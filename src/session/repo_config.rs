@@ -121,7 +121,7 @@ pub fn load_repo_config(project_path: &Path) -> Result<Option<RepoConfig>> {
     };
 
     if is_legacy {
-        tracing::warn!(
+        tracing::warn!(target: "session.store",
             "Found repo config at legacy path .aoe/config.toml -- please rename to .agent-of-empires/config.toml"
         );
     }
@@ -159,9 +159,9 @@ pub fn save_repo_config(project_path: &Path, config: &RepoConfig) -> Result<()> 
     let legacy_config = project_path.join(LEGACY_REPO_CONFIG_PATH);
     if legacy_config.exists() {
         if let Err(e) = fs::remove_file(&legacy_config) {
-            tracing::warn!("Failed to remove legacy {}: {}", legacy_config.display(), e);
+            tracing::warn!(target: "session.store", "Failed to remove legacy {}: {}", legacy_config.display(), e);
         } else {
-            tracing::info!("Removed legacy .aoe/config.toml after migrating to .agent-of-empires/");
+            tracing::info!(target: "session.store", "Removed legacy .aoe/config.toml after migrating to .agent-of-empires/");
         }
         // Also remove the .aoe/ directory if it's now empty
         let legacy_dir = project_path.join(".aoe");
@@ -296,7 +296,7 @@ pub fn resolve_config_with_repo_or_warn(profile: &str, project_path: &Path) -> C
         Ok(Some(repo_config)) => merge_repo_config(base, &repo_config),
         Ok(None) => base,
         Err(e) => {
-            tracing::warn!(
+            tracing::warn!(target: "session.store",
                 "Failed to load repo config at '{}', falling back to profile config: {e}",
                 project_path.display()
             );
@@ -660,7 +660,7 @@ fn run_hooks_captured(commands: &[String], target: &HookTarget) -> Result<()> {
     let in_container = matches!(target, HookTarget::Container { .. });
 
     for cmd in commands {
-        tracing::info!("Running hook: {}", cmd);
+        tracing::info!(target: "session.store", "Running hook: {}", cmd);
         let mut command = build_hook_command(cmd, target, HookSpawnOpts::default());
         let output = command
             .stdout(std::process::Stdio::piped())
@@ -680,7 +680,7 @@ fn run_hooks_captured(commands: &[String], target: &HookTarget) -> Result<()> {
             ));
         }
 
-        tracing::debug!(
+        tracing::debug!(target: "session.store",
             "Hook completed: {} (stdout: {} bytes, stderr: {} bytes)",
             cmd,
             output.stdout.len(),
@@ -701,7 +701,7 @@ fn run_hooks_streamed(
     let in_container = matches!(target, HookTarget::Container { .. });
 
     for cmd in commands {
-        tracing::info!("Running hook (streamed): {}", cmd);
+        tracing::info!(target: "session.store", "Running hook (streamed): {}", cmd);
         let _ = progress_tx.send(HookProgress::Started(cmd.clone()));
 
         let mut command = build_hook_command(
@@ -732,7 +732,7 @@ fn run_hooks_streamed(
             anyhow::bail!(detail);
         }
 
-        tracing::debug!("Hook completed (streamed): {}", cmd);
+        tracing::debug!(target: "session.store", "Hook completed (streamed): {}", cmd);
     }
     Ok(())
 }
@@ -773,7 +773,7 @@ fn run_hooks_best_effort(
     let mut errors = Vec::new();
 
     for cmd in commands {
-        tracing::info!("Running hook (best-effort): {}", cmd);
+        tracing::info!(target: "session.store", "Running hook (best-effort): {}", cmd);
         let mut command = build_hook_command(
             cmd,
             target,
@@ -798,10 +798,10 @@ fn run_hooks_best_effort(
                         &stdout,
                         in_container,
                     );
-                    tracing::warn!("{}", err);
+                    tracing::warn!(target: "session.store", "{}", err);
                     errors.push(err);
                 } else {
-                    tracing::debug!(
+                    tracing::debug!(target: "session.store",
                         "Hook completed: {} (stdout: {} bytes, stderr: {} bytes)",
                         cmd,
                         output.stdout.len(),
@@ -811,7 +811,7 @@ fn run_hooks_best_effort(
             }
             Err(e) => {
                 let err = format!("Failed to execute hook: {}: {}", cmd, e);
-                tracing::warn!("{}", err);
+                tracing::warn!(target: "session.store", "{}", err);
                 errors.push(err);
             }
         }

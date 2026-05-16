@@ -464,7 +464,7 @@ pub async fn login_handler(
             .into_response();
     };
 
-    tracing::debug!(
+    tracing::debug!(target: "auth.passphrase",
         ip = %client_ip,
         passphrase_len = login_req.passphrase.len(),
         "Login attempt"

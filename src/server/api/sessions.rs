@@ -440,7 +440,7 @@ pub async fn rename_session(
             .cloned()
             .collect();
         if let Err(e) = storage.save(&profile_instances) {
-            tracing::error!("Failed to save after rename: {e}");
+            tracing::error!(target: "http.api.sessions", "Failed to save after rename: {e}");
         }
     }
 
@@ -528,7 +528,7 @@ pub async fn update_session_notifications(
             .cloned()
             .collect();
         if let Err(e) = storage.save(&profile_instances) {
-            tracing::error!("Failed to save after notification update: {e}");
+            tracing::error!(target: "http.api.sessions", "Failed to save after notification update: {e}");
         }
     }
 
@@ -593,7 +593,7 @@ pub async fn update_session_diff_base(
             .cloned()
             .collect();
         if let Err(e) = storage.save(&profile_instances) {
-            tracing::error!("Failed to save after diff-base update: {e}");
+            tracing::error!(target: "http.api.sessions", "Failed to save after diff-base update: {e}");
         }
     }
 
@@ -712,7 +712,7 @@ pub async fn delete_session(
                     .cloned()
                     .collect();
                 if let Err(e) = storage.save(&profile_instances) {
-                    tracing::error!("Failed to save after deletion: {e}");
+                    tracing::error!(target: "http.api.sessions", "Failed to save after deletion: {e}");
                 }
             }
 
@@ -1119,7 +1119,7 @@ pub async fn create_session(
             (StatusCode::CREATED, Json(resp)).into_response()
         }
         Ok(Err(e)) => {
-            tracing::warn!("Session creation failed: {}", e);
+            tracing::warn!(target: "http.api.sessions", "Session creation failed: {}", e);
             (
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({"error": "create_failed", "message": "Failed to create session"})),
@@ -1127,7 +1127,7 @@ pub async fn create_session(
                 .into_response()
         }
         Err(e) => {
-            tracing::error!("Session creation panicked: {}", e);
+            tracing::error!(target: "http.api.sessions", "Session creation panicked: {}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": "internal", "message": "Internal server error"})),
@@ -1211,7 +1211,7 @@ pub async fn ensure_session(
         } else {
             !decision_instance.expects_shell() && tmux_session.is_pane_running_shell()
         };
-        tracing::debug!(
+        tracing::debug!(target: "http.api.sessions",
             session_id = id_for_log,
             exists,
             pane_dead,
@@ -1225,7 +1225,7 @@ pub async fn ensure_session(
     let needs_restart = match decision {
         Ok(Ok(v)) => v,
         Ok(Err(e)) => {
-            tracing::error!("ensure_session: failed to inspect tmux for {id}: {e}");
+            tracing::error!(target: "http.api.sessions", "ensure_session: failed to inspect tmux for {id}: {e}");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": "internal"})),
@@ -1233,7 +1233,7 @@ pub async fn ensure_session(
                 .into_response();
         }
         Err(e) => {
-            tracing::error!("ensure_session inspect panicked for {id}: {e}");
+            tracing::error!(target: "http.api.sessions", "ensure_session inspect panicked for {id}: {e}");
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": "internal"})),
@@ -1293,7 +1293,7 @@ pub async fn ensure_session(
         }
         Ok(Err(e)) => {
             let msg = e.to_string();
-            tracing::warn!("ensure_session restart failed for {id}: {msg}");
+            tracing::warn!(target: "http.api.sessions", "ensure_session restart failed for {id}: {msg}");
             let mut instances = state.instances.write().await;
             if let Some(inst) = instances.iter_mut().find(|i| i.id == id) {
                 inst.status = crate::session::Status::Error;
@@ -1309,7 +1309,7 @@ pub async fn ensure_session(
                 .into_response()
         }
         Err(e) => {
-            tracing::error!("ensure_session panicked for {id}: {e}");
+            tracing::error!(target: "http.api.sessions", "ensure_session panicked for {id}: {e}");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": "internal"})),
@@ -1399,7 +1399,7 @@ pub async fn ensure_terminal(
                 .into_response()
         }
         Ok(Err(e)) => {
-            tracing::error!("Terminal creation failed: {}", e);
+            tracing::error!(target: "http.api.sessions", "Terminal creation failed: {}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": "create_failed", "message": "Failed to create terminal"})),
@@ -1407,7 +1407,7 @@ pub async fn ensure_terminal(
                 .into_response()
         }
         Err(e) => {
-            tracing::error!("Terminal creation panicked: {}", e);
+            tracing::error!(target: "http.api.sessions", "Terminal creation panicked: {}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": "internal", "message": "Internal server error"})),
@@ -1480,7 +1480,7 @@ pub async fn ensure_container_terminal(
         )
             .into_response(),
         Ok(Err(e)) => {
-            tracing::error!("Container terminal creation failed: {}", e);
+            tracing::error!(target: "http.api.sessions", "Container terminal creation failed: {}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": "create_failed", "message": "Failed to create container terminal"})),
@@ -1488,7 +1488,7 @@ pub async fn ensure_container_terminal(
                 .into_response()
         }
         Err(e) => {
-            tracing::error!("Container terminal creation panicked: {}", e);
+            tracing::error!(target: "http.api.sessions", "Container terminal creation panicked: {}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": "internal", "message": "Internal server error"})),
@@ -1772,7 +1772,7 @@ pub async fn session_diff_files(
         )
             .into_response(),
         Err(e) => {
-            tracing::error!("Diff files panicked: {}", e);
+            tracing::error!(target: "http.api.sessions", "Diff files panicked: {}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": "internal", "message": "Internal server error"})),
@@ -1957,7 +1957,7 @@ pub async fn session_diff_file(
         )
             .into_response(),
         Ok(Err(DiffFileError::Internal(e))) => {
-            tracing::error!("File diff failed: {}", e);
+            tracing::error!(target: "http.api.sessions", "File diff failed: {}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": "diff_failed", "message": "Failed to compute file diff"})),
@@ -1965,7 +1965,7 @@ pub async fn session_diff_file(
                 .into_response()
         }
         Err(e) => {
-            tracing::error!("File diff panicked: {}", e);
+            tracing::error!(target: "http.api.sessions", "File diff panicked: {}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": "internal", "message": "Internal server error"})),
@@ -2598,7 +2598,7 @@ pub async fn send_message(
             tokio::task::spawn_blocking(move || {
                 if let Ok(storage) = Storage::new(&profile) {
                     if let Err(e) = storage.save(&profile_instances) {
-                        tracing::warn!("send_message: persist failed: {e}");
+                        tracing::warn!(target: "http.api.sessions", "send_message: persist failed: {e}");
                     }
                 }
             });
@@ -2623,7 +2623,7 @@ pub async fn send_message(
         )
             .into_response(),
         Ok(Err(SendKeysError::Tmux(e))) => {
-            tracing::error!("send_message: tmux error for {id}: {e}");
+            tracing::error!(target: "http.api.sessions", "send_message: tmux error for {id}: {e}");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": "tmux_error"})),
@@ -2631,7 +2631,7 @@ pub async fn send_message(
                 .into_response()
         }
         Err(e) => {
-            tracing::error!("send_message: blocking task panicked for {id}: {e}");
+            tracing::error!(target: "http.api.sessions", "send_message: blocking task panicked for {id}: {e}");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": "internal"})),
@@ -2726,7 +2726,7 @@ pub async fn read_output(
         )
             .into_response(),
         Ok(Err(CaptureError::Tmux(e))) => {
-            tracing::error!("read_output: tmux error for {id}: {e}");
+            tracing::error!(target: "http.api.sessions", "read_output: tmux error for {id}: {e}");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": "tmux_error"})),
@@ -2734,7 +2734,7 @@ pub async fn read_output(
                 .into_response()
         }
         Err(e) => {
-            tracing::error!("read_output: blocking task panicked for {id}: {e}");
+            tracing::error!(target: "http.api.sessions", "read_output: blocking task panicked for {id}: {e}");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": "internal"})),

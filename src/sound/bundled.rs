@@ -39,30 +39,30 @@ pub async fn install_bundled_sounds() -> anyhow::Result<()> {
     for filename in BUNDLED_SOUND_FILES {
         let path = sounds_dir.join(filename);
         if path.exists() {
-            tracing::debug!("Sound already exists, skipping: {}", filename);
+            tracing::debug!(target: "agent_of_empires", "Sound already exists, skipping: {}", filename);
             continue;
         }
 
         let url = format!("{}/{}", GITHUB_SOUNDS_BASE_URL, filename);
-        tracing::info!("Downloading sound: {}", filename);
+        tracing::info!(target: "agent_of_empires", "Downloading sound: {}", filename);
 
         match client.get(&url).send().await {
             Ok(response) if response.status().is_success() => match response.bytes().await {
                 Ok(bytes) => {
                     if let Err(e) = std::fs::write(&path, &bytes) {
-                        tracing::warn!("Failed to write sound file {}: {}", filename, e);
+                        tracing::warn!(target: "agent_of_empires", "Failed to write sound file {}: {}", filename, e);
                         failed.push(filename.to_string());
                     } else {
-                        tracing::info!("Installed sound: {}", filename);
+                        tracing::info!(target: "agent_of_empires", "Installed sound: {}", filename);
                     }
                 }
                 Err(e) => {
-                    tracing::warn!("Failed to download sound {}: {}", filename, e);
+                    tracing::warn!(target: "agent_of_empires", "Failed to download sound {}: {}", filename, e);
                     failed.push(filename.to_string());
                 }
             },
             Ok(response) => {
-                tracing::warn!(
+                tracing::warn!(target: "agent_of_empires",
                     "Failed to download {} (HTTP {})",
                     filename,
                     response.status()
@@ -70,7 +70,7 @@ pub async fn install_bundled_sounds() -> anyhow::Result<()> {
                 failed.push(filename.to_string());
             }
             Err(e) => {
-                tracing::warn!("Failed to download sound {}: {}", filename, e);
+                tracing::warn!(target: "agent_of_empires", "Failed to download sound {}: {}", filename, e);
                 failed.push(filename.to_string());
             }
         }

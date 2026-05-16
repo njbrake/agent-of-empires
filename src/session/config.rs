@@ -477,16 +477,16 @@ impl SessionConfig {
     pub fn warn_custom_agent_issues(&self) {
         for (name, command) in &self.custom_agents {
             if name.is_empty() {
-                tracing::warn!("custom_agents: entry with empty name will be ignored");
+                tracing::warn!(target: "session.store", "custom_agents: entry with empty name will be ignored");
             }
             if command.is_empty() {
-                tracing::warn!(
+                tracing::warn!(target: "session.store",
                     "custom_agents: '{}' has an empty command, session will launch with no command",
                     name
                 );
             }
             if crate::agents::get_agent(name).is_some() {
-                tracing::warn!(
+                tracing::warn!(target: "session.store",
                     "custom_agents: '{}' shadows a built-in agent; use agent_command_override instead",
                     name
                 );
@@ -494,15 +494,15 @@ impl SessionConfig {
         }
         for (name, target) in &self.agent_detect_as {
             if name.is_empty() {
-                tracing::warn!("agent_detect_as: entry with empty agent name will be ignored");
+                tracing::warn!(target: "session.store", "agent_detect_as: entry with empty agent name will be ignored");
             }
             if target.is_empty() {
-                tracing::warn!(
+                tracing::warn!(target: "session.store",
                     "agent_detect_as: '{}' maps to an empty target, status detection will default to Idle",
                     name
                 );
             } else if crate::agents::get_agent(target).is_none() {
-                tracing::warn!(
+                tracing::warn!(target: "session.store",
                     "agent_detect_as: '{}' maps to unknown agent '{}', status detection will default to Idle. Known agents: {}",
                     name,
                     target,
@@ -995,7 +995,7 @@ impl Config {
         match Self::load() {
             Ok(config) => config,
             Err(e) => {
-                tracing::warn!("Failed to load global config, using defaults: {e}");
+                tracing::warn!(target: "session.store", "Failed to load global config, using defaults: {e}");
                 Config::default()
             }
         }

@@ -227,7 +227,7 @@ pub async fn send_one(
     match send_one_inner(client, state, subscription, payload).await {
         Ok(outcome) => outcome,
         Err(e) => {
-            tracing::warn!(
+            tracing::warn!(target: "http.middleware",
                 endpoint = %subscription.endpoint,
                 error = %e,
                 "push: send_one error, marking Failed"
@@ -268,7 +268,7 @@ async fn send_one_inner(
             .text()
             .await
             .unwrap_or_else(|_| String::from("(body unreadable)"));
-        tracing::warn!(
+        tracing::warn!(target: "http.middleware",
             endpoint = %subscription.endpoint,
             status = %status,
             body = %text,

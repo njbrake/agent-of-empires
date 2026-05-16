@@ -379,10 +379,10 @@ impl App {
             let hup = signal(SignalKind::hangup());
             let term = signal(SignalKind::terminate());
             if let Err(ref e) = hup {
-                tracing::warn!("Failed to register SIGHUP handler: {}", e);
+                tracing::warn!(target: "tui.input", "Failed to register SIGHUP handler: {}", e);
             }
             if let Err(ref e) = term {
-                tracing::warn!("Failed to register SIGTERM handler: {}", e);
+                tracing::warn!(target: "tui.input", "Failed to register SIGTERM handler: {}", e);
             }
             (hup.ok(), term.ok())
         };
@@ -465,7 +465,7 @@ impl App {
                                     }
                                 }
                                 if burst_keys.len() >= PASTE_BURST_MIN_LEN {
-                                    tracing::debug!(
+                                    tracing::debug!(target: "tui.input",
                                         "paste-burst: routed {} chars via handle_paste (chars={:?})",
                                         burst_str.len(), burst_str
                                     );
@@ -578,14 +578,14 @@ impl App {
                             // IO error reading from the terminal (broken pipe,
                             // EOF, etc.) means the tty is gone. Exit cleanly
                             // instead of spinning (#608 defect 2).
-                            tracing::info!("Terminal event stream error, exiting: {}", e);
+                            tracing::info!(target: "tui.input", "Terminal event stream error, exiting: {}", e);
                             self.should_quit = true;
                             break;
                         }
                         None => {
                             // EventStream ended (EOF on stdin). The terminal is
                             // gone; exit instead of busy-looping (#608 defect 2).
-                            tracing::info!("Terminal event stream ended (EOF), exiting");
+                            tracing::info!(target: "tui.input", "Terminal event stream ended (EOF), exiting");
                             self.should_quit = true;
                             break;
                         }
@@ -601,7 +601,7 @@ impl App {
                     #[cfg(not(unix))]
                     std::future::pending::<()>().await;
                 } => {
-                    tracing::info!("Received SIGHUP, exiting");
+                    tracing::info!(target: "tui.input", "Received SIGHUP, exiting");
                     self.should_quit = true;
                     break;
                 }
@@ -614,7 +614,7 @@ impl App {
                     #[cfg(not(unix))]
                     std::future::pending::<()>().await;
                 } => {
-                    tracing::info!("Received SIGTERM, exiting");
+                    tracing::info!(target: "tui.input", "Received SIGTERM, exiting");
                     self.should_quit = true;
                     break;
                 }
@@ -692,7 +692,7 @@ impl App {
         self.home.cleanup_pending_creation();
 
         if let Err(e) = self.home.save() {
-            tracing::error!("Failed to save on quit: {}", e);
+            tracing::error!(target: "tui.input", "Failed to save on quit: {}", e);
         }
 
         Ok(())
@@ -967,7 +967,7 @@ impl App {
                             self.home.save()?;
                         }
                         Err(e) => {
-                            tracing::error!("Failed to stop session: {}", e);
+                            tracing::error!(target: "tui.input", "Failed to stop session: {}", e);
                             self.home.set_instance_error(&id, Some(e.to_string()));
                             self.home
                                 .set_instance_status(&id, crate::session::Status::Error);
@@ -1063,7 +1063,7 @@ impl App {
         } else {
             !instance.expects_shell() && tmux_session.is_pane_running_shell()
         };
-        tracing::debug!(
+        tracing::debug!(target: "tui.input",
             session_id,
             exists,
             pane_dead,
@@ -1149,7 +1149,7 @@ impl App {
         self.home.select_session_by_id(session_id);
 
         if let Err(e) = attach_result {
-            tracing::warn!("tmux attach returned error: {}", e);
+            tracing::warn!(target: "tui.input", "tmux attach returned error: {}", e);
         }
 
         Ok(())
@@ -1215,7 +1215,7 @@ impl App {
         self.home.select_session_by_id(session_id);
 
         if let Err(e) = attach_result {
-            tracing::warn!("tmux terminal attach returned error: {}", e);
+            tracing::warn!(target: "tui.input", "tmux terminal attach returned error: {}", e);
         }
 
         Ok(())
@@ -1266,13 +1266,13 @@ impl App {
         // Refresh diff view if it's open (file may have changed)
         if let Some(ref mut diff_view) = self.home.diff_view {
             if let Err(e) = diff_view.refresh_files() {
-                tracing::warn!("Failed to refresh diff after edit: {}", e);
+                tracing::warn!(target: "tui.input", "Failed to refresh diff after edit: {}", e);
             }
         }
 
         // Log any editor errors but don't fail
         if let Err(e) = status {
-            tracing::warn!("Editor '{}' returned error: {}", editor, e);
+            tracing::warn!(target: "tui.input", "Editor '{}' returned error: {}", editor, e);
         }
 
         Ok(())

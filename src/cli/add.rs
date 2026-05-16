@@ -564,7 +564,7 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
                     repo_config::resolve_global_profile_hooks(profile)
                 }
                 Err(e) => {
-                    tracing::warn!("Failed to check repo hooks: {}", e);
+                    tracing::warn!(target: "cli.add", "Failed to check repo hooks: {}", e);
                     repo_config::resolve_global_profile_hooks(profile)
                 }
             };

@@ -27,7 +27,7 @@ pub struct DeletionResult {
 pub fn perform_deletion(request: &DeletionRequest) -> DeletionResult {
     let mut errors = Vec::new();
 
-    tracing::debug!(
+    tracing::debug!(target: "session.delete",
         session_id = %request.session_id,
         title = %request.instance.title,
         delete_worktree = request.delete_worktree,
@@ -43,7 +43,7 @@ pub fn perform_deletion(request: &DeletionRequest) -> DeletionResult {
 
     // Stage 1: on_destroy hooks. The container and worktree are still
     // alive here so teardown commands have full access.
-    tracing::debug!(session_id = %request.session_id, stage = "on_destroy_hooks", "perform_deletion: stage");
+    tracing::debug!(target: "session.delete", session_id = %request.session_id, stage = "on_destroy_hooks", "perform_deletion: stage");
     run_on_destroy_hooks(&request.instance);
 
     // Stage 2: sever the live agent BEFORE we touch the working tree it
@@ -54,7 +54,7 @@ pub fn perform_deletion(request: &DeletionRequest) -> DeletionResult {
     // running bind mount. Previously the order was reversed (worktree
     // first, container second, tmux last), which raced the in-container
     // agent and produced flaky deletions on Docker + worktree sessions.
-    tracing::debug!(session_id = %request.session_id, stage = "tmux_kill", "perform_deletion: stage");
+    tracing::debug!(target: "session.delete", session_id = %request.session_id, stage = "tmux_kill", "perform_deletion: stage");
     let _ = request.instance.kill();
     let _ = request.instance.kill_terminal();
 
@@ -80,7 +80,7 @@ pub fn perform_deletion(request: &DeletionRequest) -> DeletionResult {
             if wt_info.managed_by_aoe {
                 let path = PathBuf::from(&request.instance.project_path);
                 if let Some(msg) = crate::git::cleanup::dirty_worktree_message(&path) {
-                    tracing::debug!(
+                    tracing::debug!(target: "session.delete",
                         session_id = %request.session_id,
                         path = %path.display(),
                         "perform_deletion: dirty worktree, skipping preclean + host remove"
@@ -96,7 +96,7 @@ pub fn perform_deletion(request: &DeletionRequest) -> DeletionResult {
                     if repo.managed_by_aoe {
                         let path = PathBuf::from(&repo.worktree_path);
                         if let Some(msg) = crate::git::cleanup::dirty_worktree_message(&path) {
-                            tracing::debug!(
+                            tracing::debug!(target: "session.delete",
                                 session_id = %request.session_id,
                                 repo = %repo.name,
                                 path = %path.display(),
@@ -113,7 +113,7 @@ pub fn perform_deletion(request: &DeletionRequest) -> DeletionResult {
     let any_dirty = !skip_worktree_paths.is_empty();
 
     if request.delete_worktree && is_sandboxed && !any_dirty {
-        tracing::debug!(session_id = %request.session_id, stage = "sandbox_worktree_preclean", "perform_deletion: stage");
+        tracing::debug!(target: "session.delete", session_id = %request.session_id, stage = "sandbox_worktree_preclean", "perform_deletion: stage");
         // Best-effort. The container's workdir is the session's main
         // worktree (or, for workspace sessions, the workspace root that
         // contains every per-repo worktree). `find . -delete` from
@@ -132,7 +132,7 @@ pub fn perform_deletion(request: &DeletionRequest) -> DeletionResult {
     // worktree so the host can finish cleanup without racing in-
     // container processes.
     if request.delete_sandbox && is_sandboxed {
-        tracing::debug!(session_id = %request.session_id, stage = "container_remove", "perform_deletion: stage");
+        tracing::debug!(target: "session.delete", session_id = %request.session_id, stage = "container_remove", "perform_deletion: stage");
         let container = DockerContainer::from_session_id(&request.instance.id);
         if container.exists().unwrap_or(false) {
             if let Err(e) = container.remove(true) {
@@ -145,7 +145,7 @@ pub fn perform_deletion(request: &DeletionRequest) -> DeletionResult {
     // bind mount holds the directory open, and (for sandboxed sessions)
     // the preclean above wiped any root-owned files. Must happen
     // before branch deletion since the worktree is using the branch.
-    tracing::debug!(session_id = %request.session_id, stage = "worktree_remove", "perform_deletion: stage");
+    tracing::debug!(target: "session.delete", session_id = %request.session_id, stage = "worktree_remove", "perform_deletion: stage");
     let branch_to_delete = if request.delete_branch {
         request
             .instance
@@ -157,7 +157,7 @@ pub fn perform_deletion(request: &DeletionRequest) -> DeletionResult {
         None
     };
     if let Some((b, r)) = branch_to_delete.as_ref() {
-        tracing::debug!(branch = %b, main_repo = %r.display(), "perform_deletion: branch_to_delete resolved");
+        tracing::debug!(target: "session.delete", branch = %b, main_repo = %r.display(), "perform_deletion: branch_to_delete resolved");
     }
 
     if request.delete_worktree {
@@ -240,26 +240,26 @@ pub fn perform_deletion(request: &DeletionRequest) -> DeletionResult {
 
     // Stage 5: branch cleanup (if user opted to delete it and worktree
     // was successfully removed).
-    tracing::debug!(session_id = %request.session_id, stage = "branch_delete", "perform_deletion: stage");
+    tracing::debug!(target: "session.delete", session_id = %request.session_id, stage = "branch_delete", "perform_deletion: stage");
     if let Some((branch, main_repo)) = branch_to_delete {
         let worktree_ok =
             !request.delete_worktree || !errors.iter().any(|e| e.starts_with("Worktree:"));
-        tracing::debug!(branch = %branch, main_repo = %main_repo.display(), worktree_ok, "perform_deletion: attempting branch deletion");
+        tracing::debug!(target: "session.delete", branch = %branch, main_repo = %main_repo.display(), worktree_ok, "perform_deletion: attempting branch deletion");
         if worktree_ok {
             match GitWorktree::new(main_repo.clone()) {
                 Ok(git_wt) => {
                     if let Err(e) = git_wt.delete_branch(&branch) {
-                        tracing::debug!(branch = %branch, error = %e, "perform_deletion: delete_branch returned error");
+                        tracing::debug!(target: "session.delete", branch = %branch, error = %e, "perform_deletion: delete_branch returned error");
                         errors.push(format!("Branch: {}", e));
                     }
                 }
                 Err(e) => {
-                    tracing::debug!(main_repo = %main_repo.display(), error = %e, "perform_deletion: GitWorktree::new failed");
+                    tracing::debug!(target: "session.delete", main_repo = %main_repo.display(), error = %e, "perform_deletion: GitWorktree::new failed");
                     errors.push(format!("Branch: {}", e));
                 }
             }
         } else {
-            tracing::debug!(
+            tracing::debug!(target: "session.delete",
                 "perform_deletion: skipping branch deletion (worktree removal had errors)"
             );
         }
@@ -286,18 +286,18 @@ pub fn perform_deletion(request: &DeletionRequest) -> DeletionResult {
     }
 
     // Stage 6: hook status cleanup
-    tracing::debug!(session_id = %request.session_id, stage = "hook_status_cleanup", "perform_deletion: stage");
+    tracing::debug!(target: "session.delete", session_id = %request.session_id, stage = "hook_status_cleanup", "perform_deletion: stage");
     crate::hooks::cleanup_hook_status_dir(&request.instance.id);
 
     if !errors.is_empty() {
-        tracing::debug!(
+        tracing::debug!(target: "session.delete",
             session_id = %request.session_id,
             error_count = errors.len(),
             errors = ?errors,
             "perform_deletion: completed with errors"
         );
     } else {
-        tracing::debug!(session_id = %request.session_id, "perform_deletion: completed successfully");
+        tracing::debug!(target: "session.delete", session_id = %request.session_id, "perform_deletion: completed successfully");
     }
 
     DeletionResult {
@@ -338,7 +338,7 @@ fn run_on_destroy_hooks(instance: &Instance) {
             resolved_on_destroy = hooks.on_destroy.clone();
         }
         Ok(repo_config::HookTrustStatus::NeedsTrust { .. }) => {
-            tracing::warn!(
+            tracing::warn!(target: "session.delete",
                 "Repo hooks changed since last trust approval; skipping repo on_destroy hooks"
             );
         }
@@ -349,7 +349,7 @@ fn run_on_destroy_hooks(instance: &Instance) {
         return;
     }
 
-    tracing::info!("Running on_destroy hooks for session {}", instance.id);
+    tracing::info!(target: "session.delete", "Running on_destroy hooks for session {}", instance.id);
 
     let is_sandboxed = instance.sandbox_info.as_ref().is_some_and(|s| s.enabled);
 
@@ -373,7 +373,7 @@ fn run_on_destroy_hooks(instance: &Instance) {
     };
 
     if !errors.is_empty() {
-        tracing::warn!(
+        tracing::warn!(target: "session.delete",
             "on_destroy hooks had {} failure(s) for session {}",
             errors.len(),
             instance.id

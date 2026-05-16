@@ -343,7 +343,7 @@ fn raise_fd_limit() {
             let target = TARGET.min(hard).max(soft);
             if target > soft {
                 if let Err(e) = setrlimit(Resource::RLIMIT_NOFILE, target, hard) {
-                    tracing::warn!("Failed to raise RLIMIT_NOFILE to {}: {}", target, e);
+                    tracing::warn!(target: "http.middleware", "Failed to raise RLIMIT_NOFILE to {}: {}", target, e);
                 } else {
                     info!(
                         "Raised RLIMIT_NOFILE soft limit from {} to {}",
@@ -352,7 +352,7 @@ fn raise_fd_limit() {
                 }
             }
         }
-        Err(e) => tracing::warn!("Failed to read RLIMIT_NOFILE: {}", e),
+        Err(e) => tracing::warn!(target: "http.middleware", "Failed to read RLIMIT_NOFILE: {}", e),
     }
 }
 
@@ -443,7 +443,7 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
             Ok(dir) => match PushState::init(&dir) {
                 Ok(s) => Some(Arc::new(s)),
                 Err(e) => {
-                    tracing::warn!(
+                    tracing::warn!(target: "http.middleware",
                         "Push notifications disabled: failed to init VAPID/state: {}",
                         e
                     );
@@ -451,7 +451,7 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
                 }
             },
             Err(e) => {
-                tracing::warn!("Push notifications disabled: app_dir unavailable: {}", e);
+                tracing::warn!(target: "http.middleware", "Push notifications disabled: app_dir unavailable: {}", e);
                 None
             }
         }
@@ -583,7 +583,7 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
     // The probe itself also logs details about each underlying call.
     let tailscale_ok = if remote && !no_tailscale {
         let available = tunnel::tailscale_available().await;
-        tracing::debug!(
+        tracing::debug!(target: "http.middleware",
             no_tailscale,
             tailscale_available = available,
             "tunnel: choosing transport"
@@ -591,7 +591,7 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
         available
     } else {
         if remote && no_tailscale {
-            tracing::debug!("tunnel: --no-tailscale set, skipping Tailscale auto-detection");
+            tracing::debug!(target: "http.middleware", "tunnel: --no-tailscale set, skipping Tailscale auto-detection");
         }
         false
     };
@@ -671,7 +671,7 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
             // "tailscale" for Tailscale Funnel, "local" for local-only.
             let mode = format!("{}\n", handle.mode_label());
             if let Err(e) = tokio::fs::write(app_dir.join("serve.mode"), mode).await {
-                tracing::debug!("Failed to write serve.mode: {e}");
+                tracing::debug!(target: "http.middleware", "Failed to write serve.mode: {e}");
             }
         }
 
@@ -738,7 +738,7 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
             }
             write_secret_file(&app_dir.join("serve.url"), &contents).await;
             if let Err(e) = tokio::fs::write(app_dir.join("serve.mode"), "local\n").await {
-                tracing::debug!("Failed to write serve.mode: {e}");
+                tracing::debug!(target: "http.middleware", "Failed to write serve.mode: {e}");
             }
         }
 
@@ -836,11 +836,13 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
                     }
                     match push.store.retain_owners(&valid_hashes).await {
                         Ok(0) => {}
-                        Ok(n) => tracing::info!(
+                        Ok(n) => tracing::info!(target: "http.middleware",
                             removed = n,
                             "push: dropped subscriptions whose owner-hash is no longer valid after rotation"
                         ),
-                        Err(e) => tracing::warn!(error = %e, "push: retain_owners failed"),
+                        Err(e) => {
+                            tracing::warn!(target: "http.middleware", error = %e, "push: retain_owners failed")
+                        }
                     }
                 }
 
@@ -1203,20 +1205,20 @@ async fn serve_public_file(uri: axum::http::Uri) -> impl axum::response::IntoRes
 /// Failures are logged but never propagate; the server keeps running.
 fn maybe_open_browser(url: &str) {
     if std::env::var_os("SSH_CONNECTION").is_some() || std::env::var_os("SSH_TTY").is_some() {
-        tracing::info!("--open ignored: running over SSH");
+        tracing::info!(target: "http.middleware", "--open ignored: running over SSH");
         return;
     }
 
     #[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "openbsd"))]
     {
         if std::env::var_os("DISPLAY").is_none() && std::env::var_os("WAYLAND_DISPLAY").is_none() {
-            tracing::info!("--open ignored: no DISPLAY or WAYLAND_DISPLAY set");
+            tracing::info!(target: "http.middleware", "--open ignored: no DISPLAY or WAYLAND_DISPLAY set");
             return;
         }
     }
 
     if let Err(e) = webbrowser::open(url) {
-        tracing::warn!("--open: failed to launch browser: {e}");
+        tracing::warn!(target: "http.middleware", "--open: failed to launch browser: {e}");
     }
 }
 

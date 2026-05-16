@@ -234,7 +234,7 @@ impl HomeView {
                     {
                         config.app_state.has_acknowledged_agent_hooks = true;
                         if let Err(e) = crate::session::config::save_config(&config) {
-                            tracing::warn!("Failed to save config: {e}");
+                            tracing::warn!(target: "tui.input", "Failed to save config: {e}");
                         }
                     }
                     // Resume session creation
@@ -266,7 +266,7 @@ impl HomeView {
                                     std::path::Path::new(&project_path),
                                     &hooks_hash,
                                 ) {
-                                    tracing::error!("Failed to trust repo: {}", e);
+                                    tracing::error!(target: "tui.input", "Failed to trust repo: {}", e);
                                 }
                                 let merged =
                                     repo_config::merge_hooks_with_config(&data.profile, hooks);
@@ -348,7 +348,7 @@ impl HomeView {
                     self.confirm_dialog = None;
                     if action == "delete_group" {
                         if let Err(e) = self.delete_selected_group() {
-                            tracing::error!("Failed to delete group: {}", e);
+                            tracing::error!(target: "tui.input", "Failed to delete group: {}", e);
                         }
                     } else if action == "stop_session" {
                         if let Some(session_id) = self.pending_stop_session.take() {
@@ -357,7 +357,7 @@ impl HomeView {
                     } else if action == "force_remove_session" {
                         if let Some(session_id) = self.pending_force_remove_session.take() {
                             if let Err(e) = self.force_remove_session(&session_id) {
-                                tracing::error!("Failed to force remove session: {}", e);
+                                tracing::error!(target: "tui.input", "Failed to force remove session: {}", e);
                             }
                         }
                     } else if action == "quit_during_creation" {
@@ -377,7 +377,7 @@ impl HomeView {
                 DialogResult::Submit(options) => {
                     self.unified_delete_dialog = None;
                     if let Err(e) = self.delete_selected(&options) {
-                        tracing::error!("Failed to delete session: {}", e);
+                        tracing::error!(target: "tui.input", "Failed to delete session: {}", e);
                     }
                 }
             }
@@ -394,10 +394,10 @@ impl HomeView {
                     self.group_delete_options_dialog = None;
                     if options.delete_sessions {
                         if let Err(e) = self.delete_group_with_sessions(&options) {
-                            tracing::error!("Failed to delete group with sessions: {}", e);
+                            tracing::error!(target: "tui.input", "Failed to delete group with sessions: {}", e);
                         }
                     } else if let Err(e) = self.delete_selected_group() {
-                        tracing::error!("Failed to delete group: {}", e);
+                        tracing::error!(target: "tui.input", "Failed to delete group: {}", e);
                     }
                 }
             }
@@ -421,7 +421,7 @@ impl HomeView {
                                 data.group.as_deref(),
                                 data.profile.as_deref(),
                             ) {
-                                tracing::error!("Failed to rename session: {}", e);
+                                tracing::error!(target: "tui.input", "Failed to rename session: {}", e);
                             }
                         }
                         RenameMode::Group => {
@@ -429,7 +429,7 @@ impl HomeView {
                                 data.group.as_deref(),
                                 data.profile.as_deref(),
                             ) {
-                                tracing::error!("Failed to rename group: {}", e);
+                                tracing::error!(target: "tui.input", "Failed to rename group: {}", e);
                             }
                         }
                     }
@@ -465,7 +465,7 @@ impl HomeView {
                             Some(name)
                         };
                         if let Err(e) = self.switch_profile(profile) {
-                            tracing::error!("Failed to switch profile: {}", e);
+                            tracing::error!(target: "tui.input", "Failed to switch profile: {}", e);
                         }
                     }
                     ProfilePickerAction::Created(name) => {
@@ -473,7 +473,7 @@ impl HomeView {
                         match crate::session::create_profile(&name) {
                             Ok(()) => {
                                 if let Err(e) = self.switch_profile(Some(name)) {
-                                    tracing::error!("Failed to switch to new profile: {}", e);
+                                    tracing::error!(target: "tui.input", "Failed to switch to new profile: {}", e);
                                 }
                             }
                             Err(e) => {
@@ -798,7 +798,7 @@ impl HomeView {
                 ) {
                     Ok(view) => self.settings_view = Some(view),
                     Err(e) => {
-                        tracing::error!("Failed to open settings: {}", e);
+                        tracing::error!(target: "tui.input", "Failed to open settings: {}", e);
                         self.info_dialog = Some(InfoDialog::new(
                             "Error",
                             &format!("Failed to open settings: {}", e),
@@ -812,7 +812,7 @@ impl HomeView {
                         let method = match crate::update::install::detect_install_method() {
                             Ok(m) => m,
                             Err(e) => {
-                                tracing::warn!("update detection failed: {e}");
+                                tracing::warn!(target: "tui.input", "update detection failed: {e}");
                                 return None;
                             }
                         };
@@ -878,7 +878,7 @@ impl HomeView {
                 ) {
                     Ok(view) => self.diff_view = Some(view),
                     Err(e) => {
-                        tracing::error!("Failed to open diff view: {}", e);
+                        tracing::error!(target: "tui.input", "Failed to open diff view: {}", e);
                         self.info_dialog = Some(InfoDialog::new(
                             "Error",
                             &format!("Failed to open diff view: {}", e),
@@ -1399,7 +1399,7 @@ impl HomeView {
         if let Ok(mut config) = load_config().map(|c| c.unwrap_or_default()) {
             config.app_state.sort_order = Some(self.sort_order);
             if let Err(e) = save_config(&config) {
-                tracing::warn!("Failed to save sort order: {}", e);
+                tracing::warn!(target: "tui.input", "Failed to save sort order: {}", e);
             }
         }
     }
@@ -1413,11 +1413,11 @@ impl HomeView {
             Ok(mut config) => {
                 config.app_state.group_by = Some(self.group_by);
                 if let Err(e) = save_config(&config) {
-                    tracing::warn!("Failed to save group_by mode: {}", e);
+                    tracing::warn!(target: "tui.input", "Failed to save group_by mode: {}", e);
                 }
             }
             Err(e) => {
-                tracing::warn!("Failed to load config for group_by save: {}", e);
+                tracing::warn!(target: "tui.input", "Failed to load config for group_by save: {}", e);
             }
         }
     }
@@ -1443,7 +1443,7 @@ impl HomeView {
         }
         self.flat_items = self.build_flat_items();
         if let Err(e) = self.save() {
-            tracing::error!("Failed to save group state: {}", e);
+            tracing::error!(target: "tui.input", "Failed to save group state: {}", e);
         }
     }
 
@@ -1744,7 +1744,7 @@ impl HomeView {
                 self.create_session_with_hooks(data, fallback)
             }
             Err(e) => {
-                tracing::warn!("Failed to check repo hooks: {}", e);
+                tracing::warn!(target: "tui.input", "Failed to check repo hooks: {}", e);
                 let fallback = repo_config::resolve_global_profile_hooks(&data.profile);
                 self.create_session_with_hooks(data, fallback)
             }
@@ -1776,7 +1776,7 @@ impl HomeView {
                 Some(Action::AttachSession(session_id))
             }
             Err(e) => {
-                tracing::error!("Failed to create session: {}", e);
+                tracing::error!(target: "tui.input", "Failed to create session: {}", e);
                 if let Some(dialog) = &mut self.new_dialog {
                     dialog.set_error(e.to_string());
                 }

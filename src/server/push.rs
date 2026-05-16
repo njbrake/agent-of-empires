@@ -96,7 +96,7 @@ impl VapidKeypair {
         // waiting for the lock.
         if path.exists() {
             if let Err(e) = FileExt::unlock(&lock_file) {
-                tracing::debug!("Failed to release lock file: {e}");
+                tracing::debug!(target: "http.middleware", "Failed to release lock file: {e}");
             }
             return Self::load(path);
         }
@@ -104,7 +104,7 @@ impl VapidKeypair {
         let kp = Self::generate()?;
         kp.persist(path)?;
         if let Err(e) = FileExt::unlock(&lock_file) {
-            tracing::debug!("Failed to release lock file: {e}");
+            tracing::debug!(target: "http.middleware", "Failed to release lock file: {e}");
         }
         Ok(kp)
     }
@@ -411,7 +411,7 @@ pub fn spawn_consumer(state: std::sync::Arc<super::AppState>) {
         let client = match super::push_send::build_client() {
             Ok(c) => c,
             Err(e) => {
-                tracing::error!(error = %e, "push: consumer failed to build reqwest client");
+                tracing::error!(target: "http.middleware", error = %e, "push: consumer failed to build reqwest client");
                 return;
             }
         };
@@ -435,11 +435,11 @@ pub fn spawn_consumer(state: std::sync::Arc<super::AppState>) {
                     match recv {
                         Ok(change) => handle_status_change(&mut dwell, change),
                         Err(tokio::sync::broadcast::error::RecvError::Lagged(n)) => {
-                            tracing::warn!(lagged = n, "push: consumer lagged, skipped events");
+                            tracing::warn!(target: "http.middleware", lagged = n, "push: consumer lagged, skipped events");
                             continue;
                         }
                         Err(tokio::sync::broadcast::error::RecvError::Closed) => {
-                            tracing::info!("push: status channel closed, consumer exiting");
+                            tracing::info!(target: "http.middleware", "push: status channel closed, consumer exiting");
                             return;
                         }
                     }
@@ -527,11 +527,15 @@ async fn fire_due_pushes(
     // resuming after suppression ends. Otherwise this fires every 500ms.
     if suppress_reason != *last_suppress_reason {
         match (*last_suppress_reason, suppress_reason) {
-            (None, Some(reason)) => tracing::debug!("push: suppressed, {}", reason),
-            (Some(_), Some(reason)) => {
-                tracing::debug!("push: suppression reason changed to {}", reason)
+            (None, Some(reason)) => {
+                tracing::debug!(target: "http.middleware", "push: suppressed, {}", reason)
             }
-            (Some(prev), None) => tracing::debug!("push: resumed (was suppressed: {})", prev),
+            (Some(_), Some(reason)) => {
+                tracing::debug!(target: "http.middleware", "push: suppression reason changed to {}", reason)
+            }
+            (Some(prev), None) => {
+                tracing::debug!(target: "http.middleware", "push: resumed (was suppressed: {})", prev)
+            }
             (None, None) => {}
         }
         *last_suppress_reason = suppress_reason;
@@ -642,7 +646,7 @@ async fn fire_due_pushes(
                     super::push_send::send_one(&client, push.as_ref(), &sub, &payload_clone).await;
                 if outcome == super::push_send::SendOutcome::Gone {
                     if let Err(e) = push.store.gc_stale(&sub.endpoint, sub.generation).await {
-                        tracing::warn!("Failed to GC stale push subscription: {e}");
+                        tracing::warn!(target: "http.middleware", "Failed to GC stale push subscription: {e}");
                     }
                 }
             });
@@ -737,7 +741,7 @@ pub async fn fire_wake_fired_push(
                 super::push_send::send_one(&client, push.as_ref(), &sub, &payload_clone).await;
             if outcome == super::push_send::SendOutcome::Gone {
                 if let Err(e) = push.store.gc_stale(&sub.endpoint, sub.generation).await {
-                    tracing::warn!("Failed to GC stale push subscription: {e}");
+                    tracing::warn!(target: "http.middleware", "Failed to GC stale push subscription: {e}");
                 }
             }
         });
@@ -908,7 +912,7 @@ pub async fn test(
     let client = match super::push_send::build_client() {
         Ok(c) => c,
         Err(e) => {
-            tracing::error!(error = %e, "push: failed to build reqwest client");
+            tracing::error!(target: "http.middleware", error = %e, "push: failed to build reqwest client");
             return Err(StatusCode::INTERNAL_SERVER_ERROR);
         }
     };
@@ -941,7 +945,7 @@ pub async fn test(
                 .gc_stale(&body.endpoint, subscription.generation)
                 .await
             {
-                tracing::warn!("Failed to GC stale push subscription: {e}");
+                tracing::warn!(target: "http.middleware", "Failed to GC stale push subscription: {e}");
             }
         }
     }

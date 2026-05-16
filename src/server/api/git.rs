@@ -157,7 +157,7 @@ pub async fn clone_repo(
         }
         Ok(Err(e)) => {
             let msg = e.to_string();
-            tracing::warn!("Clone failed for {dest_display}: {msg}");
+            tracing::warn!(target: "http.api.git", "Clone failed for {dest_display}: {msg}");
             (
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({"error": "clone_failed", "message": msg})),
@@ -165,7 +165,7 @@ pub async fn clone_repo(
                 .into_response()
         }
         Err(e) => {
-            tracing::error!("Clone task panicked: {e}");
+            tracing::error!(target: "http.api.git", "Clone task panicked: {e}");
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": "internal", "message": "Internal server error"})),
