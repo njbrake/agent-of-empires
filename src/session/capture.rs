@@ -172,17 +172,37 @@ fn read_claude_json_session_id(project_path: &Path) -> Option<String> {
 
 /// Polling closure for Claude Code session tracking on the host filesystem.
 ///
-/// Unlike the other agents' poll factories, this one does not take an
-/// `extra_excludes` parameter. Claude generates a fresh UUID at launch
-/// time (`generate_claude_session_id`) and the disk scan filters by file
-/// mtime against `should_attempt_resume`'s 5-minute window, so the
-/// resume-fallback cascade's just-cleared sid would be filtered out by
-/// the existing freshness check before reaching this closure. The
-/// defense-in-depth check in `apply_session_id_updates`
-/// (`tui/home/mod.rs`) guards against any edge case where a stale sid
-/// slips through. If you ever add a second consumer of the poller
-/// channel that bypasses that path, you must replicate the
-/// `retroactive_capture_excludes` filter here.
+/// Unlike other agents' poll factories, this closure does not take an
+/// `extra_excludes` set. Claude is protected from re-importing the sid
+/// `start_with_resume_fallback` just cleared by a layered chain:
+///
+/// 1. `acquire_session_id` mints a fresh UUID for Claude and assigns it
+///    to `agent_session_id` BEFORE `maybe_start_poller` runs, so the
+///    poller's `initial_known` is the new UUID, not the stale one.
+/// 2. The poller's `last_known` dedupes once Claude writes
+///    `<new_uuid>.jsonl` and the disk scan returns it.
+/// 3. The defense-in-depth guard in `apply_session_id_updates`
+///    (`tui/home/mod.rs`) drops any poller report whose sid is in
+///    `retroactive_capture_excludes`. The cascade pre-loads that set
+///    before respawning, so a race where the immediate first poll fires
+///    before Claude writes the new `.jsonl` (and therefore returns the
+///    still-fresh stale `<stale_sid>.jsonl`) is caught here.
+///
+/// The 5-minute mtime check inside `capture_claude_session_id` is an
+/// upper bound on staleness, NOT a stale-sid filter -- a just-crashed
+/// `<stale_sid>.jsonl` has a fresh mtime and passes that check.
+///
+/// Serve-only mode never drains `result_rx` (the only consumer of
+/// `try_recv_session_update` is the TUI tick path), so the stale sid
+/// cannot reach in-memory `agent_session_id` or `sessions.json` via the
+/// poller in that mode either. The only residual effect is that
+/// `on_change` may briefly write the stale sid into the tmux env's
+/// `AOE_CAPTURED_SESSION_ID_KEY`; the next poll cycle overwrites it.
+///
+/// If you ever add a second consumer of the poller channel that
+/// bypasses `apply_session_id_updates`, replicate the
+/// `retroactive_capture_excludes` filter at the consumer or thread an
+/// `extra_excludes` set into this closure mirroring the other agents.
 pub(crate) fn claude_poll_fn(project_path: String) -> impl Fn() -> Option<String> + Send + 'static {
     move || {
         capture_claude_session_id(&project_path)

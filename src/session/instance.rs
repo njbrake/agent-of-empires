@@ -520,12 +520,32 @@ fn persist_session_to_storage(profile: &str, instance_id: &str, session_id: &str
 /// Tier 2's `finalize_launch`, the next launch would otherwise re-load the
 /// bad sid from disk and pass `--resume <bad>` again, looping.
 fn clear_session_id_on_disk(profile: &str, instance_id: &str) {
-    // Invariant: caller must have stopped this instance's session_id_poller
-    // before calling. Otherwise the poller's `on_change` callback can race
-    // this load -> mutate -> save with its own write to `sessions.json` and
-    // either party's update is lost (Storage::save is non-atomic).
-    // start_with_resume_fallback enforces this via stop_poller() + nulling
-    // session_id_poller before the call site at L1736-1737.
+    // Invariant: this function must not run concurrently with any other
+    // writer to sessions.json for this profile. The live writers are:
+    //   1. TUI tick: `apply_session_id_updates` -> `HomeView::save()`,
+    //      which drains the poller's result channel and persists any new
+    //      session ID it finds.
+    //   2. `persist_session_to_storage` (called from `finalize_launch`).
+    //   3. Server `ensure_session` / `send_message` -> `storage.save`,
+    //      both inside `tokio::task::spawn_blocking`.
+    //
+    // In the TUI path, `start_with_resume_fallback` runs on the main
+    // thread between ticks, so (1) cannot interleave. (2) is sequential
+    // within the same thread (cascade calls clear, then start_with_size_opts
+    // -> finalize_launch -> persist). In the server path the per-instance
+    // `instance_lock` mutex serializes (3) for the same session.
+    //
+    // Stopping `session_id_poller` (done at the cascade call site) is NOT
+    // what prevents the race: the poller's `on_change` callback only
+    // writes to tmux env (`publish_session_to_tmux_env`), never to
+    // sessions.json. The stop is needed because the cascade also clears
+    // `agent_session_id` in memory and the TUI's reload merge would
+    // otherwise resurrect a stale poller-captured value.
+    //
+    // Storage::save is non-atomic (fs::write, not tempfile::persist), so
+    // any concurrent save would corrupt or silently lose one party's
+    // update. A future hardening is to make `Storage::save` atomic via
+    // an atomic-rename helper.
 
     let storage = match super::storage::Storage::new(profile) {
         Ok(s) => s,
@@ -1776,10 +1796,22 @@ impl Instance {
         }
 
         let attempting_resume = should_attempt_resume(self.agent_session_id.as_deref(), &self.tool);
-        // If the tmux session already existed when we entered, `start_with_size_opts`
-        // is a no-op (no `--resume <sid>` was passed in this call), so the probe
-        // would have nothing to detect; skip straight to `Fresh`.
+        // Defense in depth: every current caller runs `kill_clean()` (or
+        // its equivalent) first, so this is normally false. It can still
+        // be true if `kill_clean` raced the macOS tmux session cache
+        // (see `Instance::kill_clean` doc) -- in that case
+        // `start_with_size_opts` no-ops, the probe would have nothing to
+        // detect, and reporting `Fresh` is the least-wrong outcome
+        // (returning `Resumed` would mean lying about a `--resume <sid>`
+        // that was never passed). The debug_assert surfaces the protocol
+        // violation in dev/test if a future caller forgets to tear down.
         let pane_was_preexisting = self.tmux_session().is_ok_and(|s| s.exists());
+        debug_assert!(
+            !pane_was_preexisting,
+            "start_with_resume_fallback callers must kill_clean() first; \
+             tmux session for {} still exists on entry",
+            self.id
+        );
 
         self.start_with_size_opts(size, skip_on_launch)?;
 
