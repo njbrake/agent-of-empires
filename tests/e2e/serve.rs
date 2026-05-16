@@ -207,3 +207,151 @@ fn cli_serve_daemon_writes_marker_to_debug_log_not_serve_log() {
 
     let _ = h.run_cli(&["serve", "--stop"]);
 }
+
+/// `--auth=passphrase` is the load-bearing new mode: no URL token, the
+/// passphrase wall is the only human gate. Exercises the wall end-to-end
+/// against a real daemon so the new `run_passphrase_wall` middleware
+/// branch is locked in CI rather than relying on manual smoke tests.
+///
+/// Flow:
+///   1. GET `/api/about` without a session  -> 401 `login_required`
+///      (proves the wall actually blocks API traffic).
+///   2. POST `/api/login` with the correct passphrase + a fresh
+///      device-binding secret -> 200 with `Set-Cookie: aoe_session=`.
+///   3. GET `/api/about` carrying the session cookie + binding header
+///      -> 200, body has `"auth_mode":"passphrase"` (proves both the
+///      wall handoff and the `/api/about` mode-derivation surface).
+#[test]
+#[serial]
+fn cli_serve_auth_passphrase_login_round_trip() {
+    let h = TuiTestHarness::new("serve_auth_passphrase");
+    let port = pick_free_port();
+    let port_s = port.to_string();
+
+    let start = h.run_cli(&[
+        "serve",
+        "--daemon",
+        "--port",
+        &port_s,
+        "--auth",
+        "passphrase",
+        "--passphrase",
+        "e2e-pass",
+    ]);
+    assert!(
+        start.status.success(),
+        "aoe serve --daemon --auth=passphrase failed.\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&start.stdout),
+        String::from_utf8_lossy(&start.stderr),
+    );
+
+    assert!(
+        wait_for_port(port, Duration::from_secs(10)),
+        "daemon never bound port {}",
+        port
+    );
+
+    // 32 random-ish bytes; the contents don't matter, just the length and encoding.
+    let binding_raw: [u8; 32] = [0x5Au8; 32];
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use base64::Engine;
+    let binding_b64 = URL_SAFE_NO_PAD.encode(binding_raw);
+
+    let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+    let result: Result<(), String> = rt.block_on(async {
+        let base = format!("http://127.0.0.1:{port}");
+        // reqwest's `cookies` feature is not enabled in the workspace, so
+        // pull the session out of `Set-Cookie` by hand. Cheaper than
+        // touching Cargo.toml just for one test.
+        let client = reqwest::Client::builder()
+            .build()
+            .map_err(|e| format!("build client: {e}"))?;
+
+        // 1. Unauthenticated GET must come back with 401 + login_required body.
+        let about_unauth = client
+            .get(format!("{base}/api/about"))
+            .send()
+            .await
+            .map_err(|e| format!("GET /api/about (unauth): {e}"))?;
+        let status = about_unauth.status();
+        let body: serde_json::Value = about_unauth
+            .json()
+            .await
+            .map_err(|e| format!("decode unauth body: {e}"))?;
+        if status != reqwest::StatusCode::UNAUTHORIZED
+            || body.get("error").and_then(|v| v.as_str()) != Some("login_required")
+        {
+            return Err(format!(
+                "expected 401 login_required, got status={status} body={body}"
+            ));
+        }
+
+        // 2. POST /api/login with matching passphrase + device binding.
+        let login = client
+            .post(format!("{base}/api/login"))
+            .json(&serde_json::json!({
+                "passphrase": "e2e-pass",
+                "device_binding_secret": binding_b64,
+            }))
+            .send()
+            .await
+            .map_err(|e| format!("POST /api/login: {e}"))?;
+        if !login.status().is_success() {
+            let s = login.status();
+            let b = login.text().await.unwrap_or_default();
+            return Err(format!("login failed: status={s} body={b}"));
+        }
+
+        // Pull `aoe_session=...` out of the first Set-Cookie value that
+        // names it. Multiple Set-Cookie headers may come back (login
+        // cookie, push-related cookies, etc.); pick the one we need.
+        let session_cookie = login
+            .headers()
+            .get_all(reqwest::header::SET_COOKIE)
+            .iter()
+            .find_map(|v| {
+                let s = v.to_str().ok()?;
+                let first = s.split(';').next()?.trim();
+                if first.starts_with("aoe_session=") {
+                    Some(first.to_string())
+                } else {
+                    None
+                }
+            })
+            .ok_or_else(|| "login response missing aoe_session Set-Cookie".to_string())?;
+
+        // 3. Authenticated GET must succeed and report auth_mode=passphrase.
+        let about = client
+            .get(format!("{base}/api/about"))
+            .header("cookie", &session_cookie)
+            .header("x-aoe-device-binding", &binding_b64)
+            .send()
+            .await
+            .map_err(|e| format!("GET /api/about (auth): {e}"))?;
+        if !about.status().is_success() {
+            let s = about.status();
+            let b = about.text().await.unwrap_or_default();
+            return Err(format!(
+                "authenticated /api/about failed: status={s} body={b}"
+            ));
+        }
+        let body: serde_json::Value = about
+            .json()
+            .await
+            .map_err(|e| format!("decode about body: {e}"))?;
+        match body.get("auth_mode").and_then(|v| v.as_str()) {
+            Some("passphrase") => Ok(()),
+            other => Err(format!(
+                "expected auth_mode=passphrase, got {other:?} in {body}"
+            )),
+        }
+    });
+
+    // Always tear the daemon down before asserting, so a failed assert
+    // doesn't leak a process that owns the test port.
+    let _ = h.run_cli(&["serve", "--stop"]);
+
+    if let Err(e) = result {
+        panic!("{e}");
+    }
+}
