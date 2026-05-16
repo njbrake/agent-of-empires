@@ -226,6 +226,27 @@ export interface AgentInfo {
   install_hint: string;
 }
 
+/**
+ * AVK workflow ajan tier — FUR-3957 transplant Adım 6 server contract mirror.
+ *
+ * `lowercase` JSON serde derive (Rust `AvkAgentRole` enum). Yeni tier
+ * eklenirse server + bu union senkron tutulmalı.
+ */
+export type AvkAgentRole = "director" | "senior" | "worker";
+
+/**
+ * `GET /api/avk/agents[?role=...]` JSON shape mirror.
+ *
+ * `tmux_target` runtime'da değişebilir (pane index resync) — UI tarafı
+ * cache yapmamalı, her render fetch'i fresh sonuç kullanmalı.
+ */
+export interface AvkAgentInfo {
+  slug: string;
+  label: string;
+  role: AvkAgentRole;
+  tmux_target: string;
+}
+
 /** Profile info returned by /api/profiles */
 export interface ProfileInfo {
   name: string;

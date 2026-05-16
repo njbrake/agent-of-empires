@@ -3,6 +3,8 @@ import type {
   RichDiffFilesResponse,
   RichFileDiffResponse,
   AgentInfo,
+  AvkAgentInfo,
+  AvkAgentRole,
   ProfileInfo,
   BrowseResponse,
   GroupInfo,
@@ -367,6 +369,17 @@ export function fetchDevices(): Promise<DeviceInfo[] | null> {
 
 export async function fetchAgents(): Promise<AgentInfo[]> {
   return (await fetchJson<AgentInfo[]>("/api/agents")) ?? [];
+}
+
+/**
+ * `GET /api/avk/agents[?role=...]` — FUR-3957 Adım 6 endpoint.
+ *
+ * Opsiyonel `role` filter director|senior|worker. Geçersiz role server
+ * 400 döner; bu wrapper null'a indirgenmiş listeyi `[]` olarak verir.
+ */
+export async function fetchAvkAgents(role?: AvkAgentRole): Promise<AvkAgentInfo[]> {
+  const url = role ? `/api/avk/agents?role=${role}` : "/api/avk/agents";
+  return (await fetchJson<AvkAgentInfo[]>(url)) ?? [];
 }
 
 export async function fetchProfiles(): Promise<ProfileInfo[]> {
