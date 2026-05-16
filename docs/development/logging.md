@@ -9,15 +9,21 @@ Targets use the convention `<module>.<submodule>`. The default filter expands a 
 | Root | Sub-targets | What lands here |
 |------|-------------|-----------------|
 | `agent_of_empires` | (default crate path) | General library code emitting without `target:` |
-| `cockpit` | `cockpit.acp`, `cockpit.supervisor`, `cockpit.event_store`, `cockpit.runner`, `cockpit.acp.stderr`, `cockpit.acp.tool_dispatch` | ACP transport, supervisor lifecycle, event store, runner shim, per-tool-call entry/exit instrumentation |
+| `cockpit` | `cockpit.acp`, `cockpit.acp.stderr`, `cockpit.acp.tool_dispatch`, `cockpit.acp.spawn`, `cockpit.acp.wakeup`, `cockpit.acp.permission`, `cockpit.supervisor`, `cockpit.event_store`, `cockpit.runner`, `cockpit.ws`, `cockpit.client.ws`, `cockpit.push`, `cockpit.switch`, `cockpit.sandbox` | ACP transport, spawn/wakeup, permission prompt lifecycle, supervisor, event store, runner shim, cockpit WS relay, push notifications, sandbox enter/exit |
 | `terminal` | `terminal.ws`, `terminal.ws.bytes` | Web terminal WS relay + per-byte firehose (trace) |
 | `auth` | `auth.token`, `auth.middleware`, `auth.rate_limit`, `auth.passphrase`, `auth.device`, `auth.ip` | Token rotate, middleware accept/reject, rate-limit thresholds, login flow |
 | `process` | `process.signal`, `process.tree`, `process.reap`, `process.ppid` | Signal sends, process-tree walks, survivor reap, ppid resolution |
 | `update` | `update.fetch`, `update.cache`, `update.parse` | GitHub release polling, cache hits/misses, version compare |
-| `containers` | `containers.docker`, `containers.image`, `containers.runtime` | Docker daemon, image pull, container lifecycle |
-| `git` | `git.command` | Every `git` invocation with args, exit, duration |
+| `containers` | `containers.docker`, `containers.image`, `containers.runtime`, `containers.exec` | Docker daemon, image pull, container lifecycle, exec into running container |
+| `git` | `git.command`, `git.worktree`, `git.template`, `git.fetch` | `git` invocations, worktree add/remove/list, template resolution, fetch |
 | `migrations` | (none — entry/exit on driver) | Per-migration progress with duration |
-| `web.client` | (fixed; module surfaced as `client_target` field) | Browser-side errors relayed via `/api/client-log` |
+| `web` | `web.client`, `web.client.error`, `web.client.api`, `web.client.nav`, `web.client.input`, `web.client.settings`, `web.client.ws`, `web.client.terminal`, `web.client.cockpit`, `web.client.pwa` | Browser-side events relayed via `/api/client-log`: errors, fetch lifecycle, navigation, semantic input intents, settings edits, WS events, terminal events, cockpit, PWA lifecycle |
+| `cli` | `cli.add`, `cli.serve`, `cli.session`, `cli.cockpit`, `cli.send`, `cli.list`, `cli.project`, `cli.init`, `cli.logs`, `cli.log_level` | One-shot CLI subcommand entry/exit and outcome |
+| `tui` | `tui.input`, `tui.navigation`, `tui.render`, `tui.dialog`, `tui.settings`, `tui.home`, `tui.cockpit` | TUI key dispatch (trace), screen transitions (info), dialog lifecycle, settings edits, home/cockpit semantic events, sampled render diagnostics |
+| `session` | `session.create`, `session.delete`, `session.group`, `session.profile`, `session.capture`, `session.heartbeat`, `session.store` | Session/profile/group CRUD, terminal capture, heartbeat writes, storage IO |
+| `tmux` | `tmux.command`, `tmux.cache`, `tmux.status`, `tmux.pane` | Every tmux invocation (args/exit/duration), cache refresh, status detection, pane CRUD |
+| `http` | `http.request`, `http.middleware`, `http.error`, `http.api.sessions`, `http.api.projects`, `http.api.settings`, `http.api.git`, `http.api.system`, `http.api.log_level`, `http.api.client_log` | Axum middleware request summary (method/path/status/latency/request_id), per-route semantic events |
+| `serve` | `serve.daemon`, `serve.lifecycle`, `serve.tunnel`, `serve.shutdown` | `aoe serve` daemonize/foreground startup, PID/URL/ready file IO, tunnel up/down + passphrase rotation, signal-driven shutdown |
 | `log.runtime` | — | Filter swaps (REST + runner file-watch) |
 
 ## Levels

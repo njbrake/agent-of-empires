@@ -135,38 +135,125 @@ pub const DEFAULT_TARGET_ROOTS: &[&str] = &[
     // (`log.runtime`). Without this, `log.runtime` would be dropped
     // under any expanded-level filter that has no global default.
     "log",
+    // User-facing surfaces that previously fell under `agent_of_empires`
+    // and were therefore indistinguishable from generic library code.
+    // Each is a separate ownership boundary the user can dial up/down.
+    "cli",
+    "tui",
+    "session",
+    "tmux",
+    "http",
+    "serve",
 ];
 
 /// Sub-targets users can tune individually from the settings UI.
 /// Order is the UI ordering. Anything not in this list still works
 /// in the runtime endpoint as a raw filter, but won't have a dropdown.
 pub const KNOWN_SUB_TARGETS: &[&str] = &[
+    // Cockpit / ACP
     "cockpit.acp",
     "cockpit.acp.stderr",
     "cockpit.acp.tool_dispatch",
+    "cockpit.acp.spawn",
+    "cockpit.acp.wakeup",
+    "cockpit.acp.permission",
     "cockpit.supervisor",
     "cockpit.event_store",
     "cockpit.runner",
+    "cockpit.ws",
+    "cockpit.client.ws",
+    "cockpit.push",
+    "cockpit.switch",
+    "cockpit.sandbox",
+    // Terminal WS relay
     "terminal.ws",
     "terminal.ws.bytes",
+    // Auth
     "auth.token",
     "auth.middleware",
     "auth.rate_limit",
     "auth.passphrase",
     "auth.device",
     "auth.ip",
+    // Process
     "process.signal",
     "process.tree",
     "process.reap",
     "process.ppid",
+    // Update checker
     "update.fetch",
     "update.cache",
     "update.parse",
+    // Containers / Docker
     "containers.docker",
     "containers.image",
     "containers.runtime",
+    "containers.exec",
+    // Git
     "git.command",
+    "git.worktree",
+    "git.template",
+    "git.fetch",
+    // Web client (browser-side relay)
     "web.client",
+    "web.client.error",
+    "web.client.api",
+    "web.client.nav",
+    "web.client.input",
+    "web.client.settings",
+    "web.client.ws",
+    "web.client.terminal",
+    "web.client.cockpit",
+    "web.client.pwa",
+    // CLI subcommands
+    "cli.add",
+    "cli.serve",
+    "cli.session",
+    "cli.cockpit",
+    "cli.send",
+    "cli.list",
+    "cli.project",
+    "cli.init",
+    "cli.logs",
+    "cli.log_level",
+    // TUI
+    "tui.input",
+    "tui.navigation",
+    "tui.render",
+    "tui.dialog",
+    "tui.settings",
+    "tui.home",
+    "tui.cockpit",
+    // Session lifecycle
+    "session.create",
+    "session.delete",
+    "session.group",
+    "session.profile",
+    "session.capture",
+    "session.heartbeat",
+    "session.store",
+    // tmux integration
+    "tmux.command",
+    "tmux.cache",
+    "tmux.status",
+    "tmux.pane",
+    // HTTP REST surface
+    "http.request",
+    "http.middleware",
+    "http.error",
+    "http.api.sessions",
+    "http.api.projects",
+    "http.api.settings",
+    "http.api.git",
+    "http.api.system",
+    "http.api.log_level",
+    "http.api.client_log",
+    // serve daemon lifecycle
+    "serve.daemon",
+    "serve.lifecycle",
+    "serve.tunnel",
+    "serve.shutdown",
+    // Meta
     "log.runtime",
 ];
 
