@@ -192,6 +192,24 @@ fn normalize_path(path: &str) -> &str {
     path.strip_suffix('/').unwrap_or(path)
 }
 
+/// Whether a request path is exempt from the passphrase session +
+/// device-binding check. These are the login bootstrap surfaces and
+/// static assets that pre-load the SPA shell. Shared by the
+/// token-with-passphrase branch of `auth_middleware` and by
+/// `run_passphrase_wall` so a new bootstrap path only needs to be
+/// added once.
+fn is_login_session_exempt(path: &str) -> bool {
+    path == "/login"
+        || path == "/api/login"
+        || path == "/api/login/status"
+        || path == "/api/logout"
+        || path.starts_with("/assets/")
+        || path == "/manifest.json"
+        || path == "/sw.js"
+        || path.starts_with("/icon-")
+        || path.starts_with("/fonts/")
+}
+
 /// Whether a request path + method needs an elevated login session
 /// (step-up auth, 15-minute passphrase confirmation window).
 ///
@@ -296,6 +314,14 @@ pub struct AuthenticatedTokenHash(pub [u8; 32]);
 /// (`--auth=passphrase`). Mirrors the session + device-binding check
 /// inside the token-auth path, but skips every token-cookie
 /// operation since there is no token to refresh.
+///
+/// Rate-limit lockout is intentionally not consulted here: the only
+/// authentication attempt that can fail in this path is the passphrase
+/// POST itself, and `/api/login` enforces `check_locked` /
+/// `record_failure` inline (see `src/server/login.rs:424`). Probing
+/// `/api/*` from this wall returns 401 `login_required` without
+/// recording a failure, matching the behavior the token path uses for
+/// `login_required` redirects.
 async fn run_passphrase_wall(
     state: &AppState,
     request: Request,
@@ -305,17 +331,7 @@ async fn run_passphrase_wall(
     let path = request.uri().path().to_string();
     let method = request.method().clone();
 
-    let is_login_exempt = path == "/login"
-        || path == "/api/login"
-        || path == "/api/login/status"
-        || path == "/api/logout"
-        || path.starts_with("/assets/")
-        || path == "/manifest.json"
-        || path == "/sw.js"
-        || path.starts_with("/icon-")
-        || path.starts_with("/fonts/");
-
-    if is_login_exempt {
+    if is_login_session_exempt(&path) {
         return next.run(request).await;
     }
 
@@ -547,17 +563,7 @@ pub async fn auth_middleware(
             // is the path that grants elevation) but NOT from the session +
             // binding requirement (the elevate handler enforces both internally
             // via the same middleware path).
-            let is_login_exempt = path == "/login"
-                || path == "/api/login"
-                || path == "/api/login/status"
-                || path == "/api/logout"
-                || path.starts_with("/assets/")
-                || path == "/manifest.json"
-                || path == "/sw.js"
-                || path.starts_with("/icon-")
-                || path.starts_with("/fonts/");
-
-            if !is_login_exempt {
+            if !is_login_session_exempt(path) {
                 let session_id = super::login::extract_login_session(&request);
                 let presented_binding = extract_device_binding(&request);
 

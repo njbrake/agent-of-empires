@@ -21,6 +21,10 @@ pub enum AuthMode {
 }
 
 impl AuthMode {
+    /// CLI string form, matching what `--auth=<MODE>` accepts. The
+    /// match arms are kept in lockstep with clap's `value(rename_all =
+    /// "lowercase")` derive by the `auth_mode_cli_str_matches_clap`
+    /// unit test, which round-trips each string through `ValueEnum`.
     fn as_cli_str(self) -> &'static str {
         match self {
             AuthMode::Token => "token",
@@ -453,13 +457,15 @@ pub async fn run(profile: &str, args: ServeArgs) -> Result<()> {
     // --behind-proxy + --remote is meaningless: --remote manages its
     // own ingress, --behind-proxy assumes an external one. Warn but
     // do not hard-fail; --remote wins for the tunnel-spawn decision
-    // and both set behind_tunnel anyway.
+    // and both set behind_tunnel anyway. Emit on both stderr (for
+    // foreground users) and the tracing pipeline (for daemon users
+    // whose stderr lands inside debug.log unread).
     if args.behind_proxy && args.remote {
-        eprintln!(
-            "Note: --behind-proxy is ignored when --remote is set; \
+        let msg = "--behind-proxy is ignored when --remote is set; \
              --remote already enables the equivalent cookie-Secure and \
-             trusted-XFF behavior and manages its own ingress."
-        );
+             trusted-XFF behavior and manages its own ingress.";
+        eprintln!("Note: {msg}");
+        tracing::warn!(target: "serve", "{msg}");
     }
 
     // Named tunnel requires --tunnel-url
@@ -1009,5 +1015,26 @@ mod tests {
             validate_auth_combination(AuthMode::Token, true, true, false, true, "127.0.0.1")
                 .is_ok()
         );
+    }
+
+    #[test]
+    fn auth_mode_cli_str_matches_clap() {
+        // Drift guard: `as_cli_str()` and clap's `value(rename_all =
+        // "lowercase")` derive must agree. If someone renames a variant
+        // or changes the rename_all rule without updating the match,
+        // this round-trip fails. Catches the silent split where
+        // `--auth=passphrase` parses but the daemon respawn emits
+        // `--auth Passphrase`.
+        for variant in <AuthMode as ValueEnum>::value_variants() {
+            let cli_str = variant.as_cli_str();
+            let parsed = AuthMode::from_str(cli_str, true).unwrap_or_else(|_| {
+                panic!("clap rejects as_cli_str() output {:?}", cli_str);
+            });
+            assert_eq!(parsed, *variant);
+            let pv = variant
+                .to_possible_value()
+                .expect("non-skipped variant has a PossibleValue");
+            assert_eq!(pv.get_name(), cli_str);
+        }
     }
 }
