@@ -371,6 +371,11 @@ pub struct ServerConfig<'a> {
     pub no_tailscale: bool,
     pub is_daemon: bool,
     pub passphrase: Option<&'a str>,
+    /// True when the server sits behind an external reverse proxy
+    /// that terminates TLS. Forces cookies to `; Secure` and trusts
+    /// `X-Forwarded-For` / `cf-connecting-ip` from loopback peers,
+    /// same surface as `remote`, without spawning a tunnel.
+    pub behind_proxy: bool,
     pub open_browser: bool,
 }
 
@@ -387,6 +392,7 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
         no_tailscale,
         is_daemon,
         passphrase,
+        behind_proxy,
         open_browser,
     } = config;
 
@@ -527,7 +533,7 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
         login_manager: Arc::clone(&login_manager),
         rate_limiter: Arc::clone(&rate_limiter),
         devices: RwLock::new(Vec::new()),
-        behind_tunnel: remote,
+        behind_tunnel: remote || behind_proxy,
         instance_locks: RwLock::new(std::collections::HashMap::new()),
         cleanup_defaults_cache: RwLock::new(CleanupDefaultsCache {
             // Seed with an already-stale timestamp so the first request

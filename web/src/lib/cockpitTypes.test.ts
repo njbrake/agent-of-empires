@@ -14,6 +14,8 @@ import { describe, expect, it } from "vitest";
 import {
   applyEvent,
   emptyCockpitState,
+  isTurnActive,
+  normaliseTurnCounters,
   type CockpitFrame,
   type CockpitState,
 } from "./cockpitTypes";
@@ -27,9 +29,12 @@ function frame(seq: number, text: string): CockpitFrame {
 }
 
 function withOptimisticPrompt(state: CockpitState, text: string): CockpitState {
-  // Mirrors the optimistic dispatch in useCockpit.sendPrompt — the
-  // row id includes the wall-clock timestamp, distinct from the
-  // `user-seq-N` form the reducer assigns when the server echoes.
+  // Mirrors the optimistic dispatch in useCockpit.sendPrompt: row id
+  // includes the wall-clock timestamp (distinct from the `user-seq-N`
+  // form the reducer assigns when the server echoes), and
+  // `pendingUserPromptSeq` bumps so a subsequent server echo on the
+  // matching row doesn't double-count. See #1170.
+  const pendingUserPromptSeq = state.pendingUserPromptSeq + 1;
   return {
     ...state,
     activity: state.activity.concat({
@@ -38,7 +43,8 @@ function withOptimisticPrompt(state: CockpitState, text: string): CockpitState {
       text,
       at: new Date().toISOString(),
     }),
-    turnActive: true,
+    pendingUserPromptSeq,
+    turnActive: pendingUserPromptSeq > state.lastStoppedSeq,
   };
 }
 
@@ -838,6 +844,240 @@ describe("applyEvent / ConversationCompacted", () => {
       event: "ConversationCompacted",
     });
     expect(next.contextPrimerAvailable).toBeNull();
+  });
+});
+
+describe("turnActive derivation from prompt/stop counters (#1170)", () => {
+  // `turnActive` derives from `pendingUserPromptSeq > lastStoppedSeq`.
+  // The boolean field is kept on `CockpitState` as a memoised alias so
+  // existing `state.turnActive` reads stay correct, but the counters
+  // are the source of truth a late `Stopped` cannot clobber.
+
+  it("isTurnActive flips on / off when counters cross", () => {
+    expect(
+      isTurnActive({ pendingUserPromptSeq: 2, lastStoppedSeq: 1 }),
+    ).toBe(true);
+    expect(
+      isTurnActive({ pendingUserPromptSeq: 1, lastStoppedSeq: 1 }),
+    ).toBe(false);
+    expect(
+      isTurnActive({ pendingUserPromptSeq: 0, lastStoppedSeq: 0 }),
+    ).toBe(false);
+  });
+
+  it("Stopped advances lastStoppedSeq by one and recomputes turnActive", () => {
+    // Single-prompt happy path: send → Stopped flips turnActive off.
+    let state = applyEvent(emptyCockpitState(), {
+      session_id: "s-1",
+      seq: 1,
+      event: { UserPromptSent: { text: "hi" } },
+    });
+    expect(state.pendingUserPromptSeq).toBe(1);
+    expect(state.lastStoppedSeq).toBe(0);
+    expect(state.turnActive).toBe(true);
+
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 2,
+      event: { Stopped: { reason: "prompt_complete" } },
+    });
+    expect(state.pendingUserPromptSeq).toBe(1);
+    expect(state.lastStoppedSeq).toBe(1);
+    expect(state.turnActive).toBe(false);
+  });
+
+  it("late Stopped from prior turn does NOT clobber turnActive after a fresh follow-up", async () => {
+    // The bug. Prior turn: pendingUserPromptSeq=1, lastStoppedSeq=0
+    // (turnActive=true). User submits a follow-up before the prior
+    // turn's Stopped frame has been applied client-side; the
+    // optimistic `user_prompt` action bumps pending to 2. A beat
+    // later the Stopped frame for turn 1 lands. Under the old
+    // unconditional `turnActive=false`, the spinner died and the
+    // late agent chunks reordered visually below the new prompt.
+    // Under the counter model, lastStoppedSeq advances to 1
+    // (capped at pending) and `2 > 1` keeps turnActive true.
+    const { cockpitHookReducer } = await import("../hooks/useCockpit");
+
+    let state = applyEvent(emptyCockpitState(), {
+      session_id: "s-1",
+      seq: 1,
+      event: { UserPromptSent: { text: "first turn" } },
+    });
+    expect(state.turnActive).toBe(true);
+    // User taps Send the instant the turn ends; the optimistic
+    // dispatch lands BEFORE the Stopped frame for the prior turn.
+    state = cockpitHookReducer(state, {
+      kind: "user_prompt",
+      text: "follow-up",
+    });
+    expect(state.pendingUserPromptSeq).toBe(2);
+    expect(state.turnActive).toBe(true);
+    // Late Stopped (was for turn 1) now arrives. Must NOT kill the
+    // spinner because turn 2 is the active turn.
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 2,
+      event: { Stopped: { reason: "prompt_complete" } },
+    });
+    expect(state.pendingUserPromptSeq).toBe(2);
+    expect(state.lastStoppedSeq).toBe(1);
+    expect(state.turnActive).toBe(true);
+
+    // Eventually turn 2's own Stopped lands and flips it off.
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 3,
+      event: { Stopped: { reason: "prompt_complete" } },
+    });
+    expect(state.lastStoppedSeq).toBe(2);
+    expect(state.turnActive).toBe(false);
+  });
+
+  it("spurious Stopped on an idle session does not flip a future prompt off", () => {
+    // Defence-in-depth: a Stopped frame arriving with no outstanding
+    // turn must not advance `lastStoppedSeq` past `pendingUserPromptSeq`,
+    // otherwise the next prompt's increment wouldn't catch up and
+    // `turnActive` would stay false even with a real turn in flight.
+    let state = applyEvent(emptyCockpitState(), {
+      session_id: "s-1",
+      seq: 1,
+      event: { UserPromptSent: { text: "hi" } },
+    });
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 2,
+      event: { Stopped: { reason: "prompt_complete" } },
+    });
+    expect(state.turnActive).toBe(false);
+    // Spurious extra Stopped (e.g. duplicate replay of the close).
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 3,
+      event: { Stopped: { reason: "prompt_complete" } },
+    });
+    expect(state.lastStoppedSeq).toBe(1);
+    expect(state.pendingUserPromptSeq).toBe(1);
+    // Next real prompt: turn must reactivate.
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 4,
+      event: { UserPromptSent: { text: "second" } },
+    });
+    expect(state.pendingUserPromptSeq).toBe(2);
+    expect(state.lastStoppedSeq).toBe(1);
+    expect(state.turnActive).toBe(true);
+  });
+
+  it("optimistic user_prompt + matching server echo only bump pending once", async () => {
+    // Avoids double-counting: the server's UserPromptSent that matches
+    // and promotes an existing optimistic row must not bump
+    // `pendingUserPromptSeq` again.
+    const { cockpitHookReducer } = await import("../hooks/useCockpit");
+    let state = cockpitHookReducer(emptyCockpitState(), {
+      kind: "user_prompt",
+      text: "echo me",
+    });
+    expect(state.pendingUserPromptSeq).toBe(1);
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 5,
+      event: { UserPromptSent: { text: "echo me" } },
+    });
+    expect(state.pendingUserPromptSeq).toBe(1);
+    expect(state.turnActive).toBe(true);
+  });
+
+  it("AgentStartupError advances lastStoppedSeq, preserving the race-safe semantics", () => {
+    let state = applyEvent(emptyCockpitState(), {
+      session_id: "s-1",
+      seq: 1,
+      event: { UserPromptSent: { text: "first" } },
+    });
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 2,
+      event: { AgentStartupError: { message: "boom" } },
+    });
+    expect(state.lastStoppedSeq).toBe(1);
+    expect(state.turnActive).toBe(false);
+    expect(state.startupError).toBe("boom");
+  });
+
+  it("optimistic-match UserPromptSent resets per-turn flags (turnHasOutput, worker banners, wakeup)", () => {
+    // The optimistic-match branch used to early-return after just
+    // promoting the row id, leaving `turnHasOutput`, `workerStopped`,
+    // `workerRestarting`, and the wakeup countdown stale from the
+    // prior turn. With #1170's race-safe semantics that desync can
+    // suppress the empty-output notice on a follow-up that produces
+    // nothing, so the resets now run on BOTH UserPromptSent branches.
+    const stale: CockpitState = {
+      ...withOptimisticPrompt(emptyCockpitState(), "follow-up"),
+      turnHasOutput: true,
+      workerStopped: true,
+      workerRestarting: true,
+      nextWakeupAt: new Date(Date.now() - 1_000).toISOString(),
+      nextWakeupReason: "tick",
+    };
+    const next = applyEvent(stale, {
+      session_id: "s-1",
+      seq: 9,
+      event: { UserPromptSent: { text: "follow-up" } },
+    });
+    expect(next.activity).toHaveLength(1);
+    expect(next.activity[0].id).toBe("user-seq-9");
+    expect(next.turnHasOutput).toBe(false);
+    expect(next.workerStopped).toBe(false);
+    expect(next.workerRestarting).toBe(false);
+    expect(next.nextWakeupAt).toBeNull();
+    expect(next.nextWakeupReason).toBeNull();
+    // pendingUserPromptSeq must NOT double-count: withOptimisticPrompt
+    // bumped it to 1, the server echo matched the optimistic row, so
+    // it stays at 1.
+    expect(next.pendingUserPromptSeq).toBe(1);
+    expect(next.turnActive).toBe(true);
+  });
+});
+
+describe("normaliseTurnCounters (#1170 persisted-state backfill)", () => {
+  it("backfills counters from cached turnActive=true", () => {
+    const cached = {
+      ...emptyCockpitState(),
+      turnActive: true,
+    } as CockpitState & { pendingUserPromptSeq?: number; lastStoppedSeq?: number };
+    delete cached.pendingUserPromptSeq;
+    delete cached.lastStoppedSeq;
+    const normalised = normaliseTurnCounters(cached);
+    expect(normalised.pendingUserPromptSeq).toBe(1);
+    expect(normalised.lastStoppedSeq).toBe(0);
+    expect(normalised.turnActive).toBe(true);
+  });
+
+  it("backfills counters from cached turnActive=false", () => {
+    const cached = {
+      ...emptyCockpitState(),
+      turnActive: false,
+    } as CockpitState & { pendingUserPromptSeq?: number; lastStoppedSeq?: number };
+    delete cached.pendingUserPromptSeq;
+    delete cached.lastStoppedSeq;
+    const normalised = normaliseTurnCounters(cached);
+    expect(normalised.pendingUserPromptSeq).toBe(0);
+    expect(normalised.lastStoppedSeq).toBe(0);
+    expect(normalised.turnActive).toBe(false);
+  });
+
+  it("passes through entries that already carry counters", () => {
+    const fresh: CockpitState = {
+      ...emptyCockpitState(),
+      pendingUserPromptSeq: 5,
+      lastStoppedSeq: 3,
+      turnActive: false,
+    };
+    const normalised = normaliseTurnCounters(fresh);
+    expect(normalised.pendingUserPromptSeq).toBe(5);
+    expect(normalised.lastStoppedSeq).toBe(3);
+    // Even if the cached `turnActive` boolean was stale, the derived
+    // value wins so the spinner gate matches the counters.
+    expect(normalised.turnActive).toBe(true);
   });
 });
 

@@ -53,14 +53,16 @@ export function SecuritySettings() {
 
       <div className="rounded-lg border border-surface-700/50 bg-surface-900 px-4 py-2">
         <Row
-          label="Token auth"
+          label="Auth mode"
           value={
             about === null ? (
               <span className="text-text-muted">…</span>
-            ) : about.auth_required ? (
-              <Badge tone="ok">enabled</Badge>
+            ) : about.auth_mode === "token" ? (
+              <Badge tone="ok">--auth=token</Badge>
+            ) : about.auth_mode === "passphrase" ? (
+              <Badge tone="ok">--auth=passphrase</Badge>
             ) : (
-              <Badge tone="warn">disabled (--no-auth)</Badge>
+              <Badge tone="warn">--auth=none</Badge>
             )
           }
         />

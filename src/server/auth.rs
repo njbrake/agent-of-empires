@@ -73,6 +73,33 @@ fn build_cookie(token: &str, secure: bool, max_age_secs: u64) -> String {
     cookie
 }
 
+/// Write the `aoe_token` Set-Cookie and the companion `x-aoe-token`
+/// header into a response's header map.
+///
+/// Uses `.append` for `Set-Cookie` because the handler that just ran
+/// may already have set its own (`login_handler` sets `aoe_session`
+/// on successful login; `logout_handler` clears it). `.insert` would
+/// replace those values and the browser would only see our
+/// `aoe_token` cookie, silently dropping the session state the
+/// handler intended to set. The two cookie names don't collide, so
+/// the browser processes both Set-Cookie values. `.insert` is fine
+/// for `x-aoe-token` because no handler writes that header.
+fn write_token_headers(
+    headers: &mut axum::http::HeaderMap,
+    token: &str,
+    behind_tunnel: bool,
+    max_age_secs: u64,
+) {
+    let cookie = build_cookie(token, behind_tunnel, max_age_secs);
+    headers.append(
+        header::SET_COOKIE,
+        cookie.parse().expect("cookie format must be valid"),
+    );
+    if let Ok(value) = token.parse() {
+        headers.insert("x-aoe-token", value);
+    }
+}
+
 /// Attach both the Set-Cookie and X-Aoe-Token headers to a response. The
 /// cookie covers the browser flow; X-Aoe-Token lets the PWA update its
 /// localStorage-cached token when the server rotates. Without the header,
@@ -83,14 +110,12 @@ async fn attach_token_headers(response: &mut Response, state: &AppState) {
         return;
     };
     let max_age = state.token_manager.lifetime_secs().await;
-    let cookie = build_cookie(&current, state.behind_tunnel, max_age);
-    response.headers_mut().insert(
-        header::SET_COOKIE,
-        cookie.parse().expect("cookie format must be valid"),
+    write_token_headers(
+        response.headers_mut(),
+        &current,
+        state.behind_tunnel,
+        max_age,
     );
-    if let Ok(value) = current.parse() {
-        response.headers_mut().insert("x-aoe-token", value);
-    }
 }
 
 const MAX_DEVICES: usize = 100;
@@ -190,6 +215,40 @@ fn extract_ws_protocols(request: &Request) -> Vec<String> {
 /// both forms to the same handler). Cheap and explicit.
 fn normalize_path(path: &str) -> &str {
     path.strip_suffix('/').unwrap_or(path)
+}
+
+/// Whether a request path is exempt from the passphrase session +
+/// device-binding check. These are the login bootstrap surfaces and
+/// static assets that pre-load the SPA shell. Shared by the
+/// token-with-passphrase branch of `auth_middleware` and by
+/// `run_passphrase_wall` so a new bootstrap path only needs to be
+/// added once.
+fn is_login_session_exempt(path: &str) -> bool {
+    path == "/login"
+        || path == "/api/login"
+        || path == "/api/login/status"
+        || path == "/api/logout"
+        || path.starts_with("/assets/")
+        || path == "/manifest.json"
+        || path == "/sw.js"
+        || path.starts_with("/icon-")
+        || path.starts_with("/fonts/")
+}
+
+/// Whether to append a sliding-window refresh of the `aoe_session`
+/// cookie on the response for a session-authenticated request.
+/// Login-exempt paths skip the refresh because their own handlers
+/// own the `aoe_session` cookie's lifecycle on that response: the
+/// `POST /api/logout` handler sets `Max-Age=0` to clear it, and the
+/// `POST /api/login` handler mints a fresh session id and sets a
+/// new cookie. An unconditional refresh would emit a second
+/// `Set-Cookie: aoe_session=<id>; Max-Age=2592000` after the
+/// handler's, and browsers process Set-Cookie headers in order
+/// (later wins), so logout would leave a stale 30-day cookie
+/// pointing at a server session that no longer exists, and login
+/// would clobber the new session id with the old one.
+fn should_refresh_session_cookie(path: &str) -> bool {
+    !is_login_session_exempt(path)
 }
 
 /// Whether a request path + method needs an elevated login session
@@ -292,6 +351,93 @@ enum TokenSource {
 #[derive(Clone, Copy, Debug)]
 pub struct AuthenticatedTokenHash(pub [u8; 32]);
 
+/// Passphrase login wall used when the token gate is disabled
+/// (`--auth=passphrase`). Mirrors the session + device-binding check
+/// inside the token-auth path, but skips every token-cookie
+/// operation since there is no token to refresh.
+///
+/// Rate-limit lockout is intentionally not consulted here: the only
+/// authentication attempt that can fail in this path is the passphrase
+/// POST itself, and `/api/login` enforces `check_locked` /
+/// `record_failure` inline (see `src/server/login.rs:424`). Probing
+/// `/api/*` from this wall returns 401 `login_required` without
+/// recording a failure, matching the behavior the token path uses for
+/// `login_required` redirects.
+async fn run_passphrase_wall(
+    state: &AppState,
+    request: Request,
+    client_ip: IpAddr,
+    next: Next,
+) -> Response {
+    let path = request.uri().path().to_string();
+    let method = request.method().clone();
+
+    if is_login_session_exempt(&path) {
+        return next.run(request).await;
+    }
+
+    let session_id = super::login::extract_login_session(&request);
+    let presented_binding = extract_device_binding(&request);
+
+    let has_valid_session = match (&session_id, &presented_binding) {
+        (Some(id), Some(binding)) => state.login_manager.validate_session(id, binding).await,
+        _ => false,
+    };
+
+    if !has_valid_session {
+        if path.starts_with("/api/") || path.contains("/ws") {
+            tracing::warn!(
+                target: "auth",
+                ip = %client_ip,
+                path = %path,
+                had_session_cookie = session_id.is_some(),
+                had_device_binding = presented_binding.is_some(),
+                "passphrase wall: rejecting api/ws with 401"
+            );
+            return (
+                StatusCode::UNAUTHORIZED,
+                axum::Json(serde_json::json!({
+                    "error": "login_required",
+                    "message": "Passphrase login required"
+                })),
+            )
+                .into_response();
+        }
+        return axum::response::Redirect::temporary("/login").into_response();
+    }
+
+    let session_id = session_id.expect("valid session implies session_id exists");
+
+    if requires_elevation(&method, &path) && !state.login_manager.is_elevated(&session_id).await {
+        tracing::info!(
+            target: "auth.passphrase",
+            ip = %client_ip,
+            path = %path,
+            "passphrase wall: sensitive route required elevation; returning 403"
+        );
+        return (
+            StatusCode::FORBIDDEN,
+            axum::Json(serde_json::json!({
+                "error": "elevation_required",
+                "message": "Re-enter the passphrase to continue"
+            })),
+        )
+            .into_response();
+    }
+
+    let mut response = next.run(request).await;
+
+    // Refresh login session cookie (sliding window). No token cookie
+    // refresh: there is no token in this auth mode.
+    let login_cookie = super::login::build_login_cookie(&session_id, state.behind_tunnel);
+    response.headers_mut().append(
+        header::SET_COOKIE,
+        login_cookie.parse().expect("cookie format must be valid"),
+    );
+
+    response
+}
+
 pub async fn auth_middleware(
     State(state): State<Arc<AppState>>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
@@ -324,13 +470,25 @@ pub async fn auth_middleware(
         );
     }
 
-    // No-auth mode: pass everything through. Insert a zeroed
-    // AuthenticatedTokenHash so handlers that extract the extension
-    // still succeed; all no-auth clients share the same "owner" value.
+    // Token gate disabled (--auth=none or --auth=passphrase). Insert a
+    // zeroed AuthenticatedTokenHash so handlers that extract the
+    // extension still succeed; all token-less clients share the same
+    // "owner" value. Then either bypass entirely (--auth=none) or
+    // hand off to the passphrase wall (--auth=passphrase).
     if state.token_manager.is_no_auth().await {
-        // Once per process: surface that auth is disabled. Helps when a
-        // user is confused why their token isn't being checked.
         static NO_AUTH_LOGGED: std::sync::Once = std::sync::Once::new();
+        if state.login_manager.is_enabled() {
+            NO_AUTH_LOGGED.call_once(|| {
+                tracing::info!(
+                    target: "auth.token",
+                    "token gate disabled (--auth=passphrase); passphrase login wall remains active"
+                );
+            });
+            request
+                .extensions_mut()
+                .insert(AuthenticatedTokenHash([0u8; 32]));
+            return run_passphrase_wall(&state, request, client_ip, next).await;
+        }
         NO_AUTH_LOGGED.call_once(|| {
             tracing::info!(
                 target: "auth.token",
@@ -365,8 +523,44 @@ pub async fn auth_middleware(
             .into_response();
     }
 
-    // Try each token source in order: cookie, then query param.
-    // A stale cookie must not block a valid query param token.
+    // Steady-state path: a bound device authenticates with its
+    // passphrase session + device binding alone. The token is a
+    // first-device-pairing nonce, NOT a per-request second factor;
+    // we only consult it on bootstrap paths below. This is the
+    // core simplification from #1167: rotation still happens for
+    // URL-leak mitigation of the bootstrap URL, but bound devices
+    // never see the rotation because they don't ride on tokens.
+    let login_enabled = state.login_manager.is_enabled();
+    let presented_session_id = if login_enabled {
+        super::login::extract_login_session(&request)
+    } else {
+        None
+    };
+    let presented_binding = if login_enabled {
+        extract_device_binding(&request)
+    } else {
+        None
+    };
+    let session_valid = if login_enabled {
+        match (&presented_session_id, &presented_binding) {
+            (Some(id), Some(b)) => state.login_manager.validate_session(id, b).await,
+            _ => false,
+        }
+    } else {
+        false
+    };
+
+    if session_valid {
+        let session_id = presented_session_id.expect("session_valid implies session_id exists");
+        return handle_session_authenticated(&state, client_ip, request, next, session_id).await;
+    }
+
+    // Token-check path: either passphrase login is disabled (token
+    // is the sole factor) or this device is bootstrapping its
+    // first session. Try every token source; on success route
+    // either through the login flow (login enabled, non-bootstrap
+    // path) or straight to the handler (login-exempt path or
+    // token-only mode).
     let mut matched_source = None;
     let mut needs_upgrade = false;
     let mut matched_token_hash: Option<[u8; 32]> = None;
@@ -381,13 +575,10 @@ pub async fn auth_middleware(
         }
     }
 
-    // If cookie/query didn't match, try each WebSocket sub-protocol.
-    // A client may send multiple protocols (e.g., "graphql-ws, <token>"),
-    // so we must check each one, not just the first. Accept either the
-    // legacy bare-token form (used by older PWA tabs) or the prefixed
-    // `aoe-token.<token>` form introduced alongside device binding so
-    // that subprotocol values are self-describing instead of relying on
-    // "try every entry as a token" coincidence. See #1131.
+    // WebSocket sub-protocol fallback. A client may send multiple
+    // protocols (e.g., "graphql-ws, <token>"), so check each.
+    // Accept either bare-token (older PWA tabs) or the prefixed
+    // `aoe-token.<token>` form. See #1131.
     if matched_source.is_none() {
         for proto in extract_ws_protocols(&request) {
             let candidate = strip_ws_prefix(&proto, "aoe-token").unwrap_or(&proto);
@@ -401,212 +592,180 @@ pub async fn auth_middleware(
         }
     }
 
-    if let Some(source) = matched_source {
-        // Record success
-        state.rate_limiter.record_success(client_ip).await;
-        tracing::trace!(
+    let Some(source) = matched_source else {
+        // No valid token and no valid session: true unauthenticated
+        // state. For API and WebSocket routes return 401; for
+        // anything else serve the SPA shell so the frontend can
+        // render its own re-auth UI.
+        let path = request.uri().path();
+        let is_api_or_ws = path.starts_with("/api/") || path.contains("/ws");
+        if !is_api_or_ws {
+            return next.run(request).await;
+        }
+        let locked = state.rate_limiter.record_failure(client_ip).await;
+        let reason =
+            if extract_tokens(&request).is_empty() && extract_ws_protocols(&request).is_empty() {
+                "missing"
+            } else {
+                "invalid"
+            };
+        tracing::warn!(
             target: "auth.middleware",
             ip = %client_ip,
-            path = %request.uri().path(),
-            source = ?source,
-            "auth accepted"
+            path = %path,
+            locked = locked,
+            reason = %reason,
+            "auth rejected"
         );
-
-        // Stamp web activity so the push consumer can suppress
-        // notifications when the dashboard is actively in use.
-        state.touch_web_activity();
-
-        // Propagate the matched token's SHA-256 hash as a request extension
-        // so downstream handlers (especially /api/push/*) can filter and
-        // attribute subscriptions by owner without re-extracting the token.
-        if let Some(hash) = matched_token_hash {
-            request
-                .extensions_mut()
-                .insert(AuthenticatedTokenHash(hash));
-        }
-
-        let user_agent = request
-            .headers()
-            .get(header::USER_AGENT)
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("unknown");
-        record_device(&state, client_ip, user_agent).await;
-
-        // Login session check (second factor). Validates both the
-        // session cookie and the per-device binding secret introduced
-        // in #1131. The IP is no longer consulted, mobile rotation is
-        // a normal pattern. Sensitive routes additionally require a
-        // step-up elevation timestamp (15-minute window) set via
-        // `POST /api/login/elevate`.
-        if state.login_manager.is_enabled() {
-            let path = request.uri().path();
-
-            // Allow login-related paths and static assets through without a session.
-            // `/api/login/elevate` IS exempt from the elevation requirement (it
-            // is the path that grants elevation) but NOT from the session +
-            // binding requirement (the elevate handler enforces both internally
-            // via the same middleware path).
-            let is_login_exempt = path == "/login"
-                || path == "/api/login"
-                || path == "/api/login/status"
-                || path == "/api/logout"
-                || path.starts_with("/assets/")
-                || path == "/manifest.json"
-                || path == "/sw.js"
-                || path.starts_with("/icon-")
-                || path.starts_with("/fonts/");
-
-            if !is_login_exempt {
-                let session_id = super::login::extract_login_session(&request);
-                let presented_binding = extract_device_binding(&request);
-
-                let has_valid_session = match (&session_id, &presented_binding) {
-                    (Some(id), Some(binding)) => {
-                        state.login_manager.validate_session(id, binding).await
-                    }
-                    _ => false,
-                };
-
-                if !has_valid_session {
-                    // For API routes, return JSON 401. For HTML routes, redirect.
-                    if path.starts_with("/api/") || path.contains("/ws") {
-                        tracing::warn!(
-                            target: "auth",
-                            ip = %client_ip,
-                            path = %path,
-                            had_session_cookie = session_id.is_some(),
-                            had_device_binding = presented_binding.is_some(),
-                            "login session check failed; rejecting api/ws with 401"
-                        );
-                        return (
-                            StatusCode::UNAUTHORIZED,
-                            axum::Json(serde_json::json!({
-                                "error": "login_required",
-                                "message": "Passphrase login required"
-                            })),
-                        )
-                            .into_response();
-                    } else {
-                        let mut response =
-                            axum::response::Redirect::temporary("/login").into_response();
-
-                        // Set token cookie/header on the redirect so the browser
-                        // has the current token when it follows the redirect.
-                        if source == TokenSource::QueryParam
-                            || source == TokenSource::Bearer
-                            || needs_upgrade
-                        {
-                            attach_token_headers(&mut response, &state).await;
-                        }
-
-                        return response;
-                    }
-                }
-
-                // Session + binding are valid.
-                let session_id = session_id.expect("valid session implies session_id exists");
-
-                // Step-up gate for sensitive routes (terminal attach, cockpit
-                // command execution, file writes). Returning 403 with a typed
-                // body lets the frontend pop the inline passphrase prompt
-                // (POST /api/login/elevate) and retry. See #1131.
-                if requires_elevation(request.method(), path)
-                    && !state.login_manager.is_elevated(&session_id).await
-                {
-                    tracing::info!(
-                        target: "auth.passphrase",
-                        ip = %client_ip,
-                        path = %path,
-                        "sensitive route required elevation; returning 403 elevation_required"
-                    );
-                    return (
-                        StatusCode::FORBIDDEN,
-                        axum::Json(serde_json::json!({
-                            "error": "elevation_required",
-                            "message": "Re-enter the passphrase to continue"
-                        })),
-                    )
-                        .into_response();
-                }
-
-                let mut response = next.run(request).await;
-
-                // Set token cookie/header if needed (including Bearer to
-                // rehydrate cookie from localStorage)
-                if source == TokenSource::QueryParam
-                    || source == TokenSource::Bearer
-                    || needs_upgrade
-                {
-                    attach_token_headers(&mut response, &state).await;
-                }
-
-                // Refresh login session cookie (sliding window)
-                let login_cookie =
-                    super::login::build_login_cookie(&session_id, state.behind_tunnel);
-                response.headers_mut().append(
-                    header::SET_COOKIE,
-                    login_cookie.parse().expect("cookie format must be valid"),
-                );
-
-                return response;
-            }
-        }
-
-        let mut response = next.run(request).await;
-
-        // Refresh the auth cookie when the token was provided via query param,
-        // Bearer header, or when the token needs upgrade (grace period).
-        // Including Bearer here is important: when the cookie expires but the
-        // SPA still has the token in localStorage, API calls authenticate via
-        // Bearer header. Setting the cookie on those responses "rehydrates" it
-        // so the next browser navigation (HTML page load) works without
-        // re-pasting the ?token= URL.
-        let should_refresh =
-            source == TokenSource::QueryParam || source == TokenSource::Bearer || needs_upgrade;
-
-        if should_refresh {
-            attach_token_headers(&mut response, &state).await;
-        }
-
-        return response;
-    }
-
-    // Auth failed. For API and WebSocket routes, return 401. For everything
-    // else (the SPA shell, static assets), serve the page anyway so the
-    // frontend can attempt auth via localStorage + Bearer header. Without
-    // this, an expired cookie means the SPA never loads and localStorage
-    // never gets a chance to re-authenticate.
-    let path = request.uri().path();
-    let is_api_or_ws = path.starts_with("/api/") || path.contains("/ws");
-
-    if !is_api_or_ws {
-        return next.run(request).await;
-    }
-
-    let locked = state.rate_limiter.record_failure(client_ip).await;
-    let reason = if extract_tokens(&request).is_empty() && extract_ws_protocols(&request).is_empty()
-    {
-        "missing"
-    } else {
-        "invalid"
+        return (
+            StatusCode::UNAUTHORIZED,
+            axum::Json(serde_json::json!({
+                "error": "unauthorized",
+                "message": "Invalid or missing auth token"
+            })),
+        )
+            .into_response();
     };
-    tracing::warn!(
+
+    // Token valid: record success, stamp owner, record device.
+    state.rate_limiter.record_success(client_ip).await;
+    tracing::trace!(
         target: "auth.middleware",
         ip = %client_ip,
-        path = %path,
-        locked = locked,
-        reason = %reason,
-        "auth rejected"
+        path = %request.uri().path(),
+        source = ?source,
+        "auth accepted via token (bootstrap)"
     );
+    state.touch_web_activity();
+    if let Some(hash) = matched_token_hash {
+        request
+            .extensions_mut()
+            .insert(AuthenticatedTokenHash(hash));
+    }
+    let user_agent = request
+        .headers()
+        .get(header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("unknown")
+        .to_string();
+    record_device(&state, client_ip, user_agent.as_str()).await;
 
-    (
-        StatusCode::UNAUTHORIZED,
-        axum::Json(serde_json::json!({
-            "error": "unauthorized",
-            "message": "Invalid or missing auth token"
-        })),
-    )
-        .into_response()
+    let path = request.uri().path().to_string();
+    let should_attach_token =
+        matches!(source, TokenSource::QueryParam | TokenSource::Bearer) || needs_upgrade;
+
+    // When login is enabled, a valid token alone is not enough for
+    // non-bootstrap paths: the user still needs to complete the
+    // passphrase flow to mint a session. Return login_required
+    // (or redirect to /login for HTML) so the SPA pops the
+    // passphrase prompt.
+    if login_enabled && !is_login_session_exempt(&path) {
+        tracing::warn!(
+            target: "auth",
+            ip = %client_ip,
+            path = %path,
+            had_session_cookie = presented_session_id.is_some(),
+            had_device_binding = presented_binding.is_some(),
+            "valid token but no session on non-login-exempt path; returning login_required"
+        );
+        if path.starts_with("/api/") || path.contains("/ws") {
+            return (
+                StatusCode::UNAUTHORIZED,
+                axum::Json(serde_json::json!({
+                    "error": "login_required",
+                    "message": "Passphrase login required"
+                })),
+            )
+                .into_response();
+        } else {
+            let mut response = axum::response::Redirect::temporary("/login").into_response();
+            if should_attach_token {
+                attach_token_headers(&mut response, &state).await;
+            }
+            return response;
+        }
+    }
+
+    // Bootstrap path (login enabled + /login, /api/login, etc.) or
+    // token-only mode. Pass through; attach token cookie for the
+    // upcoming login POST when the token came via QueryParam /
+    // Bearer / grace upgrade.
+    let mut response = next.run(request).await;
+    if should_attach_token {
+        attach_token_headers(&mut response, &state).await;
+    }
+    response
+}
+
+/// Steady-state handler for a bound device. The session + binding
+/// pair is the credential; the token is not consulted. Stamps the
+/// owner identity (from the current token hash for push attribution),
+/// records the device, enforces step-up elevation for sensitive
+/// routes, and refreshes the session cookie's sliding window. NO
+/// `aoe_token` cookie or `x-aoe-token` header is attached: bound
+/// devices don't need the rotating token propagated to them.
+async fn handle_session_authenticated(
+    state: &Arc<AppState>,
+    client_ip: IpAddr,
+    mut request: Request,
+    next: Next,
+    session_id: String,
+) -> Response {
+    state.rate_limiter.record_success(client_ip).await;
+    tracing::trace!(
+        target: "auth.middleware",
+        ip = %client_ip,
+        path = %request.uri().path(),
+        "auth accepted via session+binding"
+    );
+    state.touch_web_activity();
+
+    let owner_hash = match state.token_manager.current_token().await {
+        Some(t) => super::push::sha256_token(&t),
+        None => [0u8; 32],
+    };
+    request
+        .extensions_mut()
+        .insert(AuthenticatedTokenHash(owner_hash));
+
+    let user_agent = request
+        .headers()
+        .get(header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("unknown");
+    record_device(state, client_ip, user_agent).await;
+
+    let path = request.uri().path().to_string();
+    let method = request.method().clone();
+
+    if requires_elevation(&method, &path) && !state.login_manager.is_elevated(&session_id).await {
+        tracing::info!(
+            target: "auth.passphrase",
+            ip = %client_ip,
+            path = %path,
+            "sensitive route required elevation; returning 403 elevation_required"
+        );
+        return (
+            StatusCode::FORBIDDEN,
+            axum::Json(serde_json::json!({
+                "error": "elevation_required",
+                "message": "Re-enter the passphrase to continue"
+            })),
+        )
+            .into_response();
+    }
+
+    let mut response = next.run(request).await;
+
+    if should_refresh_session_cookie(&path) {
+        let login_cookie = super::login::build_login_cookie(&session_id, state.behind_tunnel);
+        response.headers_mut().append(
+            header::SET_COOKIE,
+            login_cookie.parse().expect("cookie format must be valid"),
+        );
+    }
+
+    response
 }
 
 #[cfg(test)]
@@ -802,6 +961,160 @@ mod tests {
             "not-base64-and-wrong-length",
         )]);
         assert!(extract_device_binding(&req).is_none());
+    }
+
+    // Regression test for the token-cookie clobber bug:
+    // `write_token_headers` must `.append` the `Set-Cookie` for
+    // `aoe_token`, never `.insert`. A handler that already set
+    // `aoe_session` on its response (login_handler on success,
+    // logout_handler on clear) must keep its cookie when the
+    // middleware later adds the `aoe_token` cookie. A `.insert`
+    // would replace the handler's `Set-Cookie` (HeaderMap::insert
+    // semantics: remove all prior values, set the new one), so
+    // browsers would receive only `aoe_token=...` and the
+    // session-cookie write would be silently dropped. This test
+    // pins the two-cookies-in-the-response invariant.
+    #[test]
+    fn write_token_headers_preserves_prior_set_cookie() {
+        use axum::http::{HeaderMap, HeaderValue};
+
+        let mut headers = HeaderMap::new();
+        // Simulate a handler that already set its own Set-Cookie
+        // (e.g., `login_handler` setting `aoe_session=...`).
+        headers.insert(
+            header::SET_COOKIE,
+            HeaderValue::from_static(
+                "aoe_session=abc; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000",
+            ),
+        );
+
+        // Middleware writes the `aoe_token` cookie + companion
+        // header on top.
+        write_token_headers(&mut headers, "tok123", false, 14400);
+
+        let cookies: Vec<String> = headers
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .map(str::to_string)
+            .collect();
+        assert_eq!(
+            cookies.len(),
+            2,
+            "both Set-Cookie values must survive, got {cookies:?}"
+        );
+        assert!(
+            cookies.iter().any(|c| c.contains("aoe_session=abc")),
+            "handler's aoe_session cookie was clobbered: {cookies:?}"
+        );
+        assert!(
+            cookies.iter().any(|c| c.contains("aoe_token=tok123")),
+            "middleware's aoe_token cookie missing: {cookies:?}"
+        );
+        assert_eq!(
+            headers.get("x-aoe-token").and_then(|v| v.to_str().ok()),
+            Some("tok123")
+        );
+    }
+
+    // Regression test for the logout-clobber bug: when a request
+    // hits a login-exempt path (notably `POST /api/logout` and
+    // `POST /api/login`), `handle_session_authenticated` must NOT
+    // append a sliding-window `Set-Cookie: aoe_session=<id>` after
+    // the handler runs. The handler is the one that owns the cookie
+    // on those responses (logout clears with `Max-Age=0`; login
+    // mints a fresh id), and an unconditional refresh would emit a
+    // second Set-Cookie that browsers process later-wins, so logout
+    // would leave a stale 30-day cookie pointing at an invalidated
+    // session and login would clobber the new id with the old one.
+    #[test]
+    fn session_cookie_refresh_skips_login_exempt_paths() {
+        // Login-exempt: must not refresh.
+        assert!(!should_refresh_session_cookie("/api/logout"));
+        assert!(!should_refresh_session_cookie("/api/login"));
+        assert!(!should_refresh_session_cookie("/login"));
+        assert!(!should_refresh_session_cookie("/api/login/status"));
+        assert!(!should_refresh_session_cookie("/assets/index.js"));
+        assert!(!should_refresh_session_cookie("/manifest.json"));
+        assert!(!should_refresh_session_cookie("/sw.js"));
+
+        // Non-exempt: must refresh (sliding window).
+        assert!(should_refresh_session_cookie("/"));
+        assert!(should_refresh_session_cookie("/api/sessions"));
+        assert!(should_refresh_session_cookie(
+            "/api/sessions/abc/cockpit/ws"
+        ));
+        assert!(should_refresh_session_cookie("/api/settings"));
+        // /api/login/elevate is gated by the session check (not
+        // exempt), so its response should slide the window.
+        assert!(should_refresh_session_cookie("/api/login/elevate"));
+    }
+
+    #[test]
+    fn login_session_exempt_paths() {
+        // Bootstrap + status endpoints: the user might hit these
+        // before a session exists (or after it expired) and the
+        // middleware must let them through so the SPA can recover.
+        assert!(is_login_session_exempt("/login"));
+        assert!(is_login_session_exempt("/api/login"));
+        assert!(is_login_session_exempt("/api/login/status"));
+        assert!(is_login_session_exempt("/api/logout"));
+
+        // Static assets: pre-load the SPA shell before any auth.
+        assert!(is_login_session_exempt("/assets/index.css"));
+        assert!(is_login_session_exempt("/assets/index-abc123.js"));
+        assert!(is_login_session_exempt("/manifest.json"));
+        assert!(is_login_session_exempt("/sw.js"));
+        assert!(is_login_session_exempt("/icon-192.png"));
+        assert!(is_login_session_exempt("/fonts/inter.woff2"));
+
+        // Everything else stays gated.
+        assert!(!is_login_session_exempt("/"));
+        assert!(!is_login_session_exempt("/api/sessions"));
+        assert!(!is_login_session_exempt("/api/login/elevate"));
+        assert!(!is_login_session_exempt("/api/settings"));
+        assert!(!is_login_session_exempt("/api/sessions/abc/ws"));
+        // /api/login/foo is not the same as /api/login exactly.
+        assert!(!is_login_session_exempt("/api/login/foo"));
+        // /logins is not /login.
+        assert!(!is_login_session_exempt("/logins"));
+    }
+
+    // Pin the session lifetime to 30 days. Catches a silent
+    // regression to the old 24h window: that broke the
+    // "rarely-log-out" UX the device-bound design promises (see
+    // #1167). The test asserts both the server-side constant and
+    // the cookie's advertised Max-Age stay in sync, since a
+    // mismatch between the two creates a confusing client/server
+    // disagreement (browser thinks the cookie is fresh, server
+    // 401s it).
+    #[tokio::test]
+    async fn login_session_lifetime_is_thirty_days_sliding() {
+        use crate::server::login::{LoginManager, SESSION_LIFETIME};
+        use std::time::Duration;
+
+        // Direct pin on the server-side TTL. Any future edit that
+        // shortens this without updating the test (and the docs in
+        // `docs/guides/remote-phone-access.md`) will fail here.
+        assert_eq!(
+            SESSION_LIFETIME,
+            Duration::from_secs(30 * 24 * 60 * 60),
+            "SESSION_LIFETIME must be 30 days; see #1167"
+        );
+
+        // Cookie's advertised Max-Age must equal the server TTL so
+        // the browser and server agree on when the session is gone.
+        let mgr = LoginManager::new(Some("test"));
+        let binding = vec![0xAB; 32];
+        let session_id = mgr.create_session(&binding).await;
+        assert!(mgr.validate_session(&session_id, &binding).await);
+
+        let cookie = super::super::login::build_login_cookie(&session_id, false);
+        let expected = format!("Max-Age={}", SESSION_LIFETIME.as_secs());
+        assert!(
+            cookie.contains(&expected),
+            "cookie {cookie:?} must advertise {expected} to match server TTL"
+        );
     }
 
     #[test]

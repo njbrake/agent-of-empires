@@ -834,7 +834,12 @@ Start a web dashboard for remote session access
 * `--host <HOST>` — Host/IP to bind to (use 0.0.0.0 for LAN/VPN access)
 
   Default value: `127.0.0.1`
-* `--no-auth` — Disable authentication (only allowed with localhost binding)
+* `--auth <AUTH>` — Authentication mode: `token` (default, random URL token), `passphrase` (no token URL, passphrase login wall only), or `none` (no auth at all, loopback-only unless --behind-proxy). Mutually exclusive with --no-auth (which aliases --auth=none)
+
+  Possible values: `token`, `passphrase`, `none`
+
+* `--no-auth` — Disable authentication (only allowed with localhost binding). Alias for --auth=none
+* `--behind-proxy` — Mark this server as sitting behind a reverse proxy that terminates TLS upstream. Sets cookies as `; Secure` and trusts the `X-Forwarded-For` / `cf-connecting-ip` headers from loopback peers. Does NOT auto-spawn a tunnel (unlike --remote). Required when --auth=passphrase or --auth=none is combined with a non-loopback bind
 * `--read-only` — Read-only mode: view terminals but cannot send keystrokes
 * `--remote` — Expose the dashboard over a public HTTPS tunnel. Prefers Tailscale Funnel when `tailscale` is installed and logged in (stable `.ts.net` URL, installable PWAs survive restarts). Falls back to a Cloudflare quick tunnel otherwise (fresh URL on every restart)
 * `--tunnel-name <TUNNEL_NAME>` — Use a named Cloudflare Tunnel (requires prior `cloudflared tunnel create`). Takes precedence over Tailscale auto-detection
@@ -844,7 +849,7 @@ Start a web dashboard for remote session access
 * `--stop` — Stop a running daemon
 * `--status` — Print the running daemon's PID, mode, URLs, and log path. Exits non-zero when no daemon is running. Useful for shell scripts that want to know whether a daemon is up without parsing `ps`.
 
-   `--status` is read-only and incompatible with every flag that would change daemon state (`--stop`, `--daemon`, `--remote`) or the bind config of a fresh daemon (`--no-auth`, `--read-only`, `--passphrase`, `--port`, `--tunnel-name`, `--no-tailscale`, `--tunnel-url`, `--open`). Clap reports the misuse instead of silently ignoring the extras.
+   `--status` is read-only and incompatible with every flag that would change daemon state (`--stop`, `--daemon`, `--remote`) or the bind config of a fresh daemon (`--no-auth`, `--auth`, `--behind-proxy`, `--read-only`, `--passphrase`, `--port`, `--tunnel-name`, `--no-tailscale`, `--tunnel-url`, `--open`). Clap reports the misuse instead of silently ignoring the extras.
 * `--passphrase <PASSPHRASE>` — Require a passphrase for login (second-factor auth). Can also be set via AOE_SERVE_PASSPHRASE environment variable
 * `--open` — Open the dashboard URL in the default browser once the server is ready. Ignored under --daemon, --remote, SSH (SSH_CONNECTION/SSH_TTY), or when no display server is reachable on Linux/BSD
 

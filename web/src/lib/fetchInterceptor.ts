@@ -124,9 +124,15 @@ export function installFetchErrorToasts(): void {
   };
 }
 
-// 401 with no `login_required` body: token is dead, missing, or revoked.
-// Clear localStorage (idempotent if no token) and show the token entry
-// page. Dedupe so a burst of concurrent 401s produces one event.
+// 401 with no `login_required` body: this is the true
+// unauthenticated state. A bound device authenticates purely via
+// its `aoe_session` cookie + device binding; the server does not
+// consult the token on regular requests. This branch fires only
+// when the session is gone (server restart, 30-day idle, explicit
+// logout, or a fresh browser profile). Clear any cached token
+// (the SPA may have a stale one in localStorage) and route the
+// user back through the bootstrap flow. Dedupe so a burst of
+// concurrent 401s produces one event. See #1167.
 let tokenExpiredDispatched = false;
 function handleTokenAuthFailure(): void {
   clearToken();

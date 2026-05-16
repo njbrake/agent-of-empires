@@ -31,7 +31,7 @@ use agent_client_protocol::{Agent, ByteStreams, Client, ConnectionTo, Responder}
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use super::agent_registry::AgentSpec;
 use super::approvals::{is_destructive, ApprovalDecision, Nonce};
@@ -2709,12 +2709,39 @@ async fn collect_child_failure(child: Option<&Arc<Mutex<tokio::process::Child>>>
     }
 }
 
+/// Issue #1147: monotonic ns-since-process-start, used as a thin
+/// correlation token in the cockpit ACP tool-dispatch trace. Wall-clock
+/// fields like `chrono::Utc::now()` jitter under NTP slew and are too
+/// coarse to detect interleaved entry/exit between concurrent handlers;
+/// `Instant` is monotonic and ns-resolved on every supported platform.
+/// Cast to `u64` because `Instant::elapsed()` returns `Duration` whose
+/// `as_nanos()` is `u128`, which `tracing` formats less compactly. A
+/// `u64` of ns gives ~584 years of headroom, which is plenty.
+fn enter_timestamp_ns() -> u64 {
+    use std::sync::OnceLock;
+    static EPOCH: OnceLock<std::time::Instant> = OnceLock::new();
+    let epoch = EPOCH.get_or_init(std::time::Instant::now);
+    epoch.elapsed().as_nanos() as u64
+}
+
 async fn handle_read_text_file(
     request: ReadTextFileRequest,
     responder: Responder<ReadTextFileResponse>,
     res: SessionResources,
 ) -> agent_client_protocol::Result<()> {
-    match fs_handler::handle_read(&res.fs_policy, &res.label, &request.path) {
+    // Issue #1147: parallel-tool-call diagnostics. The `enter_ns` value is a
+    // monotonic ns-since-process-start counter; if the model dispatches N
+    // tool calls in parallel, the entries should interleave (close `enter_ns`
+    // values across handlers) rather than strictly increasing per-handler.
+    let enter_ns = enter_timestamp_ns();
+    trace!(
+        target: "cockpit.acp.tool_dispatch",
+        handler = "read_text_file",
+        path = %request.path.display(),
+        enter_ns,
+        "ACP request handler entered"
+    );
+    let result = match fs_handler::handle_read(&res.fs_policy, &res.label, &request.path) {
         Ok(content) => {
             // Honor optional line/limit slicing for ACP semantics: 1-based.
             let sliced = if request.line.is_some() || request.limit.is_some() {
@@ -2738,7 +2765,15 @@ async fn handle_read_text_file(
         Err(e) => {
             responder.respond_with_error(agent_client_protocol::util::internal_error(e.to_string()))
         }
-    }
+    };
+    trace!(
+        target: "cockpit.acp.tool_dispatch",
+        handler = "read_text_file",
+        enter_ns,
+        elapsed_ns = enter_timestamp_ns() - enter_ns,
+        "ACP request handler exited"
+    );
+    result
 }
 
 async fn handle_write_text_file(
@@ -2746,12 +2781,29 @@ async fn handle_write_text_file(
     responder: Responder<WriteTextFileResponse>,
     res: SessionResources,
 ) -> agent_client_protocol::Result<()> {
-    match fs_handler::handle_write(&res.fs_policy, &res.label, &request.path, &request.content) {
-        Ok(()) => responder.respond(WriteTextFileResponse::new()),
-        Err(e) => {
-            responder.respond_with_error(agent_client_protocol::util::internal_error(e.to_string()))
-        }
-    }
+    let enter_ns = enter_timestamp_ns();
+    trace!(
+        target: "cockpit.acp.tool_dispatch",
+        handler = "write_text_file",
+        path = %request.path.display(),
+        enter_ns,
+        "ACP request handler entered"
+    );
+    let result =
+        match fs_handler::handle_write(&res.fs_policy, &res.label, &request.path, &request.content)
+        {
+            Ok(()) => responder.respond(WriteTextFileResponse::new()),
+            Err(e) => responder
+                .respond_with_error(agent_client_protocol::util::internal_error(e.to_string())),
+        };
+    trace!(
+        target: "cockpit.acp.tool_dispatch",
+        handler = "write_text_file",
+        enter_ns,
+        elapsed_ns = enter_timestamp_ns() - enter_ns,
+        "ACP request handler exited"
+    );
+    result
 }
 
 async fn handle_create_terminal(
@@ -2759,12 +2811,30 @@ async fn handle_create_terminal(
     responder: Responder<CreateTerminalResponse>,
     res: SessionResources,
 ) -> agent_client_protocol::Result<()> {
+    let enter_ns = enter_timestamp_ns();
+    trace!(
+        target: "cockpit.acp.tool_dispatch",
+        handler = "create_terminal",
+        command = %request.command,
+        argc = request.args.len(),
+        enter_ns,
+        "ACP request handler entered"
+    );
     let cwd = request.cwd.clone().unwrap_or_else(|| res.cwd.clone());
     // Sandbox the cwd: must be inside session roots.
     if let Err(e) = res.fs_policy.resolve_inside(&cwd) {
-        return responder.respond_with_error(agent_client_protocol::util::internal_error(format!(
+        let r = responder.respond_with_error(agent_client_protocol::util::internal_error(format!(
             "terminal cwd outside session roots: {e}"
         )));
+        trace!(
+            target: "cockpit.acp.tool_dispatch",
+            handler = "create_terminal",
+            enter_ns,
+            elapsed_ns = enter_timestamp_ns() - enter_ns,
+            outcome = "cwd_outside_roots",
+            "ACP request handler exited"
+        );
+        return r;
     }
     let terminal_sandbox = res
         .sandbox
@@ -2772,7 +2842,7 @@ async fn handle_create_terminal(
         .map(|s| super::terminal_handler::TerminalSandbox {
             container_name: s.container_name.clone(),
         });
-    match res
+    let result = match res
         .terminals
         .create_and_run(
             &res.label,
@@ -2787,7 +2857,15 @@ async fn handle_create_terminal(
         Err(e) => {
             responder.respond_with_error(agent_client_protocol::util::internal_error(e.to_string()))
         }
-    }
+    };
+    trace!(
+        target: "cockpit.acp.tool_dispatch",
+        handler = "create_terminal",
+        enter_ns,
+        elapsed_ns = enter_timestamp_ns() - enter_ns,
+        "ACP request handler exited"
+    );
+    result
 }
 
 fn build_exit_status(exit_code: Option<i32>) -> agent_client_protocol::schema::TerminalExitStatus {
@@ -2801,7 +2879,15 @@ async fn handle_terminal_output(
     responder: Responder<TerminalOutputResponse>,
     res: SessionResources,
 ) -> agent_client_protocol::Result<()> {
-    match res.terminals.output(request.terminal_id.0.as_ref()).await {
+    let enter_ns = enter_timestamp_ns();
+    trace!(
+        target: "cockpit.acp.tool_dispatch",
+        handler = "terminal_output",
+        terminal_id = %request.terminal_id.0,
+        enter_ns,
+        "ACP request handler entered"
+    );
+    let result = match res.terminals.output(request.terminal_id.0.as_ref()).await {
         Ok(out) => {
             let combined = format!("{}{}", out.stdout, out.stderr);
             responder.respond(
@@ -2812,7 +2898,15 @@ async fn handle_terminal_output(
         Err(e) => {
             responder.respond_with_error(agent_client_protocol::util::internal_error(e.to_string()))
         }
-    }
+    };
+    trace!(
+        target: "cockpit.acp.tool_dispatch",
+        handler = "terminal_output",
+        enter_ns,
+        elapsed_ns = enter_timestamp_ns() - enter_ns,
+        "ACP request handler exited"
+    );
+    result
 }
 
 async fn handle_wait_for_terminal_exit(
@@ -2820,26 +2914,58 @@ async fn handle_wait_for_terminal_exit(
     responder: Responder<WaitForTerminalExitResponse>,
     res: SessionResources,
 ) -> agent_client_protocol::Result<()> {
+    let enter_ns = enter_timestamp_ns();
+    trace!(
+        target: "cockpit.acp.tool_dispatch",
+        handler = "wait_for_terminal_exit",
+        terminal_id = %request.terminal_id.0,
+        enter_ns,
+        "ACP request handler entered"
+    );
     // For our one-shot terminal model, the command has already finished by
     // the time `create_and_run` returns. So `output()` immediately yields
     // the captured exit status.
-    match res.terminals.output(request.terminal_id.0.as_ref()).await {
+    let result = match res.terminals.output(request.terminal_id.0.as_ref()).await {
         Ok(out) => responder.respond(WaitForTerminalExitResponse::new(build_exit_status(
             out.exit_code,
         ))),
         Err(e) => {
             responder.respond_with_error(agent_client_protocol::util::internal_error(e.to_string()))
         }
-    }
+    };
+    trace!(
+        target: "cockpit.acp.tool_dispatch",
+        handler = "wait_for_terminal_exit",
+        enter_ns,
+        elapsed_ns = enter_timestamp_ns() - enter_ns,
+        "ACP request handler exited"
+    );
+    result
 }
 
 async fn handle_kill_terminal(
-    _request: KillTerminalRequest,
+    request: KillTerminalRequest,
     responder: Responder<KillTerminalResponse>,
     _res: SessionResources,
 ) -> agent_client_protocol::Result<()> {
+    let enter_ns = enter_timestamp_ns();
+    trace!(
+        target: "cockpit.acp.tool_dispatch",
+        handler = "kill_terminal",
+        terminal_id = %request.terminal_id.0,
+        enter_ns,
+        "ACP request handler entered"
+    );
     // One-shot terminals are already finished; kill is a no-op.
-    responder.respond(KillTerminalResponse::new())
+    let result = responder.respond(KillTerminalResponse::new());
+    trace!(
+        target: "cockpit.acp.tool_dispatch",
+        handler = "kill_terminal",
+        enter_ns,
+        elapsed_ns = enter_timestamp_ns() - enter_ns,
+        "ACP request handler exited"
+    );
+    result
 }
 
 async fn handle_release_terminal(
@@ -2847,12 +2973,28 @@ async fn handle_release_terminal(
     responder: Responder<ReleaseTerminalResponse>,
     res: SessionResources,
 ) -> agent_client_protocol::Result<()> {
-    match res.terminals.release(request.terminal_id.0.as_ref()).await {
+    let enter_ns = enter_timestamp_ns();
+    trace!(
+        target: "cockpit.acp.tool_dispatch",
+        handler = "release_terminal",
+        terminal_id = %request.terminal_id.0,
+        enter_ns,
+        "ACP request handler entered"
+    );
+    let result = match res.terminals.release(request.terminal_id.0.as_ref()).await {
         Ok(()) => responder.respond(ReleaseTerminalResponse::new()),
         Err(e) => {
             responder.respond_with_error(agent_client_protocol::util::internal_error(e.to_string()))
         }
-    }
+    };
+    trace!(
+        target: "cockpit.acp.tool_dispatch",
+        handler = "release_terminal",
+        enter_ns,
+        elapsed_ns = enter_timestamp_ns() - enter_ns,
+        "ACP request handler exited"
+    );
+    result
 }
 
 async fn handle_permission_request(
@@ -2861,6 +3003,15 @@ async fn handle_permission_request(
     event_tx: mpsc::Sender<Event>,
     pending: PendingResponders,
 ) -> agent_client_protocol::Result<()> {
+    let enter_ns = enter_timestamp_ns();
+    let tool_call_id = request.tool_call.tool_call_id.0.to_string();
+    trace!(
+        target: "cockpit.acp.tool_dispatch",
+        handler = "permission_request",
+        tool_call_id = %tool_call_id,
+        enter_ns,
+        "ACP request handler entered"
+    );
     // Build our cockpit-side approval card.
     let title = request
         .tool_call
@@ -2907,12 +3058,37 @@ async fn handle_permission_request(
     {
         // Receiver gone: cancel.
         pending.lock().await.remove(&nonce);
+        trace!(
+            target: "cockpit.acp.tool_dispatch",
+            handler = "permission_request",
+            tool_call_id = %tool_call_id,
+            enter_ns,
+            elapsed_ns = enter_timestamp_ns() - enter_ns,
+            outcome = "receiver_gone",
+            "ACP request handler exited"
+        );
         return responder.respond(RequestPermissionResponse::new(
             RequestPermissionOutcome::Cancelled,
         ));
     }
 
-    let outcome = match resolve_rx.await {
+    // Issue #1147: this `await` is the suspected serializer for the user-felt
+    // slowness. Log the moment we begin awaiting so a wall-clock comparison
+    // with later "responder.respond" emissions exposes how long each pending
+    // approval blocked the agent's turn.
+    let await_enter_ns = enter_timestamp_ns();
+    trace!(
+        target: "cockpit.acp.tool_dispatch",
+        handler = "permission_request",
+        tool_call_id = %tool_call_id,
+        enter_ns,
+        await_offset_ns = await_enter_ns - enter_ns,
+        "awaiting approval resolution"
+    );
+    // Build outcome + its label together so the exit event never re-matches on
+    // a foreign `#[non_exhaustive]` enum it doesn't fully own.
+    let (outcome, outcome_label): (RequestPermissionOutcome, &'static str) = match resolve_rx.await
+    {
         Ok(ApprovalResolutionMessage::Decision { decision }) => {
             if let Some(option_id) = pick_option_id(&request.options, decision) {
                 // Surface the resolution to UI clients via the typed event channel.
@@ -2922,18 +3098,33 @@ async fn handle_permission_request(
                         decision,
                     })
                     .await;
-                RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(option_id))
+                (
+                    RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(option_id)),
+                    "selected",
+                )
             } else {
                 warn!(
                     target: "cockpit.acp",
                     "agent did not offer a {decision:?}-compatible option; cancelling"
                 );
-                RequestPermissionOutcome::Cancelled
+                (RequestPermissionOutcome::Cancelled, "cancelled")
             }
         }
-        Ok(ApprovalResolutionMessage::Cancelled) | Err(_) => RequestPermissionOutcome::Cancelled,
+        Ok(ApprovalResolutionMessage::Cancelled) | Err(_) => {
+            (RequestPermissionOutcome::Cancelled, "cancelled")
+        }
     };
-
+    let exit_ns = enter_timestamp_ns();
+    trace!(
+        target: "cockpit.acp.tool_dispatch",
+        handler = "permission_request",
+        tool_call_id = %tool_call_id,
+        enter_ns,
+        elapsed_ns = exit_ns - enter_ns,
+        await_ns = exit_ns - await_enter_ns,
+        outcome = outcome_label,
+        "responding to permission request"
+    );
     responder.respond(RequestPermissionResponse::new(outcome))
 }
 

@@ -394,6 +394,13 @@ pub struct ServerAbout {
     pub version: String,
     pub auth_required: bool,
     pub passphrase_enabled: bool,
+    /// Resolved value of `--auth`: `"token"`, `"passphrase"`, or
+    /// `"none"`. The frontend Security panel renders the explicit mode
+    /// label off this so `--auth=passphrase` is not mislabeled as
+    /// `--no-auth`. Derived from `token_manager.is_no_auth()` plus
+    /// `login_manager.is_enabled()` because the CLI mode is not
+    /// retained in `AppState` (only its effects are).
+    pub auth_mode: &'static str,
     pub read_only: bool,
     pub behind_tunnel: bool,
     pub profile: String,
@@ -434,6 +441,14 @@ pub struct ServerAbout {
 
 pub async fn get_about(State(state): State<Arc<AppState>>) -> Json<ServerAbout> {
     let auth_required = !state.token_manager.is_no_auth().await;
+    let passphrase_enabled = state.login_manager.is_enabled();
+    let auth_mode = if auth_required {
+        "token"
+    } else if passphrase_enabled {
+        "passphrase"
+    } else {
+        "none"
+    };
     let cockpit_master_enabled = state
         .cockpit_master_enabled
         .load(std::sync::atomic::Ordering::Relaxed);
@@ -447,7 +462,8 @@ pub async fn get_about(State(state): State<Arc<AppState>>) -> Json<ServerAbout> 
     Json(ServerAbout {
         version: env!("CARGO_PKG_VERSION").to_string(),
         auth_required,
-        passphrase_enabled: state.login_manager.is_enabled(),
+        passphrase_enabled,
+        auth_mode,
         read_only: state.read_only,
         behind_tunnel: state.behind_tunnel,
         profile: state.profile.clone(),
