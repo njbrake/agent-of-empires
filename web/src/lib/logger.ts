@@ -223,7 +223,7 @@ async function flush(viaBeacon: boolean): Promise<void> {
   if (isReporting) return;
   isReporting = true;
   try {
-    let batch = queue;
+    const batch = queue;
     queue = [];
     if (dropped > 0) {
       batch.push({
