@@ -31,7 +31,7 @@ use agent_client_protocol::{Agent, ByteStreams, Client, ConnectionTo, Responder}
 use thiserror::Error;
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use super::agent_registry::AgentSpec;
 use super::approvals::{is_destructive, ApprovalDecision, Nonce};
@@ -2475,6 +2475,21 @@ async fn collect_child_failure(child: Option<&Arc<Mutex<tokio::process::Child>>>
     }
 }
 
+/// Issue #1147: monotonic ns-since-process-start, used as a thin
+/// correlation token in the cockpit ACP tool-dispatch trace. Wall-clock
+/// fields like `chrono::Utc::now()` jitter under NTP slew and are too
+/// coarse to detect interleaved entry/exit between concurrent handlers;
+/// `Instant` is monotonic and ns-resolved on every supported platform.
+/// Cast to `u64` because `Instant::elapsed()` returns `Duration` whose
+/// `as_nanos()` is `u128`, which `tracing` formats less compactly. A
+/// `u64` of ns gives ~584 years of headroom, which is plenty.
+fn enter_timestamp_ns() -> u64 {
+    use std::sync::OnceLock;
+    static EPOCH: OnceLock<std::time::Instant> = OnceLock::new();
+    let epoch = EPOCH.get_or_init(std::time::Instant::now);
+    epoch.elapsed().as_nanos() as u64
+}
+
 async fn handle_read_text_file(
     request: ReadTextFileRequest,
     responder: Responder<ReadTextFileResponse>,
@@ -2484,9 +2499,8 @@ async fn handle_read_text_file(
     // monotonic ns-since-process-start counter; if the model dispatches N
     // tool calls in parallel, the entries should interleave (close `enter_ns`
     // values across handlers) rather than strictly increasing per-handler.
-    let entered_at = std::time::Instant::now();
     let enter_ns = enter_timestamp_ns();
-    debug!(
+    trace!(
         target: "cockpit.acp.tool_dispatch",
         handler = "read_text_file",
         path = %request.path.display(),
@@ -2518,11 +2532,11 @@ async fn handle_read_text_file(
             responder.respond_with_error(agent_client_protocol::util::internal_error(e.to_string()))
         }
     };
-    debug!(
+    trace!(
         target: "cockpit.acp.tool_dispatch",
         handler = "read_text_file",
         enter_ns,
-        elapsed_ns = entered_at.elapsed().as_nanos() as u64,
+        elapsed_ns = enter_timestamp_ns() - enter_ns,
         "ACP request handler exited"
     );
     result
@@ -2533,9 +2547,8 @@ async fn handle_write_text_file(
     responder: Responder<WriteTextFileResponse>,
     res: SessionResources,
 ) -> agent_client_protocol::Result<()> {
-    let entered_at = std::time::Instant::now();
     let enter_ns = enter_timestamp_ns();
-    debug!(
+    trace!(
         target: "cockpit.acp.tool_dispatch",
         handler = "write_text_file",
         path = %request.path.display(),
@@ -2549,11 +2562,11 @@ async fn handle_write_text_file(
             Err(e) => responder
                 .respond_with_error(agent_client_protocol::util::internal_error(e.to_string())),
         };
-    debug!(
+    trace!(
         target: "cockpit.acp.tool_dispatch",
         handler = "write_text_file",
         enter_ns,
-        elapsed_ns = entered_at.elapsed().as_nanos() as u64,
+        elapsed_ns = enter_timestamp_ns() - enter_ns,
         "ACP request handler exited"
     );
     result
@@ -2564,9 +2577,8 @@ async fn handle_create_terminal(
     responder: Responder<CreateTerminalResponse>,
     res: SessionResources,
 ) -> agent_client_protocol::Result<()> {
-    let entered_at = std::time::Instant::now();
     let enter_ns = enter_timestamp_ns();
-    debug!(
+    trace!(
         target: "cockpit.acp.tool_dispatch",
         handler = "create_terminal",
         command = %request.command,
@@ -2580,11 +2592,11 @@ async fn handle_create_terminal(
         let r = responder.respond_with_error(agent_client_protocol::util::internal_error(format!(
             "terminal cwd outside session roots: {e}"
         )));
-        debug!(
+        trace!(
             target: "cockpit.acp.tool_dispatch",
             handler = "create_terminal",
             enter_ns,
-            elapsed_ns = entered_at.elapsed().as_nanos() as u64,
+            elapsed_ns = enter_timestamp_ns() - enter_ns,
             outcome = "cwd_outside_roots",
             "ACP request handler exited"
         );
@@ -2600,28 +2612,14 @@ async fn handle_create_terminal(
             responder.respond_with_error(agent_client_protocol::util::internal_error(e.to_string()))
         }
     };
-    debug!(
+    trace!(
         target: "cockpit.acp.tool_dispatch",
         handler = "create_terminal",
         enter_ns,
-        elapsed_ns = entered_at.elapsed().as_nanos() as u64,
+        elapsed_ns = enter_timestamp_ns() - enter_ns,
         "ACP request handler exited"
     );
     result
-}
-
-/// Issue #1147: monotonic ns-since-process-start, used as a thin
-/// correlation token in the cockpit ACP tool-dispatch trace. Wall-clock
-/// fields like `chrono::Utc::now()` jitter under NTP slew and are too
-/// coarse to detect interleaved entry/exit between concurrent handlers;
-/// `Instant` is monotonic and ns-resolved on every supported platform.
-/// Cast to `u64` because `Instant::elapsed()` returns `Duration` whose
-/// `as_nanos()` is `u128`, which `tracing` formats less compactly.
-fn enter_timestamp_ns() -> u64 {
-    use std::sync::OnceLock;
-    static EPOCH: OnceLock<std::time::Instant> = OnceLock::new();
-    let epoch = EPOCH.get_or_init(std::time::Instant::now);
-    epoch.elapsed().as_nanos() as u64
 }
 
 fn build_exit_status(exit_code: Option<i32>) -> agent_client_protocol::schema::TerminalExitStatus {
@@ -2635,9 +2633,8 @@ async fn handle_terminal_output(
     responder: Responder<TerminalOutputResponse>,
     res: SessionResources,
 ) -> agent_client_protocol::Result<()> {
-    let entered_at = std::time::Instant::now();
     let enter_ns = enter_timestamp_ns();
-    debug!(
+    trace!(
         target: "cockpit.acp.tool_dispatch",
         handler = "terminal_output",
         terminal_id = %request.terminal_id.0,
@@ -2656,11 +2653,11 @@ async fn handle_terminal_output(
             responder.respond_with_error(agent_client_protocol::util::internal_error(e.to_string()))
         }
     };
-    debug!(
+    trace!(
         target: "cockpit.acp.tool_dispatch",
         handler = "terminal_output",
         enter_ns,
-        elapsed_ns = entered_at.elapsed().as_nanos() as u64,
+        elapsed_ns = enter_timestamp_ns() - enter_ns,
         "ACP request handler exited"
     );
     result
@@ -2671,9 +2668,8 @@ async fn handle_wait_for_terminal_exit(
     responder: Responder<WaitForTerminalExitResponse>,
     res: SessionResources,
 ) -> agent_client_protocol::Result<()> {
-    let entered_at = std::time::Instant::now();
     let enter_ns = enter_timestamp_ns();
-    debug!(
+    trace!(
         target: "cockpit.acp.tool_dispatch",
         handler = "wait_for_terminal_exit",
         terminal_id = %request.terminal_id.0,
@@ -2691,11 +2687,11 @@ async fn handle_wait_for_terminal_exit(
             responder.respond_with_error(agent_client_protocol::util::internal_error(e.to_string()))
         }
     };
-    debug!(
+    trace!(
         target: "cockpit.acp.tool_dispatch",
         handler = "wait_for_terminal_exit",
         enter_ns,
-        elapsed_ns = entered_at.elapsed().as_nanos() as u64,
+        elapsed_ns = enter_timestamp_ns() - enter_ns,
         "ACP request handler exited"
     );
     result
@@ -2706,9 +2702,8 @@ async fn handle_kill_terminal(
     responder: Responder<KillTerminalResponse>,
     _res: SessionResources,
 ) -> agent_client_protocol::Result<()> {
-    let entered_at = std::time::Instant::now();
     let enter_ns = enter_timestamp_ns();
-    debug!(
+    trace!(
         target: "cockpit.acp.tool_dispatch",
         handler = "kill_terminal",
         terminal_id = %request.terminal_id.0,
@@ -2717,11 +2712,11 @@ async fn handle_kill_terminal(
     );
     // One-shot terminals are already finished; kill is a no-op.
     let result = responder.respond(KillTerminalResponse::new());
-    debug!(
+    trace!(
         target: "cockpit.acp.tool_dispatch",
         handler = "kill_terminal",
         enter_ns,
-        elapsed_ns = entered_at.elapsed().as_nanos() as u64,
+        elapsed_ns = enter_timestamp_ns() - enter_ns,
         "ACP request handler exited"
     );
     result
@@ -2732,9 +2727,8 @@ async fn handle_release_terminal(
     responder: Responder<ReleaseTerminalResponse>,
     res: SessionResources,
 ) -> agent_client_protocol::Result<()> {
-    let entered_at = std::time::Instant::now();
     let enter_ns = enter_timestamp_ns();
-    debug!(
+    trace!(
         target: "cockpit.acp.tool_dispatch",
         handler = "release_terminal",
         terminal_id = %request.terminal_id.0,
@@ -2747,11 +2741,11 @@ async fn handle_release_terminal(
             responder.respond_with_error(agent_client_protocol::util::internal_error(e.to_string()))
         }
     };
-    debug!(
+    trace!(
         target: "cockpit.acp.tool_dispatch",
         handler = "release_terminal",
         enter_ns,
-        elapsed_ns = entered_at.elapsed().as_nanos() as u64,
+        elapsed_ns = enter_timestamp_ns() - enter_ns,
         "ACP request handler exited"
     );
     result
@@ -2763,10 +2757,9 @@ async fn handle_permission_request(
     event_tx: mpsc::Sender<Event>,
     pending: PendingResponders,
 ) -> agent_client_protocol::Result<()> {
-    let entered_at = std::time::Instant::now();
     let enter_ns = enter_timestamp_ns();
     let tool_call_id = request.tool_call.tool_call_id.0.to_string();
-    debug!(
+    trace!(
         target: "cockpit.acp.tool_dispatch",
         handler = "permission_request",
         tool_call_id = %tool_call_id,
@@ -2819,12 +2812,12 @@ async fn handle_permission_request(
     {
         // Receiver gone: cancel.
         pending.lock().await.remove(&nonce);
-        debug!(
+        trace!(
             target: "cockpit.acp.tool_dispatch",
             handler = "permission_request",
             tool_call_id = %tool_call_id,
             enter_ns,
-            elapsed_ns = entered_at.elapsed().as_nanos() as u64,
+            elapsed_ns = enter_timestamp_ns() - enter_ns,
             outcome = "receiver_gone",
             "ACP request handler exited"
         );
@@ -2837,16 +2830,19 @@ async fn handle_permission_request(
     // slowness. Log the moment we begin awaiting so a wall-clock comparison
     // with later "responder.respond" emissions exposes how long each pending
     // approval blocked the agent's turn.
-    let await_at = std::time::Instant::now();
-    debug!(
+    let await_enter_ns = enter_timestamp_ns();
+    trace!(
         target: "cockpit.acp.tool_dispatch",
         handler = "permission_request",
         tool_call_id = %tool_call_id,
         enter_ns,
-        await_offset_ns = entered_at.elapsed().as_nanos() as u64,
+        await_offset_ns = await_enter_ns - enter_ns,
         "awaiting approval resolution"
     );
-    let outcome = match resolve_rx.await {
+    // Build outcome + its label together so the exit event never re-matches on
+    // a foreign `#[non_exhaustive]` enum it doesn't fully own.
+    let (outcome, outcome_label): (RequestPermissionOutcome, &'static str) = match resolve_rx.await
+    {
         Ok(ApprovalResolutionMessage::Decision { decision }) => {
             if let Some(option_id) = pick_option_id(&request.options, decision) {
                 // Surface the resolution to UI clients via the typed event channel.
@@ -2856,29 +2852,30 @@ async fn handle_permission_request(
                         decision,
                     })
                     .await;
-                RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(option_id))
+                (
+                    RequestPermissionOutcome::Selected(SelectedPermissionOutcome::new(option_id)),
+                    "selected",
+                )
             } else {
                 warn!(
                     target: "cockpit.acp",
                     "agent did not offer a {decision:?}-compatible option; cancelling"
                 );
-                RequestPermissionOutcome::Cancelled
+                (RequestPermissionOutcome::Cancelled, "cancelled")
             }
         }
-        Ok(ApprovalResolutionMessage::Cancelled) | Err(_) => RequestPermissionOutcome::Cancelled,
+        Ok(ApprovalResolutionMessage::Cancelled) | Err(_) => {
+            (RequestPermissionOutcome::Cancelled, "cancelled")
+        }
     };
-    let outcome_label = match &outcome {
-        RequestPermissionOutcome::Selected(_) => "selected",
-        RequestPermissionOutcome::Cancelled => "cancelled",
-        _ => "other",
-    };
-    debug!(
+    let exit_ns = enter_timestamp_ns();
+    trace!(
         target: "cockpit.acp.tool_dispatch",
         handler = "permission_request",
         tool_call_id = %tool_call_id,
         enter_ns,
-        elapsed_ns = entered_at.elapsed().as_nanos() as u64,
-        await_ns = await_at.elapsed().as_nanos() as u64,
+        elapsed_ns = exit_ns - enter_ns,
+        await_ns = exit_ns - await_enter_ns,
         outcome = outcome_label,
         "responding to permission request"
     );

@@ -9,7 +9,7 @@ Targets use the convention `<module>.<submodule>`. The default filter expands a 
 | Root | Sub-targets | What lands here |
 |------|-------------|-----------------|
 | `agent_of_empires` | (default crate path) | General library code emitting without `target:` |
-| `cockpit` | `cockpit.acp`, `cockpit.supervisor`, `cockpit.event_store`, `cockpit.runner`, `cockpit.acp.stderr` | ACP transport, supervisor lifecycle, event store, runner shim |
+| `cockpit` | `cockpit.acp`, `cockpit.supervisor`, `cockpit.event_store`, `cockpit.runner`, `cockpit.acp.stderr`, `cockpit.acp.tool_dispatch` | ACP transport, supervisor lifecycle, event store, runner shim, per-tool-call entry/exit firehose |
 | `terminal` | `terminal.ws`, `terminal.ws.bytes` | Web terminal WS relay + per-byte firehose (trace) |
 | `auth` | `auth.token`, `auth.middleware`, `auth.rate_limit`, `auth.passphrase`, `auth.device`, `auth.ip` | Token rotate, middleware accept/reject, rate-limit thresholds, login flow |
 | `process` | `process.signal`, `process.tree`, `process.reap`, `process.ppid` | Signal sends, process-tree walks, survivor reap, ppid resolution |
