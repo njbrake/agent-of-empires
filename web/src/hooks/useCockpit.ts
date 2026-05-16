@@ -33,6 +33,7 @@ export type Action =
   | { kind: "hydrate"; state: CockpitState }
   | { kind: "enqueue_prompt"; text: string }
   | { kind: "dequeue_prompt"; id: string }
+  | { kind: "dequeue_prompts_by_id"; ids: string[] }
   | { kind: "edit_queued_prompt"; id: string; text: string }
   | { kind: "clear_queue" }
   | { kind: "dismiss_primer" };
@@ -302,6 +303,14 @@ function reducer(state: CockpitState, action: Action): CockpitState {
     return {
       ...state,
       queuedPrompts: state.queuedPrompts.filter((q) => q.id !== action.id),
+    };
+  }
+  if (action.kind === "dequeue_prompts_by_id") {
+    if (action.ids.length === 0) return state;
+    const drop = new Set(action.ids);
+    return {
+      ...state,
+      queuedPrompts: state.queuedPrompts.filter((q) => !drop.has(q.id)),
     };
   }
   if (action.kind === "edit_queued_prompt") {
@@ -814,16 +823,19 @@ export function useCockpit(
 
   // Dispatch a prompt immediately, no queueing. Internal helper used by
   // both sendPrompt (when the turn is idle) and the drain effect below
-  // (when popping the head of queuedPrompts on Stopped).
+  // (when popping the head of queuedPrompts on Stopped). Returns true
+  // when the POST succeeded so the drain effect knows whether to retire
+  // the items it just sent; false on any disconnect / non-OK response /
+  // network error so the queue stays intact for the next turn-end retry.
   const dispatchPromptNow = useCallback(
-    async (text: string) => {
-      if (!sessionId) return;
+    async (text: string): Promise<boolean> => {
+      if (!sessionId) return false;
       if (statusRef.current !== "open") {
         dispatch({
           kind: "error",
           message: "Cockpit disconnected; message not sent. Reconnect to retry.",
         });
-        return;
+        return false;
       }
       // Optimistically echo the user's message; the agent reply
       // streams back as session/update events on the WS. If the POST
@@ -849,12 +861,15 @@ export function useCockpit(
             kind: "error",
             message: `Could not send prompt (${res.status}). ${detail}`.trim(),
           });
+          return false;
         }
+        return true;
       } catch (e) {
         dispatch({
           kind: "error",
           message: `Network error sending prompt: ${describeError(e)}`,
         });
+        return false;
       }
     },
     [sessionId],
@@ -916,23 +931,47 @@ export function useCockpit(
     // worker that's not online yet; the next REST poll flips
     // workerState to "running" and re-runs this effect. See #1088.
     if (workerStateRef.current !== "running") return;
+    // Reconnect race: connect() awaits fetchReplay BEFORE opening the
+    // WS, and replay can dispatch a Stopped frame that flips turnActive
+    // off. If we drain here while the WS is still in "connecting",
+    // dispatchPromptNow will bail (statusRef !== "open"), surface an
+    // error banner, and (under the prior optimistic-clear ordering)
+    // permanently drop the queued items. Park the drain until status
+    // flips to "open"; the `status` value is in the dep array below
+    // so this effect re-runs on transition. See #1144.
+    if (statusRef.current !== "open") return;
     if (state.queuedPrompts.length === 0) return;
     drainingRef.current = true;
     if (drainModeRef.current === "combined") {
-      const combined = combineQueuedPrompts(state.queuedPrompts);
-      dispatch({ kind: "clear_queue" });
-      void dispatchPromptNow(combined).finally(() => {
-        drainingRef.current = false;
-      });
+      // Snapshot the ids we're about to send. The user can enqueue MORE
+      // prompts during the await; on success we only clear the items in
+      // the snapshot so newly-typed entries survive into the next turn.
+      // On failure (POST non-OK / network blip / WS dropped mid-send)
+      // we leave the queue untouched so the next Stopped retries.
+      const snapshot = state.queuedPrompts.slice();
+      const combined = combineQueuedPrompts(snapshot);
+      const sentIds = snapshot.map((q) => q.id);
+      void dispatchPromptNow(combined)
+        .then((ok) => {
+          if (ok) dispatch({ kind: "dequeue_prompts_by_id", ids: sentIds });
+        })
+        .finally(() => {
+          drainingRef.current = false;
+        });
     } else {
       const head = state.queuedPrompts[0]!;
-      dispatch({ kind: "dequeue_prompt", id: head.id });
-      void dispatchPromptNow(head.text).finally(() => {
-        drainingRef.current = false;
-      });
+      const headId = head.id;
+      void dispatchPromptNow(head.text)
+        .then((ok) => {
+          if (ok) dispatch({ kind: "dequeue_prompt", id: headId });
+        })
+        .finally(() => {
+          drainingRef.current = false;
+        });
     }
   }, [
     sessionId,
+    status,
     workerState,
     state.turnActive,
     state.workerStopped,

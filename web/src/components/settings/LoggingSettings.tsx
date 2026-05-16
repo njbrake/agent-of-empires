@@ -8,6 +8,7 @@ import { NumberField, SelectField, TextField } from "./FormFields";
 const KNOWN_TARGETS: { value: string; group: string }[] = [
   { value: "cockpit.acp", group: "Cockpit" },
   { value: "cockpit.acp.stderr", group: "Cockpit" },
+  { value: "cockpit.acp.tool_dispatch", group: "Cockpit" },
   { value: "cockpit.supervisor", group: "Cockpit" },
   { value: "cockpit.event_store", group: "Cockpit" },
   { value: "cockpit.runner", group: "Cockpit" },
