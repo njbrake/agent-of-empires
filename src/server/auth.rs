@@ -192,6 +192,17 @@ fn normalize_path(path: &str) -> &str {
     path.strip_suffix('/').unwrap_or(path)
 }
 
+/// Whether a request bypasses the auth token check entirely. Today
+/// the only such route is `POST /api/logout`; see #1163 for the
+/// rationale (the SPA needs to drop a stale `aoe_session` cookie
+/// after the token has expired, before it can pump a fresh token in).
+/// The handler itself only invalidates the session id the caller
+/// already presents via the HttpOnly cookie, so exposing it without
+/// a token can't leak anything an attacker doesn't already hold.
+fn is_token_check_exempt(method: &axum::http::Method, path: &str) -> bool {
+    method == axum::http::Method::POST && normalize_path(path) == "/api/logout"
+}
+
 /// Whether a request path + method needs an elevated login session
 /// (step-up auth, 15-minute passphrase confirmation window).
 ///
@@ -322,6 +333,27 @@ pub async fn auth_middleware(
             ws_protocol_count = ws_protocols.len(),
             "auth_middleware entered for cockpit ws"
         );
+    }
+
+    // `/api/logout` is exempt from the token check so the SPA can
+    // clear a stale `aoe_session` cookie immediately after the token
+    // expires, without first having to re-paste a fresh token. See
+    // #1163: when the (shorter) token TTL elapsed before the
+    // (24-hour) passphrase session, the SPA prompted only for the
+    // token and silently waved the user back in on the still-valid
+    // session cookie, bypassing the second factor. Dropping the
+    // session cookie here lets the next `loginStatus()` report
+    // `authenticated: false` so `App.tsx` routes through `LoginPage`
+    // (passphrase prompt) after the token-entry page.
+    //
+    // Safe to expose: the handler only invalidates a session whose
+    // id the caller already presents via the cookie, so an attacker
+    // without the cookie cannot log anyone out (and the cookie is
+    // HttpOnly + SameSite=Strict, so it never leaves the legitimate
+    // browser). The handler's own response always sets `Max-Age=0`
+    // on `aoe_session`, so a no-cookie call is a harmless no-op.
+    if is_token_check_exempt(request.method(), request.uri().path()) {
+        return next.run(request).await;
     }
 
     // No-auth mode: pass everything through. Insert a zeroed
@@ -802,6 +834,33 @@ mod tests {
             "not-base64-and-wrong-length",
         )]);
         assert!(extract_device_binding(&req).is_none());
+    }
+
+    #[test]
+    fn token_check_exempt_only_for_post_logout() {
+        use axum::http::Method;
+        // The bypass exists so the SPA can clear a stale session cookie
+        // immediately after the token expires. See #1163.
+        assert!(is_token_check_exempt(&Method::POST, "/api/logout"));
+        // Trailing slash variant goes to the same handler in axum, so
+        // it must also bypass the token check.
+        assert!(is_token_check_exempt(&Method::POST, "/api/logout/"));
+
+        // GET on the logout path is not a real route; deny anyway so
+        // the bypass doesn't widen if someone later adds a GET handler.
+        assert!(!is_token_check_exempt(&Method::GET, "/api/logout"));
+        assert!(!is_token_check_exempt(&Method::DELETE, "/api/logout"));
+
+        // Nothing else may bypass the token check, especially the
+        // sibling login endpoints (those have their own rate-limited
+        // handlers and the middleware path-exempt list, but they still
+        // need the token middleware to run for trace/device-record
+        // side-effects).
+        assert!(!is_token_check_exempt(&Method::POST, "/api/login"));
+        assert!(!is_token_check_exempt(&Method::POST, "/api/login/elevate"));
+        assert!(!is_token_check_exempt(&Method::GET, "/api/login/status"));
+        assert!(!is_token_check_exempt(&Method::GET, "/api/sessions"));
+        assert!(!is_token_check_exempt(&Method::GET, "/"));
     }
 
     #[test]

@@ -127,12 +127,42 @@ export function installFetchErrorToasts(): void {
 // 401 with no `login_required` body: token is dead, missing, or revoked.
 // Clear localStorage (idempotent if no token) and show the token entry
 // page. Dedupe so a burst of concurrent 401s produces one event.
+//
+// Also POST /api/logout to clear the server-side passphrase session
+// (the HttpOnly `aoe_session` cookie). The token TTL is shorter than
+// the 24-hour passphrase session in remote mode (4h vs 24h), so a
+// token expiry on its own would leave the still-valid session cookie
+// in place. After the user pastes a fresh token, `loginStatus()`
+// would then report `authenticated: true` and the SPA would skip the
+// passphrase prompt entirely. Dropping the session here forces the
+// expected token + passphrase re-challenge. See #1163.
 let tokenExpiredDispatched = false;
 function handleTokenAuthFailure(): void {
   clearToken();
   if (tokenExpiredDispatched) return;
   tokenExpiredDispatched = true;
+  // Fire-and-forget. Even if the request fails (network down, server
+  // restart, race with a concurrent logout), we still dispatch the
+  // event so the SPA shows the token-entry page; the worst case is
+  // the same partial-reauth bug we already had.
+  void clearServerSession();
   window.dispatchEvent(new CustomEvent(TOKEN_EXPIRED_EVENT));
+}
+
+// Best-effort POST /api/logout. The endpoint is exempt from the
+// token check on the server precisely to support this path; without
+// the exemption an expired token would 401 the logout request and
+// the session cookie would survive. Uses the raw fetch to bypass the
+// interceptor's auth-error handling (we're already inside it).
+async function clearServerSession(): Promise<void> {
+  try {
+    await fetch("/api/logout", {
+      method: "POST",
+      credentials: "same-origin",
+    });
+  } catch {
+    // Ignore: best effort.
+  }
 }
 
 // On 401 `login_required` the token is fine; only the second factor is

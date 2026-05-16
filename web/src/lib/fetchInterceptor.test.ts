@@ -1,5 +1,11 @@
-import { describe, it, expect } from "vitest";
-import { classifyAuthError } from "./fetchInterceptor";
+// @vitest-environment jsdom
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  classifyAuthError,
+  installFetchErrorToasts,
+  resetTokenExpired,
+  TOKEN_EXPIRED_EVENT,
+} from "./fetchInterceptor";
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -53,5 +59,125 @@ describe("classifyAuthError", () => {
     await classifyAuthError(res);
     const body = await res.json();
     expect(body).toEqual({ error: "login_required" });
+  });
+});
+
+// Regression for #1163: when the auth token is rejected (401
+// `unauthorized`), the interceptor must also POST `/api/logout` to
+// drop the still-valid passphrase session cookie. Without that, the
+// SPA prompts only for the token and silently waves the user back in
+// on the surviving 24-hour session, bypassing the second factor.
+describe("token expiry clears server session", () => {
+  // Use unique URL prefixes per test so the dedup state inside the
+  // interceptor doesn't make a single test flaky if run twice.
+  let originalFetch: typeof window.fetch;
+
+  beforeEach(() => {
+    originalFetch = window.fetch;
+    // Force-uninstall any prior interceptor so we can re-install with a
+    // fresh inner fetch under our control.
+    (window as unknown as { __aoeFetchPatched?: boolean }).__aoeFetchPatched =
+      false;
+    resetTokenExpired();
+    localStorage.clear();
+  });
+
+  afterEach(() => {
+    window.fetch = originalFetch;
+    (window as unknown as { __aoeFetchPatched?: boolean }).__aoeFetchPatched =
+      false;
+    resetTokenExpired();
+    localStorage.clear();
+  });
+
+  it("posts /api/logout before dispatching TOKEN_EXPIRED_EVENT on 401 unauthorized", async () => {
+    const calls: { url: string; method: string }[] = [];
+
+    // Mock the underlying fetch BEFORE installing the interceptor so
+    // the interceptor wraps our mock instead of the jsdom default.
+    const mockFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url;
+      const method = init?.method ?? "GET";
+      calls.push({ url, method });
+
+      if (url.endsWith("/api/sessions") && method === "GET") {
+        return jsonResponse(401, {
+          error: "unauthorized",
+          message: "Invalid or missing auth token",
+        });
+      }
+      if (url.endsWith("/api/logout") && method === "POST") {
+        return jsonResponse(200, { ok: true });
+      }
+      return jsonResponse(404, { error: "not_found" });
+    });
+    window.fetch = mockFetch as unknown as typeof window.fetch;
+
+    installFetchErrorToasts();
+
+    let dispatched = false;
+    const onExpired = () => {
+      dispatched = true;
+    };
+    window.addEventListener(TOKEN_EXPIRED_EVENT, onExpired);
+
+    try {
+      // Trigger the 401 path through the patched fetch.
+      await window.fetch("/api/sessions");
+
+      // Give the fire-and-forget logout promise a tick to land.
+      await new Promise((r) => setTimeout(r, 0));
+
+      const logoutCall = calls.find(
+        (c) => c.url.endsWith("/api/logout") && c.method === "POST",
+      );
+      expect(logoutCall, "expected /api/logout POST to be issued").toBeDefined();
+
+      expect(dispatched, "TOKEN_EXPIRED_EVENT must still fire").toBe(true);
+    } finally {
+      window.removeEventListener(TOKEN_EXPIRED_EVENT, onExpired);
+    }
+  });
+
+  it("does not post /api/logout for login_required 401 (token still valid)", async () => {
+    const calls: { url: string; method: string }[] = [];
+
+    const mockFetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url;
+      const method = init?.method ?? "GET";
+      calls.push({ url, method });
+
+      if (url.endsWith("/api/sessions") && method === "GET") {
+        return jsonResponse(401, {
+          error: "login_required",
+          message: "Passphrase login required",
+        });
+      }
+      return jsonResponse(404, { error: "not_found" });
+    });
+    window.fetch = mockFetch as unknown as typeof window.fetch;
+
+    installFetchErrorToasts();
+
+    await window.fetch("/api/sessions");
+    await new Promise((r) => setTimeout(r, 0));
+
+    const logoutCall = calls.find(
+      (c) => c.url.endsWith("/api/logout") && c.method === "POST",
+    );
+    expect(
+      logoutCall,
+      "login_required must not trigger logout (token is still valid)",
+    ).toBeUndefined();
   });
 });
