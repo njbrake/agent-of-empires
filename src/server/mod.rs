@@ -1013,6 +1013,7 @@ fn build_router(state: Arc<AppState>) -> Router {
             get(api::get_log_level).patch(api::patch_log_level),
         )
         .route("/api/client-log", post(api::post_client_log))
+        .route("/api/client-log/policy", get(api::get_client_log_policy))
         // Terminal WebSockets
         .route("/sessions/{id}/ws", get(ws::terminal_ws))
         .route("/sessions/{id}/terminal/ws", get(ws::paired_terminal_ws))
