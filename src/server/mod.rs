@@ -879,20 +879,20 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
             let mut sighup = signal(SignalKind::hangup()).ok();
             tokio::select! {
                 _ = tokio::signal::ctrl_c() => {
-                    info!("Received SIGINT, shutting down...");
+                    tracing::info!(target: "serve.shutdown", signal = "SIGINT", "received signal, shutting down");
                 }
                 _ = async { match sigterm { Some(ref mut s) => { s.recv().await; } None => std::future::pending().await } } => {
-                    info!("Received SIGTERM, shutting down...");
+                    tracing::info!(target: "serve.shutdown", signal = "SIGTERM", "received signal, shutting down");
                 }
                 _ = async { match sighup { Some(ref mut s) => { s.recv().await; } None => std::future::pending().await } } => {
-                    info!("Received SIGHUP, shutting down...");
+                    tracing::info!(target: "serve.shutdown", signal = "SIGHUP", "received signal, shutting down");
                 }
             }
         }
         #[cfg(not(unix))]
         {
             let _ = tokio::signal::ctrl_c().await;
-            info!("Shutting down...");
+            tracing::info!(target: "serve.shutdown", "received ctrl-c, shutting down");
         }
     };
 
