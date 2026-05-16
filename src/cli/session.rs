@@ -9,7 +9,7 @@ use crate::session::{GroupTree, StartOutcome, Storage};
 /// Wording used by both single-session and `--all` restart paths when the
 /// resume-fallback cascade cleared a stale agent_session_id. Centralized so
 /// drift between the two surfaces cannot happen.
-fn stale_history_suffix(stale_sid: &str) -> String {
+pub(crate) fn stale_history_suffix(stale_sid: &str) -> String {
     format!(" (resume failed for sid {stale_sid}; started fresh, prior history not loaded)")
 }
 

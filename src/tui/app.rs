@@ -1001,8 +1001,17 @@ impl App {
                     .set_instance_status(&id, crate::session::Status::Starting);
                 self.update_status = Some(UpdateStatus::transient("Reviving session...".into()));
                 terminal.draw(|f| self.render(f))?;
-                self.home.execute_send_message(&id, &message);
-                self.update_status = None;
+                let stale_sid = self.home.execute_send_message(&id, &message);
+                match stale_sid {
+                    Some(sid) => {
+                        self.update_status = Some(UpdateStatus::transient(format!(
+                            "Resume failed for sid {sid}; sent to fresh session (history not loaded)"
+                        )));
+                    }
+                    None => {
+                        self.update_status = None;
+                    }
+                }
             }
             #[cfg(feature = "serve")]
             Action::OpenCockpit(id) => {

@@ -15,8 +15,8 @@ use tui_input::Input;
 
 use crate::session::{
     config::{load_config, save_config, GroupByMode, SortOrder},
-    flatten_tree, flatten_tree_all_profiles, resolve_config_or_warn, DefaultTerminalMode, Group,
-    GroupTree, Instance, Item, Storage,
+    flatten_tree, flatten_tree_all_profiles, resolve_config_or_warn, DefaultTerminalMode,
+    EnsureReadyOutcome, Group, GroupTree, Instance, Item, Storage,
 };
 use crate::tmux::AvailableTools;
 
@@ -712,6 +712,21 @@ impl HomeView {
                 else {
                     continue;
                 };
+                // Defense-in-depth against the resume-fallback cascade: a sid
+                // the cascade just cleared can still live on disk for several
+                // minutes (opencode db, vibe meta.json, codex/gemini/pi/hermes
+                // state). The poller closures filter via `compose_exclusion`,
+                // but if a closure factory ever forgets to thread the per-
+                // instance excludes, this guard prevents the cleared sid from
+                // being re-imported into memory and disk.
+                if inst.retroactive_capture_excludes.contains(&session_id) {
+                    tracing::debug!(
+                        "Ignoring poller-reported sid {} for {}: in retroactive_capture_excludes",
+                        session_id,
+                        inst.id,
+                    );
+                    continue;
+                }
                 if inst.agent_session_id.as_deref() != Some(session_id.as_str()) {
                     updates.push((inst.id.clone(), session_id));
                 }
@@ -1383,19 +1398,28 @@ impl HomeView {
     /// `ensure_pane_ready` (which may auto-start or respawn), then deliver
     /// the keystrokes. Errors are surfaced via `info_dialog` so the caller
     /// (`execute_action`) only has to clear its transient status.
-    pub fn execute_send_message(&mut self, session_id: &str, message: &str) {
-        if let Err(err) = self.try_mutate_instance(session_id, |inst| {
-            inst.ensure_pane_ready().map(drop).map_err(Into::into)
-        }) {
-            self.info_dialog = Some(InfoDialog::new(
-                "Send Failed",
-                &format!("Cannot prepare session: {}", err),
-            ));
-            return;
-        }
-        let Some(inst) = self.get_instance(session_id) else {
-            return;
+    ///
+    /// Returns `Some(stale_sid)` when the resume-fallback cascade fired
+    /// during the implicit respawn so the caller can toast the user about
+    /// the lost history; `None` otherwise.
+    pub fn execute_send_message(&mut self, session_id: &str, message: &str) -> Option<String> {
+        let outcome = self.try_mutate_instance(session_id, |inst| {
+            inst.ensure_pane_ready().map_err(Into::into)
+        });
+        let stale_sid = match outcome {
+            Ok(Some(EnsureReadyOutcome::Respawned {
+                stale_sid: Some(sid),
+            })) => Some(sid),
+            Ok(_) => None,
+            Err(err) => {
+                self.info_dialog = Some(InfoDialog::new(
+                    "Send Failed",
+                    &format!("Cannot prepare session: {}", err),
+                ));
+                return None;
+            }
         };
+        let inst = self.get_instance(session_id)?;
         let tmux_session = match crate::tmux::Session::new(&inst.id, &inst.title) {
             Ok(s) => s,
             Err(e) => {
@@ -1403,7 +1427,7 @@ impl HomeView {
                     "Send Failed",
                     &format!("Failed to resolve session: {}", e),
                 ));
-                return;
+                return None;
             }
         };
         let delay = crate::agents::send_keys_enter_delay(&inst.tool);
@@ -1412,9 +1436,10 @@ impl HomeView {
                 "Send Failed",
                 &format!("Failed to send message: {}", e),
             ));
-            return;
+            return None;
         }
         self.stamp_last_accessed(session_id);
+        stale_sid
     }
 
     pub fn save(&self) -> anyhow::Result<()> {

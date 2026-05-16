@@ -17,16 +17,16 @@ use super::environment::{build_docker_env_args, shell_escape};
 use super::poller::SessionPoller;
 
 use crate::session::capture::{
-    build_exclusion_set, capture_codex_session_id, capture_gemini_session_id,
-    capture_hermes_session_id, capture_pi_session_id, capture_vibe_session_id, claude_poll_fn,
-    claude_poll_fn_sandboxed, codex_poll_fn, codex_poll_fn_sandboxed, gemini_poll_fn,
-    gemini_poll_fn_sandboxed, generate_claude_session_id, hermes_poll_fn, hermes_poll_fn_sandboxed,
-    is_valid_session_id, opencode_poll_fn, opencode_poll_fn_sandboxed, pi_poll_fn,
-    pi_poll_fn_sandboxed, try_capture_codex_session_id_in_container,
-    try_capture_gemini_session_id_in_container, try_capture_hermes_session_id_in_container,
-    try_capture_opencode_session_id, try_capture_opencode_session_id_in_container,
-    try_capture_pi_session_id_in_container, try_capture_vibe_session_id_in_container,
-    validated_session_id, vibe_poll_fn, vibe_poll_fn_sandboxed,
+    capture_codex_session_id, capture_gemini_session_id, capture_hermes_session_id,
+    capture_pi_session_id, capture_vibe_session_id, claude_poll_fn, claude_poll_fn_sandboxed,
+    codex_poll_fn, codex_poll_fn_sandboxed, gemini_poll_fn, gemini_poll_fn_sandboxed,
+    generate_claude_session_id, hermes_poll_fn, hermes_poll_fn_sandboxed, is_valid_session_id,
+    opencode_poll_fn, opencode_poll_fn_sandboxed, pi_poll_fn, pi_poll_fn_sandboxed,
+    try_capture_codex_session_id_in_container, try_capture_gemini_session_id_in_container,
+    try_capture_hermes_session_id_in_container, try_capture_opencode_session_id,
+    try_capture_opencode_session_id_in_container, try_capture_pi_session_id_in_container,
+    try_capture_vibe_session_id_in_container, validated_session_id, vibe_poll_fn,
+    vibe_poll_fn_sandboxed,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -98,12 +98,15 @@ fn should_attempt_resume(agent_session_id: Option<&str>, tool: &str) -> bool {
 
 /// Outcome of `Instance::ensure_pane_ready`. Callers surface this so the user
 /// knows what (if anything) happened on their behalf before a send.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum EnsureReadyOutcome {
     /// Pane was already alive; no action taken.
     AlreadyAlive,
     /// Pane was dead (`#{pane_dead}=1`) and was respawned via the restart path.
-    Respawned,
+    /// `stale_sid` is `Some` when the resume-fallback cascade fired during the
+    /// respawn, meaning the agent's prior conversation is gone; callers should
+    /// surface this so the user understands why history disappeared.
+    Respawned { stale_sid: Option<String> },
     /// Tmux session did not exist and was started from scratch.
     Started,
 }
@@ -718,9 +721,7 @@ impl Instance {
     /// `self.retroactive_capture_excludes` (cascade memory) so the caller
     /// gets the complete picture in one call.
     fn retroactive_capture_exclusion_set(&self) -> HashSet<String> {
-        let mut set = build_exclusion_set(&self.id);
-        set.extend(self.retroactive_capture_excludes.iter().cloned());
-        set
+        super::capture::compose_exclusion(&self.id, &self.retroactive_capture_excludes)
     }
 
     pub(crate) fn try_retroactive_capture(&self) -> Option<String> {
@@ -1425,6 +1426,13 @@ impl Instance {
         let mut poller = SessionPoller::new(tmux_session_name.clone());
         let instance_id = self.id.clone();
         let initial_known = self.agent_session_id.clone();
+        // Snapshot per-instance excludes (sids cleared by the resume-fallback
+        // cascade) at poller-spawn time. The cascade always tears down the
+        // existing poller and re-enters this function AFTER inserting into
+        // `retroactive_capture_excludes` (see start_with_resume_fallback),
+        // so the freshly-spawned poller's first immediate poll sees the
+        // populated set and won't re-import the bad sid.
+        let extra_excludes = self.retroactive_capture_excludes.clone();
 
         let poll_fn: Box<dyn Fn() -> Option<String> + Send + 'static> = match tool {
             "claude" => {
@@ -1456,12 +1464,14 @@ impl Instance {
                         self.container_workdir(),
                         self.id.clone(),
                         launch_time_ms,
+                        extra_excludes.clone(),
                     ))
                 } else {
                     Box::new(opencode_poll_fn(
                         self.project_path.clone(),
                         self.id.clone(),
                         launch_time_ms,
+                        extra_excludes.clone(),
                     ))
                 }
             }
@@ -1475,9 +1485,14 @@ impl Instance {
                         container_name,
                         self.container_workdir(),
                         self.id.clone(),
+                        extra_excludes.clone(),
                     ))
                 } else {
-                    Box::new(vibe_poll_fn(self.project_path.clone(), self.id.clone()))
+                    Box::new(vibe_poll_fn(
+                        self.project_path.clone(),
+                        self.id.clone(),
+                        extra_excludes.clone(),
+                    ))
                 }
             }
             "pi" => {
@@ -1490,9 +1505,14 @@ impl Instance {
                         container_name,
                         self.container_workdir(),
                         self.id.clone(),
+                        extra_excludes.clone(),
                     ))
                 } else {
-                    Box::new(pi_poll_fn(self.project_path.clone(), self.id.clone()))
+                    Box::new(pi_poll_fn(
+                        self.project_path.clone(),
+                        self.id.clone(),
+                        extra_excludes.clone(),
+                    ))
                 }
             }
             "codex" => {
@@ -1505,9 +1525,14 @@ impl Instance {
                         container_name,
                         self.container_workdir(),
                         self.id.clone(),
+                        extra_excludes.clone(),
                     ))
                 } else {
-                    Box::new(codex_poll_fn(self.project_path.clone(), self.id.clone()))
+                    Box::new(codex_poll_fn(
+                        self.project_path.clone(),
+                        self.id.clone(),
+                        extra_excludes.clone(),
+                    ))
                 }
             }
             "gemini" => {
@@ -1520,9 +1545,14 @@ impl Instance {
                         container_name,
                         self.container_workdir(),
                         self.id.clone(),
+                        extra_excludes.clone(),
                     ))
                 } else {
-                    Box::new(gemini_poll_fn(self.project_path.clone(), self.id.clone()))
+                    Box::new(gemini_poll_fn(
+                        self.project_path.clone(),
+                        self.id.clone(),
+                        extra_excludes.clone(),
+                    ))
                 }
             }
             "hermes" => {
@@ -1535,9 +1565,14 @@ impl Instance {
                         container_name,
                         self.container_workdir(),
                         self.id.clone(),
+                        extra_excludes,
                     ))
                 } else {
-                    Box::new(hermes_poll_fn(self.project_path.clone(), self.id.clone()))
+                    Box::new(hermes_poll_fn(
+                        self.project_path.clone(),
+                        self.id.clone(),
+                        extra_excludes,
+                    ))
                 }
             }
             _ => return,
@@ -1716,11 +1751,14 @@ impl Instance {
         }
 
         let attempting_resume = should_attempt_resume(self.agent_session_id.as_deref(), &self.tool);
-        let session_existed_before = self.tmux_session().is_ok_and(|s| s.exists());
+        // If the tmux session already existed when we entered, `start_with_size_opts`
+        // is a no-op (no `--resume <sid>` was passed in this call), so the probe
+        // would have nothing to detect; skip straight to `Fresh`.
+        let pane_was_preexisting = self.tmux_session().is_ok_and(|s| s.exists());
 
         self.start_with_size_opts(size, skip_on_launch)?;
 
-        if !attempting_resume || session_existed_before {
+        if !attempting_resume || pane_was_preexisting {
             return Ok(StartOutcome::Fresh);
         }
 
@@ -1818,10 +1856,15 @@ impl Instance {
             return Ok(EnsureReadyOutcome::Started);
         }
         if session.is_pane_dead() {
-            self.restart_with_size(None)
+            let outcome = self
+                .restart_with_size(None)
                 .map_err(EnsureReadyError::Tmux)?;
             self.wait_for_pane_ready(&session);
-            return Ok(EnsureReadyOutcome::Respawned);
+            let stale_sid = match outcome {
+                StartOutcome::Restarted { stale_sid } => Some(stale_sid),
+                StartOutcome::Resumed | StartOutcome::Fresh => None,
+            };
+            return Ok(EnsureReadyOutcome::Respawned { stale_sid });
         }
         Ok(EnsureReadyOutcome::AlreadyAlive)
     }

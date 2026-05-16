@@ -1154,6 +1154,7 @@ fn apply_post_restart_sync(live: &mut Instance, started: &Instance) {
     live.last_error = None;
     live.agent_session_id = started.agent_session_id.clone();
     live.last_start_time = started.last_start_time;
+    live.retroactive_capture_excludes = started.retroactive_capture_excludes.clone();
 }
 
 /// Ensure the main agent tmux session is alive, restarting it if dead.
@@ -2612,7 +2613,14 @@ pub async fn send_message(
                     }
                 }
             });
-            (StatusCode::OK, Json(serde_json::json!({"sent": true}))).into_response()
+            let mut body = serde_json::json!({"sent": true});
+            if let EnsureReadyOutcome::Respawned {
+                stale_sid: Some(sid),
+            } = outcome
+            {
+                body["stale_session_id"] = serde_json::Value::String(sid);
+            }
+            (StatusCode::OK, Json(body)).into_response()
         }
         Ok(Err(SendKeysError::NotRunning)) => (
             StatusCode::CONFLICT,

@@ -3,6 +3,7 @@
 use anyhow::{bail, Result};
 use clap::Args;
 
+use crate::cli::session::stale_history_suffix;
 use crate::session::{EnsureReadyError, EnsureReadyOutcome, Storage};
 
 #[derive(Args)]
@@ -39,8 +40,16 @@ pub async fn run(profile: &str, args: SendArgs) -> Result<()> {
     if !args.no_revive {
         if let Some(target) = instances.iter_mut().find(|i| i.id == session_id) {
             match target.ensure_pane_ready() {
-                Ok(EnsureReadyOutcome::Respawned) => {
+                Ok(EnsureReadyOutcome::Respawned { stale_sid: None }) => {
                     eprintln!("  (respawned dead pane before send)");
+                }
+                Ok(EnsureReadyOutcome::Respawned {
+                    stale_sid: Some(sid),
+                }) => {
+                    eprintln!(
+                        "  (respawned dead pane before send){}",
+                        stale_history_suffix(&sid),
+                    );
                 }
                 Ok(EnsureReadyOutcome::Started) => {
                     eprintln!("  (started stopped session before send)");
