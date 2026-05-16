@@ -104,7 +104,7 @@ futures-util = "0.3"
 tempfile = "3.14"
 
 # PATH lookup for external viewers (lnav, bat, less) used by `aoe logs`.
-which = "7.0"
+which = "8.0"
 
 # Local SQLite reader for opencode's session store. Bundled to avoid a
 # system libsqlite3 dependency. Used to read session state without spawning
