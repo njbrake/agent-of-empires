@@ -88,17 +88,10 @@ pub struct CockpitRunnerArgs {
     #[arg(long, value_delimiter = ',', default_value = "")]
     pub provider_env_keys: Vec<String>,
     /// Cached ACP session id, written by the daemon and read on
-    /// reattach. The runner doesn't itself use this field — it surfaces
+    /// reattach. The runner doesn't itself use this field; it surfaces
     /// in the registry for the daemon's restart path.
     #[arg(long)]
     pub stored_acp_session_id: Option<String>,
-    /// Sandbox container name, set when the agent runs inside a
-    /// `docker exec` wrapper. The runner only echoes it into the
-    /// registry so the daemon's reattach path can reconstruct the
-    /// host↔container path map and route fs/terminal requests across
-    /// the boundary.
-    #[arg(long)]
-    pub sandbox_container_name: Option<String>,
     /// Agent program + args after `--`.
     #[arg(last = true, required = true)]
     pub agent_argv: Vec<String>,
@@ -162,7 +155,6 @@ pub async fn run(args: CockpitRunnerArgs) -> Result<()> {
         args.additional_dirs.clone(),
         args.provider_env_keys.clone(),
         args.stored_acp_session_id.clone(),
-        args.sandbox_container_name.clone(),
     );
     worker_registry::save(&record).context("writing registry record")?;
 

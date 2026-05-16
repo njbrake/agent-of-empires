@@ -1184,7 +1184,7 @@ impl<S: BroadcastSink> Supervisor<S> {
         cwd: PathBuf,
         additional_dirs: Vec<PathBuf>,
         in_flight_turn: bool,
-        sandbox: Option<(SandboxInfo, String /* source_profile */)>,
+        sandbox: Option<SandboxInfo>,
     ) -> Result<(), SupervisorError> {
         let record = match super::worker_registry::load(&session_id)
             .map_err(|e| SupervisorError::Acp(AcpError::Spawn(format!("registry load: {e}"))))?
@@ -1236,10 +1236,9 @@ impl<S: BroadcastSink> Supervisor<S> {
 
         let cockpit_session_id = CockpitSessionId(session_id.clone());
         let sandbox_resources = match sandbox {
-            Some((info, profile)) => Some(super::acp_client::SessionSandbox::from_info(
+            Some(info) => Some(super::acp_client::SessionSandbox::from_info(
                 &info,
                 cwd.as_path(),
-                &profile,
             )?),
             None => None,
         };
@@ -1824,7 +1823,6 @@ mod tests {
             None,
             vec![],
             vec![],
-            None,
             None,
         );
         crate::cockpit::worker_registry::save(&record).unwrap();
@@ -2509,7 +2507,6 @@ mod tests {
             None,
             vec![],
             vec![],
-            None,
             None,
         );
         crate::cockpit::worker_registry::save(&record).unwrap();

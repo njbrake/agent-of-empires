@@ -124,7 +124,9 @@ pub async fn spawn_cockpit(
     let stored_acp_session_id = instance.cockpit_acp_session_id.clone();
 
     let sandbox_info =
-        match crate::cockpit::sandbox::ensure_container_for_session(&state.instances, &id).await {
+        match crate::cockpit::sandbox::ensure_container_for_session(&state.instances, &id, false)
+            .await
+        {
             Ok(info) => info,
             Err(e) => {
                 return (
@@ -440,30 +442,31 @@ pub async fn cockpit_enable(
     // Spawn the cockpit worker. If this fails the supervisor publishes
     // an AgentStartupError that the UI surfaces as the red banner; we
     // still return 200 because the substrate swap itself succeeded.
+    // Container ensure runs inside the spawned task so the HTTP
+    // response isn't held open through a docker pull/create.
     let cwd = std::path::PathBuf::from(&instance.project_path);
     let supervisor = state.cockpit_supervisor.clone();
     let session_id = id.clone();
     let model = instance.cockpit_model.clone();
     let stored_acp_session_id = instance.cockpit_acp_session_id.clone();
     let source_profile = profile.clone();
-    let sandbox_info = match crate::cockpit::sandbox::ensure_container_for_session(
-        &state.instances,
-        &session_id,
-    )
-    .await
-    {
-        Ok(info) => info,
-        Err(e) => {
-            tracing::warn!(target: "cockpit.switch", session = %session_id, "container ensure failed: {e}");
-            supervisor.publish_startup_error(&session_id, format!("container start failed: {e}"));
-            return Json(SubstrateSwitchResponse {
-                session_id: id,
-                cockpit_mode: true,
-            })
-            .into_response();
-        }
-    };
+    let state_for_spawn = state.clone();
     tokio::spawn(async move {
+        let sandbox_info = match crate::cockpit::sandbox::ensure_container_for_session(
+            &state_for_spawn.instances,
+            &session_id,
+            false,
+        )
+        .await
+        {
+            Ok(info) => info,
+            Err(e) => {
+                let message = format!("container start failed: {e}");
+                tracing::warn!(target: "cockpit.switch", session = %session_id, "container ensure failed: {e}");
+                supervisor.publish_startup_error(&session_id, message);
+                return;
+            }
+        };
         if let Err(e) = supervisor
             .spawn(crate::cockpit::supervisor::SpawnRequest {
                 session_id: session_id.clone(),

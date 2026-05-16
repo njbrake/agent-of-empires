@@ -1044,9 +1044,15 @@ pub async fn create_session(
                 let supervisor = state.cockpit_supervisor.clone();
                 let state_for_check = state.clone();
                 tokio::spawn(async move {
+                    // Initial session creation: run on_launch hooks
+                    // once here so cockpit-mode parity with the tmux
+                    // path is preserved (tmux fires on_launch from
+                    // `instance.start()` at creation, then never
+                    // again).
                     let sandbox_info = match crate::cockpit::sandbox::ensure_container_for_session(
                         &state_for_check.instances,
                         &id,
+                        true,
                     )
                     .await
                     {

@@ -494,8 +494,17 @@ agent returns the container's working directory, not the host's.
 The unix socket between the daemon and the per-session runner stays on
 the host. The runner proxies the agent's stdio across the container
 boundary, so there is no bind-mount of the daemon's socket into the
-container — that path is reserved for a future agent that natively
+container. That path is reserved for a future agent that natively
 speaks the socket transport.
+
+Known limitations:
+
+- `fs/*` path translation only covers the workspace mount(s) the
+  container was built with. Agent-config mounts (`/root/.claude`),
+  bind-mounted credentials, and user-configured `extra_volumes` are
+  not in the path map. In practice the inside-roots check (worktree-
+  only) already rejects those paths, so the safety property holds;
+  the failure mode is just a generic "outside session roots" error.
 
 ## Troubleshooting
 

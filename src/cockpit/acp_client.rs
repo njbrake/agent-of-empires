@@ -238,20 +238,18 @@ pub struct SessionSandbox {
 
 impl SessionSandbox {
     /// Build a `SessionSandbox` + `SandboxPathMap` from a `SandboxInfo`
-    /// and the session's host-side project_path / source_profile.
-    /// Returns `None` for the non-sandboxed case so the caller can use
-    /// `Option::map`/`?` flows.
+    /// and the session's host-side project_path. Path-map entries
+    /// cover only the workspace volume(s) the container was built
+    /// with; see `docs/cockpit.md` for the known-limitations note on
+    /// agent-config and `extra_volumes`.
     pub fn from_info(
         sandbox: &SandboxInfo,
         project_path: &Path,
-        source_profile: &str,
     ) -> Result<(Self, SandboxPathMap), AcpError> {
         let project_path_str = project_path.to_string_lossy().to_string();
         let (volumes, workdir) =
             crate::session::container_config::compute_volume_paths(project_path, &project_path_str)
                 .map_err(|e| AcpError::Spawn(format!("compute container workdir: {e}")))?;
-        // Avoid an "unused" warning when the field becomes meaningful later.
-        let _ = source_profile;
         let mounts: Vec<(PathBuf, PathBuf)> = volumes
             .into_iter()
             .map(|v| (PathBuf::from(v.container_path), PathBuf::from(v.host_path)))
@@ -327,11 +325,7 @@ impl AcpClient {
             stored_acp_session_id: config.stored_acp_session_id.clone(),
         };
         let sandbox_pair = if let Some(info) = &config.sandbox_info {
-            Some(SessionSandbox::from_info(
-                info,
-                config.cwd.as_path(),
-                &config.source_profile,
-            )?)
+            Some(SessionSandbox::from_info(info, config.cwd.as_path())?)
         } else {
             None
         };
@@ -852,9 +846,6 @@ fn spawn_runner_detached(
         .arg(&config.spec.command)
         .arg("--cwd")
         .arg(&config.cwd);
-    if let Some(s) = &sandbox_argv {
-        cmd.arg("--sandbox-container-name").arg(&s.container_name);
-    }
     if !config.additional_dirs.is_empty() {
         cmd.arg("--additional-dirs").arg(
             config
@@ -967,14 +958,14 @@ fn spawn_runner_detached(
 }
 
 /// Result of constructing the `docker exec` argv for a sandboxed cockpit
-/// spawn. `docker_binary` and `docker_args` together form the full
-/// command; `inherit_env` is the set of (key, value) pairs the parent
-/// process must export so docker can forward them across the container
-/// boundary via the matching `-e KEY` flags already in `docker_args`.
+/// spawn. `docker_binary` is argv[0] (the docker/podman runtime);
+/// `docker_args` is everything after it (including the container name
+/// and the in-container agent argv). `inherit_env` is the set of
+/// (key, value) pairs the parent process must export so docker can
+/// forward them via the matching `-e KEY` flags already in `docker_args`.
 struct SandboxArgv {
     docker_binary: String,
     docker_args: Vec<String>,
-    container_name: String,
     inherit_env: Vec<(String, String)>,
 }
 
@@ -1025,15 +1016,17 @@ fn build_sandbox_docker_argv(
         }
     }
 
-    // Provider auth keys (ANTHROPIC_API_KEY, CLAUDE_*): forward into the
-    // container only when set on the host AND not already in the
-    // sandbox env list. The agent inside the container needs these to
-    // call out; the host needs to keep them in argv-invisible form.
+    // Provider auth keys: forward into the container only when set on
+    // the host AND not already in the sandbox env list. Value-typed
+    // only; host filesystem paths (e.g. `CLAUDE_CONFIG_DIR`) must not
+    // cross the namespace boundary because they reference paths that
+    // don't exist inside the container. The agent's config dir is
+    // already bind-mounted at the canonical container path via
+    // `AGENT_CONFIG_MOUNTS`.
     const PROVIDER_AUTH_KEYS: &[&str] = &[
         "ANTHROPIC_API_KEY",
         "ANTHROPIC_AUTH_TOKEN",
         "CLAUDE_CODE_OAUTH_TOKEN",
-        "CLAUDE_CONFIG_DIR",
     ];
     for &key in PROVIDER_AUTH_KEYS {
         if seen_keys.contains(key) {
@@ -1071,7 +1064,6 @@ fn build_sandbox_docker_argv(
     Ok(SandboxArgv {
         docker_binary,
         docker_args,
-        container_name: sandbox.container_name.clone(),
         inherit_env,
     })
 }
@@ -2991,6 +2983,127 @@ mod tests {
         assert!(
             argv.docker_args.iter().any(|a| a == "MY_LITERAL=hello"),
             "literal env entry must be propagated as `-e KEY=VALUE`"
+        );
+        // The literal entry's KEY=VALUE form must NOT also appear in
+        // `inherit_env` (that vec is for Inherit-style entries whose
+        // value comes from the parent process env, not for literals).
+        assert!(
+            !argv.inherit_env.iter().any(|(k, _)| k == "MY_LITERAL"),
+            "literal entries must not duplicate into inherit_env"
+        );
+    }
+
+    /// Inherit-style env entries (provider auth keys) must lower into a
+    /// pair of `-e KEY` (key only) in docker_args plus a `(KEY, VALUE)`
+    /// pair in inherit_env so the runner can re-export the value and
+    /// docker can forward it into the container.
+    #[test]
+    fn build_sandbox_docker_argv_inherit_env_shape() {
+        let tmp = tempfile::tempdir().unwrap();
+        let cwd = tmp.path().to_path_buf();
+        let sandbox = SandboxInfo {
+            enabled: true,
+            container_id: None,
+            image: "alpine:latest".into(),
+            container_name: "aoe-sandbox-abc12345".into(),
+            extra_env: None,
+            custom_instruction: None,
+        };
+        let config = SpawnConfig {
+            spec: AgentSpec {
+                command: "claude-agent-acp".into(),
+                args: vec![],
+                description: "test".into(),
+                env_allowlist: None,
+            },
+            cwd,
+            additional_dirs: vec![],
+            // Per-spawn provider_env entry: must end up Inherit-style.
+            provider_env: vec![("ANTHROPIC_API_KEY".into(), "sk-test-value".into())],
+            socket_path: None,
+            stored_acp_session_id: None,
+            sandbox_info: Some(sandbox.clone()),
+            source_profile: String::new(),
+        };
+        let argv = build_sandbox_docker_argv(&config, &sandbox).expect("docker argv built");
+        // The `-e KEY` flag (without value) must appear consecutively.
+        let key_flag_idx = argv
+            .docker_args
+            .windows(2)
+            .position(|w| w[0] == "-e" && w[1] == "ANTHROPIC_API_KEY")
+            .expect("ANTHROPIC_API_KEY -e flag must be present");
+        // Value-typed forms like `-e ANTHROPIC_API_KEY=...` must NOT
+        // appear; that would leak the secret into argv.
+        assert!(
+            !argv
+                .docker_args
+                .iter()
+                .any(|a| a.starts_with("ANTHROPIC_API_KEY=")),
+            "secret must not appear as `KEY=VALUE` in argv (slot {key_flag_idx})"
+        );
+        // The value must travel via inherit_env so the parent process
+        // sets it before exec-ing docker.
+        assert_eq!(
+            argv.inherit_env
+                .iter()
+                .find(|(k, _)| k == "ANTHROPIC_API_KEY")
+                .map(|(_, v)| v.as_str()),
+            Some("sk-test-value"),
+        );
+    }
+
+    /// `CLAUDE_CONFIG_DIR` is a host filesystem path, not a value, so
+    /// it must NOT be auto-forwarded into the container even when set
+    /// on the host. The agent's config dir is bind-mounted at the
+    /// canonical container path by `AGENT_CONFIG_MOUNTS`.
+    #[test]
+    fn build_sandbox_docker_argv_drops_host_only_claude_config_dir() {
+        // Set the env var to simulate the host having it; the function
+        // under test must still skip it.
+        std::env::set_var("CLAUDE_CONFIG_DIR", "/Users/operator/.claude");
+        let tmp = tempfile::tempdir().unwrap();
+        let sandbox = SandboxInfo {
+            enabled: true,
+            container_id: None,
+            image: "alpine:latest".into(),
+            container_name: "aoe-sandbox-cfgdir".into(),
+            extra_env: None,
+            custom_instruction: None,
+        };
+        let config = SpawnConfig {
+            spec: AgentSpec {
+                command: "claude-agent-acp".into(),
+                args: vec![],
+                description: "test".into(),
+                env_allowlist: None,
+            },
+            cwd: tmp.path().to_path_buf(),
+            additional_dirs: vec![],
+            provider_env: vec![],
+            socket_path: None,
+            stored_acp_session_id: None,
+            sandbox_info: Some(sandbox.clone()),
+            source_profile: String::new(),
+        };
+        let argv = build_sandbox_docker_argv(&config, &sandbox).expect("docker argv built");
+        std::env::remove_var("CLAUDE_CONFIG_DIR");
+        assert!(
+            !argv.docker_args.iter().any(|a| a == "CLAUDE_CONFIG_DIR"),
+            "CLAUDE_CONFIG_DIR is a host path and must not be forwarded as `-e KEY`"
+        );
+        assert!(
+            !argv
+                .docker_args
+                .iter()
+                .any(|a| a.starts_with("CLAUDE_CONFIG_DIR=")),
+            "CLAUDE_CONFIG_DIR must not appear as a literal `KEY=VALUE` either"
+        );
+        assert!(
+            !argv
+                .inherit_env
+                .iter()
+                .any(|(k, _)| k == "CLAUDE_CONFIG_DIR"),
+            "CLAUDE_CONFIG_DIR must not land in inherit_env"
         );
     }
 

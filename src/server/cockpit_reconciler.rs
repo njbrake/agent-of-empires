@@ -253,7 +253,6 @@ async fn resume_one(state: Arc<AppState>, target: ResumeTarget) -> ResumeOutcome
                     .iter()
                     .find(|i| i.id == id)
                     .and_then(|i| i.sandbox_info.clone())
-                    .map(|info| (info, source_profile.clone()))
             };
             let attach_res = timeout(
                 Duration::from_secs(3),
@@ -336,7 +335,9 @@ async fn resume_one(state: Arc<AppState>, target: ResumeTarget) -> ResumeOutcome
     let cwd = PathBuf::from(project_path);
 
     let sandbox_info =
-        match crate::cockpit::sandbox::ensure_container_for_session(&state.instances, &id).await {
+        match crate::cockpit::sandbox::ensure_container_for_session(&state.instances, &id, false)
+            .await
+        {
             Ok(info) => info,
             Err(e) => {
                 let message = format!("sandbox container ensure failed: {e}");

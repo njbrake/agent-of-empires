@@ -52,12 +52,6 @@ pub struct WorkerRecord {
     /// On reattach, the daemon sends `session/load <stored_acp_session_id>`
     /// to resume the agent-side transcript.
     pub stored_acp_session_id: Option<String>,
-    /// Sandbox container name (`aoe-sandbox-<id>`) when the agent runs
-    /// inside a `docker exec` wrapper. Daemon's reattach path reads
-    /// this to reconstruct the host↔container path map for fs/terminal
-    /// requests.
-    #[serde(default)]
-    pub sandbox_container_name: Option<String>,
     pub started_at: u64,
     pub last_attached_at: Option<u64>,
     pub detached_at: Option<u64>,
@@ -75,7 +69,6 @@ impl WorkerRecord {
         additional_dirs: Vec<PathBuf>,
         provider_env_keys: Vec<String>,
         stored_acp_session_id: Option<String>,
-        sandbox_container_name: Option<String>,
     ) -> Self {
         Self {
             runner_version: RUNNER_VERSION,
@@ -88,7 +81,6 @@ impl WorkerRecord {
             additional_dirs,
             provider_env_keys,
             stored_acp_session_id,
-            sandbox_container_name,
             started_at: now_secs(),
             last_attached_at: None,
             detached_at: None,
@@ -438,7 +430,6 @@ mod tests {
                 vec![],
                 vec!["ANTHROPIC_API_KEY".into()],
                 None,
-                None,
             );
             save(&rec).unwrap();
             let loaded = load("sess-abc").unwrap().unwrap();
@@ -466,7 +457,6 @@ mod tests {
                 vec![],
                 vec![],
                 None,
-                None,
             );
             save(&rec).unwrap();
             let all = list().unwrap();
@@ -492,7 +482,6 @@ mod tests {
                 vec![],
                 vec![],
                 None,
-                None,
             );
             save(&rec).unwrap();
             assert!(record_path("sess").unwrap().exists());
@@ -515,7 +504,6 @@ mod tests {
                 None,
                 vec![],
                 vec![],
-                None,
                 None,
             );
             rec.detached_at = Some(100);
