@@ -39,7 +39,15 @@ pub fn get_container_runtime() -> ContainerRuntime {
 /// Check running state of all aoe sandbox containers in a single subprocess call.
 /// Returns a map of container name -> is_running.
 pub fn batch_container_health() -> HashMap<String, bool> {
-    get_container_runtime().batch_running_states("aoe-sandbox-")
+    let start = std::time::Instant::now();
+    let map = get_container_runtime().batch_running_states("aoe-sandbox-");
+    tracing::debug!(
+        target: "containers.runtime",
+        count = map.len(),
+        duration_ms = start.elapsed().as_millis() as u64,
+        "batch container health fetched",
+    );
+    map
 }
 
 pub struct DockerContainer {
@@ -82,29 +90,67 @@ impl DockerContainer {
             .build_create_args(&self.name, &self.image, config)
     }
 
+    #[tracing::instrument(target = "containers.runtime", skip_all, fields(name = %self.name, image = %self.image))]
     pub fn create(&self, config: &ContainerConfig) -> Result<String> {
-        self.runtime
-            .create_container(&self.name, &self.image, config)
+        tracing::info!(target: "containers.runtime", "creating container");
+        let result = self
+            .runtime
+            .create_container(&self.name, &self.image, config);
+        match &result {
+            Ok(id) => tracing::info!(target: "containers.runtime", id = %id, "created"),
+            Err(e) => tracing::error!(target: "containers.runtime", error = %e, "create failed"),
+        }
+        result
     }
 
+    #[tracing::instrument(target = "containers.runtime", skip_all, fields(name = %self.name))]
     pub fn start(&self) -> Result<()> {
-        self.runtime.start_container(&self.name)
+        tracing::info!(target: "containers.runtime", "starting container");
+        let result = self.runtime.start_container(&self.name);
+        if let Err(e) = &result {
+            tracing::error!(target: "containers.runtime", error = %e, "start failed");
+        }
+        result
     }
 
+    #[tracing::instrument(target = "containers.runtime", skip_all, fields(name = %self.name))]
     pub fn stop(&self) -> Result<()> {
-        self.runtime.stop_container(&self.name)
+        tracing::info!(target: "containers.runtime", "stopping container");
+        let result = self.runtime.stop_container(&self.name);
+        if let Err(e) = &result {
+            tracing::warn!(target: "containers.runtime", error = %e, "stop failed");
+        }
+        result
     }
 
+    #[tracing::instrument(target = "containers.runtime", skip_all, fields(name = %self.name, force))]
     pub fn remove(&self, force: bool) -> Result<()> {
-        self.runtime.remove(&self.name, force)
+        tracing::info!(target: "containers.runtime", "removing container");
+        let result = self.runtime.remove(&self.name, force);
+        if let Err(e) = &result {
+            tracing::warn!(target: "containers.runtime", error = %e, "remove failed");
+        }
+        result
     }
 
     pub fn exec_command(&self, options: Option<&str>, cmd: &str) -> String {
         self.runtime.exec_command(&self.name, options, cmd)
     }
 
+    #[tracing::instrument(target = "containers.exec", skip_all, fields(name = %self.name, cmd = ?cmd))]
     pub fn exec(&self, cmd: &[&str]) -> Result<std::process::Output> {
-        self.runtime.exec(&self.name, cmd)
+        let result = self.runtime.exec(&self.name, cmd);
+        match &result {
+            Ok(out) => tracing::debug!(
+                target: "containers.exec",
+                status = ?out.status,
+                stdout_bytes = out.stdout.len(),
+                stderr_bytes = out.stderr.len(),
+                "exec completed",
+            ),
+            Err(e) => tracing::warn!(target: "containers.exec", error = %e, "exec failed"),
+        }
+        result
     }
 }
 
