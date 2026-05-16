@@ -207,6 +207,22 @@ fn is_login_session_exempt(path: &str) -> bool {
         || path.starts_with("/fonts/")
 }
 
+/// Whether to append a sliding-window refresh of the `aoe_session`
+/// cookie on the response for a session-authenticated request.
+/// Login-exempt paths skip the refresh because their own handlers
+/// own the `aoe_session` cookie's lifecycle on that response: the
+/// `POST /api/logout` handler sets `Max-Age=0` to clear it, and the
+/// `POST /api/login` handler mints a fresh session id and sets a
+/// new cookie. An unconditional refresh would emit a second
+/// `Set-Cookie: aoe_session=<id>; Max-Age=2592000` after the
+/// handler's, and browsers process Set-Cookie headers in order
+/// (later wins), so logout would leave a stale 30-day cookie
+/// pointing at a server session that no longer exists, and login
+/// would clobber the new session id with the old one.
+fn should_refresh_session_cookie(path: &str) -> bool {
+    !is_login_session_exempt(path)
+}
+
 /// Whether a request path + method needs an elevated login session
 /// (step-up auth, 15-minute passphrase confirmation window).
 ///
@@ -589,9 +605,8 @@ async fn handle_session_authenticated(
         .headers()
         .get(header::USER_AGENT)
         .and_then(|v| v.to_str().ok())
-        .unwrap_or("unknown")
-        .to_string();
-    record_device(state, client_ip, user_agent.as_str()).await;
+        .unwrap_or("unknown");
+    record_device(state, client_ip, user_agent).await;
 
     let path = request.uri().path().to_string();
     let method = request.method().clone();
@@ -615,11 +630,13 @@ async fn handle_session_authenticated(
 
     let mut response = next.run(request).await;
 
-    let login_cookie = super::login::build_login_cookie(&session_id, state.behind_tunnel);
-    response.headers_mut().append(
-        header::SET_COOKIE,
-        login_cookie.parse().expect("cookie format must be valid"),
-    );
+    if should_refresh_session_cookie(&path) {
+        let login_cookie = super::login::build_login_cookie(&session_id, state.behind_tunnel);
+        response.headers_mut().append(
+            header::SET_COOKIE,
+            login_cookie.parse().expect("cookie format must be valid"),
+        );
+    }
 
     response
 }
@@ -817,6 +834,39 @@ mod tests {
             "not-base64-and-wrong-length",
         )]);
         assert!(extract_device_binding(&req).is_none());
+    }
+
+    // Regression test for the logout-clobber bug: when a request
+    // hits a login-exempt path (notably `POST /api/logout` and
+    // `POST /api/login`), `handle_session_authenticated` must NOT
+    // append a sliding-window `Set-Cookie: aoe_session=<id>` after
+    // the handler runs. The handler is the one that owns the cookie
+    // on those responses (logout clears with `Max-Age=0`; login
+    // mints a fresh id), and an unconditional refresh would emit a
+    // second Set-Cookie that browsers process later-wins, so logout
+    // would leave a stale 30-day cookie pointing at an invalidated
+    // session and login would clobber the new id with the old one.
+    #[test]
+    fn session_cookie_refresh_skips_login_exempt_paths() {
+        // Login-exempt: must not refresh.
+        assert!(!should_refresh_session_cookie("/api/logout"));
+        assert!(!should_refresh_session_cookie("/api/login"));
+        assert!(!should_refresh_session_cookie("/login"));
+        assert!(!should_refresh_session_cookie("/api/login/status"));
+        assert!(!should_refresh_session_cookie("/assets/index.js"));
+        assert!(!should_refresh_session_cookie("/manifest.json"));
+        assert!(!should_refresh_session_cookie("/sw.js"));
+
+        // Non-exempt: must refresh (sliding window).
+        assert!(should_refresh_session_cookie("/"));
+        assert!(should_refresh_session_cookie("/api/sessions"));
+        assert!(should_refresh_session_cookie(
+            "/api/sessions/abc/cockpit/ws"
+        ));
+        assert!(should_refresh_session_cookie("/api/settings"));
+        // /api/login/elevate is gated by the session check (not
+        // exempt), so its response should slide the window.
+        assert!(should_refresh_session_cookie("/api/login/elevate"));
     }
 
     #[test]
