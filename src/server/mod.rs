@@ -25,7 +25,7 @@ use axum::Router;
 use rust_embed::Embed;
 use serde::Serialize;
 use tokio::sync::{broadcast, RwLock};
-use tracing::info;
+use tracing::{info, Instrument};
 
 use self::push::{PushState, StatusChange, STATUS_CHANNEL_CAPACITY};
 
@@ -1077,8 +1077,52 @@ fn build_router(state: Arc<AppState>) -> Router {
             auth::auth_middleware,
         ))
         .layer(axum::middleware::from_fn(security_headers))
+        .layer(axum::middleware::from_fn(http_request_span))
         .layer(axum::extract::DefaultBodyLimit::max(1024 * 1024))
         .with_state(state)
+}
+
+/// Middleware that wraps every request in an `http.request` info span with
+/// a generated or echoed `X-Request-Id`, then emits one completion event at
+/// the level matching the response status. Logs fired inside the request
+/// (auth middleware, route handlers, downstream `tracing` events) inherit
+/// the span fields, so a single grep on `request_id` reconstructs the call.
+async fn http_request_span(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let rid = request
+        .headers()
+        .get("x-request-id")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string)
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let method = request.method().clone();
+    let path = request.uri().path().to_string();
+    let span = tracing::info_span!(
+        target: "http.request",
+        "http_request",
+        request_id = %rid,
+        method = %method,
+        path = %path,
+    );
+    let start = std::time::Instant::now();
+    let mut response = next.run(request).instrument(span.clone()).await;
+    let latency_ms = start.elapsed().as_millis() as u64;
+    let status = response.status().as_u16();
+    span.in_scope(|| {
+        if status >= 500 {
+            tracing::error!(target: "http.request", status, latency_ms, "completed");
+        } else if status >= 400 {
+            tracing::warn!(target: "http.request", status, latency_ms, "completed");
+        } else {
+            tracing::info!(target: "http.request", status, latency_ms, "completed");
+        }
+    });
+    if let Ok(value) = rid.parse() {
+        response.headers_mut().insert("x-request-id", value);
+    }
+    response
 }
 
 /// Content-Security-Policy for the dashboard.
