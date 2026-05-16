@@ -124,49 +124,21 @@ export function installFetchErrorToasts(): void {
   };
 }
 
-// 401 with no `login_required` body: the request authenticated via
-// neither a valid token NOR a valid device-bound session+binding.
-// Clear localStorage (idempotent if no token) and show the token
-// entry page. Dedupe so a burst of concurrent 401s produces one
-// event.
-//
-// Under the device-bound design (#1167), this branch is rare: a
-// PWA that completed first-time pairing rides on the 30-day sliding
-// session even when the token rotates. The 401 unauthorized fires
-// only when the session is genuinely gone (server restart, 30-day
-// idle, explicit logout, or a fresh browser profile). In all of
-// those cases we want to clear any surviving local state and route
-// the user through full re-auth, so POST /api/logout to drop the
-// server-side session before dispatching the event. The endpoint
-// is exempt from the token check precisely to support this path.
-// See #1163 (original re-challenge fix) and #1167 (design rework).
+// 401 with no `login_required` body: this is the true
+// unauthenticated state. A bound device authenticates purely via
+// its `aoe_session` cookie + device binding; the server does not
+// consult the token on regular requests. This branch fires only
+// when the session is gone (server restart, 30-day idle, explicit
+// logout, or a fresh browser profile). Clear any cached token
+// (the SPA may have a stale one in localStorage) and route the
+// user back through the bootstrap flow. Dedupe so a burst of
+// concurrent 401s produces one event. See #1167.
 let tokenExpiredDispatched = false;
 function handleTokenAuthFailure(): void {
   clearToken();
   if (tokenExpiredDispatched) return;
   tokenExpiredDispatched = true;
-  // Fire-and-forget. Even if the request fails (network down, server
-  // restart, race with a concurrent logout), we still dispatch the
-  // event so the SPA shows the token-entry page; the worst case is
-  // the same partial-reauth bug we already had.
-  void clearServerSession();
   window.dispatchEvent(new CustomEvent(TOKEN_EXPIRED_EVENT));
-}
-
-// Best-effort POST /api/logout. The endpoint is exempt from the
-// token check on the server precisely to support this path; without
-// the exemption an expired token would 401 the logout request and
-// the session cookie would survive. Uses the raw fetch to bypass the
-// interceptor's auth-error handling (we're already inside it).
-async function clearServerSession(): Promise<void> {
-  try {
-    await fetch("/api/logout", {
-      method: "POST",
-      credentials: "same-origin",
-    });
-  } catch {
-    // Ignore: best effort.
-  }
 }
 
 // On 401 `login_required` the token is fine; only the second factor is

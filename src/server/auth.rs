@@ -192,17 +192,6 @@ fn normalize_path(path: &str) -> &str {
     path.strip_suffix('/').unwrap_or(path)
 }
 
-/// Whether a request bypasses the auth token check entirely. Today
-/// the only such route is `POST /api/logout`; see #1163 for the
-/// rationale (the SPA needs to drop a stale `aoe_session` cookie
-/// after the token has expired, before it can pump a fresh token in).
-/// The handler itself only invalidates the session id the caller
-/// already presents via the HttpOnly cookie, so exposing it without
-/// a token can't leak anything an attacker doesn't already hold.
-fn is_token_check_exempt(method: &axum::http::Method, path: &str) -> bool {
-    method == axum::http::Method::POST && normalize_path(path) == "/api/logout"
-}
-
 /// Whether a request path is exempt from the passphrase session +
 /// device-binding check. These paths are either the login bootstrap
 /// flow itself or static assets that pre-load the SPA shell.
@@ -216,44 +205,6 @@ fn is_login_session_exempt(path: &str) -> bool {
         || path == "/sw.js"
         || path.starts_with("/icon-")
         || path.starts_with("/fonts/")
-}
-
-/// Outcome of combining the two-factor check into a single auth
-/// decision. Pure function, named so the design intent has a
-/// regression handle in tests.
-#[derive(Debug, PartialEq, Eq, Clone, Copy)]
-pub(crate) enum AuthOutcome {
-    /// Neither a valid token nor a valid device-bound session
-    /// presented; the request must be rejected (or, for non-API
-    /// paths, served the SPA shell so the frontend can try to
-    /// re-authenticate via localStorage).
-    Failed,
-    /// A valid token was presented. This is the steady-state path
-    /// once a device has refreshed its token cookie.
-    TokenAuthenticated,
-    /// No valid token, but the device presented a valid passphrase
-    /// session + device binding. The token check is bypassed and
-    /// the response carries the current token so the client picks
-    /// it up and the next request takes the fast token path. Only
-    /// reachable when passphrase login is enabled. See #1167.
-    SessionBypass,
-}
-
-/// Combine token + session validity into the auth outcome the
-/// middleware acts on. A bound device authenticates via either
-/// factor; an unbound or partially-authenticated request fails.
-pub(crate) fn decide_auth(
-    token_authenticated: bool,
-    login_enabled: bool,
-    session_valid: bool,
-) -> AuthOutcome {
-    if token_authenticated {
-        AuthOutcome::TokenAuthenticated
-    } else if login_enabled && session_valid {
-        AuthOutcome::SessionBypass
-    } else {
-        AuthOutcome::Failed
-    }
 }
 
 /// Whether a request path + method needs an elevated login session
@@ -388,27 +339,6 @@ pub async fn auth_middleware(
         );
     }
 
-    // `/api/logout` is exempt from the token check so the SPA can
-    // clear a stale `aoe_session` cookie immediately after the token
-    // expires, without first having to re-paste a fresh token. See
-    // #1163: when the (shorter) token TTL elapsed before the
-    // (24-hour) passphrase session, the SPA prompted only for the
-    // token and silently waved the user back in on the still-valid
-    // session cookie, bypassing the second factor. Dropping the
-    // session cookie here lets the next `loginStatus()` report
-    // `authenticated: false` so `App.tsx` routes through `LoginPage`
-    // (passphrase prompt) after the token-entry page.
-    //
-    // Safe to expose: the handler only invalidates a session whose
-    // id the caller already presents via the cookie, so an attacker
-    // without the cookie cannot log anyone out (and the cookie is
-    // HttpOnly + SameSite=Strict, so it never leaves the legitimate
-    // browser). The handler's own response always sets `Max-Age=0`
-    // on `aoe_session`, so a no-cookie call is a harmless no-op.
-    if is_token_check_exempt(request.method(), request.uri().path()) {
-        return next.run(request).await;
-    }
-
     // No-auth mode: pass everything through. Insert a zeroed
     // AuthenticatedTokenHash so handlers that extract the extension
     // still succeed; all no-auth clients share the same "owner" value.
@@ -450,62 +380,13 @@ pub async fn auth_middleware(
             .into_response();
     }
 
-    // Try each token source in order: cookie, then query param.
-    // A stale cookie must not block a valid query param token.
-    let mut matched_source = None;
-    let mut needs_upgrade = false;
-    let mut matched_token_hash: Option<[u8; 32]> = None;
-
-    for (token_value, source) in extract_tokens(&request) {
-        let (valid, upgrade) = state.token_manager.validate(token_value).await;
-        if valid {
-            matched_source = Some(source);
-            needs_upgrade = upgrade;
-            matched_token_hash = Some(super::push::sha256_token(token_value));
-            break;
-        }
-    }
-
-    // If cookie/query didn't match, try each WebSocket sub-protocol.
-    // A client may send multiple protocols (e.g., "graphql-ws, <token>"),
-    // so we must check each one, not just the first. Accept either the
-    // legacy bare-token form (used by older PWA tabs) or the prefixed
-    // `aoe-token.<token>` form introduced alongside device binding so
-    // that subprotocol values are self-describing instead of relying on
-    // "try every entry as a token" coincidence. See #1131.
-    if matched_source.is_none() {
-        for proto in extract_ws_protocols(&request) {
-            let candidate = strip_ws_prefix(&proto, "aoe-token").unwrap_or(&proto);
-            let (valid, upgrade) = state.token_manager.validate(candidate).await;
-            if valid {
-                matched_source = Some(TokenSource::WebSocketProtocol);
-                needs_upgrade = upgrade;
-                matched_token_hash = Some(super::push::sha256_token(candidate));
-                break;
-            }
-        }
-    }
-
-    // Validate the passphrase session + device binding once. The
-    // result feeds two decisions:
-    //
-    //   1. When passphrase login is enabled, a bound device whose
-    //      session + binding match the server can authenticate even
-    //      when its token is missing or stale (session-bypass). This
-    //      keeps the PWA logged in across token rotations: without
-    //      it, the 4-hour remote-mode token TTL would re-prompt the
-    //      owner every 4 hours on a device that has already completed
-    //      both factors. The token is the first-device-pairing secret
-    //      (and an internal rotation hygiene knob); the per-device
-    //      identity rides on the HttpOnly `aoe_session` cookie plus
-    //      the localStorage binding (neither of which ever appears
-    //      in a URL). See #1163 / #1167.
-    //
-    //   2. For non-login-exempt paths under login-enabled mode, the
-    //      session + binding must validate regardless of how we
-    //      authenticated. That's the second-factor requirement from
-    //      #1131; this refactor preserves it, the bypass only widens
-    //      *what counts as the first factor*.
+    // Steady-state path: a bound device authenticates with its
+    // passphrase session + device binding alone. The token is a
+    // first-device-pairing nonce, NOT a per-request second factor;
+    // we only consult it on bootstrap paths below. This is the
+    // core simplification from #1167: rotation still happens for
+    // URL-leak mitigation of the bootstrap URL, but bound devices
+    // never see the rotation because they don't ride on tokens.
     let login_enabled = state.login_manager.is_enabled();
     let presented_session_id = if login_enabled {
         super::login::extract_login_session(&request)
@@ -526,26 +407,58 @@ pub async fn auth_middleware(
         false
     };
 
-    let token_authenticated = matched_source.is_some();
-    let outcome = decide_auth(token_authenticated, login_enabled, session_valid);
-    let session_bypass = outcome == AuthOutcome::SessionBypass;
+    if session_valid {
+        let session_id = presented_session_id.expect("session_valid implies session_id exists");
+        return handle_session_authenticated(&state, client_ip, request, next, session_id).await;
+    }
 
-    if outcome == AuthOutcome::Failed {
-        // Auth failed on both factors.
-        //
-        // For API and WebSocket routes, return 401. For everything
-        // else (the SPA shell, static assets), serve the page anyway
-        // so the frontend can attempt auth via localStorage + Bearer
-        // header. Without this, an expired cookie means the SPA
-        // never loads and localStorage never gets a chance to
-        // re-authenticate.
+    // Token-check path: either passphrase login is disabled (token
+    // is the sole factor) or this device is bootstrapping its
+    // first session. Try every token source; on success route
+    // either through the login flow (login enabled, non-bootstrap
+    // path) or straight to the handler (login-exempt path or
+    // token-only mode).
+    let mut matched_source = None;
+    let mut needs_upgrade = false;
+    let mut matched_token_hash: Option<[u8; 32]> = None;
+
+    for (token_value, source) in extract_tokens(&request) {
+        let (valid, upgrade) = state.token_manager.validate(token_value).await;
+        if valid {
+            matched_source = Some(source);
+            needs_upgrade = upgrade;
+            matched_token_hash = Some(super::push::sha256_token(token_value));
+            break;
+        }
+    }
+
+    // WebSocket sub-protocol fallback. A client may send multiple
+    // protocols (e.g., "graphql-ws, <token>"), so check each.
+    // Accept either bare-token (older PWA tabs) or the prefixed
+    // `aoe-token.<token>` form. See #1131.
+    if matched_source.is_none() {
+        for proto in extract_ws_protocols(&request) {
+            let candidate = strip_ws_prefix(&proto, "aoe-token").unwrap_or(&proto);
+            let (valid, upgrade) = state.token_manager.validate(candidate).await;
+            if valid {
+                matched_source = Some(TokenSource::WebSocketProtocol);
+                needs_upgrade = upgrade;
+                matched_token_hash = Some(super::push::sha256_token(candidate));
+                break;
+            }
+        }
+    }
+
+    let Some(source) = matched_source else {
+        // No valid token and no valid session: true unauthenticated
+        // state. For API and WebSocket routes return 401; for
+        // anything else serve the SPA shell so the frontend can
+        // render its own re-auth UI.
         let path = request.uri().path();
         let is_api_or_ws = path.starts_with("/api/") || path.contains("/ws");
-
         if !is_api_or_ws {
             return next.run(request).await;
         }
-
         let locked = state.rate_limiter.record_failure(client_ip).await;
         let reason =
             if extract_tokens(&request).is_empty() && extract_ws_protocols(&request).is_empty() {
@@ -561,7 +474,6 @@ pub async fn auth_middleware(
             reason = %reason,
             "auth rejected"
         );
-
         return (
             StatusCode::UNAUTHORIZED,
             axum::Json(serde_json::json!({
@@ -570,33 +482,104 @@ pub async fn auth_middleware(
             })),
         )
             .into_response();
-    }
+    };
 
-    // Authenticated. Record success on the rate limiter, stamp
-    // owner identity, and record the device.
+    // Token valid: record success, stamp owner, record device.
     state.rate_limiter.record_success(client_ip).await;
     tracing::trace!(
         target: "auth.middleware",
         ip = %client_ip,
         path = %request.uri().path(),
-        token_authenticated = token_authenticated,
-        session_bypass = session_bypass,
-        "auth accepted"
+        source = ?source,
+        "auth accepted via token (bootstrap)"
     );
+    state.touch_web_activity();
+    if let Some(hash) = matched_token_hash {
+        request
+            .extensions_mut()
+            .insert(AuthenticatedTokenHash(hash));
+    }
+    let user_agent = request
+        .headers()
+        .get(header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("unknown")
+        .to_string();
+    record_device(&state, client_ip, user_agent.as_str()).await;
 
+    let path = request.uri().path().to_string();
+    let should_attach_token =
+        matches!(source, TokenSource::QueryParam | TokenSource::Bearer) || needs_upgrade;
+
+    // When login is enabled, a valid token alone is not enough for
+    // non-bootstrap paths: the user still needs to complete the
+    // passphrase flow to mint a session. Return login_required
+    // (or redirect to /login for HTML) so the SPA pops the
+    // passphrase prompt.
+    if login_enabled && !is_login_session_exempt(&path) {
+        tracing::warn!(
+            target: "auth",
+            ip = %client_ip,
+            path = %path,
+            had_session_cookie = presented_session_id.is_some(),
+            had_device_binding = presented_binding.is_some(),
+            "valid token but no session on non-login-exempt path; returning login_required"
+        );
+        if path.starts_with("/api/") || path.contains("/ws") {
+            return (
+                StatusCode::UNAUTHORIZED,
+                axum::Json(serde_json::json!({
+                    "error": "login_required",
+                    "message": "Passphrase login required"
+                })),
+            )
+                .into_response();
+        } else {
+            let mut response = axum::response::Redirect::temporary("/login").into_response();
+            if should_attach_token {
+                attach_token_headers(&mut response, &state).await;
+            }
+            return response;
+        }
+    }
+
+    // Bootstrap path (login enabled + /login, /api/login, etc.) or
+    // token-only mode. Pass through; attach token cookie for the
+    // upcoming login POST when the token came via QueryParam /
+    // Bearer / grace upgrade.
+    let mut response = next.run(request).await;
+    if should_attach_token {
+        attach_token_headers(&mut response, &state).await;
+    }
+    response
+}
+
+/// Steady-state handler for a bound device. The session + binding
+/// pair is the credential; the token is not consulted. Stamps the
+/// owner identity (from the current token hash for push attribution),
+/// records the device, enforces step-up elevation for sensitive
+/// routes, and refreshes the session cookie's sliding window. NO
+/// `aoe_token` cookie or `x-aoe-token` header is attached: bound
+/// devices don't need the rotating token propagated to them.
+async fn handle_session_authenticated(
+    state: &Arc<AppState>,
+    client_ip: IpAddr,
+    mut request: Request,
+    next: Next,
+    session_id: String,
+) -> Response {
+    state.rate_limiter.record_success(client_ip).await;
+    tracing::trace!(
+        target: "auth.middleware",
+        ip = %client_ip,
+        path = %request.uri().path(),
+        "auth accepted via session+binding"
+    );
     state.touch_web_activity();
 
-    // Owner-identity stamp for push attribution. Use the matched
-    // token hash when available; otherwise (session-bypass) fall
-    // back to the current token's hash. Single-owner deployment,
-    // so one current token => one owner identity.
-    let owner_hash = if let Some(h) = matched_token_hash {
-        h
-    } else {
-        match state.token_manager.current_token().await {
-            Some(t) => super::push::sha256_token(&t),
-            None => [0u8; 32],
-        }
+    let owner_hash = match state.token_manager.current_token().await {
+        Some(t) => super::push::sha256_token(&t),
+        None => [0u8; 32],
     };
     request
         .extensions_mut()
@@ -608,120 +591,36 @@ pub async fn auth_middleware(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("unknown")
         .to_string();
-    record_device(&state, client_ip, user_agent.as_str()).await;
+    record_device(state, client_ip, user_agent.as_str()).await;
 
-    // When to attach a refreshed token cookie + header on the
-    // response. Three cases:
-    //   - QueryParam / Bearer: client doesn't yet have a fresh
-    //     cookie; install one.
-    //   - needs_upgrade: grace-period token; push the current.
-    //   - session-bypass: client's token is stale or missing.
-    //     Push the current so the next request takes the fast
-    //     token path instead of re-running the session-bypass
-    //     round-trip.
-    //
-    // For WebSocket upgrades the `Set-Cookie` header on the 101
-    // response is processed by the browser, so the `aoe_token`
-    // cookie refreshes correctly. The companion `x-aoe-token`
-    // header on the 101 response is NOT exposed to the WebSocket
-    // API, so the SPA's localStorage cache stays stale until the
-    // next regular HTTP request (which will refresh it). That's
-    // self-healing because the SPA always makes HTTP calls
-    // alongside its WS, but worth noting if a future WS-only flow
-    // is added.
-    let should_attach_token = session_bypass
-        || matches!(
-            matched_source,
-            Some(TokenSource::QueryParam) | Some(TokenSource::Bearer)
+    let path = request.uri().path().to_string();
+    let method = request.method().clone();
+
+    if requires_elevation(&method, &path) && !state.login_manager.is_elevated(&session_id).await {
+        tracing::info!(
+            target: "auth.passphrase",
+            ip = %client_ip,
+            path = %path,
+            "sensitive route required elevation; returning 403 elevation_required"
+        );
+        return (
+            StatusCode::FORBIDDEN,
+            axum::Json(serde_json::json!({
+                "error": "elevation_required",
+                "message": "Re-enter the passphrase to continue"
+            })),
         )
-        || needs_upgrade;
-
-    if login_enabled {
-        let path = request.uri().path().to_string();
-        let method = request.method().clone();
-        let is_login_exempt = is_login_session_exempt(&path);
-
-        if !is_login_exempt {
-            // Second-factor requirement (session + binding). Under
-            // session-bypass this is already true; under the token
-            // path we still need to enforce it.
-            if !session_valid {
-                tracing::warn!(
-                    target: "auth",
-                    ip = %client_ip,
-                    path = %path,
-                    had_session_cookie = presented_session_id.is_some(),
-                    had_device_binding = presented_binding.is_some(),
-                    "login session check failed; rejecting api/ws with 401"
-                );
-
-                if path.starts_with("/api/") || path.contains("/ws") {
-                    return (
-                        StatusCode::UNAUTHORIZED,
-                        axum::Json(serde_json::json!({
-                            "error": "login_required",
-                            "message": "Passphrase login required"
-                        })),
-                    )
-                        .into_response();
-                } else {
-                    let mut response =
-                        axum::response::Redirect::temporary("/login").into_response();
-                    if should_attach_token {
-                        attach_token_headers(&mut response, &state).await;
-                    }
-                    return response;
-                }
-            }
-
-            let session_id = presented_session_id
-                .clone()
-                .expect("session_valid implies session_id exists");
-
-            // Step-up gate for sensitive routes (settings + profile
-            // writes). Independent of which factor authenticated us,
-            // since elevation is its own 15-minute window. See #1131.
-            if requires_elevation(&method, &path)
-                && !state.login_manager.is_elevated(&session_id).await
-            {
-                tracing::info!(
-                    target: "auth.passphrase",
-                    ip = %client_ip,
-                    path = %path,
-                    "sensitive route required elevation; returning 403 elevation_required"
-                );
-                return (
-                    StatusCode::FORBIDDEN,
-                    axum::Json(serde_json::json!({
-                        "error": "elevation_required",
-                        "message": "Re-enter the passphrase to continue"
-                    })),
-                )
-                    .into_response();
-            }
-
-            let mut response = next.run(request).await;
-
-            if should_attach_token {
-                attach_token_headers(&mut response, &state).await;
-            }
-
-            // Refresh session cookie sliding window.
-            let login_cookie = super::login::build_login_cookie(&session_id, state.behind_tunnel);
-            response.headers_mut().append(
-                header::SET_COOKIE,
-                login_cookie.parse().expect("cookie format must be valid"),
-            );
-
-            return response;
-        }
+            .into_response();
     }
 
-    // Login disabled OR login-session-exempt path.
     let mut response = next.run(request).await;
-    if should_attach_token {
-        attach_token_headers(&mut response, &state).await;
-    }
+
+    let login_cookie = super::login::build_login_cookie(&session_id, state.behind_tunnel);
+    response.headers_mut().append(
+        header::SET_COOKIE,
+        login_cookie.parse().expect("cookie format must be valid"),
+    );
+
     response
 }
 
@@ -921,33 +820,6 @@ mod tests {
     }
 
     #[test]
-    fn token_check_exempt_only_for_post_logout() {
-        use axum::http::Method;
-        // The bypass exists so the SPA can clear a stale session cookie
-        // immediately after the token expires. See #1163.
-        assert!(is_token_check_exempt(&Method::POST, "/api/logout"));
-        // Trailing slash variant goes to the same handler in axum, so
-        // it must also bypass the token check.
-        assert!(is_token_check_exempt(&Method::POST, "/api/logout/"));
-
-        // GET on the logout path is not a real route; deny anyway so
-        // the bypass doesn't widen if someone later adds a GET handler.
-        assert!(!is_token_check_exempt(&Method::GET, "/api/logout"));
-        assert!(!is_token_check_exempt(&Method::DELETE, "/api/logout"));
-
-        // Nothing else may bypass the token check, especially the
-        // sibling login endpoints (those have their own rate-limited
-        // handlers and the middleware path-exempt list, but they still
-        // need the token middleware to run for trace/device-record
-        // side-effects).
-        assert!(!is_token_check_exempt(&Method::POST, "/api/login"));
-        assert!(!is_token_check_exempt(&Method::POST, "/api/login/elevate"));
-        assert!(!is_token_check_exempt(&Method::GET, "/api/login/status"));
-        assert!(!is_token_check_exempt(&Method::GET, "/api/sessions"));
-        assert!(!is_token_check_exempt(&Method::GET, "/"));
-    }
-
-    #[test]
     fn login_session_exempt_paths() {
         // Bootstrap + status endpoints: the user might hit these
         // before a session exists (or after it expired) and the
@@ -1012,48 +884,6 @@ mod tests {
             cookie.contains(&expected),
             "cookie {cookie:?} must advertise {expected} to match server TTL"
         );
-    }
-
-    // Session-bypass decision: a bound device authenticates via
-    // EITHER a valid token OR (passphrase enabled AND valid
-    // session+binding). This is the core design property added
-    // by #1167; the table-driven test below pins every combination
-    // so a future refactor that flips a condition trips here
-    // instead of silently shipping a regression.
-    #[test]
-    fn decide_auth_outcome_table() {
-        // login disabled, token valid -> token path.
-        assert_eq!(
-            decide_auth(true, false, false),
-            AuthOutcome::TokenAuthenticated
-        );
-        // login disabled, no token -> failed (single-factor mode).
-        assert_eq!(decide_auth(false, false, false), AuthOutcome::Failed);
-        // login disabled never reaches session-bypass even when
-        // session_valid happens to be true (defensive; the caller
-        // only sets session_valid when login is enabled, but the
-        // helper enforces the invariant on its own).
-        assert_eq!(decide_auth(false, false, true), AuthOutcome::Failed);
-
-        // login enabled, both factors valid -> token path takes
-        // priority. We don't want to skip the token rotation
-        // refresh logic just because the session was also valid.
-        assert_eq!(
-            decide_auth(true, true, true),
-            AuthOutcome::TokenAuthenticated
-        );
-        // login enabled, token only -> token path.
-        assert_eq!(
-            decide_auth(true, true, false),
-            AuthOutcome::TokenAuthenticated
-        );
-        // login enabled, session only -> session bypass. This is
-        // the load-bearing case from #1167: a PWA whose token has
-        // rotated past the 4h window still authenticates via the
-        // session cookie + binding.
-        assert_eq!(decide_auth(false, true, true), AuthOutcome::SessionBypass);
-        // login enabled, neither factor -> failed.
-        assert_eq!(decide_auth(false, true, false), AuthOutcome::Failed);
     }
 
     #[test]
