@@ -59,6 +59,7 @@ struct ResumeTarget {
     project_path: String,
     stored_acp_session_id: Option<String>,
     in_flight_turn: bool,
+    yolo_mode: bool,
 }
 
 /// Tuple shape used by the instance-list snapshot. Aliased to dodge
@@ -71,6 +72,7 @@ type RawTargetTuple = (
     Option<String>,
     String,
     Option<String>,
+    bool,
 );
 
 pub async fn reconcile_cockpit_workers(state: &Arc<AppState>, attempted: &mut HashSet<String>) {
@@ -115,6 +117,7 @@ pub async fn reconcile_cockpit_workers(state: &Arc<AppState>, attempted: &mut Ha
                     i.cockpit_model.clone(),
                     i.project_path.clone(),
                     i.cockpit_acp_session_id.clone(),
+                    i.yolo_mode,
                 )
             })
             .collect()
@@ -138,7 +141,9 @@ pub async fn reconcile_cockpit_workers(state: &Arc<AppState>, attempted: &mut Ha
     // already-attached). For the rest, decide attach vs fresh-spawn at
     // task time so concurrent tasks see consistent registry state.
     let mut tasks: Vec<ResumeTarget> = Vec::new();
-    for (id, tool, agent_override, model, project_path, stored_acp_session_id) in raw_targets {
+    for (id, tool, agent_override, model, project_path, stored_acp_session_id, yolo_mode) in
+        raw_targets
+    {
         if attempted.contains(&id) {
             continue;
         }
@@ -162,6 +167,7 @@ pub async fn reconcile_cockpit_workers(state: &Arc<AppState>, attempted: &mut Ha
             project_path,
             stored_acp_session_id,
             in_flight_turn,
+            yolo_mode,
         });
     }
 
@@ -227,6 +233,7 @@ async fn resume_one(state: Arc<AppState>, target: ResumeTarget) -> ResumeOutcome
         project_path,
         stored_acp_session_id,
         in_flight_turn,
+        yolo_mode,
     } = target;
 
     // Reattach path: if a previous daemon detached a runner for this
@@ -326,6 +333,7 @@ async fn resume_one(state: Arc<AppState>, target: ResumeTarget) -> ResumeOutcome
             provider_env: vec![],
             model,
             stored_acp_session_id,
+            yolo_mode,
         })
         .await;
     if let Err(e) = spawn_result {

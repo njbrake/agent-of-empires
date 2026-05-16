@@ -122,6 +122,7 @@ pub async fn spawn_cockpit(
         .collect();
     let model = req.model.or_else(|| instance.cockpit_model.clone());
     let stored_acp_session_id = instance.cockpit_acp_session_id.clone();
+    let yolo_mode = instance.yolo_mode;
 
     let agent_for_response = agent.clone();
     match state
@@ -134,6 +135,7 @@ pub async fn spawn_cockpit(
             provider_env,
             model,
             stored_acp_session_id,
+            yolo_mode,
         })
         .await
     {
@@ -431,6 +433,7 @@ pub async fn cockpit_enable(
     let session_id = id.clone();
     let model = instance.cockpit_model.clone();
     let stored_acp_session_id = instance.cockpit_acp_session_id.clone();
+    let yolo_mode = instance.yolo_mode;
     tokio::spawn(async move {
         if let Err(e) = supervisor
             .spawn(crate::cockpit::supervisor::SpawnRequest {
@@ -441,6 +444,7 @@ pub async fn cockpit_enable(
                 provider_env: vec![],
                 model,
                 stored_acp_session_id,
+                yolo_mode,
             })
             .await
         {

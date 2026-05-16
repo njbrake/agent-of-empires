@@ -1016,6 +1016,7 @@ pub async fn create_session(
                     instance.cockpit_model.clone(),
                     instance.project_path.clone(),
                     instance.cockpit_acp_session_id.clone(),
+                    instance.yolo_mode,
                 ))
             } else {
                 None
@@ -1025,8 +1026,15 @@ pub async fn create_session(
             drop(instances);
 
             #[cfg(feature = "serve")]
-            if let Some((id, tool, agent_override, model, project_path, stored_acp_session_id)) =
-                cockpit_spawn_target
+            if let Some((
+                id,
+                tool,
+                agent_override,
+                model,
+                project_path,
+                stored_acp_session_id,
+                yolo_mode,
+            )) = cockpit_spawn_target
             {
                 let agent = state
                     .cockpit_supervisor
@@ -1045,6 +1053,7 @@ pub async fn create_session(
                             provider_env: vec![],
                             model,
                             stored_acp_session_id,
+                            yolo_mode,
                         })
                         .await
                     {
