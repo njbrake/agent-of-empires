@@ -571,11 +571,18 @@ pub(crate) fn is_valid_session_id(id: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.')
 }
 
-/// Build a set of session IDs already claimed by other AoE instances.
+/// Build the set of session IDs already claimed by other live AoE instances.
 ///
-/// Lists all tmux sessions with the AoE prefix, reads each one's hidden env vars
-/// to find its instance ID and captured session ID, and collects all captured IDs
-/// from instances other than `current_instance_id`.
+/// Reads every other AoE-prefixed tmux session's hidden env to find which
+/// session IDs are currently bound to which instance, and returns the set
+/// of captured IDs that belong to instances OTHER than `current_instance_id`.
+/// Used by post-launch poll closures to avoid re-importing another
+/// instance's session via filesystem scan.
+///
+/// Callers that also need to exclude IDs not yet visible in tmux env (e.g.
+/// the resume-fallback cascade's just-crashed sid) should use
+/// [`Instance::retroactive_capture_exclusion_set`] instead, which composes
+/// this function with the per-instance exclusion list.
 pub(crate) fn build_exclusion_set(current_instance_id: &str) -> HashSet<String> {
     let output = match std::process::Command::new("tmux")
         .args(["list-sessions", "-F", "#{session_name}"])

@@ -1,9 +1,10 @@
 //! Session instance definition and operations
 
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -47,6 +48,52 @@ pub enum Status {
     Starting,
     Deleting,
     Creating,
+}
+
+/// Outcome of a `start_with_resume_fallback` cascade.
+///
+/// Failures (both tiers) propagate as `Err` so callers keep the existing
+/// `Status::Error` + `last_error` path. Only successful outcomes are
+/// enumerated; mirrors the `EnsureReadyOutcome` shape.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StartOutcome {
+    /// Session ID was set and resume succeeded; pane is alive.
+    Resumed,
+    /// Resume attempt crashed the pane fast; the bad sid was cleared and a
+    /// fresh start succeeded. Caller should surface this: the user's prior
+    /// conversation is gone. `stale_sid` is the sid that was cleared.
+    Restarted { stale_sid: String },
+    /// No resume was attempted (no prior sid, agent doesn't support resume,
+    /// or sid was invalid). Started cleanly.
+    Fresh,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProbeResult {
+    Alive,
+    Dead,
+}
+
+const RESUME_PROBE_MAX: std::time::Duration = std::time::Duration::from_millis(3000);
+const RESUME_PROBE_POLL: std::time::Duration = std::time::Duration::from_millis(50);
+/// Grace window we keep observing after the pane stops running its boot
+/// shell, before declaring `Alive`. Without it, a Node.js agent that
+/// `exec`s past the wrapper at ~80ms and crashes at ~250ms is reported
+/// as alive on the first not-shell poll, defeating the cascade.
+const RESUME_PROBE_POST_SHELL_GRACE: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Pure decision: should the resume-fallback cascade probe and potentially
+/// retry without resume after the initial start? Extracted for unit-testability:
+/// the cascade itself needs a real tmux session to test end-to-end.
+fn should_attempt_resume(agent_session_id: Option<&str>, tool: &str) -> bool {
+    let valid = agent_session_id.map(is_valid_session_id).unwrap_or(false);
+    if !valid {
+        return false;
+    }
+    !matches!(
+        crate::agents::get_agent(tool).map(|a| &a.resume_strategy),
+        Some(crate::agents::ResumeStrategy::Unsupported) | None,
+    )
 }
 
 /// Outcome of `Instance::ensure_pane_ready`. Callers surface this so the user
@@ -308,6 +355,15 @@ pub struct Instance {
     pub last_error: Option<String>,
     #[serde(skip)]
     pub session_id_poller: Option<Arc<Mutex<SessionPoller>>>,
+
+    /// Runtime-only set of session IDs that retroactive capture must NOT
+    /// re-discover from on-disk artifacts. Populated by the resume-fallback
+    /// cascade with the just-crashed session ID so the Tier-2 fresh start
+    /// doesn't re-import the same bad sid via filesystem scan (opencode db,
+    /// vibe meta.json, codex state, etc., all keep the bad session's row
+    /// after the crash for several minutes).
+    #[serde(skip)]
+    pub(crate) retroactive_capture_excludes: HashSet<String>,
 }
 
 /// Append yolo-mode flags or environment variables to a launch command.
@@ -439,6 +495,51 @@ fn persist_session_to_storage(profile: &str, instance_id: &str, session_id: &str
     }
 }
 
+/// Clear the persisted `agent_session_id` for an instance.
+///
+/// Inverse of `persist_session_to_storage`. Used by the resume-fallback
+/// cascade after Tier 1 detects a crashed pane: the bad sid was already
+/// flushed to `sessions.json` by the Tier-1 `finalize_launch`, so an
+/// in-memory clear is not enough. If the daemon dies between Tier 1 and
+/// Tier 2's `finalize_launch`, the next launch would otherwise re-load the
+/// bad sid from disk and pass `--resume <bad>` again, looping.
+fn clear_session_id_on_disk(profile: &str, instance_id: &str) {
+    debug_assert!(
+        std::thread::current()
+            .name()
+            .is_none_or(|n| n == "main" || !n.starts_with("aoe-")),
+        "clear_session_id_on_disk must not be called from background threads (was: {:?})",
+        std::thread::current().name()
+    );
+
+    let storage = match super::storage::Storage::new(profile) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::warn!("Failed to create storage to clear session ID: {}", e);
+            return;
+        }
+    };
+    let mut instances = match storage.load() {
+        Ok(i) => i,
+        Err(e) => {
+            tracing::warn!("Failed to load instances to clear session ID: {}", e);
+            return;
+        }
+    };
+    let Some(inst) = instances.iter_mut().find(|i| i.id == instance_id) else {
+        return;
+    };
+    if inst.agent_session_id.is_none() {
+        return;
+    }
+    inst.agent_session_id = None;
+    if let Err(e) = storage.save(&instances) {
+        tracing::warn!("Failed to save instances after clearing session ID: {}", e);
+    } else {
+        tracing::debug!("Session ID cleared on disk for {}", instance_id);
+    }
+}
+
 /// Publish a captured session ID to the tmux environment only.
 ///
 /// Background threads (poller on_change) call this so that
@@ -493,6 +594,7 @@ impl Instance {
             last_start_time: None,
             last_error: None,
             session_id_poller: None,
+            retroactive_capture_excludes: HashSet::new(),
         }
     }
 
@@ -610,8 +712,20 @@ impl Instance {
         (session_id, false)
     }
 
+    /// Full set of session IDs that retroactive capture must skip for THIS
+    /// instance: the live tmux-discovered set plus any sids the
+    /// resume-fallback cascade has explicitly cleared. Composed of
+    /// [`build_exclusion_set`] (live tmux scan) and
+    /// `self.retroactive_capture_excludes` (cascade memory) so the caller
+    /// gets the complete picture in one call.
+    fn retroactive_capture_exclusion_set(&self) -> HashSet<String> {
+        let mut set = build_exclusion_set(&self.id);
+        set.extend(self.retroactive_capture_excludes.iter().cloned());
+        set
+    }
+
     pub(crate) fn try_retroactive_capture(&self) -> Option<String> {
-        let exclusion = build_exclusion_set(&self.id);
+        let exclusion = self.retroactive_capture_exclusion_set();
         let result: Option<String> = match self.tool.as_str() {
             "opencode" => {
                 if self.is_sandboxed() {
@@ -1463,11 +1577,50 @@ impl Instance {
     }
 
     pub fn restart(&mut self) -> Result<()> {
-        self.restart_with_size(None)
+        self.restart_with_size(None).map(|_| ())
     }
 
-    pub fn restart_with_size(&mut self, size: Option<(u16, u16)>) -> Result<()> {
+    pub fn restart_with_size(&mut self, size: Option<(u16, u16)>) -> Result<StartOutcome> {
         self.restart_with_size_opts(size, false)
+    }
+
+    /// Tear down the current tmux session cleanly so a fresh
+    /// `start_with_size_opts` can recreate it.
+    ///
+    /// `remain-on-exit on` keeps the tmux session alive after the agent
+    /// process exits, leaving a frozen pane. The plain kill-session +
+    /// new-session flow can race against the session cache
+    /// (kill_process_tree on a defunct pid stalls on macOS, and the
+    /// subsequent kill can run while start's exists() check still sees the
+    /// cached entry), leaving the dead pane in place. Respawning the pane
+    /// into a shell first puts it back in a live state so the kill path
+    /// proceeds cleanly. The kill below then sees a live pane and tears it
+    /// down. Caller is responsible for the subsequent
+    /// `start_with_size_opts` to recreate the session with the agent
+    /// command.
+    fn kill_clean(&self) -> Result<()> {
+        let session = self.tmux_session()?;
+        if !session.exists() {
+            return Ok(());
+        }
+        if session.is_pane_dead() {
+            tracing::info!(
+                "restart: pane dead for session {} (remain-on-exit), \
+                 respawning shell before recreate",
+                session.name()
+            );
+            let shell = super::environment::user_shell();
+            if let Err(e) = session.respawn_dead_pane(&self.project_path, Some(&shell)) {
+                tracing::warn!(
+                    "respawn_dead_pane failed for {}: {} -- falling back to kill+start",
+                    session.name(),
+                    e
+                );
+            }
+        }
+        session.kill()?;
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        Ok(())
     }
 
     /// Restart the session, optionally skipping on_launch hooks (e.g. when
@@ -1476,44 +1629,127 @@ impl Instance {
         &mut self,
         size: Option<(u16, u16)>,
         skip_on_launch: bool,
-    ) -> Result<()> {
+    ) -> Result<StartOutcome> {
         self.stop_poller();
         self.session_id_poller = None;
+        self.kill_clean()?;
+        self.start_with_resume_fallback(size, skip_on_launch)
+    }
 
+    /// Settle-based pane probe used by the resume-fallback cascade.
+    ///
+    /// Returns `Dead` immediately if the pane dies or the session evaporates
+    /// during the probe window. Returns `Alive` only after the pane has been
+    /// off the boot shell for `RESUME_PROBE_POST_SHELL_GRACE` consecutive
+    /// time (handles Node.js agents that `exec` to `node` before crashing
+    /// on a bad sid), or charitably on full timeout for slow-start agents.
+    /// `pane_dead` is the unambiguous signal we trust to fire the cascade.
+    fn probe_settle(
+        &self,
+        max: std::time::Duration,
+        poll: std::time::Duration,
+    ) -> Result<ProbeResult> {
         let session = self.tmux_session()?;
-
-        if session.exists() {
-            // Dead-pane case: `remain-on-exit on` keeps the tmux session
-            // alive after the agent process exits, leaving a frozen pane.
-            // The plain kill-session + new-session flow can race against
-            // the session cache (kill_process_tree on a defunct pid
-            // stalls on macOS, and the subsequent kill can run while
-            // start's exists() check still sees the cached entry),
-            // leaving the dead pane in place. Respawning the pane into a
-            // shell first puts it back in a live state so the kill path
-            // proceeds cleanly. The kill below then sees a live pane and
-            // tears it down; start_with_size_opts recreates the session
-            // with the agent command.
-            if session.is_pane_dead() {
-                tracing::info!(
-                    "restart: pane dead for session {} (remain-on-exit), \
-                     respawning shell before recreate",
-                    session.name()
-                );
-                let shell = super::environment::user_shell();
-                if let Err(e) = session.respawn_dead_pane(&self.project_path, Some(&shell)) {
-                    tracing::warn!(
-                        "respawn_dead_pane failed for {}: {} -- falling back to kill+start",
-                        session.name(),
-                        e
-                    );
-                }
+        let deadline = std::time::Instant::now() + max;
+        let mut first_post_shell: Option<std::time::Instant> = None;
+        loop {
+            if !session.exists() {
+                return Ok(ProbeResult::Dead);
             }
-            session.kill()?;
-            std::thread::sleep(std::time::Duration::from_millis(100));
+            if session.is_pane_dead() {
+                return Ok(ProbeResult::Dead);
+            }
+            let now = std::time::Instant::now();
+            if !session.is_pane_running_shell() {
+                let started = *first_post_shell.get_or_insert(now);
+                if now.duration_since(started) >= RESUME_PROBE_POST_SHELL_GRACE {
+                    return Ok(ProbeResult::Alive);
+                }
+            } else {
+                first_post_shell = None;
+            }
+            if now >= deadline {
+                return Ok(ProbeResult::Alive);
+            }
+            std::thread::sleep(poll);
+        }
+    }
+
+    /// Start the session with a one-shot resume fallback.
+    ///
+    /// Cascade:
+    ///   1. If a valid `agent_session_id` is set and the agent supports
+    ///      resume, attempt the start (which appends `--resume <sid>` or
+    ///      equivalent). Probe the pane via `probe_settle`.
+    ///   2. If the pane went dead within the probe window, stop the Tier-1
+    ///      poller, tear down the dead tmux session, clear the bad sid
+    ///      (in memory, on disk, and from retroactive-capture re-discovery),
+    ///      and retry the start with `skip_on_launch=true` so on_launch
+    ///      hooks do not run twice.
+    ///   3. If the second start also fails, propagate `Err` so the caller's
+    ///      existing `Status::Error` + `last_error` path takes over.
+    ///
+    /// Cockpit-mode sessions short-circuit (no tmux pane to probe).
+    pub(crate) fn start_with_resume_fallback(
+        &mut self,
+        size: Option<(u16, u16)>,
+        skip_on_launch: bool,
+    ) -> Result<StartOutcome> {
+        #[cfg(feature = "serve")]
+        if self.cockpit_mode {
+            self.start_with_size_opts(size, skip_on_launch)?;
+            return Ok(StartOutcome::Fresh);
         }
 
-        self.start_with_size_opts(size, skip_on_launch)
+        if self.status == Status::Error {
+            self.status = Status::Idle;
+            self.last_error = None;
+            self.last_error_check = None;
+        }
+
+        let attempting_resume = should_attempt_resume(self.agent_session_id.as_deref(), &self.tool);
+        let session_existed_before = self.tmux_session().is_ok_and(|s| s.exists());
+
+        self.start_with_size_opts(size, skip_on_launch)?;
+
+        if !attempting_resume || session_existed_before {
+            return Ok(StartOutcome::Fresh);
+        }
+
+        match self.probe_settle(RESUME_PROBE_MAX, RESUME_PROBE_POLL)? {
+            ProbeResult::Alive => return Ok(StartOutcome::Resumed),
+            ProbeResult::Dead => {}
+        }
+
+        let stale_sid = self
+            .agent_session_id
+            .clone()
+            .unwrap_or_else(|| "<unknown>".to_string());
+        let profile = self.effective_profile();
+        tracing::warn!(
+            "start: resume with sid {} for session {} crashed pane within probe; \
+             clearing sid and retrying without resume",
+            stale_sid,
+            self.id,
+        );
+
+        self.stop_poller();
+        self.session_id_poller = None;
+        self.kill_clean()
+            .with_context(|| format!("kill_clean before resume fallback for {}", self.id))?;
+
+        self.agent_session_id = None;
+        clear_session_id_on_disk(&profile, &self.id);
+        self.retroactive_capture_excludes.insert(stale_sid.clone());
+
+        self.start_with_size_opts(size, true).with_context(|| {
+            format!(
+                "fresh restart after resume fallback failed for {} (stale sid {} was cleared)",
+                self.id, stale_sid,
+            )
+        })?;
+
+        Ok(StartOutcome::Restarted { stale_sid })
     }
 
     /// Smart-send precondition: bring this session's tmux pane to a state
@@ -3176,6 +3412,182 @@ mod tests {
             );
 
             cleanup(&name);
+        }
+    }
+
+    mod resume_fallback {
+        use super::super::{
+            clear_session_id_on_disk, should_attempt_resume, Instance, StartOutcome, Status,
+        };
+        use serial_test::serial;
+        use tempfile::tempdir;
+
+        #[test]
+        fn no_sid_does_not_attempt_resume() {
+            assert!(!should_attempt_resume(None, "claude"));
+            assert!(!should_attempt_resume(Some(""), "claude"));
+            assert!(!should_attempt_resume(Some("   "), "claude"));
+        }
+
+        #[test]
+        fn invalid_sid_does_not_attempt_resume() {
+            assert!(!should_attempt_resume(Some("bad id!"), "claude"));
+            assert!(!should_attempt_resume(Some("path/slash"), "claude"));
+            assert!(!should_attempt_resume(Some(&"x".repeat(257)), "claude"));
+        }
+
+        #[test]
+        fn valid_sid_for_resume_supporting_agent_attempts() {
+            assert!(should_attempt_resume(
+                Some("11111111-1111-1111-1111-111111111111"),
+                "claude"
+            ));
+            assert!(should_attempt_resume(Some("session_abc.123"), "opencode"));
+            assert!(should_attempt_resume(Some("uuid-abc-123"), "codex"));
+            assert!(should_attempt_resume(Some("uuid-abc-123"), "gemini"));
+        }
+
+        #[test]
+        fn unsupported_agent_does_not_attempt_resume() {
+            assert!(!should_attempt_resume(
+                Some("11111111-1111-1111-1111-111111111111"),
+                "cursor"
+            ));
+            assert!(!should_attempt_resume(
+                Some("11111111-1111-1111-1111-111111111111"),
+                "copilot"
+            ));
+        }
+
+        #[test]
+        fn unknown_tool_does_not_attempt_resume() {
+            assert!(!should_attempt_resume(Some("uuid-abc-123"), "nonexistent"));
+        }
+
+        #[test]
+        #[serial]
+        fn clear_session_id_on_disk_is_idempotent_when_already_none() {
+            let temp = tempdir().unwrap();
+            std::env::set_var("HOME", temp.path());
+            #[cfg(target_os = "linux")]
+            std::env::set_var("XDG_CONFIG_HOME", temp.path().join(".config"));
+
+            clear_session_id_on_disk("test-profile-empty", "nonexistent-id");
+        }
+
+        #[test]
+        #[serial]
+        fn clear_session_id_on_disk_clears_persisted_value() {
+            let temp = tempdir().unwrap();
+            std::env::set_var("HOME", temp.path());
+            #[cfg(target_os = "linux")]
+            std::env::set_var("XDG_CONFIG_HOME", temp.path().join(".config"));
+
+            let storage = crate::session::storage::Storage::new("clear-test").unwrap();
+            let mut inst = Instance::new("title", "/tmp/x");
+            inst.agent_session_id = Some("stale-uuid-1234".to_string());
+            let id = inst.id.clone();
+            storage.save(&[inst]).unwrap();
+
+            clear_session_id_on_disk("clear-test", &id);
+
+            let loaded = storage.load().unwrap();
+            assert_eq!(loaded.len(), 1);
+            assert_eq!(loaded[0].agent_session_id, None);
+        }
+
+        #[test]
+        #[serial]
+        fn restart_outcome_for_cockpit_session_is_fresh() {
+            #[cfg(feature = "serve")]
+            {
+                if std::process::Command::new("tmux")
+                    .arg("-V")
+                    .output()
+                    .is_err()
+                {
+                    eprintln!("tmux not available; skipping");
+                    return;
+                }
+                let temp = tempdir().unwrap();
+                std::env::set_var("HOME", temp.path());
+                #[cfg(target_os = "linux")]
+                std::env::set_var("XDG_CONFIG_HOME", temp.path().join(".config"));
+
+                let mut inst = Instance::new("cockpit_test", "/tmp/x");
+                inst.cockpit_mode = true;
+                inst.agent_session_id = Some("11111111-1111-1111-1111-111111111111".to_string());
+                inst.tool = "claude".to_string();
+
+                let outcome = inst.start_with_resume_fallback(None, true).unwrap();
+                assert_eq!(outcome, StartOutcome::Fresh);
+            }
+        }
+
+        #[test]
+        #[serial]
+        fn fallback_clears_sid_in_memory_and_on_disk_when_pane_dies() {
+            if std::process::Command::new("tmux")
+                .arg("-V")
+                .output()
+                .is_err()
+            {
+                eprintln!("tmux not available; skipping");
+                return;
+            }
+            let temp = tempdir().unwrap();
+            std::env::set_var("HOME", temp.path());
+            #[cfg(target_os = "linux")]
+            std::env::set_var("XDG_CONFIG_HOME", temp.path().join(".config"));
+
+            let storage = crate::session::storage::Storage::new("fb-test").unwrap();
+
+            let stale_sid = "11111111-1111-1111-1111-111111111111".to_string();
+            let mut inst = Instance::new("fallback_dies_test", "/tmp/x");
+            inst.tool = "claude".to_string();
+            inst.source_profile = "fb-test".to_string();
+            inst.command = "/bin/false".to_string();
+            inst.agent_session_id = Some(stale_sid.clone());
+            inst.status = Status::Idle;
+            let id = inst.id.clone();
+
+            let tmux_name = crate::tmux::Session::generate_name(&inst.id, &inst.title);
+            let _ = std::process::Command::new("tmux")
+                .args(["kill-session", "-t", &tmux_name])
+                .output();
+
+            storage.save(&[inst.clone()]).unwrap();
+
+            let outcome = inst.start_with_resume_fallback(None, true);
+
+            let _ = std::process::Command::new("tmux")
+                .args(["kill-session", "-t", &tmux_name])
+                .output();
+
+            let outcome = outcome.expect("cascade must succeed: Tier-2 fresh start with /bin/false should always succeed at tmux level");
+            match outcome {
+                StartOutcome::Restarted { stale_sid: cleared } => {
+                    assert_eq!(cleared, stale_sid);
+                }
+                other => panic!("expected Restarted, got {other:?}"),
+            }
+            assert!(
+                inst.retroactive_capture_excludes.contains(&stale_sid),
+                "stale sid must be in exclusion set so retroactive capture cannot \
+                 re-import it on next launch"
+            );
+            assert_ne!(
+                inst.agent_session_id.as_deref(),
+                Some(stale_sid.as_str()),
+                "stale sid must not survive in memory (Tier 2 may regenerate a fresh sid for Claude, but never the stale one)"
+            );
+            let loaded = storage.load().unwrap();
+            let row = loaded.iter().find(|i| i.id == id).expect("instance");
+            assert_ne!(
+                row.agent_session_id.as_deref(),
+                Some(stale_sid.as_str()),
+                "stale sid must not survive on disk after fallback"
+            );
         }
     }
 }
