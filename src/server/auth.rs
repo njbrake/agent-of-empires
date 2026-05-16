@@ -73,6 +73,33 @@ fn build_cookie(token: &str, secure: bool, max_age_secs: u64) -> String {
     cookie
 }
 
+/// Write the `aoe_token` Set-Cookie and the companion `x-aoe-token`
+/// header into a response's header map.
+///
+/// Uses `.append` for `Set-Cookie` because the handler that just ran
+/// may already have set its own (`login_handler` sets `aoe_session`
+/// on successful login; `logout_handler` clears it). `.insert` would
+/// replace those values and the browser would only see our
+/// `aoe_token` cookie, silently dropping the session state the
+/// handler intended to set. The two cookie names don't collide, so
+/// the browser processes both Set-Cookie values. `.insert` is fine
+/// for `x-aoe-token` because no handler writes that header.
+fn write_token_headers(
+    headers: &mut axum::http::HeaderMap,
+    token: &str,
+    behind_tunnel: bool,
+    max_age_secs: u64,
+) {
+    let cookie = build_cookie(token, behind_tunnel, max_age_secs);
+    headers.append(
+        header::SET_COOKIE,
+        cookie.parse().expect("cookie format must be valid"),
+    );
+    if let Ok(value) = token.parse() {
+        headers.insert("x-aoe-token", value);
+    }
+}
+
 /// Attach both the Set-Cookie and X-Aoe-Token headers to a response. The
 /// cookie covers the browser flow; X-Aoe-Token lets the PWA update its
 /// localStorage-cached token when the server rotates. Without the header,
@@ -83,14 +110,12 @@ async fn attach_token_headers(response: &mut Response, state: &AppState) {
         return;
     };
     let max_age = state.token_manager.lifetime_secs().await;
-    let cookie = build_cookie(&current, state.behind_tunnel, max_age);
-    response.headers_mut().insert(
-        header::SET_COOKIE,
-        cookie.parse().expect("cookie format must be valid"),
+    write_token_headers(
+        response.headers_mut(),
+        &current,
+        state.behind_tunnel,
+        max_age,
     );
-    if let Ok(value) = current.parse() {
-        response.headers_mut().insert("x-aoe-token", value);
-    }
 }
 
 const MAX_DEVICES: usize = 100;
@@ -834,6 +859,60 @@ mod tests {
             "not-base64-and-wrong-length",
         )]);
         assert!(extract_device_binding(&req).is_none());
+    }
+
+    // Regression test for the token-cookie clobber bug:
+    // `write_token_headers` must `.append` the `Set-Cookie` for
+    // `aoe_token`, never `.insert`. A handler that already set
+    // `aoe_session` on its response (login_handler on success,
+    // logout_handler on clear) must keep its cookie when the
+    // middleware later adds the `aoe_token` cookie. A `.insert`
+    // would replace the handler's `Set-Cookie` (HeaderMap::insert
+    // semantics: remove all prior values, set the new one), so
+    // browsers would receive only `aoe_token=...` and the
+    // session-cookie write would be silently dropped. This test
+    // pins the two-cookies-in-the-response invariant.
+    #[test]
+    fn write_token_headers_preserves_prior_set_cookie() {
+        use axum::http::{HeaderMap, HeaderValue};
+
+        let mut headers = HeaderMap::new();
+        // Simulate a handler that already set its own Set-Cookie
+        // (e.g., `login_handler` setting `aoe_session=...`).
+        headers.insert(
+            header::SET_COOKIE,
+            HeaderValue::from_static(
+                "aoe_session=abc; HttpOnly; SameSite=Strict; Path=/; Max-Age=2592000",
+            ),
+        );
+
+        // Middleware writes the `aoe_token` cookie + companion
+        // header on top.
+        write_token_headers(&mut headers, "tok123", false, 14400);
+
+        let cookies: Vec<String> = headers
+            .get_all(header::SET_COOKIE)
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .map(str::to_string)
+            .collect();
+        assert_eq!(
+            cookies.len(),
+            2,
+            "both Set-Cookie values must survive, got {cookies:?}"
+        );
+        assert!(
+            cookies.iter().any(|c| c.contains("aoe_session=abc")),
+            "handler's aoe_session cookie was clobbered: {cookies:?}"
+        );
+        assert!(
+            cookies.iter().any(|c| c.contains("aoe_token=tok123")),
+            "middleware's aoe_token cookie missing: {cookies:?}"
+        );
+        assert_eq!(
+            headers.get("x-aoe-token").and_then(|v| v.to_str().ok()),
+            Some("tok123")
+        );
     }
 
     // Regression test for the logout-clobber bug: when a request
