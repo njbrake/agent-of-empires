@@ -504,13 +504,12 @@ fn persist_session_to_storage(profile: &str, instance_id: &str, session_id: &str
 /// Tier 2's `finalize_launch`, the next launch would otherwise re-load the
 /// bad sid from disk and pass `--resume <bad>` again, looping.
 fn clear_session_id_on_disk(profile: &str, instance_id: &str) {
-    debug_assert!(
-        std::thread::current()
-            .name()
-            .is_none_or(|n| n == "main" || !n.starts_with("aoe-")),
-        "clear_session_id_on_disk must not be called from background threads (was: {:?})",
-        std::thread::current().name()
-    );
+    // Invariant: caller must have stopped this instance's session_id_poller
+    // before calling. Otherwise the poller's `on_change` callback can race
+    // this load -> mutate -> save with its own write to `sessions.json` and
+    // either party's update is lost (Storage::save is non-atomic).
+    // start_with_resume_fallback enforces this via stop_poller() + nulling
+    // session_id_poller before the call site at L1736-1737.
 
     let storage = match super::storage::Storage::new(profile) {
         Ok(s) => s,
@@ -1685,11 +1684,24 @@ impl Instance {
     ///      poller, tear down the dead tmux session, clear the bad sid
     ///      (in memory, on disk, and from retroactive-capture re-discovery),
     ///      and retry the start with `skip_on_launch=true` so on_launch
-    ///      hooks do not run twice.
-    ///   3. If the second start also fails, propagate `Err` so the caller's
-    ///      existing `Status::Error` + `last_error` path takes over.
+    ///      hooks do not run twice. Probe the second pane the same way:
+    ///      `start_with_size_opts` only fails on tmux-subprocess errors, so
+    ///      an in-pane crash (missing binary, broken `docker exec`, agent
+    ///      panic on first run) would otherwise masquerade as
+    ///      `StartOutcome::Restarted` over a corpse pane.
+    ///   3. If the Tier-2 start fails at the tmux level *or* its pane crashes
+    ///      within the probe window, propagate `Err` so the caller's existing
+    ///      `Status::Error` + `last_error` path takes over.
+    ///
+    /// Latency: only fires the probe when `--resume <sid>` is being passed
+    /// to a freshly-created tmux session. Healthy resumes pay
+    /// `RESUME_PROBE_POST_SHELL_GRACE` (~500ms) once on cold start; warm
+    /// sessions and non-resume launches pay nothing.
     ///
     /// Cockpit-mode sessions short-circuit (no tmux pane to probe).
+    /// `StartOutcome::Fresh` is honest there: cockpit's resume concept lives
+    /// in `cockpit_acp_session_id` and is handled by the ACP supervisor, not
+    /// by this cascade.
     pub(crate) fn start_with_resume_fallback(
         &mut self,
         size: Option<(u16, u16)>,
@@ -1748,6 +1760,25 @@ impl Instance {
                 self.id, stale_sid,
             )
         })?;
+
+        // Tier-2 needs the same settle-probe as Tier-1: tmux can spawn the
+        // pane successfully while the agent inside crashes immediately
+        // (missing binary, gone docker image, agent panic on first run).
+        // Without this, the in-pane crash class - the very class the cascade
+        // exists to surface - would silently report `StartOutcome::Restarted`.
+        // The dead pane is left in tmux; the next user-initiated restart
+        // goes through `restart_with_size_opts` -> `kill_clean` and self-heals.
+        if matches!(
+            self.probe_settle(RESUME_PROBE_MAX, RESUME_PROBE_POLL)?,
+            ProbeResult::Dead
+        ) {
+            anyhow::bail!(
+                "fresh restart after resume fallback crashed within probe for {} \
+                 (stale sid {} was cleared; underlying issue persists)",
+                self.id,
+                stale_sid,
+            );
+        }
 
         Ok(StartOutcome::Restarted { stale_sid })
     }
@@ -3564,30 +3595,95 @@ mod tests {
                 .args(["kill-session", "-t", &tmux_name])
                 .output();
 
-            let outcome = outcome.expect("cascade must succeed: Tier-2 fresh start with /bin/false should always succeed at tmux level");
-            match outcome {
-                StartOutcome::Restarted { stale_sid: cleared } => {
-                    assert_eq!(cleared, stale_sid);
-                }
-                other => panic!("expected Restarted, got {other:?}"),
-            }
+            let err = outcome
+                .expect_err("Tier-2 with /bin/false must crash within probe and propagate Err");
+            let chain = format!("{:#}", err);
+            assert!(
+                chain.contains("crashed within probe") && chain.contains(&stale_sid),
+                "Tier-2 probe failure must surface the stale sid in its error chain, got: {chain}",
+            );
+
             assert!(
                 inst.retroactive_capture_excludes.contains(&stale_sid),
-                "stale sid must be in exclusion set so retroactive capture cannot \
-                 re-import it on next launch"
+                "stale sid must be in exclusion set even when Tier-2 ultimately fails: \
+                 the cleanup happens before the Tier-2 attempt and must survive the bail",
             );
             assert_ne!(
                 inst.agent_session_id.as_deref(),
                 Some(stale_sid.as_str()),
-                "stale sid must not survive in memory (Tier 2 may regenerate a fresh sid for Claude, but never the stale one)"
+                "stale sid must not survive in memory after fallback, even on Tier-2 failure",
             );
             let loaded = storage.load().unwrap();
             let row = loaded.iter().find(|i| i.id == id).expect("instance");
             assert_ne!(
                 row.agent_session_id.as_deref(),
                 Some(stale_sid.as_str()),
-                "stale sid must not survive on disk after fallback"
+                "stale sid must not survive on disk after fallback, even on Tier-2 failure",
             );
+        }
+
+        #[test]
+        #[serial]
+        fn fallback_returns_restarted_when_tier2_pane_lives() {
+            if std::process::Command::new("tmux")
+                .arg("-V")
+                .output()
+                .is_err()
+            {
+                eprintln!("tmux not available; skipping");
+                return;
+            }
+            let temp = tempdir().unwrap();
+            std::env::set_var("HOME", temp.path());
+            #[cfg(target_os = "linux")]
+            std::env::set_var("XDG_CONFIG_HOME", temp.path().join(".config"));
+
+            let _storage = crate::session::storage::Storage::new("fb-test-live").unwrap();
+
+            let stale_sid = "22222222-2222-2222-2222-222222222222".to_string();
+            let mut inst = Instance::new("fallback_lives_test", "/tmp/x");
+            inst.tool = "claude".to_string();
+            inst.source_profile = "fb-test-live".to_string();
+            // Claude regenerates a fresh UUID on Tier-2 (acquire_session_id
+            // emits `--session-id <new_uuid>`), so we cannot just count argv.
+            // Match the *stale* sid specifically: Tier-1 appends `--resume
+            // <stale_sid>` and the script exits, firing the cascade. Tier-2
+            // appends `--session-id <new_uuid>` (different value), so the
+            // pattern does not match and `sleep 30` keeps the pane alive
+            // past RESUME_PROBE_MAX (3s).
+            inst.command = format!(
+                "/bin/sh -c 'case \"$*\" in *{stale}*) exit 1 ;; esac; exec sleep 30' --",
+                stale = stale_sid,
+            );
+            inst.agent_session_id = Some(stale_sid.clone());
+            inst.status = Status::Idle;
+
+            let tmux_name = crate::tmux::Session::generate_name(&inst.id, &inst.title);
+            let _ = std::process::Command::new("tmux")
+                .args(["kill-session", "-t", &tmux_name])
+                .output();
+
+            let outcome = inst.start_with_resume_fallback(None, true);
+
+            let _ = std::process::Command::new("tmux")
+                .args(["kill-session", "-t", &tmux_name])
+                .output();
+
+            match outcome {
+                Ok(StartOutcome::Restarted { stale_sid: cleared }) => {
+                    assert_eq!(cleared, stale_sid);
+                }
+                Ok(other) => panic!(
+                    "Tier-2 success path must return Restarted, got {other:?}; \
+                     a different variant indicates the probe misfires"
+                ),
+                Err(e) => panic!(
+                    "Tier-2 with a live binary must succeed: {e:#}; \
+                     check probe_settle behavior on long-running shells"
+                ),
+            }
+            assert!(inst.retroactive_capture_excludes.contains(&stale_sid));
+            assert!(inst.agent_session_id.as_deref() != Some(stale_sid.as_str()));
         }
     }
 }
