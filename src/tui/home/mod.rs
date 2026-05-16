@@ -1208,19 +1208,28 @@ impl HomeView {
     }
 
     pub fn show_welcome(&mut self) {
+        tracing::info!(target: "tui.dialog", dialog = "welcome", "opening");
         self.welcome_dialog = Some(WelcomeDialog::new());
     }
 
     pub fn show_no_agents(&mut self) {
+        tracing::info!(target: "tui.dialog", dialog = "no_agents", "opening");
         self.no_agents_dialog = Some(NoAgentsDialog::new());
     }
 
     /// Replace available tools (used after re-check from no-agents dialog).
     pub fn set_available_tools(&mut self, tools: AvailableTools) {
+        tracing::debug!(target: "tui.home", count = tools.available_list().len(), "available tools refreshed");
         self.available_tools = tools;
     }
 
     pub fn show_changelog(&mut self, from_version: Option<String>) {
+        tracing::info!(
+            target: "tui.dialog",
+            dialog = "changelog",
+            from_version = ?from_version,
+            "opening",
+        );
         self.changelog_dialog = Some(ChangelogDialog::new(from_version));
     }
 

@@ -309,6 +309,7 @@ impl App {
         // before the welcome screen.
         self.home.welcome_dialog = None;
         self.home.changelog_dialog = None;
+        tracing::info!(target: "tui.dialog", dialog = "warning", "opening warning dialog");
         self.home.info_dialog =
             Some(crate::tui::dialogs::InfoDialog::new("Warning", message).with_size(WIDTH, height));
     }
@@ -699,6 +700,7 @@ impl App {
     }
 
     fn render(&mut self, frame: &mut Frame) {
+        let start = std::time::Instant::now();
         if self.update_status.as_ref().is_some_and(|s| s.is_expired()) {
             self.update_status = None;
         }
@@ -710,6 +712,21 @@ impl App {
             self.update_info.as_ref(),
             status_text,
         );
+        // Sampled / slow-frame only: full-frame trace would dominate the
+        // log at `default_level = trace`. Only emit when a frame breaks the
+        // 16ms budget (60fps), which is the diagnostic case worth tracing.
+        let elapsed = start.elapsed();
+        if elapsed.as_millis() > 16
+            && tracing::enabled!(target: "tui.render", tracing::Level::TRACE)
+        {
+            tracing::trace!(
+                target: "tui.render",
+                frame_ms = elapsed.as_millis() as u64,
+                width = frame.area().width,
+                height = frame.area().height,
+                "slow frame",
+            );
+        }
     }
 
     /// Poll for update check result (non-blocking).
