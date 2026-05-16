@@ -1628,7 +1628,7 @@ impl Instance {
     /// down. Caller is responsible for the subsequent
     /// `start_with_size_opts` to recreate the session with the agent
     /// command.
-    fn kill_clean(&self) -> Result<()> {
+    pub(crate) fn kill_clean(&self) -> Result<()> {
         let session = self.tmux_session()?;
         if !session.exists() {
             return Ok(());
@@ -1770,7 +1770,7 @@ impl Instance {
         let stale_sid = self
             .agent_session_id
             .clone()
-            .unwrap_or_else(|| "<unknown>".to_string());
+            .expect("attempting_resume guarantees agent_session_id is Some");
         let profile = self.effective_profile();
         tracing::warn!(
             "start: resume with sid {} for session {} crashed pane within probe; \
@@ -1806,6 +1806,15 @@ impl Instance {
             self.probe_settle(RESUME_PROBE_MAX, RESUME_PROBE_POLL)?,
             ProbeResult::Dead
         ) {
+            // Symmetric teardown with the Tier-1->Tier-2 transition above:
+            // the Tier-2 spawn already started a fresh poller via
+            // `finalize_launch`, and bailing without stopping it leaves an
+            // orphan thread polling a dead pane. The pane stays in tmux
+            // (intentional, for `tmux attach` diagnostic on the crash),
+            // but the poller handle must be torn down so callers see a
+            // consistent post-error state.
+            self.stop_poller();
+            self.session_id_poller = None;
             anyhow::bail!(
                 "fresh restart after resume fallback crashed within probe for {} \
                  (stale sid {} was cleared; underlying issue persists)",
@@ -3542,7 +3551,19 @@ mod tests {
             #[cfg(target_os = "linux")]
             std::env::set_var("XDG_CONFIG_HOME", temp.path().join(".config"));
 
-            clear_session_id_on_disk("test-profile-empty", "nonexistent-id");
+            let storage =
+                crate::session::storage::Storage::new("test-profile-already-none").unwrap();
+            let inst = Instance::new("title", "/tmp/x");
+            let id = inst.id.clone();
+            assert!(inst.agent_session_id.is_none());
+            storage.save(&[inst]).unwrap();
+
+            clear_session_id_on_disk("test-profile-already-none", &id);
+
+            let loaded = storage.load().unwrap();
+            assert_eq!(loaded.len(), 1);
+            assert_eq!(loaded[0].agent_session_id, None);
+            assert_eq!(loaded[0].id, id);
         }
 
         #[test]

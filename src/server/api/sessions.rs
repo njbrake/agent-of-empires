@@ -1271,11 +1271,13 @@ pub async fn ensure_session(
 
     let restart_result = tokio::task::spawn_blocking(
         move || -> anyhow::Result<(Instance, crate::session::StartOutcome)> {
-            let tmux_session = instance.tmux_session()?;
-            if tmux_session.exists() {
-                let _ = tmux_session.kill();
-            }
             let mut inst = instance;
+            // Use kill_clean (vs bare tmux kill) so a remain-on-exit dead
+            // pane is respawned-then-killed; bare kill races against the
+            // session cache on macOS and can leave the corpse pane behind,
+            // which then trips the next start_with_resume_fallback's
+            // `pane_was_preexisting` short-circuit. See `Instance::kill_clean`.
+            inst.kill_clean()?;
             let outcome = inst.start_with_resume_fallback(None, false)?;
             Ok((inst, outcome))
         },
