@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useMatch, useNavigate } from "react-router-dom";
+import { useLocation, useMatch, useNavigate } from "react-router-dom";
 import { IDLE_DECAY_WINDOW_MS, isSessionActive } from "./lib/session";
 import { useSessions } from "./hooks/useSessions";
 import { clearCockpitCache } from "./hooks/useCockpit";
@@ -26,6 +26,7 @@ import {
   parseIdleDecayWindowMs,
   useIdleDecayWindowMs,
 } from "./lib/idleDecay";
+import { clog } from "./lib/logger";
 import { toastBus } from "./lib/toastBus";
 import { OPEN_SESSION_EVENT } from "./lib/sessionRoute";
 import {
@@ -168,9 +169,29 @@ function isInsideEditable(target: EventTarget | null): boolean {
   return false;
 }
 
+// Track navigation across the SPA and emit one web.client.nav event per
+// pathname change. Fires on initial mount too so a fresh tab/PWA launch
+// is recorded. Search params are dropped to keep the auth token out of
+// the log; pathname alone is what callers care about.
+function useNavigationLogger(location: { pathname: string }): void {
+  const last = useRef<string | null>(null);
+  useEffect(() => {
+    const from = last.current;
+    const to = location.pathname;
+    if (from === to) return;
+    last.current = to;
+    clog.info("web.client.nav", from === null ? "initial" : "navigate", {
+      from: from ?? undefined,
+      to,
+    });
+  }, [location.pathname]);
+}
+
 function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLogout: () => void }) {
   const navigate = useNavigate();
   const idleDecayWindowMs = useIdleDecayWindowMs();
+  const location = useLocation();
+  useNavigationLogger(location);
   const sessionMatch = useMatch("/session/:sessionId");
   const settingsRootMatch = useMatch("/settings");
   const settingsTabMatch = useMatch("/settings/:tab");

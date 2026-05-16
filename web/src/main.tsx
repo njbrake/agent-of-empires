@@ -12,11 +12,28 @@ import App from "./App";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { ToastBusBridge, ToastProvider } from "./components/Toasts";
 import { installFetchErrorToasts } from "./lib/fetchInterceptor";
+import { clog } from "./lib/logger";
 import "./index.css";
 
 if ("serviceWorker" in navigator) {
-  navigator.serviceWorker.register("/sw.js");
+  navigator.serviceWorker
+    .register("/sw.js")
+    .then(() => {
+      clog.info("web.client.pwa", "service worker registered");
+    })
+    .catch((err: unknown) => {
+      clog.warn("web.client.pwa", "service worker registration failed", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
 }
+
+window.addEventListener("online", () => {
+  clog.info("web.client.pwa", "online");
+});
+window.addEventListener("offline", () => {
+  clog.warn("web.client.pwa", "offline");
+});
 
 installFetchErrorToasts();
 

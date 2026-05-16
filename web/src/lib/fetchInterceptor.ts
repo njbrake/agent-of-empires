@@ -1,5 +1,6 @@
 import { isServerDown } from "./connectionState";
 import { getOrCreateDeviceBindingSecret } from "./deviceBinding";
+import { clog } from "./logger";
 import { reportError } from "./toastBus";
 import { clearToken, getToken, saveToken } from "./token";
 
@@ -71,7 +72,37 @@ export function installFetchErrorToasts(): void {
     const isApi = path.startsWith("/api/");
     const sameOrigin = isSameOrigin(rawUrl);
 
-    const patchedInit = attachAuthHeader(sameOrigin, init);
+    // Generate a per-request id and inject as X-Request-Id so the backend
+    // request-id middleware echoes the same id on its http.request span.
+    // A single grep on request_id then ties browser → handler → downstream.
+    let requestId: string | undefined;
+    let patchedInit = attachAuthHeader(sameOrigin, init);
+    if (sameOrigin && isApi) {
+      try {
+        requestId =
+          typeof crypto !== "undefined" && "randomUUID" in crypto
+            ? crypto.randomUUID()
+            : Math.random().toString(36).slice(2);
+        const h = new Headers(patchedInit?.headers ?? init?.headers);
+        if (!h.has("X-Request-Id")) {
+          h.set("X-Request-Id", requestId);
+        }
+        patchedInit = { ...(patchedInit ?? init ?? {}), headers: h };
+      } catch {
+        // Fall through without a request id; the middleware generates one.
+      }
+    }
+
+    const method =
+      (patchedInit?.method ?? init?.method ?? "GET").toUpperCase();
+    const start = performance.now();
+    if (isApi) {
+      clog.debug("web.client.api", "request start", {
+        method,
+        path,
+        request_id: requestId,
+      });
+    }
 
     try {
       const res = await original(input, patchedInit);
@@ -103,6 +134,23 @@ export function installFetchErrorToasts(): void {
       if (isApi && res.status >= 500 && !isServerDown()) {
         reportError(`Server error ${res.status} from ${path}`);
       }
+      if (isApi) {
+        const latency_ms = Math.round(performance.now() - start);
+        const fields = {
+          method,
+          path,
+          status: res.status,
+          latency_ms,
+          request_id: requestId,
+        };
+        if (res.status >= 500) {
+          clog.error("web.client.api", "request failed", fields);
+        } else if (res.status >= 400) {
+          clog.warn("web.client.api", "request failed", fields);
+        } else {
+          clog.info("web.client.api", "request ok", fields);
+        }
+      }
       return res;
     } catch (err) {
       // Ignore aborts (triggered by deliberate cleanup).
@@ -111,6 +159,16 @@ export function installFetchErrorToasts(): void {
         (err.name === "AbortError" || err.name === "TimeoutError")
       ) {
         throw err;
+      }
+      if (isApi) {
+        const latency_ms = Math.round(performance.now() - start);
+        clog.warn("web.client.api", "request network error", {
+          method,
+          path,
+          latency_ms,
+          request_id: requestId,
+          error: err instanceof Error ? err.message : String(err),
+        });
       }
       // When the server is known to be down, suppress per-request toasts.
       // The DisconnectBanner handles the user-facing notification instead.
