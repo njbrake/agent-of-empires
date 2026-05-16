@@ -124,18 +124,22 @@ export function installFetchErrorToasts(): void {
   };
 }
 
-// 401 with no `login_required` body: token is dead, missing, or revoked.
-// Clear localStorage (idempotent if no token) and show the token entry
-// page. Dedupe so a burst of concurrent 401s produces one event.
+// 401 with no `login_required` body: the request authenticated via
+// neither a valid token NOR a valid device-bound session+binding.
+// Clear localStorage (idempotent if no token) and show the token
+// entry page. Dedupe so a burst of concurrent 401s produces one
+// event.
 //
-// Also POST /api/logout to clear the server-side passphrase session
-// (the HttpOnly `aoe_session` cookie). The token TTL is shorter than
-// the 24-hour passphrase session in remote mode (4h vs 24h), so a
-// token expiry on its own would leave the still-valid session cookie
-// in place. After the user pastes a fresh token, `loginStatus()`
-// would then report `authenticated: true` and the SPA would skip the
-// passphrase prompt entirely. Dropping the session here forces the
-// expected token + passphrase re-challenge. See #1163.
+// Under the device-bound design (#1167), this branch is rare: a
+// PWA that completed first-time pairing rides on the 30-day sliding
+// session even when the token rotates. The 401 unauthorized fires
+// only when the session is genuinely gone (server restart, 30-day
+// idle, explicit logout, or a fresh browser profile). In all of
+// those cases we want to clear any surviving local state and route
+// the user through full re-auth, so POST /api/logout to drop the
+// server-side session before dispatching the event. The endpoint
+// is exempt from the token check precisely to support this path.
+// See #1163 (original re-challenge fix) and #1167 (design rework).
 let tokenExpiredDispatched = false;
 function handleTokenAuthFailure(): void {
   clearToken();
