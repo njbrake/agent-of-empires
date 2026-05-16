@@ -1575,10 +1575,6 @@ impl Instance {
         }
     }
 
-    pub fn restart(&mut self) -> Result<()> {
-        self.restart_with_size(None).map(|_| ())
-    }
-
     pub fn restart_with_size(&mut self, size: Option<(u16, u16)>) -> Result<StartOutcome> {
         self.restart_with_size_opts(size, false)
     }

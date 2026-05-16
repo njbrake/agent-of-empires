@@ -118,7 +118,7 @@ enum PollCommand {
 ///
 /// `stop()` sends an explicit `PollCommand::Stop` and joins the thread,
 /// providing a deterministic shutdown path for callers like `Instance::kill`
-/// and `Instance::restart`.
+/// and `Instance::restart_with_size`.
 pub struct SessionPoller {
     session_name: String,
     cmd_tx: mpsc::Sender<PollCommand>,
