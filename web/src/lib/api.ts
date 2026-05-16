@@ -233,6 +233,12 @@ export interface ServerAbout {
   version: string;
   auth_required: boolean;
   passphrase_enabled: boolean;
+  /** Resolved `--auth` mode. `"token"` means the URL token gates
+   *  requests; `"passphrase"` means the passphrase login wall is the
+   *  only human gate; `"none"` means no authentication at all. The
+   *  Security panel renders an accurate label off this instead of
+   *  guessing "--no-auth" from `auth_required === false`. */
+  auth_mode: "token" | "passphrase" | "none";
   read_only: boolean;
   behind_tunnel: boolean;
   profile: string;
