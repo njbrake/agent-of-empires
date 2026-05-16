@@ -1591,27 +1591,31 @@ impl Instance {
         }
     }
 
-    /// Best-effort: rescue a Claude transcript that has gone missing or
-    /// oversized so `--resume <sid>` survives the restart instead of
-    /// thrashing on autocompact or failing outright. Only applies to Claude
-    /// sessions with a known `agent_session_id` running on the host (not
-    /// inside a sandboxed container, where the transcript lives in the
-    /// container's filesystem and is recovered separately on next launch).
+    /// Best-effort: dispatch to the agent's restart-time recovery
+    /// implementation so `--resume <sid>` survives the restart instead of
+    /// thrashing on autocompact or failing outright. Sandboxed sessions are
+    /// skipped: their state lives in the container filesystem and is
+    /// recovered separately on next launch.
     fn try_recover_transcript(&mut self) {
-        if self.tool != "claude" || self.is_sandboxed() {
+        if self.is_sandboxed() {
             return;
         }
         let sid = match self.agent_session_id.as_deref() {
             Some(s) if !s.is_empty() => s.to_string(),
             _ => return,
         };
-        match crate::session::recovery::recover_transcript_for_sid(&sid, &self.project_path) {
+        let harness = match crate::session::recovery::for_tool(&self.tool) {
+            Some(h) => h,
+            None => return,
+        };
+        match harness.recover(&sid, &self.project_path) {
             Ok(crate::session::recovery::RecoveryOutcome::NoArchiveFreshLaunch) => {
                 tracing::warn!(
                     "restart '{}': transcript missing and no archive for sid {}; \
-                     clearing session id so claude launches fresh instead of failing on --resume",
+                     clearing session id so {} launches fresh instead of failing on --resume",
                     self.title,
-                    sid
+                    sid,
+                    self.tool,
                 );
                 self.agent_session_id = None;
             }

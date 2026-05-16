@@ -2,7 +2,8 @@
 //!
 //! When a session is restarted but its `~/.claude/projects/<encoded>/<sid>.jsonl`
 //! transcript is missing or pathologically large, `claude --resume <sid>` either
-//! fails outright or thrashes on autocompact. This module surfaces a best-effort
+//! fails outright or thrashes on autocompact. This submodule implements
+//! [`super::HarnessRecovery`] for the `"claude"` tool with a best-effort
 //! recovery cascade applied at restart time:
 //!
 //! 1. If the transcript exists and is within a sane size budget, do nothing.
@@ -59,6 +60,15 @@ pub enum RecoveryOutcome {
     /// Recovery does not apply to this session (e.g. non-Claude tool, no
     /// session ID, project dir missing). No action taken.
     NotApplicable,
+}
+
+/// [`super::HarnessRecovery`] implementation for Claude Code sessions.
+pub struct ClaudeRecovery;
+
+impl super::HarnessRecovery for ClaudeRecovery {
+    fn recover(&self, sid: &str, project_path: &str) -> Result<RecoveryOutcome> {
+        recover_transcript_for_sid(sid, project_path)
+    }
 }
 
 /// Best-effort recovery for a Claude session's transcript.
