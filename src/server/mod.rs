@@ -964,6 +964,8 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/avk/health", get(api::get_avk_health))
         // AVK Linear iş kuyruğu (FUR-4160 — started + unstarted GraphQL proxy)
         .route("/api/avk/linear-queue", get(api::get_avk_linear_queue))
+        // AVK pane peek (FUR-4161 — tmux capture-pane preview)
+        .route("/api/avk/pane-peek", get(api::get_avk_pane_peek))
         // Profiles
         .route(
             "/api/profiles",

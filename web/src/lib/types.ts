@@ -295,6 +295,21 @@ export interface AvkBroadcastResponse {
 }
 
 /**
+ * `GET /api/avk/pane-peek?slug=<slug>&lines=<N>` JSON shape mirror — FUR-4161.
+ *
+ * Backend `tmux capture-pane -t <target> -pS -<N>` çıktısını döner.
+ * `runtime_resolved` false ise registry sabit `tmux_target` kullanıldı
+ * (UI rozet "kayıt: ..." gösterir).
+ */
+export interface AvkPanePeekResponse {
+  slug: string;
+  target: string;
+  runtime_resolved: boolean;
+  lines: number;
+  content: string;
+}
+
+/**
  * `GET /api/avk/linear-queue` JSON shape mirror — FUR-4160.
  *
  * Backend Linear GraphQL API'sine `LINEAR_API_KEY` env'i ile sorgu atar;

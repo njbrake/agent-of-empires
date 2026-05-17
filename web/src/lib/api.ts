@@ -9,6 +9,7 @@ import type {
   AvkBroadcastResponse,
   AvkHealthResponse,
   AvkMemoryEntry,
+  AvkPanePeekResponse,
   LinearQueueError,
   LinearQueueResponse,
   ProfileInfo,
@@ -386,6 +387,21 @@ export async function fetchAgents(): Promise<AgentInfo[]> {
 export async function fetchAvkAgents(role?: AvkAgentRole): Promise<AvkAgentInfo[]> {
   const url = role ? `/api/avk/agents?role=${role}` : "/api/avk/agents";
   return (await fetchJson<AvkAgentInfo[]>(url)) ?? [];
+}
+
+/**
+ * `GET /api/avk/pane-peek?slug=<slug>&lines=<N>` — FUR-4161 tmux capture-pane.
+ *
+ * 404 (bilinmeyen slug) / 502 (tmux capture hatası) durumunda null döner;
+ * UI bunu "preview alınamadı" mesajı olarak gösterir.
+ */
+export async function fetchAvkPanePeek(
+  slug: string,
+  lines = 40,
+): Promise<AvkPanePeekResponse | null> {
+  return await fetchJson<AvkPanePeekResponse>(
+    `/api/avk/pane-peek?slug=${encodeURIComponent(slug)}&lines=${lines}`,
+  );
 }
 
 /**

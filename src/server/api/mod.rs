@@ -20,6 +20,8 @@ mod avk_health;
 mod avk_linear;
 // FUR-4118 — AVK memory recall feed endpoint (mock; agentmemory MCP proxy bekleniş).
 mod avk_memory;
+// FUR-4161 — AVK pane peek (tmux capture-pane preview, GET /api/avk/pane-peek).
+mod avk_pane_peek;
 #[cfg(feature = "serve")]
 mod client_log;
 #[cfg(feature = "serve")]
@@ -51,6 +53,7 @@ pub use avk_broadcast::broadcast_avk;
 pub use avk_health::get_avk_health;
 pub use avk_linear::get_avk_linear_queue;
 pub use avk_memory::list_avk_memory_recall;
+pub use avk_pane_peek::get_avk_pane_peek;
 #[cfg(feature = "serve")]
 pub use client_log::post_client_log;
 pub use git::{clone_repo, list_branches};
