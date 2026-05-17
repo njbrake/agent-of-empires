@@ -213,6 +213,9 @@ pub struct SessionConfigOverride {
     pub default_tool: Option<String>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_claude_account: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub yolo_mode_default: Option<bool>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -421,6 +424,9 @@ pub fn apply_session_overrides(
 ) {
     if source.default_tool.is_some() {
         target.default_tool = source.default_tool.clone();
+    }
+    if source.default_claude_account.is_some() {
+        target.default_claude_account = source.default_claude_account.clone();
     }
     if let Some(yolo_mode_default) = source.yolo_mode_default {
         target.yolo_mode_default = yolo_mode_default;
@@ -688,6 +694,50 @@ mod tests {
         // notify_in_cli should retain global default since not overridden
         assert!(merged.updates.notify_in_cli);
         assert!(merged.worktree.enabled);
+    }
+
+    #[test]
+    fn test_default_claude_account_merges_like_sibling() {
+        // Profile-set value wins over global None.
+        let global = Config::default();
+        let profile = ProfileConfig {
+            session: Some(SessionConfigOverride {
+                default_claude_account: Some("forit-main".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let merged = merge_configs(global, &profile);
+        assert_eq!(
+            merged.session.default_claude_account.as_deref(),
+            Some("forit-main")
+        );
+
+        // Profile None leaves global value alone.
+        let mut global2 = Config::default();
+        global2.session.default_claude_account = Some("pivot-main".to_string());
+        let profile2 = ProfileConfig::default();
+        let merged2 = merge_configs(global2, &profile2);
+        assert_eq!(
+            merged2.session.default_claude_account.as_deref(),
+            Some("pivot-main")
+        );
+
+        // Profile-set value overrides a different global value.
+        let mut global3 = Config::default();
+        global3.session.default_claude_account = Some("wma-work".to_string());
+        let profile3 = ProfileConfig {
+            session: Some(SessionConfigOverride {
+                default_claude_account: Some("forit-backup".to_string()),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let merged3 = merge_configs(global3, &profile3);
+        assert_eq!(
+            merged3.session.default_claude_account.as_deref(),
+            Some("forit-backup")
+        );
     }
 
     #[test]

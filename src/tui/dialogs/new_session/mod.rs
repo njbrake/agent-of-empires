@@ -293,29 +293,39 @@ fn handle_editable_list_key(
     }
 }
 
-/// Build label/value pairs for non-default inherited sandbox settings.
-/// Discover Claude account dirs and append one `claude` row per account
-/// to the tool list, with the matching `ClaudeAccount` in the parallel
-/// `tool_accounts` vector. Gated behind `AOE_CLAUDE_ACCOUNTS_PICKER=1`
-/// during the first rollout so the upstream-PR-target default behavior
-/// is unchanged for anyone who has not opted in. Caller passes the
-/// pre-populated `tools` (with `None` filler in `tool_accounts`).
-fn append_claude_account_rows(
+/// Replace the bare `claude` row(s) with one `claude => <account>` row per
+/// discovered account, keeping a parallel `tool_accounts` vector aligned.
+///
+/// Replace, not additive: when ≥1 account is configured, the bare `claude`
+/// row is redundant (every launch needs a config dir), so we drop it. When
+/// 0 accounts exist, leave the row list untouched, the bare `claude` row
+/// is the only way to launch and inherits the shell env.
+///
+/// Caller is responsible for discovery (so tests can inject a fake account
+/// list without touching `$HOME/.claude-accounts`).
+fn apply_claude_account_rows(
     tools: &mut Vec<String>,
     tool_accounts: &mut Vec<Option<ClaudeAccount>>,
+    accounts: &[ClaudeAccount],
 ) {
-    if std::env::var("AOE_CLAUDE_ACCOUNTS_PICKER").ok().as_deref() != Some("1") {
+    if accounts.is_empty() {
         return;
     }
     if !tools.iter().any(|t| t == "claude") {
-        return; // No plain `claude` row means Claude is unavailable; no point adding accounts.
+        return; // No plain `claude` row means Claude is unavailable; nothing to replace.
     }
-    let Some(root) = claude_accounts::default_root() else {
-        return;
-    };
-    for acct in claude_accounts::discover_accounts(&root) {
+    for acct in accounts {
         tools.push("claude".to_string());
-        tool_accounts.push(Some(acct));
+        tool_accounts.push(Some(acct.clone()));
+    }
+    let mut i = 0;
+    while i < tools.len() {
+        if tools[i] == "claude" && tool_accounts[i].is_none() {
+            tools.remove(i);
+            tool_accounts.remove(i);
+        } else {
+            i += 1;
+        }
     }
 }
 
@@ -375,7 +385,14 @@ impl NewSessionDialog {
         let mut available_tools: Vec<String> = tools.available_list().to_vec();
         let mut available_tool_accounts: Vec<Option<ClaudeAccount>> =
             vec![None; available_tools.len()];
-        append_claude_account_rows(&mut available_tools, &mut available_tool_accounts);
+        let discovered_accounts = claude_accounts::default_root()
+            .map(|r| claude_accounts::discover_accounts(&r))
+            .unwrap_or_default();
+        apply_claude_account_rows(
+            &mut available_tools,
+            &mut available_tool_accounts,
+            &discovered_accounts,
+        );
         let docker_available = containers::get_container_runtime().is_available();
 
         // Load resolved config (global + profile + repo overrides from cwd)
@@ -384,14 +401,49 @@ impl NewSessionDialog {
             std::path::Path::new(&current_dir),
         );
 
-        // Determine default tool index based on config
-        let tool_index = if let Some(ref default_tool) = config.session.default_tool {
-            available_tools
+        // Determine default tool index based on config. When the default
+        // tool is `claude` AND the profile pins a `default_claude_account`,
+        // prefer the matching account row. Unknown account name falls back
+        // to the first row matching `default_tool`; a one-shot WARN goes
+        // out so the user knows their pin was ignored.
+        let tool_index = match config.session.default_tool.as_deref() {
+            Some("claude") => {
+                let account_match =
+                    config
+                        .session
+                        .default_claude_account
+                        .as_deref()
+                        .and_then(|name| {
+                            available_tools.iter().enumerate().position(|(i, t)| {
+                                t == "claude"
+                                    && available_tool_accounts
+                                        .get(i)
+                                        .and_then(|a| a.as_ref().map(|acct| acct.name == name))
+                                        .unwrap_or(false)
+                            })
+                        });
+                if let Some(idx) = account_match {
+                    idx
+                } else {
+                    if let Some(pinned) = config.session.default_claude_account.as_deref() {
+                        if !discovered_accounts.iter().any(|a| a.name == pinned) {
+                            tracing::warn!(
+                                "profile pins default_claude_account=\"{}\" but no such account under ~/.claude-accounts; falling back to first claude row",
+                                pinned
+                            );
+                        }
+                    }
+                    available_tools
+                        .iter()
+                        .position(|t| t == "claude")
+                        .unwrap_or(0)
+                }
+            }
+            Some(default_tool) => available_tools
                 .iter()
                 .position(|t| t == default_tool)
-                .unwrap_or(0)
-        } else {
-            0
+                .unwrap_or(0),
+            None => 0,
         };
 
         // Apply sandbox defaults from config (disabled for host-only agents like settl)
