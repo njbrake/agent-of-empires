@@ -717,11 +717,19 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
   // Pinning to the no-keyboard height combined with the keyboard
   // reservation in TerminalView keeps the layout stable across the
   // keyboard cycle.
+  //
+  // Cockpit substrate doesn't host xterm.js, so the SIGWINCH concern
+  // doesn't apply; leaving the pin on for cockpit traps the composer
+  // below the keyboard on Android Chrome PWA (#1177). Drop the pin when
+  // the active session is cockpit so `h-dvh` plus the viewport meta's
+  // `interactive-widget=resizes-content` shrink the container with the
+  // keyboard and lift the composer back into view.
   const { isMobile, stableViewportHeight } = useMobileKeyboard();
-  const rootStyle =
-    isMobile && stableViewportHeight > 0
-      ? { height: `${stableViewportHeight}px` }
-      : undefined;
+  const pinRootHeight =
+    isMobile && stableViewportHeight > 0 && !activeSession?.cockpit_mode;
+  const rootStyle = pinRootHeight
+    ? { height: `${stableViewportHeight}px` }
+    : undefined;
 
   const cockpitPrefs = useMemo(
     () => ({

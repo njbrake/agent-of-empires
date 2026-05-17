@@ -384,6 +384,22 @@ export function Composer({
                   : "Send a message…  Type @ for files, / for commands"
               }
               onInput={onInput}
+              onFocus={() => {
+                // Defensive scrollIntoView for mobile soft-keyboard cycles.
+                // The App root no longer pins height for cockpit (#1177),
+                // so `h-dvh` shrinks with the keyboard and the composer
+                // should naturally lift into view; this is a belt-and-
+                // braces hop after the keyboard animation completes so
+                // any UA that lags the layout-viewport update still ends
+                // up scrolled to the composer.
+                if (!isMobile) return;
+                window.setTimeout(() => {
+                  taRef.current?.scrollIntoView({
+                    block: "end",
+                    behavior: "smooth",
+                  });
+                }, 300);
+              }}
               onKeyDown={(e) => {
                 // Three-way Enter dispatch. See decideEnterAction for
                 // the full matrix; the inline branches below handle
