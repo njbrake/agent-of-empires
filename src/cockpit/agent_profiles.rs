@@ -63,7 +63,7 @@ impl AgentProfile {
     /// namespace matches or the value isn't a string.
     pub fn parent_tool_use_id_from_meta(
         &self,
-        meta: &Option<std::collections::HashMap<String, serde_json::Value>>,
+        meta: &Option<serde_json::Map<String, serde_json::Value>>,
     ) -> Option<String> {
         let map = meta.as_ref()?;
         for namespace in self.parent_meta_namespaces {
@@ -188,7 +188,6 @@ pub fn resolve(key: &str) -> &'static AgentProfile {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
 
     #[test]
     fn resolve_known_agents() {
@@ -237,7 +236,7 @@ mod tests {
 
     #[test]
     fn parent_tool_use_id_from_meta_reads_claudecode_for_claude() {
-        let mut meta = HashMap::new();
+        let mut meta = serde_json::Map::new();
         meta.insert(
             "claudeCode".to_string(),
             serde_json::json!({ "parentToolUseId": "tc-parent-7" }),
@@ -250,7 +249,7 @@ mod tests {
 
     #[test]
     fn parent_tool_use_id_from_meta_returns_none_for_unverified_agents() {
-        let mut meta = HashMap::new();
+        let mut meta = serde_json::Map::new();
         meta.insert(
             "opencode".to_string(),
             serde_json::json!({ "parentToolUseId": "tc-9" }),
@@ -262,7 +261,7 @@ mod tests {
 
     #[test]
     fn parent_tool_use_id_from_meta_returns_none_for_missing_namespace() {
-        let mut meta = HashMap::new();
+        let mut meta = serde_json::Map::new();
         meta.insert(
             "otherNamespace".to_string(),
             serde_json::json!({ "parentToolUseId": "tc-x" }),
@@ -272,7 +271,7 @@ mod tests {
 
     #[test]
     fn parent_tool_use_id_from_meta_returns_none_for_non_string_value() {
-        let mut meta = HashMap::new();
+        let mut meta = serde_json::Map::new();
         meta.insert(
             "claudeCode".to_string(),
             serde_json::json!({ "parentToolUseId": 42 }),

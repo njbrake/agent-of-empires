@@ -33,6 +33,7 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use tracing::{debug, error, info, trace, warn};
 
+use super::agent_profiles;
 use super::agent_registry::AgentSpec;
 use super::approvals::{is_destructive, ApprovalDecision, Nonce};
 use super::fs_handler::{self, FsPolicy, SandboxPathMap};
@@ -99,6 +100,12 @@ impl AcpError {
 /// Configuration for spawning an ACP agent.
 #[derive(Debug, Clone)]
 pub struct SpawnConfig {
+    /// Registry key of the agent (e.g. `"claude"`, `"codex"`,
+    /// `"opencode"`). Used to resolve the static `AgentProfile` that
+    /// gates server-side claude-specific event synthesis and routes
+    /// per-agent slash commands. Defaults to `"claude"` for legacy
+    /// callers; the supervisor passes the real key when it spawns.
+    pub agent_key: String,
     pub spec: AgentSpec,
     pub cwd: PathBuf,
     pub additional_dirs: Vec<PathBuf>,
@@ -331,6 +338,8 @@ impl AcpClient {
             None
         };
         let runner_sandbox = sandbox_pair.as_ref().map(|(handle, _)| handle);
+        let profile = agent_profiles::resolve(&config.agent_key);
+        let install_binary = config.spec.command.clone();
         if let Some(socket_path) = config.socket_path.clone() {
             spawn_runner_detached(&config, &socket_path, session_id.0.clone(), runner_sandbox)?;
             return Self::connect_via_socket(
@@ -345,6 +354,8 @@ impl AcpClient {
                 event_tx,
                 event_rx,
                 sandbox_pair,
+                profile,
+                install_binary,
             )
             .await;
         }
@@ -363,6 +374,8 @@ impl AcpClient {
             event_tx,
             event_rx,
             sandbox_pair,
+            profile,
+            install_binary,
         )
         .await
     }
@@ -380,6 +393,8 @@ impl AcpClient {
         event_tx: mpsc::Sender<Event>,
         event_rx: mpsc::Receiver<Event>,
         sandbox: Option<(SessionSandbox, SandboxPathMap)>,
+        profile: &'static agent_profiles::AgentProfile,
+        install_binary: String,
     ) -> Result<Self, AcpError> {
         let (stdin, stdout) = {
             let mut guard = child.lock().await;
@@ -431,9 +446,10 @@ impl AcpClient {
             None,
             mode,
             Some(ready_tx),
+            profile,
         ));
 
-        wait_for_handshake(&session_label, ready_rx, Some(&child)).await?;
+        wait_for_handshake(&session_label, ready_rx, Some(&child), &install_binary).await?;
 
         Ok(Self {
             session_id,
@@ -463,6 +479,8 @@ impl AcpClient {
         event_tx: mpsc::Sender<Event>,
         event_rx: mpsc::Receiver<Event>,
         sandbox: Option<(SessionSandbox, SandboxPathMap)>,
+        profile: &'static agent_profiles::AgentProfile,
+        install_binary: String,
     ) -> Result<Self, AcpError> {
         // Poll for the runner to finish binding the socket. The runner
         // binds before it spawns the agent so this is usually fast (a
@@ -506,9 +524,10 @@ impl AcpClient {
             None,
             mode,
             Some(ready_tx),
+            profile,
         ));
 
-        wait_for_handshake(&session_label, ready_rx, None).await?;
+        wait_for_handshake(&session_label, ready_rx, None, &install_binary).await?;
 
         Ok(Self {
             session_id,
@@ -540,6 +559,7 @@ impl AcpClient {
     /// request id this client never issued and is dropped silently by
     /// the underlying transport, leaving the UI otherwise stuck on
     /// "thinking".
+    #[allow(clippy::too_many_arguments)]
     pub async fn attach(
         socket_path: PathBuf,
         cwd: PathBuf,
@@ -548,6 +568,7 @@ impl AcpClient {
         in_flight_turn: bool,
         session_id: CockpitSessionId,
         sandbox: Option<(SessionSandbox, SandboxPathMap)>,
+        agent_key: String,
     ) -> Result<Self, AcpError> {
         let (cmd_tx, cmd_rx) = mpsc::channel::<ClientCmd>(16);
         let (event_tx, event_rx) = mpsc::channel::<Event>(64);
@@ -556,6 +577,11 @@ impl AcpClient {
             acp_session_id: stored_acp_session_id,
             in_flight_turn,
         };
+        let profile = agent_profiles::resolve(&agent_key);
+        // Resume path has no install hint to surface: the agent is
+        // already running. Pass an empty string; the install hint is
+        // only consulted on handshake-failure timeouts, which the resume
+        // path treats as a different fault.
         Self::connect_via_socket(
             socket_path,
             cwd,
@@ -568,6 +594,8 @@ impl AcpClient {
             event_tx,
             event_rx,
             sandbox,
+            profile,
+            String::new(),
         )
         .await
     }
@@ -1574,27 +1602,17 @@ fn is_compact_completion(text: &str) -> bool {
     text.contains("Compacting completed.")
 }
 
-/// Extract a sub-agent parent tool-call id from an ACP `_meta` blob.
-///
-/// claude-agent-acp tags child tool calls launched by Claude's `Task`
-/// tool with `_meta.claudeCode.parentToolUseId` pointing at the parent
-/// Task's `tool_call_id`. Other adapters may grow their own keys
-/// later; this helper only knows about the `claudeCode` namespace for
-/// now. See #1041.
-fn parent_tool_use_id_from_meta(
-    meta: &Option<agent_client_protocol::schema::Meta>,
-) -> Option<String> {
-    meta.as_ref()
-        .and_then(|m| m.get("claudeCode"))
-        .and_then(|cc| cc.get("parentToolUseId"))
-        .and_then(|v| v.as_str())
-        .map(|s| s.to_owned())
-}
-
 /// Map an ACP `SessionUpdate` to the cockpit's typed `Event`. Variants we
 /// don't yet handle pass through as `RawAgentUpdate` so UI clients can at
 /// least see them; we'll narrow these as the schema stabilises.
-fn map_update_to_events(update: SessionUpdate) -> Vec<Event> {
+///
+/// `profile` carries per-agent gates for claude-specific synthesis
+/// (subagent linkage namespace, ExitPlanMode-to-Plan, ScheduleWakeup);
+/// other agents pass these through as plain tool calls.
+fn map_update_to_events(
+    update: SessionUpdate,
+    profile: &'static agent_profiles::AgentProfile,
+) -> Vec<Event> {
     match update {
         SessionUpdate::AgentMessageChunk(chunk) => match chunk.content {
             ContentBlock::Text(text) => {
@@ -1635,7 +1653,7 @@ fn map_update_to_events(update: SessionUpdate) -> Vec<Event> {
         SessionUpdate::ToolCall(tc) => {
             let raw_args = tc.raw_input.clone().unwrap_or(serde_json::Value::Null);
             let args_preview = preview_args(&raw_args);
-            let parent_tool_call_id = parent_tool_use_id_from_meta(&tc.meta);
+            let parent_tool_call_id = profile.parent_tool_use_id_from_meta(&tc.meta);
             if let Some(parent) = parent_tool_call_id.as_deref() {
                 // Breadcrumb so AOE_ACP_TRACE=1 sessions can verify the
                 // subagent linkage round-trip (parent Task id → child
@@ -1669,8 +1687,11 @@ fn map_update_to_events(update: SessionUpdate) -> Vec<Event> {
             // raw_input.plan) instead of the structured SessionUpdate::Plan
             // channel. Synthesise a PlanUpdated event so the cockpit's
             // PlanStrip and the rest of the plan-aware UI light up. See
-            // #1059.
-            if matches!(tc.kind, agent_client_protocol::schema::ToolKind::SwitchMode) {
+            // #1059. Gated on the agent's profile so codex / opencode /
+            // gemini mode switches don't spuriously emit empty Plans.
+            if profile.supports_exit_plan_mode
+                && matches!(tc.kind, agent_client_protocol::schema::ToolKind::SwitchMode)
+            {
                 if let Some(plan) = extract_plan_from_switch_mode(&raw_args) {
                     events.push(Event::PlanUpdated { plan });
                 }
@@ -1680,8 +1701,10 @@ fn map_update_to_events(update: SessionUpdate) -> Vec<Event> {
             // mode self-firing a fresh prompt when the wake triggers.
             // Capture an absolute `at` timestamp here so the sidebar
             // countdown survives daemon restarts and never has to parse
-            // the natural-language output string. See #1091.
-            if tc.title == "ScheduleWakeup" {
+            // the natural-language output string. See #1091. Gated on
+            // the agent's profile (claude-only today) so coincidental
+            // tool names on other agents don't fire a wakeup event.
+            if profile.supports_wakeup_tools && tc.title == "ScheduleWakeup" {
                 if let Some(event) = wakeup_event_from_raw(&raw_args) {
                     events.push(event);
                 }
@@ -1752,8 +1775,11 @@ fn map_update_to_events(update: SessionUpdate) -> Vec<Event> {
             // emit path in the `ToolCall` branch above therefore never
             // sees real args and `wakeup_event_from_raw` returns None,
             // so re-check here when the update carries both the title
-            // and a populated raw_input. See #1091.
-            if matches!(update.fields.title.as_deref(), Some("ScheduleWakeup")) {
+            // and a populated raw_input. See #1091. Gated on profile so
+            // non-claude agents don't fire WakeupScheduled on coincidence.
+            if profile.supports_wakeup_tools
+                && matches!(update.fields.title.as_deref(), Some("ScheduleWakeup"))
+            {
                 if let Some(raw) = update.fields.raw_input.as_ref() {
                     if let Some(event) = wakeup_event_from_raw(raw) {
                         events.push(event);
@@ -1997,6 +2023,7 @@ async fn run_connection_task<W, R>(
     socket_path: Option<PathBuf>,
     mode: ConnectMode,
     ready_tx: Option<oneshot::Sender<Result<(), AcpError>>>,
+    profile: &'static agent_profiles::AgentProfile,
 ) where
     W: futures_util::AsyncWrite + Send + 'static,
     R: futures_util::AsyncRead + Send + 'static,
@@ -2062,7 +2089,7 @@ async fn run_connection_task<W, R>(
                     last_event_at
                         .store(chrono::Utc::now().timestamp_millis(), Ordering::Relaxed);
                     let suppressing = suppress.load(Ordering::Relaxed);
-                    for event in map_update_to_events(notification.update) {
+                    for event in map_update_to_events(notification.update, profile) {
                         // During the post-load replay window, drop only
                         // events that would reproduce the prior turns'
                         // visible transcript (assistant chunks, tool
@@ -2096,7 +2123,8 @@ async fn run_connection_task<W, R>(
                 let event_tx = event_tx_for_perm.clone();
                 let pending = pending_for_perm.clone();
                 async move {
-                    handle_permission_request(request, responder, event_tx, pending).await
+                    handle_permission_request(request, responder, event_tx, pending, profile)
+                        .await
                 }
             },
             agent_client_protocol::on_receive_request!(),
@@ -2662,10 +2690,16 @@ async fn run_connection_task<W, R>(
 /// download stall) returns a clear typed error instead of leaving the
 /// supervisor parked indefinitely. Also watches for early child exit
 /// and surfaces stderr in the message so callers see why it died.
+///
+/// `install_binary` is the binary name from `AgentSpec.command` so the
+/// timeout message points users at the right install command for the
+/// specific agent (codex-acp / opencode / gemini, not always
+/// claude-agent-acp).
 async fn wait_for_handshake(
     session_label: &str,
     ready_rx: oneshot::Receiver<Result<(), AcpError>>,
     child: Option<&Arc<Mutex<tokio::process::Child>>>,
+    install_binary: &str,
 ) -> Result<(), AcpError> {
     let timeout = std::time::Duration::from_secs(30);
     match tokio::time::timeout(timeout, ready_rx).await {
@@ -2689,12 +2723,15 @@ async fn wait_for_handshake(
                 let mut guard = child.lock().await;
                 let _ = guard.kill().await;
             }
+            let install_hint = super::install_hints::install_hint_for(install_binary)
+                .unwrap_or("install the adapter for the configured agent and re-run");
             Err(AcpError::Spawn(format!(
                 "agent did not complete the ACP initialize handshake within {}s. \
-                 Common causes: `npx -y` is still downloading the adapter on first run, \
+                 Common causes: the adapter is still downloading on first run, \
                  or the configured agent command isn't a real ACP server. \
-                 Try `npm install -g @agentclientprotocol/claude-agent-acp` and re-run.",
-                timeout.as_secs()
+                 Try `{}` and re-run.",
+                timeout.as_secs(),
+                install_hint
             )))
         }
     }
@@ -3002,6 +3039,7 @@ async fn handle_permission_request(
     responder: Responder<RequestPermissionResponse>,
     event_tx: mpsc::Sender<Event>,
     pending: PendingResponders,
+    profile: &'static agent_profiles::AgentProfile,
 ) -> agent_client_protocol::Result<()> {
     let enter_ns = enter_timestamp_ns();
     let tool_call_id = request.tool_call.tool_call_id.0.to_string();
@@ -3038,7 +3076,7 @@ async fn handle_permission_request(
             .unwrap_or_else(|| "other".into()),
         args_preview,
         started_at: chrono::Utc::now(),
-        parent_tool_call_id: parent_tool_use_id_from_meta(&request.tool_call.meta),
+        parent_tool_call_id: profile.parent_tool_use_id_from_meta(&request.tool_call.meta),
     };
     let approval = build_approval(tool_call);
     let nonce = approval.nonce.clone();
@@ -3159,6 +3197,7 @@ mod tests {
             custom_instruction: None,
         };
         let config = SpawnConfig {
+            agent_key: "claude".into(),
             spec: AgentSpec {
                 command: "claude-agent-acp".into(),
                 args: vec!["--stdio".into()],
@@ -3222,6 +3261,7 @@ mod tests {
             custom_instruction: None,
         };
         let config = SpawnConfig {
+            agent_key: "claude".into(),
             spec: AgentSpec {
                 command: "claude-agent-acp".into(),
                 args: vec![],
@@ -3289,6 +3329,7 @@ mod tests {
             custom_instruction: None,
         };
         let config = SpawnConfig {
+            agent_key: "claude".into(),
             spec: AgentSpec {
                 command: "claude-agent-acp".into(),
                 args: vec![],
@@ -3332,6 +3373,7 @@ mod tests {
     #[tokio::test]
     async fn spawn_with_nonexistent_command_errors_cleanly() {
         let config = SpawnConfig {
+            agent_key: "claude".into(),
             spec: AgentSpec {
                 command: "/nonexistent/agent/binary/aoe-test".into(),
                 args: vec![],
@@ -3361,6 +3403,7 @@ mod tests {
         // Ensure the path truly does not exist.
         let _ = std::fs::remove_dir_all(&missing);
         let config = SpawnConfig {
+            agent_key: "claude".into(),
             spec: AgentSpec {
                 command: "/bin/true".into(),
                 args: vec![],
@@ -3425,41 +3468,6 @@ mod tests {
     }
 
     #[test]
-    fn parent_tool_use_id_from_meta_reads_claudecode_namespace() {
-        let mut meta = serde_json::Map::new();
-        meta.insert(
-            "claudeCode".to_string(),
-            serde_json::json!({ "parentToolUseId": "tc-parent-7" }),
-        );
-        assert_eq!(
-            parent_tool_use_id_from_meta(&Some(meta)),
-            Some("tc-parent-7".to_string())
-        );
-    }
-
-    #[test]
-    fn parent_tool_use_id_from_meta_returns_none_for_unrelated_keys() {
-        let mut meta = serde_json::Map::new();
-        meta.insert("terminalExit".to_string(), serde_json::json!({ "code": 0 }));
-        assert!(parent_tool_use_id_from_meta(&Some(meta)).is_none());
-    }
-
-    #[test]
-    fn parent_tool_use_id_from_meta_returns_none_for_none_meta() {
-        assert!(parent_tool_use_id_from_meta(&None).is_none());
-    }
-
-    #[test]
-    fn parent_tool_use_id_from_meta_returns_none_when_value_not_a_string() {
-        let mut meta = serde_json::Map::new();
-        meta.insert(
-            "claudeCode".to_string(),
-            serde_json::json!({ "parentToolUseId": 42 }),
-        );
-        assert!(parent_tool_use_id_from_meta(&Some(meta)).is_none());
-    }
-
-    #[test]
     fn map_update_to_events_threads_parent_tool_call_id() {
         use agent_client_protocol::schema::{SessionUpdate, ToolCall as AcpToolCall};
         let mut meta = serde_json::Map::new();
@@ -3470,7 +3478,7 @@ mod tests {
         let mut tc = AcpToolCall::new("tc-child-1", "Read");
         tc.raw_input = Some(serde_json::json!({"path": "x"}));
         tc.meta = Some(meta);
-        let events = map_update_to_events(SessionUpdate::ToolCall(tc));
+        let events = map_update_to_events(SessionUpdate::ToolCall(tc), &agent_profiles::CLAUDE);
         let started = events.iter().find_map(|e| match e {
             Event::ToolCallStarted { tool_call } => Some(tool_call),
             _ => None,
@@ -3484,7 +3492,29 @@ mod tests {
         use agent_client_protocol::schema::{SessionUpdate, ToolCall as AcpToolCall};
         let mut tc = AcpToolCall::new("tc-1", "Read");
         tc.raw_input = Some(serde_json::json!({"path": "x"}));
-        let events = map_update_to_events(SessionUpdate::ToolCall(tc));
+        let events = map_update_to_events(SessionUpdate::ToolCall(tc), &agent_profiles::CLAUDE);
+        let started = events.iter().find_map(|e| match e {
+            Event::ToolCallStarted { tool_call } => Some(tool_call),
+            _ => None,
+        });
+        assert!(started.unwrap().parent_tool_call_id.is_none());
+    }
+
+    #[test]
+    fn map_update_to_events_does_not_link_parent_for_unverified_agents() {
+        use agent_client_protocol::schema::{SessionUpdate, ToolCall as AcpToolCall};
+        let mut meta = serde_json::Map::new();
+        meta.insert(
+            "claudeCode".to_string(),
+            serde_json::json!({ "parentToolUseId": "tc-task-1" }),
+        );
+        let mut tc = AcpToolCall::new("tc-child-1", "Read");
+        tc.raw_input = Some(serde_json::json!({"path": "x"}));
+        tc.meta = Some(meta);
+        // Codex profile lists no parent_meta_namespaces, so the linkage
+        // doesn't render even when claude's namespace happens to be on
+        // the wire.
+        let events = map_update_to_events(SessionUpdate::ToolCall(tc), &agent_profiles::CODEX);
         let started = events.iter().find_map(|e| match e {
             Event::ToolCallStarted { tool_call } => Some(tool_call),
             _ => None,
@@ -3679,7 +3709,10 @@ mod tests {
                 "abc1234 first commit",
             ))]);
         let update = ToolCallUpdate::new("tc-1", fields);
-        let events = map_update_to_events(SessionUpdate::ToolCallUpdate(update));
+        let events = map_update_to_events(
+            SessionUpdate::ToolCallUpdate(update),
+            &agent_profiles::CLAUDE,
+        );
         assert_eq!(events.len(), 1);
         match &events[0] {
             Event::ToolCallCompleted {
@@ -3707,7 +3740,10 @@ mod tests {
                 "partial output",
             ))]);
         let update = ToolCallUpdate::new("tc-2", fields);
-        let events = map_update_to_events(SessionUpdate::ToolCallUpdate(update));
+        let events = map_update_to_events(
+            SessionUpdate::ToolCallUpdate(update),
+            &agent_profiles::CLAUDE,
+        );
         // InProgress now emits a ToolCallUpdated re-stamping started_at
         // (#1060 follow-up) plus the streaming ToolCallContent.
         assert_eq!(events.len(), 2);
@@ -3739,7 +3775,10 @@ mod tests {
         use agent_client_protocol::schema::{ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields};
         let fields = ToolCallUpdateFields::new().status(ToolCallStatus::InProgress);
         let update = ToolCallUpdate::new("tc-3", fields);
-        let events = map_update_to_events(SessionUpdate::ToolCallUpdate(update));
+        let events = map_update_to_events(
+            SessionUpdate::ToolCallUpdate(update),
+            &agent_profiles::CLAUDE,
+        );
         assert_eq!(events.len(), 1);
         match &events[0] {
             Event::ToolCallUpdated {
@@ -3779,7 +3818,10 @@ mod tests {
                 "reason": "Test 10-minute wake-up card countdown",
             }));
         let update = ToolCallUpdate::new("toolu_test", fields);
-        let events = map_update_to_events(SessionUpdate::ToolCallUpdate(update));
+        let events = map_update_to_events(
+            SessionUpdate::ToolCallUpdate(update),
+            &agent_profiles::CLAUDE,
+        );
         let wakeup = events
             .iter()
             .find(|e| matches!(e, Event::WakeupScheduled { .. }))
@@ -3810,7 +3852,10 @@ mod tests {
         use agent_client_protocol::schema::{ToolCallUpdate, ToolCallUpdateFields};
         let fields = ToolCallUpdateFields::new().title("ScheduleWakeup".to_string());
         let update = ToolCallUpdate::new("toolu_test", fields);
-        let events = map_update_to_events(SessionUpdate::ToolCallUpdate(update));
+        let events = map_update_to_events(
+            SessionUpdate::ToolCallUpdate(update),
+            &agent_profiles::CLAUDE,
+        );
         assert!(
             !events
                 .iter()
@@ -3823,7 +3868,7 @@ mod tests {
     fn map_usage_update_emits_typed_usage_event() {
         use agent_client_protocol::schema::{Cost, UsageUpdate};
         let u = UsageUpdate::new(12_345, 200_000).cost(Cost::new(0.42, "USD"));
-        let events = map_update_to_events(SessionUpdate::UsageUpdate(u));
+        let events = map_update_to_events(SessionUpdate::UsageUpdate(u), &agent_profiles::CLAUDE);
         assert_eq!(events.len(), 1);
         match &events[0] {
             Event::UsageUpdated { usage } => {
@@ -3850,7 +3895,10 @@ mod tests {
             AcpAvailableCommand::new("clear", "Reset context"),
         ];
         let update = AvailableCommandsUpdate::new(cmds);
-        let events = map_update_to_events(SessionUpdate::AvailableCommandsUpdate(update));
+        let events = map_update_to_events(
+            SessionUpdate::AvailableCommandsUpdate(update),
+            &agent_profiles::CLAUDE,
+        );
         assert_eq!(events.len(), 1);
         match &events[0] {
             Event::AvailableCommandsUpdated { commands } => {

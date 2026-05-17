@@ -423,15 +423,17 @@ impl<S: BroadcastSink> Supervisor<S> {
     /// chunks; otherwise a reconnecting client sees only assistant text
     /// and every turn concatenates into one giant message.
     ///
-    /// Also detects `/clear` (claude-agent-acp's reset-conversation
-    /// command) and emits a follow-up `Event::SessionCleared` so the
-    /// UI can fold the pre-clear transcript and drop now-stale
-    /// session-scoped capability caches. The adapter sends no
-    /// structured signal for `/clear` (text-only `agent_message_chunk`
-    /// notifications), so this is a deliberate server-side detection.
-    /// See #1101.
-    pub fn publish_user_prompt(&self, session_id: &str, text: String) {
-        let is_clear = is_clear_command(&text);
+    /// Also detects the conversation-reset slash command (claude's
+    /// `/clear`, codex's / opencode's `/new`) and emits a follow-up
+    /// `Event::SessionCleared` so the UI can fold the pre-clear
+    /// transcript and drop now-stale session-scoped capability caches.
+    /// Adapters don't emit a structured signal for these, so detection
+    /// is text-based but routed through the session's `AgentProfile`
+    /// so each agent's aliases match the right surface. See #1101.
+    pub async fn publish_user_prompt(&self, session_id: &str, text: String) {
+        let agent_key = self.agent_key_for_session(session_id).await;
+        let profile = super::agent_profiles::resolve(&agent_key);
+        let is_clear = profile.is_clear_command(&text);
         let seq = next_seq(&self.next_seqs, session_id);
         self.sink
             .publish(session_id, seq, &Event::UserPromptSent { text });
@@ -439,6 +441,24 @@ impl<S: BroadcastSink> Supervisor<S> {
             let seq = next_seq(&self.next_seqs, session_id);
             self.sink.publish(session_id, seq, &Event::SessionCleared);
         }
+    }
+
+    /// Resolve the agent registry key for a session. Looks at the live
+    /// worker handle first (covers Runner + Attached); falls back to the
+    /// on-disk worker registry record so a session that has been
+    /// detached can still resolve its profile; returns `"claude"` as a
+    /// last-resort default to keep behavior unchanged for legacy
+    /// sessions whose records pre-date this field.
+    async fn agent_key_for_session(&self, session_id: &str) -> String {
+        if let Some(handle) = self.workers.lock().await.get(session_id) {
+            if let WorkerKind::Runner { spawn_config } = &handle.kind {
+                return spawn_config.agent_key.clone();
+            }
+        }
+        if let Ok(Some(record)) = super::worker_registry::load(session_id) {
+            return record.agent_name;
+        }
+        "claude".to_string()
     }
 
     /// Drop per-session bookkeeping (replay seq counter). Called when
@@ -597,6 +617,7 @@ impl<S: BroadcastSink> Supervisor<S> {
         })?;
 
         let config = SpawnConfig {
+            agent_key: agent.clone(),
             spec,
             cwd,
             additional_dirs,
@@ -1281,6 +1302,7 @@ impl<S: BroadcastSink> Supervisor<S> {
             in_flight_turn,
             cockpit_session_id,
             sandbox_resources,
+            record.agent_name.clone(),
         )
         .await?;
         super::worker_registry::mark_attached(&session_id);
@@ -1591,22 +1613,6 @@ async fn restart_decision(
     }
 }
 
-/// True when the user prompt is a `/clear` invocation. Matches `/clear`
-/// exact or `/clear ...flags`, tolerates surrounding whitespace.
-/// Conservative on purpose: a false positive renders an extra divider
-/// (harmless), a false negative leaves the UI showing stale capability
-/// state (the current bug we're fixing). claude-agent-acp doesn't emit
-/// a structured boundary event for `/clear`, so this is text-match
-/// detection. See #1101.
-fn is_clear_command(text: &str) -> bool {
-    let trimmed = text.trim();
-    trimmed == "/clear"
-        || trimmed
-            .strip_prefix("/clear")
-            .map(|rest| rest.starts_with(char::is_whitespace))
-            .unwrap_or(false)
-}
-
 /// Increment and return the per-session seq counter. Lives at the
 /// supervisor level so the no-worker `publish_startup_error` path
 /// and the drain task share a single source of truth — otherwise
@@ -1836,6 +1842,7 @@ mod tests {
         };
         let socket_path = tmp.path().join("budget.sock");
         let dummy_config = SpawnConfig {
+            agent_key: "claude".into(),
             spec: dummy_spec,
             cwd: std::env::temp_dir(),
             additional_dirs: vec![],
@@ -1922,6 +1929,7 @@ mod tests {
             env_allowlist: None,
         };
         let dummy_config = SpawnConfig {
+            agent_key: "claude".into(),
             spec: dummy_spec,
             cwd: std::env::temp_dir(),
             additional_dirs: vec![],
@@ -1993,6 +2001,7 @@ mod tests {
             env_allowlist: None,
         };
         let dummy_config = SpawnConfig {
+            agent_key: "claude".into(),
             spec: dummy_spec,
             cwd: std::env::temp_dir(),
             additional_dirs: vec![],
@@ -2064,6 +2073,7 @@ mod tests {
             env_allowlist: None,
         };
         let dummy_config = SpawnConfig {
+            agent_key: "claude".into(),
             spec: dummy_spec,
             cwd: std::env::temp_dir(),
             additional_dirs: vec![],
@@ -2189,6 +2199,7 @@ mod tests {
             env_allowlist: None,
         };
         let dummy_config = SpawnConfig {
+            agent_key: "claude".into(),
             spec: dummy_spec,
             cwd: std::env::temp_dir(),
             additional_dirs: vec![],
@@ -2262,21 +2273,23 @@ mod tests {
         );
     }
 
-    /// `is_clear_command` matches the user's `/clear` invocation in
-    /// the shapes the adapter accepts: bare, with flags, surrounded
-    /// by whitespace. Anything else falls through so a prompt that
-    /// merely mentions /clear (e.g. quoting a help string) doesn't
-    /// trip the divider. See #1101.
+    /// Claude profile's `is_clear_command` matches the user's `/clear`
+    /// invocation in the shapes the adapter accepts: bare, with flags,
+    /// surrounded by whitespace. Anything else falls through so a
+    /// prompt that merely mentions /clear (e.g. quoting a help string)
+    /// doesn't trip the divider. See #1101. The profile-keyed check
+    /// itself is unit-tested in `cockpit::agent_profiles::tests`.
     #[test]
-    fn is_clear_command_matches_invocations() {
-        assert!(is_clear_command("/clear"));
-        assert!(is_clear_command(" /clear "));
-        assert!(is_clear_command("/clear\n"));
-        assert!(is_clear_command("/clear --foo"));
-        assert!(!is_clear_command("clear"));
-        assert!(!is_clear_command("/cleart"));
-        assert!(!is_clear_command("hello /clear world"));
-        assert!(!is_clear_command(""));
+    fn claude_profile_is_clear_command_matches_invocations() {
+        let claude = &super::super::agent_profiles::CLAUDE;
+        assert!(claude.is_clear_command("/clear"));
+        assert!(claude.is_clear_command(" /clear "));
+        assert!(claude.is_clear_command("/clear\n"));
+        assert!(claude.is_clear_command("/clear --foo"));
+        assert!(!claude.is_clear_command("clear"));
+        assert!(!claude.is_clear_command("/cleart"));
+        assert!(!claude.is_clear_command("hello /clear world"));
+        assert!(!claude.is_clear_command(""));
     }
 
     /// `publish_user_prompt` emits a synthetic `SessionCleared` event
@@ -2288,7 +2301,7 @@ mod tests {
     async fn publish_user_prompt_emits_session_cleared_for_clear_command() {
         let sink = VecSink::new();
         let sup = Supervisor::new(sink.clone());
-        sup.publish_user_prompt("s-1", "/clear".into());
+        sup.publish_user_prompt("s-1", "/clear".into()).await;
         let frames = sink.frames.lock().unwrap().clone();
         assert_eq!(frames.len(), 2);
         assert!(matches!(
@@ -2305,7 +2318,8 @@ mod tests {
     async fn publish_user_prompt_does_not_emit_session_cleared_for_normal_prompts() {
         let sink = VecSink::new();
         let sup = Supervisor::new(sink.clone());
-        sup.publish_user_prompt("s-1", "tell me about /clear".into());
+        sup.publish_user_prompt("s-1", "tell me about /clear".into())
+            .await;
         let frames = sink.frames.lock().unwrap().clone();
         assert_eq!(frames.len(), 1);
         assert!(matches!(&frames[0].2, Event::UserPromptSent { .. }));
@@ -2337,8 +2351,8 @@ mod tests {
     async fn publish_user_prompt_emits_event_and_increments_seq() {
         let sink = VecSink::new();
         let sup = Supervisor::new(sink.clone());
-        sup.publish_user_prompt("s-1", "first prompt".into());
-        sup.publish_user_prompt("s-1", "second prompt".into());
+        sup.publish_user_prompt("s-1", "first prompt".into()).await;
+        sup.publish_user_prompt("s-1", "second prompt".into()).await;
 
         let frames = sink.frames.lock().unwrap().clone();
         assert_eq!(frames.len(), 2);
@@ -2369,7 +2383,7 @@ mod tests {
         // Simulate: we've persisted up to seq=42 for s-1 and seq=7 for s-2.
         sup.hydrate_seqs([("s-1".to_string(), 42), ("s-2".to_string(), 7)]);
 
-        sup.publish_user_prompt("s-1", "after restart".into());
+        sup.publish_user_prompt("s-1", "after restart".into()).await;
         sup.publish_startup_error("s-2", "retry".into());
 
         let frames = sink.frames.lock().unwrap().clone();
@@ -2671,9 +2685,9 @@ mod tests {
                 event_store: event_store.clone(),
             });
             let sup = Supervisor::new(sink);
-            sup.publish_user_prompt("s-99", "first".into());
-            sup.publish_user_prompt("s-99", "second".into());
-            sup.publish_user_prompt("s-99", "third".into());
+            sup.publish_user_prompt("s-99", "first".into()).await;
+            sup.publish_user_prompt("s-99", "second".into()).await;
+            sup.publish_user_prompt("s-99", "third".into()).await;
             // sup, sink, and the in-memory replay ring drop here.
         }
 
@@ -2692,7 +2706,8 @@ mod tests {
         });
         let sup = Supervisor::new(sink);
         sup.hydrate_seqs(event_store.all_session_seqs());
-        sup.publish_user_prompt("s-99", "after restart".into());
+        sup.publish_user_prompt("s-99", "after restart".into())
+            .await;
 
         // The fresh publish must be seq=4, not seq=1. A seq=1
         // publish would be a no-op on disk (INSERT OR IGNORE) and
