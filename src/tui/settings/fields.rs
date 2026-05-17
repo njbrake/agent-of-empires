@@ -86,6 +86,7 @@ pub enum FieldKey {
     Clipboard,
     // Session
     DefaultTool,
+    DefaultClaudeAccount,
     StrictHotkeys,
     AgentExtraArgs,
     AgentCommandOverride,
@@ -209,6 +210,19 @@ where
 }
 
 /// Parse a list of "key=value" strings into a HashMap.
+/// Map a `DefaultClaudeAccount` Select index back to the account `name`.
+/// Index 0 is "(none)"; subsequent indices match `discover_accounts(default_root())`
+/// in the order it returns (alphabetical by name). Returns `None` for index 0
+/// or when the index points past the live account list.
+fn claude_account_name_from_index(selected: usize) -> Option<String> {
+    if selected == 0 {
+        return None;
+    }
+    let root = crate::session::claude_accounts::default_root()?;
+    let accounts = crate::session::claude_accounts::discover_accounts(&root);
+    accounts.get(selected - 1).map(|a| a.name.clone())
+}
+
 fn parse_key_value_list(items: &[String]) -> std::collections::HashMap<String, String> {
     items
         .iter()
@@ -1342,6 +1356,44 @@ fn build_session_fields(
     let mut options = vec!["Auto (first available)".to_string()];
     options.extend(crate::agents::agent_names().iter().map(|n| n.to_string()));
 
+    let (default_claude_account, claude_account_override) = resolve_optional(
+        scope,
+        global.session.default_claude_account.clone(),
+        session.and_then(|s| s.default_claude_account.clone()),
+        session
+            .map(|s| s.default_claude_account.is_some())
+            .unwrap_or(false),
+    );
+    let discovered_accounts = crate::session::claude_accounts::default_root()
+        .map(|r| crate::session::claude_accounts::discover_accounts(&r))
+        .unwrap_or_default();
+    let mut claude_account_options = vec!["(none)".to_string()];
+    claude_account_options.extend(
+        discovered_accounts
+            .iter()
+            .map(|a| format!("{} ({})", a.display_label(), a.name)),
+    );
+    let claude_account_selected = default_claude_account
+        .as_deref()
+        .and_then(|name| {
+            discovered_accounts
+                .iter()
+                .position(|a| a.name == name)
+                .map(|i| i + 1)
+        })
+        .unwrap_or(0);
+    let global_claude_account_selected = global
+        .session
+        .default_claude_account
+        .as_deref()
+        .and_then(|name| {
+            discovered_accounts
+                .iter()
+                .position(|a| a.name == name)
+                .map(|i| i + 1)
+        })
+        .unwrap_or(0);
+
     let (yolo_mode_default, yolo_override) = resolve_value(
         scope,
         global.session.yolo_mode_default,
@@ -1486,6 +1538,25 @@ fn build_session_fields(
                 FieldValue::Select {
                     selected: global_tool_selected,
                     options,
+                },
+            ),
+        },
+        SettingField {
+            key: FieldKey::DefaultClaudeAccount,
+            label: "Default Claude Account",
+            description:
+                "Pre-select this ~/.claude-accounts entry when Default Tool is `claude`. \"(none)\" leaves the bare-claude row selected.",
+            value: FieldValue::Select {
+                selected: claude_account_selected,
+                options: claude_account_options.clone(),
+            },
+            category: SettingsCategory::Session,
+            has_override: claude_account_override,
+            inherited_display: inherited_if(
+                claude_account_override,
+                FieldValue::Select {
+                    selected: global_claude_account_selected,
+                    options: claude_account_options,
                 },
             ),
         },
@@ -1943,6 +2014,9 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
             config.session.default_tool =
                 crate::agents::name_from_settings_index(*selected).map(|s| s.to_string());
         }
+        (FieldKey::DefaultClaudeAccount, FieldValue::Select { selected, .. }) => {
+            config.session.default_claude_account = claude_account_name_from_index(*selected);
+        }
         (FieldKey::AgentExtraArgs, FieldValue::List(v)) => {
             config.session.agent_extra_args = parse_key_value_list(v);
         }
@@ -2273,6 +2347,14 @@ fn apply_field_to_profile(field: &SettingField, _global: &Config, config: &mut P
                 .session
                 .get_or_insert_with(SessionConfigOverride::default);
             session.default_tool = tool;
+        }
+        (FieldKey::DefaultClaudeAccount, FieldValue::Select { selected, .. }) => {
+            let name = claude_account_name_from_index(*selected);
+            use crate::session::SessionConfigOverride;
+            let session = config
+                .session
+                .get_or_insert_with(SessionConfigOverride::default);
+            session.default_claude_account = name;
         }
         (FieldKey::YoloModeDefault, FieldValue::Bool(v)) => {
             set_profile_override(*v, &mut config.session, |s, val| s.yolo_mode_default = val);

@@ -1225,3 +1225,84 @@ fn test_sandbox_config_mode_enter_on_image_returns_to_main() {
     assert!(matches!(result, DialogResult::Continue));
     assert!(!dialog.sandbox_config_mode);
 }
+
+#[test]
+fn test_picker_replaces_bare_claude_when_accounts_present() {
+    use crate::session::claude_accounts::ClaudeAccount;
+    use std::path::PathBuf;
+
+    let mut tools = vec!["claude".to_string(), "opencode".to_string()];
+    let mut accounts: Vec<Option<ClaudeAccount>> = vec![None, None];
+    let discovered = vec![
+        ClaudeAccount {
+            name: "forit-main".to_string(),
+            config_dir: PathBuf::from("/fake/forit-main"),
+        },
+        ClaudeAccount {
+            name: "pivot-main".to_string(),
+            config_dir: PathBuf::from("/fake/pivot-main"),
+        },
+    ];
+
+    apply_claude_account_rows(&mut tools, &mut accounts, &discovered);
+
+    assert_eq!(tools.len(), accounts.len(), "vectors stay aligned");
+    let bare_claude_rows = tools
+        .iter()
+        .zip(accounts.iter())
+        .filter(|(t, a)| t.as_str() == "claude" && a.is_none())
+        .count();
+    assert_eq!(
+        bare_claude_rows, 0,
+        "bare `claude` row must be removed when ≥1 account present"
+    );
+    let claude_account_rows: Vec<&str> = tools
+        .iter()
+        .zip(accounts.iter())
+        .filter_map(|(t, a)| {
+            if t == "claude" {
+                a.as_ref().map(|acct| acct.name.as_str())
+            } else {
+                None
+            }
+        })
+        .collect();
+    assert_eq!(claude_account_rows, vec!["forit-main", "pivot-main"]);
+    assert!(
+        tools.iter().any(|t| t == "opencode"),
+        "non-claude tools untouched"
+    );
+}
+
+#[test]
+fn test_picker_keeps_bare_claude_when_no_accounts() {
+    use crate::session::claude_accounts::ClaudeAccount;
+
+    let mut tools = vec!["claude".to_string(), "opencode".to_string()];
+    let mut accounts: Vec<Option<ClaudeAccount>> = vec![None, None];
+    let discovered: Vec<ClaudeAccount> = Vec::new();
+
+    apply_claude_account_rows(&mut tools, &mut accounts, &discovered);
+
+    assert_eq!(tools, vec!["claude".to_string(), "opencode".to_string()]);
+    assert!(accounts.iter().all(|a| a.is_none()));
+}
+
+#[test]
+fn test_picker_no_op_when_claude_not_installed() {
+    use crate::session::claude_accounts::ClaudeAccount;
+    use std::path::PathBuf;
+
+    let mut tools = vec!["opencode".to_string()];
+    let mut accounts: Vec<Option<ClaudeAccount>> = vec![None];
+    let discovered = vec![ClaudeAccount {
+        name: "forit-main".to_string(),
+        config_dir: PathBuf::from("/fake/forit-main"),
+    }];
+
+    apply_claude_account_rows(&mut tools, &mut accounts, &discovered);
+
+    assert_eq!(tools, vec!["opencode".to_string()]);
+    assert_eq!(accounts.len(), 1);
+    assert!(accounts[0].is_none());
+}

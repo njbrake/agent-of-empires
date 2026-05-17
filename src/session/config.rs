@@ -418,6 +418,13 @@ pub struct SessionConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_tool: Option<String>,
 
+    /// Account directory basename to pre-select when `default_tool` is `claude`
+    /// and ≥1 entry exists under `~/.claude-accounts/`. Stored by name (not
+    /// path) so the binding survives `$HOME` changes. Unknown name falls back
+    /// to the first claude row with a one-shot WARN.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_claude_account: Option<String>,
+
     /// Enable YOLO mode by default for new sessions (skip permission prompts)
     #[serde(default)]
     pub yolo_mode_default: bool,

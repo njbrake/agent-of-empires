@@ -641,6 +641,11 @@ impl SettingsView {
                     s.default_tool = None;
                 }
             }
+            FieldKey::DefaultClaudeAccount => {
+                if let Some(ref mut s) = config.session {
+                    s.default_claude_account = None;
+                }
+            }
             FieldKey::SandboxEnabledByDefault => {
                 if let Some(ref mut s) = config.sandbox {
                     s.enabled_by_default = None;
