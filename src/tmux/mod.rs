@@ -104,8 +104,10 @@ pub fn refresh_session_cache() {
         }
     };
 
+    // Trace, not debug: the TUI status poller calls this every ~2s, so
+    // at debug it dominates the idle log. Errors above still log at warn.
     let sessions = new_data.as_ref().map(|m| m.len()).unwrap_or(0);
-    tracing::debug!(
+    tracing::trace!(
         target: "tmux.cache",
         sessions,
         duration_ms = start.elapsed().as_millis() as u64,
@@ -151,7 +153,10 @@ pub fn batch_pane_metadata() -> HashMap<String, PaneMetadata> {
         }
     };
 
-    tracing::debug!(
+    // Trace, not debug: paired with refresh_session_cache in the TUI
+    // status poll loop (~every 2s). Debug-level here would dominate the
+    // idle log.
+    tracing::trace!(
         target: "tmux.pane",
         sessions = result.len(),
         duration_ms = start.elapsed().as_millis() as u64,
