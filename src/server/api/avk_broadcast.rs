@@ -119,12 +119,23 @@ pub async fn broadcast_avk(
             }
         };
 
-        match send_to_pane(agent.tmux_target, message) {
+        // FUR-4122: AoE binary kendi `aoe_<slug>_<hash>` session'larini
+        // yaratiyor; registry sabit `avk-ofis:...` formatindan once runtime
+        // resolver dene. Bulamazsa registry target fallback (demo / manuel
+        // tmux ofis senaryosu icin geriye uyumlu). Resolver basariliysa
+        // session varligi list-sessions ile zaten dogrulanmis — pane_exists
+        // check'i atla (format `^.0` literal, window_name match olmaz).
+        let (effective_target, runtime_resolved) = match resolve_runtime_target(agent.slug) {
+            Some(t) => (t, true),
+            None => (agent.tmux_target.to_string(), false),
+        };
+
+        match send_to_pane(&effective_target, message, runtime_resolved) {
             Ok(()) => {
                 ok += 1;
                 results.push(BroadcastResult {
                     slug: (*slug).to_string(),
-                    target: agent.tmux_target.to_string(),
+                    target: effective_target,
                     ok: true,
                     error: None,
                 });
@@ -133,7 +144,7 @@ pub async fn broadcast_avk(
                 failed += 1;
                 results.push(BroadcastResult {
                     slug: (*slug).to_string(),
-                    target: agent.tmux_target.to_string(),
+                    target: effective_target,
                     ok: false,
                     error: Some(e),
                 });
@@ -166,8 +177,8 @@ fn error_response(status: StatusCode, msg: &str) -> Response {
 /// Pane var olup olmadığı `list-panes` ile pre-check (yanlış registry +
 /// tmux drift yakalama). Multi-line / 2KB+ mesajlar paste-buffer üzerinden
 /// bracketed paste, kısa tek satır mesajlar `send-keys -l --`.
-fn send_to_pane(target: &str, message: &str) -> Result<(), String> {
-    if !pane_exists(target)? {
+fn send_to_pane(target: &str, message: &str, pre_validated: bool) -> Result<(), String> {
+    if !pre_validated && !pane_exists(target)? {
         return Err(format!("tmux pane not found: {target}"));
     }
 
@@ -180,6 +191,36 @@ fn send_to_pane(target: &str, message: &str) -> Result<(), String> {
 
     run_tmux(&["send-keys", "-t", target, "Enter"])?;
     Ok(())
+}
+
+/// FUR-4122: AVK slug'i AoE binary'nin yarattigi runtime tmux session adina
+/// çevirir. AoE session naming: `aoe_<sanitized_title>_<id_first_8>` —
+/// AVK ajanlari title olarak slug kullaniyor (ornek: `aoe_koord_e91e6bb4`).
+///
+/// Tam slug eslesmesi sart (`aoe_koord_` `aoe_koord-1_` ile cakismasin):
+/// prefix sonrasinda kalan kisim sadece 8-char hash olmali (alphanumeric).
+///
+/// Bulamazsa None — caller registry sabit `tmux_target`'a fallback yapar.
+fn resolve_runtime_target(slug: &str) -> Option<String> {
+    let output = Command::new("tmux")
+        .args(["list-sessions", "-F", "#{session_name}"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let prefix = format!("aoe_{slug}_");
+    let matched = stdout.lines().map(str::trim).find(|name| {
+        if !name.starts_with(&prefix) {
+            return false;
+        }
+        let rest = &name[prefix.len()..];
+        // 8-char hash + sadece alphanumeric — fuzzy match koruma.
+        !rest.is_empty() && rest.chars().all(|c| c.is_ascii_alphanumeric())
+    })?;
+    // `:^.0` = ilk window + ilk pane (AoE default layout, tek pane).
+    Some(format!("{matched}:^.0"))
 }
 
 fn pane_exists(target: &str) -> Result<bool, String> {
