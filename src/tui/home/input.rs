@@ -839,6 +839,21 @@ impl HomeView {
             KeyCode::Char('?') => {
                 self.show_help = true;
             }
+            KeyCode::Char('e') if !self.strict_hotkeys => {
+                if let Err(e) = self.restart_selected_session() {
+                    tracing::error!("restart_selected_session failed: {}", e);
+                }
+            }
+            KeyCode::Char('E') if self.strict_hotkeys => {
+                if let Err(e) = self.restart_selected_session() {
+                    tracing::error!("restart_selected_session failed: {}", e);
+                }
+            }
+            KeyCode::F(5) => {
+                if let Err(e) = self.restart_selected_session() {
+                    tracing::error!("restart_selected_session failed: {}", e);
+                }
+            }
             KeyCode::Char('P') => {
                 self.show_profile_picker();
             }

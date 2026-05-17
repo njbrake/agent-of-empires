@@ -87,6 +87,52 @@ impl HomeView {
         Ok(session_id)
     }
 
+    pub(super) fn restart_selected_session(&mut self) -> anyhow::Result<()> {
+        let id = match &self.selected_session {
+            Some(id) => id.clone(),
+            None => return Ok(()),
+        };
+        let is_transient = match self.get_instance(&id) {
+            Some(inst) => matches!(inst.status, Status::Creating | Status::Deleting),
+            None => return Ok(()),
+        };
+        if is_transient {
+            return Ok(());
+        }
+
+        let mut snapshot = match self.get_instance(&id) {
+            Some(inst) => inst.clone(),
+            None => return Ok(()),
+        };
+        snapshot.restart_with_size(crate::terminal::get_size())?;
+
+        self.mutate_instance(&id, |inst| {
+            inst.status = snapshot.status;
+        });
+        self.save()?;
+
+        // Restart re-execs the agent at a blank prompt; nudge it back into its
+        // prior task. The brief sleep lets the agent finish booting before the
+        // keys land, otherwise the message is typed into a not-yet-ready pane.
+        let title = snapshot.title.clone();
+        let session_id = snapshot.id.clone();
+        let tool = snapshot.tool.clone();
+        std::thread::sleep(std::time::Duration::from_millis(2000));
+        let tmux_session = crate::tmux::Session::new(&session_id, &title)?;
+        if tmux_session.exists() {
+            let delay = crate::agents::send_keys_enter_delay(&tool);
+            let wake_msg = "wake up: pick up what you were doing";
+            if let Err(e) = tmux_session.send_keys_with_delay(wake_msg, delay) {
+                tracing::warn!("failed to send wake-up message after restart: {}", e);
+            } else {
+                self.mutate_instance(&session_id, |inst| {
+                    inst.touch_last_accessed();
+                });
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn delete_selected(&mut self, options: &DeleteOptions) -> anyhow::Result<()> {
         if let Some(id) = &self.selected_session {
             let id = id.clone();

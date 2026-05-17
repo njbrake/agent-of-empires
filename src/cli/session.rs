@@ -655,6 +655,29 @@ async fn restart_session(profile: &str, args: SessionIdArgs) -> Result<()> {
     bail_if_cockpit(&instances[idx], "restart")?;
     let outcome = instances[idx].restart_with_size(crate::terminal::get_size())?;
     let title = instances[idx].title.clone();
+    let session_id = instances[idx].id.clone();
+    let tool = instances[idx].tool.clone();
+
+    // Restart re-execs the agent at a blank prompt; nudge it back into its
+    // prior task. The brief sleep lets the agent finish booting before the
+    // keys land, otherwise the message is typed into a not-yet-ready pane.
+    std::thread::sleep(std::time::Duration::from_millis(2000));
+
+    let tmux_session = crate::tmux::Session::new(&session_id, &title)?;
+    if tmux_session.exists() {
+        let delay = crate::agents::send_keys_enter_delay(&tool);
+        let wake_msg = "wake up: pick up what you were doing";
+        match tmux_session.send_keys_with_delay(wake_msg, delay) {
+            Ok(()) => {
+                if let Some(inst) = instances.iter_mut().find(|i| i.id == session_id) {
+                    inst.touch_last_accessed();
+                }
+            }
+            Err(e) => {
+                eprintln!("Warning: failed to send wake-up message: {}", e);
+            }
+        }
+    }
 
     let group_tree = GroupTree::new_with_groups(&instances, &groups);
     storage.commit(&instances, &group_tree)?;
