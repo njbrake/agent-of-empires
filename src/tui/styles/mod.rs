@@ -13,9 +13,7 @@ mod resolved;
 mod themes;
 
 #[cfg(feature = "serve")]
-pub use resolved::{
-    resolve_theme, CssVarProjection, ResolvedTheme, ResolvedThemeSource, SyntaxProjection,
-};
+pub use resolved::{resolve_theme, ResolvedTheme};
 #[cfg(any(feature = "serve", test))]
 pub use themes::ThemeAppearance;
 pub use themes::{idle_decay_window, Theme};
