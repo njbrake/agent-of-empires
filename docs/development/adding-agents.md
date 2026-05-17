@@ -13,7 +13,11 @@ Adding an agent involves these files:
 | `src/hooks/mod.rs` | Hook installer (if the agent supports hooks) |
 | `src/session/instance.rs` | Wire hook installation + env prefix |
 | `src/session/container_config.rs` | Config mount for Docker sandbox |
+| `src/cockpit/agent_registry.rs` | Cockpit ACP adapter entry (only if the agent ships an ACP server) |
+| `src/cockpit/agent_profiles.rs` + `web/src/lib/agentProfiles.ts` | Cockpit profile (clear aliases, meta namespace, capability gates, tool aliases) |
+| `src/cockpit/install_hints.rs` | Install hint surfaced by `aoe cockpit doctor` and handshake failures |
 | `docker/Dockerfile` | Install agent in sandbox image |
+| `docs/cockpit/multi-agent.md` | Per-agent cockpit feature matrix |
 | `README.md`, `docs/` | Documentation updates |
 
 ## Levels of Support
@@ -193,14 +197,68 @@ In `src/tmux/status_detection.rs`, add a test for your detection function.
 
 In `src/session/instance.rs`, add your agent to `test_status_hook_env_prefix_includes_hermes` (if hook-based).
 
-### 8. Update Documentation
+### 8. Add the Cockpit Profile (if the agent has an ACP server)
+
+If the agent publishes an ACP server (its CLI accepts `acp`, `--acp`, or
+ships a separate `*-acp` adapter binary), wire cockpit support too.
+
+1. Add the binary to `src/cockpit/agent_registry.rs::with_defaults()`
+   keyed on the same name you used in `src/agents.rs`.
+2. Add an install hint to `src/cockpit/install_hints.rs::install_hint_for`.
+3. Add a server-side profile to `src/cockpit/agent_profiles.rs`:
+
+   ```rust
+   pub const MYAGENT: AgentProfile = AgentProfile {
+       key: "myagent",
+       // Empty until you've observed the adapter's _meta convention for
+       // child tool-call linkage. Don't guess; missing indentation is
+       // safer than fake parent links.
+       parent_meta_namespaces: &[],
+       // Slash command(s) that reset the conversation. Empty if the
+       // agent has no clear-boundary semantic.
+       clear_aliases: &["/new"],
+       supports_exit_plan_mode: false,
+       supports_wakeup_tools: false,
+   };
+   ```
+
+   Add the new constant to `resolve()` so `agent_profiles::resolve("myagent")`
+   returns it.
+
+4. Mirror in `web/src/lib/agentProfiles.ts`:
+
+   ```ts
+   const MYAGENT: AgentProfile = {
+     key: "myagent",
+     capabilities: { todos: false, skills: false, wakeup: false, subagents: false },
+     parentMetaNamespaces: [],
+     mcpPrefixes: ["mcp__"],
+     aliases: {
+       execute: ["shell"],
+       read: ["read_file"],
+       edit: ["apply_patch", "edit_file"],
+     },
+     specialTitles: { todoPrefixes: [], skillNames: [], scheduleNames: [] },
+   };
+   ```
+
+   Add it to `PROFILES` so `resolveAgentProfile("myagent")` returns it.
+
+5. Document the agent in `docs/cockpit/multi-agent.md` (per-agent
+   feature matrix + which cockpit features work / fall back / fire).
+
+Profile data should be conservative. When the adapter's tool surface
+isn't verified, leave the alias map empty rather than guessing; the
+cockpit will render the generic tool card, which is the right fallback.
+
+### 9. Update Documentation
 
 - `README.md`: features list + FAQ
 - `docs/index.md`: supported agents list
 - `docs/guides/sandbox.md`: sandbox overview + image table
 - `docker/Dockerfile.dev`: comment listing inherited agents
 
-### 9. Verify
+### 10. Verify
 
 ```bash
 cargo fmt
