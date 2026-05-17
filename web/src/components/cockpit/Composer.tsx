@@ -340,7 +340,13 @@ export function Composer({
   // ~200-500ms after mount and steals focus from us. Re-claim a couple
   // of times so the agent input wins; only when focus is on body or
   // inside .wterm so an intentional click into the host shell sticks.
+  //
+  // Mobile skips this entirely (#1178): auto-focusing the textarea pops
+  // the soft keyboard on every session open / switch, which is the wrong
+  // default for the read-traffic that dominates mobile usage. Users tap
+  // the composer when they want to type.
   useEffect(() => {
+    if (isMobile) return;
     const el = taRef.current;
     if (!el) return;
     el.focus();
@@ -360,7 +366,7 @@ export function Composer({
       window.clearTimeout(t1);
       window.clearTimeout(t2);
     };
-  }, []);
+  }, [isMobile]);
 
   const wrapperLayout = composerWrapperLayout({ keyboardOpen });
   return (
@@ -485,7 +491,7 @@ export function Composer({
                 e.stopPropagation();
                 void sendFromTextarea(taRef, composerRuntime, enqueuePrompt);
               }}
-              autoFocus
+              autoFocus={!isMobile}
               className={[
                 "min-h-[56px] max-h-[200px] resize-none bg-transparent",
                 "px-4 pt-3 pb-1 text-sm leading-6 text-text-primary",
