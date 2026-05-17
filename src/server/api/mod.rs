@@ -34,6 +34,8 @@ mod avk_pane_peek;
 mod avk_roadmap;
 // FUR-4167 — AVK Sentry alerts (REST API SENTRY_AUTH_TOKEN).
 mod avk_sentry;
+// AVK VPS sistem durum (hostname + load + memory + disk + uptime).
+mod avk_vps_status;
 #[cfg(feature = "serve")]
 mod client_log;
 #[cfg(feature = "serve")]
@@ -72,6 +74,7 @@ pub use avk_memory::list_avk_memory_recall;
 pub use avk_pane_peek::get_avk_pane_peek;
 pub use avk_roadmap::get_avk_roadmap;
 pub use avk_sentry::get_avk_sentry_alerts;
+pub use avk_vps_status::get_avk_vps_status;
 #[cfg(feature = "serve")]
 pub use client_log::post_client_log;
 pub use git::{clone_repo, list_branches};

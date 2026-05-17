@@ -981,6 +981,8 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/avk/error-board", get(api::get_avk_error_board))
         // AVK Sentry alerts (FUR-4167 — Sentry REST API unresolved 24h)
         .route("/api/avk/sentry-alerts", get(api::get_avk_sentry_alerts))
+        // AVK VPS sistem durum (hostname + load + memory% + disk% + uptime)
+        .route("/api/avk/vps-status", get(api::get_avk_vps_status))
         // Profiles
         .route(
             "/api/profiles",

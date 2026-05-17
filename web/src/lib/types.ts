@@ -538,6 +538,33 @@ export interface AvkHealthResponse {
 }
 
 /**
+ * `GET /api/avk/vps-status` JSON shape mirror.
+ *
+ * Daemon host (VPS) sistem metrikleri: hostname + kernel + uptime +
+ * load avg + memory % + disk %. Linux dışı host'larda `load_avg` /
+ * `memory` / `disk` alanları `null` olabilir.
+ */
+export interface AvkVpsStatusResponse {
+  hostname: string;
+  kernel: string | null;
+  os: string | null;
+  uptime_sec: number | null;
+  cpu_count: number | null;
+  load_avg: [number, number, number] | null;
+  memory: {
+    total_kb: number;
+    used_kb: number;
+    used_pct: number;
+  } | null;
+  disk: {
+    mount: string;
+    total_kb: number;
+    used_kb: number;
+    used_pct: number;
+  } | null;
+}
+
+/**
  * `GET /api/avk/memory-recall[?role=...&hours=...]` JSON shape mirror.
  *
  * Mock implementation: server static MOCK_FEED döner. Gerçek agentmemory
