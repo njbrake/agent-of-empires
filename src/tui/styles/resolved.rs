@@ -84,29 +84,39 @@ pub struct ResolvedTheme {
 /// behaviour) and the returned `source` reports `Fallback` so the
 /// frontend can surface that.
 pub fn resolve_theme(name: &str) -> ResolvedTheme {
+    debug!("resolve_theme enter name={}", name);
     let theme = load_theme(name);
+    debug!("resolve_theme: load_theme returned");
     let source = classify_source(name);
+    debug!("resolve_theme: classify_source -> {:?}", source);
     let resolved_name = if matches!(source, ResolvedThemeSource::Fallback) {
         "empire".to_string()
     } else {
         name.to_string()
     };
     let appearance = resolved_appearance(&theme);
+    debug!("resolve_theme: appearance -> {:?}", appearance);
     let syntax = syntax_projection(&theme, appearance);
     debug!(
-        requested = name,
-        resolved = %resolved_name,
-        source = ?source,
-        appearance = ?appearance,
-        shiki_theme = %syntax.shiki_theme,
-        "resolved theme projection"
+        "resolved theme projection name={} source={:?} appearance={:?} shiki_theme={}",
+        resolved_name, source, appearance, syntax.shiki_theme
+    );
+    let web = web_projection(&theme, appearance);
+    debug!(
+        "resolve_theme: web projection done ({} vars)",
+        web.css_vars.len()
+    );
+    let terminal = terminal_projection(&theme, appearance);
+    debug!(
+        "resolve_theme: terminal projection done ({} vars)",
+        terminal.css_vars.len()
     );
     ResolvedTheme {
         name: resolved_name,
         source,
         appearance,
-        web: web_projection(&theme, appearance),
-        terminal: terminal_projection(&theme, appearance),
+        web,
+        terminal,
         syntax,
     }
 }
