@@ -118,3 +118,5 @@ Upgrading aoe while the PWA is installed replaces `sw.js` but the new service wo
 **"Disabled by the server".** Ask the operator to flip `web.notifications_enabled` or set it in the TUI.
 
 **Notifications stop after a while, and you need to re-enable.** This is token rotation dropping stale subscriptions. If you use `aoe serve --remote`, the token rotates every four hours; grab a fresh dashboard URL and re-enable in the PWA.
+
+**Tapping a notification opens the wrong port or hostname.** Push payloads carry the origin recorded at subscribe time. If you change `--port`, `--host`, move the deployment behind a different reverse proxy, or your `aoe serve --remote` URL changed, the notification still resolves to the old origin until you refresh the subscription. Open Settings, Notifications, and click **Re-subscribe** on the affected device. Subscriptions created before this tracking landed have no recorded origin and are skipped on send; the same Re-subscribe action upgrades them.
