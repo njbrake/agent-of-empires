@@ -13,6 +13,7 @@
 //!   `state::apply_event`.
 
 pub mod acp_client;
+pub mod agent_profiles;
 pub mod agent_registry;
 pub mod approvals;
 pub mod client;
