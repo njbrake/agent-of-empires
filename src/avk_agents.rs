@@ -162,12 +162,20 @@ pub fn filter_by_role(role: AvkAgentRole) -> impl Iterator<Item = &'static AvkAg
     AVK_AGENTS.iter().filter(move |a| a.role == role)
 }
 
-/// Tier keyword (director/senior/worker/all) AVK ajan slug listesine çevir.
+/// Tier keyword AVK ajan slug listesine çevir.
 ///
 /// CLI `aoe send <tier> "<msg>"` (FUR-4120) ve server POST
 /// `/api/avk/broadcast` (FUR-4121) ortak kullanır. Bilinmeyen keyword için
-/// `None` döner (tekil session send fallback'i çağıran tarafta yapılır).
+/// `None` döner.
+///
+/// Kabul edilen biçimler:
+/// - `all` / `director` / `senior` / `worker` — tier-bazlı 1+ slug
+/// - `slug:<slug>` — FUR-4156 tekil hedef (örn `slug:koord`); slug
+///   AVK_AGENTS registry'de tanımlı olmalı, yoksa `None`.
 pub fn resolve_tier_slugs(tier: &str) -> Option<Vec<&'static str>> {
+    if let Some(slug) = tier.strip_prefix("slug:") {
+        return find_by_slug(slug).map(|a| vec![a.slug]);
+    }
     match tier {
         "all" => Some(AVK_AGENTS.iter().map(|a| a.slug).collect()),
         "director" => Some(
@@ -266,7 +274,24 @@ mod tests {
         assert_eq!(resolve_tier_slugs("senior").unwrap().len(), 4);
         assert_eq!(resolve_tier_slugs("worker").unwrap().len(), 6);
         assert_eq!(resolve_tier_slugs("all").unwrap().len(), 13);
+        // Bare slug bilinen ajan olsa bile tier resolver olarak geçersiz —
+        // slug seçimi `slug:<slug>` prefix gerektirir.
         assert!(resolve_tier_slugs("koord").is_none());
         assert!(resolve_tier_slugs("bilinmeyen").is_none());
+    }
+
+    #[test]
+    fn resolve_tier_slugs_slug_prefix() {
+        // FUR-4156: `slug:<slug>` tekil hedef seçimi.
+        let koord = resolve_tier_slugs("slug:koord").unwrap();
+        assert_eq!(koord, vec!["koord"]);
+
+        let code2 = resolve_tier_slugs("slug:code-2").unwrap();
+        assert_eq!(code2, vec!["code-2"]);
+
+        // Bilinmeyen slug None döner.
+        assert!(resolve_tier_slugs("slug:bilinmeyen").is_none());
+        // Boş slug None döner.
+        assert!(resolve_tier_slugs("slug:").is_none());
     }
 }

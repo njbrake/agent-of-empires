@@ -263,9 +263,17 @@ export type AvkMemoryTier = "core" | "working" | "archival";
  */
 export type AvkBroadcastTier = "director" | "senior" | "worker" | "all";
 
+/**
+ * AVK broadcast hedef — tier veya FUR-4156 tekil slug.
+ *
+ * `slug:<slug>` formatı tek pane gönderim (örn `slug:koord`). Sunucu
+ * `crate::avk_agents::resolve_tier_slugs` ile çözer; bilinmeyen slug 404.
+ */
+export type AvkBroadcastTarget = AvkBroadcastTier | `slug:${string}`;
+
 /** `POST /api/avk/broadcast` istek body shape mirror. */
 export interface AvkBroadcastRequest {
-  tier: AvkBroadcastTier;
+  tier: AvkBroadcastTarget;
   message: string;
 }
 

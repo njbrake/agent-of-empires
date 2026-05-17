@@ -1,26 +1,30 @@
 /**
- * AVK broadcast widget — FUR-4121 + FUR-4155 (broadcast history).
+ * AVK broadcast widget — FUR-4121 + FUR-4155 + FUR-4156.
  *
- * 4 tier butonu (director/senior/worker/all) + mesaj textarea + Gönder.
- * `POST /api/avk/broadcast` ile tmux pane'lere bracketed-paste mesaj yollar.
- * Sonuç inline summary (ok / failed) ve gerekirse per-pane hata listesi.
+ * 4 tier butonu (director/senior/worker/all) **VEYA** tekil ajan slug
+ * dropdown ile mesaj gönder. `POST /api/avk/broadcast` ile tmux pane'lere
+ * bracketed-paste mesaj yollar.
  *
  * FUR-4155 (A): Son 10 yayın localStorage `avk-broadcast-history` key'inde
- * saklanır; her entry yanında "Tekrarla" butonu textarea + tier'ı doldurur.
+ * saklanır; her entry yanında "Tekrarla" butonu textarea + hedefi doldurur.
+ *
+ * FUR-4156 (B): "Tek Ajan" modu ile 13 slug'dan birine doğrudan mesaj
+ * (sunucu `tier="slug:<slug>"` prefix'ini tekil hedef olarak çözer).
  *
  * Tasarım:
  *   - director badge yeşil (status-running) — yönetim
  *   - senior badge sarı (status-waiting) — kıdemli iş
  *   - worker badge gri (text-muted) — paralel slot
  *   - all badge brand-500 (turuncu accent) — 13 ajan
- *
- * Mobile-first: 1 col tier seçim grid, lg breakpoint 4 col yan yana.
+ *   - slug badge brand-500 (tek ajan) — tek pane gönderim
  */
 
-import { useState } from "react";
-import { postAvkBroadcast } from "../lib/api";
+import { useEffect, useState } from "react";
+import { fetchAvkAgents, postAvkBroadcast } from "../lib/api";
 import type {
+  AvkAgentInfo,
   AvkBroadcastResponse,
+  AvkBroadcastTarget,
   AvkBroadcastTier,
 } from "../lib/types";
 
@@ -50,9 +54,12 @@ const TIERS: AvkBroadcastTier[] = ["director", "senior", "worker", "all"];
 const HISTORY_KEY = "avk-broadcast-history";
 const HISTORY_MAX = 10;
 
+type TargetMode = "tier" | "slug";
+
 interface BroadcastHistoryEntry {
   id: string;
-  tier: AvkBroadcastTier;
+  /** `AvkBroadcastTier` veya `slug:<slug>` string. */
+  target: AvkBroadcastTarget;
   message: string;
   at: string;
   ok: number;
@@ -66,10 +73,44 @@ function loadHistory(): BroadcastHistoryEntry[] {
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     if (!Array.isArray(parsed)) return [];
-    return parsed.slice(0, HISTORY_MAX) as BroadcastHistoryEntry[];
+    return parsed
+      .slice(0, HISTORY_MAX)
+      .map(migrateHistoryEntry)
+      .filter((e): e is BroadcastHistoryEntry => e !== null);
   } catch {
     return [];
   }
+}
+
+function migrateHistoryEntry(raw: unknown): BroadcastHistoryEntry | null {
+  if (!raw || typeof raw !== "object") return null;
+  const obj = raw as Record<string, unknown>;
+  // FUR-4155 v1 entry: { tier: ... } — FUR-4156 v2 entry: { target: ... }.
+  // Eski cache'i kaybetmemek için `tier` field'ı `target`'a kopyalanır.
+  const target =
+    typeof obj.target === "string"
+      ? obj.target
+      : typeof obj.tier === "string"
+        ? obj.tier
+        : null;
+  if (!target) return null;
+  if (
+    typeof obj.id !== "string" ||
+    typeof obj.message !== "string" ||
+    typeof obj.at !== "string" ||
+    typeof obj.ok !== "number" ||
+    typeof obj.total !== "number"
+  ) {
+    return null;
+  }
+  return {
+    id: obj.id,
+    target: target as AvkBroadcastTarget,
+    message: obj.message,
+    at: obj.at,
+    ok: obj.ok,
+    total: obj.total,
+  };
 }
 
 function saveHistory(entries: BroadcastHistoryEntry[]) {
@@ -104,15 +145,64 @@ function formatRelativeTime(iso: string): string {
   return `${diffDays}g önce`;
 }
 
+function isSlugTarget(target: AvkBroadcastTarget): target is `slug:${string}` {
+  return target.startsWith("slug:");
+}
+
+function targetLabel(
+  target: AvkBroadcastTarget,
+  agents: AvkAgentInfo[],
+): string {
+  if (isSlugTarget(target)) {
+    const slug = target.slice(5);
+    const agent = agents.find((a) => a.slug === slug);
+    return agent ? agent.label : slug;
+  }
+  return TIER_LABEL[target];
+}
+
+function targetBadgeClass(target: AvkBroadcastTarget): string {
+  if (isSlugTarget(target)) {
+    return TIER_ACCENT.all;
+  }
+  return TIER_ACCENT[target];
+}
+
 export function AvkBroadcastWidget() {
   const [tier, setTier] = useState<AvkBroadcastTier>("all");
+  const [targetMode, setTargetMode] = useState<TargetMode>("tier");
+  const [selectedSlug, setSelectedSlug] = useState<string>("");
+  const [agents, setAgents] = useState<AvkAgentInfo[]>([]);
   const [message, setMessage] = useState("");
   const [sending, setSending] = useState(false);
   const [result, setResult] = useState<AvkBroadcastResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [history, setHistory] = useState<BroadcastHistoryEntry[]>(() => loadHistory());
 
-  const canSend = message.trim().length > 0 && !sending;
+  useEffect(() => {
+    let cancelled = false;
+    async function load() {
+      const result = await fetchAvkAgents();
+      const first = result[0];
+      if (!cancelled && first) {
+        setAgents(result);
+        setSelectedSlug((prev) => prev || first.slug);
+      }
+    }
+    load();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const activeTarget: AvkBroadcastTarget =
+    targetMode === "slug" && selectedSlug
+      ? (`slug:${selectedSlug}` as `slug:${string}`)
+      : tier;
+
+  const targetReady =
+    targetMode === "tier" || (targetMode === "slug" && selectedSlug.length > 0);
+  const canSend = message.trim().length > 0 && !sending && targetReady;
 
   async function handleSend() {
     if (!canSend) return;
@@ -120,7 +210,7 @@ export function AvkBroadcastWidget() {
     setError(null);
     setResult(null);
     const trimmed = message.trim();
-    const res = await postAvkBroadcast({ tier, message: trimmed });
+    const res = await postAvkBroadcast({ tier: activeTarget, message: trimmed });
     setSending(false);
     if (!res) {
       setError("Broadcast başarısız (sunucu hatası veya ağ kopması).");
@@ -132,7 +222,7 @@ export function AvkBroadcastWidget() {
     }
     const entry: BroadcastHistoryEntry = {
       id: generateId(),
-      tier,
+      target: activeTarget,
       message: trimmed,
       at: new Date().toISOString(),
       ok: res.ok,
@@ -144,16 +234,27 @@ export function AvkBroadcastWidget() {
   }
 
   function handleReplay(entry: BroadcastHistoryEntry) {
-    setTier(entry.tier);
-    setMessage(entry.message);
     setResult(null);
     setError(null);
+    setMessage(entry.message);
+    if (isSlugTarget(entry.target)) {
+      const slug = entry.target.slice(5);
+      setTargetMode("slug");
+      setSelectedSlug(slug);
+    } else {
+      setTargetMode("tier");
+      setTier(entry.target);
+    }
   }
 
   function handleClearHistory() {
     setHistory([]);
     saveHistory([]);
   }
+
+  const sendButtonLabel = sending
+    ? "Gönderiliyor…"
+    : `Gönder → ${targetLabel(activeTarget, agents)}`;
 
   return (
     <div>
@@ -162,26 +263,91 @@ export function AvkBroadcastWidget() {
       </h3>
 
       <div className="rounded border border-surface-700 bg-surface-800 p-4 space-y-4">
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
-          {TIERS.map((t) => {
-            const active = tier === t;
-            return (
-              <button
-                key={t}
-                type="button"
-                onClick={() => setTier(t)}
-                className={`rounded border px-3 py-2 text-left transition-colors ${TIER_ACCENT[t]} ${
-                  active ? "bg-surface-700 ring-1 ring-current" : "bg-surface-900"
-                }`}
-              >
-                <div className="font-mono text-sm font-medium">{TIER_LABEL[t]}</div>
-                <div className="font-body text-[11px] opacity-70 leading-tight mt-0.5">
-                  {TIER_DESCRIPTION[t]}
-                </div>
-              </button>
-            );
-          })}
+        {/* Mod seçici — tier / slug */}
+        <div
+          role="tablist"
+          aria-label="Hedef modu"
+          className="inline-flex rounded border border-surface-700 bg-surface-900 p-0.5"
+        >
+          <button
+            type="button"
+            role="tab"
+            aria-selected={targetMode === "tier"}
+            onClick={() => setTargetMode("tier")}
+            className={`rounded px-3 py-1 font-mono text-[11px] uppercase tracking-wider transition-colors ${
+              targetMode === "tier"
+                ? "bg-surface-700 text-text-primary"
+                : "text-text-muted hover:text-text-secondary"
+            }`}
+          >
+            Tier
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={targetMode === "slug"}
+            onClick={() => setTargetMode("slug")}
+            className={`rounded px-3 py-1 font-mono text-[11px] uppercase tracking-wider transition-colors ${
+              targetMode === "slug"
+                ? "bg-surface-700 text-text-primary"
+                : "text-text-muted hover:text-text-secondary"
+            }`}
+          >
+            Tek Ajan
+          </button>
         </div>
+
+        {targetMode === "tier" ? (
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
+            {TIERS.map((t) => {
+              const active = tier === t;
+              return (
+                <button
+                  key={t}
+                  type="button"
+                  onClick={() => setTier(t)}
+                  className={`rounded border px-3 py-2 text-left transition-colors ${TIER_ACCENT[t]} ${
+                    active ? "bg-surface-700 ring-1 ring-current" : "bg-surface-900"
+                  }`}
+                >
+                  <div className="font-mono text-sm font-medium">{TIER_LABEL[t]}</div>
+                  <div className="font-body text-[11px] opacity-70 leading-tight mt-0.5">
+                    {TIER_DESCRIPTION[t]}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        ) : (
+          <div>
+            <label
+              htmlFor="avk-broadcast-slug"
+              className="font-mono text-[11px] uppercase tracking-wider text-text-muted block mb-1"
+            >
+              Hedef ajan
+            </label>
+            {agents.length === 0 ? (
+              <p className="font-body text-[13px] text-text-muted">
+                Ajan listesi yükleniyor…
+              </p>
+            ) : (
+              <select
+                id="avk-broadcast-slug"
+                value={selectedSlug}
+                onChange={(e) => setSelectedSlug(e.target.value)}
+                disabled={sending}
+                className="w-full rounded border border-surface-700 bg-surface-900 px-3 py-2 font-body text-[14px] text-text-primary focus:outline-none focus:border-brand-500/60 focus:ring-1 focus:ring-brand-500/40"
+              >
+                {agents.map((agent) => (
+                  <option key={agent.slug} value={agent.slug}>
+                    {agent.label} · {agent.slug}
+                    {!agent.pane_alive ? " (pane yok)" : ""}
+                  </option>
+                ))}
+              </select>
+            )}
+          </div>
+        )}
 
         <div>
           <label
@@ -219,7 +385,7 @@ export function AvkBroadcastWidget() {
             disabled={!canSend}
             className="rounded bg-brand-500 hover:bg-brand-400 disabled:bg-surface-700 disabled:text-text-muted disabled:cursor-not-allowed text-surface-900 font-mono text-sm font-semibold px-4 py-2 transition-colors"
           >
-            {sending ? "Gönderiliyor…" : `Gönder → ${TIER_LABEL[tier]}`}
+            {sendButtonLabel}
           </button>
           {error && (
             <span className="font-body text-[13px] text-status-error">{error}</span>
@@ -278,6 +444,8 @@ export function AvkBroadcastWidget() {
                     ? `${entry.message.slice(0, 96)}…`
                     : entry.message;
                 const allOk = entry.ok === entry.total;
+                const label = targetLabel(entry.target, agents);
+                const badgeClass = targetBadgeClass(entry.target);
                 return (
                   <li
                     key={entry.id}
@@ -286,9 +454,10 @@ export function AvkBroadcastWidget() {
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-2 mb-1 font-mono text-[10px]">
                         <span
-                          className={`px-1.5 py-0.5 rounded uppercase tracking-wider ${TIER_ACCENT[entry.tier]} bg-surface-800`}
+                          className={`px-1.5 py-0.5 rounded uppercase tracking-wider bg-surface-800 ${badgeClass}`}
+                          title={entry.target}
                         >
-                          {TIER_LABEL[entry.tier]}
+                          {label}
                         </span>
                         <span
                           className={
@@ -312,7 +481,7 @@ export function AvkBroadcastWidget() {
                       type="button"
                       onClick={() => handleReplay(entry)}
                       className="shrink-0 rounded border border-brand-500/40 text-brand-500 hover:bg-brand-500/10 font-mono text-[10px] uppercase tracking-wider px-2 py-1 transition-colors"
-                      title="Mesaj ve tier'ı tekrar yükle"
+                      title="Mesaj ve hedefi tekrar yükle"
                     >
                       Tekrarla
                     </button>

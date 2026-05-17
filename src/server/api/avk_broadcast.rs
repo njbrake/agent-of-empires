@@ -43,7 +43,8 @@ const PASTE_BUFFER_THRESHOLD: usize = 2048;
 
 #[derive(Deserialize)]
 pub struct BroadcastRequest {
-    /// Tier keyword: `director` / `senior` / `worker` / `all`.
+    /// Hedef keyword: `director` / `senior` / `worker` / `all` veya
+    /// FUR-4156 tekil hedef için `slug:<slug>` (örn `slug:koord`).
     pub tier: String,
     /// Gönderilecek mesaj (8KB cap).
     pub message: String,
@@ -94,7 +95,7 @@ pub async fn broadcast_avk(
         return error_response(
             StatusCode::NOT_FOUND,
             &format!(
-                "unknown tier '{}' (expected: director / senior / worker / all)",
+                "unknown target '{}' (expected: director / senior / worker / all veya slug:<slug>)",
                 req.tier
             ),
         );
