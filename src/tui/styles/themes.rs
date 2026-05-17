@@ -292,7 +292,7 @@ mod tests {
         // Structural guard: every Color field listed in color_fields_mut
         // must be downsampled. If a new Color field is added to Theme but
         // not to color_fields_mut, downsample_to_palette will silently miss
-        // it and this test will still pass for the missing field — so the
+        // it and this test will still pass for the missing field; so the
         // guard relies on color_fields_mut being the single source of truth
         // for "what counts as a color field" (asserted by color_fields_mut
         // returning a fixed-size array).
