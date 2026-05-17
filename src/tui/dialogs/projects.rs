@@ -9,6 +9,7 @@ use tui_input::Input;
 use super::DialogResult;
 use crate::session::projects;
 use crate::session::{Project, ProjectScope};
+use crate::tui::components::set_prefixed_input_cursor_position;
 use crate::tui::styles::Theme;
 
 #[derive(Copy, Clone, PartialEq, Eq)]
@@ -338,6 +339,9 @@ impl ProjectsDialog {
                     )));
                 }
                 frame.render_widget(Paragraph::new(lines), chunks[2]);
+                if self.add_focused == 0 {
+                    set_prefixed_input_cursor_position(frame, chunks[2], "Path: ", &self.add_input);
+                }
             }
         }
 

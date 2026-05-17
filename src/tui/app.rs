@@ -227,6 +227,33 @@ impl App {
         Ok(())
     }
 
+    /// Draw a frame without exposing ratatui's intermediate cursor moves.
+    ///
+    /// The backend moves the real terminal cursor while flushing changed
+    /// cells. If an IME is composing text, those transient moves can pull the
+    /// candidate window toward refreshed UI such as the status list before the
+    /// frame's final cursor position is restored. Synchronized update batches
+    /// the frame, and hiding the cursor before the batch keeps the only visible
+    /// cursor transition at ratatui's final `Frame::set_cursor_position`.
+    fn draw(&mut self, terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>) -> Result<()> {
+        crossterm::execute!(
+            terminal.backend_mut(),
+            crossterm::terminal::BeginSynchronizedUpdate
+        )?;
+        let draw_result = (|| -> Result<()> {
+            crossterm::execute!(terminal.backend_mut(), crossterm::cursor::Hide)?;
+            terminal.draw(|f| self.render(f)).map(|_| ())?;
+            Ok(())
+        })();
+        let end_result = crossterm::execute!(
+            terminal.backend_mut(),
+            crossterm::terminal::EndSynchronizedUpdate
+        );
+        draw_result?;
+        end_result?;
+        Ok(())
+    }
+
     /// Temporarily leave TUI mode, run a closure, and restore TUI mode.
     /// Drops the EventStream before the closure so child processes (tmux,
     /// editors) have exclusive access to stdin, then creates a fresh one.
@@ -334,7 +361,7 @@ impl App {
     ) -> Result<()> {
         // Initial render
         terminal.clear()?;
-        terminal.draw(|f| self.render(f))?;
+        self.draw(terminal)?;
 
         // Refresh tmux session cache
         crate::tmux::refresh_session_cache();
@@ -512,7 +539,7 @@ impl App {
                                 // non-burst Event::Key arm below.
                                 self.sync_mouse_capture(terminal)?;
                                 if !self.needs_redraw {
-                                    terminal.draw(|f| self.render(f))?;
+                                    self.draw(terminal)?;
                                 }
                                 if self.should_quit {
                                     break;
@@ -528,7 +555,7 @@ impl App {
                             // on the next iteration; drawing before that drain
                             // wastes a frame and can flicker.
                             if !self.needs_redraw {
-                                terminal.draw(|f| self.render(f))?;
+                                self.draw(terminal)?;
                             }
 
                             if self.should_quit {
@@ -550,14 +577,14 @@ impl App {
                                 _ => false,
                             };
                             if handled {
-                                terminal.draw(|f| self.render(f))?;
+                                self.draw(terminal)?;
                             }
                             continue;
                         }
                         Some(Ok(Event::Paste(text))) => {
                             self.home.handle_paste(&text);
 
-                            terminal.draw(|f| self.render(f))?;
+                            self.draw(terminal)?;
 
                             continue;
                         }
@@ -570,7 +597,7 @@ impl App {
                             // (responsive::dialog_width, STACKED_BREAKPOINT,
                             // etc.) re-evaluates; ratatui's draw() autoresizes
                             // internally before rendering.
-                            terminal.draw(|f| self.render(f))?;
+                            self.draw(terminal)?;
                             continue;
                         }
                         Some(Ok(_)) => {}
@@ -680,7 +707,7 @@ impl App {
             }
 
             if refresh_needed {
-                terminal.draw(|f| self.render(f))?;
+                self.draw(terminal)?;
             }
 
             if self.should_quit {
@@ -1000,7 +1027,7 @@ impl App {
                 self.home
                     .set_instance_status(&id, crate::session::Status::Starting);
                 self.update_status = Some(UpdateStatus::transient("Reviving session...".into()));
-                terminal.draw(|f| self.render(f))?;
+                self.draw(terminal)?;
                 self.home.execute_send_message(&id, &message);
                 self.update_status = None;
             }

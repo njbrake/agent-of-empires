@@ -122,6 +122,7 @@ impl CustomInstructionDialog {
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(textarea_border_color));
+        let textarea_inner = textarea_block.inner(chunks[0]);
 
         let mut text_area_clone = self.text_area.clone();
         text_area_clone.set_block(textarea_block);
@@ -134,6 +135,24 @@ impl CustomInstructionDialog {
         }
 
         frame.render_widget(&text_area_clone, chunks[0]);
+        if self.focused_zone == 0 && textarea_inner.width > 0 && textarea_inner.height > 0 {
+            let cursor = text_area_clone.screen_cursor();
+            let max_x = textarea_inner
+                .x
+                .saturating_add(textarea_inner.width.saturating_sub(1));
+            let max_y = textarea_inner
+                .y
+                .saturating_add(textarea_inner.height.saturating_sub(1));
+            let cursor_x = textarea_inner
+                .x
+                .saturating_add(cursor.col as u16)
+                .min(max_x);
+            let cursor_y = textarea_inner
+                .y
+                .saturating_add(cursor.row as u16)
+                .min(max_y);
+            frame.set_cursor_position(Position::new(cursor_x, cursor_y));
+        }
 
         // Button row
         let button_area = chunks[1];

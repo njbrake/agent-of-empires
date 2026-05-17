@@ -6,6 +6,7 @@ use ratatui::widgets::*;
 use tui_input::backend::crossterm::EventHandler;
 use tui_input::Input;
 
+use super::text_input::set_prefixed_input_cursor_position;
 use crate::tui::styles::Theme;
 
 pub enum ListPickerResult {
@@ -138,6 +139,7 @@ impl ListPicker {
             Span::styled("_", Style::default().fg(theme.accent)),
         ]);
         frame.render_widget(Paragraph::new(filter_line), chunks[0]);
+        set_prefixed_input_cursor_position(frame, chunks[0], "Filter: ", &self.filter);
 
         // Item list with scrolling
         let visible_height = chunks[2].height as usize;

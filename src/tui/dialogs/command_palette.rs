@@ -14,6 +14,7 @@ use tui_input::Input;
 use unicode_width::UnicodeWidthStr;
 
 use super::DialogResult;
+use crate::tui::components::set_prefixed_input_cursor_position;
 use crate::tui::styles::Theme;
 
 /// Group buckets, rendered in this order. Mirrors `web/src/components/command-palette/groups.ts`.
@@ -386,6 +387,7 @@ impl CommandPaletteDialog {
             Span::styled("_", Style::default().fg(theme.accent)),
         ]);
         frame.render_widget(Paragraph::new(input_line), chunks[0]);
+        set_prefixed_input_cursor_position(frame, chunks[0], "> ", &self.input);
 
         // Separator
         let sep = "─".repeat(chunks[1].width as usize);
