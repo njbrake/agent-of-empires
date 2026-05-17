@@ -15,8 +15,8 @@ use crate::tui::dialogs::{
     builtin_commands, CommandPaletteDialog, ConfirmDialog, DeleteDialogConfig, DialogResult,
     GroupDeleteOptionsDialog, HookTrustAction, HooksInstallDialog, InfoDialog, NewSessionData,
     NewSessionDialog, NoAgentsAction, PaletteAction, PaletteCommand, PaletteGroup,
-    ProfilePickerAction, ProjectsDialog, RenameDialog, RenameMode, SendMessageDialog,
-    UnifiedDeleteDialog,
+    ProfilePickerAction, ProjectsDialog, RenameDialog, RenameMode, RestartDialog,
+    SendMessageDialog, UnifiedDeleteDialog,
 };
 use crate::tui::diff::{DiffAction, DiffView};
 use crate::tui::settings::{SettingsAction, SettingsView};
@@ -566,6 +566,24 @@ impl HomeView {
             return None;
         }
 
+        if let Some(dialog) = &mut self.restart_dialog {
+            match dialog.handle_key(key) {
+                DialogResult::Continue => {}
+                DialogResult::Cancel => {
+                    self.restart_dialog = None;
+                }
+                DialogResult::Submit(data) => {
+                    self.restart_dialog = None;
+                    let profile = data.profile.as_deref();
+                    let tool = data.tool.as_deref();
+                    if let Err(e) = self.restart_selected_session(profile, tool) {
+                        tracing::error!("restart_selected_session failed: {}", e);
+                    }
+                }
+            }
+            return None;
+        }
+
         if let Some(dialog) = &mut self.projects_dialog {
             match dialog.handle_key(key) {
                 DialogResult::Continue => {}
@@ -837,19 +855,13 @@ impl HomeView {
                 self.show_help = true;
             }
             KeyCode::Char('e') if !self.strict_hotkeys => {
-                if let Err(e) = self.restart_selected_session() {
-                    tracing::error!("restart_selected_session failed: {}", e);
-                }
+                self.open_restart_dialog();
             }
             KeyCode::Char('E') if self.strict_hotkeys => {
-                if let Err(e) = self.restart_selected_session() {
-                    tracing::error!("restart_selected_session failed: {}", e);
-                }
+                self.open_restart_dialog();
             }
             KeyCode::F(5) => {
-                if let Err(e) = self.restart_selected_session() {
-                    tracing::error!("restart_selected_session failed: {}", e);
-                }
+                self.open_restart_dialog();
             }
             KeyCode::Char('P') => {
                 self.show_profile_picker();
@@ -2244,6 +2256,41 @@ impl HomeView {
             Some(buf) => buf.push_str(text),
             None => self.pending_paste = Some(text.to_string()),
         }
+    }
+
+    /// Open the restart dialog for the currently-selected session. The dialog
+    /// pre-fills profile + AI engine from the instance's current values, and on
+    /// submit restarts the session, optionally migrating to the picked profile
+    /// and/or swapping the AI engine. No-op if no session is selected or the
+    /// selected session is mid-transition.
+    fn open_restart_dialog(&mut self) {
+        let Some(id) = self.selected_session.clone() else {
+            return;
+        };
+        let Some(inst) = self.get_instance(&id) else {
+            return;
+        };
+        if matches!(inst.status, Status::Deleting | Status::Creating) {
+            return;
+        }
+        let current_title = inst.title.clone();
+        let current_profile = if inst.source_profile.is_empty() {
+            self.active_profile
+                .clone()
+                .unwrap_or_else(|| "default".to_string())
+        } else {
+            inst.source_profile.clone()
+        };
+        let current_tool = inst.tool.clone();
+        let profiles = list_profiles().unwrap_or_else(|_| vec![current_profile.clone()]);
+        let tools: Vec<String> = self.available_tools.available_list().to_vec();
+        self.restart_dialog = Some(RestartDialog::new(
+            &current_title,
+            &current_profile,
+            &current_tool,
+            profiles,
+            tools,
+        ));
     }
 
     /// Open the send-message dialog for the currently-selected running session.

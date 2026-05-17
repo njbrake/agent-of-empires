@@ -87,9 +87,10 @@ impl HomeView {
         Ok(session_id)
     }
 
-    /// Restart the cursor's session via the `e` / `E` / `F5` keybind path.
+    /// Restart the cursor's session, optionally migrating to a new profile
+    /// and/or swapping the AI engine first.
     ///
-    /// Guards:
+    /// Guards (apply to bare `e` / `E` / `F5` and dialog-submitted restarts):
     /// - No selection: no-op.
     /// - Transient lifecycle (`Creating` / `Deleting`): drop.
     /// - Sunk rows (`is_archived`, `is_snoozed`, `pane_dead_observed`):
@@ -99,6 +100,15 @@ impl HomeView {
     ///   1.5s, the press is dropped. Without this guard rapid `e` presses
     ///   would each spawn a wake-up worker AND tear down the still-booting
     ///   tmux pane via overlapping `restart_with_size` calls.
+    ///
+    /// `new_profile`: when `Some(p)` and `p` differs from the current
+    /// `source_profile`, the session moves between profile storages.
+    /// Mirrors the profile-move path in `rename_selected` so a restart-
+    /// with-different-profile behaves the same as rename + restart.
+    ///
+    /// `new_tool`: when `Some(t)` and `t` differs from the current `tool`,
+    /// the field is updated before respawn so the new agent binary starts
+    /// on the next launch.
     ///
     /// Restart goes through `try_mutate_instance_writeback_on_err` so all
     /// of `restart_with_size`'s mutations (cleared stale `agent_session_id`
@@ -111,7 +121,11 @@ impl HomeView {
     ///
     /// The readiness probe + send-keys runs on a background OS thread so
     /// the TUI event loop never blocks.
-    pub(super) fn restart_selected_session(&mut self) -> anyhow::Result<()> {
+    pub(super) fn restart_selected_session(
+        &mut self,
+        new_profile: Option<&str>,
+        new_tool: Option<&str>,
+    ) -> anyhow::Result<()> {
         let id = match &self.selected_session {
             Some(id) => id.clone(),
             None => return Ok(()),
@@ -143,6 +157,52 @@ impl HomeView {
             }
         }
         self.restart_cooldown_at.insert(id.clone(), now);
+
+        // Apply tool swap before restart so the new binary starts on the
+        // next launch.
+        if let Some(target_tool) = new_tool {
+            let current_tool = self
+                .get_instance(&id)
+                .map(|i| i.tool.clone())
+                .unwrap_or_default();
+            if target_tool != current_tool {
+                self.mutate_instance(&id, |inst| {
+                    inst.tool = target_tool.to_string();
+                });
+            }
+        }
+
+        // Apply profile move. Validates the target exists, lazily creates
+        // its Storage, and rebuilds group trees so the row renders under
+        // the new profile immediately.
+        if let Some(target_profile) = new_profile {
+            let current_profile = self
+                .get_instance(&id)
+                .map(|i| i.source_profile.clone())
+                .unwrap_or_else(|| {
+                    self.active_profile
+                        .clone()
+                        .unwrap_or_else(|| "default".to_string())
+                });
+            if target_profile != current_profile {
+                let profiles = list_profiles()?;
+                if !profiles.contains(&target_profile.to_string()) {
+                    anyhow::bail!("Profile '{}' does not exist", target_profile);
+                }
+                if !self.storages.contains_key(target_profile) {
+                    self.storages
+                        .insert(target_profile.to_string(), Storage::new(target_profile)?);
+                }
+                self.mutate_instance(&id, |inst| {
+                    inst.source_profile = target_profile.to_string();
+                });
+                self.rebuild_group_trees();
+                // Rebuild the visible row list too; otherwise the row still
+                // renders under the old profile until the next reload, and
+                // any follow-up keybind hits stale cursor state.
+                self.flat_items = self.build_flat_items();
+            }
+        }
 
         // Restart the live instance (not a detached clone) so all
         // non-status fields restart_with_size touches are kept.
