@@ -986,6 +986,7 @@ fn build_router(state: Arc<AppState>) -> Router {
         )
         .route("/api/themes", get(api::list_themes))
         .route("/api/sounds", get(api::list_sounds))
+        .route("/api/sounds/file/{name}", get(api::serve_sound_file))
         // Push notifications
         .route("/api/push/status", get(push::get_status))
         .route(
