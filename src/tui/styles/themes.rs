@@ -133,12 +133,52 @@ pub struct Theme {
 
 impl Default for Theme {
     fn default() -> Self {
-        // The serde-default fallback path. Parses the embedded Empire
-        // TOML on each call; cached via OnceLock so partial custom TOMLs
-        // don't pay the parse cost more than once per process.
-        use std::sync::OnceLock;
-        static EMPIRE: OnceLock<Theme> = OnceLock::new();
-        EMPIRE.get_or_init(|| super::load_theme("empire")).clone()
+        // Hardcoded Empire palette used only as serde's per-field
+        // fallback for partial custom TOMLs. Must NOT round-trip
+        // through `load_theme("empire")` + `toml::from_str`: serde's
+        // container-level `#[serde(default)]` calls Theme::default()
+        // every time it deserializes a Theme (to seed the struct
+        // before overwriting present fields), so parsing any TOML
+        // would re-enter Default which would re-parse Empire which
+        // would re-enter Default... a self-referential deadlock. The
+        // values mirror `themes/builtin/empire.toml`; if Empire's
+        // palette ever drifts, sync this manually (or replace with a
+        // build-time codegen step).
+        Self {
+            background: Color::Rgb(0x0f, 0x17, 0x2a),
+            border: Color::Rgb(0x33, 0x41, 0x55),
+            terminal_border: Color::Rgb(0x0d, 0x94, 0x88),
+            selection: Color::Rgb(0x26, 0x32, 0x4b),
+            session_selection: Color::Rgb(0x37, 0x41, 0x5c),
+            title: Color::Rgb(0xfb, 0xbf, 0x24),
+            text: Color::Rgb(0xcb, 0xd5, 0xe1),
+            dimmed: Color::Rgb(0x64, 0x74, 0x8b),
+            hint: Color::Rgb(0x94, 0xa3, 0xb8),
+            running: Color::Rgb(0x22, 0xc5, 0x5e),
+            waiting: Color::Rgb(0xfb, 0xbf, 0x24),
+            fresh_idle: Color::Rgb(0xf5, 0x9e, 0x0b),
+            idle: Color::Rgb(0x64, 0x74, 0x8b),
+            error: Color::Rgb(0xef, 0x44, 0x44),
+            terminal_active: Color::Rgb(0x0d, 0x94, 0x88),
+            group: Color::Rgb(0xcb, 0xd5, 0xe1),
+            search: Color::Rgb(0xfb, 0xbf, 0x24),
+            accent: Color::Rgb(0xd9, 0x77, 0x06),
+            diff_add: Color::Rgb(0x22, 0xc5, 0x5e),
+            diff_delete: Color::Rgb(0xef, 0x44, 0x44),
+            diff_modified: Color::Rgb(0xfb, 0xbf, 0x24),
+            diff_header: Color::Rgb(0x0d, 0x94, 0x88),
+            help_key: Color::Rgb(0xd9, 0x77, 0x06),
+            branch: Color::Rgb(0x0d, 0x94, 0x88),
+            sandbox: Color::Rgb(0x94, 0xa3, 0xb8),
+            // appearance and syntax default to None / empty here,
+            // but the per-field `#[serde(default)]` attributes on
+            // those fields take precedence over this container
+            // default, so partial custom TOMLs that omit them still
+            // resolve to None rather than inheriting Empire's values
+            // (covered by `partial_custom_theme_does_not_inherit_metadata`).
+            appearance: None,
+            syntax: ThemeSyntax { shiki_theme: None },
+        }
     }
 }
 

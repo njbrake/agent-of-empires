@@ -198,6 +198,37 @@ mod tests {
     ];
 
     #[test]
+    fn default_does_not_recurse_through_load_theme() {
+        // Regression for the OnceLock-via-load_theme deadlock the
+        // first cut of this work shipped: serde's container-level
+        // `#[serde(default)]` calls Theme::default() to seed before
+        // overwriting present fields, so if Default ran load_theme
+        // (which runs toml::from_str which calls Default which runs
+        // load_theme...) every theme load deadlocked. Default must
+        // build the struct inline.
+        //
+        // Asserting the timing alone would be flaky in CI; instead
+        // confirm Default returns the Empire palette directly and
+        // that parsing every builtin completes within a tight wall
+        // clock (toml::from_str on ~500B is microseconds, not
+        // seconds).
+        use std::time::{Duration, Instant};
+        let started = Instant::now();
+        let d = Theme::default();
+        assert_eq!(d.background, Color::Rgb(0x0f, 0x17, 0x2a));
+        assert_eq!(d.title, Color::Rgb(0xfb, 0xbf, 0x24));
+        for name in builtin_theme_names() {
+            let _ = load_theme(name);
+        }
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "loading all builtins took {:?}; serde default likely re-entered load_theme",
+            elapsed
+        );
+    }
+
+    #[test]
     fn all_builtins_parse_with_expected_background() {
         // Mandatory parse-all guard: every entry in BUILTIN_THEMES must
         // deserialize cleanly from its embedded TOML and match the
