@@ -1,3 +1,5 @@
+appearance = "dark"
+
 background = "#0f172a"
 border = "#334155"
 terminal_border = "#0d9488"
@@ -23,3 +25,6 @@ diff_header = "#0d9488"
 help_key = "#d97706"
 branch = "#0d9488"
 sandbox = "#94a3b8"
+
+[syntax]
+shiki_theme = "github-dark"

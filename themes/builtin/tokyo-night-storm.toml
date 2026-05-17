@@ -1,3 +1,5 @@
+appearance = "dark"
+
 background = "#24283b"
 border = "#414868"
 terminal_border = "#3d59a1"
@@ -23,3 +25,6 @@ diff_header = "#7dcfff"
 help_key = "#e0af68"
 branch = "#7dcfff"
 sandbox = "#bb9af7"
+
+[syntax]
+shiki_theme = "tokyo-night"

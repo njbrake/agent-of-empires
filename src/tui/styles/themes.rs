@@ -7,6 +7,37 @@ use serde::{Deserialize, Serialize};
 
 use super::palette::color_to_palette;
 
+/// Whether a theme renders against a dark or light surface. Drives
+/// web-side surface ramp derivation (dark themes lighten from
+/// background, light themes darken from background) and selects the
+/// fallback syntax highlighter theme when none is specified.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ThemeAppearance {
+    Dark,
+    Light,
+}
+
+/// Per-theme syntax-highlighter metadata. Lives in `[syntax]` in the
+/// TOML so renderer-specific knobs don't pollute the flat semantic
+/// color fields.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ThemeSyntax {
+    /// Name of the Shiki theme module to load on the web (`github-dark`,
+    /// `dracula`, `catppuccin-latte`, etc.). `None` falls back by
+    /// appearance: dark themes get `github-dark`, light themes get
+    /// `github-light`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shiki_theme: Option<String>,
+}
+
+impl ThemeSyntax {
+    fn is_default(&self) -> bool {
+        self.shiki_theme.is_none()
+    }
+}
+
 /// Convert the user-configured decay duration (minutes) into a `Duration`.
 /// `0` returns `Duration::ZERO`, which the freshness logic treats as
 /// "fully decayed immediately" — a documented opt-out: every Idle row
@@ -84,6 +115,20 @@ pub struct Theme {
     pub branch: Color,
     #[serde(with = "hex_color")]
     pub sandbox: Color,
+
+    /// Whether the theme is dark or light. Optional; when absent the
+    /// resolver classifies the theme from `background` luminance. Use
+    /// per-field `#[serde(default)]` so a partial custom TOML that
+    /// omits this field deserializes to `None` rather than inheriting
+    /// Empire's `Dark`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub appearance: Option<ThemeAppearance>,
+
+    /// Renderer-specific syntax-highlighter overrides. Lives in nested
+    /// `[syntax]`; empty by default so custom TOMLs without it round-trip
+    /// without a stray empty section.
+    #[serde(default, skip_serializing_if = "ThemeSyntax::is_default")]
+    pub syntax: ThemeSyntax,
 }
 
 impl Default for Theme {

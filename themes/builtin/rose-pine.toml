@@ -1,3 +1,5 @@
+appearance = "dark"
+
 background = "#191724"
 border = "#524f67"
 terminal_border = "#9ccfd8"
@@ -23,3 +25,6 @@ diff_header = "#31748f"
 help_key = "#f6c177"
 branch = "#31748f"
 sandbox = "#908caa"
+
+[syntax]
+shiki_theme = "rose-pine"

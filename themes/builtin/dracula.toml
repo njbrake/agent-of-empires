@@ -1,3 +1,5 @@
+appearance = "dark"
+
 background = "#282a36"
 border = "#44475a"
 terminal_border = "#8be9fd"
@@ -23,3 +25,6 @@ diff_header = "#bd93f9"
 help_key = "#ff79c6"
 branch = "#8be9fd"
 sandbox = "#bd93f9"
+
+[syntax]
+shiki_theme = "dracula"

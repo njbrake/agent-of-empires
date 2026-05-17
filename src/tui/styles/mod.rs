@@ -11,6 +11,11 @@ mod palette;
 mod themes;
 
 pub use themes::{idle_decay_window, Theme};
+// Re-exported for the upcoming theme-projection module (commit 5+); tests
+// in this file consume them directly. Re-export here so all theme types
+// live behind one `crate::tui::styles::*` import surface.
+#[allow(unused_imports)]
+pub use themes::{ThemeAppearance, ThemeSyntax};
 
 use std::path::PathBuf;
 use tracing::warn;
@@ -217,6 +222,58 @@ mod tests {
                 name
             );
         }
+    }
+
+    #[test]
+    fn builtin_appearance_matches_palette() {
+        // Catppuccin Latte is the lone light builtin; the rest are dark.
+        for name in builtin_theme_names() {
+            let theme = load_theme(name);
+            let expected = if name == "catppuccin-latte" {
+                Some(ThemeAppearance::Light)
+            } else {
+                Some(ThemeAppearance::Dark)
+            };
+            assert_eq!(
+                theme.appearance, expected,
+                "builtin theme '{}' appearance mismatch",
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn builtin_syntax_shiki_theme_present() {
+        for name in builtin_theme_names() {
+            let theme = load_theme(name);
+            assert!(
+                theme.syntax.shiki_theme.is_some(),
+                "builtin theme '{}' missing [syntax].shiki_theme",
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn partial_custom_theme_does_not_inherit_metadata() {
+        // Container-level #[serde(default)] would otherwise have a
+        // missing `appearance` fall back to Empire's `Dark`. The
+        // per-field #[serde(default)] on Option<ThemeAppearance> /
+        // ThemeSyntax must override that so absent metadata resolves
+        // to None / empty.
+        let toml_str = r##"
+background = "#1a1b26"
+border = "#414868"
+"##;
+        let theme: Theme = toml::from_str(toml_str).unwrap();
+        assert_eq!(
+            theme.appearance, None,
+            "partial custom TOML must not inherit Empire's appearance"
+        );
+        assert!(
+            theme.syntax.shiki_theme.is_none(),
+            "partial custom TOML must not inherit Empire's syntax.shiki_theme"
+        );
     }
 
     #[test]

@@ -1,3 +1,5 @@
+appearance = "light"
+
 background = "#eff1f5"
 border = "#bcc0cc"
 terminal_border = "#04a5e5"
@@ -23,3 +25,6 @@ diff_header = "#04a5e5"
 help_key = "#df8e1d"
 branch = "#04a5e5"
 sandbox = "#8839ef"
+
+[syntax]
+shiki_theme = "catppuccin-latte"
