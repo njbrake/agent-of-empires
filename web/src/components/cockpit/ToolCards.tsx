@@ -53,6 +53,8 @@ import {
   type MemoryHit,
 } from "../../lib/memoryClassify";
 import { reclassifyBash } from "../../lib/toolReclassify";
+import { useAgentProfile } from "../../lib/agentProfileContext";
+import type { AgentProfile, CardKind } from "../../lib/agentProfiles";
 
 interface Props {
   tool: ToolCall;
@@ -87,19 +89,24 @@ interface ToolCardProps extends Props {
 }
 
 export function ToolCard({ tool, result, nested }: ToolCardProps) {
-  const card = renderToolCard(tool, result);
+  const profile = useAgentProfile();
+  const card = renderToolCard(tool, result, profile);
   if (!nested && hasSubagentParent(tool)) {
     return <SubagentChildWrap>{card}</SubagentChildWrap>;
   }
   return card;
 }
 
-function renderToolCard(tool: ToolCall, result?: ActivityRow) {
+function renderToolCard(
+  tool: ToolCall,
+  result: ActivityRow | undefined,
+  profile: AgentProfile,
+) {
   const memory = classifyMemory(tool);
   if (memory.isMemory) {
     return <MemoryCard tool={tool} result={result} hit={memory} />;
   }
-  const mcp = classifyMcp(tool);
+  const mcp = classifyMcp(tool, profile);
   if (mcp.isMcp) {
     return (
       <McpToolCard
@@ -110,20 +117,31 @@ function renderToolCard(tool: ToolCall, result?: ActivityRow) {
       />
     );
   }
-  const skill = classifySkill(tool);
-  if (skill.isSkill) {
-    return <SkillToolCard tool={tool} result={result} skillName={skill.name} />;
+  if (profile.capabilities.skills) {
+    const skill = classifySkill(tool, profile);
+    if (skill.isSkill) {
+      return (
+        <SkillToolCard tool={tool} result={result} skillName={skill.name} />
+      );
+    }
   }
-  const todos = classifyTodoWrite(tool);
-  if (todos.isTodoWrite) {
-    return <TodoUpdateCard tool={tool} result={result} todos={todos.todos} />;
+  if (profile.capabilities.todos) {
+    const todos = classifyTodoWrite(tool, profile);
+    if (todos.isTodoWrite) {
+      return <TodoUpdateCard tool={tool} result={result} todos={todos.todos} />;
+    }
   }
-  const schedule = classifySchedule(tool);
-  if (schedule.kind) {
-    return <ScheduleToolCard tool={tool} result={result} kind={schedule.kind} />;
+  if (profile.capabilities.wakeup) {
+    const schedule = classifySchedule(tool, profile);
+    if (schedule.kind) {
+      return (
+        <ScheduleToolCard tool={tool} result={result} kind={schedule.kind} />
+      );
+    }
   }
   const { kind, provenance } = reclassifyBash(tool);
-  switch (kind) {
+  const effectiveKind = resolveEffectiveKind(tool, kind, profile);
+  switch (effectiveKind) {
     case "execute":
       return <ExecuteToolCard tool={tool} result={result} />;
     case "read":
@@ -143,6 +161,41 @@ function renderToolCard(tool: ToolCall, result?: ActivityRow) {
     default:
       return <GenericToolCard tool={tool} result={result} />;
   }
+}
+
+/** Resolve the dispatch kind for a tool call. Trusts the ACP `kind`
+ *  when it's a concrete card category; for `"other"` or unrecognised
+ *  kinds, consults the active agent profile's alias table so adapter
+ *  tools that don't take advantage of `ToolKind` (codex `shell`,
+ *  gemini `run_shell_command`, etc.) still land on the right card. */
+function resolveEffectiveKind(
+  tool: ToolCall,
+  reclassifiedKind: string,
+  profile: AgentProfile,
+): string {
+  const known: ReadonlySet<string> = new Set([
+    "execute",
+    "read",
+    "edit",
+    "delete",
+    "search",
+    "fetch",
+    "think",
+  ]);
+  if (known.has(reclassifiedKind)) {
+    return reclassifiedKind;
+  }
+  const name = tool.name?.trim() ?? "";
+  if (!name) return reclassifiedKind;
+  for (const [card, aliases] of Object.entries(profile.aliases) as [
+    CardKind,
+    string[],
+  ][]) {
+    if (aliases.some((alias) => alias === name)) {
+      return card;
+    }
+  }
+  return reclassifiedKind;
 }
 
 /** Indented wrap that marks a tool card as a sub-agent (Claude Task)
@@ -857,13 +910,16 @@ interface TodoItem {
  *  `kind: "think"` tool call with the joined todo list crammed into the
  *  title (`"Update TODOs: a, b, c"`) and the structured `{todos: [...]}`
  *  payload in raw_input. We detect via the title prefix and parse the
- *  args payload to render a proper checklist. See #1064. */
+ *  args payload to render a proper checklist. See #1064. Profile-keyed
+ *  so coincidental matches on other agents return early. */
 function classifyTodoWrite(
   tool: ToolCall,
+  profile: AgentProfile,
 ): { isTodoWrite: true; todos: TodoItem[] } | { isTodoWrite: false } {
   const title = tool.name?.trim() ?? "";
+  const prefixes = profile.specialTitles.todoPrefixes;
   const looksLikeTodo =
-    title.startsWith("Update TODOs") || title === "TodoWrite";
+    title === "TodoWrite" || prefixes.some((p) => title.startsWith(p));
   if (!looksLikeTodo) return { isTodoWrite: false };
   const args = parseJsonObject(tool.args_preview);
   if (!args) return { isTodoWrite: false };
@@ -982,10 +1038,12 @@ function TodoUpdateCard({ tool, result, todos }: TodoCardProps) {
  *  See #1062. */
 function classifySkill(
   tool: ToolCall,
+  profile: AgentProfile,
 ): { isSkill: true; name: string } | { isSkill: false } {
   if (tool.kind !== "other") return { isSkill: false };
   const title = tool.name?.trim().toLowerCase() ?? "";
-  if (title !== "skill" && title !== "claude-skill") return { isSkill: false };
+  const names = profile.specialTitles.skillNames;
+  if (!names.includes(title)) return { isSkill: false };
   const args = parseJsonObject(tool.args_preview);
   const name = pickStr(args, "skill", "name", "skill_name") ?? "skill";
   return { isSkill: true, name };
@@ -1486,6 +1544,7 @@ function MemoryCard({ tool, result, hit }: MemoryCardProps) {
  */
 function classifySchedule(
   tool: ToolCall,
+  profile: AgentProfile,
 ): { kind: "wakeup" | "cron_create" | "cron_list" | "cron_delete" | null } {
   if (tool.kind !== "other") return { kind: null };
   const args = parseJsonObject(tool.args_preview);
@@ -1493,6 +1552,8 @@ function classifySchedule(
   // `name` is usually the same value but matching both keeps us robust
   // to upstream relabels (e.g. claude-agent-acp future kind handling).
   const title = (pickStr(args, "_aoe_title") ?? tool.name ?? "").trim();
+  const allowed = profile.specialTitles.scheduleNames;
+  if (!allowed.includes(title)) return { kind: null };
   switch (title) {
     case "ScheduleWakeup":
       return { kind: "wakeup" };

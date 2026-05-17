@@ -12,6 +12,43 @@ import { ReviewStep } from "./steps/ReviewStep";
 import { getSubmittedBranch } from "./sessionNames";
 import { initialData, reducer, type WizardData } from "./wizardReducer";
 
+/** localStorage key persisting the last tool the user picked in the
+ *  wizard. Per-browser, scoped by tool registry key. Validated against
+ *  ACP_CAPABLE_TOOLS on read so an outdated value (or one written by a
+ *  different aoe install with extra agents registered) doesn't crash
+ *  the wizard. See #1133 thread 7 / #1135. */
+const LAST_USED_TOOL_KEY = "aoe-cockpit-last-tool";
+
+function loadLastUsedTool(): string {
+  if (typeof window === "undefined") return "claude";
+  try {
+    const stored = window.localStorage.getItem(LAST_USED_TOOL_KEY);
+    if (stored && ACP_CAPABLE_TOOLS.has(stored)) {
+      return stored;
+    }
+  } catch {
+    // Private mode / storage disabled: fall through to default.
+  }
+  return "claude";
+}
+
+function saveLastUsedTool(tool: string): void {
+  if (typeof window === "undefined") return;
+  if (!ACP_CAPABLE_TOOLS.has(tool)) return;
+  try {
+    window.localStorage.setItem(LAST_USED_TOOL_KEY, tool);
+  } catch {
+    // Quota exceeded / storage disabled: silently skip.
+  }
+}
+
+/** Layer the last-used tool over the shared `initialData` template so
+ *  fresh wizard opens default to whatever the user picked last. The
+ *  prefill path overrides this when `prefill.tool` is set. */
+function buildInitialData(): WizardData {
+  return { ...initialData, tool: loadLastUsedTool() };
+}
+
 // Wizard: project path → session (title + worktree) → agent → review
 function computeSteps(_data: WizardData): StepDef[] {
   return [
@@ -46,17 +83,18 @@ interface Props {
 }
 
 export function SessionWizard({ onClose, onCreated, prefill, cockpitMasterEnabled }: Props) {
+  const baseInitial = buildInitialData();
   const prefillData: WizardData = prefill
     ? {
-        ...initialData,
+        ...baseInitial,
         path: prefill.path || "",
-        tool: prefill.tool || "claude",
+        tool: prefill.tool || baseInitial.tool,
         yoloMode: prefill.yoloMode ?? false,
         sandboxEnabled: prefill.sandboxEnabled ?? false,
         profile: prefill.profile || "",
         group: prefill.group || "",
       }
-    : initialData;
+    : baseInitial;
 
   const [state, dispatch] = useReducer(reducer, {
     currentStep: prefill?.skipToReview ? 3 : (prefill?.path ? 1 : 0),
@@ -168,6 +206,7 @@ export function SessionWizard({ onClose, onCreated, prefill, cockpitMasterEnable
     const result = await createSession(body);
     if (result.ok) {
       dispatch({ type: "SUBMIT_SUCCESS" });
+      saveLastUsedTool(d.tool);
       const warnings = result.session?.warnings;
       if (warnings && warnings.length > 0) {
         for (const w of warnings) toastBus.handler?.error(w);

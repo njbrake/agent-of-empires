@@ -629,6 +629,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
                       key={activeSessionId}
                       sessionId={activeSessionId!}
                       cockpitWorkerState={activeSession.cockpit_worker_state ?? "absent"}
+                      tool={activeSession.tool}
                     />
                   </Suspense>
                 ) : (

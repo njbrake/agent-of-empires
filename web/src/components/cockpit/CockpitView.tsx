@@ -41,6 +41,7 @@ import {
   chooseVerb,
 } from "../../lib/cockpitRattle";
 import { useCockpitPrefs } from "../../lib/cockpitPrefs";
+import { AgentProfileProvider } from "../../lib/agentProfileContext";
 import type {
   Approval,
   ApprovalDecision,
@@ -56,6 +57,10 @@ interface Props {
    *  (REST-poll-driven, ~3s cadence). Drives the `WorkerResumingBanner`
    *  while the reconciler is mid-spawn/attach. See #1088. */
   cockpitWorkerState: "absent" | "resuming" | "running";
+  /** Session's `tool` registry key (claude / codex / opencode / gemini
+   *  / etc.). Resolves the active AgentProfile that drives card
+   *  dispatch and claude-specific capability gates. */
+  tool: string | null | undefined;
 }
 
 const STARTER_PROMPTS = [
@@ -64,28 +69,30 @@ const STARTER_PROMPTS = [
   "What does the build pipeline do?",
 ];
 
-export function CockpitView({ sessionId, cockpitWorkerState }: Props) {
+export function CockpitView({ sessionId, cockpitWorkerState, tool }: Props) {
   // Folds rows above the most recent `/clear` divider out of the
   // thread by default; the disclosure banner toggles this. Lives on
   // the view (not the reducer) because it's a UI preference, not
   // event-log state. See #1101.
   const [showClearedTurns, setShowClearedTurns] = useState(false);
   return (
-    <CockpitRuntime
-      sessionId={sessionId}
-      cockpitWorkerState={cockpitWorkerState}
-      showClearedTurns={showClearedTurns}
-    >
-      {(ctx) => (
-        <CockpitChrome
-          sessionId={sessionId}
-          cockpitWorkerState={cockpitWorkerState}
-          showClearedTurns={showClearedTurns}
-          onToggleClearedTurns={() => setShowClearedTurns((v) => !v)}
-          {...ctx}
-        />
-      )}
-    </CockpitRuntime>
+    <AgentProfileProvider toolKey={tool}>
+      <CockpitRuntime
+        sessionId={sessionId}
+        cockpitWorkerState={cockpitWorkerState}
+        showClearedTurns={showClearedTurns}
+      >
+        {(ctx) => (
+          <CockpitChrome
+            sessionId={sessionId}
+            cockpitWorkerState={cockpitWorkerState}
+            showClearedTurns={showClearedTurns}
+            onToggleClearedTurns={() => setShowClearedTurns((v) => !v)}
+            {...ctx}
+          />
+        )}
+      </CockpitRuntime>
+    </AgentProfileProvider>
   );
 }
 
