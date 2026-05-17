@@ -237,8 +237,28 @@ export async function updateProfileSettings(
 
 // --- Themes & Sounds ---
 
+import type { ResolvedTheme } from "./theme";
+
 export async function fetchThemes(): Promise<string[]> {
   return (await fetchJson<string[]>("/api/themes")) ?? [];
+}
+
+/** Fetch the resolved theme projection (web CSS vars, terminal CSS
+ *  vars, syntax highlighter selection) for a named theme. The server
+ *  falls back to Empire for unknown names; check `source` to detect. */
+export function fetchResolvedTheme(
+  name: string,
+): Promise<ResolvedTheme | null> {
+  return fetchJson<ResolvedTheme>(
+    `/api/themes/${encodeURIComponent(name)}`,
+  );
+}
+
+/** Fetch the resolved theme for the active profile's current
+ *  selection. Server reads from profile_config so per-profile overrides
+ *  land in the right place. */
+export function fetchCurrentTheme(): Promise<ResolvedTheme | null> {
+  return fetchJson<ResolvedTheme>("/api/theme/current");
 }
 
 export async function fetchSounds(): Promise<string[]> {
@@ -305,6 +325,13 @@ export interface ServerAbout {
    *  so the rendered transcript matches the user's chosen ceiling
    *  instead of clipping at a hard-coded frontend constant. See #1111. */
   cockpit_replay_events: number;
+  /** Active theme name. Frontends use this as the cache key for the
+   *  resolved-theme payload fetched from /api/theme/current. See #1189. */
+  theme_name: string;
+  /** Resolved appearance (dark/light) of the active theme. Surfaced
+   *  so the pre-React bootstrap script can pick the right cached CSS
+   *  variable set and color-scheme before hydration. See #1189. */
+  theme_appearance: "dark" | "light";
 }
 
 export async function setCockpitMaster(

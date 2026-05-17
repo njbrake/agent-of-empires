@@ -7,6 +7,7 @@ import { CockpitPrefsProvider } from "./lib/cockpitPrefs";
 import { useWorkspaces } from "./hooks/useWorkspaces";
 import { useRepoGroups } from "./hooks/useRepoGroups";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
+import { useResolvedTheme } from "./hooks/useResolvedTheme";
 import { useDiffFiles } from "./hooks/useDiffFiles";
 import { useDiffComments } from "./hooks/useDiffComments";
 import { SendCommentsDialog } from "./components/diff/comments/SendCommentsDialog";
@@ -73,6 +74,11 @@ import { UpdateBanner } from "./components/UpdateBanner";
 const RIGHT_PANEL_COLLAPSED_KEY = "aoe-right-collapsed";
 
 export default function App() {
+  // Apply the user-selected theme as CSS custom properties on the root
+  // element. Runs once on mount + on settings-driven theme changes.
+  // The pre-React script in index.html paints the cached theme before
+  // hydration; this hook keeps it in sync with the server's view.
+  useResolvedTheme();
   const [loginRequired, setLoginRequired] = useState<boolean | null>(null);
   const [loginAuthenticated, setLoginAuthenticated] = useState(true);
   const [tokenExpired, setTokenExpired] = useState(false);
