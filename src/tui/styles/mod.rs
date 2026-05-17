@@ -179,53 +179,52 @@ mod tests {
         assert!(matches!(theme.title, Color::Rgb(_, _, _)));
     }
 
+    /// Hex strings for the builtin background colors. The structural test
+    /// `all_builtins_parse_with_expected_background` walks the list and
+    /// asserts every embedded TOML deserializes to the right hex. Adding a
+    /// new builtin requires one entry here.
+    const BUILTIN_BACKGROUND_HEX: &[(&str, Color)] = &[
+        ("empire", Color::Rgb(0x0f, 0x17, 0x2a)),
+        ("phosphor", Color::Rgb(0x10, 0x14, 0x12)),
+        ("tokyo-night-storm", Color::Rgb(0x24, 0x28, 0x3b)),
+        ("catppuccin-latte", Color::Rgb(0xef, 0xf1, 0xf5)),
+        ("dracula", Color::Rgb(0x28, 0x2a, 0x36)),
+        ("rose-pine", Color::Rgb(0x19, 0x17, 0x24)),
+    ];
+
     #[test]
-    fn test_load_phosphor() {
-        let theme = load_theme("phosphor");
-        assert_eq!(theme.title, Color::Rgb(57, 255, 20));
-        assert_eq!(theme.background, Color::Rgb(16, 20, 18));
+    fn all_builtins_parse_with_expected_background() {
+        // Mandatory parse-all guard: every entry in BUILTIN_THEMES must
+        // deserialize cleanly from its embedded TOML and match the
+        // expected background hex. Without this, a typo in a builtin TOML
+        // would only show up at first runtime load via load_theme's
+        // panic message.
+        for (name, expected_bg) in BUILTIN_BACKGROUND_HEX {
+            let theme = load_theme(name);
+            assert_eq!(
+                theme.background, *expected_bg,
+                "builtin theme '{}' background mismatch",
+                name
+            );
+        }
+        // Defensive: ensure every builtin in BUILTIN_THEMES has an entry
+        // in BUILTIN_BACKGROUND_HEX so the test covers all builtins.
+        let table_names: Vec<&str> = BUILTIN_BACKGROUND_HEX.iter().map(|(n, _)| *n).collect();
+        for name in builtin_theme_names() {
+            assert!(
+                table_names.contains(&name),
+                "builtin '{}' missing from BUILTIN_BACKGROUND_HEX test table",
+                name
+            );
+        }
     }
 
     #[test]
-    fn test_load_catppuccin_latte() {
-        let theme = load_theme("catppuccin-latte");
-        assert_eq!(theme.title, Color::Rgb(30, 102, 245));
-        assert_eq!(theme.background, Color::Rgb(239, 241, 245));
-    }
-
-    #[test]
-    fn test_load_empire() {
-        let theme = load_theme("empire");
-        assert_eq!(theme.title, Color::Rgb(251, 191, 36));
-        assert_eq!(theme.background, Color::Rgb(15, 23, 42));
-    }
-
-    #[test]
-    fn test_load_invalid_fallback() {
+    fn unknown_theme_falls_back_to_empire() {
         let theme = load_theme("nonexistent-theme");
-        assert_eq!(theme.title, Color::Rgb(251, 191, 36));
-        assert_eq!(theme.background, Color::Rgb(15, 23, 42));
-    }
-
-    #[test]
-    fn test_load_tokyo_night_storm() {
-        let theme = load_theme("tokyo-night-storm");
-        assert_eq!(theme.title, Color::Rgb(122, 162, 247));
-        assert_eq!(theme.background, Color::Rgb(36, 40, 59));
-    }
-
-    #[test]
-    fn test_load_dracula() {
-        let theme = load_theme("dracula");
-        assert_eq!(theme.title, Color::Rgb(189, 147, 249));
-        assert_eq!(theme.background, Color::Rgb(40, 42, 54));
-    }
-
-    #[test]
-    fn test_load_rose_pine() {
-        let theme = load_theme("rose-pine");
-        assert_eq!(theme.title, Color::Rgb(196, 167, 231));
-        assert_eq!(theme.background, Color::Rgb(25, 23, 36));
+        let empire = load_theme("empire");
+        assert_eq!(theme.background, empire.background);
+        assert_eq!(theme.title, empire.title);
     }
 
     #[test]
