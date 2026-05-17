@@ -110,7 +110,11 @@ async fn main() -> Result<()> {
                     SubscriberTarget::File(p, _) => Some(p.clone()),
                     SubscriberTarget::Stdout => None,
                 };
-                let res = logging::init_subscriber(resolution.target, filter);
+                let res = logging::init_subscriber_with_options(
+                    resolution.target,
+                    filter,
+                    log_cfg.show_spans,
+                );
                 if let Some(w) = resolution.warning {
                     // Emit through the subscriber that just came up.
                     tracing::warn!(target: "log.runtime", "{}", w);

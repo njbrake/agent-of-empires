@@ -136,6 +136,7 @@ pub enum FieldKey {
     LoggingRotation,
     LoggingMaxSizeMib,
     LoggingKeepCount,
+    LoggingShowSpans,
 }
 
 /// Resolve a field value from global config and optional profile override.
@@ -423,6 +424,19 @@ fn build_logging_fields(global: &Config) -> Vec<SettingField> {
         label: "Keep count (restart req.)",
         description: "How many rotated files to retain (.1 through .keep_count).",
         value: FieldValue::Number(global.logging.keep_count as u64),
+        category: SettingsCategory::Logging,
+        has_override: false,
+        inherited_display: None,
+    });
+    fields.push(SettingField {
+        key: FieldKey::LoggingShowSpans,
+        label: "Show span context (restart req.)",
+        description:
+            "When on, every log line is prefixed with the names + fields of the spans wrapping it \
+             (e.g. `http_request{request_id=... method=GET path=...}` from the per-request middleware). \
+             Useful for grep-correlation across async boundaries when triaging; noisy on idle polling endpoints. \
+             Off by default keeps the log readable.",
+        value: FieldValue::Bool(global.logging.show_spans),
         category: SettingsCategory::Logging,
         has_override: false,
         inherited_display: None,
@@ -2084,6 +2098,9 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
         }
         (FieldKey::LoggingKeepCount, FieldValue::Number(v)) => {
             config.logging.keep_count = (*v).clamp(1, u8::MAX as u64) as u8;
+        }
+        (FieldKey::LoggingShowSpans, FieldValue::Bool(v)) => {
+            config.logging.show_spans = *v;
         }
         (FieldKey::HostEnvironment, FieldValue::List(v)) => config.environment = v.clone(),
         _ => {}

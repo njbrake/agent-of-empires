@@ -77,6 +77,13 @@ rotation = "size"        # "size" | "never"
 max_size_mib = 50
 keep_count = 5
 
+# Whether the formatter prefixes each event with the span chain wrapping
+# it (e.g. `http_request{request_id=... method=GET path=...}` from the
+# per-request middleware). Off by default keeps the log readable; turn
+# on for grep-correlation when triaging across async boundaries.
+# Restart required.
+show_spans = false
+
 [logging.targets]
 "cockpit.acp" = "trace"
 "auth.middleware" = "debug"

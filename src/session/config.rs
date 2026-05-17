@@ -115,6 +115,16 @@ pub struct LoggingConfig {
     /// Older rotations are dropped.
     #[serde(default = "default_keep_count")]
     pub keep_count: u8,
+
+    /// Whether the tracing formatter prefixes each event with the names
+    /// and fields of the spans wrapping it (e.g. the per-request
+    /// `http_request{request_id=... method=GET path=...}` introduced by
+    /// the axum middleware). Useful for grep-correlation when triaging
+    /// across async boundaries, noisy on idle polling endpoints.
+    /// Defaults to `false` so the log stays readable; flip to `true`
+    /// when investigating. Requires restart.
+    #[serde(default = "default_show_spans")]
+    pub show_spans: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -143,6 +153,7 @@ impl Default for LoggingConfig {
             rotation: RotationKind::default(),
             max_size_mib: default_max_size_mib(),
             keep_count: default_keep_count(),
+            show_spans: default_show_spans(),
         }
     }
 }
@@ -161,6 +172,10 @@ fn default_max_size_mib() -> u64 {
 
 fn default_keep_count() -> u8 {
     5
+}
+
+fn default_show_spans() -> bool {
+    false
 }
 
 /// Configuration for the cockpit (ACP-based native rendering of agent
