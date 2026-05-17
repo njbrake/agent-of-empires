@@ -87,14 +87,10 @@ const RESUME_PROBE_POLL: std::time::Duration = std::time::Duration::from_millis(
 /// opencode (bun-compiled native binary that loads JS, parses argv, and
 /// hits the session-not-found path) reaches `pane_dead = true` between
 /// ~900ms and ~1100ms after spawn on a warm cache, longer on cold or
-/// heavy projects. The earlier 500ms value caught Node.js agents that
-/// crashed in ~250ms but missed opencode's slower bun startup, leaving
-/// the cascade dormant on stale opencode sids: the user-visible bug is a
-/// dead pane after restart with the bad sid still on disk and no toast.
-/// Healthy resumes pay this entire window once on Tier-1 (and again on
-/// Tier-2 if it fires); the pane is fully attachable for the duration so
-/// the cost is purely in the synchronous restart path's latency, not in
-/// agent responsiveness afterward.
+/// heavy projects. Healthy resumes pay this entire window once on Tier-1
+/// (and again on Tier-2 if it fires); the pane is fully attachable for
+/// the duration so the cost is purely in the synchronous restart path's
+/// latency, not in agent responsiveness afterward.
 const RESUME_PROBE_POST_SHELL_GRACE: std::time::Duration = std::time::Duration::from_millis(2000);
 
 /// Pure decision: should the resume-fallback cascade probe and potentially
@@ -122,11 +118,11 @@ pub enum EnsureReadyOutcome {
     /// respawn, meaning the agent's prior conversation is gone; callers should
     /// surface this so the user understands why history disappeared.
     Respawned { stale_sid: Option<String> },
-    /// Tmux session did not exist and was started from scratch via the
-    /// resume-fallback cascade. `stale_sid` is `Some` when the cascade
-    /// fired during this start (sid was on disk from a prior run, the
-    /// agent crashed on it, and we cleared it before retrying), with the
-    /// same surface-to-user contract as `Respawned`.
+    /// Tmux session did not exist and was started via the resume-fallback
+    /// cascade. `stale_sid` is `Some` when the cascade fired (sid was on
+    /// disk from a prior run, the agent crashed on it, and we cleared it
+    /// before retrying), `None` for a healthy resume or fresh launch
+    /// without resume. Same surface-to-user contract as `Respawned`.
     Started { stale_sid: Option<String> },
 }
 
@@ -1708,7 +1704,7 @@ impl Instance {
             let shell = super::environment::user_shell();
             if let Err(e) = session.respawn_dead_pane(&self.project_path, Some(&shell)) {
                 tracing::warn!(
-                    "respawn_dead_pane failed for {}: {} -- falling back to kill+start",
+                    "respawn_dead_pane failed for {}: {}; falling back to kill+start",
                     session.name(),
                     e
                 );
@@ -1822,16 +1818,12 @@ impl Instance {
         size: Option<(u16, u16)>,
         skip_on_launch: bool,
     ) -> Result<StartOutcome> {
-        // Clear stale Status::Error before any early-return so all restart
-        // paths (REST `ensure_session`, TUI Enter/restart, CLI `aoe session
-        // restart [id|--all]`) behave consistently. Pre-cascade only REST
-        // had a pre-restart reset (still inlined at
-        // `src/server/api/sessions.rs::ensure_session`, sets
-        // `status=Starting`, `last_error=None`); hoisting the reset here
-        // is a deliberate UX broadening so a TUI/CLI restart on a session
-        // sitting in `Status::Error` no longer leaves the error chip up
-        // after a successful relaunch, and cockpit-mode short-circuit
-        // sessions get the same treatment.
+        // Clear `Status::Error` on entry so a successful relaunch from any
+        // restart surface (REST `ensure_session`, TUI Enter/restart, CLI
+        // `aoe session restart [id|--all]`, cockpit-mode short-circuit)
+        // does not leave a stale error chip up. REST `ensure_session`
+        // re-asserts `status=Starting`, `last_error=None` pre-call as
+        // defense in depth.
         //
         // `last_error_check` is cleared alongside `last_error` to mirror
         // how the field is otherwise managed: `update_status` writes both
