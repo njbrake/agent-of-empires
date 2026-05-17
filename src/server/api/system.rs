@@ -198,26 +198,40 @@ pub async fn list_themes() -> Json<Vec<String>> {
 /// CSS vars, terminal CSS vars, syntax highlighter selection,
 /// appearance) for the named theme. Unknown names resolve to Empire
 /// with `source: "fallback"`, mirroring `load_theme`'s behaviour.
+///
+/// Wrapped in `spawn_blocking`: the resolver does sync file I/O
+/// (`discover_custom_themes` directory scan + TOML parse) which must
+/// not run on a tokio worker thread.
 pub async fn get_resolved_theme(
     axum::extract::Path(name): axum::extract::Path<String>,
 ) -> Json<crate::tui::styles::ResolvedTheme> {
-    Json(crate::tui::styles::resolve_theme(&name))
+    let resolved = tokio::task::spawn_blocking(move || crate::tui::styles::resolve_theme(&name))
+        .await
+        .unwrap_or_else(|_| crate::tui::styles::resolve_theme("empire"));
+    Json(resolved)
 }
 
 /// `GET /api/theme/current` returns the resolved theme for the active
 /// profile (the picker's current selection). Resolved through
 /// `profile_config::resolve_config_or_warn` so per-profile theme
-/// overrides land in the right place.
+/// overrides land in the right place. Sync work runs in
+/// `spawn_blocking`.
 pub async fn get_current_theme(
     State(state): State<Arc<AppState>>,
 ) -> Json<crate::tui::styles::ResolvedTheme> {
-    let cfg = crate::session::profile_config::resolve_config_or_warn(&state.profile);
-    let name = if cfg.theme.name.is_empty() {
-        "empire".to_string()
-    } else {
-        cfg.theme.name
-    };
-    Json(crate::tui::styles::resolve_theme(&name))
+    let profile = state.profile.clone();
+    let resolved = tokio::task::spawn_blocking(move || {
+        let cfg = crate::session::profile_config::resolve_config_or_warn(&profile);
+        let name = if cfg.theme.name.is_empty() {
+            "empire".to_string()
+        } else {
+            cfg.theme.name
+        };
+        crate::tui::styles::resolve_theme(&name)
+    })
+    .await
+    .unwrap_or_else(|_| crate::tui::styles::resolve_theme("empire"));
+    Json(resolved)
 }
 
 // --- Wizard support ---
@@ -496,13 +510,27 @@ pub async fn get_about(State(state): State<Arc<AppState>>) -> Json<ServerAbout> 
     let cockpit_max_concurrent_resumes = cockpit_cfg.max_concurrent_resumes;
     let cockpit_force_end_turn_threshold_secs = cockpit_cfg.force_end_turn_threshold_secs;
     let cockpit_replay_events = cockpit_cfg.replay_events;
-    let profile_cfg = crate::session::profile_config::resolve_config_or_warn(&state.profile);
-    let theme_name = if profile_cfg.theme.name.is_empty() {
-        "empire".to_string()
-    } else {
-        profile_cfg.theme.name.clone()
-    };
-    let theme_appearance = crate::tui::styles::resolve_theme(&theme_name).appearance;
+    // Theme resolution does sync file I/O (profile config read +
+    // discover_custom_themes dir scan + TOML parse for the resolved
+    // appearance). Run off the runtime thread.
+    let theme_profile = state.profile.clone();
+    let (theme_name, theme_appearance) = tokio::task::spawn_blocking(move || {
+        let profile_cfg = crate::session::profile_config::resolve_config_or_warn(&theme_profile);
+        let name = if profile_cfg.theme.name.is_empty() {
+            "empire".to_string()
+        } else {
+            profile_cfg.theme.name.clone()
+        };
+        let appearance = crate::tui::styles::resolve_theme(&name).appearance;
+        (name, appearance)
+    })
+    .await
+    .unwrap_or_else(|_| {
+        (
+            "empire".to_string(),
+            crate::tui::styles::ThemeAppearance::Dark,
+        )
+    });
     Json(ServerAbout {
         version: env!("CARGO_PKG_VERSION").to_string(),
         auth_required,
