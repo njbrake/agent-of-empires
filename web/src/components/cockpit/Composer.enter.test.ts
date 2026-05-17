@@ -5,7 +5,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { decideEnterAction } from "./Composer";
+import { decideBeforeInputAction, decideEnterAction } from "./Composer";
 
 const plainEnter = {
   key: "Enter",
@@ -85,6 +85,49 @@ describe("decideEnterAction (#1129)", () => {
   it("desktop + idle + plain Enter -> 'default' (primitive handles Send)", () => {
     expect(
       decideEnterAction(plainEnter, { isMobile: false, turnActive: false }),
+    ).toBe("default");
+  });
+});
+
+describe("decideBeforeInputAction (#1174)", () => {
+  it("mobile + insertLineBreak -> 'newline'", () => {
+    expect(
+      decideBeforeInputAction("insertLineBreak", false, { isMobile: true }),
+    ).toBe("newline");
+  });
+
+  it("mobile + insertParagraph -> 'newline'", () => {
+    expect(
+      decideBeforeInputAction("insertParagraph", false, { isMobile: true }),
+    ).toBe("newline");
+  });
+
+  it("mobile + insertText -> 'default' (regular character)", () => {
+    expect(
+      decideBeforeInputAction("insertText", false, { isMobile: true }),
+    ).toBe("default");
+  });
+
+  it("mobile + deleteContentBackward -> 'default' (backspace)", () => {
+    expect(
+      decideBeforeInputAction("deleteContentBackward", false, {
+        isMobile: true,
+      }),
+    ).toBe("default");
+  });
+
+  it("desktop + insertLineBreak -> 'default' (keydown handler owns desktop)", () => {
+    expect(
+      decideBeforeInputAction("insertLineBreak", false, { isMobile: false }),
+    ).toBe("default");
+  });
+
+  it("mobile + insertLineBreak during IME composition -> 'default'", () => {
+    expect(
+      decideBeforeInputAction("insertLineBreak", true, { isMobile: true }),
+    ).toBe("default");
+    expect(
+      decideBeforeInputAction("insertParagraph", true, { isMobile: true }),
     ).toBe("default");
   });
 });
