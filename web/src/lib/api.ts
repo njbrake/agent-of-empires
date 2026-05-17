@@ -8,6 +8,7 @@ import type {
   AvkBroadcastRequest,
   AvkBroadcastResponse,
   AvkHealthResponse,
+  AvkVpsStatusResponse,
   AvkMemoryEntry,
   AvkPanePeekResponse,
   FurkanChatRequest,
@@ -575,6 +576,14 @@ export async function fetchAvkLinearQueue(): Promise<
  */
 export async function fetchAvkHealth(): Promise<AvkHealthResponse | null> {
   return await fetchJson<AvkHealthResponse>("/api/avk/health");
+}
+
+/**
+ * `GET /api/avk/vps-status` — daemon host VPS sistem metrikleri.
+ * Hata durumunda null döner.
+ */
+export async function fetchAvkVpsStatus(): Promise<AvkVpsStatusResponse | null> {
+  return await fetchJson<AvkVpsStatusResponse>("/api/avk/vps-status");
 }
 
 /**

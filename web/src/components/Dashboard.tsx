@@ -13,6 +13,7 @@ import { AvkMemoryFeed } from "./AvkMemoryFeed";
 import { AvkRoadmap } from "./AvkRoadmap";
 import { AvkSentryAlerts } from "./AvkSentryAlerts";
 import { AvkSystemHealth } from "./AvkSystemHealth";
+import { AvkVpsStatus } from "./AvkVpsStatus";
 
 interface Props {
   sessions: SessionResponse[];
@@ -218,6 +219,10 @@ export function Dashboard({
         {/* DURUM tier — pasif izleme widget'ları */}
         <div className="rounded-lg border border-surface-700/40 bg-surface-900/40 p-4 sm:p-6">
           <AvkSystemHealth />
+        </div>
+
+        <div className="rounded-lg border border-surface-700/40 bg-surface-900/40 p-4 sm:p-6">
+          <AvkVpsStatus />
         </div>
 
         <div className="rounded-lg border border-surface-700/40 bg-surface-900/40 p-4 sm:p-6">
