@@ -22,6 +22,7 @@ use std::collections::BTreeMap;
 
 use ratatui::style::Color;
 use serde::Serialize;
+use tracing::debug;
 
 use super::{load_theme, Theme, ThemeAppearance};
 
@@ -91,13 +92,22 @@ pub fn resolve_theme(name: &str) -> ResolvedTheme {
         name.to_string()
     };
     let appearance = resolved_appearance(&theme);
+    let syntax = syntax_projection(&theme, appearance);
+    debug!(
+        requested = name,
+        resolved = %resolved_name,
+        source = ?source,
+        appearance = ?appearance,
+        shiki_theme = %syntax.shiki_theme,
+        "resolved theme projection"
+    );
     ResolvedTheme {
         name: resolved_name,
         source,
         appearance,
         web: web_projection(&theme, appearance),
         terminal: terminal_projection(&theme, appearance),
-        syntax: syntax_projection(&theme, appearance),
+        syntax,
     }
 }
 

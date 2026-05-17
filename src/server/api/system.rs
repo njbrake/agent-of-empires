@@ -205,9 +205,13 @@ pub async fn list_themes() -> Json<Vec<String>> {
 pub async fn get_resolved_theme(
     axum::extract::Path(name): axum::extract::Path<String>,
 ) -> Json<crate::tui::styles::ResolvedTheme> {
+    tracing::debug!(theme = %name, "GET /api/themes/{{name}}");
     let resolved = tokio::task::spawn_blocking(move || crate::tui::styles::resolve_theme(&name))
         .await
-        .unwrap_or_else(|_| crate::tui::styles::resolve_theme("empire"));
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "theme resolve task panicked, falling back to empire");
+            crate::tui::styles::resolve_theme("empire")
+        });
     Json(resolved)
 }
 
@@ -220,6 +224,7 @@ pub async fn get_current_theme(
     State(state): State<Arc<AppState>>,
 ) -> Json<crate::tui::styles::ResolvedTheme> {
     let profile = state.profile.clone();
+    tracing::debug!(profile = %profile, "GET /api/theme/current");
     let resolved = tokio::task::spawn_blocking(move || {
         let cfg = crate::session::profile_config::resolve_config_or_warn(&profile);
         let name = if cfg.theme.name.is_empty() {
@@ -230,7 +235,10 @@ pub async fn get_current_theme(
         crate::tui::styles::resolve_theme(&name)
     })
     .await
-    .unwrap_or_else(|_| crate::tui::styles::resolve_theme("empire"));
+    .unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "current theme resolve task panicked, falling back to empire");
+        crate::tui::styles::resolve_theme("empire")
+    });
     Json(resolved)
 }
 
@@ -525,12 +533,18 @@ pub async fn get_about(State(state): State<Arc<AppState>>) -> Json<ServerAbout> 
         (name, appearance)
     })
     .await
-    .unwrap_or_else(|_| {
+    .unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "about theme resolve task panicked, defaulting to empire/dark");
         (
             "empire".to_string(),
             crate::tui::styles::ThemeAppearance::Dark,
         )
     });
+    tracing::debug!(
+        theme_name = %theme_name,
+        theme_appearance = ?theme_appearance,
+        "GET /api/about (theme bits)"
+    );
     Json(ServerAbout {
         version: env!("CARGO_PKG_VERSION").to_string(),
         auth_required,

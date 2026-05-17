@@ -19,7 +19,7 @@ pub use themes::ThemeAppearance;
 pub use themes::{idle_decay_window, Theme};
 
 use std::path::PathBuf;
-use tracing::warn;
+use tracing::{debug, warn};
 
 /// One built-in theme. `source` is the TOML body embedded at compile time
 /// via `include_str!`. Adding a new builtin is: drop `themes/builtin/X.toml`
@@ -140,11 +140,18 @@ fn parse_builtin(builtin: &BuiltinTheme) -> Theme {
 
 pub fn load_theme(name: &str) -> Theme {
     if let Some(builtin) = BUILTIN_THEMES.iter().find(|b| b.name == name) {
+        debug!(theme = name, source = "builtin", "loaded theme");
         return parse_builtin(builtin);
     }
     for (theme_name, path) in discover_custom_themes() {
         if theme_name == name {
             if let Some(theme) = load_custom_theme(&path) {
+                debug!(
+                    theme = name,
+                    source = "custom",
+                    path = %path.display(),
+                    "loaded theme"
+                );
                 return theme;
             }
         }
