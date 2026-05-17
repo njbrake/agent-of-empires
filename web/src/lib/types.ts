@@ -573,6 +573,22 @@ export interface AvkVpsStatusResponse {
 }
 
 /**
+ * `POST /api/avk/ofis-baslat` JSON shape — tmux 13 ajan ofisi rebuild.
+ *
+ * Endpoint sabit script çağırır (parametre yok). Script idempotent —
+ * mevcut session varsa atlar. UI buton tetikler, sonuç tail satırları
+ * gösterilir.
+ */
+export interface AvkOfisBaslatResponse {
+  ok: boolean;
+  script_path: string;
+  elapsed_ms: number;
+  stdout_tail: string;
+  stderr_tail: string;
+  error: string | null;
+}
+
+/**
  * `GET /api/avk/memory-recall[?role=...&hours=...]` JSON shape mirror.
  *
  * Mock implementation: server static MOCK_FEED döner. Gerçek agentmemory

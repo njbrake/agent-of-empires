@@ -9,6 +9,7 @@ import type {
   AvkBroadcastResponse,
   AvkHealthResponse,
   AvkVpsStatusResponse,
+  AvkOfisBaslatResponse,
   AvkMemoryEntry,
   AvkPanePeekResponse,
   FurkanChatRequest,
@@ -584,6 +585,17 @@ export async function fetchAvkHealth(): Promise<AvkHealthResponse | null> {
  */
 export async function fetchAvkVpsStatus(): Promise<AvkVpsStatusResponse | null> {
   return await fetchJson<AvkVpsStatusResponse>("/api/avk/vps-status");
+}
+
+/**
+ * `POST /api/avk/ofis-baslat` — tmux 13 ajan ofisi rebuild trigger.
+ * Sabit script çağırır (idempotent — mevcut session varsa atlar).
+ * Hata durumunda null döner.
+ */
+export async function postAvkOfisBaslat(): Promise<AvkOfisBaslatResponse | null> {
+  return fetchJson<AvkOfisBaslatResponse>("/api/avk/ofis-baslat", {
+    method: "POST",
+  });
 }
 
 /**

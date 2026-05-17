@@ -983,6 +983,8 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/avk/sentry-alerts", get(api::get_avk_sentry_alerts))
         // AVK VPS sistem durum (hostname + load + memory% + disk% + uptime)
         .route("/api/avk/vps-status", get(api::get_avk_vps_status))
+        // AVK ofis başlat (tmux 13 ajan layout rebuild — sabit script çağırır)
+        .route("/api/avk/ofis-baslat", post(api::post_avk_ofis_baslat))
         // Profiles
         .route(
             "/api/profiles",

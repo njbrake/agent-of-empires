@@ -36,6 +36,8 @@ mod avk_roadmap;
 mod avk_sentry;
 // AVK VPS sistem durum (hostname + load + memory + disk + uptime).
 mod avk_vps_status;
+// AVK ofis başlat (tmux 13 ajan layout rebuild — POST trigger).
+mod avk_ofis_baslat;
 #[cfg(feature = "serve")]
 mod client_log;
 #[cfg(feature = "serve")]
@@ -71,6 +73,7 @@ pub use avk_git_flow::get_avk_git_flow;
 pub use avk_health::get_avk_health;
 pub use avk_linear::get_avk_linear_queue;
 pub use avk_memory::list_avk_memory_recall;
+pub use avk_ofis_baslat::post_avk_ofis_baslat;
 pub use avk_pane_peek::get_avk_pane_peek;
 pub use avk_roadmap::get_avk_roadmap;
 pub use avk_sentry::get_avk_sentry_alerts;

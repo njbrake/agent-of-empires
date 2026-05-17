@@ -12,6 +12,7 @@ import { AvkLinearQueue } from "./AvkLinearQueue";
 import { AvkMemoryFeed } from "./AvkMemoryFeed";
 import { AvkRoadmap } from "./AvkRoadmap";
 import { AvkSentryAlerts } from "./AvkSentryAlerts";
+import { AvkOfisControl } from "./AvkOfisControl";
 import { AvkSystemHealth } from "./AvkSystemHealth";
 import { AvkVpsStatus } from "./AvkVpsStatus";
 
@@ -219,6 +220,10 @@ export function Dashboard({
         {/* DURUM tier — pasif izleme widget'ları */}
         <div className="rounded-lg border border-surface-700/40 bg-surface-900/40 p-4 sm:p-6">
           <AvkSystemHealth />
+        </div>
+
+        <div className="rounded-lg border border-surface-700/40 bg-surface-900/40 p-4 sm:p-6">
+          <AvkOfisControl />
         </div>
 
         <div className="rounded-lg border border-surface-700/40 bg-surface-900/40 p-4 sm:p-6">
