@@ -767,6 +767,11 @@ impl SettingsView {
                     s.on_error = None;
                 }
             }
+            FieldKey::SoundOnApproval => {
+                if let Some(ref mut s) = config.sound {
+                    s.on_approval = None;
+                }
+            }
             // Hooks
             FieldKey::HookOnCreate => {
                 if let Some(ref mut h) = config.hooks {

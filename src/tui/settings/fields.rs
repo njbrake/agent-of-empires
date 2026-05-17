@@ -102,6 +102,7 @@ pub enum FieldKey {
     SoundOnWaiting,
     SoundOnIdle,
     SoundOnError,
+    SoundOnApproval,
     // Hooks
     HookOnCreate,
     HookOnLaunch,
@@ -264,7 +265,8 @@ impl SettingField {
                 | FieldKey::SoundOnRunning
                 | FieldKey::SoundOnWaiting
                 | FieldKey::SoundOnIdle
-                | FieldKey::SoundOnError,
+                | FieldKey::SoundOnError
+                | FieldKey::SoundOnApproval,
                 FieldValue::OptionalText(Some(name)),
             ) => {
                 if !name.is_empty() {
@@ -1641,6 +1643,12 @@ fn build_sound_fields(
         snd.and_then(|s| s.on_error.clone()),
         snd.map(|s| s.on_error.is_some()).unwrap_or(false),
     );
+    let (on_approval, o8) = resolve_optional(
+        scope,
+        global.sound.on_approval.clone(),
+        snd.and_then(|s| s.on_approval.clone()),
+        snd.map(|s| s.on_approval.is_some()).unwrap_or(false),
+    );
 
     let global_mode_selected = match &global.sound.mode {
         SoundMode::Random => 0,
@@ -1756,6 +1764,18 @@ fn build_sound_fields(
             inherited_display: inherited_if(
                 o7,
                 FieldValue::OptionalText(global.sound.on_error.clone()),
+            ),
+        },
+        SettingField {
+            key: FieldKey::SoundOnApproval,
+            label: "On Approval",
+            description: "Cockpit only. Played in the browser when a session needs permission. Specify file name with extension",
+            value: FieldValue::OptionalText(on_approval),
+            category: SettingsCategory::Sound,
+            has_override: o8,
+            inherited_display: inherited_if(
+                o8,
+                FieldValue::OptionalText(global.sound.on_approval.clone()),
             ),
         },
     ]
@@ -1982,6 +2002,9 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
         }
         (FieldKey::SoundOnError, FieldValue::OptionalText(v)) => {
             config.sound.on_error = v.clone();
+        }
+        (FieldKey::SoundOnApproval, FieldValue::OptionalText(v)) => {
+            config.sound.on_approval = v.clone();
         }
         // Hooks
         (FieldKey::HookOnCreate, FieldValue::List(v)) => config.hooks.on_create = v.clone(),
@@ -2363,6 +2386,12 @@ fn apply_field_to_profile(field: &SettingField, _global: &Config, config: &mut P
                 .sound
                 .get_or_insert_with(crate::sound::SoundConfigOverride::default);
             s.on_error = v.clone();
+        }
+        (FieldKey::SoundOnApproval, FieldValue::OptionalText(v)) => {
+            let s = config
+                .sound
+                .get_or_insert_with(crate::sound::SoundConfigOverride::default);
+            s.on_approval = v.clone();
         }
         // Hooks
         (FieldKey::HookOnCreate, FieldValue::List(v)) => {
