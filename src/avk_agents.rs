@@ -70,19 +70,19 @@ pub const AVK_AGENTS: &[AvkAgent] = &[
     // idare window (yönetim, 4 ajan)
     AvkAgent {
         slug: "koord",
-        label: "Koord (Chief of Staff)",
+        label: "Koord (Genel Sekreter)",
         role: AvkAgentRole::Director,
         tmux_target: "avk-ofis:idare.1",
     },
     AvkAgent {
         slug: "komuta",
-        label: "Komuta Merkezi (COO)",
+        label: "Komuta Merkezi (Operasyon Müdürü)",
         role: AvkAgentRole::Director,
         tmux_target: "avk-ofis:idare.2",
     },
     AvkAgent {
         slug: "merge",
-        label: "Merge Agent (DevOps)",
+        label: "Birleştirme Ajanı (PR Bekçi)",
         role: AvkAgentRole::Senior,
         tmux_target: "avk-ofis:idare.3",
     },
@@ -95,7 +95,7 @@ pub const AVK_AGENTS: &[AvkAgent] = &[
     // uretim window (kıdemli iş, 3 ajan)
     AvkAgent {
         slug: "mudur",
-        label: "Müdür (Gateway Patrol)",
+        label: "Müdür (Geçit Süzgeci)",
         role: AvkAgentRole::Director,
         tmux_target: "avk-ofis:uretim.1",
     },
@@ -112,6 +112,8 @@ pub const AVK_AGENTS: &[AvkAgent] = &[
         tmux_target: "avk-ofis:uretim.3",
     },
     // yardimcilar window (paralel slot, 6 ajan)
+    // UI gösterim sırası: Gemini'ler birlikte, sonra Kimi'ler, sonra Codex
+    // (Furkan canon 2026-05-17). tmux_target değişmedi — pane index VPS layout.
     AvkAgent {
         slug: "gemini-1",
         label: "Gemini-1 (Araştırmacı)",
@@ -119,20 +121,26 @@ pub const AVK_AGENTS: &[AvkAgent] = &[
         tmux_target: "avk-ofis:yardimcilar.1",
     },
     AvkAgent {
+        slug: "gemini-2",
+        label: "Gemini-2 (Araştırmacı)",
+        role: AvkAgentRole::Worker,
+        tmux_target: "avk-ofis:yardimcilar.6",
+    },
+    AvkAgent {
         slug: "kimi-1",
-        label: "Kimi-1 (Multi-Provider)",
+        label: "Kimi-1 (Çoklu Sağlayıcı)",
         role: AvkAgentRole::Worker,
         tmux_target: "avk-ofis:yardimcilar.2",
     },
     AvkAgent {
         slug: "kimi-2",
-        label: "Kimi-2 (Multi-Provider)",
+        label: "Kimi-2 (Çoklu Sağlayıcı)",
         role: AvkAgentRole::Worker,
         tmux_target: "avk-ofis:yardimcilar.3",
     },
     AvkAgent {
         slug: "kimi-3",
-        label: "Kimi-3 (Multi-Provider)",
+        label: "Kimi-3 (Çoklu Sağlayıcı)",
         role: AvkAgentRole::Worker,
         tmux_target: "avk-ofis:yardimcilar.4",
     },
@@ -141,12 +149,6 @@ pub const AVK_AGENTS: &[AvkAgent] = &[
         label: "Codex (Bağımsız Denetçi)",
         role: AvkAgentRole::Worker,
         tmux_target: "avk-ofis:yardimcilar.5",
-    },
-    AvkAgent {
-        slug: "gemini-2",
-        label: "Gemini-2 (Araştırmacı)",
-        role: AvkAgentRole::Worker,
-        tmux_target: "avk-ofis:yardimcilar.6",
     },
 ];
 

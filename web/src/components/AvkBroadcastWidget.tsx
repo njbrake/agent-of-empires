@@ -22,17 +22,17 @@ import type {
 } from "../lib/types";
 
 const TIER_LABEL: Record<AvkBroadcastTier, string> = {
-  director: "Director",
-  senior: "Senior",
-  worker: "Worker",
+  director: "Yönetim",
+  senior: "Kıdemli",
+  worker: "Operasyon",
   all: "Tümü",
 };
 
 const TIER_DESCRIPTION: Record<AvkBroadcastTier, string> = {
   director: "Koord + Komuta + Müdür (3 ajan)",
-  senior: "Code-1/2 + Merge + Hata (4 ajan)",
+  senior: "Code-1/2 + Birleştirme + Hata (4 ajan)",
   worker: "Gemini-1/2 + Kimi-1/2/3 + Codex (6 ajan)",
-  all: "13 ajan birden (Director + Senior + Worker)",
+  all: "13 ajan birden (Yönetim + Kıdemli + Operasyon)",
 };
 
 const TIER_ACCENT: Record<AvkBroadcastTier, string> = {
@@ -73,7 +73,7 @@ export function AvkBroadcastWidget() {
   return (
     <div>
       <h3 className="font-mono text-sm uppercase tracking-widest text-text-muted mb-4">
-        AVK Broadcast
+        AVK Yayın
       </h3>
 
       <div className="rounded border border-surface-700 bg-surface-800 p-4 space-y-4">
@@ -111,17 +111,17 @@ export function AvkBroadcastWidget() {
             onChange={(e) => setMessage(e.target.value)}
             disabled={sending}
             rows={3}
-            placeholder="Örn: kankam patrol özet ver (Linear In Progress + son merged PR)"
+            placeholder="Örn: patrol özet ver (Linear In Progress + son birleştirilen PR)"
             className="w-full rounded border border-surface-700 bg-surface-900 px-3 py-2 font-body text-[14px] text-text-primary placeholder:text-text-muted/60 focus:outline-none focus:border-brand-500/60 focus:ring-1 focus:ring-brand-500/40 resize-y"
             maxLength={8192}
           />
           <div className="flex items-center justify-between mt-1">
             <span className="font-mono text-[10px] text-text-muted">
-              {message.length}/8192 byte
+              {message.length}/8192 karakter
             </span>
             {message.length > 2048 && (
               <span className="font-mono text-[10px] text-status-waiting">
-                paste-buffer (bracketed) yolu kullanılacak
+                uzun mesaj — yapıştırma modu
               </span>
             )}
           </div>

@@ -25,9 +25,9 @@ const REFRESH_INTERVAL_MS = 30_000;
 const ROLE_ORDER: AvkAgentRole[] = ["director", "senior", "worker"];
 
 const ROLE_LABEL: Record<AvkAgentRole, string> = {
-  director: "Director",
-  senior: "Senior",
-  worker: "Worker",
+  director: "Yönetim",
+  senior: "Kıdemli",
+  worker: "Operasyon",
 };
 
 const ROLE_BADGE_CLASS: Record<AvkAgentRole, string> = {
@@ -75,9 +75,9 @@ export function AvkAgentsGrid() {
     return (
       <div>
         <h3 className="font-mono text-sm uppercase tracking-widest text-text-muted mb-4">
-          AVK Workflow Agents
+          AVK İş Ajanları
         </h3>
-        <p className="font-body text-[14px] text-text-muted">Loading…</p>
+        <p className="font-body text-[14px] text-text-muted">Yükleniyor…</p>
       </div>
     );
   }
@@ -86,10 +86,10 @@ export function AvkAgentsGrid() {
     return (
       <div>
         <h3 className="font-mono text-sm uppercase tracking-widest text-text-muted mb-4">
-          AVK Workflow Agents
+          AVK İş Ajanları
         </h3>
         <p className="font-body text-[14px] text-text-muted">
-          No agents available (server `/api/avk/agents` returned empty).
+          Ajan bulunamadı (sunucu `/api/avk/agents` boş döndü).
         </p>
       </div>
     );
@@ -101,9 +101,9 @@ export function AvkAgentsGrid() {
   return (
     <div>
       <h3 className="font-mono text-sm uppercase tracking-widest text-text-muted mb-4">
-        AVK Workflow Agents ({agents.length}){" "}
+        AVK İş Ajanları ({agents.length}){" "}
         <span className="text-status-running normal-case tracking-normal">
-          · {aliveCount}/{agents.length} live
+          · {aliveCount}/{agents.length} canlı
         </span>
       </h3>
       <div className="space-y-6">
@@ -122,8 +122,8 @@ export function AvkAgentsGrid() {
                     ? "bg-status-running"
                     : "bg-surface-600";
                   const dotTitle = agent.pane_alive
-                    ? `live · ${effectiveTarget}`
-                    : `pane yok · registry: ${agent.tmux_target}`;
+                    ? `canlı · ${effectiveTarget}`
+                    : `pane yok · kayıt: ${agent.tmux_target}`;
                   return (
                     <article
                       key={agent.slug}
@@ -150,7 +150,7 @@ export function AvkAgentsGrid() {
                         <span className="shrink-0">{agent.slug}</span>
                         <span
                           className="truncate"
-                          title={`registry: ${agent.tmux_target}${agent.runtime_target ? ` · runtime: ${agent.runtime_target}` : ""}`}
+                          title={`kayıt: ${agent.tmux_target}${agent.runtime_target ? ` · çalışan: ${agent.runtime_target}` : ""}`}
                         >
                           {effectiveTarget}
                         </span>

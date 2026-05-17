@@ -38,7 +38,7 @@ export function Dashboard({
   }, [idleDecayWindowMs, sessions]);
 
   return (
-    <div className="flex-1 flex flex-col items-center justify-center bg-surface-950 px-4">
+    <div className="flex-1 flex flex-col items-center bg-surface-950 px-4 py-6 overflow-y-auto">
       {/* Logo + Title */}
       <svg
         viewBox="0 0 128 128"
@@ -79,7 +79,7 @@ export function Dashboard({
       </svg>
       <div className="mb-1 text-center">
         <p className="text-[11px] md:text-xs font-mono text-text-muted uppercase tracking-[0.2em]">
-          agent of
+          ajan
         </p>
         <h1
           className="text-3xl md:text-5xl font-mono font-semibold text-brand-500 uppercase tracking-tight"
@@ -96,19 +96,16 @@ export function Dashboard({
       {sessions.length > 0 && (
         <div className="flex items-center gap-2 text-xs font-mono text-text-muted mb-6">
           {stats.active > 0 && (
-            <span className="text-status-running">{stats.active} running</span>
+            <span className="text-status-running">{stats.active} çalışıyor</span>
           )}
           {stats.waiting > 0 && (
-            <span className="text-status-waiting">{stats.waiting} waiting</span>
+            <span className="text-status-waiting">{stats.waiting} bekliyor</span>
           )}
           {stats.errors > 0 && (
-            <span className="text-status-error">
-              {stats.errors} error{stats.errors !== 1 ? "s" : ""}
-            </span>
+            <span className="text-status-error">{stats.errors} hata</span>
           )}
           <span>
-            {sessions.length} session{sessions.length !== 1 ? "s" : ""} across{" "}
-            {stats.projects} project{stats.projects !== 1 ? "s" : ""}
+            {sessions.length} oturum / {stats.projects} proje
           </span>
         </div>
       )}
@@ -132,18 +129,18 @@ export function Dashboard({
           <rect x="3" y="3" width="18" height="18" rx="2" />
           <line x1="9" y1="3" x2="9" y2="21" />
         </svg>
-        Show sessions
+        Oturumları Göster
       </button>
 
       {/* Action panes */}
       {readOnly ? (
         <div className="max-w-sm w-full">
           <p className="text-xs text-text-dim text-center mb-3">
-            This dashboard is in read-only mode.
+            Bu panel salt-okur modda.
           </p>
           <ActionPane
-            title="Docs"
-            subtitle="Guides and reference"
+            title="Dokümanlar"
+            subtitle="Rehber ve referans"
             href="https://www.agent-of-empires.com/docs"
             icon="book"
           />
@@ -151,21 +148,21 @@ export function Dashboard({
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3 max-w-2xl w-full">
           <ActionPane
-            title="New session"
-            subtitle="Pick a project, then launch a new session"
+            title="Yeni Oturum"
+            subtitle="Proje seç, yeni oturum başlat"
             onClick={onNewSession}
             icon="folder"
             featured
           />
           <ActionPane
-            title="Clone URL"
-            subtitle="Clone a repo from a URL"
+            title="URL'den Klonla"
+            subtitle="Repo URL'sinden klonla"
             onClick={onCloneFromUrl}
             icon="git"
           />
           <ActionPane
-            title="Docs"
-            subtitle="Guides and reference"
+            title="Dokümanlar"
+            subtitle="Rehber ve referans"
             href="https://www.agent-of-empires.com/docs"
             icon="book"
           />
@@ -175,28 +172,40 @@ export function Dashboard({
       {/* Keyboard hint (desktop only) */}
       {!readOnly && (
         <p className="mt-4 text-[11px] font-mono text-text-dim hidden md:block">
-          press{" "}
+          yeni oturum için{" "}
           <kbd className="px-1 py-0.5 rounded bg-surface-800 border border-surface-700/40">
             n
           </kbd>{" "}
-          to create a session
+          bas
         </p>
       )}
 
-      {/* FUR-3957 Adım 8 — AVK workflow ajan grid (13 ajan) */}
-      <div className="mt-12 w-full max-w-4xl">
-        <AvkAgentsGrid />
-      </div>
+      {/* AVK Komuta Paneli — 3 widget grouplandığı section (FUR-3957 Adım 8 + FUR-4121 + FUR-4118) */}
+      <section
+        aria-label="AVK Komuta Paneli"
+        className="mt-10 w-full max-w-4xl border-t border-surface-700/40 pt-8 space-y-8"
+      >
+        <header className="text-center">
+          <h2 className="font-mono text-xs uppercase tracking-[0.3em] text-text-muted">
+            AVK Komuta Paneli
+          </h2>
+          <p className="font-body text-[12px] text-text-dim mt-1">
+            13 ajan orkestrasyonu · canlı durum · tier yayını · son 24 saat hafıza
+          </p>
+        </header>
 
-      {/* FUR-4121 — AVK tier broadcast widget (director/senior/worker/all -> tmux) */}
-      <div className="mt-12 w-full max-w-4xl">
-        <AvkBroadcastWidget />
-      </div>
+        <div className="rounded-lg border border-surface-700/40 bg-surface-900/40 p-4 sm:p-6">
+          <AvkAgentsGrid />
+        </div>
 
-      {/* FUR-4118 — AVK memory recall feed (mock; agentmemory MCP proxy bekleniş) */}
-      <div className="mt-12 w-full max-w-4xl">
-        <AvkMemoryFeed />
-      </div>
+        <div className="rounded-lg border border-surface-700/40 bg-surface-900/40 p-4 sm:p-6">
+          <AvkBroadcastWidget />
+        </div>
+
+        <div className="rounded-lg border border-surface-700/40 bg-surface-900/40 p-4 sm:p-6">
+          <AvkMemoryFeed />
+        </div>
+      </section>
     </div>
   );
 }

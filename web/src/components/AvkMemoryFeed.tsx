@@ -21,9 +21,9 @@ import type { AvkMemoryEntry, AvkMemoryTier } from "../lib/types";
 const REFRESH_INTERVAL_MS = 60_000;
 
 const TIER_LABEL: Record<AvkMemoryTier, string> = {
-  core: "Core",
-  working: "Working",
-  archival: "Archival",
+  core: "Çekirdek",
+  working: "Aktif",
+  archival: "Arşiv",
 };
 
 const TIER_BADGE_CLASS: Record<AvkMemoryTier, string> = {
@@ -72,9 +72,9 @@ export function AvkMemoryFeed() {
     return (
       <div>
         <h3 className="font-mono text-sm uppercase tracking-widest text-text-muted mb-4">
-          AVK Memory Recall
+          AVK Hafıza
         </h3>
-        <p className="font-body text-[14px] text-text-muted">Loading…</p>
+        <p className="font-body text-[14px] text-text-muted">Yükleniyor…</p>
       </div>
     );
   }
@@ -83,10 +83,10 @@ export function AvkMemoryFeed() {
     return (
       <div>
         <h3 className="font-mono text-sm uppercase tracking-widest text-text-muted mb-4">
-          AVK Memory Recall
+          AVK Hafıza
         </h3>
         <p className="font-body text-[14px] text-text-muted">
-          No memory entries (server `/api/avk/memory-recall` returned empty).
+          Hafıza kaydı yok (sunucu `/api/avk/memory-recall` boş döndü).
         </p>
       </div>
     );
@@ -95,7 +95,7 @@ export function AvkMemoryFeed() {
   return (
     <div>
       <h3 className="font-mono text-sm uppercase tracking-widest text-text-muted mb-4">
-        AVK Memory Recall ({entries.length})
+        AVK Hafıza ({entries.length})
       </h3>
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
         {entries.map((entry) => (
