@@ -609,7 +609,7 @@ pub(crate) fn is_valid_session_id(id: &str) -> bool {
 /// per-instance set of IDs the cascade has explicitly cleared but which
 /// may still live on disk for several minutes.
 ///
-/// Both [`Instance::retroactive_capture_exclusion_set`] and the post-launch
+/// Both `Instance::retroactive_capture_exclusion_set` and the post-launch
 /// `*_poll_fn` closures route through this helper so the resume-fallback
 /// cascade's just-crashed sid is filtered identically on the synchronous
 /// pre-launch path and on the asynchronous polling path.

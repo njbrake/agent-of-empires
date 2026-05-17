@@ -769,7 +769,7 @@ impl Instance {
     /// Full set of session IDs that retroactive capture must skip for THIS
     /// instance: the live tmux-discovered set plus any sids the
     /// resume-fallback cascade has explicitly cleared. Composed of
-    /// [`build_exclusion_set`] (live tmux scan) and
+    /// `build_exclusion_set` (live tmux scan) and
     /// `self.retroactive_capture_excludes` (cascade memory) so the caller
     /// gets the complete picture in one call.
     fn retroactive_capture_exclusion_set(&self) -> HashSet<String> {
