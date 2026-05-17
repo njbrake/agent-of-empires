@@ -52,6 +52,12 @@ pub const DWELL_TERMINAL_MS: u64 = 2_000;
 /// OR this long has passed, whichever comes second.
 pub const COOLDOWN_MS: u64 = 60_000;
 
+/// Delay between hitting "Send test notification" and the server actually
+/// firing the push. Gives the user time to lock their phone so the
+/// notification lands on the Lock Screen instead of in the foreground
+/// app, which is what they actually want to verify.
+pub const TEST_DELAY_MS: u64 = 3_000;
+
 // ── VAPID keypair ───────────────────────────────────────────────────────────
 
 /// Persisted form of the VAPID keypair. PKCS#8 PEM for the private key,
@@ -921,6 +927,8 @@ pub async fn test(
         tag: "aoe-test".to_string(),
         session_id: String::new(),
     };
+
+    tokio::time::sleep(std::time::Duration::from_millis(TEST_DELAY_MS)).await;
 
     let outcome = super::push_send::send_one(&client, push, &subscription, &payload).await;
     let mut result = TestResult {
