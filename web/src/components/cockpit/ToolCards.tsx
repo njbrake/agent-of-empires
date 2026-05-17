@@ -34,7 +34,13 @@ import {
   Trash2,
 } from "lucide-react";
 
-import { getHighlighter, langKeyForExt, loadLanguage } from "../../lib/highlighter";
+import {
+  ensureThemeLoaded,
+  getHighlighter,
+  langKeyForExt,
+  loadLanguage,
+} from "../../lib/highlighter";
+import { useShikiTheme } from "../../hooks/useShikiTheme";
 import { hasAnsi, parseAnsi, type AnsiStyle } from "../../lib/ansi";
 import { parseJsonObject, pickFirst, pickStr } from "../../lib/cockpitArgs";
 import { useCockpitPrefs } from "../../lib/cockpitPrefs";
@@ -412,6 +418,7 @@ function HighlightedBlock({
 }) {
   const [html, setHtml] = useState<string | null>(null);
   const [showAll, setShowAll] = useState(false);
+  const shikiTheme = useShikiTheme();
   const unwrapped = unwrapMarkdownFence(text);
   const effectiveText = unwrapped.text;
   const effectiveLang = unwrapped.lang ?? language;
@@ -435,11 +442,12 @@ function HighlightedBlock({
       try {
         const langKey = langKeyForExt(effectiveLang) ?? effectiveLang;
         await loadLanguage(langKey);
+        const resolvedTheme = await ensureThemeLoaded(shikiTheme);
         const hl = await getHighlighter();
         if (cancelled) return;
         const out = hl.codeToHtml(shown, {
           lang: langKey,
-          theme: "github-dark",
+          theme: resolvedTheme,
         });
         setHtml(out);
       } catch {
@@ -449,7 +457,7 @@ function HighlightedBlock({
     return () => {
       cancelled = true;
     };
-  }, [effectiveLang, shown]);
+  }, [effectiveLang, shown, shikiTheme, ansi]);
 
   return (
     <div className="border-t border-surface-800 bg-surface-950">

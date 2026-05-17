@@ -5,9 +5,29 @@ import { createOnigurumaEngine } from "shiki/engine/oniguruma";
 let instance: HighlighterCore | null = null;
 let loading: Promise<HighlighterCore> | null = null;
 
+/** Shiki theme module imports for every theme an AoE-resolved theme
+ *  can name. Unknown values fall back to `DEFAULT_SHIKI_THEME`. Lazy
+ *  imports so users on Empire don't pay for the Dracula/Tokyo Night
+ *  modules they never see. */
+const SHIKI_THEME_IMPORTS: Record<string, () => Promise<unknown>> = {
+  "github-dark": () => import("shiki/themes/github-dark.mjs"),
+  "github-light": () => import("shiki/themes/github-light.mjs"),
+  "github-dark-dimmed": () => import("shiki/themes/github-dark-dimmed.mjs"),
+  "tokyo-night": () => import("shiki/themes/tokyo-night.mjs"),
+  "catppuccin-latte": () => import("shiki/themes/catppuccin-latte.mjs"),
+  dracula: () => import("shiki/themes/dracula.mjs"),
+  "rose-pine": () => import("shiki/themes/rose-pine.mjs"),
+};
+
+/** Fallback when the resolver names a Shiki theme this bundle doesn't
+ *  carry (user-defined themes with arbitrary shiki_theme entries). */
+export const DEFAULT_SHIKI_THEME = "github-dark";
+
 /**
  * Returns a singleton Shiki highlighter. Languages are loaded on demand
- * via `loadLanguage()` so the initial bundle stays small.
+ * via `loadLanguage()` so the initial bundle stays small. The default
+ * theme is bundled at construction time; switch to another bundled
+ * theme via `ensureThemeLoaded`.
  */
 export async function getHighlighter(): Promise<HighlighterCore> {
   if (instance) return instance;
@@ -21,6 +41,28 @@ export async function getHighlighter(): Promise<HighlighterCore> {
     return hl;
   });
   return loading;
+}
+
+/** Lazy-load a Shiki theme module and register it on the singleton
+ *  highlighter. Returns the name the caller should pass to
+ *  `codeToHtml` / `codeToTokens` (the requested name if it loaded
+ *  cleanly, `DEFAULT_SHIKI_THEME` otherwise). Idempotent. */
+export async function ensureThemeLoaded(name: string): Promise<string> {
+  const importer = SHIKI_THEME_IMPORTS[name];
+  if (!importer) return DEFAULT_SHIKI_THEME;
+  const hl = await getHighlighter();
+  if (hl.getLoadedThemes().includes(name)) return name;
+  try {
+    const mod = await importer();
+    const theme = (mod as { default: unknown }).default;
+    if (theme) {
+      await hl.loadTheme(theme as Parameters<typeof hl.loadTheme>[0]);
+      return name;
+    }
+  } catch {
+    // Module load failed; fall through.
+  }
+  return DEFAULT_SHIKI_THEME;
 }
 
 const EXT_TO_LANG: Record<string, () => Promise<unknown>> = {
