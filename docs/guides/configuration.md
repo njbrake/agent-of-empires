@@ -45,11 +45,35 @@ All settings below can also be edited from the TUI settings screen (press `s` or
 ```toml
 [theme]
 name = "empire"   # empire, phosphor, tokyo-night-storm, catppuccin-latte, dracula, rose-pine
+color_mode = "truecolor"   # truecolor | palette (TUI only)
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `name` | `"empire"` | TUI color theme. Available: `empire` (warm navy/amber), `phosphor` (green), `tokyo-night-storm` (dark blue/purple), `catppuccin-latte` (light pastel), `dracula` (dark purple/pink), `rose-pine` (dark muted purple/pink). |
+| `name` | `"empire"` | Color theme. Applies to **both the TUI and the web dashboard**. Available builtins: `empire` (warm navy/amber), `phosphor` (green), `tokyo-night-storm` (dark blue/purple), `catppuccin-latte` (light pastel), `dracula` (dark purple/pink), `rose-pine` (dark muted purple/pink). Custom TOML themes in `~/.agent-of-empires/themes/*.toml` also appear in the picker. |
+| `color_mode` | `"truecolor"` | TUI only. `palette` downsamples to xterm-256 for transports that mangle 24-bit RGB (e.g. some `mosh` setups). The web dashboard always renders truecolor. |
+
+### Builtin themes
+
+Each builtin theme is a TOML file under `themes/builtin/` in the repo, embedded into the binary at build time. The schema matches the custom-theme format below, plus two optional metadata fields:
+
+- `appearance = "dark" | "light"` declares the surface polarity. Drives the web dashboard's surface-ramp derivation (lighten vs darken from background) and selects the fallback Shiki syntax theme. If omitted, the server classifies from background luminance.
+- `[syntax].shiki_theme = "..."` names the bundled Shiki theme the web dashboard loads for code blocks. If omitted, falls back by appearance (`github-dark` / `github-light`).
+
+### Custom themes
+
+Drop a TOML file in `~/.agent-of-empires/themes/<name>.toml` (or `$XDG_CONFIG_HOME/agent-of-empires/themes/` on Linux). The file appears in the theme picker under its filename stem.
+
+Export a builtin as a starting point:
+
+```bash
+aoe theme export empire             # writes ~/.agent-of-empires/themes/custom-empire.toml
+aoe theme export dracula -o my.toml # writes to my.toml
+aoe theme list                      # show all available themes
+aoe theme dir                       # print the custom themes directory
+```
+
+The schema is flat; every field is optional and missing fields fall back to Empire's defaults. The 24 color fields cover background, borders, text, status semantics, diff colors, branch/sandbox chips, and accent. Add the optional `appearance` and `[syntax]` table to control the web surface.
 
 ## Session
 
