@@ -19,6 +19,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { fetchAvkFurkanInbox } from "../lib/api";
+import { usePushSubscription } from "../hooks/usePushSubscription";
 import type { FurkanInboxSignal } from "../lib/types";
 
 const REFRESH_INTERVAL_MS = 30_000;
@@ -94,6 +95,7 @@ export function AvkFurkanInbox() {
   const [error, setError] = useState<string | null>(null);
   const [unreadCount, setUnreadCount] = useState(0);
   const [permission, setPermission] = useState<Permission>(() => detectPermission());
+  const push = usePushSubscription();
   const seenIdsRef = useRef<Set<string>>(loadSeenIds());
   const firstLoadRef = useRef(true);
 
@@ -187,23 +189,100 @@ export function AvkFurkanInbox() {
             {unreadCount} yeni
           </button>
         )}
+        {/* Foreground bildirim (sayfa açıkken balon) — basit Notification API */}
         {permission === "default" && (
           <button
             type="button"
             onClick={requestPermission}
             className="normal-case tracking-normal font-mono text-[11px] text-brand-500 hover:underline"
+            title="Sayfa açıkken bildirim balonu"
           >
             bildirimleri aç
           </button>
         )}
-        {permission === "granted" && (
-          <span className="normal-case tracking-normal text-status-running text-[11px]">
-            · bildirim açık
-          </span>
-        )}
         {permission === "denied" && (
           <span className="normal-case tracking-normal text-text-dim text-[11px]">
             · bildirim engelli
+          </span>
+        )}
+
+        {/* Arka plan/kilit ekran push (Web Push API + Service Worker) */}
+        {(push.state.kind === "off" || push.state.kind === "loading") && (
+          <button
+            type="button"
+            onClick={push.enable}
+            disabled={push.state.kind === "loading"}
+            className="normal-case tracking-normal font-mono text-[11px] text-brand-500 hover:underline disabled:opacity-60"
+            title="Arka plan / kilit ekran push bildirim (Service Worker)"
+          >
+            {push.state.kind === "loading" ? "yükleniyor…" : "push aboneliği aç"}
+          </button>
+        )}
+        {push.state.kind === "asking" && (
+          <span className="normal-case tracking-normal text-status-waiting text-[11px]">
+            · izin isteniyor…
+          </span>
+        )}
+        {push.state.kind === "subscribing" && (
+          <span className="normal-case tracking-normal text-status-waiting text-[11px]">
+            · abone olunuyor…
+          </span>
+        )}
+        {push.state.kind === "enabled" && (
+          <>
+            <span className="normal-case tracking-normal text-status-running text-[11px]">
+              · push aktif
+            </span>
+            <button
+              type="button"
+              onClick={push.sendTest}
+              className="normal-case tracking-normal font-mono text-[10px] text-text-muted hover:text-brand-500"
+              title="Sunucudan test push gönder"
+            >
+              test
+            </button>
+            <button
+              type="button"
+              onClick={push.disable}
+              className="normal-case tracking-normal font-mono text-[10px] text-text-muted hover:text-status-error"
+              title="Push aboneliğini kapat"
+            >
+              kapat
+            </button>
+          </>
+        )}
+        {push.state.kind === "sending-test" && (
+          <span className="normal-case tracking-normal text-status-waiting text-[11px]">
+            · test gönderiliyor…
+          </span>
+        )}
+        {push.state.kind === "disabling" && (
+          <span className="normal-case tracking-normal text-status-waiting text-[11px]">
+            · kapatılıyor…
+          </span>
+        )}
+        {push.state.kind === "denied" && (
+          <span className="normal-case tracking-normal text-text-dim text-[11px]">
+            · push izni reddedildi (iPhone Safari Ayarlar → Bildirimler)
+          </span>
+        )}
+        {push.state.kind === "unsupported" && (
+          <span className="normal-case tracking-normal text-text-dim text-[11px]" title={`reason: ${push.state.reason}`}>
+            {push.state.reason === "ios-not-standalone"
+              ? "· PWA install gerek (Ana Ekrana Ekle)"
+              : push.state.reason === "insecure-origin"
+                ? "· HTTPS gerek (Tailscale)"
+                : "· push API desteklenmiyor"}
+          </span>
+        )}
+        {push.state.kind === "error" && (
+          <span className="normal-case tracking-normal text-status-error text-[11px]" title={push.state.message}>
+            · push hata
+          </span>
+        )}
+        {permission === "granted" && push.state.kind === "off" && (
+          <span className="normal-case tracking-normal text-text-dim text-[10px]" title="Foreground bildirim (sayfa açık) çalışıyor — arka plan push için 'push aboneliği aç'">
+            ↑ kilit ekran için
           </span>
         )}
       </h3>
