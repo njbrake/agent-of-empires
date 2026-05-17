@@ -1,9 +1,12 @@
 /**
- * AVK broadcast widget — FUR-4121.
+ * AVK broadcast widget — FUR-4121 + FUR-4155 (broadcast history).
  *
  * 4 tier butonu (director/senior/worker/all) + mesaj textarea + Gönder.
  * `POST /api/avk/broadcast` ile tmux pane'lere bracketed-paste mesaj yollar.
  * Sonuç inline summary (ok / failed) ve gerekirse per-pane hata listesi.
+ *
+ * FUR-4155 (A): Son 10 yayın localStorage `avk-broadcast-history` key'inde
+ * saklanır; her entry yanında "Tekrarla" butonu textarea + tier'ı doldurur.
  *
  * Tasarım:
  *   - director badge yeşil (status-running) — yönetim
@@ -44,12 +47,70 @@ const TIER_ACCENT: Record<AvkBroadcastTier, string> = {
 
 const TIERS: AvkBroadcastTier[] = ["director", "senior", "worker", "all"];
 
+const HISTORY_KEY = "avk-broadcast-history";
+const HISTORY_MAX = 10;
+
+interface BroadcastHistoryEntry {
+  id: string;
+  tier: AvkBroadcastTier;
+  message: string;
+  at: string;
+  ok: number;
+  total: number;
+}
+
+function loadHistory(): BroadcastHistoryEntry[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(HISTORY_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.slice(0, HISTORY_MAX) as BroadcastHistoryEntry[];
+  } catch {
+    return [];
+  }
+}
+
+function saveHistory(entries: BroadcastHistoryEntry[]) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(
+      HISTORY_KEY,
+      JSON.stringify(entries.slice(0, HISTORY_MAX)),
+    );
+  } catch {
+    // quota aşımı veya localStorage devre dışı — sessizce geç
+  }
+}
+
+function generateId(): string {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function formatRelativeTime(iso: string): string {
+  const then = new Date(iso).getTime();
+  if (Number.isNaN(then)) return iso;
+  const now = Date.now();
+  const diffMin = Math.floor((now - then) / 60_000);
+  if (diffMin < 1) return "az önce";
+  if (diffMin < 60) return `${diffMin}dk önce`;
+  const diffHours = Math.floor(diffMin / 60);
+  if (diffHours < 24) return `${diffHours}sa önce`;
+  const diffDays = Math.floor(diffHours / 24);
+  return `${diffDays}g önce`;
+}
+
 export function AvkBroadcastWidget() {
   const [tier, setTier] = useState<AvkBroadcastTier>("all");
   const [message, setMessage] = useState("");
   const [sending, setSending] = useState(false);
   const [result, setResult] = useState<AvkBroadcastResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [history, setHistory] = useState<BroadcastHistoryEntry[]>(() => loadHistory());
 
   const canSend = message.trim().length > 0 && !sending;
 
@@ -58,7 +119,8 @@ export function AvkBroadcastWidget() {
     setSending(true);
     setError(null);
     setResult(null);
-    const res = await postAvkBroadcast({ tier, message: message.trim() });
+    const trimmed = message.trim();
+    const res = await postAvkBroadcast({ tier, message: trimmed });
     setSending(false);
     if (!res) {
       setError("Broadcast başarısız (sunucu hatası veya ağ kopması).");
@@ -68,6 +130,29 @@ export function AvkBroadcastWidget() {
     if (res.failed === 0) {
       setMessage("");
     }
+    const entry: BroadcastHistoryEntry = {
+      id: generateId(),
+      tier,
+      message: trimmed,
+      at: new Date().toISOString(),
+      ok: res.ok,
+      total: res.total,
+    };
+    const next = [entry, ...history].slice(0, HISTORY_MAX);
+    setHistory(next);
+    saveHistory(next);
+  }
+
+  function handleReplay(entry: BroadcastHistoryEntry) {
+    setTier(entry.tier);
+    setMessage(entry.message);
+    setResult(null);
+    setError(null);
+  }
+
+  function handleClearHistory() {
+    setHistory([]);
+    saveHistory([]);
   }
 
   return (
@@ -169,6 +254,72 @@ export function AvkBroadcastWidget() {
                   ))}
               </ul>
             )}
+          </div>
+        )}
+
+        {history.length > 0 && (
+          <div className="border-t border-surface-700 pt-4">
+            <div className="flex items-center justify-between mb-2">
+              <h4 className="font-mono text-[11px] uppercase tracking-wider text-text-muted">
+                Son Yayınlar ({history.length})
+              </h4>
+              <button
+                type="button"
+                onClick={handleClearHistory}
+                className="font-mono text-[10px] text-text-muted hover:text-status-error transition-colors"
+              >
+                Geçmişi Temizle
+              </button>
+            </div>
+            <ul className="space-y-2">
+              {history.map((entry) => {
+                const preview =
+                  entry.message.length > 96
+                    ? `${entry.message.slice(0, 96)}…`
+                    : entry.message;
+                const allOk = entry.ok === entry.total;
+                return (
+                  <li
+                    key={entry.id}
+                    className="rounded border border-surface-700 bg-surface-900 p-2.5 flex items-start gap-2"
+                  >
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 mb-1 font-mono text-[10px]">
+                        <span
+                          className={`px-1.5 py-0.5 rounded uppercase tracking-wider ${TIER_ACCENT[entry.tier]} bg-surface-800`}
+                        >
+                          {TIER_LABEL[entry.tier]}
+                        </span>
+                        <span
+                          className={
+                            allOk ? "text-status-running" : "text-status-error"
+                          }
+                        >
+                          {entry.ok}/{entry.total} ok
+                        </span>
+                        <span
+                          className="text-text-muted"
+                          title={entry.at}
+                        >
+                          {formatRelativeTime(entry.at)}
+                        </span>
+                      </div>
+                      <p className="font-body text-[12px] text-text-secondary leading-snug break-words">
+                        {preview}
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => handleReplay(entry)}
+                      className="shrink-0 rounded border border-brand-500/40 text-brand-500 hover:bg-brand-500/10 font-mono text-[10px] uppercase tracking-wider px-2 py-1 transition-colors"
+                      title="Mesaj ve tier'ı tekrar yükle"
+                    >
+                      Tekrarla
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
           </div>
         )}
       </div>
