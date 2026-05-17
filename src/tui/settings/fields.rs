@@ -87,6 +87,8 @@ pub enum FieldKey {
     // Session
     DefaultTool,
     StrictHotkeys,
+    LockSortOrder,
+    HibernateAfterMinutes,
     AgentExtraArgs,
     AgentCommandOverride,
     AgentStatusHooks,
@@ -1354,6 +1356,18 @@ fn build_session_fields(
         session.and_then(|s| s.strict_hotkeys),
     );
 
+    let (lock_sort_order, lock_sort_override) = resolve_value(
+        scope,
+        global.session.lock_sort_order,
+        session.and_then(|s| s.lock_sort_order),
+    );
+
+    let (hibernate_after_minutes, hibernate_override) = resolve_value(
+        scope,
+        global.session.hibernate_after_minutes,
+        session.and_then(|s| s.hibernate_after_minutes),
+    );
+
     let (agent_status_hooks, status_hooks_override) = resolve_value(
         scope,
         global.session.agent_status_hooks,
@@ -1512,6 +1526,31 @@ fn build_session_fields(
             inherited_display: inherited_if(
                 strict_hotkeys_override,
                 FieldValue::Bool(global.session.strict_hotkeys),
+            ),
+        },
+        SettingField {
+            key: FieldKey::LockSortOrder,
+            label: "Lock Sort Order",
+            description: "Lock the current sort order and disable the O / Ctrl+O cycling hotkeys",
+            value: FieldValue::Bool(lock_sort_order),
+            category: SettingsCategory::Session,
+            has_override: lock_sort_override,
+            inherited_display: inherited_if(
+                lock_sort_override,
+                FieldValue::Bool(global.session.lock_sort_order),
+            ),
+        },
+        SettingField {
+            key: FieldKey::HibernateAfterMinutes,
+            label: "Auto-Hibernate (minutes)",
+            description:
+                "Hibernate idle sessions after this many minutes (0 = disabled)",
+            value: FieldValue::Number(hibernate_after_minutes),
+            category: SettingsCategory::Session,
+            has_override: hibernate_override,
+            inherited_display: inherited_if(
+                hibernate_override,
+                FieldValue::Number(global.session.hibernate_after_minutes),
             ),
         },
         SettingField {
@@ -1884,6 +1923,10 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
         }
         (FieldKey::YoloModeDefault, FieldValue::Bool(v)) => config.session.yolo_mode_default = *v,
         (FieldKey::StrictHotkeys, FieldValue::Bool(v)) => config.session.strict_hotkeys = *v,
+        (FieldKey::LockSortOrder, FieldValue::Bool(v)) => config.session.lock_sort_order = *v,
+        (FieldKey::HibernateAfterMinutes, FieldValue::Number(v)) => {
+            config.session.hibernate_after_minutes = *v
+        }
         (FieldKey::AgentStatusHooks, FieldValue::Bool(v)) => {
             config.session.agent_status_hooks = *v;
         }
@@ -2279,6 +2322,14 @@ fn apply_field_to_profile(field: &SettingField, _global: &Config, config: &mut P
         }
         (FieldKey::StrictHotkeys, FieldValue::Bool(v)) => {
             set_profile_override(*v, &mut config.session, |s, val| s.strict_hotkeys = val);
+        }
+        (FieldKey::LockSortOrder, FieldValue::Bool(v)) => {
+            set_profile_override(*v, &mut config.session, |s, val| s.lock_sort_order = val);
+        }
+        (FieldKey::HibernateAfterMinutes, FieldValue::Number(v)) => {
+            set_profile_override(*v, &mut config.session, |s, val| {
+                s.hibernate_after_minutes = val;
+            });
         }
         (FieldKey::AgentStatusHooks, FieldValue::Bool(v)) => {
             set_profile_override(*v, &mut config.session, |s, val| {

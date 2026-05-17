@@ -99,6 +99,7 @@ export type SessionStatus =
   | "Error"
   | "Starting"
   | "Stopped"
+  | "Hibernated"
   | "Unknown"
   | "Deleting"
   | "Creating";

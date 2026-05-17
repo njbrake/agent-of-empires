@@ -238,6 +238,7 @@ impl Preview {
                         }
                         crate::session::Status::Unknown => theme.waiting,
                         crate::session::Status::Stopped => theme.dimmed,
+                        crate::session::Status::Hibernated => theme.dimmed,
                         crate::session::Status::Error => theme.error,
                         crate::session::Status::Starting => theme.dimmed,
                         crate::session::Status::Deleting => theme.waiting,

@@ -614,6 +614,97 @@ pub struct DeleteSessionBody {
     pub force_delete: bool,
 }
 
+pub async fn hibernate_session(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if state.read_only {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(
+                serde_json::json!({"error": "read_only", "message": "Server is in read-only mode"}),
+            ),
+        );
+    }
+
+    let lock = state.instance_lock(&id).await;
+    let _guard = lock.lock().await;
+
+    let instance = {
+        let instances = state.instances.read().await;
+        instances.iter().find(|i| i.id == id).cloned()
+    };
+
+    let Some(instance) = instance else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "message": "Session not found" })),
+        );
+    };
+
+    if !instance.can_hibernate() {
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "error": "cannot_hibernate",
+                "message": "Session does not support hibernate (no resume strategy or session ID)"
+            })),
+        );
+    }
+
+    if matches!(
+        instance.status,
+        Status::Stopped | Status::Hibernated | Status::Deleting | Status::Creating
+    ) {
+        return (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "error": "invalid_status",
+                "message": format!("Cannot hibernate session in {:?} state", instance.status)
+            })),
+        );
+    }
+
+    {
+        let mut instances = state.instances.write().await;
+        if let Some(inst) = instances.iter_mut().find(|i| i.id == id) {
+            inst.status = Status::Hibernated;
+        }
+    }
+
+    match instance.hibernate() {
+        Ok(()) => {
+            crate::tmux::refresh_session_cache();
+            let profile = instance.source_profile.clone();
+            let instances = state.instances.read().await;
+            if let Ok(storage) = Storage::new(&profile) {
+                let profile_instances: Vec<_> = instances
+                    .iter()
+                    .filter(|i| i.source_profile == profile)
+                    .cloned()
+                    .collect();
+                if let Err(e) = storage.save(&profile_instances) {
+                    tracing::error!("Failed to save after hibernate: {e}");
+                }
+            }
+            (
+                StatusCode::OK,
+                Json(serde_json::json!({ "message": "Session hibernated" })),
+            )
+        }
+        Err(e) => {
+            let mut instances = state.instances.write().await;
+            if let Some(inst) = instances.iter_mut().find(|i| i.id == id) {
+                inst.status = Status::Error;
+            }
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(serde_json::json!({ "error": e.to_string() })),
+            )
+        }
+    }
+}
+
 pub async fn delete_session(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,

@@ -9,7 +9,7 @@ use rattles::presets::prelude as spinners;
 
 use super::{
     get_indent, HomeView, TerminalMode, ViewMode, ICON_COLLAPSED, ICON_DELETING, ICON_ERROR,
-    ICON_EXPANDED, ICON_IDLE, ICON_STOPPED, ICON_UNKNOWN,
+    ICON_EXPANDED, ICON_HIBERNATED, ICON_IDLE, ICON_STOPPED, ICON_UNKNOWN,
 };
 use crate::session::config::GroupByMode;
 use crate::session::{Item, Status};
@@ -269,7 +269,14 @@ impl HomeView {
 
         // Render dialogs on top
         if self.show_help {
-            HelpOverlay::render(frame, area, theme, self.sort_order, self.strict_hotkeys);
+            HelpOverlay::render(
+                frame,
+                area,
+                theme,
+                self.sort_order,
+                self.strict_hotkeys,
+                self.lock_sort_order,
+            );
         }
 
         // Each Option<Dialog> field on HomeView gets the same render dispatch:
@@ -529,6 +536,7 @@ impl HomeView {
                                 Status::Idle => ICON_IDLE,
                                 Status::Unknown => ICON_UNKNOWN,
                                 Status::Stopped => ICON_STOPPED,
+                                Status::Hibernated => ICON_HIBERNATED,
                                 Status::Error => ICON_ERROR,
                                 Status::Starting => spinner_starting(&inst.created_at),
                                 Status::Deleting => ICON_DELETING,
@@ -542,6 +550,7 @@ impl HomeView {
                                 }
                                 Status::Unknown => theme.waiting,
                                 Status::Stopped => theme.dimmed,
+                                Status::Hibernated => theme.dimmed,
                                 Status::Error => theme.error,
                                 Status::Starting => theme.dimmed,
                                 Status::Deleting => theme.waiting,
@@ -873,6 +882,7 @@ impl HomeView {
                         ),
                         Status::Unknown => (ICON_UNKNOWN, theme.waiting),
                         Status::Stopped => (ICON_STOPPED, theme.dimmed),
+                        Status::Hibernated => (ICON_HIBERNATED, theme.dimmed),
                         Status::Error => (ICON_ERROR, theme.error),
                         Status::Starting => (spinner_starting(&inst.created_at), theme.dimmed),
                         Status::Deleting => (ICON_DELETING, theme.waiting),

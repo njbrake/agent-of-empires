@@ -34,7 +34,7 @@ pub use log_level::{get_log_level, patch_log_level};
 pub use projects::{create_project, delete_project, list_projects};
 pub use sessions::{
     create_session, delete_session, ensure_container_terminal, ensure_session, ensure_terminal,
-    list_sessions, read_output, rename_session, send_message, session_diff_file,
+    hibernate_session, list_sessions, read_output, rename_session, send_message, session_diff_file,
     session_diff_files, update_session_diff_base, update_session_notifications, CleanupDefaults,
     OutputQuery, SendMessageRequest, SessionResponse,
 };

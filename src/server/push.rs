@@ -472,7 +472,10 @@ fn handle_status_change(dwell: &mut HashMap<String, DwellState>, change: StatusC
     // Drop entries for transitions into Stopped/Deleting so the map
     // doesn't grow forever in long-running servers that create and
     // destroy many sessions.
-    if matches!(change.new, Status::Stopped | Status::Deleting) {
+    if matches!(
+        change.new,
+        Status::Stopped | Status::Hibernated | Status::Deleting
+    ) {
         dwell.remove(&change.instance_id);
     }
 }

@@ -458,6 +458,17 @@ pub struct SessionConfig {
     /// Off by default; existing users keep the legacy single-letter UX.
     #[serde(default)]
     pub strict_hotkeys: bool,
+
+    /// Lock the current sort order, disabling the O / Ctrl+O cycling hotkeys.
+    #[serde(default)]
+    pub lock_sort_order: bool,
+
+    /// Auto-hibernate idle sessions after this many minutes of inactivity.
+    /// 0 = disabled (default). When enabled, sessions whose agent supports
+    /// resume and whose session ID has been captured will be hibernated
+    /// automatically after exceeding this threshold.
+    #[serde(default)]
+    pub hibernate_after_minutes: u64,
 }
 
 impl SessionConfig {

@@ -341,6 +341,7 @@ impl HomeView {
                 DialogResult::Cancel => {
                     self.confirm_dialog = None;
                     self.pending_stop_session = None;
+                    self.pending_hibernate_session = None;
                     self.pending_force_remove_session = None;
                 }
                 DialogResult::Submit(_) => {
@@ -353,6 +354,10 @@ impl HomeView {
                     } else if action == "stop_session" {
                         if let Some(session_id) = self.pending_stop_session.take() {
                             return Some(Action::StopSession(session_id));
+                        }
+                    } else if action == "hibernate_session" {
+                        if let Some(session_id) = self.pending_hibernate_session.take() {
+                            return Some(Action::HibernateSession(session_id));
                         }
                     } else if action == "force_remove_session" {
                         if let Some(session_id) = self.pending_force_remove_session.take() {
@@ -902,6 +907,40 @@ impl HomeView {
                     }
                 }
             }
+            KeyCode::Char('z') => {
+                if let Some(session_id) = &self.selected_session {
+                    if let Some(inst) = self.get_instance(session_id) {
+                        if matches!(
+                            inst.status,
+                            Status::Stopped
+                                | Status::Hibernated
+                                | Status::Deleting
+                                | Status::Creating
+                        ) {
+                            return None;
+                        }
+                        if !inst.can_hibernate() {
+                            let reason = if !inst.supports_session_poller() {
+                                "agent does not support session resume"
+                            } else {
+                                "session ID not yet captured"
+                            };
+                            return Some(Action::SetTransientStatus(format!(
+                                "Cannot hibernate: {}",
+                                reason
+                            )));
+                        }
+                        let message =
+                            format!("Hibernate '{}'? It will resume on next attach.", inst.title);
+                        self.pending_hibernate_session = Some(session_id.clone());
+                        self.confirm_dialog = Some(ConfirmDialog::new(
+                            "Hibernate Session",
+                            &message,
+                            "hibernate_session",
+                        ));
+                    }
+                }
+            }
             KeyCode::Char('d') => {
                 // Deletion only allowed in Agent View
                 if self.view_mode == ViewMode::Terminal {
@@ -1047,10 +1086,14 @@ impl HomeView {
                 self.open_send_message_dialog();
             }
             KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.apply_sort_order(self.sort_order.cycle_reverse());
+                if !self.lock_sort_order {
+                    self.apply_sort_order(self.sort_order.cycle_reverse());
+                }
             }
             KeyCode::Char('o') => {
-                self.apply_sort_order(self.sort_order.cycle());
+                if !self.lock_sort_order {
+                    self.apply_sort_order(self.sort_order.cycle());
+                }
             }
             // iPad-friendly ±10 aliases for PageUp/PageDown. iPads have no
             // PageUp/PageDown keys, and Cmd combos are typically stripped by
@@ -1205,6 +1248,7 @@ impl HomeView {
                         Status::Creating => " [creating]",
                         Status::Deleting => " [deleting]",
                         Status::Stopped => " [stopped]",
+                        Status::Hibernated => " [hibernated]",
                         _ => "",
                     };
                     let title = if inst.group_path.is_empty() {

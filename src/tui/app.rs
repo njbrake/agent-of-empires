@@ -393,11 +393,13 @@ impl App {
         let mut last_disk_refresh = std::time::Instant::now();
         let mut last_spinner_redraw = std::time::Instant::now();
         let mut last_heartbeat = std::time::Instant::now();
+        let mut last_hibernate_check = std::time::Instant::now();
         const STATUS_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
         const DISK_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
         // Fastest spinner (breathe) changes every 180ms; 120ms ensures smooth animation
         const SPINNER_REDRAW_INTERVAL: Duration = Duration::from_millis(120);
         const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(10);
+        const HIBERNATE_CHECK_INTERVAL: Duration = Duration::from_secs(60);
 
         // Signal that the TUI is active so the web push consumer can
         // suppress notifications while the user is watching the dashboard.
@@ -668,6 +670,16 @@ impl App {
             if last_heartbeat.elapsed() >= HEARTBEAT_INTERVAL {
                 crate::session::write_tui_heartbeat();
                 last_heartbeat = std::time::Instant::now();
+            }
+
+            if last_hibernate_check.elapsed() >= HIBERNATE_CHECK_INTERVAL {
+                last_hibernate_check = std::time::Instant::now();
+                if let Some(ids) = self.home.collect_auto_hibernate_candidates() {
+                    for id in ids {
+                        self.execute_action(Action::HibernateSession(id), terminal)?;
+                        refresh_needed = true;
+                    }
+                }
             }
 
             // Animated spinners (rattles) need periodic redraws, but only at
@@ -968,6 +980,29 @@ impl App {
                         }
                         Err(e) => {
                             tracing::error!("Failed to stop session: {}", e);
+                            self.home.set_instance_error(&id, Some(e.to_string()));
+                            self.home
+                                .set_instance_status(&id, crate::session::Status::Error);
+                            self.home.save()?;
+                        }
+                    }
+                }
+            }
+            Action::HibernateSession(id) => {
+                if let Some(inst) = self.home.get_instance(&id) {
+                    let inst_clone = inst.clone();
+                    self.home
+                        .set_instance_status(&id, crate::session::Status::Hibernated);
+                    match inst_clone.hibernate() {
+                        Ok(()) => {
+                            crate::tmux::refresh_session_cache();
+                            self.home.reload()?;
+                            self.home
+                                .set_instance_status(&id, crate::session::Status::Hibernated);
+                            self.home.save()?;
+                        }
+                        Err(e) => {
+                            tracing::error!("Failed to hibernate session: {}", e);
                             self.home.set_instance_error(&id, Some(e.to_string()));
                             self.home
                                 .set_instance_status(&id, crate::session::Status::Error);
@@ -1286,6 +1321,7 @@ pub enum Action {
     AttachTerminal(String, TerminalMode),
     EditFile(PathBuf),
     StopSession(String),
+    HibernateSession(String),
     SetTheme(String),
     SpawnUpdate(crate::update::install::InstallMethod, String),
     SetTransientStatus(String),

@@ -944,6 +944,7 @@ fn build_router(state: Arc<AppState>) -> Router {
             patch(api::update_session_diff_base),
         )
         .route("/api/sessions/{id}/terminal", post(api::ensure_terminal))
+        .route("/api/sessions/{id}/hibernate", post(api::hibernate_session))
         .route(
             "/api/sessions/{id}/container-terminal",
             post(api::ensure_container_terminal),
@@ -1659,7 +1660,7 @@ pub(crate) fn apply_status_intent(
     // want the spinner to flicker back to Running.
     if matches!(
         inst.status,
-        Status::Stopped | Status::Deleting | Status::Creating
+        Status::Stopped | Status::Hibernated | Status::Deleting | Status::Creating
     ) {
         return;
     }

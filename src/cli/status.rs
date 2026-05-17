@@ -85,6 +85,7 @@ pub async fn run(profile: &str, args: StatusArgs) -> Result<()> {
         print_status_group("RUNNING", "⠋", Status::Running, &instances);
         print_status_group("IDLE", "⠒", Status::Idle, &instances);
         print_status_group("STOPPED", "⠒", Status::Stopped, &instances);
+        print_status_group("HIBERNATED", "⏸", Status::Hibernated, &instances);
         print_status_group("ERROR", "✕", Status::Error, &instances);
         println!(
             "Total: {} sessions in profile '{}'",
@@ -120,6 +121,7 @@ fn count_by_status(instances: &[crate::session::Instance]) -> StatusCounts {
             Status::Idle => counts.idle += 1,
             Status::Unknown => counts.idle += 1,
             Status::Stopped => counts.stopped += 1,
+            Status::Hibernated => counts.stopped += 1,
             Status::Error => counts.error += 1,
             Status::Starting => counts.idle += 1,
             Status::Deleting => {}

@@ -32,7 +32,7 @@ fn polling_tier(status: Status) -> u64 {
         Status::Running | Status::Waiting | Status::Starting => TIER_HOT,
         Status::Idle | Status::Unknown => TIER_WARM,
         Status::Error => TIER_COLD,
-        Status::Stopped | Status::Deleting | Status::Creating => 0,
+        Status::Stopped | Status::Hibernated | Status::Deleting | Status::Creating => 0,
     }
 }
 
@@ -144,6 +144,7 @@ impl StatusPoller {
                         && !matches!(
                             inst.status,
                             Status::Stopped
+                                | Status::Hibernated
                                 | Status::Deleting
                                 | Status::Starting
                                 | Status::Creating

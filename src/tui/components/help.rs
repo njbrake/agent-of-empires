@@ -7,7 +7,7 @@ use crate::session::config::SortOrder;
 use crate::tui::styles::Theme;
 
 const DIALOG_WIDTH: u16 = 50;
-const DIALOG_HEIGHT: u16 = 44;
+const DIALOG_HEIGHT: u16 = 45;
 #[cfg(test)]
 const BORDER_HEIGHT: u16 = 2;
 #[cfg(test)]
@@ -38,6 +38,7 @@ fn shortcuts(strict: bool) -> Vec<(&'static str, Vec<(&'static str, &'static str
                     ("N", "New session"),
                     ("Ctrl+N", "New from selection"),
                     ("X", "Stop session"),
+                    ("z", "Hibernate session"),
                     ("D", "Delete session/group"),
                     ("R", "Rename session/group"),
                     ("M", "Send message to agent"),
@@ -94,6 +95,7 @@ fn shortcuts(strict: bool) -> Vec<(&'static str, Vec<(&'static str, &'static str
                     ("n", "New session"),
                     ("N", "New from selection"),
                     ("x", "Stop session"),
+                    ("z", "Hibernate session"),
                     ("d", "Delete session/group"),
                     ("r", "Rename session/group"),
                     ("m", "Send message to agent"),
@@ -162,6 +164,7 @@ impl HelpOverlay {
         theme: &Theme,
         sort_order: SortOrder,
         strict_hotkeys: bool,
+        lock_sort_order: bool,
     ) {
         let x = area.x + (area.width.saturating_sub(DIALOG_WIDTH)) / 2;
         let y = area.y + (area.height.saturating_sub(DIALOG_HEIGHT)) / 2;
@@ -191,7 +194,11 @@ impl HelpOverlay {
         frame.render_widget(block, dialog_area);
 
         let mut lines: Vec<Line> = Vec::new();
-        let sort_label = format!("(current sort: {})", sort_order.label());
+        let sort_label = if lock_sort_order {
+            format!("(current sort: {} [locked])", sort_order.label())
+        } else {
+            format!("(current sort: {})", sort_order.label())
+        };
 
         let sections = shortcuts(strict_hotkeys);
         let last_idx = sections.len().saturating_sub(1);

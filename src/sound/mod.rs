@@ -69,6 +69,7 @@ pub fn play_for_transition(old: Status, new: Status, config: &SoundConfig) {
         Status::Error => config.on_error.as_deref(),
         Status::Unknown => return,
         Status::Stopped => return,
+        Status::Hibernated => return,
         Status::Deleting => return,
         Status::Creating => return,
     };

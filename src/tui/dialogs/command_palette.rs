@@ -136,6 +136,14 @@ pub fn builtin_commands(serve_enabled: bool, strict_hotkeys: bool) -> Vec<Palett
             payload: PaletteAction::Key(key('x')),
         },
         PaletteCommand {
+            id: "hibernate",
+            title: "Hibernate session".to_string(),
+            group: PaletteGroup::Actions,
+            keywords: vec!["suspend", "sleep", "freeze", "pause"],
+            hotkey: "z",
+            payload: PaletteAction::Key(key('z')),
+        },
+        PaletteCommand {
             id: "delete",
             title: "Delete session or group".to_string(),
             group: PaletteGroup::Actions,

@@ -47,6 +47,7 @@ pub enum Status {
     Starting,
     Deleting,
     Creating,
+    Hibernated,
 }
 
 /// Outcome of `Instance::ensure_pane_ready`. Callers surface this so the user
@@ -569,6 +570,12 @@ impl Instance {
                 crate::agents::ResumeStrategy::Unsupported
             )
         })
+    }
+
+    /// Whether this session can be hibernated (agent supports resume and a
+    /// session ID has been captured).
+    pub fn can_hibernate(&self) -> bool {
+        self.supports_session_poller() && self.agent_session_id.is_some()
     }
 
     /// Acquire a pre-launch session ID for the agent.
@@ -1620,6 +1627,22 @@ impl Instance {
         Ok(())
     }
 
+    /// Hibernate the session: kill the tmux pane and stop the container, but
+    /// preserve the agent_session_id so the conversation can be resumed on
+    /// next attach. Unlike stop(), does not clean up hook status files.
+    pub fn hibernate(&self) -> Result<()> {
+        self.kill()?;
+
+        if self.is_sandboxed() {
+            let container = containers::DockerContainer::from_session_id(&self.id);
+            if container.is_running().unwrap_or(false) {
+                container.stop()?;
+            }
+        }
+
+        Ok(())
+    }
+
     /// Update status using pre-fetched pane metadata to avoid per-instance
     /// subprocess spawns. Falls back to subprocess calls if metadata is missing.
     pub fn update_status_with_metadata(&mut self, metadata: Option<&tmux::PaneMetadata>) {
@@ -1639,7 +1662,7 @@ impl Instance {
     fn update_status_with_metadata_inner(&mut self, metadata: Option<&tmux::PaneMetadata>) {
         if matches!(
             self.status,
-            Status::Stopped | Status::Deleting | Status::Creating
+            Status::Stopped | Status::Deleting | Status::Creating | Status::Hibernated
         ) {
             return;
         }
@@ -2434,6 +2457,7 @@ mod tests {
             Status::Starting,
             Status::Deleting,
             Status::Creating,
+            Status::Hibernated,
         ];
 
         for status in statuses {

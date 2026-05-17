@@ -26,6 +26,7 @@ const STATIC_GLYPH: Record<SessionStatus, string> = {
   Error: "✕",
   Starting: "⠀",
   Stopped: "⠒",
+  Hibernated: "⏸",
   Unknown: "⠤",
   Deleting: "✕",
   Creating: "⠀",

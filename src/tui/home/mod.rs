@@ -124,6 +124,7 @@ pub(super) const ICON_IDLE: &str = "⠒";
 pub(super) const ICON_ERROR: &str = "✕";
 pub(super) const ICON_UNKNOWN: &str = "⠤";
 pub(super) const ICON_STOPPED: &str = "⠒";
+pub(super) const ICON_HIBERNATED: &str = "⏸";
 pub(super) const ICON_DELETING: &str = "✕";
 pub(super) const ICON_COLLAPSED: &str = "▶";
 pub(super) const ICON_EXPANDED: &str = "▼";
@@ -150,6 +151,7 @@ pub struct HomeView {
     pub(super) selected_group_profile: Option<String>,
     pub(super) view_mode: ViewMode,
     pub(super) sort_order: SortOrder,
+    pub(super) lock_sort_order: bool,
     pub(super) group_by: GroupByMode,
     /// Collapsed state for project-mode groups (persists across rebuilds)
     pub(super) project_group_collapsed: HashMap<String, bool>,
@@ -190,6 +192,8 @@ pub struct HomeView {
     pub(super) pending_attach_after_warning: Option<String>,
     /// Session to stop after the confirmation dialog is accepted
     pub(super) pending_stop_session: Option<String>,
+    /// Session to hibernate after the confirmation dialog is accepted
+    pub(super) pending_hibernate_session: Option<String>,
     /// Session to force-remove after the confirmation dialog is accepted
     pub(super) pending_force_remove_session: Option<String>,
     // Search
@@ -303,6 +307,7 @@ impl HomeView {
         };
         let sound_config = resolved.sound.clone();
         let strict_hotkeys = resolved.session.strict_hotkeys;
+        let lock_sort_order = resolved.session.lock_sort_order;
         let idle_decay_window =
             crate::tui::styles::idle_decay_window(resolved.theme.idle_decay_minutes);
         let user_config = load_config().ok().flatten();
@@ -368,6 +373,7 @@ impl HomeView {
             pending_paste: None,
             pending_attach_after_warning: None,
             pending_stop_session: None,
+            pending_hibernate_session: None,
             pending_force_remove_session: None,
             search_active: false,
             search_query: Input::default(),
@@ -392,6 +398,7 @@ impl HomeView {
             default_terminal_mode,
             sound_config,
             strict_hotkeys,
+            lock_sort_order,
             idle_decay_window,
             settings_view: None,
             settings_close_confirm: false,
@@ -645,6 +652,7 @@ impl HomeView {
             s != Status::Deleting
                 && s != Status::Creating
                 && s != Status::Stopped
+                && s != Status::Hibernated
                 && update.status != Status::Stopped
         });
         if !should_update {
@@ -1592,6 +1600,7 @@ impl HomeView {
         };
         self.sound_config = config.sound.clone();
         self.strict_hotkeys = config.session.strict_hotkeys;
+        self.lock_sort_order = config.session.lock_sort_order;
         self.idle_decay_window =
             crate::tui::styles::idle_decay_window(config.theme.idle_decay_minutes);
     }
@@ -1612,5 +1621,38 @@ impl HomeView {
         size: Option<(u16, u16)>,
     ) -> anyhow::Result<()> {
         self.try_mutate_instance(id, |inst| inst.start_container_terminal_with_size(size))
+    }
+
+    /// Collect sessions eligible for auto-hibernate based on the configured
+    /// `hibernate_after_minutes` threshold. Returns None if the feature is
+    /// disabled (threshold == 0) or no sessions qualify.
+    pub fn collect_auto_hibernate_candidates(&self) -> Option<Vec<String>> {
+        let profile = self.active_profile.as_deref().unwrap_or("default");
+        let config = resolve_config_or_warn(profile);
+        let threshold_minutes = config.session.hibernate_after_minutes;
+        if threshold_minutes == 0 {
+            return None;
+        }
+        let threshold = chrono::Duration::minutes(threshold_minutes as i64);
+        let now = chrono::Utc::now();
+        let mut candidates = Vec::new();
+        for inst in &self.instances {
+            if inst.status != crate::session::Status::Idle {
+                continue;
+            }
+            if !inst.can_hibernate() {
+                continue;
+            }
+            if let Some(idle_entered) = inst.idle_entered_at {
+                if now.signed_duration_since(idle_entered) >= threshold {
+                    candidates.push(inst.id.clone());
+                }
+            }
+        }
+        if candidates.is_empty() {
+            None
+        } else {
+            Some(candidates)
+        }
     }
 }

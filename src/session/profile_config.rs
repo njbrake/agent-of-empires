@@ -232,6 +232,12 @@ pub struct SessionConfigOverride {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub strict_hotkeys: Option<bool>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lock_sort_order: Option<bool>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hibernate_after_minutes: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -442,6 +448,12 @@ pub fn apply_session_overrides(
     }
     if let Some(strict_hotkeys) = source.strict_hotkeys {
         target.strict_hotkeys = strict_hotkeys;
+    }
+    if let Some(lock_sort_order) = source.lock_sort_order {
+        target.lock_sort_order = lock_sort_order;
+    }
+    if let Some(hibernate_after_minutes) = source.hibernate_after_minutes {
+        target.hibernate_after_minutes = hibernate_after_minutes;
     }
 }
 
