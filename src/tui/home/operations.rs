@@ -351,9 +351,22 @@ impl HomeView {
         new_title: &str,
         new_group: Option<&str>,
         new_profile: Option<&str>,
+        new_tool: Option<&str>,
     ) -> anyhow::Result<()> {
         if let Some(id) = &self.selected_session {
             let id = id.clone();
+
+            if let Some(target_tool) = new_tool {
+                let current_tool = self
+                    .get_instance(&id)
+                    .map(|i| i.tool.clone())
+                    .unwrap_or_default();
+                if target_tool != current_tool {
+                    self.mutate_instance(&id, |inst| {
+                        inst.tool = target_tool.to_string();
+                    });
+                }
+            }
 
             // Get current values for comparison
             let (current_title, current_group) = self

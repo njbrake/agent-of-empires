@@ -7,6 +7,7 @@ use tui_input::backend::crossterm::EventHandler;
 use tui_input::Input;
 
 use super::DialogResult;
+use crate::session::profile_config::resolve_config_or_warn;
 use crate::tui::components::{
     render_text_field, render_text_field_with_ghost, GroupGhostCompletion, ListPicker,
     ListPickerResult,
@@ -22,6 +23,9 @@ pub struct RenameData {
     pub group: Option<String>,
     /// New profile (None means keep current, Some(name) means move to that profile)
     pub profile: Option<String>,
+    /// New AI tool (None means keep current). Always None in Group mode since
+    /// a group has no tool of its own.
+    pub tool: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,11 +39,15 @@ pub struct RenameDialog {
     current_title: String,
     current_group: String,
     current_profile: String,
+    current_tool: String,
     available_profiles: Vec<String>,
+    available_tools: Vec<String>,
     new_title: Input,
     new_group: Input,
     profile_index: usize,
-    focused_field: usize, // Session: 0=title, 1=group, 2=profile; Group: 0=group, 1=profile
+    tool_index: usize,
+    /// Session: 0=title, 1=group, 2=profile, 3=tool. Group: 0=group, 1=profile.
+    focused_field: usize,
     existing_groups: Vec<String>,
     group_picker: ListPicker,
     group_ghost: Option<GroupGhostCompletion>,
@@ -56,12 +64,18 @@ impl RenameDialog {
         current_title: &str,
         current_group: &str,
         current_profile: &str,
+        current_tool: &str,
         available_profiles: Vec<String>,
+        available_tools: Vec<String>,
         existing_groups: Vec<String>,
     ) -> Self {
         let profile_index = available_profiles
             .iter()
             .position(|p| p == current_profile)
+            .unwrap_or(0);
+        let tool_index = available_tools
+            .iter()
+            .position(|t| t == current_tool)
             .unwrap_or(0);
 
         Self {
@@ -69,10 +83,13 @@ impl RenameDialog {
             current_title: current_title.to_string(),
             current_group: current_group.to_string(),
             current_profile: current_profile.to_string(),
+            current_tool: current_tool.to_string(),
             available_profiles,
+            available_tools,
             new_title: Input::default(),
             new_group: Input::new(current_group.to_string()),
             profile_index,
+            tool_index,
             focused_field: 0,
             existing_groups,
             group_picker: ListPicker::new("Select Group"),
@@ -97,10 +114,13 @@ impl RenameDialog {
             current_title: String::new(),
             current_group: current_group.to_string(),
             current_profile: current_profile.to_string(),
+            current_tool: String::new(),
             available_profiles,
+            available_tools: Vec::new(),
             new_title: Input::default(),
             new_group: Input::new(current_group.to_string()),
             profile_index,
+            tool_index: 0,
             focused_field: 0,
             existing_groups,
             group_picker: ListPicker::new("Select Group"),
@@ -111,7 +131,7 @@ impl RenameDialog {
 
     fn field_count(&self) -> usize {
         match self.mode {
-            RenameMode::Session => 3, // title, group, profile
+            RenameMode::Session => 4, // title, group, profile, tool
             RenameMode::Group => 2,   // group, profile
         }
     }
@@ -141,6 +161,33 @@ impl RenameDialog {
         match self.mode {
             RenameMode::Session => self.focused_field == 2,
             RenameMode::Group => self.focused_field == 1,
+        }
+    }
+
+    fn is_tool_field(&self) -> bool {
+        matches!(self.mode, RenameMode::Session) && self.focused_field == 3
+    }
+
+    fn selected_tool(&self) -> Option<&str> {
+        self.available_tools
+            .get(self.tool_index)
+            .map(String::as_str)
+    }
+
+    /// Profile change snaps tool to the profile's `default_tool` if that tool
+    /// exists in `available_tools`; otherwise leaves tool_index where it was.
+    /// Mirrors the restart and new-session dialogs so "picking a profile
+    /// pre-populates the AI engine" behaves the same across all modals.
+    fn reload_tool_from_profile(&mut self) {
+        if !matches!(self.mode, RenameMode::Session) {
+            return;
+        }
+        let profile = self.selected_profile().to_string();
+        let config = resolve_config_or_warn(&profile);
+        if let Some(ref default_tool) = config.session.default_tool {
+            if let Some(idx) = self.available_tools.iter().position(|t| t == default_tool) {
+                self.tool_index = idx;
+            }
         }
     }
 
@@ -217,11 +264,19 @@ impl RenameDialog {
             KeyCode::Enter => {
                 let title_value = self.new_title.value().trim().to_string();
                 let group_value = self.new_group.value().trim();
-                let selected_profile = self.selected_profile();
+                let selected_profile = self.selected_profile().to_string();
                 let profile_changed = selected_profile != self.current_profile;
+                let selected_tool = self.selected_tool().map(str::to_string);
+                let tool_changed = matches!(self.mode, RenameMode::Session)
+                    && selected_tool.as_deref() != Some(self.current_tool.as_str())
+                    && selected_tool.is_some();
 
                 // If nothing has changed, cancel
-                if title_value.is_empty() && group_value == self.current_group && !profile_changed {
+                if title_value.is_empty()
+                    && group_value == self.current_group
+                    && !profile_changed
+                    && !tool_changed
+                {
                     return DialogResult::Cancel;
                 }
 
@@ -250,17 +305,19 @@ impl RenameDialog {
                     Some(group_value.to_string())
                 };
 
-                // Determine profile value
                 let profile = if profile_changed {
-                    Some(selected_profile.to_string())
+                    Some(selected_profile)
                 } else {
                     None
                 };
+
+                let tool = if tool_changed { selected_tool } else { None };
 
                 DialogResult::Submit(RenameData {
                     title: title_value,
                     group,
                     profile,
+                    tool,
                 })
             }
             KeyCode::Tab => {
@@ -295,17 +352,35 @@ impl RenameDialog {
                 DialogResult::Continue
             }
             KeyCode::Left if self.is_profile_field() => {
-                // Cycle profile backwards
                 if self.profile_index == 0 {
                     self.profile_index = self.available_profiles.len().saturating_sub(1);
                 } else {
                     self.profile_index -= 1;
                 }
+                self.reload_tool_from_profile();
                 DialogResult::Continue
             }
             KeyCode::Right | KeyCode::Char(' ') if self.is_profile_field() => {
-                // Cycle profile forwards
                 self.profile_index = (self.profile_index + 1) % self.available_profiles.len();
+                self.reload_tool_from_profile();
+                DialogResult::Continue
+            }
+            KeyCode::Left if self.is_tool_field() => {
+                if self.available_tools.is_empty() {
+                    return DialogResult::Continue;
+                }
+                self.tool_index = if self.tool_index == 0 {
+                    self.available_tools.len() - 1
+                } else {
+                    self.tool_index - 1
+                };
+                DialogResult::Continue
+            }
+            KeyCode::Right | KeyCode::Char(' ') if self.is_tool_field() => {
+                if self.available_tools.is_empty() {
+                    return DialogResult::Continue;
+                }
+                self.tool_index = (self.tool_index + 1) % self.available_tools.len();
                 DialogResult::Continue
             }
             _ => {
@@ -339,7 +414,7 @@ impl RenameDialog {
 
     fn render_session(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let dialog_width = 50;
-        let dialog_area = super::centered_rect(area, dialog_width, 15);
+        let dialog_area = super::centered_rect(area, dialog_width, 17);
 
         frame.render_widget(Clear, dialog_area);
 
@@ -360,32 +435,30 @@ impl RenameDialog {
                 Constraint::Length(1), // Current title
                 Constraint::Length(1), // Current group
                 Constraint::Length(1), // Current profile
+                Constraint::Length(1), // Current tool
                 Constraint::Length(1), // Spacer
                 Constraint::Length(1), // New title field
                 Constraint::Length(1), // New group field
                 Constraint::Length(1), // Profile selector
+                Constraint::Length(1), // Tool selector
                 Constraint::Length(1), // Spacer
                 Constraint::Min(1),    // Hint
             ])
             .split(inner);
 
-        // Current title
         let current_title_line = Line::from(vec![
             Span::styled("Current title: ", Style::default().fg(theme.dimmed)),
             Span::styled(&self.current_title, Style::default().fg(theme.text)),
         ]);
         frame.render_widget(Paragraph::new(current_title_line), chunks[0]);
 
-        // Current group
         self.render_current_group(frame, chunks[1], theme);
-
-        // Current profile
         self.render_current_profile(frame, chunks[2], theme);
+        self.render_current_tool(frame, chunks[3], theme);
 
-        // New title field
         render_text_field(
             frame,
-            chunks[4],
+            chunks[5],
             "New title:",
             &self.new_title,
             self.focused_field == 0,
@@ -393,16 +466,12 @@ impl RenameDialog {
             theme,
         );
 
-        // New group field
-        self.render_group_field(frame, chunks[5], theme);
+        self.render_group_field(frame, chunks[6], theme);
+        self.render_profile_selector(frame, chunks[7], theme);
+        self.render_tool_selector(frame, chunks[8], theme);
 
-        // Profile selector
-        self.render_profile_selector(frame, chunks[6], theme);
+        self.render_hints(frame, chunks[10], theme);
 
-        // Hint
-        self.render_hints(frame, chunks[8], theme);
-
-        // Render group picker overlay
         if self.group_picker.is_active() {
             self.group_picker.render(frame, area, theme);
         }
@@ -505,6 +574,38 @@ impl RenameDialog {
         frame.render_widget(Paragraph::new(line), area);
     }
 
+    fn render_current_tool(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        let line = Line::from(vec![
+            Span::styled("Current AI:      ", Style::default().fg(theme.dimmed)),
+            Span::styled(&self.current_tool, Style::default().fg(theme.text)),
+        ]);
+        frame.render_widget(Paragraph::new(line), area);
+    }
+
+    fn render_tool_selector(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        let focused = self.is_tool_field();
+        let selected = self.selected_tool().unwrap_or("");
+        let style = if focused {
+            Style::default().fg(theme.accent)
+        } else {
+            Style::default().fg(theme.text)
+        };
+        let line = Line::from(vec![
+            Span::styled(
+                "AI engine:  ",
+                if focused {
+                    Style::default().fg(theme.accent)
+                } else {
+                    Style::default().fg(theme.dimmed)
+                },
+            ),
+            Span::styled("< ", Style::default().fg(theme.dimmed)),
+            Span::styled(selected, style),
+            Span::styled(" >", Style::default().fg(theme.dimmed)),
+        ]);
+        frame.render_widget(Paragraph::new(line), area);
+    }
+
     fn render_group_field(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let group_hint = if self.is_group_field() && !self.existing_groups.is_empty() {
             Some("Ctrl+P to browse")
@@ -601,7 +702,9 @@ mod tests {
             "Original Title",
             "work/frontend",
             "default",
+            "",
             default_profiles(),
+            Vec::new(),
             Vec::new(),
         );
         assert_eq!(dialog.current_title, "Original Title");
@@ -615,29 +718,59 @@ mod tests {
 
     #[test]
     fn test_new_dialog_empty_group() {
-        let dialog = RenameDialog::new("Title", "", "default", default_profiles(), Vec::new());
+        let dialog = RenameDialog::new(
+            "Title",
+            "",
+            "default",
+            "",
+            default_profiles(),
+            Vec::new(),
+            Vec::new(),
+        );
         assert_eq!(dialog.current_group, "");
     }
 
     #[test]
     fn test_new_dialog_with_non_default_profile() {
-        let dialog = RenameDialog::new("Title", "group", "work", multi_profiles(), Vec::new());
+        let dialog = RenameDialog::new(
+            "Title",
+            "group",
+            "work",
+            "",
+            multi_profiles(),
+            Vec::new(),
+            Vec::new(),
+        );
         assert_eq!(dialog.current_profile, "work");
         assert_eq!(dialog.profile_index, 1); // "work" is at index 1
     }
 
     #[test]
     fn test_esc_cancels() {
-        let mut dialog =
-            RenameDialog::new("Test", "group", "default", default_profiles(), Vec::new());
+        let mut dialog = RenameDialog::new(
+            "Test",
+            "group",
+            "default",
+            "",
+            default_profiles(),
+            Vec::new(),
+            Vec::new(),
+        );
         let result = dialog.handle_key(key(KeyCode::Esc));
         assert!(matches!(result, DialogResult::Cancel));
     }
 
     #[test]
     fn test_enter_with_unchanged_fields_cancels() {
-        let mut dialog =
-            RenameDialog::new("Test", "group", "default", default_profiles(), Vec::new());
+        let mut dialog = RenameDialog::new(
+            "Test",
+            "group",
+            "default",
+            "",
+            default_profiles(),
+            Vec::new(),
+            Vec::new(),
+        );
         // Title is empty, group is pre-populated but unchanged, profile unchanged - should cancel
         let result = dialog.handle_key(key(KeyCode::Enter));
         assert!(matches!(result, DialogResult::Cancel));
@@ -649,7 +782,9 @@ mod tests {
             "Old Title",
             "group",
             "default",
+            "",
             default_profiles(),
+            Vec::new(),
             Vec::new(),
         );
         dialog.handle_key(key(KeyCode::Char('N')));
@@ -673,7 +808,9 @@ mod tests {
             "Title",
             "old-group",
             "default",
+            "",
             default_profiles(),
+            Vec::new(),
             Vec::new(),
         );
         // Switch to group field and clear it
@@ -703,7 +840,9 @@ mod tests {
             "Old Title",
             "old-group",
             "default",
+            "",
             default_profiles(),
+            Vec::new(),
             Vec::new(),
         );
         // Type title
@@ -737,7 +876,9 @@ mod tests {
             "Title",
             "some-group",
             "default",
+            "",
             default_profiles(),
+            Vec::new(),
             Vec::new(),
         );
         // Switch to group field and clear it
@@ -760,8 +901,15 @@ mod tests {
 
     #[test]
     fn test_tab_switches_fields() {
-        let mut dialog =
-            RenameDialog::new("Test", "group", "default", default_profiles(), Vec::new());
+        let mut dialog = RenameDialog::new(
+            "Test",
+            "group",
+            "default",
+            "",
+            default_profiles(),
+            Vec::new(),
+            Vec::new(),
+        );
         assert_eq!(dialog.focused_field, 0);
 
         dialog.handle_key(key(KeyCode::Tab));
@@ -771,14 +919,27 @@ mod tests {
         assert_eq!(dialog.focused_field, 2);
 
         dialog.handle_key(key(KeyCode::Tab));
+        assert_eq!(dialog.focused_field, 3);
+
+        dialog.handle_key(key(KeyCode::Tab));
         assert_eq!(dialog.focused_field, 0);
     }
 
     #[test]
     fn test_shift_tab_switches_fields_backwards() {
-        let mut dialog =
-            RenameDialog::new("Test", "group", "default", default_profiles(), Vec::new());
+        let mut dialog = RenameDialog::new(
+            "Test",
+            "group",
+            "default",
+            "",
+            default_profiles(),
+            Vec::new(),
+            Vec::new(),
+        );
         assert_eq!(dialog.focused_field, 0);
+
+        dialog.handle_key(shift_key(KeyCode::Tab));
+        assert_eq!(dialog.focused_field, 3);
 
         dialog.handle_key(shift_key(KeyCode::Tab));
         assert_eq!(dialog.focused_field, 2);
@@ -792,8 +953,15 @@ mod tests {
 
     #[test]
     fn test_down_switches_to_next_field() {
-        let mut dialog =
-            RenameDialog::new("Test", "group", "default", default_profiles(), Vec::new());
+        let mut dialog = RenameDialog::new(
+            "Test",
+            "group",
+            "default",
+            "",
+            default_profiles(),
+            Vec::new(),
+            Vec::new(),
+        );
         assert_eq!(dialog.focused_field, 0);
 
         dialog.handle_key(key(KeyCode::Down));
@@ -805,8 +973,15 @@ mod tests {
 
     #[test]
     fn test_up_switches_to_previous_field() {
-        let mut dialog =
-            RenameDialog::new("Test", "group", "default", default_profiles(), Vec::new());
+        let mut dialog = RenameDialog::new(
+            "Test",
+            "group",
+            "default",
+            "",
+            default_profiles(),
+            Vec::new(),
+            Vec::new(),
+        );
         dialog.focused_field = 2;
 
         dialog.handle_key(key(KeyCode::Up));
@@ -818,8 +993,15 @@ mod tests {
 
     #[test]
     fn test_char_input_goes_to_focused_field() {
-        let mut dialog =
-            RenameDialog::new("Test", "group", "default", default_profiles(), Vec::new());
+        let mut dialog = RenameDialog::new(
+            "Test",
+            "group",
+            "default",
+            "",
+            default_profiles(),
+            Vec::new(),
+            Vec::new(),
+        );
 
         // Type in title field
         dialog.handle_key(key(KeyCode::Char('a')));
@@ -835,8 +1017,15 @@ mod tests {
 
     #[test]
     fn test_char_input_ignored_on_profile_field() {
-        let mut dialog =
-            RenameDialog::new("Test", "group", "default", multi_profiles(), Vec::new());
+        let mut dialog = RenameDialog::new(
+            "Test",
+            "group",
+            "default",
+            "",
+            multi_profiles(),
+            Vec::new(),
+            Vec::new(),
+        );
         dialog.focused_field = 2; // Profile field
 
         // Typing should not affect anything
@@ -848,8 +1037,15 @@ mod tests {
 
     #[test]
     fn test_backspace_removes_char_from_focused_field() {
-        let mut dialog =
-            RenameDialog::new("Test", "group", "default", default_profiles(), Vec::new());
+        let mut dialog = RenameDialog::new(
+            "Test",
+            "group",
+            "default",
+            "",
+            default_profiles(),
+            Vec::new(),
+            Vec::new(),
+        );
         dialog.handle_key(key(KeyCode::Char('a')));
         dialog.handle_key(key(KeyCode::Char('b')));
         dialog.handle_key(key(KeyCode::Char('c')));
@@ -864,7 +1060,9 @@ mod tests {
             "Original",
             "original-group",
             "default",
+            "",
             default_profiles(),
+            Vec::new(),
             Vec::new(),
         );
         dialog.handle_key(key(KeyCode::Char('N')));
@@ -883,7 +1081,9 @@ mod tests {
             "Old Name",
             "old/group",
             "default",
+            "",
             default_profiles(),
+            Vec::new(),
             Vec::new(),
         );
 
@@ -918,7 +1118,9 @@ mod tests {
             "Old Name",
             "group",
             "default",
+            "",
             default_profiles(),
+            Vec::new(),
             Vec::new(),
         );
 
@@ -932,8 +1134,15 @@ mod tests {
 
     #[test]
     fn test_whitespace_is_trimmed() {
-        let mut dialog =
-            RenameDialog::new("Test", "group", "default", default_profiles(), Vec::new());
+        let mut dialog = RenameDialog::new(
+            "Test",
+            "group",
+            "default",
+            "",
+            default_profiles(),
+            Vec::new(),
+            Vec::new(),
+        );
         for c in "  New Title  ".chars() {
             dialog.handle_key(key(KeyCode::Char(c)));
         }
@@ -958,8 +1167,15 @@ mod tests {
 
     #[test]
     fn test_left_right_arrow_moves_cursor_in_input() {
-        let mut dialog =
-            RenameDialog::new("Test", "group", "default", default_profiles(), Vec::new());
+        let mut dialog = RenameDialog::new(
+            "Test",
+            "group",
+            "default",
+            "",
+            default_profiles(),
+            Vec::new(),
+            Vec::new(),
+        );
         dialog.handle_key(key(KeyCode::Char('a')));
         dialog.handle_key(key(KeyCode::Char('b')));
         dialog.handle_key(key(KeyCode::Char('c')));
@@ -973,8 +1189,15 @@ mod tests {
 
     #[test]
     fn test_profile_selection_with_right_arrow() {
-        let mut dialog =
-            RenameDialog::new("Test", "group", "default", multi_profiles(), Vec::new());
+        let mut dialog = RenameDialog::new(
+            "Test",
+            "group",
+            "default",
+            "",
+            multi_profiles(),
+            Vec::new(),
+            Vec::new(),
+        );
         assert_eq!(dialog.profile_index, 0);
         assert_eq!(dialog.selected_profile(), "default");
 
@@ -998,8 +1221,15 @@ mod tests {
 
     #[test]
     fn test_profile_selection_with_space_key() {
-        let mut dialog =
-            RenameDialog::new("Test", "group", "default", multi_profiles(), Vec::new());
+        let mut dialog = RenameDialog::new(
+            "Test",
+            "group",
+            "default",
+            "",
+            multi_profiles(),
+            Vec::new(),
+            Vec::new(),
+        );
         dialog.focused_field = 2;
 
         // Space cycles forward like Right arrow
@@ -1019,8 +1249,15 @@ mod tests {
 
     #[test]
     fn test_profile_selection_with_left_arrow() {
-        let mut dialog =
-            RenameDialog::new("Test", "group", "default", multi_profiles(), Vec::new());
+        let mut dialog = RenameDialog::new(
+            "Test",
+            "group",
+            "default",
+            "",
+            multi_profiles(),
+            Vec::new(),
+            Vec::new(),
+        );
         dialog.focused_field = 2;
 
         // Cycle backward (should wrap to end)
@@ -1039,8 +1276,15 @@ mod tests {
 
     #[test]
     fn test_profile_arrows_only_work_on_profile_field() {
-        let mut dialog =
-            RenameDialog::new("Test", "group", "default", multi_profiles(), Vec::new());
+        let mut dialog = RenameDialog::new(
+            "Test",
+            "group",
+            "default",
+            "",
+            multi_profiles(),
+            Vec::new(),
+            Vec::new(),
+        );
         assert_eq!(dialog.focused_field, 0); // Title field
 
         // Right arrow on title field should move cursor, not change profile
@@ -1053,8 +1297,15 @@ mod tests {
 
     #[test]
     fn test_submit_with_profile_change() {
-        let mut dialog =
-            RenameDialog::new("Test", "group", "default", multi_profiles(), Vec::new());
+        let mut dialog = RenameDialog::new(
+            "Test",
+            "group",
+            "default",
+            "",
+            multi_profiles(),
+            Vec::new(),
+            Vec::new(),
+        );
 
         // Change profile
         dialog.focused_field = 2;
@@ -1077,7 +1328,9 @@ mod tests {
             "Old Title",
             "old-group",
             "default",
+            "",
             multi_profiles(),
+            Vec::new(),
             Vec::new(),
         );
 
@@ -1112,7 +1365,15 @@ mod tests {
 
     #[test]
     fn test_same_profile_returns_none() {
-        let mut dialog = RenameDialog::new("Test", "group", "work", multi_profiles(), Vec::new());
+        let mut dialog = RenameDialog::new(
+            "Test",
+            "group",
+            "work",
+            "",
+            multi_profiles(),
+            Vec::new(),
+            Vec::new(),
+        );
 
         // Change title to trigger submit
         dialog.handle_key(key(KeyCode::Char('X')));
@@ -1145,7 +1406,9 @@ mod tests {
             "Test",
             "group",
             "default",
+            "",
             default_profiles(),
+            Vec::new(),
             sample_groups(),
         );
         // Focus group field
@@ -1162,7 +1425,9 @@ mod tests {
             "Test",
             "group",
             "default",
+            "",
             default_profiles(),
+            Vec::new(),
             sample_groups(),
         );
         assert_eq!(dialog.focused_field, 0);
@@ -1177,7 +1442,9 @@ mod tests {
             "Test",
             "group",
             "default",
+            "",
             default_profiles(),
+            Vec::new(),
             sample_groups(),
         );
         dialog.focused_field = 2;
@@ -1188,8 +1455,15 @@ mod tests {
 
     #[test]
     fn test_ctrl_p_ignored_when_no_groups() {
-        let mut dialog =
-            RenameDialog::new("Test", "group", "default", default_profiles(), Vec::new());
+        let mut dialog = RenameDialog::new(
+            "Test",
+            "group",
+            "default",
+            "",
+            default_profiles(),
+            Vec::new(),
+            Vec::new(),
+        );
         dialog.handle_key(key(KeyCode::Tab)); // Focus group field
         dialog.handle_key(ctrl_p());
         assert!(!dialog.group_picker.is_active());
@@ -1201,7 +1475,9 @@ mod tests {
             "Test",
             "old-group",
             "default",
+            "",
             default_profiles(),
+            Vec::new(),
             sample_groups(),
         );
         dialog.handle_key(key(KeyCode::Tab)); // Focus group field
@@ -1220,7 +1496,9 @@ mod tests {
             "Test",
             "old-group",
             "default",
+            "",
             default_profiles(),
+            Vec::new(),
             sample_groups(),
         );
         dialog.handle_key(key(KeyCode::Tab)); // Focus group field
@@ -1239,7 +1517,9 @@ mod tests {
             "Test",
             "old-group",
             "default",
+            "",
             default_profiles(),
+            Vec::new(),
             sample_groups(),
         );
         dialog.handle_key(key(KeyCode::Tab)); // Focus group field
@@ -1257,7 +1537,9 @@ mod tests {
             "Test",
             "old-group",
             "default",
+            "",
             default_profiles(),
+            Vec::new(),
             sample_groups(),
         );
         dialog.handle_key(key(KeyCode::Tab)); // Focus group field
@@ -1277,8 +1559,15 @@ mod tests {
 
     #[test]
     fn test_group_ghost_appears_on_typing() {
-        let mut dialog =
-            RenameDialog::new("Test", "", "default", default_profiles(), sample_groups());
+        let mut dialog = RenameDialog::new(
+            "Test",
+            "",
+            "default",
+            "",
+            default_profiles(),
+            Vec::new(),
+            sample_groups(),
+        );
         dialog.handle_key(key(KeyCode::Tab)); // Focus group field
         dialog.handle_key(key(KeyCode::Char('p')));
         assert_eq!(dialog.group_ghost_text(), Some("ersonal"));
@@ -1286,8 +1575,15 @@ mod tests {
 
     #[test]
     fn test_group_ghost_none_when_no_match() {
-        let mut dialog =
-            RenameDialog::new("Test", "", "default", default_profiles(), sample_groups());
+        let mut dialog = RenameDialog::new(
+            "Test",
+            "",
+            "default",
+            "",
+            default_profiles(),
+            Vec::new(),
+            sample_groups(),
+        );
         dialog.handle_key(key(KeyCode::Tab));
         dialog.handle_key(key(KeyCode::Char('z')));
         assert!(dialog.group_ghost_text().is_none());
@@ -1295,8 +1591,15 @@ mod tests {
 
     #[test]
     fn test_group_ghost_accept_with_right_arrow() {
-        let mut dialog =
-            RenameDialog::new("Test", "", "default", default_profiles(), sample_groups());
+        let mut dialog = RenameDialog::new(
+            "Test",
+            "",
+            "default",
+            "",
+            default_profiles(),
+            Vec::new(),
+            sample_groups(),
+        );
         dialog.handle_key(key(KeyCode::Tab));
         dialog.handle_key(key(KeyCode::Char('p')));
         assert!(dialog.group_ghost_text().is_some());
@@ -1307,8 +1610,15 @@ mod tests {
 
     #[test]
     fn test_group_ghost_accept_with_end_key() {
-        let mut dialog =
-            RenameDialog::new("Test", "", "default", default_profiles(), sample_groups());
+        let mut dialog = RenameDialog::new(
+            "Test",
+            "",
+            "default",
+            "",
+            default_profiles(),
+            Vec::new(),
+            sample_groups(),
+        );
         dialog.handle_key(key(KeyCode::Tab));
         dialog.handle_key(key(KeyCode::Char('p')));
         assert!(dialog.group_ghost_text().is_some());
@@ -1319,8 +1629,15 @@ mod tests {
 
     #[test]
     fn test_group_ghost_cleared_on_field_switch() {
-        let mut dialog =
-            RenameDialog::new("Test", "", "default", default_profiles(), sample_groups());
+        let mut dialog = RenameDialog::new(
+            "Test",
+            "",
+            "default",
+            "",
+            default_profiles(),
+            Vec::new(),
+            sample_groups(),
+        );
         dialog.handle_key(key(KeyCode::Tab)); // Focus group field
         dialog.handle_key(key(KeyCode::Char('p')));
         assert!(dialog.group_ghost_text().is_some());
@@ -1331,8 +1648,15 @@ mod tests {
 
     #[test]
     fn test_group_ghost_common_prefix_for_multiple_matches() {
-        let mut dialog =
-            RenameDialog::new("Test", "", "default", default_profiles(), sample_groups());
+        let mut dialog = RenameDialog::new(
+            "Test",
+            "",
+            "default",
+            "",
+            default_profiles(),
+            Vec::new(),
+            sample_groups(),
+        );
         dialog.handle_key(key(KeyCode::Tab));
         dialog.handle_key(key(KeyCode::Char('w')));
         // "work" and "work/frontend" share common prefix "work"
@@ -1342,8 +1666,15 @@ mod tests {
 
     #[test]
     fn test_group_ghost_cleared_on_picker_select() {
-        let mut dialog =
-            RenameDialog::new("Test", "", "default", default_profiles(), sample_groups());
+        let mut dialog = RenameDialog::new(
+            "Test",
+            "",
+            "default",
+            "",
+            default_profiles(),
+            Vec::new(),
+            sample_groups(),
+        );
         dialog.handle_key(key(KeyCode::Tab));
         dialog.handle_key(key(KeyCode::Char('w')));
         assert!(dialog.group_ghost_text().is_some());
@@ -1461,5 +1792,183 @@ mod tests {
             "unique name should submit"
         );
         assert!(dialog.validation_error.is_none());
+    }
+
+    fn default_tools() -> Vec<String> {
+        vec![
+            "claude".to_string(),
+            "codex".to_string(),
+            "settl".to_string(),
+        ]
+    }
+
+    #[test]
+    fn test_tool_field_seeds_index_from_current() {
+        let d = RenameDialog::new(
+            "Test",
+            "group",
+            "default",
+            "codex",
+            default_profiles(),
+            default_tools(),
+            Vec::new(),
+        );
+        assert_eq!(d.current_tool, "codex");
+        assert_eq!(d.tool_index, 1);
+    }
+
+    #[test]
+    fn test_tool_field_falls_back_to_zero_when_current_not_in_list() {
+        let d = RenameDialog::new(
+            "Test",
+            "group",
+            "default",
+            "ghost-tool",
+            default_profiles(),
+            default_tools(),
+            Vec::new(),
+        );
+        assert_eq!(d.tool_index, 0);
+    }
+
+    #[test]
+    fn test_arrows_cycle_tool_when_tool_focused() {
+        let mut d = RenameDialog::new(
+            "Test",
+            "group",
+            "default",
+            "claude",
+            default_profiles(),
+            default_tools(),
+            Vec::new(),
+        );
+        d.focused_field = 3;
+        d.handle_key(key(KeyCode::Right));
+        assert_eq!(d.tool_index, 1);
+        d.handle_key(key(KeyCode::Right));
+        assert_eq!(d.tool_index, 2);
+        d.handle_key(key(KeyCode::Right));
+        assert_eq!(d.tool_index, 0); // wrap
+        d.handle_key(key(KeyCode::Left));
+        assert_eq!(d.tool_index, 2); // wrap back
+    }
+
+    #[test]
+    fn test_space_cycles_tool_forward_when_tool_focused() {
+        let mut d = RenameDialog::new(
+            "Test",
+            "group",
+            "default",
+            "claude",
+            default_profiles(),
+            default_tools(),
+            Vec::new(),
+        );
+        d.focused_field = 3;
+        d.handle_key(key(KeyCode::Char(' ')));
+        assert_eq!(d.tool_index, 1);
+    }
+
+    #[test]
+    fn test_tool_change_submits_some() {
+        let mut d = RenameDialog::new(
+            "Test",
+            "group",
+            "default",
+            "claude",
+            default_profiles(),
+            default_tools(),
+            Vec::new(),
+        );
+        d.focused_field = 3;
+        d.handle_key(key(KeyCode::Right)); // tool -> codex
+        match d.handle_key(key(KeyCode::Enter)) {
+            DialogResult::Submit(data) => {
+                assert_eq!(data.tool, Some("codex".to_string()));
+                assert_eq!(data.profile, None);
+                assert_eq!(data.title, "");
+            }
+            _ => panic!("Expected Submit"),
+        }
+    }
+
+    #[test]
+    fn test_unchanged_tool_submits_none() {
+        let mut d = RenameDialog::new(
+            "Old",
+            "group",
+            "default",
+            "claude",
+            default_profiles(),
+            default_tools(),
+            Vec::new(),
+        );
+        // Type a new title so submit isn't a no-op cancel
+        for ch in "New".chars() {
+            d.handle_key(key(KeyCode::Char(ch)));
+        }
+        match d.handle_key(key(KeyCode::Enter)) {
+            DialogResult::Submit(data) => {
+                assert_eq!(data.tool, None);
+            }
+            _ => panic!("Expected Submit"),
+        }
+    }
+
+    #[test]
+    fn test_tool_override_does_not_snap_profile() {
+        let mut d = RenameDialog::new(
+            "Test",
+            "group",
+            "default",
+            "claude",
+            multi_profiles(),
+            default_tools(),
+            Vec::new(),
+        );
+        d.focused_field = 3;
+        d.handle_key(key(KeyCode::Right));
+        assert_eq!(d.profile_index, 0); // profile unchanged
+    }
+
+    #[test]
+    fn test_group_mode_has_no_tool_field() {
+        let d = RenameDialog::new_for_group("g", "default", default_profiles(), Vec::new());
+        assert!(d.available_tools.is_empty());
+        assert_eq!(d.current_tool, "");
+    }
+
+    #[test]
+    fn test_group_mode_submit_returns_tool_none() {
+        let mut d = RenameDialog::new_for_group("g", "default", default_profiles(), Vec::new());
+        // Type a new group so submit isn't a no-op cancel
+        for _ in 0..1 {
+            d.handle_key(key(KeyCode::Backspace));
+        }
+        for ch in "h".chars() {
+            d.handle_key(key(KeyCode::Char(ch)));
+        }
+        match d.handle_key(key(KeyCode::Enter)) {
+            DialogResult::Submit(data) => {
+                assert_eq!(data.tool, None);
+            }
+            _ => panic!("Expected Submit"),
+        }
+    }
+
+    #[test]
+    fn test_arrows_on_tool_field_ignored_when_tools_empty() {
+        let mut d = RenameDialog::new(
+            "Test",
+            "group",
+            "default",
+            "",
+            default_profiles(),
+            Vec::new(),
+            Vec::new(),
+        );
+        d.focused_field = 3;
+        d.handle_key(key(KeyCode::Right));
+        assert_eq!(d.tool_index, 0);
     }
 }

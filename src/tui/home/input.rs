@@ -420,6 +420,7 @@ impl HomeView {
                                 &data.title,
                                 data.group.as_deref(),
                                 data.profile.as_deref(),
+                                data.tool.as_deref(),
                             ) {
                                 tracing::error!("Failed to rename session: {}", e);
                             }
@@ -1005,11 +1006,14 @@ impl HomeView {
                             list_profiles().unwrap_or_else(|_| vec![current_profile.clone()]);
                         let existing_groups: Vec<String> =
                             self.all_groups().iter().map(|g| g.path.clone()).collect();
+                        let tools: Vec<String> = self.available_tools.available_list().to_vec();
                         self.rename_dialog = Some(RenameDialog::new(
                             &inst.title,
                             &inst.group_path,
                             &current_profile,
+                            &inst.tool,
                             profiles,
+                            tools,
                             existing_groups,
                         ));
                     }
