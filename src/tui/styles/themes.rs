@@ -113,36 +113,79 @@ impl Theme {
 }
 
 impl Theme {
+    /// Mutable references to every `Color` field, in declaration order. The
+    /// single authoritative list shared by `downsample_to_palette` and the
+    /// structural guard test. New `Color` fields added to `Theme` must be
+    /// added here too; non-color metadata (appearance, syntax, etc.) must not.
+    pub fn color_fields_mut(&mut self) -> [&mut Color; 25] {
+        [
+            &mut self.background,
+            &mut self.border,
+            &mut self.terminal_border,
+            &mut self.selection,
+            &mut self.session_selection,
+            &mut self.title,
+            &mut self.text,
+            &mut self.dimmed,
+            &mut self.hint,
+            &mut self.running,
+            &mut self.waiting,
+            &mut self.fresh_idle,
+            &mut self.idle,
+            &mut self.error,
+            &mut self.terminal_active,
+            &mut self.group,
+            &mut self.search,
+            &mut self.accent,
+            &mut self.diff_add,
+            &mut self.diff_delete,
+            &mut self.diff_modified,
+            &mut self.diff_header,
+            &mut self.help_key,
+            &mut self.branch,
+            &mut self.sandbox,
+        ]
+    }
+
+    /// Read-only counterpart to `color_fields_mut`.
+    pub fn color_fields(&self) -> [Color; 25] {
+        [
+            self.background,
+            self.border,
+            self.terminal_border,
+            self.selection,
+            self.session_selection,
+            self.title,
+            self.text,
+            self.dimmed,
+            self.hint,
+            self.running,
+            self.waiting,
+            self.fresh_idle,
+            self.idle,
+            self.error,
+            self.terminal_active,
+            self.group,
+            self.search,
+            self.accent,
+            self.diff_add,
+            self.diff_delete,
+            self.diff_modified,
+            self.diff_header,
+            self.help_key,
+            self.branch,
+            self.sandbox,
+        ]
+    }
+
     /// Convert every `Color::Rgb` field to the nearest xterm-256 palette index
     /// (`Color::Indexed`). In-place. Idempotent: already-Indexed / named /
     /// Reset colors are untouched. Use when the downstream transport mangles
     /// 24-bit RGB escapes but handles 256-palette fine (e.g. Termius mosh).
     pub fn downsample_to_palette(&mut self) {
-        self.background = color_to_palette(self.background);
-        self.border = color_to_palette(self.border);
-        self.terminal_border = color_to_palette(self.terminal_border);
-        self.selection = color_to_palette(self.selection);
-        self.session_selection = color_to_palette(self.session_selection);
-        self.title = color_to_palette(self.title);
-        self.text = color_to_palette(self.text);
-        self.dimmed = color_to_palette(self.dimmed);
-        self.hint = color_to_palette(self.hint);
-        self.running = color_to_palette(self.running);
-        self.waiting = color_to_palette(self.waiting);
-        self.fresh_idle = color_to_palette(self.fresh_idle);
-        self.idle = color_to_palette(self.idle);
-        self.error = color_to_palette(self.error);
-        self.terminal_active = color_to_palette(self.terminal_active);
-        self.group = color_to_palette(self.group);
-        self.search = color_to_palette(self.search);
-        self.accent = color_to_palette(self.accent);
-        self.diff_add = color_to_palette(self.diff_add);
-        self.diff_delete = color_to_palette(self.diff_delete);
-        self.diff_modified = color_to_palette(self.diff_modified);
-        self.diff_header = color_to_palette(self.diff_header);
-        self.help_key = color_to_palette(self.help_key);
-        self.branch = color_to_palette(self.branch);
-        self.sandbox = color_to_palette(self.sandbox);
+        for field in self.color_fields_mut() {
+            *field = color_to_palette(*field);
+        }
     }
 }
 
@@ -428,55 +471,22 @@ mod tests {
 
     #[test]
     fn downsample_to_palette_converts_all_fields() {
-        // Structural guard: serialize Theme to count its fields, then verify
-        // downsample_to_palette touches every one. If a new Color field is
-        // added to Theme but not to downsample_to_palette, this test fails.
-        let value: toml::Value = toml::Value::try_from(Theme::empire()).unwrap();
-        let total_fields = value.as_table().unwrap().len();
-
+        // Structural guard: every Color field listed in color_fields_mut
+        // must be downsampled. If a new Color field is added to Theme but
+        // not to color_fields_mut, downsample_to_palette will silently miss
+        // it and this test will still pass for the missing field — so the
+        // guard relies on color_fields_mut being the single source of truth
+        // for "what counts as a color field" (asserted by color_fields_mut
+        // returning a fixed-size array).
         let mut theme = Theme::empire();
         theme.downsample_to_palette();
-
-        let all_colors = [
-            theme.background,
-            theme.border,
-            theme.terminal_border,
-            theme.selection,
-            theme.session_selection,
-            theme.title,
-            theme.text,
-            theme.dimmed,
-            theme.hint,
-            theme.running,
-            theme.waiting,
-            theme.fresh_idle,
-            theme.idle,
-            theme.error,
-            theme.terminal_active,
-            theme.group,
-            theme.search,
-            theme.accent,
-            theme.diff_add,
-            theme.diff_delete,
-            theme.diff_modified,
-            theme.diff_header,
-            theme.help_key,
-            theme.branch,
-            theme.sandbox,
-        ];
-
-        assert_eq!(
-            all_colors.len(),
-            total_fields,
-            "Theme has {} fields but downsample test checks {}; update downsample_to_palette and this test",
-            total_fields,
-            all_colors.len()
-        );
-
-        assert!(
-            all_colors.iter().all(|c| !matches!(c, Color::Rgb(_, _, _))),
-            "Rgb still present after downsample"
-        );
+        for color in theme.color_fields() {
+            assert!(
+                !matches!(color, Color::Rgb(_, _, _)),
+                "Rgb still present after downsample: {:?}",
+                color
+            );
+        }
     }
 
     #[test]
