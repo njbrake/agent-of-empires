@@ -16,6 +16,8 @@ mod avk_agents;
 mod avk_broadcast;
 // FUR-4157 — AVK sistem sağlık endpoint (GET /api/avk/health).
 mod avk_health;
+// FUR-4164 — Furkan chat (POST /api/avk/furkan-chat → memory_signal_send).
+mod avk_furkan_chat;
 // FUR-4162 — AVK git akış (GET /api/avk/git-flow, gh CLI proxy).
 mod avk_git_flow;
 // FUR-4160 — AVK Linear iş kuyruğu endpoint (GET /api/avk/linear-queue).
@@ -52,6 +54,7 @@ pub use cockpit::{
 
 pub use avk_agents::list_avk_agents;
 pub use avk_broadcast::broadcast_avk;
+pub use avk_furkan_chat::post_avk_furkan_chat;
 pub use avk_git_flow::get_avk_git_flow;
 pub use avk_health::get_avk_health;
 pub use avk_linear::get_avk_linear_queue;

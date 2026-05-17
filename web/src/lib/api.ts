@@ -10,6 +10,8 @@ import type {
   AvkHealthResponse,
   AvkMemoryEntry,
   AvkPanePeekResponse,
+  FurkanChatRequest,
+  FurkanChatResponse,
   GitFlowError,
   GitFlowResponse,
   LinearQueueError,
@@ -389,6 +391,28 @@ export async function fetchAgents(): Promise<AgentInfo[]> {
 export async function fetchAvkAgents(role?: AvkAgentRole): Promise<AvkAgentInfo[]> {
   const url = role ? `/api/avk/agents?role=${role}` : "/api/avk/agents";
   return (await fetchJson<AvkAgentInfo[]>(url)) ?? [];
+}
+
+/**
+ * `POST /api/avk/furkan-chat` — FUR-4164 agentmemory signal_send wrapper.
+ *
+ * Furkan'dan AVK ajanına chat mesajı yollar. Başarılı 200 →
+ * `FurkanChatResponse` (signal_id + thread_id). Hata null döner.
+ */
+export async function postAvkFurkanChat(
+  payload: FurkanChatRequest,
+): Promise<FurkanChatResponse | null> {
+  try {
+    const res = await fetch("/api/avk/furkan-chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) return null;
+    return (await res.json()) as FurkanChatResponse;
+  } catch {
+    return null;
+  }
 }
 
 /**

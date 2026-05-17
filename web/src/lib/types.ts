@@ -295,6 +295,27 @@ export interface AvkBroadcastResponse {
 }
 
 /**
+ * Furkan chat — FUR-4164.
+ *
+ * `POST /api/avk/furkan-chat { to, message, thread_id? }` → agentmemory
+ * MCP `memory_signal_send` wrapper. Hedef ajan idle iken signal'i `memory_signal_read`
+ * ile yakalar.
+ */
+export interface FurkanChatRequest {
+  to: string;
+  message: string;
+  thread_id?: string;
+}
+
+export interface FurkanChatResponse {
+  signal_id: string;
+  thread_id: string;
+  to: string;
+  from: "furkan";
+  created_at: string;
+}
+
+/**
  * `GET /api/avk/git-flow` JSON shape mirror — FUR-4162.
  *
  * Backend `gh` CLI proxy → ajanlarim repo (veya AVK_GH_REPO env) için

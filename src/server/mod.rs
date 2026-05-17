@@ -968,6 +968,8 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/avk/pane-peek", get(api::get_avk_pane_peek))
         // AVK git akış (FUR-4162 — gh CLI proxy: open + recent merged PRs)
         .route("/api/avk/git-flow", get(api::get_avk_git_flow))
+        // Furkan chat (FUR-4164 — memory_signal_send wrapper, agent inbox)
+        .route("/api/avk/furkan-chat", post(api::post_avk_furkan_chat))
         // Profiles
         .route(
             "/api/profiles",
