@@ -479,33 +479,14 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
     };
     #[cfg(feature = "serve")]
     let cockpit_supervisor = {
-        let push_for_sink = push_state.clone();
-        let push_enabled_for_sink = push_enabled;
-        let on_approval =
-            std::sync::Arc::new(move |session_id: &str, title: &str, destructive: bool| {
-                let session_id = session_id.to_string();
-                let title = title.to_string();
-                let push = push_for_sink.clone();
-                tokio::spawn(async move {
-                    if let Some(_push) = push {
-                        if push_enabled_for_sink {
-                            // We re-enter the cockpit_ws helper when we have
-                            // an AppState in scope; the standalone trigger
-                            // here just logs intent. The full server-driven
-                            // path lives at cockpit_ws::trigger_approval_push,
-                            // invoked from the API handler that receives
-                            // the cockpit broadcast.
-                            tracing::debug!(
-                                target: "cockpit.supervisor",
-                                session = %session_id,
-                                title = %title,
-                                destructive,
-                                "approval event observed (push delivery handled via api layer)"
-                            );
-                        }
-                    }
-                });
-            }) as std::sync::Arc<dyn Fn(&str, &str, bool) + Send + Sync>;
+        // Approval pushes are dispatched from `cockpit_event_listener`,
+        // which subscribes to the broadcast that ChannelSink::publish
+        // feeds and has `Arc<AppState>` in scope without the closure
+        // dance. The supervisor's `on_approval` callback survives only
+        // because the test sinks set it directly; in production it is
+        // a no-op. See #1038.
+        let on_approval = std::sync::Arc::new(|_: &str, _: &str, _: bool| {})
+            as std::sync::Arc<dyn Fn(&str, &str, bool) + Send + Sync>;
         let sink = std::sync::Arc::new(crate::cockpit::supervisor::ChannelSink {
             tx: cockpit_events_tx.clone(),
             on_approval,
@@ -1550,6 +1531,29 @@ async fn cockpit_event_listener(state: Arc<AppState>) {
                     );
                 }
             }
+        }
+
+        // Approval push: when the worker emits an `ApprovalRequested`
+        // event, trigger a Web Push so the user sees a "needs approval"
+        // alert even when the dashboard is backgrounded. Unlike the
+        // status-change pushes in `push.rs`, approvals do NOT honour
+        // the TUI/web active-session suppression; the service worker
+        // still routes focused clients to an in-app toast via the
+        // existing `aoe-push` postMessage path. See #1038.
+        if let crate::cockpit::state::Event::ApprovalRequested { approval } = frame.event.as_ref() {
+            let state_for_push = state.clone();
+            let session_id = frame.session_id.clone();
+            let approval_title = approval.tool_call.name.clone();
+            let destructive = approval.destructive;
+            tokio::spawn(async move {
+                cockpit_ws::trigger_approval_push(
+                    &state_for_push,
+                    &session_id,
+                    &approval_title,
+                    destructive,
+                )
+                .await;
+            });
         }
 
         let status_intent = derive_cockpit_status(frame.event.as_ref());
