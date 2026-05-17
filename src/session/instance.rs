@@ -3890,5 +3890,88 @@ mod tests {
             assert!(inst.retroactive_capture_excludes.contains(&stale_sid));
             assert!(inst.agent_session_id.as_deref() != Some(stale_sid.as_str()));
         }
+
+        #[test]
+        #[serial]
+        fn cascade_fires_when_pane_dies_inside_post_shell_grace_window() {
+            if std::process::Command::new("tmux")
+                .arg("-V")
+                .output()
+                .is_err()
+            {
+                eprintln!("tmux not available; skipping");
+                return;
+            }
+            let temp = tempdir().unwrap();
+            std::env::set_var("HOME", temp.path());
+            #[cfg(target_os = "linux")]
+            std::env::set_var("XDG_CONFIG_HOME", temp.path().join(".config"));
+
+            let _storage = crate::session::storage::Storage::new("fb-test-grace").unwrap();
+
+            let stale_sid = "33333333-3333-3333-3333-333333333333".to_string();
+            let mut inst = Instance::new("fallback_grace_test", "/tmp/x");
+            inst.tool = "claude".to_string();
+            inst.source_profile = "fb-test-grace".to_string();
+            // Regression guard for RESUME_PROBE_POST_SHELL_GRACE.
+            //
+            // The Tier-1 wrapper exits its boot shell immediately via `exec
+            // sleep N`, then the replacement process exits; tmux observes
+            // pane_dead at roughly t = N seconds. We pick N inside the
+            // window (current grace 2000ms, sleep 1.2s) so:
+            //   * with grace = 500ms, probe_settle returns Alive at t=500ms
+            //     before the death at t=1200ms; cascade misses it; the test
+            //     observes Resumed; assertion FAILS (regression caught).
+            //   * with grace >= ~1300ms, the grace timer is still open when
+            //     pane_dead fires; probe_settle returns Dead; cascade fires;
+            //     the test observes Restarted; assertion PASSES.
+            //
+            // This pins the LOWER bound of grace; the upper bound is
+            // implicitly RESUME_PROBE_MAX (3000ms) since deadline charity
+            // would otherwise mask future regressions.
+            //
+            // Tier-2 reuses the same wrapper but its sid differs from the
+            // stale one (cascade clears agent_session_id; Claude's FlagPair
+            // strategy regenerates a fresh UUID), so the case match misses
+            // and `exec sleep 30` keeps the pane alive past the second
+            // probe window.
+            inst.command = format!(
+                "/bin/sh -c 'case \"$*\" in *{stale}*) exec sleep 1.2 ;; esac; exec sleep 30' --",
+                stale = stale_sid,
+            );
+            inst.agent_session_id = Some(stale_sid.clone());
+            inst.status = Status::Idle;
+
+            let tmux_name = crate::tmux::Session::generate_name(&inst.id, &inst.title);
+            let _ = std::process::Command::new("tmux")
+                .args(["kill-session", "-t", &tmux_name])
+                .output();
+
+            let outcome = inst.start_with_resume_fallback(None, true);
+
+            let _ = std::process::Command::new("tmux")
+                .args(["kill-session", "-t", &tmux_name])
+                .output();
+
+            match outcome {
+                Ok(StartOutcome::Restarted { stale_sid: cleared }) => {
+                    assert_eq!(cleared, stale_sid);
+                }
+                Ok(StartOutcome::Resumed) => panic!(
+                    "Tier-1 grace shortcut returned Alive before the t=1200ms pane_dead: \
+                     RESUME_PROBE_POST_SHELL_GRACE is too short. \
+                     Real opencode crashes at ~1000ms; raise the grace constant."
+                ),
+                Ok(other) => panic!(
+                    "Expected Restarted or Resumed; got {other:?} (probe path is taking an unexpected branch)"
+                ),
+                Err(e) => panic!(
+                    "Tier-2 must succeed because its wrapper does not match the stale sid: {e:#}; \
+                     either the cascade is misrouting the sid or Tier-2 spawn is failing"
+                ),
+            }
+            assert!(inst.retroactive_capture_excludes.contains(&stale_sid));
+            assert!(inst.agent_session_id.as_deref() != Some(stale_sid.as_str()));
+        }
     }
 }
