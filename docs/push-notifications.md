@@ -4,7 +4,7 @@ The web dashboard can send browser push notifications when an agent is waiting f
 
 ## What triggers a notification
 
-Three event types, each independently toggleable in Settings:
+Four event types. The first three are status-driven and independently toggleable in Settings:
 
 - **Waiting** — session transitions to `Waiting` and stays that way for at least five seconds (the most common pattern: agent paused to ask you something). Longer dwell because Claude sometimes pauses briefly before resolving.
 - **Idle** — session finishes a long-running job and settles into `Idle`.
@@ -14,7 +14,11 @@ A shared 60-second post-send cooldown per session prevents rapid re-buzzing when
 
 Each session also has per-session overrides that beat the server-wide defaults: you can enable `Idle` notifications only on the one long-running session you care about, for example, without flooding yourself every time any session finishes.
 
-Notifications are suppressed when you're already looking at aoe:
+The fourth event type comes from cockpit sessions and runs on its own rules:
+
+- **Cockpit approval**, a cockpit-driven agent emits an `ApprovalRequested` event because a tool needs your permission. Fires immediately (no dwell), tag `cockpit-approval-<session>`, and **bypasses** the TUI/web-active suppression below. Even when the dashboard or TUI is foregrounded the approval still routes through web push: the service worker forwards focused clients to an in-app toast instead of an OS banner so you still get an audible/visual cue. The cockpit also plays a browser-side chime keyed off `[sound] on_approval`; see [Sound effects](sounds.md).
+
+Status notifications are suppressed when you're already looking at aoe (cockpit approvals ignore this list):
 
 - **Dashboard focused (per-device):** if the PWA browser tab is visible and focused, that device skips the OS notification and shows an in-app toast instead.
 - **TUI active (all devices):** if the `aoe` TUI is running on the same machine as the server, all push notifications to all devices are suppressed. The TUI writes a heartbeat file (`$app_dir/tui.active`) every 10 seconds; the push consumer skips delivery when the file was modified within the last 30 seconds.
