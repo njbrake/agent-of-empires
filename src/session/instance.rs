@@ -1819,7 +1819,20 @@ impl Instance {
             return Ok(StartOutcome::Fresh);
         }
 
-        match self.probe_settle(RESUME_PROBE_MAX, RESUME_PROBE_POLL)? {
+        // Tier-1 settle probe. On Err (rare: only when `tmux_session()`
+        // fails), tear down the Tier-1 poller spawned by the
+        // start_with_size_opts above before propagating, so a transient
+        // tmux failure cannot leak a poller thread onto a presumed-broken
+        // pane.
+        let probe = match self.probe_settle(RESUME_PROBE_MAX, RESUME_PROBE_POLL) {
+            Ok(p) => p,
+            Err(e) => {
+                self.stop_poller();
+                self.session_id_poller = None;
+                return Err(e);
+            }
+        };
+        match probe {
             ProbeResult::Alive => return Ok(StartOutcome::Resumed),
             ProbeResult::Dead => {}
         }
@@ -1859,10 +1872,18 @@ impl Instance {
         // exists to surface - would silently report `StartOutcome::Restarted`.
         // The dead pane is left in tmux; the next user-initiated restart
         // goes through `restart_with_size_opts` -> `kill_clean` and self-heals.
-        if matches!(
-            self.probe_settle(RESUME_PROBE_MAX, RESUME_PROBE_POLL)?,
-            ProbeResult::Dead
-        ) {
+        // Tier-2 settle probe. On Err (same rare condition as Tier-1),
+        // tear down the Tier-2 poller spawned by the second
+        // start_with_size_opts before propagating.
+        let probe = match self.probe_settle(RESUME_PROBE_MAX, RESUME_PROBE_POLL) {
+            Ok(p) => p,
+            Err(e) => {
+                self.stop_poller();
+                self.session_id_poller = None;
+                return Err(e);
+            }
+        };
+        if matches!(probe, ProbeResult::Dead) {
             // Symmetric teardown with the Tier-1->Tier-2 transition above:
             // the Tier-2 spawn already started a fresh poller via
             // `finalize_launch`, and bailing without stopping it leaves an
@@ -3768,6 +3789,12 @@ mod tests {
             // appends `--session-id <new_uuid>` (different value), so the
             // pattern does not match and `sleep 30` keeps the pane alive
             // past RESUME_PROBE_MAX (3s).
+            //
+            // Pinned: this discriminator relies on
+            // `ResumeStrategy::FlagPair` appending the sid to argv (see
+            // `src/agents.rs`). If a future variant ever passes the sid
+            // out of band (env var, stdin, file), update the wrapper to
+            // observe the new channel instead of `$*`.
             inst.command = format!(
                 "/bin/sh -c 'case \"$*\" in *{stale}*) exit 1 ;; esac; exec sleep 30' --",
                 stale = stale_sid,
