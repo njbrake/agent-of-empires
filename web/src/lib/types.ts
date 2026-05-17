@@ -385,6 +385,42 @@ export interface AvkPanePeekResponse {
 }
 
 /**
+ * `GET /api/avk/error-board` JSON shape mirror — FUR-4169.
+ *
+ * Linear `Hata` label'lı issue'lar. `state_type` ile aktif (started/unstarted/triage)
+ * vs son tamamlanmış (completed) ayrımı. NOT: REFORM-A11 sonra ajan rol
+ * label'ı "Hata Ajanı" ayrı — bu pano bug etiketi.
+ */
+export interface BugIssue {
+  id: string;
+  identifier: string;
+  title: string;
+  priority: number;
+  priority_label: string;
+  state_name: string;
+  state_type: string;
+  assignee: string | null;
+  team_key: string | null;
+  url: string;
+  updated_at: string;
+  created_at: string | null;
+  completed_at: string | null;
+}
+
+export interface ErrorBoardResponse {
+  label: "Hata";
+  active: BugIssue[];
+  recently_resolved: BugIssue[];
+  active_count: number;
+  resolved_count: number;
+}
+
+export interface ErrorBoardError {
+  error: string;
+  kind?: "not_configured" | "upstream_error";
+}
+
+/**
  * `GET /api/avk/roadmap` JSON shape mirror — FUR-4165.
  *
  * Linear initiatives + projects. `avg_progress` initiative içindeki proje

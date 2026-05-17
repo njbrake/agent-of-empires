@@ -974,6 +974,8 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/avk/furkan-inbox", get(api::get_avk_furkan_inbox))
         // AVK roadmap (FUR-4165 — Linear initiatives + projects progress)
         .route("/api/avk/roadmap", get(api::get_avk_roadmap))
+        // AVK Hata Ajanı panosu (FUR-4169 — Linear bug label active + resolved)
+        .route("/api/avk/error-board", get(api::get_avk_error_board))
         // Profiles
         .route(
             "/api/profiles",

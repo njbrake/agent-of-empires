@@ -15,6 +15,8 @@ import type {
   FurkanInboxResponse,
   GitFlowError,
   GitFlowResponse,
+  ErrorBoardError,
+  ErrorBoardResponse,
   LinearQueueError,
   LinearQueueResponse,
   RoadmapError,
@@ -471,6 +473,28 @@ export async function fetchAvkPanePeek(
   return await fetchJson<AvkPanePeekResponse>(
     `/api/avk/pane-peek?slug=${encodeURIComponent(slug)}&lines=${lines}`,
   );
+}
+
+/**
+ * `GET /api/avk/error-board` — FUR-4169 Hata Ajanı panosu.
+ *
+ * Aktif (started/unstarted/triage) + Son tamamlanmış (completed) bug issue'lar.
+ */
+export async function fetchAvkErrorBoard(): Promise<
+  ErrorBoardResponse | ErrorBoardError | null
+> {
+  try {
+    const res = await fetch("/api/avk/error-board");
+    if (res.ok) {
+      return (await res.json()) as ErrorBoardResponse;
+    }
+    if (res.status === 503 || res.status === 502) {
+      return (await res.json()) as ErrorBoardError;
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 /**

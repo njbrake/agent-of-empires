@@ -16,6 +16,8 @@ mod avk_agents;
 mod avk_broadcast;
 // FUR-4157 — AVK sistem sağlık endpoint (GET /api/avk/health).
 mod avk_health;
+// FUR-4169 — AVK Hata Ajanı panosu (Linear bug label active + resolved).
+mod avk_error_board;
 // FUR-4164 — Furkan chat (POST /api/avk/furkan-chat → memory_signal_send).
 mod avk_furkan_chat;
 // FUR-4170 — Furkan inbox (GET /api/avk/furkan-inbox → memory_signal_read).
@@ -58,6 +60,7 @@ pub use cockpit::{
 
 pub use avk_agents::list_avk_agents;
 pub use avk_broadcast::broadcast_avk;
+pub use avk_error_board::get_avk_error_board;
 pub use avk_furkan_chat::post_avk_furkan_chat;
 pub use avk_furkan_inbox::get_avk_furkan_inbox;
 pub use avk_git_flow::get_avk_git_flow;

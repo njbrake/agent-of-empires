@@ -4,6 +4,7 @@ import { isSessionActive } from "../lib/session";
 import { useIdleDecayWindowMs } from "../lib/idleDecay";
 import { AvkAgentsGrid } from "./AvkAgentsGrid";
 import { AvkBroadcastWidget } from "./AvkBroadcastWidget";
+import { AvkErrorBoard } from "./AvkErrorBoard";
 import { AvkFurkanChat } from "./AvkFurkanChat";
 import { AvkFurkanInbox } from "./AvkFurkanInbox";
 import { AvkGitFlow } from "./AvkGitFlow";
@@ -218,6 +219,10 @@ export function Dashboard({
 
         <div className="rounded-lg border border-surface-700/40 bg-surface-900/40 p-4 sm:p-6">
           <AvkRoadmap />
+        </div>
+
+        <div className="rounded-lg border border-surface-700/40 bg-surface-900/40 p-4 sm:p-6">
+          <AvkErrorBoard />
         </div>
 
         <div className="rounded-lg border border-surface-700/40 bg-surface-900/40 p-4 sm:p-6">
