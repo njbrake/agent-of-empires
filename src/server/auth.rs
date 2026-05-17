@@ -61,6 +61,21 @@ pub(crate) fn resolve_client_ip(
     socket_ip
 }
 
+/// Whether `client_ip` should be treated as a same-host caller that
+/// already passes the filesystem-permission trust boundary. The local
+/// TUI reads its bearer token from `~/.agent-of-empires/serve.url`
+/// (file mode 0600), so a loopback request that carries a valid token
+/// has, by construction, the same fs-level access as the daemon owner.
+/// Layering a passphrase factor on top adds friction without
+/// strengthening the trust boundary. Used by the post-token decision
+/// (see [`post_token_auth_action`]) to bypass the passphrase wall for
+/// the local-TUI-to-local-daemon flow; remote callers proxied via a
+/// tunnel are unaffected because [`resolve_client_ip`] resolves them
+/// to the real remote IP, not loopback. See #1168.
+fn is_local_trusted(client_ip: IpAddr) -> bool {
+    client_ip.is_loopback()
+}
+
 /// Build a Set-Cookie header value with optional Secure flag for HTTPS tunnels.
 fn build_cookie(token: &str, secure: bool, max_age_secs: u64) -> String {
     let mut cookie = format!(
@@ -249,6 +264,43 @@ fn is_login_session_exempt(path: &str) -> bool {
 /// would clobber the new session id with the old one.
 fn should_refresh_session_cookie(path: &str) -> bool {
     !is_login_session_exempt(path)
+}
+
+/// Decision for the post-token branch of `auth_middleware`: a request
+/// validated its bearer token but did not present an `aoe_session`
+/// cookie + device binding. When passphrase login is on, that would
+/// normally redirect/401 with `login_required` so the SPA can pop the
+/// passphrase prompt. The bypass case lets the request through to the
+/// handler, used both for bootstrap paths (login itself, static
+/// assets) and for loopback callers per the #1168 fix.
+#[derive(Debug, PartialEq, Eq)]
+enum PostTokenAuthAction {
+    /// Pass the request through to the next layer. Either passphrase
+    /// login is disabled, the path is a login-bootstrap surface, or
+    /// the caller is on loopback and is fs-trusted.
+    Bypass,
+    /// Return a `login_required` response so the SPA pops the
+    /// passphrase prompt (or redirects to `/login` for HTML).
+    RequireLogin,
+}
+
+/// Resolve the post-token branch decision. Extracted from
+/// `auth_middleware` so the loopback-bypass policy is auditable and
+/// can be exercised by table tests without the full middleware
+/// state machine. See #1168.
+fn post_token_auth_action(
+    login_enabled: bool,
+    login_exempt: bool,
+    client_ip: IpAddr,
+) -> PostTokenAuthAction {
+    if !login_enabled || login_exempt {
+        return PostTokenAuthAction::Bypass;
+    }
+    if is_local_trusted(client_ip) {
+        PostTokenAuthAction::Bypass
+    } else {
+        PostTokenAuthAction::RequireLogin
+    }
 }
 
 /// Whether a request path + method needs an elevated login session
@@ -658,38 +710,55 @@ pub async fn auth_middleware(
     // non-bootstrap paths: the user still needs to complete the
     // passphrase flow to mint a session. Return login_required
     // (or redirect to /login for HTML) so the SPA pops the
-    // passphrase prompt.
-    if login_enabled && !is_login_session_exempt(&path) {
-        tracing::warn!(
-            target: "auth",
-            ip = %client_ip,
-            path = %path,
-            had_session_cookie = presented_session_id.is_some(),
-            had_device_binding = presented_binding.is_some(),
-            "valid token but no session on non-login-exempt path; returning login_required"
-        );
-        if path.starts_with("/api/") || path.contains("/ws") {
-            return (
-                StatusCode::UNAUTHORIZED,
-                axum::Json(serde_json::json!({
-                    "error": "login_required",
-                    "message": "Passphrase login required"
-                })),
-            )
-                .into_response();
-        } else {
-            let mut response = axum::response::Redirect::temporary("/login").into_response();
-            if should_attach_token {
-                attach_token_headers(&mut response, &state).await;
+    // passphrase prompt. The one carve-out is loopback callers
+    // (#1168): the local TUI reads its token from `serve.url` (0600),
+    // so fs perms already gate same-host access; layering a
+    // passphrase on top adds friction without strengthening the
+    // boundary.
+    let login_exempt = is_login_session_exempt(&path);
+    match post_token_auth_action(login_enabled, login_exempt, client_ip) {
+        PostTokenAuthAction::Bypass => {
+            if login_enabled && !login_exempt && is_local_trusted(client_ip) {
+                tracing::info!(
+                    target: "auth",
+                    ip = %client_ip,
+                    path = %path,
+                    "loopback bypass: valid token + loopback peer; skipping passphrase factor"
+                );
             }
-            return response;
+        }
+        PostTokenAuthAction::RequireLogin => {
+            tracing::warn!(
+                target: "auth",
+                ip = %client_ip,
+                path = %path,
+                had_session_cookie = presented_session_id.is_some(),
+                had_device_binding = presented_binding.is_some(),
+                "valid token but no session on non-login-exempt path; returning login_required"
+            );
+            if path.starts_with("/api/") || path.contains("/ws") {
+                return (
+                    StatusCode::UNAUTHORIZED,
+                    axum::Json(serde_json::json!({
+                        "error": "login_required",
+                        "message": "Passphrase login required"
+                    })),
+                )
+                    .into_response();
+            } else {
+                let mut response = axum::response::Redirect::temporary("/login").into_response();
+                if should_attach_token {
+                    attach_token_headers(&mut response, &state).await;
+                }
+                return response;
+            }
         }
     }
 
-    // Bootstrap path (login enabled + /login, /api/login, etc.) or
-    // token-only mode. Pass through; attach token cookie for the
-    // upcoming login POST when the token came via QueryParam /
-    // Bearer / grace upgrade.
+    // Bootstrap path (login enabled + /login, /api/login, etc.),
+    // token-only mode, or loopback bypass per the match above. Pass
+    // through; attach token cookie for the upcoming login POST when
+    // the token came via QueryParam / Bearer / grace upgrade.
     let mut response = next.run(request).await;
     if should_attach_token {
         attach_token_headers(&mut response, &state).await;
@@ -842,6 +911,72 @@ mod tests {
         headers.insert("x-forwarded-for", "not-an-ip".parse().unwrap());
         let ip = resolve_client_ip(socket, &headers);
         assert!(ip.is_loopback());
+    }
+
+    #[test]
+    fn is_local_trusted_recognizes_loopback() {
+        assert!(is_local_trusted("127.0.0.1".parse().unwrap()));
+        assert!(is_local_trusted("::1".parse().unwrap()));
+        assert!(!is_local_trusted("192.168.1.50".parse().unwrap()));
+        assert!(!is_local_trusted("100.64.0.5".parse().unwrap()));
+        assert!(!is_local_trusted("203.0.113.10".parse().unwrap()));
+    }
+
+    // Per-row coverage of the post-token branch policy from #1168:
+    // a loopback caller with a valid token should be allowed past the
+    // passphrase wall, every other combination should still 401 or
+    // pass through exactly as before.
+    #[test]
+    fn post_token_auth_action_matrix() {
+        let loopback: IpAddr = "127.0.0.1".parse().unwrap();
+        let loopback_v6: IpAddr = "::1".parse().unwrap();
+        let remote: IpAddr = "100.64.0.5".parse().unwrap();
+
+        // login disabled: bypass regardless of path or IP (token gate
+        // was the sole factor; we are now past it).
+        assert_eq!(
+            post_token_auth_action(false, false, loopback),
+            PostTokenAuthAction::Bypass
+        );
+        assert_eq!(
+            post_token_auth_action(false, false, remote),
+            PostTokenAuthAction::Bypass
+        );
+
+        // login enabled + login-bootstrap path: bypass so the SPA can
+        // load assets and post to /api/login itself.
+        assert_eq!(
+            post_token_auth_action(true, true, loopback),
+            PostTokenAuthAction::Bypass
+        );
+        assert_eq!(
+            post_token_auth_action(true, true, remote),
+            PostTokenAuthAction::Bypass
+        );
+
+        // login enabled + non-bootstrap path + loopback: the #1168
+        // carve-out. Local TUI authenticated by token from
+        // ~/.agent-of-empires/serve.url skips the passphrase factor.
+        assert_eq!(
+            post_token_auth_action(true, false, loopback),
+            PostTokenAuthAction::Bypass
+        );
+        assert_eq!(
+            post_token_auth_action(true, false, loopback_v6),
+            PostTokenAuthAction::Bypass
+        );
+
+        // login enabled + non-bootstrap path + remote: still requires
+        // the passphrase. This is the threat passphrase auth was
+        // built to mitigate (leaked token from a remote attacker).
+        // Note: when a real reverse proxy forwards a remote request
+        // to a loopback socket, `resolve_client_ip` already returns
+        // the proxy-supplied remote IP, so the input here would be
+        // non-loopback and we land on RequireLogin correctly.
+        assert_eq!(
+            post_token_auth_action(true, false, remote),
+            PostTokenAuthAction::RequireLogin
+        );
     }
 
     #[test]
