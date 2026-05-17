@@ -19,6 +19,7 @@ pub mod client;
 pub mod context_primer;
 pub mod event_store;
 pub mod fs_handler;
+pub mod install_hints;
 pub mod node;
 pub mod permissions;
 pub mod protocol;
