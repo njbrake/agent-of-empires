@@ -41,6 +41,7 @@ import {
   chooseVerb,
 } from "../../lib/cockpitRattle";
 import { useCockpitPrefs } from "../../lib/cockpitPrefs";
+import { useApprovalSound } from "../../hooks/useApprovalSound";
 import type {
   Approval,
   ApprovalDecision,
@@ -139,6 +140,12 @@ function CockpitChrome({
   const [primerPrefill, setPrimerPrefill] = useState<
     { id: string; text: string } | null
   >(null);
+
+  // Browser-side approval chime. Fires once on the 0 -> >=1 edge of
+  // pendingApprovals; complements the OS push (delivered via the SW
+  // when the dashboard is backgrounded) and the in-app toast (when
+  // foregrounded). See #1038.
+  useApprovalSound(state.pendingApprovals.length);
 
   // Re-pin the chat viewport to the bottom when the composer (or any
   // sibling below it: queued strip, primer banner) grows. assistant-ui's
