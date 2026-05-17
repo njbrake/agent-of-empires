@@ -295,6 +295,36 @@ export interface AvkBroadcastResponse {
 }
 
 /**
+ * `GET /api/avk/git-flow` JSON shape mirror — FUR-4162.
+ *
+ * Backend `gh` CLI proxy → ajanlarim repo (veya AVK_GH_REPO env) için
+ * açık ve son birleştirilmiş PR'lar. 502 + kind=`gh_unavailable` durumunda
+ * widget yapılandırma notu gösterir.
+ */
+export interface GitPrSummary {
+  number: number;
+  title: string;
+  state: string;
+  url: string;
+  updated_at: string;
+  merged_at: string | null;
+  mergeable: string | null;
+  labels: string[];
+  author: string | null;
+}
+
+export interface GitFlowResponse {
+  repo: string;
+  open: GitPrSummary[];
+  recent_merged: GitPrSummary[];
+}
+
+export interface GitFlowError {
+  error: string;
+  kind?: "gh_unavailable";
+}
+
+/**
  * `GET /api/avk/pane-peek?slug=<slug>&lines=<N>` JSON shape mirror — FUR-4161.
  *
  * Backend `tmux capture-pane -t <target> -pS -<N>` çıktısını döner.

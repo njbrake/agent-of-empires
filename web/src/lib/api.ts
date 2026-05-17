@@ -10,6 +10,8 @@ import type {
   AvkHealthResponse,
   AvkMemoryEntry,
   AvkPanePeekResponse,
+  GitFlowError,
+  GitFlowResponse,
   LinearQueueError,
   LinearQueueResponse,
   ProfileInfo,
@@ -387,6 +389,29 @@ export async function fetchAgents(): Promise<AgentInfo[]> {
 export async function fetchAvkAgents(role?: AvkAgentRole): Promise<AvkAgentInfo[]> {
   const url = role ? `/api/avk/agents?role=${role}` : "/api/avk/agents";
   return (await fetchJson<AvkAgentInfo[]>(url)) ?? [];
+}
+
+/**
+ * `GET /api/avk/git-flow` — FUR-4162 gh CLI proxy (açık + son merged PR'lar).
+ *
+ * 200 → `GitFlowResponse`. 502 (`kind: "gh_unavailable"`) backend gh
+ * eksik/unauthenticated. Diğer hata null döner.
+ */
+export async function fetchAvkGitFlow(): Promise<
+  GitFlowResponse | GitFlowError | null
+> {
+  try {
+    const res = await fetch("/api/avk/git-flow");
+    if (res.ok) {
+      return (await res.json()) as GitFlowResponse;
+    }
+    if (res.status === 502) {
+      return (await res.json()) as GitFlowError;
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 /**
