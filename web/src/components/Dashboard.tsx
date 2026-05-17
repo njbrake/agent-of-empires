@@ -202,6 +202,20 @@ export function Dashboard({
           </p>
         </header>
 
+        {/* AKSİYON tier — Furkan ile etkileşim öne (Furkan canon 2026-05-17 UI reorder) */}
+        <div className="rounded-lg border border-surface-700/40 bg-surface-900/40 p-4 sm:p-6">
+          <AvkFurkanInbox />
+        </div>
+
+        <div className="rounded-lg border border-surface-700/40 bg-surface-900/40 p-4 sm:p-6">
+          <AvkFurkanChat />
+        </div>
+
+        <div className="rounded-lg border border-surface-700/40 bg-surface-900/40 p-4 sm:p-6">
+          <AvkBroadcastWidget />
+        </div>
+
+        {/* DURUM tier — pasif izleme widget'ları */}
         <div className="rounded-lg border border-surface-700/40 bg-surface-900/40 p-4 sm:p-6">
           <AvkSystemHealth />
         </div>
@@ -228,18 +242,6 @@ export function Dashboard({
 
         <div className="rounded-lg border border-surface-700/40 bg-surface-900/40 p-4 sm:p-6">
           <AvkSentryAlerts />
-        </div>
-
-        <div className="rounded-lg border border-surface-700/40 bg-surface-900/40 p-4 sm:p-6">
-          <AvkFurkanInbox />
-        </div>
-
-        <div className="rounded-lg border border-surface-700/40 bg-surface-900/40 p-4 sm:p-6">
-          <AvkFurkanChat />
-        </div>
-
-        <div className="rounded-lg border border-surface-700/40 bg-surface-900/40 p-4 sm:p-6">
-          <AvkBroadcastWidget />
         </div>
 
         <div className="rounded-lg border border-surface-700/40 bg-surface-900/40 p-4 sm:p-6">
