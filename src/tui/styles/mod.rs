@@ -8,8 +8,16 @@
 //! Public surface is re-exported here so callers keep `crate::tui::styles::*`.
 
 mod palette;
+#[cfg(feature = "serve")]
+mod resolved;
 mod themes;
 
+#[cfg(feature = "serve")]
+pub use resolved::{
+    resolve_theme, CssVarProjection, ResolvedTheme, ResolvedThemeSource, SyntaxProjection,
+};
+#[cfg(any(feature = "serve", test))]
+pub use themes::ThemeAppearance;
 pub use themes::{idle_decay_window, Theme};
 
 use std::path::PathBuf;
