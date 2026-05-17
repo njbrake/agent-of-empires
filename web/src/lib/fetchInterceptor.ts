@@ -143,12 +143,19 @@ export function installFetchErrorToasts(): void {
           latency_ms,
           request_id: requestId,
         };
+        // Both lifecycle events (start above + ok here) at debug:
+        // per-fetch detail is per-operation, not a semantic user action,
+        // and the web UI polls /api/sessions every ~2s, which would
+        // dominate the log at info. The backend http.request middleware
+        // already emits one info line per request; the frontend pair is
+        // for correlation when the user explicitly dials web.client.api
+        // to debug. Failures stay at warn/error so they show at info.
         if (res.status >= 500) {
           clog.error("web.client.api", "request failed", fields);
         } else if (res.status >= 400) {
           clog.warn("web.client.api", "request failed", fields);
         } else {
-          clog.info("web.client.api", "request ok", fields);
+          clog.debug("web.client.api", "request ok", fields);
         }
       }
       return res;
