@@ -11,6 +11,8 @@ pub mod cockpit_reconciler;
 pub mod cockpit_ws;
 pub mod login;
 pub mod push;
+// FUR-4154 follow-up: AVK signal → Web Push background listener (Furkan inbox kilit ekran bildirim).
+mod avk_push_listener;
 pub mod push_send;
 pub mod rate_limit;
 pub mod tunnel;
@@ -779,6 +781,7 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
     // dwell + cooldown, sends pushes. No-op when push_state is None
     // (feature disabled via web.notifications_enabled=false).
     push::spawn_consumer(state.clone());
+    avk_push_listener::spawn(state.clone());
 
     rate_limiter.spawn_cleanup_task();
     login_manager.spawn_cleanup_task();
