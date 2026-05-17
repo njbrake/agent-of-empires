@@ -88,7 +88,12 @@ pub struct Theme {
 
 impl Default for Theme {
     fn default() -> Self {
-        Self::empire()
+        // The serde-default fallback path. Parses the embedded Empire
+        // TOML on each call; cached via OnceLock so partial custom TOMLs
+        // don't pay the parse cost more than once per process.
+        use std::sync::OnceLock;
+        static EMPIRE: OnceLock<Theme> = OnceLock::new();
+        EMPIRE.get_or_init(|| super::load_theme("empire")).clone()
     }
 }
 
@@ -189,238 +194,6 @@ impl Theme {
     }
 }
 
-impl Theme {
-    /// Empire theme -- warm amber/copper on navy, aligned with DESIGN.md
-    pub fn empire() -> Self {
-        Self {
-            background: Color::Rgb(15, 23, 42),
-            border: Color::Rgb(51, 65, 85),
-            terminal_border: Color::Rgb(13, 148, 136),
-            selection: Color::Rgb(38, 50, 75),
-            session_selection: Color::Rgb(55, 65, 92),
-
-            title: Color::Rgb(251, 191, 36),
-            text: Color::Rgb(203, 213, 225),
-            dimmed: Color::Rgb(100, 116, 139),
-            hint: Color::Rgb(148, 163, 184),
-
-            running: Color::Rgb(34, 197, 94),
-            // Waiting sits at the brightest point in the brand ramp
-            // (amber-400) so it wins on luminance against the fresh-idle
-            // color. Saturation alone wasn't enough on dark backgrounds —
-            // the deeper copper read as dimmer, not more urgent.
-            // Fresh-idle drops one rung to amber-500 so the hierarchy is
-            // bright-amber > copper-amber > slate.
-            waiting: Color::Rgb(251, 191, 36),
-            fresh_idle: Color::Rgb(245, 158, 11),
-            idle: Color::Rgb(100, 116, 139),
-            error: Color::Rgb(239, 68, 68),
-            terminal_active: Color::Rgb(13, 148, 136),
-
-            group: Color::Rgb(203, 213, 225),
-            search: Color::Rgb(251, 191, 36),
-            accent: Color::Rgb(217, 119, 6),
-
-            diff_add: Color::Rgb(34, 197, 94),
-            diff_delete: Color::Rgb(239, 68, 68),
-            diff_modified: Color::Rgb(251, 191, 36),
-            diff_header: Color::Rgb(13, 148, 136),
-
-            help_key: Color::Rgb(217, 119, 6),
-
-            branch: Color::Rgb(13, 148, 136),
-            sandbox: Color::Rgb(148, 163, 184),
-        }
-    }
-
-    pub fn phosphor() -> Self {
-        Self {
-            background: Color::Rgb(16, 20, 18),
-            border: Color::Rgb(45, 70, 55),
-            terminal_border: Color::Rgb(70, 130, 180),
-            selection: Color::Rgb(30, 50, 40),
-            session_selection: Color::Rgb(60, 60, 60),
-
-            title: Color::Rgb(57, 255, 20),
-            text: Color::Rgb(180, 255, 180),
-            dimmed: Color::Rgb(80, 120, 90),
-            hint: Color::Rgb(100, 160, 120),
-
-            running: Color::Rgb(0, 255, 180),
-            waiting: Color::Rgb(255, 180, 60),
-            fresh_idle: Color::Rgb(255, 123, 28),
-            idle: Color::Rgb(60, 100, 70),
-            error: Color::Rgb(255, 100, 80),
-            terminal_active: Color::Rgb(130, 170, 255),
-
-            group: Color::Rgb(100, 220, 160),
-            search: Color::Rgb(180, 255, 200),
-            accent: Color::Rgb(57, 255, 20),
-
-            diff_add: Color::Rgb(0, 255, 180),
-            diff_delete: Color::Rgb(255, 100, 80),
-            diff_modified: Color::Rgb(255, 180, 60),
-            diff_header: Color::Rgb(100, 160, 200),
-
-            help_key: Color::Rgb(255, 180, 60),
-
-            branch: Color::Rgb(100, 160, 200),
-            sandbox: Color::Rgb(200, 122, 255),
-        }
-    }
-
-    pub fn tokyo_night_storm() -> Self {
-        Self {
-            background: Color::Rgb(36, 40, 59),
-            border: Color::Rgb(65, 72, 104),
-            terminal_border: Color::Rgb(61, 89, 161),
-            selection: Color::Rgb(54, 74, 130),
-            session_selection: Color::Rgb(65, 72, 104),
-
-            title: Color::Rgb(122, 162, 247),
-            text: Color::Rgb(192, 202, 245),
-            dimmed: Color::Rgb(86, 95, 137),
-            hint: Color::Rgb(122, 162, 247),
-
-            running: Color::Rgb(158, 206, 106),
-            waiting: Color::Rgb(224, 175, 104),
-            fresh_idle: Color::Rgb(255, 158, 100),
-            idle: Color::Rgb(86, 95, 137),
-            error: Color::Rgb(247, 118, 142),
-            terminal_active: Color::Rgb(122, 162, 247),
-
-            group: Color::Rgb(125, 207, 255),
-            search: Color::Rgb(187, 154, 247),
-            accent: Color::Rgb(122, 162, 247),
-
-            diff_add: Color::Rgb(158, 206, 106),
-            diff_delete: Color::Rgb(247, 118, 142),
-            diff_modified: Color::Rgb(224, 175, 104),
-            diff_header: Color::Rgb(125, 207, 255),
-
-            help_key: Color::Rgb(224, 175, 104),
-
-            branch: Color::Rgb(125, 207, 255),
-            sandbox: Color::Rgb(187, 154, 247),
-        }
-    }
-
-    pub fn catppuccin_latte() -> Self {
-        Self {
-            background: Color::Rgb(239, 241, 245),
-            border: Color::Rgb(188, 192, 204),
-            terminal_border: Color::Rgb(4, 165, 229),
-            selection: Color::Rgb(220, 224, 232),
-            session_selection: Color::Rgb(204, 208, 218),
-
-            title: Color::Rgb(30, 102, 245),
-            text: Color::Rgb(76, 79, 105),
-            dimmed: Color::Rgb(172, 176, 190),
-            hint: Color::Rgb(32, 159, 181),
-
-            running: Color::Rgb(64, 160, 43),
-            // Light theme: darker = more attention. Waiting takes the
-            // deepest peach, fresh_idle the mid amber, idle the lightest
-            // slate so the row visibly fades into the page over time.
-            waiting: Color::Rgb(254, 100, 11),
-            fresh_idle: Color::Rgb(223, 142, 29),
-            idle: Color::Rgb(156, 160, 176),
-            error: Color::Rgb(210, 15, 57),
-            terminal_active: Color::Rgb(30, 102, 245),
-
-            group: Color::Rgb(23, 146, 153),
-            search: Color::Rgb(114, 135, 253),
-            accent: Color::Rgb(254, 100, 11),
-
-            diff_add: Color::Rgb(64, 160, 43),
-            diff_delete: Color::Rgb(210, 15, 57),
-            diff_modified: Color::Rgb(223, 142, 29),
-            diff_header: Color::Rgb(4, 165, 229),
-
-            help_key: Color::Rgb(223, 142, 29),
-
-            branch: Color::Rgb(4, 165, 229),
-            sandbox: Color::Rgb(136, 57, 239),
-        }
-    }
-
-    /// Dracula theme
-    /// Official palette: https://draculatheme.com/spec
-    pub fn dracula() -> Self {
-        Self {
-            background: Color::Rgb(40, 42, 54),
-            border: Color::Rgb(68, 71, 90),
-            terminal_border: Color::Rgb(139, 233, 253),
-            selection: Color::Rgb(68, 71, 90),
-            session_selection: Color::Rgb(98, 114, 164),
-
-            title: Color::Rgb(189, 147, 249),
-            text: Color::Rgb(248, 248, 242),
-            dimmed: Color::Rgb(98, 114, 164),
-            hint: Color::Rgb(98, 114, 164),
-
-            running: Color::Rgb(80, 250, 123),
-            waiting: Color::Rgb(255, 184, 108),
-            fresh_idle: Color::Rgb(255, 121, 80),
-            idle: Color::Rgb(98, 114, 164),
-            error: Color::Rgb(255, 85, 85),
-            terminal_active: Color::Rgb(139, 233, 253),
-
-            group: Color::Rgb(139, 233, 253),
-            search: Color::Rgb(241, 250, 140),
-            accent: Color::Rgb(255, 121, 198),
-
-            diff_add: Color::Rgb(80, 250, 123),
-            diff_delete: Color::Rgb(255, 85, 85),
-            diff_modified: Color::Rgb(255, 184, 108),
-            diff_header: Color::Rgb(189, 147, 249),
-
-            help_key: Color::Rgb(255, 121, 198),
-
-            branch: Color::Rgb(139, 233, 253),
-            sandbox: Color::Rgb(189, 147, 249),
-        }
-    }
-
-    /// Rosé Pine theme
-    /// Official palette: https://rosepinetheme.com/palette/ingredients/
-    pub fn rose_pine() -> Self {
-        Self {
-            background: Color::Rgb(25, 23, 36),
-            border: Color::Rgb(82, 79, 103),
-            terminal_border: Color::Rgb(156, 207, 216),
-            selection: Color::Rgb(33, 32, 46),
-            session_selection: Color::Rgb(64, 61, 82),
-
-            title: Color::Rgb(196, 167, 231),
-            text: Color::Rgb(224, 222, 244),
-            dimmed: Color::Rgb(110, 106, 134),
-            hint: Color::Rgb(144, 140, 170),
-
-            running: Color::Rgb(156, 207, 216),
-            waiting: Color::Rgb(246, 193, 119),
-            fresh_idle: Color::Rgb(144, 140, 170),
-            idle: Color::Rgb(110, 106, 134),
-            error: Color::Rgb(235, 111, 146),
-            terminal_active: Color::Rgb(156, 207, 216),
-
-            group: Color::Rgb(224, 222, 244),
-            search: Color::Rgb(246, 193, 119),
-            accent: Color::Rgb(235, 188, 186),
-
-            diff_add: Color::Rgb(156, 207, 216),
-            diff_delete: Color::Rgb(235, 111, 146),
-            diff_modified: Color::Rgb(235, 188, 186),
-            diff_header: Color::Rgb(49, 116, 143),
-
-            help_key: Color::Rgb(246, 193, 119),
-
-            branch: Color::Rgb(49, 116, 143),
-            sandbox: Color::Rgb(144, 140, 170),
-        }
-    }
-}
-
 /// Serde helper for Color as hex string (#rrggbb)
 pub(super) mod hex_color {
     use ratatui::style::Color;
@@ -467,7 +240,7 @@ pub(super) mod hex_color {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tui::styles::{load_theme, BUILTIN_THEMES};
+    use crate::tui::styles::{builtin_theme_names, load_theme};
 
     #[test]
     fn downsample_to_palette_converts_all_fields() {
@@ -478,7 +251,7 @@ mod tests {
         // guard relies on color_fields_mut being the single source of truth
         // for "what counts as a color field" (asserted by color_fields_mut
         // returning a fixed-size array).
-        let mut theme = Theme::empire();
+        let mut theme = load_theme("empire");
         theme.downsample_to_palette();
         for color in theme.color_fields() {
             assert!(
@@ -526,7 +299,7 @@ mod tests {
 
     #[test]
     fn idle_color_at_age_boundaries() {
-        let theme = Theme::empire();
+        let theme = load_theme("empire");
         let window = idle_decay_window(20);
         // No timestamp = decayed.
         assert_eq!(theme.idle_color_at_age(None, window), theme.idle);
@@ -553,7 +326,7 @@ mod tests {
     fn idle_color_at_age_zero_window_disables_freshness() {
         // window = 0 is the documented opt-out: every Idle row renders
         // as fully decayed regardless of age. No pulse, no fresh tint.
-        let theme = Theme::empire();
+        let theme = load_theme("empire");
         assert_eq!(
             theme.idle_color_at_age(Some(Duration::from_secs(1)), Duration::ZERO),
             theme.idle
@@ -588,7 +361,7 @@ mod tests {
                 _ => 0.0,
             }
         }
-        for name in BUILTIN_THEMES {
+        for name in builtin_theme_names() {
             let theme = load_theme(name);
             let bg = luminance(theme.background);
             let dark_bg = bg < 128.0;
