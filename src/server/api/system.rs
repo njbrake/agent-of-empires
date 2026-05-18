@@ -485,17 +485,6 @@ pub struct ServerAbout {
     /// honours the user's chosen ceiling instead of clipping at a
     /// hard-coded constant. See #1111.
     pub cockpit_replay_events: u32,
-    /// Active theme name (resolved through the profile). The frontend
-    /// uses this as the cache key for the resolved-theme payload it
-    /// reads from `/api/theme/current`, so a settings update reflects
-    /// in the dashboard chrome on the next theme fetch without a
-    /// settings round-trip. Empty config maps to `"empire"`. See #1189.
-    pub theme_name: String,
-    /// Resolved appearance (dark/light) of the active theme. Surfaced
-    /// here so the pre-React bootstrap script in `web/index.html` can
-    /// pick the right cached CSS variable set and `color-scheme`
-    /// before the React app hydrates. See #1189.
-    pub theme_appearance: crate::tui::styles::ThemeAppearance,
 }
 
 pub async fn get_about(State(state): State<Arc<AppState>>) -> Json<ServerAbout> {
@@ -518,33 +507,6 @@ pub async fn get_about(State(state): State<Arc<AppState>>) -> Json<ServerAbout> 
     let cockpit_max_concurrent_resumes = cockpit_cfg.max_concurrent_resumes;
     let cockpit_force_end_turn_threshold_secs = cockpit_cfg.force_end_turn_threshold_secs;
     let cockpit_replay_events = cockpit_cfg.replay_events;
-    // Theme resolution does sync file I/O (profile config read +
-    // discover_custom_themes dir scan + TOML parse for the resolved
-    // appearance). Run off the runtime thread.
-    let theme_profile = state.profile.clone();
-    let (theme_name, theme_appearance) = tokio::task::spawn_blocking(move || {
-        let profile_cfg = crate::session::profile_config::resolve_config_or_warn(&theme_profile);
-        let name = if profile_cfg.theme.name.is_empty() {
-            "empire".to_string()
-        } else {
-            profile_cfg.theme.name.clone()
-        };
-        let appearance = crate::tui::styles::resolve_theme(&name).appearance;
-        (name, appearance)
-    })
-    .await
-    .unwrap_or_else(|e| {
-        tracing::warn!(error = %e, "about theme resolve task panicked, defaulting to empire/dark");
-        (
-            "empire".to_string(),
-            crate::tui::styles::ThemeAppearance::Dark,
-        )
-    });
-    tracing::debug!(
-        theme_name = %theme_name,
-        theme_appearance = ?theme_appearance,
-        "GET /api/about (theme bits)"
-    );
     Json(ServerAbout {
         version: env!("CARGO_PKG_VERSION").to_string(),
         auth_required,
@@ -559,8 +521,6 @@ pub async fn get_about(State(state): State<Arc<AppState>>) -> Json<ServerAbout> 
         cockpit_max_concurrent_resumes,
         cockpit_force_end_turn_threshold_secs,
         cockpit_replay_events,
-        theme_name,
-        theme_appearance,
     })
 }
 

@@ -418,7 +418,7 @@ function HighlightedBlock({
 }) {
   const [html, setHtml] = useState<string | null>(null);
   const [showAll, setShowAll] = useState(false);
-  const shikiTheme = useShikiTheme();
+  const shiki = useShikiTheme();
   const unwrapped = unwrapMarkdownFence(text);
   const effectiveText = unwrapped.text;
   const effectiveLang = unwrapped.lang ?? language;
@@ -442,7 +442,10 @@ function HighlightedBlock({
       try {
         const langKey = langKeyForExt(effectiveLang) ?? effectiveLang;
         await loadLanguage(langKey);
-        const resolvedTheme = await ensureThemeLoaded(shikiTheme);
+        const resolvedTheme = await ensureThemeLoaded(
+          shiki.theme,
+          shiki.appearance,
+        );
         const hl = await getHighlighter();
         if (cancelled) return;
         const out = hl.codeToHtml(shown, {
@@ -457,7 +460,7 @@ function HighlightedBlock({
     return () => {
       cancelled = true;
     };
-  }, [effectiveLang, shown, shikiTheme, ansi]);
+  }, [effectiveLang, shown, shiki.theme, shiki.appearance, ansi]);
 
   return (
     <div className="border-t border-surface-800 bg-surface-950">

@@ -103,6 +103,33 @@
   --color-diff-modified: #fbbf24;
   --color-diff-header: #0d9488;
 
+  /* Embedded terminal cold-load defaults. useResolvedTheme refetches
+     and overrides these once the resolved palette lands, but on a
+     first visit with no localStorage cache the wterm element would
+     otherwise paint with the WASM bridge's hardcoded defaults until
+     the next frame. These match the Empire palette projected by
+     src/tui/styles/resolved.rs::terminal_projection so the pre-fetch
+     paint matches the post-fetch paint for the default theme. */
+  --term-bg: #0f172a;
+  --term-fg: #cbd5e1;
+  --term-cursor: #d97706;
+  --term-color-0: #0f172a;
+  --term-color-1: #ef4444;
+  --term-color-2: #22c55e;
+  --term-color-3: #fbbf24;
+  --term-color-4: #0d9488;
+  --term-color-5: #d97706;
+  --term-color-6: #0d9488;
+  --term-color-7: #cbd5e1;
+  --term-color-8: #64748b;
+  --term-color-9: #f87171;
+  --term-color-10: #4ade80;
+  --term-color-11: #fde68a;
+  --term-color-12: #38bdf8;
+  --term-color-13: #fbbf24;
+  --term-color-14: #2dd4bf;
+  --term-color-15: #fbbf24;
+
   /* Typography */
   --font-sans: 'Geist Sans', system-ui, -apple-system, sans-serif;
   --font-mono: 'Geist Mono', ui-monospace, 'SFMono-Regular', monospace;

@@ -77,7 +77,7 @@ function HighlightedSnippet({
   filePath: string;
 }) {
   const [html, setHtml] = useState<string | null>(null);
-  const shikiTheme = useShikiTheme();
+  const shiki = useShikiTheme();
   useEffect(() => {
     let cancelled = false;
     const hint =
@@ -89,7 +89,10 @@ function HighlightedSnippet({
       try {
         const langKey = langKeyForExt(hint) ?? hint;
         await loadLanguage(langKey);
-        const resolvedTheme = await ensureThemeLoaded(shikiTheme);
+        const resolvedTheme = await ensureThemeLoaded(
+          shiki.theme,
+          shiki.appearance,
+        );
         const hl = await getHighlighter();
         if (cancelled) return;
         if (!hl.getLoadedLanguages().includes(langKey)) return;
@@ -103,7 +106,7 @@ function HighlightedSnippet({
     return () => {
       cancelled = true;
     };
-  }, [code, language, filePath, shikiTheme]);
+  }, [code, language, filePath, shiki.theme, shiki.appearance]);
 
   if (html) {
     // Shiki HTML-escapes the user-supplied `code` before tokenizing, so

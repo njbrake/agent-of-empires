@@ -186,47 +186,65 @@ test.describe("Theme picker runtime palette swap (#1189)", () => {
   test("pre-React bootstrap paints cached theme before hydration", async ({
     page,
   }) => {
-    // Network stub returns Empire; localStorage seeded with Dracula.
-    // The pre-React script in index.html should paint Dracula
-    // immediately; the React-side fetch then RE-applies Empire (the
-    // server's truth). The point of this test is the inline-script
-    // path runs at all and writes the cached vars to the root.
-    const empire: ResolvedThemePayload = {
-      name: "empire",
-      source: "builtin",
-      appearance: "dark",
-      web: {
-        cssVars: {
-          "--color-surface-900": "#0f172a",
-          "--color-text-primary": "#cbd5e1",
-        },
-      },
-      terminal: { cssVars: { "--term-bg": "#0f172a" } },
-      syntax: { shikiTheme: "github-dark" },
-    };
-    await stubTheme(page, { empire, dracula: dracula() }, empire);
-
-    // Seed localStorage on the origin before the page's inline script
-    // runs. Playwright's addInitScript runs in the page context before
-    // any other script, so the bootstrap finds the cached payload.
+    // Goal: verify the static /theme-bootstrap.js path executes and
+    // applies the cached payload BEFORE useResolvedTheme's fetch
+    // lands. To make the assertion specific to the bootstrap (and
+    // not the React-side apply), stub /api/theme/current to never
+    // resolve — only the bootstrap can have set dataset.theme. Also
+    // listen for `securitypolicyviolation` so a CSP regression on
+    // the bootstrap source fails the test loudly. Review on PR #1197.
+    const violations: string[] = [];
+    page.on("console", (msg) => {
+      const t = msg.text();
+      if (t.toLowerCase().includes("content security policy")) {
+        violations.push(t);
+      }
+    });
+    await page.addInitScript(() => {
+      document.addEventListener("securitypolicyviolation", (ev) => {
+        // Surface as console.error so the .on("console") listener
+        // above catches it.
+        // eslint-disable-next-line no-console
+        console.error(
+          "CSP violation:",
+          (ev as SecurityPolicyViolationEvent).violatedDirective,
+          (ev as SecurityPolicyViolationEvent).blockedURI,
+        );
+      });
+    });
     await page.addInitScript((cached) => {
       localStorage.setItem("aoe-resolved-theme", JSON.stringify(cached));
     }, dracula());
+    // Hang the React-side fetch so dataset.theme can only have come
+    // from the bootstrap.
+    await page.route("**/api/theme/current", () => {
+      // Intentionally never call route.fulfill / route.continue: the
+      // fetch hangs until the page closes.
+    });
+    await page.route("**/api/themes/*", () => {
+      // Same here for the picker-event path.
+    });
 
     await page.goto("/");
 
-    // Final state should be Empire (server truth wins after fetch).
+    // Bootstrap runs synchronously in <head> before React mounts,
+    // so dataset.theme + --color-surface-900 should be visible
+    // immediately after navigation.
     await expect
-      .poll(() => readCssVar(page, "--color-surface-900"))
-      .toBe("#0f172a");
-
-    // But the cache hit happened: html dataset.theme should have been
-    // set by SOMETHING (either the bootstrap on first paint, or the
-    // hook after fetch). Either way, dataset.theme is non-empty.
+      .poll(
+        () => readCssVar(page, "--color-surface-900"),
+        { timeout: 1500, intervals: [50, 100, 200] },
+      )
+      .toBe("#282a36");
     const dataTheme = await page.evaluate(
       () => document.documentElement.dataset.theme,
     );
-    expect(dataTheme).toBeTruthy();
+    expect(dataTheme).toBe("dracula");
+
+    // CSP regression check: the bootstrap must load successfully.
+    // If `src="/theme-bootstrap.js"` ever gets reverted to an inline
+    // <script>, the strict CSP fires `securitypolicyviolation`.
+    expect(violations).toEqual([]);
   });
 
   test("theme repaint persists across the chrome elements", async ({

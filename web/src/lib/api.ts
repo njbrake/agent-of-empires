@@ -325,13 +325,6 @@ export interface ServerAbout {
    *  so the rendered transcript matches the user's chosen ceiling
    *  instead of clipping at a hard-coded frontend constant. See #1111. */
   cockpit_replay_events: number;
-  /** Active theme name. Frontends use this as the cache key for the
-   *  resolved-theme payload fetched from /api/theme/current. See #1189. */
-  theme_name: string;
-  /** Resolved appearance (dark/light) of the active theme. Surfaced
-   *  so the pre-React bootstrap script can pick the right cached CSS
-   *  variable set and color-scheme before hydration. See #1189. */
-  theme_appearance: "dark" | "light";
 }
 
 export async function setCockpitMaster(

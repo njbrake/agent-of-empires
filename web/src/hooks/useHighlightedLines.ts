@@ -46,7 +46,7 @@ export function useHighlightedLines(
 ): HighlightResult {
   const [state, setState] = useState<GridState | null>(null);
   const requestRef = useRef(0);
-  const shikiTheme = useShikiTheme();
+  const shiki = useShikiTheme();
 
   const hasLang = !!langImportForPath(filePath);
 
@@ -57,7 +57,10 @@ export function useHighlightedLines(
     if (!langImport) return;
 
     (async () => {
-      const resolvedTheme = await ensureThemeLoaded(shikiTheme);
+      const resolvedTheme = await ensureThemeLoaded(
+        shiki.theme,
+        shiki.appearance,
+      );
       const hl = await getHighlighter();
 
       // Load the grammar if not already registered.
@@ -114,7 +117,7 @@ export function useHighlightedLines(
         setState({ grid: result, path: filePath });
       }
     })();
-  }, [hunks, filePath, shikiTheme]);
+  }, [hunks, filePath, shiki.theme, shiki.appearance]);
 
   // Only return the grid if it matches the current file path.
   const tokens = state && state.path === filePath ? state.grid : null;

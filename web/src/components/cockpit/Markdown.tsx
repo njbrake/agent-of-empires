@@ -126,7 +126,7 @@ function ShikiSyntaxHighlighter({
   code,
 }: SyntaxHighlighterProps) {
   const [html, setHtml] = useState<string | null>(null);
-  const shikiTheme = useShikiTheme();
+  const shiki = useShikiTheme();
   useEffect(() => {
     let cancelled = false;
     if (!language) return;
@@ -134,7 +134,10 @@ function ShikiSyntaxHighlighter({
       try {
         const langKey = langKeyForExt(language) ?? language;
         await loadLanguage(langKey);
-        const resolvedTheme = await ensureThemeLoaded(shikiTheme);
+        const resolvedTheme = await ensureThemeLoaded(
+          shiki.theme,
+          shiki.appearance,
+        );
         const hl = await getHighlighter();
         if (cancelled) return;
         setHtml(
@@ -147,7 +150,7 @@ function ShikiSyntaxHighlighter({
     return () => {
       cancelled = true;
     };
-  }, [language, code, shikiTheme]);
+  }, [language, code, shiki.theme, shiki.appearance]);
 
   if (html) {
     return (

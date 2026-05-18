@@ -289,6 +289,25 @@ mod tests {
     }
 
     #[test]
+    fn default_matches_empire_toml() {
+        // Drift guard: every color field in `impl Default for Theme`
+        // (which serde's container `#[serde(default)]` uses as the
+        // fallback for partial custom TOMLs) must match the corresponding
+        // hex in `themes/builtin/empire.toml`. A future Empire palette
+        // tweak that updates the TOML but not the hand-mirrored Default
+        // would otherwise leave partial custom TOMLs inheriting stale
+        // colors silently. Per the review on PR #1197.
+        let defaulted = Theme::default();
+        let from_toml = load_theme("empire");
+        assert_eq!(
+            defaulted.color_fields().to_vec(),
+            from_toml.color_fields().to_vec(),
+            "Theme::default() color fields drifted from themes/builtin/empire.toml; \
+             sync the hand-mirrored values in `impl Default for Theme` (themes.rs)"
+        );
+    }
+
+    #[test]
     fn default_does_not_recurse_through_load_theme() {
         // Regression for the OnceLock-via-load_theme deadlock the
         // first cut of this work shipped: serde's container-level

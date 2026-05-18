@@ -19,9 +19,21 @@ const SHIKI_THEME_IMPORTS: Record<string, () => Promise<unknown>> = {
   "rose-pine": () => import("shiki/themes/rose-pine.mjs"),
 };
 
-/** Fallback when the resolver names a Shiki theme this bundle doesn't
- *  carry (user-defined themes with arbitrary shiki_theme entries). */
+/** Fallback Shiki themes when the resolver names a theme this bundle
+ *  doesn't carry (user-defined themes with arbitrary shiki_theme
+ *  entries). Picked by appearance so a light AoE theme falling back
+ *  doesn't end up rendering code on a light surface with a dark
+ *  syntax theme. */
 export const DEFAULT_SHIKI_THEME = "github-dark";
+export const DEFAULT_SHIKI_THEME_LIGHT = "github-light";
+
+export function fallbackShikiTheme(
+  appearance: "dark" | "light" | undefined,
+): string {
+  return appearance === "light"
+    ? DEFAULT_SHIKI_THEME_LIGHT
+    : DEFAULT_SHIKI_THEME;
+}
 
 /**
  * Returns a singleton Shiki highlighter. Languages are loaded on demand
@@ -45,11 +57,16 @@ export async function getHighlighter(): Promise<HighlighterCore> {
 
 /** Lazy-load a Shiki theme module and register it on the singleton
  *  highlighter. Returns the name the caller should pass to
- *  `codeToHtml` / `codeToTokens` (the requested name if it loaded
- *  cleanly, `DEFAULT_SHIKI_THEME` otherwise). Idempotent. */
-export async function ensureThemeLoaded(name: string): Promise<string> {
+ *  `codeToHtml` / `codeToTokens`: the requested name if it loaded
+ *  cleanly, otherwise an appearance-appropriate fallback
+ *  (`github-dark` / `github-light`) so a light AoE theme isn't
+ *  rendered with a dark syntax palette. Idempotent. */
+export async function ensureThemeLoaded(
+  name: string,
+  appearance?: "dark" | "light",
+): Promise<string> {
   const importer = SHIKI_THEME_IMPORTS[name];
-  if (!importer) return DEFAULT_SHIKI_THEME;
+  if (!importer) return fallbackShikiTheme(appearance);
   const hl = await getHighlighter();
   if (hl.getLoadedThemes().includes(name)) return name;
   try {
@@ -62,7 +79,7 @@ export async function ensureThemeLoaded(name: string): Promise<string> {
   } catch {
     // Module load failed; fall through.
   }
-  return DEFAULT_SHIKI_THEME;
+  return fallbackShikiTheme(appearance);
 }
 
 const EXT_TO_LANG: Record<string, () => Promise<unknown>> = {
