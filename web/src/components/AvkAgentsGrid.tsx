@@ -17,8 +17,12 @@
  * Slug → label canonical kaynak server `src/avk_agents.rs::AVK_AGENTS`.
  */
 
-import { useEffect, useState } from "react";
-import { fetchAvkAgents, fetchAvkPanePeek } from "../lib/api";
+import { useEffect, useRef, useState } from "react";
+import {
+  fetchAvkAgents,
+  fetchAvkPanePeek,
+  postAvkBroadcast,
+} from "../lib/api";
 import type {
   AvkAgentInfo,
   AvkAgentRole,
@@ -26,6 +30,7 @@ import type {
 } from "../lib/types";
 
 const REFRESH_INTERVAL_MS = 30_000;
+const PEEK_AUTO_REFRESH_MS = 5_000;
 const PEEK_LINES = 40;
 
 const ROLE_ORDER: AvkAgentRole[] = ["director", "senior", "worker"];
@@ -84,6 +89,17 @@ export function AvkAgentsGrid() {
     };
   }, []);
 
+  async function refreshPeek(slug: string, silent = false) {
+    if (!silent) {
+      setPeekMap((prev) => ({ ...prev, [slug]: { kind: "loading" } }));
+    }
+    const result = await fetchAvkPanePeek(slug, PEEK_LINES);
+    setPeekMap((prev) => ({
+      ...prev,
+      [slug]: result ? { kind: "ready", data: result } : { kind: "error" },
+    }));
+  }
+
   async function togglePeek(slug: string) {
     if (expandedSlug === slug) {
       setExpandedSlug(null);
@@ -91,16 +107,17 @@ export function AvkAgentsGrid() {
     }
     setExpandedSlug(slug);
     if (!peekMap[slug] || peekMap[slug].kind === "error") {
-      setPeekMap((prev) => ({ ...prev, [slug]: { kind: "loading" } }));
-      const result = await fetchAvkPanePeek(slug, PEEK_LINES);
-      setPeekMap((prev) => ({
-        ...prev,
-        [slug]: result
-          ? { kind: "ready", data: result }
-          : { kind: "error" },
-      }));
+      await refreshPeek(slug);
     }
   }
+
+  useEffect(() => {
+    if (!expandedSlug) return;
+    const id = setInterval(() => {
+      refreshPeek(expandedSlug, true);
+    }, PEEK_AUTO_REFRESH_MS);
+    return () => clearInterval(id);
+  }, [expandedSlug]);
 
   if (loading) {
     return (
@@ -204,11 +221,18 @@ export function AvkAgentsGrid() {
                         </div>
                       </button>
                       {expanded && (
-                        <PeekPanel
-                          id={`peek-${agent.slug}`}
-                          peek={peek}
-                          target={effectiveTarget}
-                        />
+                        <>
+                          <PeekPanel
+                            id={`peek-${agent.slug}`}
+                            peek={peek}
+                            target={effectiveTarget}
+                          />
+                          <InjectBox
+                            slug={agent.slug}
+                            label={agent.label}
+                            onSent={() => refreshPeek(agent.slug, true)}
+                          />
+                        </>
                       )}
                     </article>
                   );
@@ -217,6 +241,95 @@ export function AvkAgentsGrid() {
             </section>
           );
         })}
+      </div>
+    </div>
+  );
+}
+
+function InjectBox({
+  slug,
+  label,
+  onSent,
+}: {
+  slug: string;
+  label: string;
+  onSent: () => void;
+}) {
+  const [message, setMessage] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<
+    | { kind: "idle" }
+    | { kind: "ok"; ts: number }
+    | { kind: "err"; reason: string }
+  >({ kind: "idle" });
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+
+  async function handleSend() {
+    const trimmed = message.trim();
+    if (!trimmed || busy) return;
+    setBusy(true);
+    setStatus({ kind: "idle" });
+    const res = await postAvkBroadcast({
+      tier: `slug:${slug}`,
+      message: trimmed,
+    });
+    setBusy(false);
+    if (res && res.failed === 0 && res.ok > 0) {
+      setStatus({ kind: "ok", ts: Date.now() });
+      setMessage("");
+      textareaRef.current?.focus();
+      setTimeout(() => onSent(), 600);
+    } else {
+      const reason =
+        res?.results?.[0]?.error ??
+        (res === null ? "ağ hatası / 4xx" : "bilinmeyen hata");
+      setStatus({ kind: "err", reason });
+    }
+  }
+
+  function handleKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+      e.preventDefault();
+      handleSend();
+    }
+  }
+
+  return (
+    <div className="mt-3 border-t border-surface-700 pt-3">
+      <label
+        htmlFor={`inject-${slug}`}
+        className="block font-mono text-[10px] uppercase tracking-wider text-text-muted mb-1"
+      >
+        {label} pane'ine mesaj gönder
+      </label>
+      <textarea
+        ref={textareaRef}
+        id={`inject-${slug}`}
+        value={message}
+        onChange={(e) => setMessage(e.target.value)}
+        onKeyDown={handleKeyDown}
+        placeholder={`@${slug} — Cmd/Ctrl+Enter ile gönder`}
+        rows={3}
+        className="w-full font-mono text-[12px] bg-surface-900 border border-surface-700 rounded p-2 text-text-secondary focus:border-brand-500/50 focus:outline-none resize-y"
+      />
+      <div className="flex items-center justify-between mt-2 gap-2">
+        <span className="font-mono text-[10px] text-text-dim">
+          {message.length}/8192
+          {status.kind === "ok" && (
+            <span className="ml-2 text-status-running">✓ gönderildi</span>
+          )}
+          {status.kind === "err" && (
+            <span className="ml-2 text-status-error">✗ {status.reason}</span>
+          )}
+        </span>
+        <button
+          type="button"
+          onClick={handleSend}
+          disabled={busy || message.trim().length === 0}
+          className="font-mono text-[11px] uppercase tracking-wider px-3 py-1 rounded border border-brand-500/50 text-brand-300 hover:bg-brand-500/10 disabled:opacity-40 disabled:cursor-not-allowed"
+        >
+          {busy ? "gönderiliyor…" : "Gönder"}
+        </button>
       </div>
     </div>
   );
