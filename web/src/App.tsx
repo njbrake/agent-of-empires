@@ -185,48 +185,30 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
     sessions,
     workspaceOrdering,
     setWorkspaceOrdering,
+    markLocalOrderingUpdate,
     error,
     injectSession,
     setSessionStatus,
   } = useSessions();
   const workspaces = useWorkspaces(sessions);
 
-  // Effective sidebar order: the persisted ordering with any not-yet-
-  // seen workspace prepended (newest first, since useWorkspaces emits
-  // in server creation order). This lets the sort be a pure rank lookup
-  // and removes any need to compute a "birth" timestamp at render time.
-  // The next effect persists the result so other devices catch up.
-  const effectiveOrdering = useMemo(() => {
-    const known = new Set(workspaceOrdering);
-    const newIds = workspaces
-      .map((w) => w.id)
-      .filter((id) => !known.has(id));
-    return newIds.length === 0
-      ? workspaceOrdering
-      : [...newIds.reverse(), ...workspaceOrdering];
-  }, [workspaces, workspaceOrdering]);
-
-  useEffect(() => {
-    if (effectiveOrdering !== workspaceOrdering) {
-      void updateWorkspaceOrdering(effectiveOrdering);
-    }
-  }, [effectiveOrdering, workspaceOrdering]);
-
   const { groups, toggleRepoCollapsed } = useRepoGroups(
     workspaces,
-    effectiveOrdering,
+    workspaceOrdering,
   );
 
   // Drag-end handler for the sidebar. Optimistically applies the new
   // order locally so the row snaps into place, then persists to the
-  // server. On failure we leave the optimistic state in place; the
-  // next /api/sessions poll will reconcile.
+  // server. `markLocalOrderingUpdate` opens a short window during
+  // which polled responses do not clobber our just-applied state, so a
+  // poll firing mid-PUT can't revert the drag.
   const handleReorderWorkspaces = useCallback(
     (newOrder: string[]) => {
       setWorkspaceOrdering(newOrder);
+      markLocalOrderingUpdate();
       void updateWorkspaceOrdering(newOrder);
     },
-    [setWorkspaceOrdering],
+    [setWorkspaceOrdering, markLocalOrderingUpdate],
   );
 
   // Selected diff-file identity. `repoName` is undefined for single-repo

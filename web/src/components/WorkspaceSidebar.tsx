@@ -1,4 +1,14 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  createContext,
+  memo,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MutableRefObject,
+} from "react";
 import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
 import { Pencil } from "lucide-react";
@@ -233,24 +243,38 @@ function isPlainLeftClick(event: React.MouseEvent<HTMLAnchorElement>): boolean {
 // is the drag handle: a short tap/click navigates as before, but a
 // press-and-hold (sensor delay) lifts the row so the user can reorder.
 // See #1169.
-// Module-scoped "drag just ended" flag. The click event Chromium
-// dispatches after a drag-release can bypass React's event delegation
-// (we've seen it land on the inner anchor without firing any wrapping
-// capture handler), so we suppress it from a document-level listener
-// installed once per sidebar mount. See `useSuppressClickAfterDrag`.
-let dragSuppressUntil = 0;
-function useSuppressClickAfterDrag() {
+
+// "Drag just ended" timestamp shared by every sortable row and the
+// document-level click suppressor. Lives as a ref on the sidebar so
+// HMR resets don't leave it in a weird state and so siblings can't
+// see each other through a module-scoped global. The document
+// listener checks `ref.current` on every click; rows write to it
+// while dragging and on release.
+const DragSuppressContext = createContext<MutableRefObject<number> | null>(null);
+function useDragSuppressRef(): MutableRefObject<number> {
+  const ref = useContext(DragSuppressContext);
+  if (!ref) {
+    throw new Error("DragSuppressContext used outside provider");
+  }
+  return ref;
+}
+
+function useSuppressClickAfterDrag(ref: MutableRefObject<number>) {
   useEffect(() => {
     const handler = (e: MouseEvent) => {
-      if (Date.now() < dragSuppressUntil) {
+      if (Date.now() < ref.current) {
         e.preventDefault();
         e.stopPropagation();
         e.stopImmediatePropagation();
       }
     };
+    // The click Chromium dispatches after a drag-release can bypass
+    // React's event delegation and land on the inner Link without
+    // firing any wrapping capture handler. A document-level capture
+    // listener catches it before navigation kicks in.
     document.addEventListener("click", handler, true);
     return () => document.removeEventListener("click", handler, true);
-  }, []);
+  }, [ref]);
 }
 
 function SortableSessionRow(props: {
@@ -260,20 +284,26 @@ function SortableSessionRow(props: {
   onDelete?: (workspaceId: string) => void;
   readOnly?: boolean;
 }) {
-  const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
-    useSortable({ id: props.workspace.id });
+  const dragSuppressRef = useDragSuppressRef();
+  // `disabled: readOnly` no-ops the sensor listeners, so a read-only
+  // viewer can't drag the row (and can't fire the PUT, which the
+  // server would reject anyway). Skipping the sortable wiring entirely
+  // would also drop the click suppressor; that's harmless in read-only
+  // since nothing else triggers a drag.
+  const { listeners, setNodeRef, transform, transition, isDragging } =
+    useSortable({ id: props.workspace.id, disabled: props.readOnly });
   useEffect(() => {
     if (isDragging) {
       // Keep extending the window while dragging so a slow drag still
       // suppresses the trailing click on release.
-      dragSuppressUntil = Date.now() + 1000;
-    } else if (dragSuppressUntil > Date.now()) {
+      dragSuppressRef.current = Date.now() + 1000;
+    } else if (dragSuppressRef.current > Date.now()) {
       // Drag just ended; the click is on its way. Hold the suppression
       // for ~250ms after release (enough to swallow the synthetic click,
       // short enough that a real tap right after still navigates).
-      dragSuppressUntil = Date.now() + 250;
+      dragSuppressRef.current = Date.now() + 250;
     }
-  }, [isDragging]);
+  }, [isDragging, dragSuppressRef]);
   const style = {
     transform: CSS.Transform.toString(transform),
     transition,
@@ -284,12 +314,18 @@ function SortableSessionRow(props: {
     position: "relative",
   } as const;
   return (
+    // We intentionally spread only `listeners` (pointer-down etc.) and
+    // not dnd-kit's `attributes`. The latter inject role="button" and a
+    // tabIndex which would duplicate the inner Link as a focusable,
+    // button-styled affordance for assistive tech. Keyboard drag isn't
+    // supported here, so the omitted attributes don't cost anything.
     <div
       ref={setNodeRef}
       style={style}
-      {...attributes}
-      {...listeners}
-      aria-roledescription="Press and hold to reorder"
+      {...(props.readOnly ? {} : listeners)}
+      aria-roledescription={
+        props.readOnly ? undefined : "Press and hold to reorder"
+      }
       // While dragging, the row gets an amber ring (matches the active
       // session accent) and a soft shadow so it reads as elevated above
       // the rest of the list. ring-inset keeps the highlight tight to
@@ -775,7 +811,8 @@ export function WorkspaceSidebar({
   onDeleteSession,
   readOnly,
 }: Props) {
-  useSuppressClickAfterDrag();
+  const dragSuppressRef = useRef<number>(0);
+  useSuppressClickAfterDrag(dragSuppressRef);
   const offline = useServerDown();
   const [width, setWidth] = useState(loadSavedWidth);
   const [filterOpen, setFilterOpen] = useState(false);
@@ -977,10 +1014,11 @@ export function WorkspaceSidebar({
         )}
 
         <div className="flex-1 overflow-y-auto overflow-x-hidden">
+          <DragSuppressContext.Provider value={dragSuppressRef}>
           <DndContext
             sensors={sensors}
             collisionDetection={closestCenter}
-            onDragEnd={handleDragEnd}
+            onDragEnd={readOnly ? undefined : handleDragEnd}
           >
             {filteredGroups.map((group) => {
               const showExpanded = q ? true : !group.collapsed;
@@ -1021,6 +1059,7 @@ export function WorkspaceSidebar({
               );
             })}
           </DndContext>
+          </DragSuppressContext.Provider>
 
           {!hasResults && filterQuery && (
             <div className="px-4 py-8 text-center">

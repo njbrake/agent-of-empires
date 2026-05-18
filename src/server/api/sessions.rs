@@ -397,9 +397,11 @@ pub async fn list_sessions(State(state): State<Arc<AppState>>) -> Json<SessionsE
         }
     }
 
-    let workspace_ordering = crate::session::load_workspace_ordering()
-        .map(|w| w.order)
-        .unwrap_or_default();
+    let workspace_ordering =
+        merge_workspace_ordering(&sessions, state.read_only).unwrap_or_else(|e| {
+            tracing::error!("Failed to merge workspace ordering: {e}");
+            Vec::new()
+        });
 
     Json(SessionsEnvelope {
         sessions,
@@ -407,15 +409,83 @@ pub async fn list_sessions(State(state): State<Arc<AppState>>) -> Json<SessionsE
     })
 }
 
+// Workspace id derivation. Mirrors the client logic in `useWorkspaces.ts`:
+// a session with a branch collapses to `${repoPath}::${branch}`; a
+// branchless session gets its own workspace at `${repoPath}::__session__::${id}`.
+// `repoPath` strips trailing slashes so the server and client compute the
+// same string for the same session row.
+fn workspace_id_for_session(s: &SessionResponse) -> String {
+    let raw = s.main_repo_path.as_deref().unwrap_or(&s.project_path);
+    let repo_path = raw.trim_end_matches('/');
+    match &s.branch {
+        Some(branch) => format!("{repo_path}::{branch}"),
+        None => format!("{repo_path}::__session__::{}", s.id),
+    }
+}
+
+// Prepend any workspace id we haven't seen before to the persisted
+// ordering and return the merged list. Done server-side so concurrent
+// clients (multiple tabs, multiple devices) converge on a single
+// ordering without each racing to PUT their own prepend. In read-only
+// mode we still compute the merge for the response, but we skip the
+// disk write.
+fn merge_workspace_ordering(
+    sessions: &[SessionResponse],
+    read_only: bool,
+) -> anyhow::Result<Vec<String>> {
+    let mut ordering = crate::session::load_workspace_ordering()
+        .map(|w| w.order)
+        .unwrap_or_default();
+    let known: std::collections::HashSet<&str> = ordering.iter().map(String::as_str).collect();
+
+    let mut seen_unknown: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut new_ids: Vec<String> = Vec::new();
+    for s in sessions {
+        let id = workspace_id_for_session(s);
+        if known.contains(id.as_str()) {
+            continue;
+        }
+        if seen_unknown.insert(id.clone()) {
+            new_ids.push(id);
+        }
+    }
+
+    if new_ids.is_empty() {
+        return Ok(ordering);
+    }
+
+    // Newest first: `instances` is in creation order, so reverse the
+    // collected unknowns and prepend.
+    new_ids.reverse();
+    new_ids.append(&mut ordering);
+    let merged = new_ids;
+
+    if !read_only {
+        crate::session::save_workspace_ordering(&crate::session::WorkspaceOrdering {
+            order: merged.clone(),
+        })?;
+    }
+    Ok(merged)
+}
+
 // --- Workspace ordering ---
 //
 // `PUT /api/workspace-ordering` overwrites the persisted workspace order
 // with a fresh client-supplied list. Workspaces are a client construct
 // (a group of sessions keyed on `repoPath::branch`), so the server
-// treats the entries as opaque strings. The list is a partial order:
-// any workspace id not in the list falls back to the client's default
-// newest-first ordering. Persisted globally (not per-profile) because
-// the sidebar shows sessions across all profiles. See #1169.
+// treats the entries as opaque strings. New workspaces are folded in
+// server-side by `merge_workspace_ordering` on every `GET /api/sessions`,
+// so the file always covers every observed workspace; this PUT just
+// reorders existing entries. Persisted globally (not per-profile)
+// because the sidebar shows sessions across all profiles. See #1169.
+
+// Caps on the inbound body. The order list is one entry per workspace
+// row and workspaces map 1:1 to sessions in the worst case, so 4096 is
+// comfortably above any realistic ceiling. Per-entry cap covers a
+// long repo path plus a long branch name; ids longer than this can't
+// come from the client's workspace id derivation in any sane setup.
+const MAX_ORDER_ENTRIES: usize = 4096;
+const MAX_ORDER_ENTRY_LEN: usize = 1024;
 
 #[derive(Deserialize)]
 pub struct UpdateWorkspaceOrderingBody {
@@ -423,8 +493,36 @@ pub struct UpdateWorkspaceOrderingBody {
 }
 
 pub async fn update_workspace_ordering(
+    State(state): State<Arc<AppState>>,
     Json(body): Json<UpdateWorkspaceOrderingBody>,
 ) -> impl IntoResponse {
+    if state.read_only {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({
+                "error": "read_only",
+                "message": "Server is in read-only mode"
+            })),
+        );
+    }
+
+    if body.order.len() > MAX_ORDER_ENTRIES {
+        return (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            Json(serde_json::json!({
+                "message": format!("order has {} entries, max is {}", body.order.len(), MAX_ORDER_ENTRIES)
+            })),
+        );
+    }
+    if let Some(bad) = body.order.iter().find(|e| e.len() > MAX_ORDER_ENTRY_LEN) {
+        return (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            Json(serde_json::json!({
+                "message": format!("order entry is {} bytes, max is {}", bad.len(), MAX_ORDER_ENTRY_LEN)
+            })),
+        );
+    }
+
     let ordering = crate::session::WorkspaceOrdering { order: body.order };
     if let Err(e) = crate::session::save_workspace_ordering(&ordering) {
         tracing::error!("Failed to persist workspace ordering: {e}");
@@ -2799,6 +2897,188 @@ pub async fn read_output(
             )
                 .into_response()
         }
+    }
+}
+
+#[cfg(test)]
+mod workspace_ordering_tests {
+    use super::*;
+    use serial_test::serial;
+    use tempfile::tempdir;
+
+    fn setup_test_home(temp: &std::path::Path) {
+        std::env::set_var("HOME", temp);
+        #[cfg(target_os = "linux")]
+        std::env::set_var("XDG_CONFIG_HOME", temp.join(".config"));
+    }
+
+    fn mock_response(id: &str, project_path: &str, branch: Option<&str>) -> SessionResponse {
+        SessionResponse {
+            id: id.to_string(),
+            title: id.to_string(),
+            project_path: project_path.to_string(),
+            group_path: String::new(),
+            tool: "claude".to_string(),
+            status: "Idle".to_string(),
+            yolo_mode: false,
+            created_at: "2025-01-01T00:00:00Z".to_string(),
+            last_accessed_at: None,
+            idle_entered_at: None,
+            last_error: None,
+            branch: branch.map(str::to_string),
+            main_repo_path: None,
+            base_branch: None,
+            base_branch_override: None,
+            is_sandboxed: false,
+            has_managed_worktree: false,
+            has_terminal: false,
+            profile: "default".to_string(),
+            cleanup_defaults: CleanupDefaults {
+                delete_worktree: false,
+                delete_branch: false,
+                delete_sandbox: false,
+            },
+            remote_owner: None,
+            notify_on_waiting: None,
+            notify_on_idle: None,
+            notify_on_error: None,
+            #[cfg(feature = "serve")]
+            cockpit_mode: false,
+            #[cfg(feature = "serve")]
+            cockpit_worker_state: crate::cockpit::supervisor::CockpitWorkerState::Absent,
+            claude_fullscreen: false,
+            workspace_repos: Vec::new(),
+            warnings: Vec::new(),
+            plan_summary: None,
+            next_wakeup_at: None,
+            next_wakeup_reason: None,
+        }
+    }
+
+    #[test]
+    fn id_uses_branch_when_present() {
+        let r = mock_response("s1", "/tmp/repo", Some("feature/x"));
+        assert_eq!(workspace_id_for_session(&r), "/tmp/repo::feature/x");
+    }
+
+    #[test]
+    fn id_falls_back_to_session_id_when_branchless() {
+        let r = mock_response("abc123", "/tmp/repo", None);
+        assert_eq!(
+            workspace_id_for_session(&r),
+            "/tmp/repo::__session__::abc123"
+        );
+    }
+
+    #[test]
+    fn id_strips_trailing_slash() {
+        // The client's `useWorkspaces.normalizePath` strips trailing
+        // slashes. Server must match so the merged ordering keys line up.
+        let r = mock_response("s1", "/tmp/repo/", Some("main"));
+        assert_eq!(workspace_id_for_session(&r), "/tmp/repo::main");
+    }
+
+    #[test]
+    fn id_prefers_main_repo_path_over_project_path() {
+        let mut r = mock_response("s1", "/tmp/worktree", Some("main"));
+        r.main_repo_path = Some("/tmp/repo".to_string());
+        assert_eq!(workspace_id_for_session(&r), "/tmp/repo::main");
+    }
+
+    #[test]
+    #[serial]
+    fn merge_prepends_unseen_newest_first() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        setup_test_home(temp.path());
+
+        // Persisted ordering already contains `b`. Sessions come in
+        // creation order (oldest first) `[b, a, c]`; `a` and `c` are
+        // unseen and should land at the top in newest-first order: `[c, a, b]`.
+        crate::session::save_workspace_ordering(&crate::session::WorkspaceOrdering {
+            order: vec!["/tmp/repo::b".to_string()],
+        })?;
+
+        let sessions = vec![
+            mock_response("sb", "/tmp/repo", Some("b")),
+            mock_response("sa", "/tmp/repo", Some("a")),
+            mock_response("sc", "/tmp/repo", Some("c")),
+        ];
+
+        let merged = merge_workspace_ordering(&sessions, /* read_only */ false)?;
+        assert_eq!(
+            merged,
+            vec![
+                "/tmp/repo::c".to_string(),
+                "/tmp/repo::a".to_string(),
+                "/tmp/repo::b".to_string(),
+            ]
+        );
+
+        // And the merge was persisted.
+        let on_disk = crate::session::load_workspace_ordering()?;
+        assert_eq!(on_disk.order, merged);
+
+        Ok(())
+    }
+
+    #[test]
+    #[serial]
+    fn merge_dedupes_within_a_single_request() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        setup_test_home(temp.path());
+
+        // Two sessions on the same workspace (rare but legal: multiple
+        // agents in one worktree). The workspace id appears once.
+        let sessions = vec![
+            mock_response("sa1", "/tmp/repo", Some("main")),
+            mock_response("sa2", "/tmp/repo", Some("main")),
+        ];
+
+        let merged = merge_workspace_ordering(&sessions, false)?;
+        assert_eq!(merged, vec!["/tmp/repo::main".to_string()]);
+        Ok(())
+    }
+
+    #[test]
+    #[serial]
+    fn merge_no_op_when_all_known() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        setup_test_home(temp.path());
+
+        crate::session::save_workspace_ordering(&crate::session::WorkspaceOrdering {
+            order: vec!["/tmp/repo::a".to_string(), "/tmp/repo::b".to_string()],
+        })?;
+
+        let sessions = vec![
+            mock_response("sa", "/tmp/repo", Some("a")),
+            mock_response("sb", "/tmp/repo", Some("b")),
+        ];
+
+        let merged = merge_workspace_ordering(&sessions, false)?;
+        assert_eq!(
+            merged,
+            vec!["/tmp/repo::a".to_string(), "/tmp/repo::b".to_string()]
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[serial]
+    fn merge_read_only_returns_merged_but_does_not_write() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        setup_test_home(temp.path());
+
+        // Empty starting state. Read-only request observes a new
+        // workspace; the response includes it but disk is untouched.
+        let sessions = vec![mock_response("sa", "/tmp/repo", Some("a"))];
+
+        let merged = merge_workspace_ordering(&sessions, /* read_only */ true)?;
+        assert_eq!(merged, vec!["/tmp/repo::a".to_string()]);
+
+        let on_disk = crate::session::load_workspace_ordering()?;
+        assert!(on_disk.order.is_empty(), "read-only path must not persist");
+
+        Ok(())
     }
 }
 

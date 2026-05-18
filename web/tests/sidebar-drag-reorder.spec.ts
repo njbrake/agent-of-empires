@@ -54,10 +54,10 @@ async function mockApis(
       },
     });
   });
-  // Catch-all for the prepend-on-first-sight PUT that App.tsx fires
-  // whenever a workspace id isn't yet in the persisted ordering. The
-  // drag test overrides this with `page.route(..., ...)` to capture the
-  // PUT body.
+  // The client only PUTs `/api/workspace-ordering` from an explicit
+  // drag now — the server-side merge in `list_sessions` covers the
+  // "new workspace appears" case. The drag test overrides this route
+  // with `page.route(..., ...)` to capture the PUT body.
   await page.route("**/api/workspace-ordering", (r) =>
     r.fulfill({ json: { order: [] } }),
   );
@@ -122,7 +122,7 @@ test.describe("Sidebar drag-to-reorder (#1169)", () => {
       .toEqual(["old-ws", "new-ws"]);
   });
 
-  test("default order with no server entry puts newest workspace first", async ({
+  test("renders the server-returned order verbatim (no client-side resort)", async ({
     page,
   }) => {
     const sessions: MockSession[] = [
@@ -142,7 +142,13 @@ test.describe("Sidebar drag-to-reorder (#1169)", () => {
       },
     ];
 
-    await mockApis(page, () => sessions, () => []);
+    // The real server prepends unseen workspace ids newest-first; the
+    // mock simulates that by returning the merged list. The client
+    // honors it directly without further sorting.
+    await mockApis(page, () => sessions, () => [
+      "/tmp/repo::feature/new",
+      "/tmp/repo::feature/old",
+    ]);
     await page.setViewportSize({ width: 1280, height: 720 });
     await page.goto("/");
 
@@ -154,10 +160,6 @@ test.describe("Sidebar drag-to-reorder (#1169)", () => {
   test("press-and-hold drag reorders the row and PUTs the new order", async ({
     page,
   }) => {
-    // Array is in creation order (oldest first) — the server returns
-    // sessions in `instances` Vec order, and the client treats that as
-    // "newest is whatever was created last." See useRepoGroups + the
-    // effective-ordering memo in App.tsx.
     const sessions: MockSession[] = [
       {
         id: "s-c",
@@ -182,8 +184,17 @@ test.describe("Sidebar drag-to-reorder (#1169)", () => {
       },
     ];
 
+    // The real server returns the merged ordering; the mock mirrors
+    // that, so the client renders the rows in the exact order the
+    // server gave it.
+    const initialOrdering = [
+      "/tmp/repo::feature/a",
+      "/tmp/repo::feature/b",
+      "/tmp/repo::feature/c",
+    ];
+
     const puts: string[][] = [];
-    await mockApis(page, () => sessions, () => []);
+    await mockApis(page, () => sessions, () => initialOrdering);
     await page.route("**/api/workspace-ordering", (r) => {
       const body = JSON.parse(r.request().postData() || "{}") as {
         order?: string[];
@@ -194,7 +205,8 @@ test.describe("Sidebar drag-to-reorder (#1169)", () => {
     await page.setViewportSize({ width: 1280, height: 720 });
     await page.goto("/");
 
-    // Initial newest-first: alpha (Mar), beta (Feb), gamma (Jan).
+    // Initial newest-first per the server-supplied ordering: alpha,
+    // beta, gamma.
     await expect
       .poll(() => readWorkspaceOrder(page), { timeout: 8000 })
       .toEqual(["alpha", "beta", "gamma"]);
@@ -245,9 +257,8 @@ test.describe("Sidebar drag-to-reorder (#1169)", () => {
       .poll(() => readWorkspaceOrder(page), { timeout: 4000 })
       .toEqual(["gamma", "alpha", "beta"]);
 
-    // The drag PUT lands after the initial "prepend new workspaces" PUT
-    // that the App-level effect fires on first observation. We assert the
-    // drag's order shows up among the PUTs.
+    // The drag is the only PUT now (server-side merge handles "new
+    // workspace appears" without a client write).
     await expect
       .poll(() => puts.at(-1), { timeout: 4000 })
       .toEqual([
@@ -255,5 +266,6 @@ test.describe("Sidebar drag-to-reorder (#1169)", () => {
         "/tmp/repo::feature/a",
         "/tmp/repo::feature/b",
       ]);
+    expect(puts.length).toBe(1);
   });
 });
