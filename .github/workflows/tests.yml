@@ -150,39 +150,11 @@ jobs:
           name: coverage-merged
           path: web/coverage/merged/
           retention-days: 14
-      - name: Upload baseline (push to main only)
-        if: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && !cancelled() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: coverage-baseline
-          path: web/coverage/merged/coverage-summary.json
-          retention-days: 90
-      - name: Download baseline (PR only)
-        if: ${{ github.event_name == 'pull_request' }}
-        continue-on-error: true
-        uses: dawidd6/action-download-artifact@v21
-        with:
-          workflow: tests.yml
-          branch: main
-          event: push
-          name: coverage-baseline
-          path: web/coverage/baseline/
-      - name: Post coverage report comment (PR only)
-        if: ${{ github.event_name == 'pull_request' && !cancelled() }}
-        uses: davelosert/vitest-coverage-report-action@v2
-        with:
-          working-directory: web
-          json-summary-path: coverage/merged/coverage-summary.json
-          json-final-path: coverage/merged/coverage-final.json
-          json-summary-compare-path: coverage/baseline/coverage-summary.json
-          comment-on: pr
-          name: Web coverage (Vitest + Playwright merged)
-      - name: Upload to codecov (optional, only when CODECOV_TOKEN is configured)
-        if: ${{ !cancelled() && env.CODECOV_TOKEN != '' }}
-        env:
-          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+      - name: Upload to Codecov
+        if: ${{ !cancelled() }}
         uses: codecov/codecov-action@v6
         with:
+          token: ${{ secrets.CODECOV_TOKEN }}
           files: web/coverage/merged/lcov.info
           flags: frontend
           name: web-frontend-merged

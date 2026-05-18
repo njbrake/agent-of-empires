@@ -176,14 +176,17 @@ coverage:
   status:
     project:
       default:
-        target: 90%
+        # Project status compares the whole repo's coverage against the
+        # base (auto-resolved to main on PRs). `auto` target means
+        # "don't drop below where main is today", which is the right
+        # behavior while the baseline climbs from the foundation
+        # baseline (~16%) toward the 90% goal across follow-ups
+        # #1217-#1224. The hard 90% target is enforced on `patch` below.
+        target: auto
         threshold: 1%
         base: auto
         if_ci_failed: error
-        # Report-only on the first few merges after the foundation lands;
-        # flip to informational: false once the baseline stabilizes via
-        # the follow-up coverage PRs (#1217-#1224, then ratcheted by #1225).
-        informational: true
+        informational: false
         only_pulls: false
     patch:
       default:
