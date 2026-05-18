@@ -31,6 +31,10 @@ pub struct BuiltinTheme {
 
 pub const BUILTIN_THEMES: &[BuiltinTheme] = &[
     BuiltinTheme {
+        name: "default",
+        source: include_str!("../../../themes/builtin/default.toml"),
+    },
+    BuiltinTheme {
         name: "empire",
         source: include_str!("../../../themes/builtin/empire.toml"),
     },
@@ -156,15 +160,15 @@ pub fn load_theme(name: &str) -> Theme {
             }
         }
     }
-    warn!("Unknown theme '{}', falling back to empire", name);
-    // Inline the empire fallback rather than recursing through `load_theme`,
-    // so a future rename or removal of the "empire" builtin would surface as
-    // a clear panic here instead of looping.
-    let empire = BUILTIN_THEMES
+    warn!("Unknown theme '{}', falling back to default", name);
+    // Inline the default fallback rather than recursing through `load_theme`,
+    // so a future rename or removal of the "default" builtin would surface
+    // as a clear panic here instead of looping.
+    let default = BUILTIN_THEMES
         .iter()
-        .find(|b| b.name == "empire")
-        .expect("'empire' builtin missing from BUILTIN_THEMES");
-    parse_builtin(empire)
+        .find(|b| b.name == "default")
+        .expect("'default' builtin missing from BUILTIN_THEMES");
+    parse_builtin(default)
 }
 
 /// Load a theme and, when `palette_mode` is true, convert every `Color::Rgb`
@@ -213,6 +217,11 @@ mod tests {
     /// other than the anchors themselves; cross-field rendering tests cover
     /// the rest. Adding a new builtin requires one row here.
     const BUILTIN_COLOR_ANCHORS: &[(&str, Color, Color)] = &[
+        (
+            "default",
+            Color::Rgb(0x1c, 0x1c, 0x1f),
+            Color::Rgb(0xfb, 0xbf, 0x24),
+        ),
         (
             "empire",
             Color::Rgb(0x0f, 0x17, 0x2a),
@@ -423,20 +432,21 @@ border = "#414868"
     }
 
     #[test]
-    fn unknown_theme_falls_back_to_empire() {
+    fn unknown_theme_falls_back_to_default() {
         let theme = load_theme("nonexistent-theme");
-        let empire = load_theme("empire");
+        let default = load_theme("default");
         assert_eq!(
             theme.color_fields(),
-            empire.color_fields(),
-            "fallback theme color fields drifted from empire"
+            default.color_fields(),
+            "fallback theme color fields drifted from default"
         );
     }
 
     #[test]
     fn test_builtin_themes_count() {
-        assert_eq!(BUILTIN_THEMES.len(), 6);
+        assert_eq!(BUILTIN_THEMES.len(), 7);
         let names: Vec<&str> = builtin_theme_names().collect();
+        assert!(names.contains(&"default"));
         assert!(names.contains(&"empire"));
         assert!(names.contains(&"phosphor"));
         assert!(names.contains(&"tokyo-night-storm"));
