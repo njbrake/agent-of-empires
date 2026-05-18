@@ -115,11 +115,25 @@ const INITIALIZE_RESULT = {
       sse: false,
     },
   },
-  authMethods: [],
+  // No authMethods key at all. An empty array is interpreted by some
+  // ACP client implementations as "auth methods listed but none
+  // available", which surfaces as AuthRequired on the next call.
+  // Omitting the key signals "no auth required" cleanly.
 };
 
 async function handleRequest(msg) {
   const { id, method, params } = msg;
+  if (process.env.FAKE_ACP_DEBUG) {
+    try {
+      const { appendFileSync } = await import("node:fs");
+      appendFileSync(
+        process.env.FAKE_ACP_DEBUG,
+        `req method=${method} id=${id} params=${JSON.stringify(params).slice(0, 200)}\n`,
+      );
+    } catch {
+      // ignore log errors
+    }
+  }
   switch (method) {
     case "initialize":
       sendResult(id, INITIALIZE_RESULT);

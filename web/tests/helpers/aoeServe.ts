@@ -13,7 +13,7 @@
 //
 // See `docs/development/playwright.md` for the full recipe.
 
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { existsSync, mkdtempSync, writeFileSync, chmodSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -46,6 +46,23 @@ export interface SpawnOptions {
   cockpit?: boolean;
   /** Optional path to a FAKE_ACP_SCRIPT for cockpit tests. */
   fakeAcpScript?: string;
+  /**
+   * Runs after the isolated $HOME tree is set up and the fake shim is on
+   * PATH, but BEFORE `aoe serve` spawns. Use to call `aoe add` so the
+   * server picks up the session record in-memory on boot (a post-spawn
+   * `aoe add` would write to disk but the running server's
+   * `state.instances` cache would never reload). The callback receives
+   * the same env vars the server will run with, ready to pass straight
+   * to `child_process.spawnSync(..., { env: seedEnv.env })`.
+   */
+  seedFn?: (seedEnv: {
+    home: string;
+    shimBin: string;
+    xdg: string;
+    tmp: string;
+    tmuxTmp: string;
+    env: NodeJS.ProcessEnv;
+  }) => void | Promise<void>;
 }
 
 export interface ServeHandle {
@@ -94,6 +111,52 @@ export async function listSessions(
   );
 }
 
+/**
+ * Returns a `seedFn` for `spawnAoeServe` that:
+ *   1. git-inits a fresh project dir under the isolated HOME.
+ *   2. runs `aoe add <projectDir> -t <title> -c <tool>` against the same env.
+ *
+ * Must run BEFORE serve spawns so the server picks up the session record
+ * in-memory on boot. A post-spawn `aoe add` writes to disk but the running
+ * server's `state.instances` cache never reloads, so subsequent
+ * `GET /api/sessions` returns an empty list.
+ */
+export function seedSessionViaAoeAdd(opts: {
+  title: string;
+  tool?: string;
+  subdir?: string;
+}): (seedEnv: {
+  home: string;
+  shimBin: string;
+  env: NodeJS.ProcessEnv;
+}) => void {
+  return ({ home, env }) => {
+    const projectDir = join(home, opts.subdir ?? "project");
+    mkdirSync(projectDir, { recursive: true });
+    spawnSync("git", ["init", "-q"], { cwd: projectDir });
+    spawnSync("git", ["commit", "--allow-empty", "-q", "-m", "init"], {
+      cwd: projectDir,
+      env: {
+        ...env,
+        GIT_AUTHOR_NAME: "t",
+        GIT_AUTHOR_EMAIL: "t@t",
+        GIT_COMMITTER_NAME: "t",
+        GIT_COMMITTER_EMAIL: "t@t",
+      },
+    });
+    const addRes = spawnSync(
+      resolveAoeBinary(),
+      ["add", projectDir, "-t", opts.title, "-c", opts.tool ?? "claude"],
+      { env },
+    );
+    if (addRes.status !== 0) {
+      throw new Error(
+        `aoe add failed: status=${addRes.status} stderr=${addRes.stderr?.toString() ?? "<none>"}`,
+      );
+    }
+  };
+}
+
 export function resolveAoeBinary(): string {
   const fromEnv = process.env.AOE_E2E_BINARY;
   if (fromEnv && existsSync(fromEnv)) return fromEnv;
@@ -108,16 +171,30 @@ function portFor(workerIndex: number, parallelIndex: number, attempt: number): n
   return 5200 + workerIndex * 100 + parallelIndex + attempt * 7;
 }
 
-async function waitForServer(baseUrl: string, deadlineMs: number): Promise<void> {
+async function waitForServer(
+  baseUrl: string,
+  deadlineMs: number,
+  proc: ChildProcess,
+  authMode: AuthMode,
+): Promise<void> {
   const deadline = Date.now() + deadlineMs;
   let lastErr: unknown = "no attempts made";
   while (Date.now() < deadline) {
+    if (proc.exitCode !== null || proc.signalCode !== null) {
+      throw new Error(
+        `aoe serve died before ready (exit=${proc.exitCode} signal=${proc.signalCode})`,
+      );
+    }
     try {
       const res = await fetch(`${baseUrl}/api/about`);
-      // /api/about returns 401 under passphrase mode (auth required) and
-      // 200 under no-auth. Either response shape is proof the HTTP listener
-      // is bound.
-      if (res.status === 200 || res.status === 401) return;
+      // In `--no-auth` mode the server returns 200 outright. In passphrase
+      // mode it returns 401 BUT also sets a distinct WWW-Authenticate-ish
+      // response shape. Accepting 401 here without distinguishing makes
+      // the harness latch onto stale token-auth servers that other test
+      // runs left running on the same port. Be precise per authMode.
+      if (authMode === "none" && res.status === 200) return;
+      if (authMode === "passphrase" && (res.status === 200 || res.status === 401))
+        return;
       lastErr = `status ${res.status}`;
     } catch (err) {
       lastErr = err;
@@ -222,6 +299,19 @@ export async function spawnAoeServe(opts: SpawnOptions): Promise<ServeHandle> {
     writeFakeClaudeShim(shimBin);
   }
 
+  const seedEnv = {
+    ...process.env,
+    HOME: home,
+    XDG_CONFIG_HOME: xdg,
+    TMPDIR: tmp,
+    TMUX_TMPDIR: tmuxTmp,
+    PATH: `${shimBin}:${process.env.PATH ?? ""}`,
+  };
+
+  if (opts.seedFn) {
+    await opts.seedFn({ home, shimBin, xdg, tmp, tmuxTmp, env: seedEnv });
+  }
+
   const authMode: AuthMode = opts.authMode ?? "none";
   const passphrase = authMode === "passphrase" ? opts.passphrase ?? DEFAULT_PASSPHRASE : undefined;
 
@@ -241,15 +331,20 @@ export async function spawnAoeServe(opts: SpawnOptions): Promise<ServeHandle> {
 
     proc = spawn(aoeBinary, args, {
       stdio: ["ignore", "pipe", "pipe"],
-      env: {
-        ...process.env,
-        HOME: home,
-        XDG_CONFIG_HOME: xdg,
-        TMPDIR: tmp,
-        TMUX_TMPDIR: tmuxTmp,
-        PATH: `${shimBin}:${process.env.PATH ?? ""}`,
-      },
+      env: seedEnv,
     });
+
+    if (process.env.AOE_E2E_DEBUG === "1") {
+      // Append per-worker server stdio + spawn env to a fixed path so
+      // CI runs can post-mortem failures without holding open pipes
+      // that buffer-fill and stall the harness.
+      const logPath = `/tmp/aoe-e2e-debug-${opts.workerIndex}-${opts.parallelIndex}.log`;
+      const fs = await import("node:fs");
+      const log = fs.createWriteStream(logPath, { flags: "a" });
+      log.write(`\n=== spawn ${args.join(" ")} (home=${home}) ===\n`);
+      proc.stdout?.on("data", (b) => log.write(`[stdout] ${b}`));
+      proc.stderr?.on("data", (b) => log.write(`[stderr] ${b}`));
+    }
 
     let spawnFailed = false;
     proc.once("error", () => {
@@ -257,7 +352,7 @@ export async function spawnAoeServe(opts: SpawnOptions): Promise<ServeHandle> {
     });
 
     try {
-      await waitForServer(baseUrl, spawnTimeoutMs);
+      await waitForServer(baseUrl, spawnTimeoutMs, proc, authMode);
       break;
     } catch (err) {
       try {
@@ -308,9 +403,32 @@ export async function spawnAoeServe(opts: SpawnOptions): Promise<ServeHandle> {
           });
         }
       } finally {
+        // Best-effort: kill any tmux server bound to the isolated socket
+        // before deleting the dir. Cockpit specs leave tmux child
+        // processes around that hold open file descriptors and trip
+        // ENOTEMPTY on rmSync if not cleaned up first.
+        try {
+          spawnSync("tmux", ["kill-server"], {
+            env: {
+              ...process.env,
+              HOME: home,
+              TMUX_TMPDIR: join(home, "tmux"),
+            },
+            stdio: "ignore",
+          });
+        } catch {
+          // tmux not installed or no server running; either way we don't
+          // care.
+        }
         // Removing the home dir wipes the isolated TMUX_TMPDIR socket too.
-        // Orphaned tmux child processes inside the dead socket are inert.
-        rmSync(home, { recursive: true, force: true });
+        // Wrap in try/catch: stale fds, slow umount, or AFS-style retry
+        // semantics can leave non-empty dirs that don't matter for the
+        // test result.
+        try {
+          rmSync(home, { recursive: true, force: true });
+        } catch {
+          // best effort
+        }
       }
     },
   };

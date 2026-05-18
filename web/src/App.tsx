@@ -587,7 +587,16 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
         onToggleRightPanel: () => setDiffCollapsed((c) => !c),
         onToggleTerminalFocus: handleToggleTerminalFocus,
       }),
-      [toggleDiff, showPalette, deletingWorkspaceId, showSettings, handleCloseSettings, navigate, handleToggleTerminalFocus],
+      [
+        toggleDiff,
+        showPalette,
+        deletingWorkspaceId,
+        showSettings,
+        handleCloseSettings,
+        navigate,
+        handleToggleTerminalFocus,
+        serverAbout,
+      ],
     ),
   );
 

@@ -39,12 +39,20 @@ test("dashboard suppresses mutation UI in read-only", async ({
   serveReadOnly,
   page,
 }) => {
+  // Wait for /api/about to land before driving keyboard shortcuts. The
+  // "n" shortcut handler reads `serverAbout?.read_only`; if /api/about
+  // hasn't resolved yet, `serverAbout` is `null` and the read-only guard
+  // is bypassed. Wait for the response so the React state has the flag
+  // before the keypress fires.
+  const aboutPromise = page.waitForResponse(
+    (r) => r.url().endsWith("/api/about") && r.status() === 200,
+    { timeout: 10_000 },
+  );
   await page.goto(serveReadOnly.baseUrl);
+  await aboutPromise;
+  // Small settle so React commits the serverAbout state from the response.
+  await page.waitForTimeout(200);
 
-  // The dashboard's empty state would normally invite the user to create
-  // a new session. In read-only mode, the "n" keyboard shortcut handler
-  // must not open the wizard. Press it and assert the wizard heading
-  // never appears.
   await page.locator("body").click();
   await page.keyboard.press("n");
   await expect(
