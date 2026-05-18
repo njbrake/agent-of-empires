@@ -203,8 +203,9 @@ const MAX_THEME_NAME_LEN: usize = 128;
 
 /// `GET /api/themes/:name` returns the resolved theme projection (web
 /// CSS vars, terminal CSS vars, syntax highlighter selection,
-/// appearance) for the named theme. Unknown names resolve to Empire
-/// with `source: "fallback"`, mirroring `load_theme`'s behaviour.
+/// appearance) for the named theme. Unknown names resolve to the
+/// `default` builtin with `source: "fallback"`, mirroring
+/// `load_theme`'s behaviour.
 ///
 /// Wrapped in `spawn_blocking`: the resolver does sync file I/O
 /// (`discover_custom_themes` directory scan + TOML parse) which must
@@ -218,14 +219,14 @@ pub async fn get_resolved_theme(
             "GET /api/themes/{{name}} rejected: name exceeds {} bytes",
             MAX_THEME_NAME_LEN,
         );
-        return Json(crate::tui::styles::resolve_theme("empire"));
+        return Json(crate::tui::styles::resolve_theme("default"));
     }
     tracing::debug!(theme = %name, "GET /api/themes/{{name}}");
     let resolved = tokio::task::spawn_blocking(move || crate::tui::styles::resolve_theme(&name))
         .await
         .unwrap_or_else(|e| {
-            tracing::warn!(error = %e, "theme resolve task panicked, falling back to empire");
-            crate::tui::styles::resolve_theme("empire")
+            tracing::warn!(error = %e, "theme resolve task panicked, falling back to default");
+            crate::tui::styles::resolve_theme("default")
         });
     Json(resolved)
 }
@@ -243,7 +244,7 @@ pub async fn get_current_theme(
     let resolved = tokio::task::spawn_blocking(move || {
         let cfg = crate::session::profile_config::resolve_config_or_warn(&profile);
         let name = if cfg.theme.name.is_empty() {
-            "empire".to_string()
+            "default".to_string()
         } else {
             cfg.theme.name
         };
@@ -251,8 +252,8 @@ pub async fn get_current_theme(
     })
     .await
     .unwrap_or_else(|e| {
-        tracing::warn!(error = %e, "current theme resolve task panicked, falling back to empire");
-        crate::tui::styles::resolve_theme("empire")
+        tracing::warn!(error = %e, "current theme resolve task panicked, falling back to default");
+        crate::tui::styles::resolve_theme("default")
     });
     Json(resolved)
 }

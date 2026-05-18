@@ -80,9 +80,9 @@ pub struct ResolvedTheme {
 }
 
 /// Resolve a theme name into the full projection. Always succeeds:
-/// unknown names fall back to Empire (matching `load_theme`'s
-/// behaviour) and the returned `source` reports `Fallback` so the
-/// frontend can surface that.
+/// unknown names fall back to the `default` builtin (matching
+/// `load_theme`'s behaviour) and the returned `source` reports
+/// `Fallback` so the frontend can surface that.
 pub fn resolve_theme(name: &str) -> ResolvedTheme {
     debug!("resolve_theme enter name={}", name);
     let theme = load_theme(name);
@@ -90,7 +90,7 @@ pub fn resolve_theme(name: &str) -> ResolvedTheme {
     let source = classify_source(name);
     debug!("resolve_theme: classify_source -> {:?}", source);
     let resolved_name = if matches!(source, ResolvedThemeSource::Fallback) {
-        "empire".to_string()
+        "default".to_string()
     } else {
         name.to_string()
     };
@@ -386,7 +386,7 @@ mod tests {
     fn unknown_theme_resolves_to_fallback() {
         let r = resolve_theme("does-not-exist");
         assert_eq!(r.source, ResolvedThemeSource::Fallback);
-        assert_eq!(r.name, "empire");
+        assert_eq!(r.name, "default");
     }
 
     #[test]
