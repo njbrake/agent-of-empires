@@ -370,9 +370,7 @@ impl EventStore {
         // and "treated as fired" branches below stay at trace because
         // those carry the wake `at` timestamp, which is the only
         // diagnostic value of this function.
-        let Some(json) = json else {
-            return None;
-        };
+        let json = json?;
         let event: Event = match serde_json::from_str(&json) {
             Ok(e) => e,
             Err(e) => {
