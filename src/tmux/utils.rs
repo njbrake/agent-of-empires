@@ -28,7 +28,7 @@ pub fn strip_ansi(content: &str) -> String {
 
 /// Only targets ST-terminated (`\x1b\\`) OSC sequences; BEL-terminated ones
 /// must pass through unchanged since downstream parsers handle those correctly.
-pub fn strip_osc_st(content: &str) -> String {
+pub(crate) fn strip_osc_st(content: &str) -> String {
     const OSC: &str = "\x1b]";
     const ST: &str = "\x1b\\";
 
