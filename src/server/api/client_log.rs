@@ -255,7 +255,7 @@ pub struct ClientLogPolicy {
 ///
 /// The directive uses EnvFilter syntax (`root=level,root.sub=level,...`).
 /// We support the subset: bare `target=level`, last-wins. Unknown levels
-/// and complex span/field directives are ignored — the frontend gates
+/// and complex span/field directives are ignored; the frontend gates
 /// conservatively when in doubt.
 pub fn build_policy_from_filter(directive: &str) -> ClientLogPolicy {
     let mut default_level: String = "info".to_string();
