@@ -160,7 +160,7 @@ jobs:
       - name: Download baseline (PR only)
         if: ${{ github.event_name == 'pull_request' }}
         continue-on-error: true
-        uses: dawidd6/action-download-artifact@v6
+        uses: dawidd6/action-download-artifact@v21
         with:
           workflow: tests.yml
           branch: main
@@ -181,7 +181,7 @@ jobs:
         if: ${{ !cancelled() && env.CODECOV_TOKEN != '' }}
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@v6
         with:
           files: web/coverage/merged/lcov.info
           fail_ci_if_error: false
