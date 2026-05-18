@@ -57,6 +57,8 @@ pub enum PaletteAction {
     Key(KeyEvent),
     /// Move the cursor to a position in `flat_items` (used for session/group jump items).
     JumpToCursor(usize),
+    /// Open a tool session by name (lazygit, yazi, etc.)
+    ToolSession(String),
 }
 
 /// One entry in the palette. `payload` is what gets returned when the user picks it.

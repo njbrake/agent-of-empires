@@ -166,7 +166,7 @@ impl SessionPoller {
         let cmd_rx = match self.cmd_rx.take() {
             Some(rx) => rx,
             None => {
-                tracing::warn!(
+                tracing::warn!(target: "session.create",
                     "Poller for {} already started, ignoring duplicate start",
                     instance_id
                 );
@@ -177,7 +177,7 @@ impl SessionPoller {
         let _guard = match PollerCountGuard::try_acquire() {
             Some(g) => g,
             None => {
-                tracing::warn!(
+                tracing::warn!(target: "session.create",
                     "Poller thread budget exhausted ({}/{}), skipping poller for {}",
                     ACTIVE_POLLER_COUNT.load(Ordering::SeqCst),
                     MAX_POLLER_THREADS,
@@ -235,7 +235,7 @@ impl SessionPoller {
                     }
 
                     if crate::tmux::utils::is_pane_dead(&session_name) {
-                        tracing::info!("Pane dead for {}, stopping poller", session_name);
+                        tracing::info!(target: "session.create", "Pane dead for {}, stopping poller", session_name);
                         break;
                     }
 
@@ -249,7 +249,7 @@ impl SessionPoller {
                 true
             }
             Err(e) => {
-                tracing::warn!("Failed to spawn poller thread {}: {}", thread_label, e);
+                tracing::warn!(target: "session.create", "Failed to spawn poller thread {}: {}", thread_label, e);
                 // Restore channels to allow retrying spawn
                 let (cmd_tx, cmd_rx) = mpsc::channel();
                 self.cmd_tx = cmd_tx;
@@ -272,7 +272,7 @@ impl SessionPoller {
         let _ = self.cmd_tx.send(PollCommand::Stop);
         if let Some(handle) = self.handle.take() {
             if let Err(e) = handle.join() {
-                tracing::warn!("Poller thread panicked: {:?}", e);
+                tracing::warn!(target: "session.create", "Poller thread panicked: {:?}", e);
             }
         }
     }

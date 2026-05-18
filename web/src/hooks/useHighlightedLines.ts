@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import {
+  ensureThemeLoaded,
   getHighlighter,
   langImportForPath,
   type ThemedToken,
 } from "../lib/highlighter";
 import type { RichDiffHunk } from "../lib/types";
+import { useShikiTheme } from "./useShikiTheme";
 
 /** A single token with content and an optional foreground color. */
 export interface SyntaxToken {
@@ -44,6 +46,7 @@ export function useHighlightedLines(
 ): HighlightResult {
   const [state, setState] = useState<GridState | null>(null);
   const requestRef = useRef(0);
+  const shiki = useShikiTheme();
 
   const hasLang = !!langImportForPath(filePath);
 
@@ -54,6 +57,10 @@ export function useHighlightedLines(
     if (!langImport) return;
 
     (async () => {
+      const resolvedTheme = await ensureThemeLoaded(
+        shiki.theme,
+        shiki.appearance,
+      );
       const hl = await getHighlighter();
 
       // Load the grammar if not already registered.
@@ -91,7 +98,7 @@ export function useHighlightedLines(
           try {
             const { tokens } = hl.codeToTokens(raw, {
               lang: langId,
-              theme: "github-dark",
+              theme: resolvedTheme,
             });
             const mapped: SyntaxToken[] = (
               tokens[0] as ThemedToken[] | undefined
@@ -110,7 +117,7 @@ export function useHighlightedLines(
         setState({ grid: result, path: filePath });
       }
     })();
-  }, [hunks, filePath]);
+  }, [hunks, filePath, shiki.theme, shiki.appearance]);
 
   // Only return the grid if it matches the current file path.
   const tokens = state && state.path === filePath ? state.grid : null;

@@ -74,7 +74,7 @@ fn prune_empty_parent_dirs(worktree_path: &Path, main_repo: &Path) {
 
         match std::fs::remove_dir(&parent) {
             Ok(()) => {
-                tracing::debug!(
+                tracing::debug!(target: "git.worktree",
                     path = %parent.display(),
                     "removed empty worktree wrapper dir"
                 );
@@ -82,7 +82,7 @@ fn prune_empty_parent_dirs(worktree_path: &Path, main_repo: &Path) {
                 hops += 1;
             }
             Err(e) => {
-                tracing::debug!(
+                tracing::debug!(target: "git.worktree",
                     path = %parent.display(),
                     error = %e,
                     "stopped pruning at non-empty or inaccessible parent"
@@ -311,20 +311,20 @@ pub fn deinit_submodules_if_present(worktree_path: &Path) {
     let output = super::command::run_git(worktree_path, ["submodule", "deinit", "-f", "--all"]);
     match output {
         Ok(o) if o.status.success() => {
-            tracing::debug!(
+            tracing::debug!(target: "git.worktree",
                 path = %worktree_path.display(),
                 "deinitialised submodules before worktree removal"
             );
         }
         Ok(o) => {
-            tracing::debug!(
+            tracing::debug!(target: "git.worktree",
                 path = %worktree_path.display(),
                 stderr = %String::from_utf8_lossy(&o.stderr),
                 "submodule deinit returned non-zero; continuing"
             );
         }
         Err(e) => {
-            tracing::debug!(
+            tracing::debug!(target: "git.worktree",
                 path = %worktree_path.display(),
                 error = %e,
                 "submodule deinit failed to spawn; continuing"
@@ -369,14 +369,14 @@ pub fn manual_submodule_worktree_cleanup(
         let modules_dir = main_repo.join(".git/worktrees").join(&name).join("modules");
         if modules_dir.exists() {
             if let Err(e) = std::fs::remove_dir_all(&modules_dir) {
-                tracing::debug!(
+                tracing::debug!(target: "git.worktree",
                     path = %modules_dir.display(),
                     error = %e,
                     "failed to remove orphaned worktree modules dir"
                 );
                 errors.push(format!("Submodule cleanup: {}", e));
             } else {
-                tracing::debug!(
+                tracing::debug!(target: "git.worktree",
                     path = %modules_dir.display(),
                     "removed orphaned worktree modules dir"
                 );
@@ -454,7 +454,7 @@ pub fn remove_managed_worktree(
     let mut errors = Vec::new();
     let has_dot_git = worktree_path.join(".git").exists();
 
-    tracing::debug!(
+    tracing::debug!(target: "git.worktree",
         path = %worktree_path.display(),
         has_dot_git,
         is_sandboxed = instance.is_sandboxed(),
@@ -492,7 +492,7 @@ pub fn remove_managed_worktree(
                 worktree_removed = true;
             }
             Err(e) => {
-                tracing::debug!(error = %e, kind = ?e.kind(), "remove_worktree_dir failed (no .git)");
+                tracing::debug!(target: "git.worktree", error = %e, kind = ?e.kind(), "remove_worktree_dir failed (no .git)");
                 if is_permission_error(&e.to_string())
                     && try_sandbox_dir_cleanup(
                         worktree_path,
@@ -524,7 +524,7 @@ pub fn remove_managed_worktree(
             }
             Err(e) => {
                 let err_str = e.to_string();
-                tracing::debug!(
+                tracing::debug!(target: "git.worktree",
                     error = %err_str,
                     is_perm = is_permission_error(&err_str),
                     is_submodule = is_submodule_blocker(&err_str),
@@ -611,24 +611,24 @@ fn try_sandbox_dir_cleanup(
         return false;
     }
     if !allow_container_removal {
-        tracing::debug!("sandbox fallback skipped: caller forbade container removal");
+        tracing::debug!(target: "git.worktree", "sandbox fallback skipped: caller forbade container removal");
         return false;
     }
 
     let cleaned = cleanup_sandbox_worktree(instance);
-    tracing::debug!(cleaned, "container cleanup attempted");
+    tracing::debug!(target: "git.worktree", cleaned, "container cleanup attempted");
     if !cleaned {
         return false;
     }
 
     let container = DockerContainer::from_session_id(&instance.id);
     let rm_result = container.remove(true);
-    tracing::debug!(?rm_result, "container force-removed");
+    tracing::debug!(target: "git.worktree", ?rm_result, "container force-removed");
 
     match remove_worktree_dir(worktree_path, main_repo, true) {
         Ok(()) => true,
         Err(e) => {
-            tracing::debug!(error = %e, kind = ?e.kind(), "remove_worktree_dir failed after cleanup");
+            tracing::debug!(target: "git.worktree", error = %e, kind = ?e.kind(), "remove_worktree_dir failed after cleanup");
             false
         }
     }

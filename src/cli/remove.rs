@@ -33,6 +33,7 @@ fn needs_worktree_cleanup(inst: &Instance, args: &RemoveArgs) -> bool {
         .is_some_and(|wt| wt.managed_by_aoe && args.delete_worktree)
 }
 
+#[tracing::instrument(target = "cli.session", skip_all, fields(profile = %profile))]
 pub async fn run(profile: &str, args: RemoveArgs) -> Result<()> {
     let storage = Storage::new(profile)?;
     let (instances, groups) = storage.load_with_groups()?;

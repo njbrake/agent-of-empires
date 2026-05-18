@@ -19,24 +19,27 @@ async function mockApis(page: Page, sessions: MockSession[]) {
   await page.route("**/api/sessions", (r) => {
     if (r.request().method() !== "GET") return r.fulfill({ status: 400 });
     return r.fulfill({
-      json: sessions.map((s) => ({
-        id: s.id,
-        title: s.title,
-        project_path: s.project_path,
-        group_path: s.project_path,
-        tool: "claude",
-        status: "Idle",
-        yolo_mode: false,
-        created_at: new Date().toISOString(),
-        last_accessed_at: null,
-        last_error: null,
-        branch: s.branch,
-        main_repo_path: null,
-        is_sandboxed: false,
-        has_terminal: true,
-        profile: "default",
-        workspace_repos: [],
-      })),
+      json: {
+        sessions: sessions.map((s) => ({
+          id: s.id,
+          title: s.title,
+          project_path: s.project_path,
+          group_path: s.project_path,
+          tool: "claude",
+          status: "Idle",
+          yolo_mode: false,
+          created_at: new Date().toISOString(),
+          last_accessed_at: null,
+          last_error: null,
+          branch: s.branch,
+          main_repo_path: null,
+          is_sandboxed: false,
+          has_terminal: true,
+          profile: "default",
+          workspace_repos: [],
+        })),
+        workspace_ordering: [],
+      },
     });
   });
   for (const path of [

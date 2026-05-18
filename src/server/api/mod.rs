@@ -35,14 +35,15 @@ pub use projects::{create_project, delete_project, list_projects};
 pub use sessions::{
     create_session, delete_session, ensure_container_terminal, ensure_session, ensure_terminal,
     list_sessions, read_output, rename_session, send_message, session_diff_file,
-    session_diff_files, update_session_diff_base, update_session_notifications, CleanupDefaults,
-    OutputQuery, SendMessageRequest, SessionResponse,
+    session_diff_files, update_session_diff_base, update_session_notifications,
+    update_workspace_ordering, CleanupDefaults, OutputQuery, SendMessageRequest, SessionResponse,
 };
 pub use system::{
     browse_filesystem, create_profile, default_profile, delete_profile, docker_status,
-    filesystem_home, get_about, get_profile_settings, get_settings, get_update_status, list_agents,
-    list_devices, list_groups, list_profiles, list_sounds, list_themes, rename_profile,
-    update_profile_settings, update_settings,
+    filesystem_home, get_about, get_current_theme, get_profile_settings, get_resolved_theme,
+    get_settings, get_update_status, list_agents, list_devices, list_groups, list_profiles,
+    list_sounds, list_themes, rename_profile, serve_sound_file, update_profile_settings,
+    update_settings,
 };
 
 const SHELL_METACHARACTERS: &[char] = &[

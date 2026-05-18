@@ -131,7 +131,7 @@ impl SettingsView {
         let mut available_profiles = match list_profiles() {
             Ok(p) => p,
             Err(e) => {
-                tracing::debug!("Failed to list profiles: {e}");
+                tracing::debug!(target: "tui.settings", "Failed to list profiles: {e}");
                 Vec::new()
             }
         };

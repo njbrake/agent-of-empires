@@ -73,11 +73,14 @@ pub enum SupervisorError {
 /// Frame published to the broadcast channel; mirrors
 /// `crate::server::CockpitBroadcastFrame` so the supervisor can be
 /// tested without pulling in the server module.
+///
+/// Approval pushes are no longer driven from here: the cockpit event
+/// listener in the server module subscribes to the same broadcast and
+/// matches `Event::ApprovalRequested` with `Arc<AppState>` already in
+/// scope, which removed the need for a separate approval callback path.
+/// See #1038.
 pub trait BroadcastSink: Send + Sync + 'static {
     fn publish(&self, session_id: &str, seq: u64, event: &Event);
-    fn approval_requested(&self, _session_id: &str, _approval_title: &str, _destructive: bool) {
-        // Default: no-op. The server impl fires a push notification.
-    }
     /// Approval nonces from `ApprovalRequested` events on disk with no
     /// matching `ApprovalResolved`. Used by `Supervisor::attach` to
     /// cancel approvals whose responder died with the previous daemon.
@@ -771,13 +774,6 @@ impl<S: BroadcastSink> Supervisor<S> {
                     }
                     let seq = next_seq(&next_seqs, &session_id);
                     sink.publish(&session_id, seq, &event);
-                    if let Event::ApprovalRequested { approval } = &event {
-                        sink.approval_requested(
-                            &session_id,
-                            &approval.tool_call.name,
-                            approval.destructive,
-                        );
-                    }
                 }
 
                 // Channel closed: the agent's connection task ended.
@@ -1623,11 +1619,6 @@ fn next_seq(next_seqs: &SeqMap, session_id: &str) -> u64 {
     *entry
 }
 
-/// Callback fired when the supervisor observes an ApprovalRequested
-/// event for a session. The server impl uses this to trigger a Web
-/// Push notification; the test impl just records the call.
-pub type ApprovalHook = Arc<dyn Fn(&str, &str, bool) + Send + Sync>;
-
 /// A `BroadcastSink` impl backed by a tokio broadcast channel. The
 /// AppState in the server module wires this so cockpit events flow
 /// straight into the existing WebSocket fanout, and snapshots them
@@ -1641,7 +1632,6 @@ pub type ApprovalHook = Arc<dyn Fn(&str, &str, bool) + Send + Sync>;
 /// this lock briefly.
 pub struct ChannelSink {
     pub tx: broadcast::Sender<crate::server::CockpitBroadcastFrame>,
-    pub on_approval: ApprovalHook,
     /// Disk-backed event log. The single source of truth for replay:
     /// the WS-on-connect drain, the `/cockpit/replay` REST endpoint,
     /// and the supervisor's startup `hydrate_seqs` all read from here.
@@ -1685,10 +1675,6 @@ impl BroadcastSink for ChannelSink {
         let _ = self.tx.send(frame);
     }
 
-    fn approval_requested(&self, session_id: &str, approval_title: &str, destructive: bool) {
-        (self.on_approval)(session_id, approval_title, destructive);
-    }
-
     fn unresolved_approval_nonces(&self, session_id: &str) -> Vec<Nonce> {
         self.event_store.unresolved_approval_nonces(session_id)
     }
@@ -1701,21 +1687,18 @@ mod tests {
     /// In-memory sink that captures published frames.
     struct VecSink {
         frames: std::sync::Mutex<Vec<(String, u64, Event)>>,
-        approvals: std::sync::Mutex<Vec<(String, String, bool)>>,
         stale_nonces: std::sync::Mutex<Vec<Nonce>>,
     }
     impl VecSink {
         fn new() -> Arc<Self> {
             Arc::new(Self {
                 frames: std::sync::Mutex::new(Vec::new()),
-                approvals: std::sync::Mutex::new(Vec::new()),
                 stale_nonces: std::sync::Mutex::new(Vec::new()),
             })
         }
         fn with_stale_nonces(nonces: Vec<Nonce>) -> Arc<Self> {
             Arc::new(Self {
                 frames: std::sync::Mutex::new(Vec::new()),
-                approvals: std::sync::Mutex::new(Vec::new()),
                 stale_nonces: std::sync::Mutex::new(nonces),
             })
         }
@@ -1726,13 +1709,6 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push((session_id.to_string(), seq, event.clone()));
-        }
-        fn approval_requested(&self, session: &str, title: &str, destructive: bool) {
-            self.approvals.lock().unwrap().push((
-                session.to_string(),
-                title.to_string(),
-                destructive,
-            ));
         }
         fn unresolved_approval_nonces(&self, _session_id: &str) -> Vec<Nonce> {
             self.stale_nonces.lock().unwrap().clone()
@@ -2602,10 +2578,8 @@ mod tests {
         let db_path = tmp.path().join("cockpit.db");
         let event_store = Arc::new(EventStore::open(&db_path, 1000).unwrap());
         let (tx, mut rx) = broadcast::channel(16);
-        let on_approval: ApprovalHook = Arc::new(|_, _, _| {});
         let sink = Arc::new(ChannelSink {
             tx,
-            on_approval,
             event_store: event_store.clone(),
         });
 
@@ -2664,10 +2638,8 @@ mod tests {
         {
             let event_store = Arc::new(EventStore::open(&db_path, 1000).unwrap());
             let (tx, _rx) = broadcast::channel(16);
-            let on_approval: ApprovalHook = Arc::new(|_, _, _| {});
             let sink = Arc::new(ChannelSink {
                 tx,
-                on_approval,
                 event_store: event_store.clone(),
             });
             let sup = Supervisor::new(sink);
@@ -2684,10 +2656,8 @@ mod tests {
         assert_eq!(event_store.highest_seq("s-99"), 3);
 
         let (tx, mut rx) = broadcast::channel(16);
-        let on_approval: ApprovalHook = Arc::new(|_, _, _| {});
         let sink = Arc::new(ChannelSink {
             tx,
-            on_approval,
             event_store: event_store.clone(),
         });
         let sup = Supervisor::new(sink);

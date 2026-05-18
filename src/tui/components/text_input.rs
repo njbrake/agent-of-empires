@@ -233,6 +233,7 @@ pub fn set_input_cursor_position(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tui::styles::load_theme;
 
     fn groups(names: &[&str]) -> Vec<String> {
         names.iter().map(|s| s.to_string()).collect()
@@ -373,7 +374,7 @@ mod tests {
         let backend = TestBackend::new(40, 3);
         let mut terminal = Terminal::new(backend).unwrap();
         let input = Input::new("hi".to_string());
-        let theme = Theme::empire();
+        let theme = load_theme("empire");
 
         terminal
             .draw(|f| {
@@ -402,7 +403,7 @@ mod tests {
         let backend = TestBackend::new(40, 3);
         let mut terminal = Terminal::new(backend).unwrap();
         let input = Input::new("你".to_string());
-        let theme = Theme::empire();
+        let theme = load_theme("empire");
 
         terminal
             .draw(|f| {

@@ -194,27 +194,13 @@ export function useTerminal(
     termEl.style.height = "100%";
     container.appendChild(termEl);
 
-    // Apply custom theme colors via CSS custom properties.
-    // wterm uses --term-* variables for theming instead of a JS theme object.
-    termEl.style.setProperty("--term-bg", "#141416");
-    termEl.style.setProperty("--term-fg", "#e4e4e7");
-    termEl.style.setProperty("--term-cursor", "#d97706");
-    termEl.style.setProperty("--term-color-0", "#1c1c1f");
-    termEl.style.setProperty("--term-color-1", "#ef4444");
-    termEl.style.setProperty("--term-color-2", "#22c55e");
-    termEl.style.setProperty("--term-color-3", "#fbbf24");
-    termEl.style.setProperty("--term-color-4", "#60a5fa");
-    termEl.style.setProperty("--term-color-5", "#a78bfa");
-    termEl.style.setProperty("--term-color-6", "#22d3ee");
-    termEl.style.setProperty("--term-color-7", "#e4e4e7");
-    termEl.style.setProperty("--term-color-8", "#52525b");
-    termEl.style.setProperty("--term-color-9", "#f87171");
-    termEl.style.setProperty("--term-color-10", "#4ade80");
-    termEl.style.setProperty("--term-color-11", "#fde68a");
-    termEl.style.setProperty("--term-color-12", "#93c5fd");
-    termEl.style.setProperty("--term-color-13", "#c4b5fd");
-    termEl.style.setProperty("--term-color-14", "#67e8f9");
-    termEl.style.setProperty("--term-color-15", "#fafafa");
+    // wterm reads --term-* CSS variables for theming. Background,
+    // foreground, cursor, and the 16 ANSI slots come from the resolved
+    // theme (set on document.documentElement by useResolvedTheme) and
+    // cascade in. Only font vars are per-terminal-instance since they
+    // track the user's font-size setting; setting them on the element
+    // (not the root) lets each terminal instance scale independently
+    // under pinch-zoom.
     termEl.style.setProperty(
       "--term-font-family",
       "'Geist Mono', ui-monospace, 'SFMono-Regular', monospace",
@@ -1196,6 +1182,24 @@ export function useTerminal(
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId, wsPath]);
+
+  // Repaint the live terminal when the user picks a new theme. The
+  // resolved theme's --term-* variables live on documentElement and
+  // cascade in, but wterm only re-reads them on draw, so a quiet PTY
+  // would otherwise keep painting in the old palette until the next
+  // byte arrives. Calling term.resize with the current size forces a
+  // re-layout without changing the geometry.
+  useEffect(() => {
+    const onThemeChanged = () => {
+      const term = termRef.current;
+      if (!term) return;
+      term.resize(term.cols, term.rows);
+    };
+    window.addEventListener("aoe:theme-changed", onThemeChanged);
+    return () => {
+      window.removeEventListener("aoe:theme-changed", onThemeChanged);
+    };
+  }, []);
 
   // Apply font size changes from settings UI to the live terminal.
   useEffect(() => {

@@ -409,7 +409,7 @@ fn build_resume_flags(tool: &str, session_id: &str, is_existing_session: bool) -
     use crate::agents::{get_agent, ResumeStrategy};
 
     if !is_valid_session_id(session_id) {
-        tracing::warn!(
+        tracing::warn!(target: "session.store",
             "Refusing to build resume flags: invalid session ID {:?}",
             session_id
         );
@@ -465,7 +465,7 @@ fn append_resume_flags(
         } else {
             *cmd = format!("{} {}", cmd, resume_part);
         }
-        tracing::debug!("Added resume flags to {} command: {}", context, resume_part);
+        tracing::debug!(target: "session.store", "Added resume flags to {} command: {}", context, resume_part);
     }
 }
 
@@ -485,7 +485,7 @@ fn persist_session_to_storage(profile: &str, instance_id: &str, session_id: &str
     );
 
     if !is_valid_session_id(session_id) {
-        tracing::warn!(
+        tracing::warn!(target: "session.store",
             "Refusing to persist invalid session ID {:?} for {}",
             session_id,
             instance_id
@@ -496,14 +496,14 @@ fn persist_session_to_storage(profile: &str, instance_id: &str, session_id: &str
     let storage = match super::storage::Storage::new(profile) {
         Ok(s) => s,
         Err(e) => {
-            tracing::warn!("Failed to create storage for session ID persistence: {}", e);
+            tracing::warn!(target: "session.store", "Failed to create storage for session ID persistence: {}", e);
             return;
         }
     };
     let mut instances = match storage.load() {
         Ok(i) => i,
         Err(e) => {
-            tracing::warn!("Failed to load instances for session ID persistence: {}", e);
+            tracing::warn!(target: "session.store", "Failed to load instances for session ID persistence: {}", e);
             return;
         }
     };
@@ -515,9 +515,9 @@ fn persist_session_to_storage(profile: &str, instance_id: &str, session_id: &str
     inst.agent_session_id = Some(session_id.to_string());
 
     if let Err(e) = storage.save(&instances) {
-        tracing::warn!("Failed to save instances for session ID persistence: {}", e);
+        tracing::warn!(target: "session.store", "Failed to save instances for session ID persistence: {}", e);
     } else {
-        tracing::debug!("Session ID persisted for {}", instance_id);
+        tracing::debug!(target: "session.store", "Session ID persisted for {}", instance_id);
     }
 }
 
@@ -579,14 +579,14 @@ fn clear_session_id_on_disk(profile: &str, instance_id: &str) {
     let storage = match super::storage::Storage::new(profile) {
         Ok(s) => s,
         Err(e) => {
-            tracing::warn!("Failed to create storage to clear session ID: {}", e);
+            tracing::warn!(target: "session.store", "Failed to create storage to clear session ID: {}", e);
             return;
         }
     };
     let mut instances = match storage.load() {
         Ok(i) => i,
         Err(e) => {
-            tracing::warn!("Failed to load instances to clear session ID: {}", e);
+            tracing::warn!(target: "session.store", "Failed to load instances to clear session ID: {}", e);
             return;
         }
     };
@@ -598,9 +598,9 @@ fn clear_session_id_on_disk(profile: &str, instance_id: &str) {
     }
     inst.agent_session_id = None;
     if let Err(e) = storage.save(&instances) {
-        tracing::warn!("Failed to save instances after clearing session ID: {}", e);
+        tracing::warn!(target: "session.store", "Failed to save instances after clearing session ID: {}", e);
     } else {
-        tracing::debug!("Session ID cleared on disk for {}", instance_id);
+        tracing::debug!(target: "session.store", "Session ID cleared on disk for {}", instance_id);
     }
 }
 
@@ -615,7 +615,7 @@ fn publish_session_to_tmux_env(tmux_session_name: &str, session_id: &str) {
         crate::tmux::env::AOE_CAPTURED_SESSION_ID_KEY,
         session_id,
     ) {
-        tracing::warn!("Failed to write captured session ID to tmux env: {}", e);
+        tracing::warn!(target: "session.store", "Failed to write captured session ID to tmux env: {}", e);
     }
 }
 
@@ -752,7 +752,7 @@ impl Instance {
         let tmux_exists = self.tmux_session().is_ok_and(|s| s.exists());
         if tmux_exists {
             if let Some(id) = self.try_retroactive_capture() {
-                tracing::info!(
+                tracing::info!(target: "session.store",
                     "Retroactive capture found session ID for {}: {}",
                     self.tool,
                     id
@@ -769,7 +769,7 @@ impl Instance {
         };
 
         if let Some(ref id) = session_id {
-            tracing::debug!("Session ID for {}: {}", self.tool, id);
+            tracing::debug!(target: "session.store", "Session ID for {}: {}", self.tool, id);
             self.agent_session_id = session_id.clone();
         }
 
@@ -1127,7 +1127,7 @@ impl Instance {
                         &sandbox.container_name,
                         &workdir,
                     ) {
-                        tracing::warn!("on_launch hook failed in container: {}", e);
+                        tracing::warn!(target: "session.store", "on_launch hook failed in container: {}", e);
                     }
                 }
             }
@@ -1186,7 +1186,7 @@ impl Instance {
             self.build_host_command(agent, &on_launch_hooks)
         };
 
-        tracing::debug!(
+        tracing::debug!(target: "session.store",
             "container cmd: {}",
             cmd.as_ref().map_or("none".to_string(), |v| {
                 super::environment::redact_env_values(v)
@@ -1250,14 +1250,14 @@ impl Instance {
         if self.tool == "settl" {
             // settl uses TOML config, not JSON settings
             if let Err(e) = crate::hooks::install_settl_hooks() {
-                tracing::warn!("Failed to install settl hooks: {}", e);
+                tracing::warn!(target: "session.store", "Failed to install settl hooks: {}", e);
             }
         } else if self.tool == "hermes" && !self.is_sandboxed() {
             // Hermes uses YAML config; sandbox path is handled by build_container_config
             if let Some(home) = dirs::home_dir() {
                 let config_path = home.join(".hermes").join("config.yaml");
                 if let Err(e) = crate::hooks::install_hermes_hooks(&config_path) {
-                    tracing::warn!("Failed to install hermes hooks: {}", e);
+                    tracing::warn!(target: "session.store", "Failed to install hermes hooks: {}", e);
                 }
             }
         } else if self.tool == "kiro" && !self.is_sandboxed() {
@@ -1267,7 +1267,9 @@ impl Instance {
                 let config_path = home.join(crate::hooks::KIRO_HOOKS_AGENT_FILE);
                 match crate::hooks::install_kiro_hooks(&config_path) {
                     Ok(()) => crate::hooks::set_kiro_default_agent_if_builtin(),
-                    Err(e) => tracing::warn!("Failed to install kiro hooks: {}", e),
+                    Err(e) => {
+                        tracing::warn!(target: "session.store", "Failed to install kiro hooks: {}", e)
+                    }
                 }
             }
         } else if agent.is_some_and(|a| a.name == "codex") && !self.is_sandboxed() {
@@ -1291,7 +1293,7 @@ impl Instance {
                 if let Some(home) = dirs::home_dir() {
                     let settings_path = home.join(hook_cfg.settings_rel_path);
                     if let Err(e) = crate::hooks::install_hooks(&settings_path, hook_cfg.events) {
-                        tracing::warn!("Failed to install agent hooks: {}", e);
+                        tracing::warn!(target: "session.store", "Failed to install agent hooks: {}", e);
                     }
                 }
             }
@@ -1322,7 +1324,7 @@ impl Instance {
             if let Err(e) =
                 super::repo_config::execute_hooks(hook_cmds, Path::new(&self.project_path))
             {
-                tracing::warn!("on_launch hook failed: {}", e);
+                tracing::warn!(target: "session.store", "on_launch hook failed: {}", e);
             }
         }
 
@@ -1382,7 +1384,7 @@ impl Instance {
             crate::tmux::env::AOE_INSTANCE_ID_KEY,
             &self.id,
         ) {
-            tracing::warn!("Failed to set AOE_INSTANCE_ID in tmux env: {}", e);
+            tracing::warn!(target: "session.store", "Failed to set AOE_INSTANCE_ID in tmux env: {}", e);
         }
 
         self.persist_session_id(profile);
@@ -1409,12 +1411,12 @@ impl Instance {
                         sandbox.as_ref(),
                     );
                 })) {
-                    tracing::error!("finalize-tmux thread panicked: {:?}", panic);
+                    tracing::error!(target: "session.store", "finalize-tmux thread panicked: {:?}", panic);
                 }
             }) {
             Ok(_handle) => {}
             Err(e) => {
-                tracing::error!(
+                tracing::error!(target: "session.store", 
                     session = %instance_id_for_log,
                     error = %e,
                     "Failed to spawn finalize-tmux thread"
@@ -1665,7 +1667,7 @@ impl Instance {
             .unwrap_or_default();
 
         let on_change: Box<dyn Fn(&str) + Send + 'static> = Box::new(move |new_id: &str| {
-            tracing::info!("Session ID changed for {}: {}", cb_instance_id, new_id);
+            tracing::info!(target: "session.store", "Session ID changed for {}: {}", cb_instance_id, new_id);
             if !cb_tmux_name.is_empty() {
                 publish_session_to_tmux_env(&cb_tmux_name, new_id);
             }
@@ -1674,7 +1676,7 @@ impl Instance {
         if poller.start(instance_id.clone(), poll_fn, on_change, initial_known) {
             self.session_id_poller = Some(Arc::new(Mutex::new(poller)));
         } else {
-            tracing::warn!(
+            tracing::warn!(target: "session.store",
                 "Failed to start session poller for instance {}, poller will not be stored",
                 instance_id
             );
@@ -1714,14 +1716,14 @@ impl Instance {
             return Ok(());
         }
         if session.is_pane_dead() {
-            tracing::info!(
+            tracing::info!(target: "session.store",
                 "restart: pane dead for session {} (remain-on-exit), \
                  respawning shell before recreate",
                 session.name()
             );
             let shell = super::environment::user_shell();
             if let Err(e) = session.respawn_dead_pane(&self.project_path, Some(&shell)) {
-                tracing::warn!(
+                tracing::warn!(target: "session.store",
                     "respawn_dead_pane failed for {}: {}; falling back to kill+start",
                     session.name(),
                     e
@@ -1910,6 +1912,7 @@ impl Instance {
             .expect("attempting_resume guarantees agent_session_id is Some");
         let profile = self.effective_profile();
         tracing::warn!(
+            target: "session.store",
             "start: resume with sid {} for session {} crashed pane within probe; \
              clearing sid and retrying without resume",
             stale_sid,
@@ -2165,7 +2168,7 @@ impl Instance {
         let session = match self.tmux_session() {
             Ok(s) => s,
             Err(_) => {
-                tracing::trace!(
+                tracing::trace!(target: "session.store",
                     "status '{}': tmux_session() failed, setting Error",
                     self.title
                 );
@@ -2181,7 +2184,7 @@ impl Instance {
         };
 
         if !session.exists() {
-            tracing::trace!(
+            tracing::trace!(target: "session.store",
                 "status '{}': session.exists()=false (tmux name={}), setting Error",
                 self.title,
                 tmux::Session::generate_name(&self.id, &self.title)
@@ -2208,7 +2211,7 @@ impl Instance {
                 tmux::utils::pane_current_command(&name)
             });
 
-        tracing::trace!(
+        tracing::trace!(target: "session.store",
             "status '{}': exists=true, is_dead={}, pane_cmd={:?}, tool={}, cmd_override={}",
             self.title,
             is_dead,
@@ -2224,7 +2227,7 @@ impl Instance {
         };
 
         if let Some(hook_status) = crate::hooks::read_hook_status(&self.id) {
-            tracing::trace!(
+            tracing::trace!(target: "session.store",
                 "status '{}': hook detected {:?}, is_dead={}",
                 self.title,
                 hook_status,
@@ -2261,7 +2264,7 @@ impl Instance {
 
         let pane_content = session.capture_pane(50).unwrap_or_default();
         let detected = tmux::detect_status_from_content(&pane_content, detection_tool);
-        tracing::trace!(
+        tracing::trace!(target: "session.store",
             "status '{}': detected={:?}, cmd_override={}, custom_cmd={}",
             self.title,
             detected,
@@ -2277,7 +2280,7 @@ impl Instance {
                 .and_then(|m| m.pane_current_command.as_deref())
                 .map(tmux::utils::is_shell_command)
                 .unwrap_or_else(|| session.is_pane_running_shell());
-            tracing::trace!(
+            tracing::trace!(target: "session.store",
                 "status '{}': is_shell_stale check: expects_shell={}, shell_check={}",
                 self.title,
                 expects,
@@ -2304,13 +2307,13 @@ impl Instance {
                 // UI the agent is still alive; only declare Error when the
                 // content looks like a bare shell prompt.
                 if pane_has_agent_content(&pane_content, &self.tool) {
-                    tracing::trace!(
+                    tracing::trace!(target: "session.store",
                         "status '{}': shell stale but pane has agent content, staying Idle",
                         self.title,
                     );
                     Status::Idle
                 } else {
-                    tracing::trace!(
+                    tracing::trace!(target: "session.store",
                         "status '{}': shell stale, no agent content, setting Error",
                         self.title,
                     );
@@ -2320,7 +2323,7 @@ impl Instance {
             other => other,
         };
 
-        tracing::trace!("status '{}': final={:?}", self.title, self.status);
+        tracing::trace!(target: "session.store", "status '{}': final={:?}", self.title, self.status);
 
         if self.status == Status::Error {
             if self.last_error.is_none() {

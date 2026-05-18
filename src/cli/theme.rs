@@ -4,7 +4,8 @@ use anyhow::{bail, Result};
 use clap::Subcommand;
 
 use crate::tui::styles::{
-    available_themes, custom_themes_dir, export_theme_toml, load_theme, BUILTIN_THEMES,
+    available_themes, builtin_theme_names, custom_themes_dir, export_theme_toml, is_builtin_theme,
+    load_theme,
 };
 
 #[derive(Subcommand)]
@@ -27,17 +28,19 @@ pub enum ThemeCommands {
     Dir,
 }
 
+#[tracing::instrument(target = "cli.session", skip_all)]
 pub fn run_list() {
     let themes = available_themes();
+    let builtin_count = builtin_theme_names().count();
 
     println!("Built-in themes:");
-    for name in BUILTIN_THEMES {
+    for name in builtin_theme_names() {
         println!("  {}", name);
     }
 
     let custom: Vec<_> = themes
         .iter()
-        .filter(|name| !BUILTIN_THEMES.contains(&name.as_str()))
+        .filter(|name| !is_builtin_theme(name))
         .collect();
     if !custom.is_empty() {
         println!("\nCustom themes:");
@@ -46,13 +49,10 @@ pub fn run_list() {
         }
     }
 
-    println!(
-        "\n{} built-in, {} custom",
-        BUILTIN_THEMES.len(),
-        custom.len()
-    );
+    println!("\n{} built-in, {} custom", builtin_count, custom.len());
 }
 
+#[tracing::instrument(target = "cli.session", skip_all, fields(name = %name))]
 pub fn run_export(name: &str, output: Option<&str>) -> Result<()> {
     let all = available_themes();
     if !all.iter().any(|t| t == name) {
@@ -77,7 +77,7 @@ pub fn run_export(name: &str, output: Option<&str>) -> Result<()> {
 
             // Use a "custom-" prefix when exporting a builtin so the file is
             // recognized as a custom theme (builtin names are filtered out).
-            let filename = if BUILTIN_THEMES.contains(&name) {
+            let filename = if is_builtin_theme(name) {
                 format!("custom-{}.toml", name)
             } else {
                 format!("{}.toml", name)
@@ -97,6 +97,7 @@ pub fn run_export(name: &str, output: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+#[tracing::instrument(target = "cli.session", skip_all)]
 pub fn run_dir() -> Result<()> {
     match custom_themes_dir() {
         Some(dir) => {

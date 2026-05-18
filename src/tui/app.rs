@@ -336,6 +336,7 @@ impl App {
         // before the welcome screen.
         self.home.welcome_dialog = None;
         self.home.changelog_dialog = None;
+        tracing::info!(target: "tui.dialog", dialog = "warning", "opening warning dialog");
         self.home.info_dialog =
             Some(crate::tui::dialogs::InfoDialog::new("Warning", message).with_size(WIDTH, height));
     }
@@ -406,10 +407,10 @@ impl App {
             let hup = signal(SignalKind::hangup());
             let term = signal(SignalKind::terminate());
             if let Err(ref e) = hup {
-                tracing::warn!("Failed to register SIGHUP handler: {}", e);
+                tracing::warn!(target: "tui.input", "Failed to register SIGHUP handler: {}", e);
             }
             if let Err(ref e) = term {
-                tracing::warn!("Failed to register SIGTERM handler: {}", e);
+                tracing::warn!(target: "tui.input", "Failed to register SIGTERM handler: {}", e);
             }
             (hup.ok(), term.ok())
         };
@@ -492,7 +493,7 @@ impl App {
                                     }
                                 }
                                 if burst_keys.len() >= PASTE_BURST_MIN_LEN {
-                                    tracing::debug!(
+                                    tracing::debug!(target: "tui.input",
                                         "paste-burst: routed {} chars via handle_paste (chars={:?})",
                                         burst_str.len(), burst_str
                                     );
@@ -605,14 +606,14 @@ impl App {
                             // IO error reading from the terminal (broken pipe,
                             // EOF, etc.) means the tty is gone. Exit cleanly
                             // instead of spinning (#608 defect 2).
-                            tracing::info!("Terminal event stream error, exiting: {}", e);
+                            tracing::info!(target: "tui.input", "Terminal event stream error, exiting: {}", e);
                             self.should_quit = true;
                             break;
                         }
                         None => {
                             // EventStream ended (EOF on stdin). The terminal is
                             // gone; exit instead of busy-looping (#608 defect 2).
-                            tracing::info!("Terminal event stream ended (EOF), exiting");
+                            tracing::info!(target: "tui.input", "Terminal event stream ended (EOF), exiting");
                             self.should_quit = true;
                             break;
                         }
@@ -628,7 +629,7 @@ impl App {
                     #[cfg(not(unix))]
                     std::future::pending::<()>().await;
                 } => {
-                    tracing::info!("Received SIGHUP, exiting");
+                    tracing::info!(target: "tui.input", "Received SIGHUP, exiting");
                     self.should_quit = true;
                     break;
                 }
@@ -641,7 +642,7 @@ impl App {
                     #[cfg(not(unix))]
                     std::future::pending::<()>().await;
                 } => {
-                    tracing::info!("Received SIGTERM, exiting");
+                    tracing::info!(target: "tui.input", "Received SIGTERM, exiting");
                     self.should_quit = true;
                     break;
                 }
@@ -719,13 +720,14 @@ impl App {
         self.home.cleanup_pending_creation();
 
         if let Err(e) = self.home.save() {
-            tracing::error!("Failed to save on quit: {}", e);
+            tracing::error!(target: "tui.input", "Failed to save on quit: {}", e);
         }
 
         Ok(())
     }
 
     fn render(&mut self, frame: &mut Frame) {
+        let start = std::time::Instant::now();
         if self.update_status.as_ref().is_some_and(|s| s.is_expired()) {
             self.update_status = None;
         }
@@ -737,6 +739,21 @@ impl App {
             self.update_info.as_ref(),
             status_text,
         );
+        // Sampled / slow-frame only: full-frame trace would dominate the
+        // log at `default_level = trace`. Only emit when a frame breaks the
+        // 16ms budget (60fps), which is the diagnostic case worth tracing.
+        let elapsed = start.elapsed();
+        if elapsed.as_millis() > 16
+            && tracing::enabled!(target: "tui.render", tracing::Level::TRACE)
+        {
+            tracing::trace!(
+                target: "tui.render",
+                frame_ms = elapsed.as_millis() as u64,
+                width = frame.area().width,
+                height = frame.area().height,
+                "slow frame",
+            );
+        }
     }
 
     /// Poll for update check result (non-blocking).
@@ -994,7 +1011,7 @@ impl App {
                             self.home.save()?;
                         }
                         Err(e) => {
-                            tracing::error!("Failed to stop session: {}", e);
+                            tracing::error!(target: "tui.input", "Failed to stop session: {}", e);
                             self.home.set_instance_error(&id, Some(e.to_string()));
                             self.home
                                 .set_instance_status(&id, crate::session::Status::Error);
@@ -1039,6 +1056,9 @@ impl App {
                         self.update_status = None;
                     }
                 }
+            }
+            Action::AttachToolSession(id, tool_name) => {
+                self.attach_tool_session(&id, &tool_name, terminal)?;
             }
             #[cfg(feature = "serve")]
             Action::OpenCockpit(id) => {
@@ -1099,7 +1119,7 @@ impl App {
         } else {
             !instance.expects_shell() && tmux_session.is_pane_running_shell()
         };
-        tracing::debug!(
+        tracing::debug!(target: "tui.input",
             session_id,
             exists,
             pane_dead,
@@ -1193,7 +1213,7 @@ impl App {
         self.home.select_session_by_id(session_id);
 
         if let Err(e) = attach_result {
-            tracing::warn!("tmux attach returned error: {}", e);
+            tracing::warn!(target: "tui.input", "tmux attach returned error: {}", e);
         }
 
         Ok(())
@@ -1259,7 +1279,78 @@ impl App {
         self.home.select_session_by_id(session_id);
 
         if let Err(e) = attach_result {
-            tracing::warn!("tmux terminal attach returned error: {}", e);
+            tracing::warn!(target: "tui.input", "tmux terminal attach returned error: {}", e);
+        }
+
+        Ok(())
+    }
+
+    fn attach_tool_session(
+        &mut self,
+        session_id: &str,
+        tool_name: &str,
+        terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+    ) -> Result<()> {
+        let instance = match self.home.get_instance(session_id) {
+            Some(inst) => inst.clone(),
+            None => return Ok(()),
+        };
+
+        let tool_config = match self.home.tool_configs.get(tool_name) {
+            Some(tc) => tc.clone(),
+            None => return Ok(()),
+        };
+
+        if tool_config.command.is_empty() {
+            self.home.set_instance_error(
+                session_id,
+                Some(format!("Tool '{}' has no command configured", tool_name)),
+            );
+            return Ok(());
+        }
+
+        let size = crate::terminal::get_size();
+        let tool_session = crate::tmux::ToolSession::new(&instance.id, &instance.title, tool_name);
+
+        if !tool_session.exists() || tool_session.is_pane_dead() {
+            if tool_session.exists() {
+                let _ = tool_session.kill();
+            }
+            if let Err(e) =
+                tool_session.create_with_size(&instance.project_path, &tool_config.command, size)
+            {
+                self.home
+                    .set_instance_error(session_id, Some(e.to_string()));
+                return Ok(());
+            }
+        }
+
+        let branch = instance
+            .worktree_info
+            .as_ref()
+            .map(|w| w.branch.as_str())
+            .or_else(|| instance.workspace_info.as_ref().map(|w| w.branch.as_str()));
+        crate::tmux::status_bar::apply_all_tmux_options(
+            tool_session.session_name(),
+            &format!("{} ({})", instance.title, tool_name),
+            branch,
+            None,
+        );
+
+        let attach_fn: Box<dyn FnOnce() -> Result<()>> = Box::new(move || tool_session.attach());
+        let attach_result = self.with_raw_mode_disabled(terminal, attach_fn)?;
+
+        self.needs_redraw = true;
+        crate::tmux::refresh_session_cache();
+        self.home.reload()?;
+        self.home.select_session_by_id(session_id);
+
+        if let Err(e) = attach_result {
+            tracing::warn!(
+                "tmux tool session '{}' attach returned error: {}",
+                tool_name,
+                e
+            );
         }
 
         Ok(())
@@ -1310,13 +1401,13 @@ impl App {
         // Refresh diff view if it's open (file may have changed)
         if let Some(ref mut diff_view) = self.home.diff_view {
             if let Err(e) = diff_view.refresh_files() {
-                tracing::warn!("Failed to refresh diff after edit: {}", e);
+                tracing::warn!(target: "tui.input", "Failed to refresh diff after edit: {}", e);
             }
         }
 
         // Log any editor errors but don't fail
         if let Err(e) = status {
-            tracing::warn!("Editor '{}' returned error: {}", editor, e);
+            tracing::warn!(target: "tui.input", "Editor '{}' returned error: {}", editor, e);
         }
 
         Ok(())
@@ -1338,6 +1429,9 @@ pub enum Action {
     /// can render a "Reviving..." status before the potentially-slow
     /// ensure_pane_ready call.
     SendMessage(String, String),
+    /// Attach to a tool session (lazygit, yazi, etc.) for the given agent
+    /// session. The tool_name indexes into Config.tools.
+    AttachToolSession(String, String),
     /// Open the native cockpit view for `session_id`. The action handler
     /// stashes the id in `pending_cockpit_open`; the main loop drains it
     /// after `execute_action` returns and runs the async cockpit loop

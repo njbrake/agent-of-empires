@@ -385,26 +385,28 @@ impl TunnelHandle {
     /// Cancels the health monitor first, then sends SIGTERM to cloudflared.
     /// For Tailscale funnels, leaves the funnel configuration in place on
     /// purpose: restarting aoe shouldn't tear down the PWA's origin.
+    #[tracing::instrument(target = "serve.tunnel", skip_all)]
     pub async fn shutdown(self) {
         self.cancel.cancel();
         // Brief yield to let the monitor task observe cancellation
         tokio::task::yield_now().await;
 
         let Some(child_arc) = self.child else {
-            info!("Tailscale Funnel handle released (Funnel config left in place)");
+            tracing::info!(target: "serve.tunnel", "Tailscale Funnel handle released (Funnel config left in place)");
             return;
         };
         let mut child = child_arc.lock().await;
         if let Some(id) = child.id() {
+            tracing::info!(target: "serve.tunnel", pid = id, "sending SIGTERM to cloudflared");
             let _ = nix::sys::signal::kill(
                 nix::unistd::Pid::from_raw(id as i32),
                 nix::sys::signal::Signal::SIGTERM,
             );
         }
         match tokio::time::timeout(std::time::Duration::from_secs(5), child.wait()).await {
-            Ok(_) => info!("Cloudflare tunnel stopped cleanly"),
+            Ok(_) => tracing::info!(target: "serve.tunnel", "Cloudflare tunnel stopped cleanly"),
             Err(_) => {
-                warn!("Cloudflare tunnel did not stop in 5s, killing");
+                tracing::warn!(target: "serve.tunnel", "Cloudflare tunnel did not stop in 5s, killing");
                 let _ = child.kill().await;
             }
         }

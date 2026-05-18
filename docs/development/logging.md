@@ -6,19 +6,29 @@ Agent of Empires uses the [`tracing`](https://docs.rs/tracing) crate. The TUI, t
 
 Targets use the convention `<module>.<submodule>`. The default filter expands a chosen level to a directive per top-level root, so target names like `auth.token` inherit from `auth` without per-target env config.
 
-| Root | Sub-targets | What lands here |
-|------|-------------|-----------------|
-| `agent_of_empires` | (default crate path) | General library code emitting without `target:` |
-| `cockpit` | `cockpit.acp`, `cockpit.supervisor`, `cockpit.event_store`, `cockpit.runner`, `cockpit.acp.stderr`, `cockpit.acp.tool_dispatch` | ACP transport, supervisor lifecycle, event store, runner shim, per-tool-call entry/exit instrumentation |
-| `terminal` | `terminal.ws`, `terminal.ws.bytes` | Web terminal WS relay + per-byte firehose (trace) |
-| `auth` | `auth.token`, `auth.middleware`, `auth.rate_limit`, `auth.passphrase`, `auth.device`, `auth.ip` | Token rotate, middleware accept/reject, rate-limit thresholds, login flow |
-| `process` | `process.signal`, `process.tree`, `process.reap`, `process.ppid` | Signal sends, process-tree walks, survivor reap, ppid resolution |
-| `update` | `update.fetch`, `update.cache`, `update.parse` | GitHub release polling, cache hits/misses, version compare |
-| `containers` | `containers.docker`, `containers.image`, `containers.runtime` | Docker daemon, image pull, container lifecycle |
-| `git` | `git.command` | Every `git` invocation with args, exit, duration |
-| `migrations` | (none — entry/exit on driver) | Per-migration progress with duration |
-| `web.client` | (fixed; module surfaced as `client_target` field) | Browser-side errors relayed via `/api/client-log` |
-| `log.runtime` | — | Filter swaps (REST + runner file-watch) |
+Only a small set of sub-targets is enumerated in the settings dropdown (see `KNOWN_SUB_TARGETS` in `src/logging.rs`). Code is free to emit under any sub-target it wants; the dropdown is for convenience. Advanced filters can be entered as raw EnvFilter directives in the settings UI's filter field or via `PATCH /api/log-level`.
+
+| Root | What lands here |
+|------|-----------------|
+| `agent_of_empires` | Default crate target. General library code emitting without `target:`. |
+| `cockpit` | ACP transport, supervisor, event store, runner shim, per-tool-call entry/exit. |
+| `terminal` | Web terminal WS relay + per-byte firehose (trace). |
+| `auth` | Token rotate, middleware accept/reject, rate-limit, login flow. |
+| `process` | Signal sends, process-tree walks, survivor reap, ppid resolution. |
+| `update` | GitHub release polling, cache hits/misses, version compare. |
+| `containers` | Docker daemon, image pull, container lifecycle, exec into running container. |
+| `git` | `git` invocation arguments, exit, duration. |
+| `migrations` | Per-migration progress with duration. |
+| `web` | Browser-side events relayed via `/api/client-log` under `web.client`. The client-side module name is preserved in the `client_target` field. |
+| `cli` | One-shot CLI subcommand entry/exit and outcome (e.g. `cli.serve`, `cli.add`). |
+| `tui` | TUI key dispatch, screen transitions, dialog lifecycle, sampled render diagnostics. |
+| `session` | Session/profile/group CRUD, terminal capture, heartbeat writes, storage IO. |
+| `tmux` | tmux invocations, cache refresh, status detection, pane CRUD. |
+| `http` | Axum request-scoped span with `request_id`/`method`/`path`/`status`/`latency_ms`, plus per-route semantic events. |
+| `serve` | `aoe serve` daemonize/foreground startup, PID/URL file IO, tunnel up/down, signal-driven shutdown. |
+| `hooks` | Agent hook integration (Claude/Settl/Hermes/Kiro) install/uninstall and hook status file lifecycle. |
+| `sound` | Notification sound asset download/install and per-event playback. |
+| `log.runtime` | Filter swaps (REST + runner file-watch). |
 
 ## Levels
 
@@ -70,6 +80,13 @@ file_path = "debug.log"  # relative -> app_dir, absolute -> verbatim
 rotation = "size"        # "size" | "never"
 max_size_mib = 50
 keep_count = 5
+
+# Whether the formatter prefixes each event with the span chain wrapping
+# it (e.g. `http_request{request_id=... method=GET path=...}` from the
+# per-request middleware). Off by default keeps the log readable; turn
+# on for grep-correlation when triaging across async boundaries.
+# Restart required.
+show_spans = false
 
 [logging.targets]
 "cockpit.acp" = "trace"

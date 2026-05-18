@@ -19,6 +19,7 @@ pub struct TmuxStatusArgs {
     format: String,
 }
 
+#[tracing::instrument(target = "tmux.status", skip_all)]
 pub fn run_status(args: TmuxStatusArgs) -> Result<()> {
     use crate::tmux::status_bar::get_session_info_for_current;
 

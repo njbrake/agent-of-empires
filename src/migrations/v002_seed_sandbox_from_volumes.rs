@@ -216,7 +216,7 @@ pub fn run() -> Result<()> {
             match pull {
                 Ok(status) if status.success() => "alpine".to_string(),
                 _ => {
-                    tracing::warn!(
+                    tracing::warn!(target: "migrations",
                         "No container images available for volume migration. \
                          Run 'docker pull alpine' manually and restart to retry."
                     );
@@ -243,7 +243,7 @@ pub fn run() -> Result<()> {
         let tmp = match extract_volume_to_temp(migration.volume_name, &image) {
             Ok(t) => t,
             Err(e) => {
-                tracing::warn!("Failed to extract volume {}: {}", migration.volume_name, e);
+                tracing::warn!(target: "migrations", "Failed to extract volume {}: {}", migration.volume_name, e);
                 continue;
             }
         };
@@ -258,7 +258,7 @@ pub fn run() -> Result<()> {
                 );
             }
             Err(e) => {
-                tracing::warn!(
+                tracing::warn!(target: "migrations",
                     "Failed to merge files from volume {}: {}",
                     migration.volume_name,
                     e
@@ -268,7 +268,7 @@ pub fn run() -> Result<()> {
 
         // Clean up temp dir.
         if let Err(e) = std::fs::remove_dir_all(&tmp) {
-            tracing::debug!("Failed to clean up temp dir {}: {}", tmp.display(), e);
+            tracing::debug!(target: "migrations", "Failed to clean up temp dir {}: {}", tmp.display(), e);
         }
     }
 

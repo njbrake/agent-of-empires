@@ -63,11 +63,13 @@ pub(super) struct GroupRenameContext {
 }
 
 /// View mode for the home screen
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum ViewMode {
     #[default]
     Agent,
     Terminal,
+    /// Previewing a tool session (lazygit, yazi, etc.)
+    Tool(String),
 }
 
 /// Terminal mode for sandboxed sessions (container vs host)
@@ -224,6 +226,7 @@ pub struct HomeView {
     pub(super) preview_cache: PreviewCache,
     pub(super) terminal_preview_cache: PreviewCache,
     pub(super) container_terminal_preview_cache: PreviewCache,
+    pub(super) tool_preview_cache: PreviewCache,
 
     /// Mouse wheel offset for the preview pane, in lines back from the bottom.
     /// Reset to 0 whenever the selected session changes.
@@ -259,6 +262,19 @@ pub struct HomeView {
 
     // Resizable list column width (percentage-like units)
     pub(super) list_width: u16,
+
+    // Tool sessions config (lazygit, yazi, etc.)
+    pub(super) tool_configs: HashMap<String, crate::session::config::ToolSessionConfig>,
+    /// Pre-parsed and sorted view of valid tool hotkeys: (name, KeyCode, KeyModifiers).
+    /// Built once at construction and on settings reload, then iterated on every
+    /// keystroke to look up matching tools. Sorted by name so the alphabetically-first
+    /// tool wins on duplicate hotkeys.
+    pub(super) tool_hotkey_cache: Vec<(
+        String,
+        crossterm::event::KeyCode,
+        crossterm::event::KeyModifiers,
+    )>,
+    pub(super) tool_picker_dialog: Option<super::dialogs::ToolPickerDialog>,
 }
 
 impl HomeView {
@@ -385,6 +401,7 @@ impl HomeView {
             preview_cache: PreviewCache::default(),
             terminal_preview_cache: PreviewCache::default(),
             container_terminal_preview_cache: PreviewCache::default(),
+            tool_preview_cache: PreviewCache::default(),
             preview_scroll_offset: 0,
             preview_area: Rect::default(),
             diff_area: Rect::default(),
@@ -397,9 +414,25 @@ impl HomeView {
             settings_close_confirm: false,
             diff_view: None,
             list_width: user_config
+                .as_ref()
                 .and_then(|c| c.app_state.home_list_width)
                 .unwrap_or(35),
+            tool_configs: user_config
+                .as_ref()
+                .map(|c| c.tools.clone())
+                .unwrap_or_default(),
+            tool_hotkey_cache: Vec::new(),
+            tool_picker_dialog: None,
         };
+
+        view.tool_hotkey_cache = input::build_tool_hotkey_cache(&view.tool_configs);
+        let hotkey_warnings = input::validate_tool_hotkeys(&view.tool_configs);
+        if !hotkey_warnings.is_empty() && view.info_dialog.is_none() {
+            view.info_dialog = Some(InfoDialog::new(
+                "Tool hotkey config errors",
+                &hotkey_warnings.join("\n"),
+            ));
+        }
 
         // Clean up orphaned Creating instances from a prior crash
         let orphan_ids: Vec<String> = view
@@ -412,9 +445,9 @@ impl HomeView {
             view.remove_instance(id);
         }
         if !orphan_ids.is_empty() {
-            tracing::info!("Cleaned up {} orphaned creating sessions", orphan_ids.len());
+            tracing::info!(target: "tui.home", "Cleaned up {} orphaned creating sessions", orphan_ids.len());
             if let Err(e) = view.save() {
-                tracing::warn!("Failed to save view state: {e}");
+                tracing::warn!(target: "tui.home", "Failed to save view state: {e}");
             }
         }
 
@@ -453,7 +486,7 @@ impl HomeView {
                     .map(|(s, k, v)| (s.as_str(), k.as_str(), v.as_str()))
                     .collect();
                 if let Err(e) = crate::tmux::env::set_hidden_env_batch(&batch_refs) {
-                    tracing::warn!("Batch env sync failed: {}", e);
+                    tracing::warn!(target: "tui.home", "Batch env sync failed: {}", e);
                 }
             }
             if !unset_batch.is_empty() {
@@ -462,7 +495,7 @@ impl HomeView {
                     .map(|(s, k)| (s.as_str(), k.as_str()))
                     .collect();
                 if let Err(e) = crate::tmux::env::remove_hidden_env_batch(&batch_refs) {
-                    tracing::warn!("Batch env unset failed: {}", e);
+                    tracing::warn!(target: "tui.home", "Batch env unset failed: {}", e);
                 }
             }
         }
@@ -679,10 +712,10 @@ impl HomeView {
                 self.rebuild_group_trees();
 
                 if let Err(e) = self.save() {
-                    tracing::error!("Failed to save after deletion: {}", e);
+                    tracing::error!(target: "tui.home", "Failed to save after deletion: {}", e);
                 }
                 if let Err(e) = self.reload() {
-                    tracing::warn!("Failed to reload session state: {e}");
+                    tracing::warn!(target: "tui.home", "Failed to reload session state: {e}");
                 }
             } else {
                 let error = if result.errors.is_empty() {
@@ -725,6 +758,7 @@ impl HomeView {
                 // being re-imported into memory and disk.
                 if inst.retroactive_capture_excludes.contains(&session_id) {
                     tracing::debug!(
+                        target: "tui.home",
                         "Ignoring poller-reported sid {} for {}: in retroactive_capture_excludes",
                         session_id,
                         inst.id,
@@ -753,7 +787,7 @@ impl HomeView {
                 });
             }
             if let Err(e) = self.save() {
-                tracing::error!("Failed to save after session ID update: {}", e);
+                tracing::error!(target: "tui.home", "Failed to save after session ID update: {}", e);
                 for (id, old_val) in &prev {
                     self.mutate_instance(id, |inst| {
                         inst.agent_session_id = old_val.clone();
@@ -970,7 +1004,7 @@ impl HomeView {
                 }
 
                 if let Err(e) = self.save() {
-                    tracing::error!("Failed to save after creation: {}", e);
+                    tracing::error!(target: "tui.home", "Failed to save after creation: {}", e);
                 }
 
                 if on_launch_hooks_ran {
@@ -978,7 +1012,7 @@ impl HomeView {
                 }
 
                 if let Err(e) = self.reload() {
-                    tracing::warn!("Failed to reload session state: {e}");
+                    tracing::warn!(target: "tui.home", "Failed to reload session state: {e}");
                 }
                 self.new_dialog = None;
 
@@ -1073,7 +1107,7 @@ impl HomeView {
                         main_repo_path: std::path::PathBuf::from(&wt.main_repo_path),
                     });
             crate::session::builder::cleanup_instance(instance, worktree.as_ref(), &[]);
-            tracing::info!("Cleaned up cancelled session on exit");
+            tracing::info!(target: "tui.home", "Cleaned up cancelled session on exit");
         }
     }
 
@@ -1174,6 +1208,7 @@ impl HomeView {
             || self.profile_picker_dialog.is_some()
             || self.projects_dialog.is_some()
             || self.command_palette.is_some()
+            || self.tool_picker_dialog.is_some()
             || self.send_message_dialog.is_some()
             || self.update_confirm_dialog.is_some()
             || serve_open
@@ -1221,25 +1256,34 @@ impl HomeView {
         if let Ok(mut config) = load_config().map(|c| c.unwrap_or_default()) {
             config.app_state.home_list_width = Some(self.list_width);
             if let Err(e) = save_config(&config) {
-                tracing::warn!("Failed to save config: {e}");
+                tracing::warn!(target: "tui.home", "Failed to save config: {e}");
             }
         }
     }
 
     pub fn show_welcome(&mut self) {
+        tracing::info!(target: "tui.dialog", dialog = "welcome", "opening");
         self.welcome_dialog = Some(WelcomeDialog::new());
     }
 
     pub fn show_no_agents(&mut self) {
+        tracing::info!(target: "tui.dialog", dialog = "no_agents", "opening");
         self.no_agents_dialog = Some(NoAgentsDialog::new());
     }
 
     /// Replace available tools (used after re-check from no-agents dialog).
     pub fn set_available_tools(&mut self, tools: AvailableTools) {
+        tracing::debug!(target: "tui.home", count = tools.available_list().len(), "available tools refreshed");
         self.available_tools = tools;
     }
 
     pub fn show_changelog(&mut self, from_version: Option<String>) {
+        tracing::info!(
+            target: "tui.dialog",
+            dialog = "changelog",
+            from_version = ?from_version,
+            "opening",
+        );
         self.changelog_dialog = Some(ChangelogDialog::new(from_version));
     }
 
@@ -1337,6 +1381,7 @@ impl HomeView {
         self.preview_cache = PreviewCache::default();
         self.terminal_preview_cache = PreviewCache::default();
         self.container_terminal_preview_cache = PreviewCache::default();
+        self.tool_preview_cache = PreviewCache::default();
         self.preview_scroll_offset = 0;
         // Clear search since match indices are invalid with new flat_items
         if self.search_active {
@@ -1658,6 +1703,15 @@ impl HomeView {
         self.strict_hotkeys = config.session.strict_hotkeys;
         self.idle_decay_window =
             crate::tui::styles::idle_decay_window(config.theme.idle_decay_minutes);
+        self.tool_configs = config.tools;
+        self.tool_hotkey_cache = input::build_tool_hotkey_cache(&self.tool_configs);
+        let hotkey_warnings = input::validate_tool_hotkeys(&self.tool_configs);
+        if !hotkey_warnings.is_empty() && self.info_dialog.is_none() {
+            self.info_dialog = Some(InfoDialog::new(
+                "Tool hotkey config errors",
+                &hotkey_warnings.join("\n"),
+            ));
+        }
     }
 
     /// Toggle terminal mode between Container and Host for a session

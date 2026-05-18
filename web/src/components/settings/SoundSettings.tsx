@@ -19,7 +19,9 @@ export function SoundSettings({ settings, onSaveField, onUpdate }: Props) {
   return (
     <div className="space-y-4">
       <p className="text-xs text-text-dim">
-        Audio alerts play on the server host machine, not in your browser.
+        Status-change alerts (start, waiting, idle, error) play on the
+        server host machine. Cockpit approval chimes play in your
+        browser, where the dashboard is open.
       </p>
       <ToggleField
         label="Enabled"
@@ -77,6 +79,14 @@ export function SoundSettings({ settings, onSaveField, onUpdate }: Props) {
             value={(sound.on_error as string) ?? ""}
             onChange={(v) => save("on_error", v || null)}
             placeholder="e.g. error.wav"
+            mono
+          />
+          <TextField
+            label="On approval"
+            description="Cockpit only. Played in the browser when a session needs permission."
+            value={(sound.on_approval as string) ?? ""}
+            onChange={(v) => save("on_approval", v || null)}
+            placeholder="e.g. approval.wav"
             mono
           />
         </>

@@ -135,11 +135,11 @@ impl RuntimeBase {
 
     pub fn ensure_image(&self, image: &str) -> Result<()> {
         if self.image_exists_locally(image) {
-            tracing::info!("Using local {} image '{}'", self.name, image);
+            tracing::info!(target: "containers.runtime", "Using local {} image '{}'", self.name, image);
             return Ok(());
         }
 
-        tracing::info!("Pulling {} image '{}'", self.name, image);
+        tracing::info!(target: "containers.runtime", "Pulling {} image '{}'", self.name, image);
         self.pull_image(image)
     }
 
@@ -171,7 +171,7 @@ impl RuntimeBase {
 
         for vol in &config.volumes {
             if !self.supports_read_only_volumes && vol.read_only {
-                tracing::warn!(
+                tracing::warn!(target: "containers.runtime",
                     "{} does not support read-only volumes, mounting {} read-write",
                     self.name,
                     vol.container_path
@@ -229,7 +229,7 @@ impl RuntimeBase {
     /// Run the container creation command (after existence has already been checked by the caller).
     pub fn run_create(&self, name: &str, image: &str, config: &ContainerConfig) -> Result<String> {
         let args = self.build_create_args(name, image, config);
-        tracing::debug!("{} create args: {}", self.name, args.join(" "));
+        tracing::debug!(target: "containers.runtime", "{} create args: {}", self.name, args.join(" "));
 
         let mut cmd = self.command();
         cmd.args(&args);
@@ -244,7 +244,7 @@ impl RuntimeBase {
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            tracing::debug!("stderr: {}", stderr);
+            tracing::debug!(target: "containers.runtime", "stderr: {}", stderr);
             if stderr.contains("permission denied") {
                 return Err(DockerError::PermissionDenied);
             }

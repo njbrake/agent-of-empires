@@ -410,6 +410,7 @@ pub fn daemon_pid() -> Option<u32> {
     }
 }
 
+#[tracing::instrument(target = "cli.serve", skip_all, fields(profile = %profile))]
 pub async fn run(profile: &str, args: ServeArgs) -> Result<()> {
     if args.stop {
         return stop_daemon().await;
@@ -549,9 +550,20 @@ pub async fn run(profile: &str, args: ServeArgs) -> Result<()> {
         return start_daemon(profile, &args);
     }
 
+    tracing::info!(
+        target: "serve.daemon",
+        profile = %profile,
+        host = %host,
+        port = args.resolved_port(),
+        mode = if args.remote { "remote" } else { "local" },
+        auth = ?auth_mode,
+        "starting foreground serve",
+    );
+
     // Write PID file for non-daemon mode too (so --stop works either way)
     if let Ok(path) = pid_file_path() {
         let _ = tokio::fs::write(&path, std::process::id().to_string()).await;
+        tracing::debug!(target: "serve.lifecycle", path = %path.display(), pid = std::process::id(), "wrote pid file");
     }
 
     let result = crate::server::start_server(crate::server::ServerConfig {
@@ -699,9 +711,20 @@ fn start_daemon(profile: &str, args: &ServeArgs) -> Result<()> {
     let child = cmd.spawn()?;
     let pid = child.id();
 
+    tracing::info!(
+        target: "serve.daemon",
+        pid,
+        profile = %profile,
+        port = args.resolved_port(),
+        host = %args.host,
+        remote = args.remote,
+        "daemon child spawned",
+    );
+
     // Write PID file
     if let Ok(path) = pid_file_path() {
         std::fs::write(&path, pid.to_string())?;
+        tracing::debug!(target: "serve.lifecycle", path = %path.display(), pid, "wrote pid file");
     }
 
     println!("aoe serve started as daemon (PID {})", pid);
@@ -709,10 +732,12 @@ fn start_daemon(profile: &str, args: &ServeArgs) -> Result<()> {
     Ok(())
 }
 
+#[tracing::instrument(target = "serve.shutdown", skip_all)]
 async fn stop_daemon() -> Result<()> {
     let path = pid_file_path()?;
 
     if !path.exists() {
+        tracing::warn!(target: "serve.shutdown", path = %path.display(), "no pid file; daemon not running");
         bail!(
             "No running daemon found (no PID file at {})",
             path.display()
@@ -724,6 +749,7 @@ async fn stop_daemon() -> Result<()> {
         .trim()
         .parse()
         .map_err(|_| anyhow::anyhow!("Invalid PID in {}: {}", path.display(), pid_str.trim()))?;
+    tracing::info!(target: "serve.shutdown", pid, "sending SIGTERM to daemon");
 
     // Verify PID belongs to an aoe process on all platforms
     if !verify_pid_is_aoe(pid) {

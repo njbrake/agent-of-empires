@@ -200,7 +200,7 @@ pub fn create_workspace(
                                 )
                                 .map_err(|e| format!("{}: {}", repo_name, e))
                         })();
-                        tracing::info!(
+                        tracing::info!(target: "session.create",
                             "workspace create: repo={} elapsed={:?} ok={}",
                             repo_name,
                             repo_start.elapsed(),
@@ -218,7 +218,7 @@ pub fn create_workspace(
                 })
                 .collect()
         });
-    tracing::info!(
+    tracing::info!(target: "session.create",
         "workspace create: {} repos completed in {:?}",
         plans.len(),
         create_start.elapsed()
@@ -310,12 +310,14 @@ pub fn build_instance(
         }
     }
 
-    let config =
-        super::repo_config::resolve_config_with_repo(profile, std::path::Path::new(&params.path))
-            .unwrap_or_else(|e| {
-                tracing::warn!("Failed to load config, using defaults: {}", e);
-                Config::default()
-            });
+    let config = super::repo_config::resolve_config_with_repo(
+        profile,
+        std::path::Path::new(&params.path),
+    )
+    .unwrap_or_else(|e| {
+        tracing::warn!(target: "session.create", "Failed to load config, using defaults: {}", e);
+        Config::default()
+    });
 
     let mut final_path = PathBuf::from(&params.path)
         .canonicalize()
@@ -551,7 +553,7 @@ pub fn cleanup_instance(
     if let Some(wt) = created_worktree {
         if let Ok(git_wt) = GitWorktree::new(wt.main_repo_path.clone()) {
             if let Err(e) = git_wt.remove_worktree(&wt.path, false) {
-                tracing::warn!("Failed to clean up worktree: {}", e);
+                tracing::warn!(target: "session.create", "Failed to clean up worktree: {}", e);
             }
         }
     }
@@ -560,7 +562,7 @@ pub fn cleanup_instance(
     for wt in created_workspace_worktrees {
         if let Ok(git_wt) = GitWorktree::new(wt.main_repo_path.clone()) {
             if let Err(e) = git_wt.remove_worktree(&wt.path, false) {
-                tracing::warn!("Failed to clean up workspace worktree: {}", e);
+                tracing::warn!(target: "session.create", "Failed to clean up workspace worktree: {}", e);
             }
         }
     }
@@ -574,7 +576,7 @@ pub fn cleanup_instance(
             let container = containers::DockerContainer::from_session_id(&instance.id);
             if container.exists().unwrap_or(false) {
                 if let Err(e) = container.remove(true) {
-                    tracing::warn!("Failed to clean up container: {}", e);
+                    tracing::warn!(target: "session.create", "Failed to clean up container: {}", e);
                 }
             }
         }

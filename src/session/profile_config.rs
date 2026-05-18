@@ -312,7 +312,7 @@ pub fn resolve_config_or_warn(profile: &str) -> Config {
     match resolve_config(profile) {
         Ok(config) => config,
         Err(e) => {
-            tracing::warn!(
+            tracing::warn!(target: "session.profile",
                 "Failed to load config for profile '{}', using defaults: {e}",
                 profile
             );

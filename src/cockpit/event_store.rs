@@ -364,14 +364,13 @@ impl EventStore {
             .optional()
             .ok()
             .flatten();
-        let Some(json) = json else {
-            trace!(
-                target: "cockpit.event_store",
-                session = %session_id,
-                "latest_pending_wakeup: no WakeupScheduled row"
-            );
-            return None;
-        };
+        // No log for the "no row" branch. The web UI polls /api/sessions
+        // every ~2-3s and fans this query out per cockpit session; every
+        // idle session would land here on every poll. The "still pending"
+        // and "treated as fired" branches below stay at trace because
+        // those carry the wake `at` timestamp, which is the only
+        // diagnostic value of this function.
+        let json = json?;
         let event: Event = match serde_json::from_str(&json) {
             Ok(e) => e,
             Err(e) => {

@@ -85,7 +85,7 @@ fn set_session_option(session_name: &str, option: &str, value: &str) -> Result<(
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
         // Don't fail on option errors - status bar is non-critical
-        tracing::debug!("Failed to set tmux option {}: {}", option, stderr);
+        tracing::debug!(target: "tmux.status", "Failed to set tmux option {}: {}", option, stderr);
     }
 
     Ok(())
@@ -122,13 +122,13 @@ pub fn apply_all_tmux_options(
         let theme = load_theme(theme_name);
 
         if let Err(e) = apply_status_bar(session_name, title, branch, sandbox, &theme) {
-            tracing::debug!("Failed to apply tmux status bar: {}", e);
+            tracing::debug!(target: "tmux.status", "Failed to apply tmux status bar: {}", e);
         }
     }
 
     if let Some(mouse_enabled) = should_apply_tmux_mouse() {
         if let Err(e) = apply_mouse_option(session_name, mouse_enabled) {
-            tracing::debug!("Failed to apply tmux mouse option: {}", e);
+            tracing::debug!(target: "tmux.status", "Failed to apply tmux mouse option: {}", e);
         }
     }
 }
@@ -214,7 +214,7 @@ fn get_session_option(session_name: &str, option: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tui::styles::{load_theme, BUILTIN_THEMES};
+    use crate::tui::styles::{builtin_theme_names, load_theme};
 
     #[test]
     fn test_get_status_returns_none_for_non_tmux() {
@@ -238,7 +238,7 @@ mod tests {
 
     #[test]
     fn test_all_themes_produce_valid_status_bar_colors() {
-        for theme_name in BUILTIN_THEMES {
+        for theme_name in builtin_theme_names() {
             let theme = load_theme(theme_name);
             let colors = [
                 ("background", color_to_tmux(theme.background)),

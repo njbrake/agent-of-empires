@@ -174,6 +174,7 @@ struct SessionDetails {
     profile: String,
 }
 
+#[tracing::instrument(target = "cli.session", skip_all, fields(profile = %profile))]
 pub async fn run(profile: &str, command: SessionCommands) -> Result<()> {
     match command {
         SessionCommands::Start(args) => start_session(profile, args).await,

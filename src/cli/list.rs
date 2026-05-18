@@ -114,6 +114,7 @@ fn print_table_row(inst: &Instance) {
     );
 }
 
+#[tracing::instrument(target = "cli.list", skip_all, fields(profile = %profile))]
 pub async fn run(profile: &str, args: ListArgs) -> Result<()> {
     if args.all {
         return run_all_profiles(args.json).await;
