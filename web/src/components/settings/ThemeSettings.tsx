@@ -39,10 +39,7 @@ export function ThemeSettings({ settings, onSaveField, onUpdate }: Props) {
         label="Theme"
         value={(theme.name as string) ?? ""}
         onChange={(v) => save("name", v)}
-        options={[
-          { value: "", label: "Default" },
-          ...themes.map((t) => ({ value: t, label: t })),
-        ]}
+        options={themes.map((t) => ({ value: t, label: t }))}
       />
       <SelectField
         label="Color mode"

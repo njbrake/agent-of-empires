@@ -39,6 +39,11 @@
 
 @import "tailwindcss";
 
+/* Build-time fallback palette. Mirrors the `default` builtin theme
+   (themes/builtin/default.toml) so the cold-load paint, before
+   useResolvedTheme has fetched and applied the user's selection,
+   matches the resolved palette for default. Keep these values in
+   sync with that TOML file. */
 @theme {
   /* Brand -- Amber/Copper (used sparingly) */
   --color-brand-400: #fbbf24;
@@ -90,11 +95,10 @@
 
   /* Extended semantic tokens populated by the resolved theme
      projection (see src/tui/styles/resolved.rs). These build-time
-     defaults paint a sensible Empire-aligned dashboard on cold load
-     before useResolvedTheme has fetched and applied the user's
-     selection. */
-  --color-selection: #26324b;
-  --color-session-selection: #37415c;
+     defaults match the `default` builtin theme so cold-load paint
+     matches the post-fetch paint when no localStorage cache exists. */
+  --color-selection: #3f3f46;
+  --color-session-selection: #52525b;
   --color-terminal-active: #0d9488;
   --color-branch: #0d9488;
   --color-sandbox: #94a3b8;
@@ -107,27 +111,27 @@
      and overrides these once the resolved palette lands, but on a
      first visit with no localStorage cache the wterm element would
      otherwise paint with the WASM bridge's hardcoded defaults until
-     the next frame. These match the Empire palette projected by
+     the next frame. These match the `default` builtin projected by
      src/tui/styles/resolved.rs::terminal_projection so the pre-fetch
      paint matches the post-fetch paint for the default theme. */
-  --term-bg: #0f172a;
-  --term-fg: #cbd5e1;
-  --term-cursor: #d97706;
-  --term-color-0: #0f172a;
+  --term-bg: #1c1c1f;
+  --term-fg: #e4e4e7;
+  --term-cursor: #f59e0b;
+  --term-color-0: #1c1c1f;
   --term-color-1: #ef4444;
   --term-color-2: #22c55e;
   --term-color-3: #fbbf24;
   --term-color-4: #0d9488;
-  --term-color-5: #d97706;
+  --term-color-5: #f59e0b;
   --term-color-6: #0d9488;
-  --term-color-7: #cbd5e1;
-  --term-color-8: #64748b;
-  --term-color-9: #f87171;
-  --term-color-10: #4ade80;
-  --term-color-11: #fde68a;
-  --term-color-12: #38bdf8;
-  --term-color-13: #fbbf24;
-  --term-color-14: #2dd4bf;
+  --term-color-7: #e4e4e7;
+  --term-color-8: #8b8b94;
+  --term-color-9: #f26969;
+  --term-color-10: #4ed17e;
+  --term-color-11: #fccc50;
+  --term-color-12: #3da9a0;
+  --term-color-13: #f7b13c;
+  --term-color-14: #3da9a0;
   --term-color-15: #fbbf24;
 
   /* Typography */
