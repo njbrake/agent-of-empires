@@ -48,6 +48,7 @@ const ALLOWED_TARGETS: &[&str] = &[
 ];
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ClientLogEntry {
     pub level: String,
     pub message: String,
@@ -69,6 +70,7 @@ pub struct ClientLogEntry {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ClientLogBatch {
     pub entries: Vec<ClientLogEntry>,
 }
