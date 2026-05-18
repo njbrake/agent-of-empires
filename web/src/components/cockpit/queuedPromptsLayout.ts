@@ -4,11 +4,11 @@
 // mounting the strip + assistant-ui runtime. See #1232.
 
 /** Per-row clamp heuristic. Triggers on either multi-line content
- *  (≥3 newlines, since shorter multi-line prompts fit naturally inside
- *  line-clamp-3 without truncating) or a single very-long line that
- *  would wrap past three rendered lines at the strip's typical width.
- *  False positives just show an unnecessary "…" affordance, which is
- *  cheap. */
+ *  (3+ lines, i.e. 2+ newlines, since shorter multi-line prompts fit
+ *  naturally inside line-clamp-3 without truncating) or a single
+ *  very-long line that would wrap past three rendered lines at the
+ *  strip's typical width. False positives just show an unnecessary
+ *  "…" affordance, which is cheap. */
 export function isQueuedPromptLong(text: string): boolean {
   const lineCount = text.split("\n").length;
   return lineCount >= 3 || text.length > 160;

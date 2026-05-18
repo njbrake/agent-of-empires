@@ -56,6 +56,7 @@ import {
 import { useCockpitPrefs } from "../../lib/cockpitPrefs";
 import { AgentProfileProvider } from "../../lib/agentProfileContext";
 import { useApprovalSound } from "../../hooks/useApprovalSound";
+import { useIsCoarsePointer } from "../../hooks/useIsCoarsePointer";
 import type {
   Approval,
   ApprovalDecision,
@@ -1669,24 +1670,6 @@ function QueuedPromptsStrip({
       </div>
     </div>
   );
-}
-
-/** Tracks whether the primary pointer is coarse (touch). Used to pick
- *  mobile vs desktop defaults that don't fit Tailwind's responsive
- *  classes. Matches `useMobileKeyboard`'s detection. */
-function useIsCoarsePointer(): boolean {
-  const [isCoarse, setIsCoarse] = useState(() =>
-    typeof window !== "undefined" &&
-    Boolean(window.matchMedia?.("(pointer: coarse)").matches),
-  );
-  useEffect(() => {
-    if (typeof window === "undefined" || !window.matchMedia) return;
-    const mql = window.matchMedia("(pointer: coarse)");
-    const onChange = () => setIsCoarse(mql.matches);
-    mql.addEventListener?.("change", onChange);
-    return () => mql.removeEventListener?.("change", onChange);
-  }, []);
-  return isCoarse;
 }
 
 function QueuedPromptRow({
