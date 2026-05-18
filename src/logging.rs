@@ -151,118 +151,41 @@ pub const DEFAULT_TARGET_ROOTS: &[&str] = &[
 /// Sub-targets users can tune individually from the settings UI.
 /// Order is the UI ordering. Anything not in this list still works
 /// in the runtime endpoint as a raw filter, but won't have a dropdown.
+///
+/// Kept intentionally short. The list is for the UI dropdown only;
+/// callers can always set arbitrary EnvFilter directives via the
+/// settings TUI's raw field or `PATCH /api/log-level`. Adding an
+/// entry here is only worth it when we have evidence we'll want to
+/// dial that area in isolation. Sub-targets emitted by code (e.g.
+/// `http.request`, `cli.serve`, `tui.home`) work fine even when not
+/// listed; they just won't have a one-click row in the settings UI.
 pub const KNOWN_SUB_TARGETS: &[&str] = &[
-    // Cockpit / ACP
     "cockpit.acp",
     "cockpit.acp.stderr",
     "cockpit.acp.tool_dispatch",
-    "cockpit.acp.spawn",
-    "cockpit.acp.wakeup",
-    "cockpit.acp.permission",
     "cockpit.supervisor",
     "cockpit.event_store",
     "cockpit.runner",
-    "cockpit.ws",
-    "cockpit.client.ws",
-    "cockpit.push",
-    "cockpit.switch",
-    "cockpit.sandbox",
-    // Terminal WS relay
     "terminal.ws",
     "terminal.ws.bytes",
-    // Auth
     "auth.token",
     "auth.middleware",
     "auth.rate_limit",
     "auth.passphrase",
     "auth.device",
     "auth.ip",
-    // Process
     "process.signal",
     "process.tree",
     "process.reap",
     "process.ppid",
-    // Update checker
     "update.fetch",
     "update.cache",
     "update.parse",
-    // Containers / Docker
     "containers.docker",
     "containers.image",
     "containers.runtime",
-    "containers.exec",
-    // Git
     "git.command",
-    "git.worktree",
-    "git.template",
-    "git.fetch",
-    // Web client (browser-side relay)
     "web.client",
-    "web.client.error",
-    "web.client.api",
-    "web.client.nav",
-    "web.client.input",
-    "web.client.settings",
-    "web.client.ws",
-    "web.client.terminal",
-    "web.client.cockpit",
-    "web.client.pwa",
-    // CLI subcommands
-    "cli.add",
-    "cli.serve",
-    "cli.session",
-    "cli.cockpit",
-    "cli.send",
-    "cli.list",
-    "cli.project",
-    "cli.init",
-    "cli.logs",
-    "cli.log_level",
-    // TUI
-    "tui.input",
-    "tui.navigation",
-    "tui.render",
-    "tui.dialog",
-    "tui.settings",
-    "tui.home",
-    "tui.cockpit",
-    // Session lifecycle
-    "session.create",
-    "session.delete",
-    "session.group",
-    "session.profile",
-    "session.capture",
-    "session.heartbeat",
-    "session.store",
-    // tmux integration
-    "tmux.command",
-    "tmux.cache",
-    "tmux.status",
-    "tmux.pane",
-    // HTTP REST surface
-    "http.request",
-    "http.middleware",
-    "http.error",
-    "http.api.sessions",
-    "http.api.projects",
-    "http.api.settings",
-    "http.api.git",
-    "http.api.system",
-    "http.api.log_level",
-    "http.api.client_log",
-    // serve daemon lifecycle
-    "serve.daemon",
-    "serve.lifecycle",
-    "serve.tunnel",
-    "serve.shutdown",
-    // Agent hook integration (Claude/Settl/Hermes/Kiro)
-    "hooks.install",
-    "hooks.uninstall",
-    "hooks.status",
-    // Notification sounds
-    "sound.bundled",
-    "sound.playback",
-    // Meta
     "log.runtime",
 ];
 
