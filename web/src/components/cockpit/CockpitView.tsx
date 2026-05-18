@@ -40,6 +40,10 @@ import {
 import { Composer } from "./Composer";
 import { ContextPrimerBanner } from "./ContextPrimerBanner";
 import { Markdown } from "./Markdown";
+import {
+  isQueuedPromptLong,
+  queuedStripLayout,
+} from "./queuedPromptsLayout";
 import { SubagentCard, ToolCard, ToolGroupCard } from "./ToolCards";
 import { DiffCommentsUserCard } from "../diff/comments/DiffCommentsUserCard";
 import { parseDiffCommentsSentinel } from "../diff/comments/buildPrompt";
@@ -1609,7 +1613,22 @@ function QueuedPromptsStrip({
   onEdit,
   onClear,
 }: QueuedPromptsStripProps) {
+  // Strip-level collapse: when the queue exceeds `visibleDefault` rows,
+  // only the first N render until the user expands. State resets when
+  // the queue length drops back below the threshold (toggle disappears;
+  // `expanded` stays harmlessly true and re-arms on the next overflow).
+  // Mobile gets N=1 because a single multi-line prompt already eats
+  // half the small-viewport composer area; desktop tolerates N=2.
+  // See #1232.
+  const isMobile = useIsCoarsePointer();
+  const [expanded, setExpanded] = useState(false);
   if (queued.length === 0) return null;
+  const layout = queuedStripLayout({
+    queuedCount: queued.length,
+    isMobile,
+    expanded,
+  });
+  const visible = queued.slice(0, layout.visibleCount);
   return (
     <div className="border-t border-surface-800 bg-surface-900/60 px-4 py-2">
       <div className="mx-auto max-w-3xl xl:max-w-4xl 2xl:max-w-5xl">
@@ -1629,7 +1648,7 @@ function QueuedPromptsStrip({
           )}
         </div>
         <ul className="flex flex-col gap-1.5">
-          {queued.map((q) => (
+          {visible.map((q) => (
             <QueuedPromptRow
               key={q.id}
               prompt={q}
@@ -1638,9 +1657,36 @@ function QueuedPromptsStrip({
             />
           ))}
         </ul>
+        {layout.toggleLabel && (
+          <button
+            type="button"
+            onClick={() => setExpanded((v) => !v)}
+            className="mt-1.5 w-full rounded-md border border-sky-700/20 bg-sky-950/10 px-2 py-1 text-[11px] font-medium uppercase tracking-wider text-sky-300 hover:bg-sky-950/30"
+          >
+            {layout.toggleLabel}
+          </button>
+        )}
       </div>
     </div>
   );
+}
+
+/** Tracks whether the primary pointer is coarse (touch). Used to pick
+ *  mobile vs desktop defaults that don't fit Tailwind's responsive
+ *  classes. Matches `useMobileKeyboard`'s detection. */
+function useIsCoarsePointer(): boolean {
+  const [isCoarse, setIsCoarse] = useState(() =>
+    typeof window !== "undefined" &&
+    Boolean(window.matchMedia?.("(pointer: coarse)").matches),
+  );
+  useEffect(() => {
+    if (typeof window === "undefined" || !window.matchMedia) return;
+    const mql = window.matchMedia("(pointer: coarse)");
+    const onChange = () => setIsCoarse(mql.matches);
+    mql.addEventListener?.("change", onChange);
+    return () => mql.removeEventListener?.("change", onChange);
+  }, []);
+  return isCoarse;
 }
 
 function QueuedPromptRow({
@@ -1657,6 +1703,13 @@ function QueuedPromptRow({
   // current prompt.text. This avoids a setState-in-effect to keep the
   // draft synced with external edits (lint: react-hooks/set-state-in-effect).
   const [editing, setEditing] = useState(false);
+  // Per-row clamp: long / multi-line prompts only render their first
+  // few lines in display mode. The `…` affordance lifts the clamp
+  // without entering edit mode. The clamp is undone automatically when
+  // the editor mounts, since the textarea has its own sizing logic.
+  // See #1232.
+  const [rowExpanded, setRowExpanded] = useState(false);
+  const isLong = isQueuedPromptLong(prompt.text);
 
   return (
     <li className="group flex items-start gap-2 rounded-lg border border-sky-700/30 bg-sky-950/15 px-2.5 py-1.5">
@@ -1675,14 +1728,36 @@ function QueuedPromptRow({
           }}
         />
       ) : (
-        <button
-          type="button"
-          onClick={() => setEditing(true)}
-          title="Click to edit"
-          className="min-w-0 flex-1 text-left text-xs leading-5 text-text-secondary whitespace-pre-wrap break-words hover:text-text-primary"
-        >
-          {prompt.text}
-        </button>
+        <div className="min-w-0 flex-1">
+          <button
+            type="button"
+            onClick={() => setEditing(true)}
+            title="Click to edit"
+            className={[
+              "block w-full text-left text-xs leading-5 text-text-secondary whitespace-pre-wrap break-words hover:text-text-primary",
+              isLong && !rowExpanded ? "line-clamp-3" : "",
+            ]
+              .filter(Boolean)
+              .join(" ")}
+          >
+            {prompt.text}
+          </button>
+          {isLong && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                setRowExpanded((v) => !v);
+              }}
+              className="mt-0.5 text-[11px] font-medium text-sky-300 hover:text-sky-200"
+              aria-label={
+                rowExpanded ? "Collapse queued prompt" : "Show full queued prompt"
+              }
+            >
+              {rowExpanded ? "Show less" : "…"}
+            </button>
+          )}
+        </div>
       )}
       <button
         type="button"
