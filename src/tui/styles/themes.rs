@@ -329,13 +329,19 @@ mod tests {
 
     #[test]
     fn downsample_to_palette_converts_all_fields() {
-        // Structural guard: every Color field listed in color_fields_mut
-        // must be downsampled. If a new Color field is added to Theme but
-        // not to color_fields_mut, downsample_to_palette will silently miss
-        // it and this test will still pass for the missing field; so the
-        // guard relies on color_fields_mut being the single source of truth
-        // for "what counts as a color field" (asserted by color_fields_mut
-        // returning a fixed-size array).
+        // Structural guard: every Color field listed in `color_fields_mut`
+        // must survive downsampling without an Rgb left behind.
+        //
+        // Tradeoff vs the pre-PR version: that one cross-checked against
+        // the serialized field count, so a Color field added to Theme but
+        // missing from `downsample_to_palette` failed loud. Here the test
+        // is only as strong as `color_fields_mut`: if a new Color field is
+        // added to Theme but not to `color_fields_mut`, the downsample
+        // silently misses it and this test still passes. We accept that
+        // because `color_fields_mut` is the single source of truth for
+        // "what counts as a color field" (both downsample and the
+        // `default_matches_empire_toml` drift guard consume it), so the
+        // only way to drift is to forget two spots at once instead of one.
         let mut theme = load_theme("empire");
         theme.downsample_to_palette();
         for color in theme.color_fields() {

@@ -1,9 +1,9 @@
 //! TUI theme and styling.
 //!
 //! The module is split into:
-//!   - `themes`   — the `Theme` struct and built-in theme constructors
-//!   - `palette`  — 24-bit RGB -> xterm-256 downsampling for `palette_mode`
-//!   - this file  — theme discovery / loading / serialization glue
+//!   - `themes`: the `Theme` struct, its `Default` (Empire mirror), and palette downsampling
+//!   - `palette`: 24-bit RGB -> xterm-256 downsampling for `palette_mode`
+//!   - this file: builtin TOML embedding, custom theme discovery, load/serialize glue
 //!
 //! Public surface is re-exported here so callers keep `crate::tui::styles::*`.
 
@@ -11,11 +11,6 @@ mod palette;
 mod themes;
 
 pub use themes::{idle_decay_window, Theme};
-// Re-exported for the upcoming theme-projection module (commit 5+); tests
-// in this file consume them directly. Re-export here so all theme types
-// live behind one `crate::tui::styles::*` import surface.
-#[allow(unused_imports)]
-pub use themes::{ThemeAppearance, ThemeSyntax};
 
 use std::path::PathBuf;
 use tracing::warn;
@@ -128,14 +123,18 @@ fn load_custom_theme(path: &std::path::Path) -> Option<Theme> {
     }
 }
 
+/// Parse a builtin's embedded TOML. Builtin TOMLs are committed to the repo
+/// and embedded at build time; a parse failure here is a developer bug, not
+/// user input. The `all_builtins_parse_with_expected_anchors` test guards
+/// against that landing in main.
+fn parse_builtin(builtin: &BuiltinTheme) -> Theme {
+    toml::from_str(builtin.source)
+        .unwrap_or_else(|e| panic!("builtin theme '{}' failed to parse: {}", builtin.name, e))
+}
+
 pub fn load_theme(name: &str) -> Theme {
     if let Some(builtin) = BUILTIN_THEMES.iter().find(|b| b.name == name) {
-        // Builtin TOMLs are committed to the repo and embedded at build
-        // time; a parse failure here is a developer bug, not user input.
-        // The `validates_all_builtins_parse` test in this module guards
-        // against that landing in main.
-        return toml::from_str(builtin.source)
-            .unwrap_or_else(|e| panic!("builtin theme '{}' failed to parse: {}", name, e));
+        return parse_builtin(builtin);
     }
     for (theme_name, path) in discover_custom_themes() {
         if theme_name == name {
@@ -145,14 +144,22 @@ pub fn load_theme(name: &str) -> Theme {
         }
     }
     warn!("Unknown theme '{}', falling back to empire", name);
-    load_theme("empire")
+    // Inline the empire fallback rather than recursing through `load_theme`,
+    // so a future rename or removal of the "empire" builtin would surface as
+    // a clear panic here instead of looping.
+    let empire = BUILTIN_THEMES
+        .iter()
+        .find(|b| b.name == "empire")
+        .expect("'empire' builtin missing from BUILTIN_THEMES");
+    parse_builtin(empire)
 }
 
 /// Load a theme and, when `palette_mode` is true, convert every `Color::Rgb`
 /// field to `Color::Indexed` (nearest xterm-256 index). Use this from callers
-/// that have access to `ThemeConfig::color_mode`. Builtin themes construct
-/// colors directly in Rust (bypassing the serde hex helper), so the conversion
-/// must be applied at the Theme level after construction.
+/// that have access to `ThemeConfig::color_mode`. Hex strings in the embedded
+/// and custom TOMLs deserialize to `Color::Rgb`; `palette_mode` consumers need
+/// xterm-256 `Color::Indexed`, so the downsample runs at the `Theme` level
+/// after parsing.
 pub fn load_theme_with_mode(name: &str, palette_mode: bool) -> Theme {
     let mut theme = load_theme(name);
     if palette_mode {
@@ -168,6 +175,7 @@ pub fn export_theme_toml(theme: &Theme) -> Result<String, toml::ser::Error> {
 
 #[cfg(test)]
 mod tests {
+    use super::themes::ThemeAppearance;
     use super::*;
     use ratatui::style::Color;
     use std::io::Write;
@@ -184,17 +192,44 @@ mod tests {
         assert!(matches!(theme.title, Color::Rgb(_, _, _)));
     }
 
-    /// Hex strings for the builtin background colors. The structural test
-    /// `all_builtins_parse_with_expected_background` walks the list and
-    /// asserts every embedded TOML deserializes to the right hex. Adding a
-    /// new builtin requires one entry here.
-    const BUILTIN_BACKGROUND_HEX: &[(&str, Color)] = &[
-        ("empire", Color::Rgb(0x0f, 0x17, 0x2a)),
-        ("phosphor", Color::Rgb(0x10, 0x14, 0x12)),
-        ("tokyo-night-storm", Color::Rgb(0x24, 0x28, 0x3b)),
-        ("catppuccin-latte", Color::Rgb(0xef, 0xf1, 0xf5)),
-        ("dracula", Color::Rgb(0x28, 0x2a, 0x36)),
-        ("rose-pine", Color::Rgb(0x19, 0x17, 0x24)),
+    /// Anchor colors for the builtin themes. Each row is
+    /// `(name, background, title)`. The structural test
+    /// `all_builtins_parse_with_expected_anchors` walks the list and asserts
+    /// every embedded TOML deserializes to the expected hex on both anchors.
+    /// Two anchors per theme is the minimum that catches a typo anywhere
+    /// other than the anchors themselves; cross-field rendering tests cover
+    /// the rest. Adding a new builtin requires one row here.
+    const BUILTIN_COLOR_ANCHORS: &[(&str, Color, Color)] = &[
+        (
+            "empire",
+            Color::Rgb(0x0f, 0x17, 0x2a),
+            Color::Rgb(0xfb, 0xbf, 0x24),
+        ),
+        (
+            "phosphor",
+            Color::Rgb(0x10, 0x14, 0x12),
+            Color::Rgb(0x39, 0xff, 0x14),
+        ),
+        (
+            "tokyo-night-storm",
+            Color::Rgb(0x24, 0x28, 0x3b),
+            Color::Rgb(0x7a, 0xa2, 0xf7),
+        ),
+        (
+            "catppuccin-latte",
+            Color::Rgb(0xef, 0xf1, 0xf5),
+            Color::Rgb(0x1e, 0x66, 0xf5),
+        ),
+        (
+            "dracula",
+            Color::Rgb(0x28, 0x2a, 0x36),
+            Color::Rgb(0xbd, 0x93, 0xf9),
+        ),
+        (
+            "rose-pine",
+            Color::Rgb(0x19, 0x17, 0x24),
+            Color::Rgb(0xc4, 0xa7, 0xe7),
+        ),
     ];
 
     #[test]
@@ -291,27 +326,32 @@ mod tests {
     }
 
     #[test]
-    fn all_builtins_parse_with_expected_background() {
+    fn all_builtins_parse_with_expected_anchors() {
         // Mandatory parse-all guard: every entry in BUILTIN_THEMES must
-        // deserialize cleanly from its embedded TOML and match the
-        // expected background hex. Without this, a typo in a builtin TOML
-        // would only show up at first runtime load via load_theme's
-        // panic message.
-        for (name, expected_bg) in BUILTIN_BACKGROUND_HEX {
+        // deserialize cleanly from its embedded TOML and match the expected
+        // background and title hex. Without this, a typo in a builtin TOML
+        // would only show up at first runtime load via load_theme's panic
+        // message.
+        for (name, expected_bg, expected_title) in BUILTIN_COLOR_ANCHORS {
             let theme = load_theme(name);
             assert_eq!(
                 theme.background, *expected_bg,
                 "builtin theme '{}' background mismatch",
                 name
             );
+            assert_eq!(
+                theme.title, *expected_title,
+                "builtin theme '{}' title mismatch",
+                name
+            );
         }
         // Defensive: ensure every builtin in BUILTIN_THEMES has an entry
-        // in BUILTIN_BACKGROUND_HEX so the test covers all builtins.
-        let table_names: Vec<&str> = BUILTIN_BACKGROUND_HEX.iter().map(|(n, _)| *n).collect();
+        // in BUILTIN_COLOR_ANCHORS so the test covers all builtins.
+        let table_names: Vec<&str> = BUILTIN_COLOR_ANCHORS.iter().map(|(n, _, _)| *n).collect();
         for name in builtin_theme_names() {
             assert!(
                 table_names.contains(&name),
-                "builtin '{}' missing from BUILTIN_BACKGROUND_HEX test table",
+                "builtin '{}' missing from BUILTIN_COLOR_ANCHORS test table",
                 name
             );
         }
@@ -373,8 +413,11 @@ border = "#414868"
     fn unknown_theme_falls_back_to_empire() {
         let theme = load_theme("nonexistent-theme");
         let empire = load_theme("empire");
-        assert_eq!(theme.background, empire.background);
-        assert_eq!(theme.title, empire.title);
+        assert_eq!(
+            theme.color_fields(),
+            empire.color_fields(),
+            "fallback theme color fields drifted from empire"
+        );
     }
 
     #[test]

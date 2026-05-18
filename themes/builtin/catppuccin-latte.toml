@@ -10,6 +10,9 @@ text = "#4c4f69"
 dimmed = "#acb0be"
 hint = "#209fb5"
 running = "#40a02b"
+# Light theme: darker = more attention. Waiting takes the deepest peach,
+# fresh_idle the mid amber, idle the lightest slate so the row visibly
+# fades into the page over time.
 waiting = "#fe640b"
 fresh_idle = "#df8e1d"
 idle = "#9ca0b0"
