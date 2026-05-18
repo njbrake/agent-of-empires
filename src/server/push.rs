@@ -600,6 +600,22 @@ async fn fire_due_pushes(
             continue;
         }
 
+        // Cockpit approval pushes are dispatched immediately from
+        // `cockpit_event_listener` with their own tag and bypass the
+        // TUI/web active-session suppression. If the session has any
+        // unresolved cockpit approvals, the user has already been
+        // notified through that channel; a second status-change push
+        // five seconds later for the same underlying event would just
+        // be noise. See #1038.
+        if event == NotificationEvent::Waiting
+            && !app_state
+                .cockpit_event_store
+                .unresolved_approval_nonces(&instance_id)
+                .is_empty()
+        {
+            continue;
+        }
+
         let subs = push.store.snapshot().await;
         if subs.is_empty() {
             continue;

@@ -16,7 +16,7 @@ Each session also has per-session overrides that beat the server-wide defaults: 
 
 The fourth event type comes from cockpit sessions and runs on its own rules:
 
-- **Cockpit approval**, a cockpit-driven agent emits an `ApprovalRequested` event because a tool needs your permission. Fires immediately (no dwell), tag `cockpit-approval-<session>`, and **bypasses** the TUI/web-active suppression below. Even when the dashboard or TUI is foregrounded the approval still routes through web push: the service worker forwards focused clients to an in-app toast instead of an OS banner so you still get an audible/visual cue. The cockpit also plays a browser-side chime keyed off `[sound] on_approval`; see [Sound effects](sounds.md).
+- **Cockpit approval**, a cockpit-driven agent emits an `ApprovalRequested` event because a tool needs your permission. Fires immediately (no dwell), tag `cockpit-approval-<session>`, and **bypasses** the TUI/web-active suppression below. Even when the dashboard or TUI is foregrounded the approval still routes through web push: the service worker forwards focused clients to an in-app toast instead of an OS banner so you still get an audible/visual cue. The cockpit also plays a browser-side chime keyed off `[sound] on_approval`; see [Sound effects](sounds.md). The corresponding `Waiting` status push is suppressed while the approval is unresolved, so you do not get a second OS banner for the same underlying event.
 
 Status notifications are suppressed when you're already looking at aoe (cockpit approvals ignore this list):
 
