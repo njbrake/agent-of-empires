@@ -21,30 +21,65 @@ jobs:
       - name: Install dependencies
         working-directory: web
         run: npm ci
-      - name: Run Vitest unit tests
+      - name: Run Vitest with coverage
         working-directory: web
-        run: npm run test:unit
+        run: npm run test:unit -- --coverage
+      - name: Upload to Codecov (vitest flag)
+        if: ${{ !cancelled() }}
+        uses: codecov/codecov-action@v6
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: web/coverage/vitest/lcov.info
+          flags: vitest
+          name: vitest
+          fail_ci_if_error: false
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ !cancelled() }}
+        with:
+          name: vitest-coverage
+          path: web/coverage/vitest/
+          retention-days: 14
 
   playwright:
-    name: Playwright
+    name: Playwright (mocked)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: '22'
-      - name: Install dependencies and build
+      - name: Install dependencies
         working-directory: web
-        run: npm ci && npm run build
+        run: npm ci
+      - name: Build web with coverage instrumentation
+        working-directory: web
+        env:
+          AOE_COVERAGE: '1'
+        run: npm run build
       - name: Validate coverage matrix
         working-directory: web
         run: node tests/validate-coverage-matrix.mjs
       - name: Install Playwright browsers
         working-directory: web
         run: npx playwright install --with-deps chromium
-      - name: Run Playwright tests
+      - name: Run Playwright (mocked) with coverage
         working-directory: web
-        run: npx playwright test
+        env:
+          AOE_COVERAGE: '1'
+        run: npx playwright test --config=playwright.config.ts
+      - name: Build LCOV from collected Playwright coverage
+        working-directory: web
+        if: ${{ !cancelled() }}
+        run: npm run coverage:merge
+      - name: Upload to Codecov (playwright-mocked flag)
+        if: ${{ !cancelled() }}
+        uses: codecov/codecov-action@v6
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: web/coverage/merged/lcov.info
+          flags: playwright-mocked
+          name: playwright-mocked
+          fail_ci_if_error: false
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: ${{ !cancelled() }}
         with:
@@ -55,46 +90,6 @@ jobs:
   playwright-live:
     name: Playwright (live)
     runs-on: ubuntu-latest
-    # Only spin up the live job when changes can plausibly affect the
-    # surface it covers. Docs-only or website-only PRs skip it.
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
-        with:
-          node-version: '22'
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-        with:
-          cache-bin: "false"
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Install tmux
-        run: sudo apt-get update && sudo apt-get install -y tmux
-      - name: Build aoe with serve feature
-        run: cargo build --features serve --release
-      - name: Install web deps
-        working-directory: web
-        run: npm ci
-      - name: Install Playwright browsers
-        working-directory: web
-        run: npx playwright install --with-deps chromium
-      - name: Run live Playwright suite
-        working-directory: web
-        env:
-          AOE_E2E_BINARY: ${{ github.workspace }}/target/release/aoe
-        run: npx playwright test --config=playwright.live.config.ts
-      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        if: ${{ !cancelled() }}
-        with:
-          name: playwright-live-report
-          path: web/playwright-live-report/
-          retention-days: 14
-
-  coverage:
-    name: Coverage
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      pull-requests: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
@@ -117,49 +112,28 @@ jobs:
       - name: Install Playwright browsers
         working-directory: web
         run: npx playwright install --with-deps chromium
-      - name: Run Vitest with coverage
-        working-directory: web
-        env:
-          AOE_COVERAGE: '1'
-        run: npm run test:unit -- --coverage
-      - name: Run mocked Playwright with coverage
-        working-directory: web
-        env:
-          AOE_COVERAGE: '1'
-        run: npx playwright test --config=playwright.config.ts
-        continue-on-error: true
       - name: Run live Playwright with coverage
         working-directory: web
         env:
           AOE_COVERAGE: '1'
           AOE_E2E_BINARY: ${{ github.workspace }}/target/release/aoe
-        run: |
-          if [ -f playwright.live.config.ts ]; then
-            npx playwright test --config=playwright.live.config.ts
-          else
-            echo "playwright.live.config.ts not yet present; skipping live run"
-          fi
-        continue-on-error: true
-      - name: Merge coverage
+        run: npx playwright test --config=playwright.live.config.ts
+      - name: Build LCOV from collected Playwright coverage
         working-directory: web
-        run: npm run coverage:merge
-      - name: Upload merged coverage artifact
         if: ${{ !cancelled() }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: coverage-merged
-          path: web/coverage/merged/
-          retention-days: 14
-      - name: Upload to Codecov
+        run: npm run coverage:merge
+      - name: Upload to Codecov (playwright-live flag)
         if: ${{ !cancelled() }}
         uses: codecov/codecov-action@v6
         with:
           token: ${{ secrets.CODECOV_TOKEN }}
           files: web/coverage/merged/lcov.info
-          flags: frontend
-          name: web-frontend-merged
+          flags: playwright-live
+          name: playwright-live
           fail_ci_if_error: false
-          # Components defined in codecov.yml at the repo root segment the
-          # PR comment by user-facing surface. Per-test-type splits
-          # (vitest / playwright-mocked / playwright-live) become
-          # additional uploads with their own flags in a follow-up.
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ !cancelled() }}
+        with:
+          name: playwright-live-report
+          path: web/playwright-live-report/
+          retention-days: 14

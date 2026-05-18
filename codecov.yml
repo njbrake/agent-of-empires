@@ -25,11 +25,22 @@ comment:
 codecov:
   disable_default_path_fixes: false
 
-# Flag for the single merged frontend upload. Add more flags
-# (playwright-mocked, playwright-live, vitest) in a follow-up once we
-# split the upload step into three separate codecov calls.
+# One flag per test type. Each CI job uploads its own LCOV with its own
+# flag, and Codecov merges them server-side into the combined coverage
+# report (see https://docs.codecov.com/docs/flags). `carryforward: true`
+# means a flag whose job did not run on a given PR (e.g. docs-only PR
+# skipping playwright-live) does not zero out that slice; the last
+# known value carries forward instead.
 flags:
-  frontend:
+  vitest:
+    paths:
+      - web/src/
+    carryforward: true
+  playwright-mocked:
+    paths:
+      - web/src/
+    carryforward: true
+  playwright-live:
     paths:
       - web/src/
     carryforward: true
