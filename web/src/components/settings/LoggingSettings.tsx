@@ -109,6 +109,13 @@ const KNOWN_TARGETS: { value: string; group: string }[] = [
   { value: "serve.lifecycle", group: "Serve" },
   { value: "serve.tunnel", group: "Serve" },
   { value: "serve.shutdown", group: "Serve" },
+  // Agent hook integration
+  { value: "hooks.install", group: "Hooks" },
+  { value: "hooks.uninstall", group: "Hooks" },
+  { value: "hooks.status", group: "Hooks" },
+  // Notification sounds
+  { value: "sound.bundled", group: "Sound" },
+  { value: "sound.playback", group: "Sound" },
   // Meta
   { value: "log.runtime", group: "Meta" },
 ];

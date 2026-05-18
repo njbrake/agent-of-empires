@@ -157,7 +157,7 @@ async fn main() -> Result<()> {
         log_path_for_msg.as_ref(),
         env_cfg.level,
     ) {
-        tracing::info!(target: "agent_of_empires", "Debug logging at {} to {}", lvl.as_str(), path.display());
+        tracing::info!(target: "log.runtime", "Debug logging at {} to {}", lvl.as_str(), path.display());
     }
 
     // CLI invocations get the dev-namespace drift warning on stderr right

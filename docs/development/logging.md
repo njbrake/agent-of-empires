@@ -24,6 +24,8 @@ Targets use the convention `<module>.<submodule>`. The default filter expands a 
 | `tmux` | `tmux.command`, `tmux.cache`, `tmux.status`, `tmux.pane` | Every tmux invocation (args/exit/duration), cache refresh, status detection, pane CRUD |
 | `http` | `http.request`, `http.middleware`, `http.error`, `http.api.sessions`, `http.api.projects`, `http.api.settings`, `http.api.git`, `http.api.system`, `http.api.log_level`, `http.api.client_log` | Axum middleware request summary (method/path/status/latency/request_id), per-route semantic events |
 | `serve` | `serve.daemon`, `serve.lifecycle`, `serve.tunnel`, `serve.shutdown` | `aoe serve` daemonize/foreground startup, PID/URL/ready file IO, tunnel up/down + passphrase rotation, signal-driven shutdown |
+| `hooks` | `hooks.install`, `hooks.uninstall`, `hooks.status` | Agent hook integration (Claude/Settl/Hermes/Kiro): settings.json edits, allowlist writes, uninstall sweeps, hook status file lifecycle |
+| `sound` | `sound.bundled`, `sound.playback` | Notification sound asset download/install and per-event playback through the platform audio backend |
 | `log.runtime` | — | Filter swaps (REST + runner file-watch) |
 
 ## Levels

@@ -144,6 +144,8 @@ pub const DEFAULT_TARGET_ROOTS: &[&str] = &[
     "tmux",
     "http",
     "serve",
+    "hooks",
+    "sound",
 ];
 
 /// Sub-targets users can tune individually from the settings UI.
@@ -253,6 +255,13 @@ pub const KNOWN_SUB_TARGETS: &[&str] = &[
     "serve.lifecycle",
     "serve.tunnel",
     "serve.shutdown",
+    // Agent hook integration (Claude/Settl/Hermes/Kiro)
+    "hooks.install",
+    "hooks.uninstall",
+    "hooks.status",
+    // Notification sounds
+    "sound.bundled",
+    "sound.playback",
     // Meta
     "log.runtime",
 ];
