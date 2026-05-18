@@ -102,7 +102,7 @@ jobs:
         with:
           cache-bin: "false"
           save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Check every tracing! call has target: and Rust/TS/docs target lists agree
+      - name: "Check every tracing! call has target and Rust/TS/docs target lists agree"
         run: cargo xtask check-logging
 
   nix:
