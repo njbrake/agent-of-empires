@@ -212,8 +212,14 @@ fn check_logging() {
 
 fn check_untagged_tracing() -> bool {
     let mut ok = true;
-    let macro_re =
-        regex::Regex::new(r"tracing::(trace|debug|info|warn|error|event)!\s*\(").expect("regex");
+    // Match both level macros (`tracing::info!`, ...) and span macros
+    // (`tracing::info_span!`, `tracing::span!`, ...). Both accept `target:`
+    // as the first macro argument; both should carry it so the user can
+    // dial coverage from settings without falling back to the crate root.
+    let macro_re = regex::Regex::new(
+        r"tracing::(trace_span|debug_span|info_span|warn_span|error_span|trace|debug|info|warn|error|event|span)!\s*\(",
+    )
+    .expect("regex");
 
     for entry in walk_rust_files(Path::new("src")) {
         let content = match fs::read_to_string(&entry) {
@@ -438,8 +444,12 @@ fn check_target_list_sync() -> bool {
 /// that already have `target:` are skipped. Backslash-style escapes are
 /// preserved through string literals.
 fn auto_tag_logging(path: &str, target: &str) {
-    let macro_re =
-        regex::Regex::new(r"tracing::(trace|debug|info|warn|error|event)!\s*\(").expect("regex");
+    // Match the same set of macros as `check_untagged_tracing` so a
+    // `check-logging` failure can always be backfilled by re-running this.
+    let macro_re = regex::Regex::new(
+        r"tracing::(trace_span|debug_span|info_span|warn_span|error_span|trace|debug|info|warn|error|event|span)!\s*\(",
+    )
+    .expect("regex");
     let content = match fs::read_to_string(path) {
         Ok(c) => c,
         Err(e) => {
