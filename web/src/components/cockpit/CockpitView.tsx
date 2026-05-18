@@ -302,6 +302,11 @@ function CockpitChrome({
           <RejectedPromptsStrip
             rejected={state.rejectedPrompts}
             onRetry={sendPrompt}
+            disabled={
+              state.workerRestarting ||
+              state.workerStopped ||
+              Boolean(state.startupError)
+            }
           />
 
           <ContextPrimerBanner
@@ -1452,9 +1457,17 @@ interface QueuedPromptsStripProps {
 function RejectedPromptsStrip({
   rejected,
   onRetry,
+  disabled,
 }: {
   rejected: RejectedPrompt[];
   onRetry: (text: string) => void;
+  /** True while the worker is restarting/stopped/in startup error.
+   *  Retry must be gated then: `sendPrompt` would clear
+   *  `workerRestarting` / `agentUnresponsive` and the rejected pills
+   *  before the respawn has produced a new `AcpSessionAssigned`,
+   *  leaving the UI claiming the agent is ready while the daemon
+   *  hasn't reconnected yet. See #1196. */
+  disabled: boolean;
 }) {
   // Pills for prompts the daemon refused while another `session/prompt`
   // was already in flight. The user sees the rejection and can re-fire
@@ -1491,7 +1504,8 @@ function RejectedPromptsStrip({
               <button
                 type="button"
                 onClick={() => onRetry(r.text)}
-                className="inline-flex shrink-0 items-center gap-1 rounded-md border border-amber-700/60 bg-amber-900/30 px-2 py-1 text-[10px] font-mono uppercase tracking-wide text-amber-100 hover:bg-amber-900/60"
+                disabled={disabled}
+                className="inline-flex shrink-0 items-center gap-1 rounded-md border border-amber-700/60 bg-amber-900/30 px-2 py-1 text-[10px] font-mono uppercase tracking-wide text-amber-100 hover:bg-amber-900/60 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-amber-900/30"
                 aria-label="Retry rejected prompt"
               >
                 <RotateCcw className="h-3 w-3" />

@@ -778,28 +778,77 @@ impl<S: BroadcastSink> Supervisor<S> {
                 // watchdog fire: the agent ignored `session/cancel` for
                 // CANCEL_ESCALATION_GRACE while a prompt was in flight.
                 // The runner subprocess is still alive but wedged on a
-                // tool call the agent never cancelled, and a fresh
-                // `session/load` over a new socket would either collide
-                // on the old runner's socket path or reattach to the
-                // same wedged agent. SIGTERM the runner PID inline so
-                // the next spawn gets a clean process. Do NOT call
-                // `terminate_runner_for_session` here: that helper
-                // deletes the worker_registry entry, which would make
-                // `restart_decision` interpret it as a user-initiated
-                // stop and skip the respawn. See #1196.
+                // tool call the agent never cancelled, and the next
+                // `AcpClient::spawn` reuses the same UNIX socket path
+                // (`<workers_dir>/<session_id>.sock`), so a respawn
+                // before the old runner exits either binds against a
+                // collided socket or reconnects to the wedged process.
+                //
+                // Sequence here:
+                //   1. SIGTERM the old PID.
+                //   2. Poll for PID death + socket file removal (cap 3s).
+                //   3. SIGKILL if the wedged runner is still alive past
+                //      the SIGTERM grace.
+                //   4. Best-effort `remove_file` on the socket so the
+                //      respawn binds cleanly.
+                //
+                // Do NOT call `terminate_runner_for_session` here: that
+                // helper deletes the worker_registry entry, which
+                // makes `restart_decision` interpret it as a
+                // user-initiated stop and skip the respawn. See #1196.
                 if agent_unresponsive {
                     #[cfg(unix)]
-                    if let Ok(Some(record)) = super::worker_registry::load(&session_id) {
-                        if super::worker_registry::is_pid_alive(record.pid) {
-                            use nix::sys::signal::{kill, Signal};
-                            use nix::unistd::Pid;
-                            info!(
-                                target: "cockpit.supervisor",
-                                session = %session_id,
-                                pid = record.pid,
-                                "SIGTERM wedged runner before respawn (agent_unresponsive)"
-                            );
-                            let _ = kill(Pid::from_raw(record.pid as i32), Signal::SIGTERM);
+                    {
+                        use nix::sys::signal::{kill, Signal};
+                        use nix::unistd::Pid;
+                        let old_pid = super::worker_registry::load(&session_id)
+                            .ok()
+                            .flatten()
+                            .map(|r| r.pid);
+                        if let Some(pid) = old_pid {
+                            if super::worker_registry::is_pid_alive(pid) {
+                                info!(
+                                    target: "cockpit.supervisor",
+                                    session = %session_id,
+                                    pid,
+                                    "SIGTERM wedged runner before respawn (agent_unresponsive)"
+                                );
+                                let _ = kill(Pid::from_raw(pid as i32), Signal::SIGTERM);
+                            }
+                            // Poll for the runner to exit before
+                            // proceeding to respawn. ~3s budget, 100ms
+                            // tick. claude-agent-acp's shutdown path
+                            // is fast in practice; if it's truly
+                            // unkillable by SIGTERM we escalate to
+                            // SIGKILL below.
+                            for _ in 0..30 {
+                                if !super::worker_registry::is_pid_alive(pid) {
+                                    break;
+                                }
+                                tokio::time::sleep(Duration::from_millis(100)).await;
+                            }
+                            if super::worker_registry::is_pid_alive(pid) {
+                                warn!(
+                                    target: "cockpit.supervisor",
+                                    session = %session_id,
+                                    pid,
+                                    "wedged runner survived SIGTERM grace; escalating to SIGKILL"
+                                );
+                                let _ = kill(Pid::from_raw(pid as i32), Signal::SIGKILL);
+                                // One more brief tick for the kernel
+                                // to reap and the socket inode to
+                                // drop. We don't loop forever; spawn
+                                // will surface its own error if the
+                                // process is somehow still around.
+                                tokio::time::sleep(Duration::from_millis(200)).await;
+                            }
+                        }
+                        if let Ok(socket_path) =
+                            super::worker_registry::socket_path_for(&session_id)
+                        {
+                            if socket_path.exists() {
+                                let _ = std::fs::remove_file(&socket_path);
+                            }
                         }
                     }
                 }

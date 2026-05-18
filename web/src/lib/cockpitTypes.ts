@@ -684,9 +684,15 @@ export function applyEvent(
     if (event.Stopped.reason === "user_stopped") {
       next.workerStopped = true;
       next.workerRestarting = false;
+      // Any prior unresponsive escalation has been superseded by the
+      // user explicitly stopping the worker; drop the stale banner
+      // flag so a future `restart_pending` doesn't accidentally
+      // render unresponsive copy. See #1196.
+      next.agentUnresponsive = false;
     } else if (event.Stopped.reason === "restart_pending") {
       next.workerRestarting = true;
       next.workerStopped = false;
+      next.agentUnresponsive = false;
     } else if (event.Stopped.reason === "agent_unresponsive") {
       // Cancel-escalation watchdog in the daemon fired: claude-agent-acp
       // ignored `session/cancel` for the grace window, the supervisor
@@ -730,6 +736,9 @@ export function applyEvent(
   if ("AgentStartupError" in event) {
     next.startupError = event.AgentStartupError.message;
     next.inFlightTool = null;
+    // A failed respawn supersedes any in-progress unresponsive
+    // escalation; the user sees the startup error banner instead.
+    next.agentUnresponsive = false;
     // Same race-safe semantics as `Stopped`: advance `lastStoppedSeq`
     // by one so a startup failure for the prior turn doesn't kill the
     // spinner for a freshly-typed follow-up the user has already
