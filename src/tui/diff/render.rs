@@ -571,7 +571,7 @@ impl DiffView {
 mod tests {
     use super::*;
     use crate::tui::diff::BranchSelectState;
-    use crate::tui::styles::{load_theme, Theme};
+    use crate::tui::styles::load_theme;
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 

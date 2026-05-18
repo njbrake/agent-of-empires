@@ -2854,7 +2854,7 @@ fn paste_on_group_header_stashes_instead_of_misrouting() {
 #[test]
 #[serial]
 fn update_bar_renders_status_toast_without_update_info() {
-    use crate::tui::styles::{load_theme, Theme};
+    use crate::tui::styles::load_theme;
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
