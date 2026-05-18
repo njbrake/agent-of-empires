@@ -177,6 +177,17 @@ enum ConnectMode {
 /// bounded.
 const RESUME_IDLE_GRACE_DEFAULT: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// Grace window between the first `session/cancel` notification (sent
+/// during an in-flight `session/prompt`) and the daemon declaring the
+/// agent unresponsive. When this fires, the connection task ends with
+/// `Stopped { reason: "agent_unresponsive" }` and the supervisor
+/// SIGTERMs the runner before respawning via `session/load`. 10s is
+/// long enough for claude-agent-acp to resolve a real cancel through
+/// the SDK message boundary but short enough that a user who clicked
+/// "Force end turn" isn't watching a frozen UI for 30s while the
+/// daemon waits. See #1196.
+const CANCEL_ESCALATION_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
+
 /// Monotonic counter appended to synthetic tool-call IDs so two events
 /// minted within the same millisecond don't collide on the
 /// `(session_id, tool_id)` keys used by the cockpit event store.
@@ -2457,10 +2468,41 @@ async fn run_connection_task<W, R>(
                         tokio::pin!(prompt_fut);
 
                         let mut shutdown = false;
+                        // Cancel-escalation watchdog. The first
+                        // `session/cancel` sent while the prompt future is
+                        // still pending arms a 10s timer; if the agent
+                        // doesn't resolve the prompt before it fires (or
+                        // the user submits a follow-up prompt while we're
+                        // already cancelling, which means they've already
+                        // clicked "Force end turn" and re-typed), we
+                        // declare the agent unresponsive, end the
+                        // connection task, and let the supervisor drain
+                        // path SIGTERM the runner and respawn with
+                        // session/load for transcript continuity. Without
+                        // this, claude-agent-acp ignoring cancel in the
+                        // middle of a `block: true` TaskOutput leaves the
+                        // daemon's `prompt_fut` pinned forever and every
+                        // follow-up prompt is silently dropped. See #1196.
+                        let mut agent_unresponsive = false;
+                        let mut cancelling = false;
+                        let cancel_grace = tokio::time::sleep(CANCEL_ESCALATION_GRACE);
+                        tokio::pin!(cancel_grace);
+
                         loop {
                             tokio::select! {
                                 res = &mut prompt_fut => {
                                     let _ = res?;
+                                    break;
+                                }
+                                _ = &mut cancel_grace, if cancelling => {
+                                    warn!(
+                                        target: "cockpit.acp",
+                                        session = %session_label,
+                                        grace_secs = CANCEL_ESCALATION_GRACE.as_secs(),
+                                        "agent ignored session/cancel past grace window; escalating to runner restart"
+                                    );
+                                    agent_unresponsive = true;
+                                    shutdown = true;
                                     break;
                                 }
                                 cmd = cmd_rx.recv() => {
@@ -2473,9 +2515,17 @@ async fn run_connection_task<W, R>(
                                             connection.send_notification(
                                                 CancelNotification::new(acp_session_id.clone()),
                                             )?;
-                                            // Keep awaiting the prompt; the
-                                            // agent should resolve it with
-                                            // StopReason::Cancelled.
+                                            // Arm the escalation watchdog on
+                                            // the first cancel only; later
+                                            // cancels just resend the
+                                            // notification.
+                                            if !cancelling {
+                                                cancelling = true;
+                                                cancel_grace.as_mut().reset(
+                                                    tokio::time::Instant::now()
+                                                        + CANCEL_ESCALATION_GRACE,
+                                                );
+                                            }
                                         }
                                         Some(ClientCmd::SetMode(mode_id)) => {
                                             info!(
@@ -2523,13 +2573,49 @@ async fn run_connection_task<W, R>(
                                                 }
                                             });
                                         }
-                                        Some(ClientCmd::Prompt(_)) => {
-                                            // Client-side prompt queueing is
-                                            // tracked separately in #1031.
+                                        Some(ClientCmd::Prompt(rejected_text)) => {
+                                            // Surface the dropped prompt
+                                            // to the UI so the user can
+                                            // retry from a Rejected pill
+                                            // instead of having their
+                                            // message vanish silently.
+                                            // Client-side composer queueing
+                                            // is tracked separately in
+                                            // #1031; this event covers the
+                                            // server-side gap when a prompt
+                                            // does make it to the daemon
+                                            // while another is in flight.
                                             warn!(
                                                 target: "cockpit.acp",
-                                                "received Prompt while one is in flight; dropping (queueing tracked in #1031)"
+                                                "received Prompt while one is in flight; rejecting"
                                             );
+                                            let _ = event_tx_for_block
+                                                .send(Event::PromptRejected {
+                                                    reason: "agent_busy".into(),
+                                                    text: rejected_text,
+                                                })
+                                                .await;
+                                            // A follow-up arriving while
+                                            // a cancel is in flight means
+                                            // the user has clicked Force
+                                            // end turn (which optimistically
+                                            // unlocked the composer via the
+                                            // supervisor's synthetic Stopped)
+                                            // and then re-typed. That's a
+                                            // strong signal the agent is
+                                            // wedged; escalate immediately
+                                            // without waiting for the 10s
+                                            // grace.
+                                            if cancelling {
+                                                warn!(
+                                                    target: "cockpit.acp",
+                                                    session = %session_label,
+                                                    "follow-up prompt arrived while cancel pending; escalating to runner restart"
+                                                );
+                                                agent_unresponsive = true;
+                                                shutdown = true;
+                                                break;
+                                            }
                                         }
                                         Some(ClientCmd::Shutdown) | None => {
                                             info!(
@@ -2548,7 +2634,9 @@ async fn run_connection_task<W, R>(
                         // Consumers (reducer, persisted status) need a single
                         // turn-end event per turn or they sit on a stale
                         // "in flight" state forever.
-                        let reason = if shutdown {
+                        let reason = if agent_unresponsive {
+                            "agent_unresponsive"
+                        } else if shutdown {
                             "shutdown"
                         } else {
                             "prompt_complete"

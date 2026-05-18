@@ -363,6 +363,20 @@ pub enum Event {
     UserPromptSent {
         text: String,
     },
+    /// A user prompt arrived at the daemon while another `session/prompt`
+    /// was still in flight. The daemon refused to forward it (claude-agent-acp
+    /// serializes prompts internally and a second concurrent prompt would
+    /// race the pending one). Carries the rejected text so the UI can
+    /// render a Retry pill near the composer. The text was already
+    /// persisted as `UserPromptSent` upstream of this rejection by the
+    /// `/cockpit/prompt` handler, so this event does not introduce new
+    /// PII exposure relative to the existing transcript. Reason is an
+    /// opaque tag for forward extensibility; today only `"agent_busy"`
+    /// is used. See #1196.
+    PromptRejected {
+        reason: String,
+        text: String,
+    },
     /// Agent-assigned ACP session id from a successful `session/new`.
     /// Server-side listener catches this and persists the id on
     /// `Instance.cockpit_acp_session_id` so the next spawn can call
@@ -531,6 +545,11 @@ impl CockpitState {
             // in-memory mirror needed yet. Bumps seq so the WS replay
             // surfaces it to live clients.
             Event::WakeupScheduled { .. } => {}
+            // Rejected follow-up prompt while another prompt was in flight.
+            // No durable in-memory mutation; the reducer surfaces a Retry
+            // pill from the broadcast frame and the event_store entry
+            // carries the historical record. See #1196.
+            Event::PromptRejected { .. } => {}
         }
         self.last_seq = self.last_seq.saturating_add(1);
         self.updated_at = Utc::now();

@@ -378,7 +378,8 @@ impl CockpitTranscript {
             | Event::RateLimit { .. }
             | Event::UsageUpdated { .. }
             | Event::RawAgentUpdate { .. }
-            | Event::WakeupScheduled { .. } => {
+            | Event::WakeupScheduled { .. }
+            | Event::PromptRejected { .. } => {
                 // Surface as info notes for now; richer renderers are
                 // followup work tracked in the plan's "out of scope".
             }

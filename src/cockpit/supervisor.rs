@@ -691,7 +691,21 @@ impl<S: BroadcastSink> Supervisor<S> {
         tokio::spawn(async move {
             let mut inbound = initial_inbound;
             loop {
+                // Tracks whether the connection task ended because the
+                // cancel-escalation watchdog declared the agent
+                // unresponsive (see acp_client.rs's CANCEL_ESCALATION_GRACE).
+                // When true, the runner subprocess is alive but wedged
+                // around a tool call the agent never cancelled, so the
+                // supervisor must SIGTERM it before respawning;
+                // otherwise the next `session/load` would attach to the
+                // same wedged process. See #1196.
+                let mut agent_unresponsive = false;
                 while let Some(event) = inbound.recv().await {
+                    if let Event::Stopped { reason } = &event {
+                        if reason == "agent_unresponsive" {
+                            agent_unresponsive = true;
+                        }
+                    }
                     // Mirror the agent-assigned id into the cached
                     // spawn_config so a subsequent crash respawn picks
                     // up the latest id and calls session/load instead
@@ -757,8 +771,38 @@ impl<S: BroadcastSink> Supervisor<S> {
                 warn!(
                     target: "cockpit.supervisor",
                     session = %session_id,
+                    agent_unresponsive,
                     "drain channel closed (agent connection task ended); evaluating respawn"
                 );
+                // The connection task observed the cancel-escalation
+                // watchdog fire: the agent ignored `session/cancel` for
+                // CANCEL_ESCALATION_GRACE while a prompt was in flight.
+                // The runner subprocess is still alive but wedged on a
+                // tool call the agent never cancelled, and a fresh
+                // `session/load` over a new socket would either collide
+                // on the old runner's socket path or reattach to the
+                // same wedged agent. SIGTERM the runner PID inline so
+                // the next spawn gets a clean process. Do NOT call
+                // `terminate_runner_for_session` here: that helper
+                // deletes the worker_registry entry, which would make
+                // `restart_decision` interpret it as a user-initiated
+                // stop and skip the respawn. See #1196.
+                if agent_unresponsive {
+                    #[cfg(unix)]
+                    if let Ok(Some(record)) = super::worker_registry::load(&session_id) {
+                        if super::worker_registry::is_pid_alive(record.pid) {
+                            use nix::sys::signal::{kill, Signal};
+                            use nix::unistd::Pid;
+                            info!(
+                                target: "cockpit.supervisor",
+                                session = %session_id,
+                                pid = record.pid,
+                                "SIGTERM wedged runner before respawn (agent_unresponsive)"
+                            );
+                            let _ = kill(Pid::from_raw(record.pid as i32), Signal::SIGTERM);
+                        }
+                    }
+                }
                 let respawn_config: SpawnConfig =
                     match restart_decision(&workers, &session_id).await {
                         RestartDecision::Respawn(cfg) => {

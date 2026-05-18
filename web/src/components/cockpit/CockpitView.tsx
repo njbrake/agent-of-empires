@@ -19,7 +19,15 @@ import {
   ThreadPrimitive,
   useMessage,
 } from "@assistant-ui/react";
-import { Check, ChevronDown, Clock, ListChecks, X } from "lucide-react";
+import {
+  AlertTriangle,
+  Check,
+  ChevronDown,
+  Clock,
+  ListChecks,
+  RotateCcw,
+  X,
+} from "lucide-react";
 
 import { ApprovalCard } from "./ApprovalCard";
 import {
@@ -47,6 +55,7 @@ import type {
   CockpitState,
   Plan,
   QueuedPrompt,
+  RejectedPrompt,
   ToolCall,
 } from "../../lib/cockpitTypes";
 
@@ -211,7 +220,7 @@ function CockpitChrome({
         <WorkerStoppedBanner sessionId={sessionId} />
       )}
       {state.workerRestarting && !state.startupError && !state.workerStopped && (
-        <WorkerRestartingBanner />
+        <WorkerRestartingBanner agentUnresponsive={state.agentUnresponsive} />
       )}
       {cockpitWorkerState === "resuming" &&
         !state.startupError &&
@@ -288,6 +297,11 @@ function CockpitChrome({
             onRemove={removeQueuedPrompt}
             onEdit={editQueuedPrompt}
             onClear={clearQueue}
+          />
+
+          <RejectedPromptsStrip
+            rejected={state.rejectedPrompts}
+            onRetry={sendPrompt}
           />
 
           <ContextPrimerBanner
@@ -1085,24 +1099,30 @@ function InteractionErrorBanner({
   );
 }
 
-function WorkerRestartingBanner() {
-  // `aoe cockpit restart` deletes the registry + writes a sentinel; the
-  // daemon's reaper publishes Stopped{reason:"restart_pending"} and the
-  // reconciler clears its `attempted` set so the next 2s tick spawns a
-  // fresh worker (with the cached acp_session_id for transcript
-  // continuity). AcpSessionAssigned then clears `workerRestarting` and
-  // this banner unmounts. No reconnect button because the daemon is
-  // already handling it.
+function WorkerRestartingBanner({
+  agentUnresponsive,
+}: {
+  agentUnresponsive: boolean;
+}) {
+  // Two reasons land here:
+  //   - `aoe cockpit restart` (deletes registry, daemon's reaper
+  //     publishes Stopped{reason:"restart_pending"}, reconciler spawns
+  //     a fresh worker with the cached acp_session_id).
+  //   - Cancel-escalation watchdog fired: claude-agent-acp ignored
+  //     `session/cancel` for the grace window, the supervisor SIGTERMed
+  //     the wedged runner and is respawning via `session/load`.
+  // Both end with `AcpSessionAssigned` clearing the banner.
+  // See #1196 for the agent_unresponsive variant.
+  const message = agentUnresponsive
+    ? "Agent stopped responding to cancel. Restarting worker; your transcript will be preserved."
+    : "Restarting cockpit worker… the daemon will respawn the agent with your existing transcript shortly.";
   return (
     <div className="flex items-center gap-2 border-b border-sky-900/60 bg-sky-950/40 px-4 py-2 text-xs text-sky-200">
       <span
         className="inline-block h-2 w-2 animate-pulse rounded-full bg-sky-400"
         aria-hidden
       />
-      <span>
-        Restarting cockpit worker… the daemon will respawn the agent with
-        your existing transcript shortly.
-      </span>
+      <span>{message}</span>
     </div>
   );
 }
@@ -1429,6 +1449,62 @@ interface QueuedPromptsStripProps {
  *  queued mid-turn. Each row is editable in place (click to edit, save
  *  on Enter or blur, cancel on Escape) and removable via the X button.
  *  Hidden when the queue is empty. See #1031. */
+function RejectedPromptsStrip({
+  rejected,
+  onRetry,
+}: {
+  rejected: RejectedPrompt[];
+  onRetry: (text: string) => void;
+}) {
+  // Pills for prompts the daemon refused while another `session/prompt`
+  // was already in flight. The user sees the rejection and can re-fire
+  // via the Retry button instead of having their message vanish. The
+  // reducer caps the list at 5 entries (oldest dropped) and clears on
+  // the next UserPromptSent. See #1196.
+  if (rejected.length === 0) return null;
+  return (
+    <div className="border-t border-amber-900/40 bg-amber-950/20 px-4 py-2">
+      <div className="mx-auto max-w-3xl xl:max-w-4xl 2xl:max-w-5xl">
+        <div className="pb-1.5 text-[11px] uppercase tracking-wider text-amber-300">
+          <span className="inline-flex items-center gap-1">
+            <AlertTriangle className="h-3 w-3" />
+            Rejected ({rejected.length})
+          </span>
+        </div>
+        <ul className="flex flex-col gap-1.5">
+          {rejected.map((r) => (
+            <li
+              key={r.id}
+              className="group flex items-start gap-2 rounded-lg border border-amber-700/30 bg-amber-950/15 px-2.5 py-1.5"
+            >
+              <span className="mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-amber-500/20 text-[10px] font-semibold text-amber-300">
+                !
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="truncate whitespace-pre-wrap break-words text-xs text-amber-100">
+                  {r.text}
+                </p>
+                <p className="mt-0.5 text-[10px] text-amber-400/80">
+                  Agent was busy; prompt was not sent.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => onRetry(r.text)}
+                className="inline-flex shrink-0 items-center gap-1 rounded-md border border-amber-700/60 bg-amber-900/30 px-2 py-1 text-[10px] font-mono uppercase tracking-wide text-amber-100 hover:bg-amber-900/60"
+                aria-label="Retry rejected prompt"
+              >
+                <RotateCcw className="h-3 w-3" />
+                Retry
+              </button>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
 function QueuedPromptsStrip({
   queued,
   onRemove,

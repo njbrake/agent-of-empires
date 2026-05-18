@@ -551,6 +551,12 @@ The session's working directory was renamed, moved, or deleted out from under `a
 
 Reinstalling the adapter does not help here; the adapter is fine, the cwd is gone.
 
+### Agent stopped responding to cancel
+
+If the agent ignores `session/cancel` mid-tool-call (most commonly a `block: true` TaskOutput against a wedged background shell), aoe escalates after a ~10s grace window: the daemon ends the ACP connection, SIGTERMs the wedged `aoe __cockpit-runner` subprocess, and the supervisor respawns a fresh worker via `session/load` so the transcript continues uninterrupted. The cockpit view shows "Agent stopped responding to cancel. Restarting worker; your transcript will be preserved" while the respawn is in flight; the banner clears automatically once the new worker comes online.
+
+Follow-up prompts the daemon refused while the original turn was still in flight no longer vanish silently. The composer shows them as amber "Rejected" pills with a Retry button; clicking Retry re-dispatches the prompt through the normal send path against the freshly-respawned worker.
+
 ### Cockpit feels "stuck" with no events
 
 - Check `aoe cockpit logs --follow` (when the worker supervisor lands)

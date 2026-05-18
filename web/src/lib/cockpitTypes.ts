@@ -173,7 +173,8 @@ export type CockpitEvent =
   | { UserPromptSent: { text: string } }
   | { AcpSessionAssigned: { acp_session_id: string } }
   | { SessionContextReset: { reason: string } }
-  | { WakeupScheduled: { at: string; reason: string | null } };
+  | { WakeupScheduled: { at: string; reason: string | null } }
+  | { PromptRejected: { reason: string; text: string } };
 
 export interface CockpitFrame {
   session_id: string;
@@ -296,6 +297,31 @@ export interface CockpitState {
    *  primer (last N turns) and pre-filling the composer with it.
    *  Cleared by `UserPromptSent`. See #1004. */
   contextPrimerAvailable: { resetSeq: number; reason: string } | null;
+  /** Capped FIFO of prompts the daemon rejected because another
+   *  `session/prompt` was already in flight. The composer renders a
+   *  Retry pill per entry; clicking Retry re-dispatches via the
+   *  normal sendPrompt path. Cleared on `UserPromptSent` (the user
+   *  has either retried or moved on). See #1196. */
+  rejectedPrompts: RejectedPrompt[];
+  /** Set when the daemon emitted `Stopped { reason: "agent_unresponsive" }`,
+   *  meaning the cancel-escalation watchdog fired and the supervisor
+   *  is restarting the wedged worker. The composer renders a specific
+   *  banner ("Agent stopped responding to cancel, restarting worker")
+   *  instead of the generic "Restarting..." overlay. Also pairs with
+   *  `workerRestarting = true` so the existing composer-lockdown
+   *  styling kicks in; cleared on `AcpSessionAssigned` (the respawned
+   *  worker came online) or `UserPromptSent`. See #1196. */
+  agentUnresponsive: boolean;
+}
+
+export interface RejectedPrompt {
+  /** Client-stable id derived from the frame seq. Used to key the
+   *  pill list and to target a specific entry for retry/dismiss. */
+  id: string;
+  text: string;
+  reason: string;
+  /** Server-side wall-clock at rejection time (frame arrival). */
+  rejectedAt: string;
 }
 
 export interface QueuedPrompt {
@@ -379,6 +405,8 @@ export function emptyCockpitState(): CockpitState {
     nextWakeupAt: null,
     nextWakeupReason: null,
     contextPrimerAvailable: null,
+    rejectedPrompts: [],
+    agentUnresponsive: false,
   };
 }
 
@@ -659,6 +687,18 @@ export function applyEvent(
     } else if (event.Stopped.reason === "restart_pending") {
       next.workerRestarting = true;
       next.workerStopped = false;
+    } else if (event.Stopped.reason === "agent_unresponsive") {
+      // Cancel-escalation watchdog in the daemon fired: claude-agent-acp
+      // ignored `session/cancel` for the grace window, the supervisor
+      // is SIGTERMing the runner and respawning via `session/load` to
+      // preserve transcript continuity. Reuse `workerRestarting`'s
+      // composer-lockdown semantics; the `agentUnresponsive` flag lets
+      // the banner render the specific cause. Cleared on
+      // `AcpSessionAssigned` (respawn finished) or `UserPromptSent`.
+      // See #1196.
+      next.workerRestarting = true;
+      next.workerStopped = false;
+      next.agentUnresponsive = true;
     }
     // Some upstream slash commands (e.g. /usage, /status, /memory in
     // claude-agent-acp) advertise via available_commands_update but
@@ -757,6 +797,12 @@ export function applyEvent(
     // user_stopped banner without waiting for AcpSessionAssigned.
     next.workerStopped = false;
     next.workerRestarting = false;
+    // The user is moving on. Clear any pending Retry pills and the
+    // agent-unresponsive banner; if the rejection was legitimate the
+    // new prompt will end up rejected too and a fresh pill will land.
+    // See #1196.
+    next.rejectedPrompts = [];
+    next.agentUnresponsive = false;
     // /loop dynamic mode self-fires a UserPromptSent on wake, but a
     // user-typed follow-up during the wait is NOT the wake firing;
     // only clear when the scheduled time has already elapsed. The
@@ -794,6 +840,9 @@ export function applyEvent(
     // is online; clear both transient worker banners.
     next.workerStopped = false;
     next.workerRestarting = false;
+    // The respawn after an `agent_unresponsive` escalation completed;
+    // clear the banner so the user can interact again. See #1196.
+    next.agentUnresponsive = false;
     return next;
   }
   if ("SessionContextReset" in event) {
@@ -836,6 +885,36 @@ export function applyEvent(
   if ("WakeupScheduled" in event) {
     next.nextWakeupAt = event.WakeupScheduled.at;
     next.nextWakeupReason = event.WakeupScheduled.reason ?? null;
+    return next;
+  }
+  if ("PromptRejected" in event) {
+    // Daemon refused the follow-up prompt because another `session/prompt`
+    // was still in flight. The rejected text has already been persisted
+    // upstream as `UserPromptSent` by the REST handler; this event tells
+    // the UI the daemon never forwarded it to the agent. Show a Retry
+    // pill so the user can re-dispatch via the normal sendPrompt path
+    // instead of having their message vanish silently. See #1196.
+    const entry: RejectedPrompt = {
+      id: `rejected-${frame.seq}`,
+      text: event.PromptRejected.text,
+      reason: event.PromptRejected.reason,
+      rejectedAt: new Date().toISOString(),
+    };
+    const REJECTED_PROMPTS_CAP = 5;
+    next.rejectedPrompts = [...next.rejectedPrompts, entry].slice(
+      -REJECTED_PROMPTS_CAP,
+    );
+    // Retire the spinner for this rejected submission so the composer
+    // unlocks. `pendingUserPromptSeq` was bumped by the optimistic
+    // dispatch; advancing `lastStoppedSeq` by one (capped) gives this
+    // rejection the same turn-retirement semantics as a Stopped without
+    // letting it spill into a different turn's bookkeeping. See #1170
+    // for the cap rationale.
+    next.lastStoppedSeq = Math.min(
+      next.lastStoppedSeq + 1,
+      next.pendingUserPromptSeq,
+    );
+    next.turnActive = isTurnActive(next);
     return next;
   }
   // RawAgentUpdate, TodoListUpdated, anything else: pass through with
