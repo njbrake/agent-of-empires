@@ -39,7 +39,7 @@ installFetchErrorToasts();
 
 // Pull the server-derived log policy now that `window.fetch` is patched
 // to carry the auth header. The logger installed earlier intentionally
-// deferred this — see the comment in `installClientLogger()`.
+// deferred this; see the comment in `installClientLogger()`.
 void refreshClientLogPolicy();
 
 createRoot(document.getElementById("root")!).render(
