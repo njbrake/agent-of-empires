@@ -76,16 +76,29 @@ Recording (for PR reviews): `RECORD_E2E=1 cargo test --test e2e -- --nocapture` 
 
 ### Web Dashboard Playwright Tests
 
-Baseline Playwright tests live in `web/tests/` (run with `cd web && npx playwright test`). For any change to touch events, xterm.js integration, mobile-viewport behavior, WebSocket message shape, or the soft keyboard, write a real-session e2e against a running `aoe serve` rather than relying on the user to verify on their phone.
+Two suites under `web/`:
 
-Recipe:
-1. Shim a fake tool on `$PATH` (a script named `claude` that execs `bash -i`) so `aoe add --cmd claude` creates a live tmux session.
-2. `cargo build --features serve`, then start `aoe serve --no-auth --port N` in the background with isolated `HOME=/tmp/aoehome`.
-3. In a Node script using `@playwright/test` (already a devDep), emulate mobile with `devices['iPhone 13']` so `pointer: coarse` matches.
-4. Spy on PTY bytes by patching `WebSocket.prototype.send` in an `addInitScript` and pushing into `window.__WS_SENT__`.
-5. Synthesize multi-touch via `page.evaluate` dispatching raw `new TouchEvent(...)` on `.xterm` — Playwright's `page.touchscreen` is single-finger only.
+- **Mocked**: `web/tests/*.spec.ts`, run via `cd web && npx playwright test --config=playwright.config.ts`. Uses `page.route()` to stub `/api/*` responses; serves the production Vite bundle through `vite preview` on port 4173. Fast and deterministic; for UI logic that does not depend on real backend state.
+- **Live**: `web/tests/live/*.spec.ts`, run via `cd web && npx playwright test --config=playwright.live.config.ts`. Each test spawns a real `aoe serve` subprocess against an isolated `HOME` via the harness in `web/tests/helpers/aoeServe.ts`. Two workers, `workerIndex`-based port allocation, `TMUX_TMPDIR` per test. For flows that depend on backend persistence, auth, sessions, tmux, git, read-only, or cockpit.
 
-Keep the script ephemeral unless promoted to `web/tests/` with a mobile Playwright project (`hasTouch: true`, `isMobile: true`). Install browser deps with `npx playwright install-deps` if missing.
+When deciding which suite to use:
+
+- Backend, persistence, auth, session, tmux, git, read-only, or cockpit round-trip flows belong in **live Playwright**.
+- Request-payload permutations (does control X emit the right JSON keys) belong in **Vitest + RTL + MSW** under `web/src/**/__tests__/`. See `web/src/components/settings/__tests__/SoundSettings.test.tsx` as the canonical example.
+- Browser-specific behavior not practical in Vitest (focus, keyboard, drag-drop, modal escape, mobile viewport, touch events) belongs in **mocked Playwright**.
+
+**Mandate:** any PR that changes a user-facing dashboard flow under auth, wizard / session creation, settings, profiles, sessions / sidebar, right panel / diff / notifications, directory browser, devices, git clone, connectivity, or read-only behavior must update `web/tests/coverage-matrix.json` and add or modify the appropriate test. CI fails on a missing matrix entry via `web/tests/validate-coverage-matrix.mjs`. Pure styling or copy-only changes may add a `kind: "deferred"` entry with a `reason` and a linked issue.
+
+**Coverage reports.** Vitest uses `@vitest/coverage-v8`; Playwright uses `vite-plugin-istanbul` gated by `AOE_COVERAGE=1`. The merge script (`web/scripts/merge-coverage.mjs`, via `npm run coverage:merge`) feeds both into `monocart-coverage-reports` and writes `web/coverage/merged/` (LCOV + HTML + summary). The CI `coverage` job posts a PR comment with deltas via `davelosert/vitest-coverage-report-action`; baseline is the most recent main-branch artifact.
+
+Full recipe, harness API, and fake-ACP-agent details live in `docs/development/playwright.md`.
+
+**Legacy mobile/touch recipe (still applies for the mocked specs under `tests/`):**
+
+1. Shim a fake tool on `$PATH` so `aoe add --cmd claude` creates a live tmux session (the live harness already does this for you).
+2. Emulate mobile with `devices['iPhone 13']` so `pointer: coarse` matches.
+3. Spy on PTY bytes by patching `WebSocket.prototype.send` in an `addInitScript` and pushing into `window.__WS_SENT__`.
+4. Synthesize multi-touch via `page.evaluate` dispatching raw `new TouchEvent(...)` on `.xterm`; Playwright's `page.touchscreen` is single-finger only.
 
 **Gotcha:** synthetic touchmove events fire back-to-back with Δt≈1ms, which blows up any `Δpx / Δtime` velocity calculation. Cap velocity and per-frame emit counts, or a real device will look sane while the e2e produces runaway momentum (or vice-versa).
 

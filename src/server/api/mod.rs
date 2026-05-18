@@ -112,7 +112,7 @@ mod tests {
     //! refactor PR that claimed "no behavior changes" dropped 4 shell
     //! metacharacters (`#`, `[`, `]`, `~`) from the injection blocklist,
     //! added `"hooks"` to the settings-write allowlist (a hooks section
-    //! set via the API runs arbitrary shell commands on session start —
+    //! set via the API runs arbitrary shell commands on session start;
     //! local RCE), and replaced the `SESSION_BLOCKED_FIELDS` contents
     //! with two field names that don't exist on `SessionConfig`,
     //! turning the blocklist into a no-op.
@@ -120,6 +120,93 @@ mod tests {
     //! Pin the contents here so the next refactor that touches this
     //! file fails CI instead of silently regressing security.
     use super::*;
+
+    /// Read-only audit: every mutating handler must check `state.read_only`
+    /// and return 403 before performing any write. This static check walks
+    /// the handler source files and looks for the canonical guard pattern.
+    ///
+    /// Why static: building a full AppState in a unit test requires a tmux
+    /// runtime, login manager, token manager, broadcast channels, and an
+    /// app-data dir. The end-to-end Playwright spec in
+    /// `web/tests/live/read-only-mode.spec.ts` covers the runtime path;
+    /// this test guards against a contributor adding a new POST/PATCH/DELETE
+    /// handler and forgetting the guard.
+    #[test]
+    fn every_mutating_handler_has_read_only_guard() {
+        // (file_label, source, list_of_handler_fn_names_we_expect_guarded).
+        // Each entry is read at compile time via include_str!. If a new
+        // mutating handler is added and the corresponding fn name is added
+        // here, the test will check that the file contains the guard.
+        let cases: &[(&str, &str, &[&str])] = &[
+            (
+                "api/sessions.rs",
+                include_str!("sessions.rs"),
+                &[
+                    "create_session",
+                    "delete_session",
+                    "rename_session",
+                    "send_message",
+                    "ensure_session",
+                    "ensure_terminal",
+                    "ensure_container_terminal",
+                    "update_session_notifications",
+                    "update_session_diff_base",
+                ],
+            ),
+            ("api/git.rs", include_str!("git.rs"), &["clone_repo"]),
+            (
+                "api/projects.rs",
+                include_str!("projects.rs"),
+                &["create_project", "delete_project"],
+            ),
+            (
+                "api/system.rs",
+                include_str!("system.rs"),
+                &[
+                    "update_settings",
+                    "create_profile",
+                    "delete_profile",
+                    "rename_profile",
+                    "default_profile",
+                    "update_profile_settings",
+                ],
+            ),
+        ];
+
+        let guard_patterns: &[&str] = &["state.read_only", "self.read_only"];
+        let mut missing: Vec<String> = Vec::new();
+        for (file_label, source, handler_names) in cases {
+            for name in *handler_names {
+                let needle = format!("fn {name}");
+                let Some(start) = source.find(&needle) else {
+                    missing.push(format!(
+                        "{file_label}: handler `{name}` not found (rename/refactor?)"
+                    ));
+                    continue;
+                };
+                // Look at the next ~3000 chars of the handler body for the
+                // guard. The handlers are short; this window covers them
+                // without false negatives.
+                let window_end = (start + 3000).min(source.len());
+                let body = &source[start..window_end];
+                let has_guard = guard_patterns.iter().any(|p| body.contains(p));
+                if !has_guard {
+                    missing.push(format!(
+                        "{file_label}: handler `{name}` is missing read-only guard. \
+                         Mutating handlers must check `state.read_only` and return \
+                         403 before performing any write. Add the guard or, if the \
+                         handler is intentionally read-safe, drop it from this list \
+                         in the same commit with justification."
+                    ));
+                }
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "Read-only audit failed:\n{}",
+            missing.join("\n")
+        );
+    }
 
     #[test]
     fn shell_metacharacters_blocklist_is_exhaustive() {

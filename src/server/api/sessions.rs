@@ -553,6 +553,14 @@ pub async fn rename_session(
     Path(id): Path<String>,
     Json(body): Json<RenameSessionBody>,
 ) -> impl IntoResponse {
+    if state.read_only {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(
+                serde_json::json!({"error": "read_only", "message": "Server is in read-only mode"}),
+            ),
+        );
+    }
     let title = body.title.trim().to_string();
     if title.is_empty() {
         return (
@@ -1538,6 +1546,15 @@ pub async fn ensure_terminal(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    if state.read_only {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(
+                serde_json::json!({"error": "read_only", "message": "Server is in read-only mode"}),
+            ),
+        )
+            .into_response();
+    }
     let instances = state.instances.read().await;
     let inst = match instances.iter().find(|i| i.id == id) {
         Some(i) => i.clone(),
@@ -1634,6 +1651,15 @@ pub async fn ensure_container_terminal(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> impl IntoResponse {
+    if state.read_only {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(
+                serde_json::json!({"error": "read_only", "message": "Server is in read-only mode"}),
+            ),
+        )
+            .into_response();
+    }
     let instances = state.instances.read().await;
     let inst = match instances.iter().find(|i| i.id == id) {
         Some(i) => i.clone(),
