@@ -133,6 +133,13 @@ const PAGES = [
       "Logging targets, env-var matrix, runtime control endpoint, and browser-side error relay for Agent of Empires.",
   },
   {
+    source: "docs/development/playwright.md",
+    dest: "docs/development/playwright.md",
+    title: "Playwright + Vitest testing",
+    description:
+      "Long-form reference for the web dashboard test pipeline: mocked vs live Playwright, Vitest contract tests, fake ACP agent, coverage matrix, coverage reports.",
+  },
+  {
     source: "docs/sounds.md",
     dest: "docs/sounds.md",
     title: "Sound Effects",
@@ -186,6 +193,7 @@ const URL_MAP = {
   "docs/development.md": "/docs/development/",
   "docs/development/adding-agents.md": "/docs/development/adding-agents/",
   "docs/development/logging.md": "/docs/development/logging/",
+  "docs/development/playwright.md": "/docs/development/playwright/",
   "docs/guides/configuration.md": "/docs/guides/configuration/",
   "docs/cli/reference.md": "/docs/cli/reference/",
   "docs/cockpit.md": "/docs/cockpit/",
