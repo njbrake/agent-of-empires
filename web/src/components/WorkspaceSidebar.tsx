@@ -277,8 +277,11 @@ function SortableSessionRow(props: {
   const style = {
     transform: CSS.Transform.toString(transform),
     transition,
-    opacity: isDragging ? 0.4 : 1,
     touchAction: "manipulation",
+    // Lift the active row above its siblings so the ring/shadow aren't
+    // clipped by the next row in the list.
+    zIndex: isDragging ? 10 : "auto",
+    position: "relative",
   } as const;
   return (
     <div
@@ -287,6 +290,17 @@ function SortableSessionRow(props: {
       {...attributes}
       {...listeners}
       aria-roledescription="Press and hold to reorder"
+      // While dragging, the row gets an amber ring (matches the active
+      // session accent) and a soft shadow so it reads as elevated above
+      // the rest of the list. ring-inset keeps the highlight tight to
+      // the row rectangle; the transition runs in both directions so
+      // the lift and the drop both feel intentional. The inner
+      // SessionRow keeps its own background, so we only style the
+      // outline here.
+      className={
+        "transition-shadow duration-150 " +
+        (isDragging ? "ring-2 ring-inset ring-brand-500 shadow-lg" : "")
+      }
     >
       <SessionRow {...props} indented />
     </div>
@@ -771,12 +785,14 @@ export function WorkspaceSidebar({
 
   // Whole-row press-and-hold drag. The delay lets a quick click or tap
   // pass through to the row's navigation link unchanged; only a held
-  // pointer (250ms with <8px movement) flips the row into drag mode. We
-  // unify mouse and touch delays so the gesture feels the same on
-  // desktop and mobile.
+  // pointer (150ms with <8px movement) flips the row into drag mode.
+  // 150ms is the iOS Reminders/Notes ballpark: long enough to filter
+  // out scroll-flicks and accidental taps, short enough that the lift
+  // feels immediate. Same delay on mouse and touch so the gesture is
+  // identical on desktop and mobile.
   const sensors = useSensors(
-    useSensor(MouseSensor, { activationConstraint: { delay: 250, tolerance: 8 } }),
-    useSensor(TouchSensor, { activationConstraint: { delay: 250, tolerance: 8 } }),
+    useSensor(MouseSensor, { activationConstraint: { delay: 150, tolerance: 8 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 150, tolerance: 8 } }),
   );
 
   const handleDragEnd = useCallback(

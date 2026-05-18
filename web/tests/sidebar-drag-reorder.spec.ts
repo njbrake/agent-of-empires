@@ -208,12 +208,22 @@ test.describe("Sidebar drag-to-reorder (#1169)", () => {
       sourceBox.y + sourceBox.height / 2,
     );
     await page.mouse.down();
-    await page.waitForTimeout(350);
+    await page.waitForTimeout(250);
     await page.mouse.move(
       targetBox.x + targetBox.width / 2,
       targetBox.y + targetBox.height / 2,
       { steps: 12 },
     );
+
+    // Mid-drag: the source row must visibly lift (amber ring + shadow).
+    // We assert this before releasing so the test fails if a future
+    // refactor strips the visual feedback. The dragged row's
+    // `className` is on the dnd-kit-injected wrapper, which we already
+    // selected via the aria-roledescription locator.
+    const sourceClass = await wrappers.nth(2).getAttribute("class");
+    expect(sourceClass ?? "").toContain("ring-2");
+    expect(sourceClass ?? "").toContain("shadow-lg");
+
     await page.mouse.up();
 
     // Order now starts with gamma (visually moved to the top).
