@@ -1,6 +1,6 @@
 import { useCallback, useMemo, useState } from "react";
 import type { Workspace, RepoGroup } from "../lib/types";
-import { groupCreatedAt, makeCompareWorkspaces } from "../lib/workspaceSort";
+import { groupCreatedAt, sortWorkspaces } from "../lib/workspaceSort";
 
 const COLLAPSED_KEY_PREFIX = "aoe-repo-collapsed-";
 export const MULTI_REPO_GROUP_ID = "__multi_repo__";
@@ -27,8 +27,6 @@ export function useRepoGroups(
   const [collapsedMap, setCollapsedMap] = useState<Record<string, boolean>>({});
 
   const groups = useMemo(() => {
-    const compareWorkspaces = makeCompareWorkspaces(workspaceOrdering);
-
     const byRepo = new Map<string, Workspace[]>();
     const multiRepo: Workspace[] = [];
 
@@ -45,13 +43,10 @@ export function useRepoGroups(
       }
     }
 
-    const sortWorkspaces = (list: Workspace[]) =>
-      [...list].sort(compareWorkspaces);
-
     const repoGroups: RepoGroup[] = [];
 
     for (const [repoPath, repoWorkspaces] of byRepo) {
-      const sorted = sortWorkspaces(repoWorkspaces);
+      const sorted = sortWorkspaces(repoWorkspaces, workspaceOrdering);
       const hasActive = sorted.some((ws) => ws.status === "active");
       const collapsed =
         collapsedMap[repoPath] ?? loadCollapsed(repoPath);
@@ -71,7 +66,7 @@ export function useRepoGroups(
     }
 
     if (multiRepo.length > 0) {
-      const sorted = sortWorkspaces(multiRepo);
+      const sorted = sortWorkspaces(multiRepo, workspaceOrdering);
       const hasActive = sorted.some((ws) => ws.status === "active");
       const collapsed =
         collapsedMap[MULTI_REPO_GROUP_ID] ?? loadCollapsed(MULTI_REPO_GROUP_ID);

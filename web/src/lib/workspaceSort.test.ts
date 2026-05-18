@@ -1,16 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { SessionResponse, Workspace } from "./types";
-import {
-  compareByBirth,
-  groupCreatedAt,
-  makeCompareWorkspaces,
-  workspaceCreatedAt,
-} from "./workspaceSort";
-
-// With no user-defined ordering, `makeCompareWorkspaces([])` reduces to
-// the birth-key comparator. We test the default contract here; the
-// ordering-priority contract gets its own block below.
-const compareWorkspaces = makeCompareWorkspaces([]);
+import { groupCreatedAt, sortWorkspaces } from "./workspaceSort";
 
 function mkSession(overrides: Partial<SessionResponse> = {}): SessionResponse {
   return {
@@ -46,11 +36,7 @@ function mkSession(overrides: Partial<SessionResponse> = {}): SessionResponse {
   };
 }
 
-function mkWorkspace(
-  id: string,
-  status: "active" | "idle",
-  sessions: SessionResponse[],
-): Workspace {
+function mkWorkspace(id: string, sessions: SessionResponse[]): Workspace {
   return {
     id,
     branch: null,
@@ -58,178 +44,64 @@ function mkWorkspace(
     displayName: id,
     agents: ["claude"],
     primaryAgent: "claude",
-    status,
+    status: "idle",
     sessions,
   };
 }
 
-describe("compareWorkspaces (sidebar stable order, #1169)", () => {
-  it("does not reorder when a session's status flips active <-> idle", () => {
-    const wsA = mkWorkspace("a", "active", [
-      mkSession({ id: "sa", created_at: "2025-01-01T00:00:00Z" }),
-    ]);
-    const wsB = mkWorkspace("b", "idle", [
-      mkSession({ id: "sb", created_at: "2025-02-01T00:00:00Z" }),
-    ]);
+const ids = (ws: Workspace[]) => ws.map((w) => w.id);
 
-    const initial = [wsA, wsB].sort(compareWorkspaces).map((w) => w.id);
+describe("sortWorkspaces", () => {
+  it("does not reorder when a session's status flips active <-> idle (#1169)", () => {
+    const wsA = { ...mkWorkspace("a", [mkSession({ id: "sa", created_at: "2025-01-01T00:00:00Z" })]), status: "active" as const };
+    const wsB = { ...mkWorkspace("b", [mkSession({ id: "sb", created_at: "2025-02-01T00:00:00Z" })]), status: "idle" as const };
 
-    const wsAFlipped = { ...wsA, status: "idle" as const };
-    const wsBFlipped = { ...wsB, status: "active" as const };
-    const flipped = [wsAFlipped, wsBFlipped]
-      .sort(compareWorkspaces)
-      .map((w) => w.id);
-
-    expect(flipped).toEqual(initial);
+    expect(ids(sortWorkspaces([wsA, wsB], []))).toEqual(
+      ids(sortWorkspaces(
+        [{ ...wsA, status: "idle" }, { ...wsB, status: "active" }],
+        [],
+      )),
+    );
   });
 
-  it("places the newest workspace at index 0 (created_at descending)", () => {
-    const wsOld = mkWorkspace("old", "idle", [
-      mkSession({ id: "s-old", created_at: "2025-01-01T00:00:00Z" }),
-    ]);
-    const wsMid = mkWorkspace("mid", "idle", [
-      mkSession({ id: "s-mid", created_at: "2025-03-01T00:00:00Z" }),
-    ]);
-    const wsNew = mkWorkspace("new", "idle", [
-      mkSession({ id: "s-new", created_at: "2025-05-01T00:00:00Z" }),
-    ]);
+  it("places the newest workspace at index 0 (default order)", () => {
+    const old = mkWorkspace("old", [mkSession({ id: "s-old", created_at: "2025-01-01T00:00:00Z" })]);
+    const mid = mkWorkspace("mid", [mkSession({ id: "s-mid", created_at: "2025-03-01T00:00:00Z" })]);
+    const fresh = mkWorkspace("new", [mkSession({ id: "s-new", created_at: "2025-05-01T00:00:00Z" })]);
 
-    const sorted = [wsOld, wsMid, wsNew].sort(compareWorkspaces).map((w) => w.id);
-
-    expect(sorted).toEqual(["new", "mid", "old"]);
+    expect(ids(sortWorkspaces([old, mid, fresh], []))).toEqual(["new", "mid", "old"]);
   });
 
-  it("breaks ties on `id` deterministically when created_at matches", () => {
-    const ts = "2025-04-01T12:00:00Z";
-    const wsZ = mkWorkspace("z-ws", "idle", [
-      mkSession({ id: "sz", created_at: ts }),
-    ]);
-    const wsA = mkWorkspace("a-ws", "idle", [
-      mkSession({ id: "sa", created_at: ts }),
-    ]);
-    const wsM = mkWorkspace("m-ws", "idle", [
-      mkSession({ id: "sm", created_at: ts }),
-    ]);
+  it("ranks workspaces by their position in the ordering list", () => {
+    const a = mkWorkspace("a", [mkSession({ id: "sa", created_at: "2025-01-01T00:00:00Z" })]);
+    const b = mkWorkspace("b", [mkSession({ id: "sb", created_at: "2025-04-01T00:00:00Z" })]);
+    const c = mkWorkspace("c", [mkSession({ id: "sc", created_at: "2025-02-01T00:00:00Z" })]);
 
-    const order = [wsZ, wsA, wsM].sort(compareWorkspaces).map((w) => w.id);
-    const reverseOrder = [wsM, wsZ, wsA]
-      .sort(compareWorkspaces)
-      .map((w) => w.id);
-
-    expect(order).toEqual(["a-ws", "m-ws", "z-ws"]);
-    expect(reverseOrder).toEqual(order);
+    expect(ids(sortWorkspaces([a, b, c], ["c", "a", "b"]))).toEqual(["c", "a", "b"]);
   });
 
-  it("ignores `last_accessed_at` and `idle_entered_at` when keying", () => {
-    const baseTs = "2025-01-01T00:00:00Z";
-    const wsA = mkWorkspace("a", "idle", [
-      mkSession({
-        id: "sa",
-        created_at: baseTs,
-        last_accessed_at: "2099-01-01T00:00:00Z",
-      }),
-    ]);
-    const wsB = mkWorkspace("b", "idle", [
-      mkSession({
-        id: "sb",
-        created_at: baseTs,
-        idle_entered_at: "2099-06-01T00:00:00Z",
-      }),
-    ]);
+  it("sorts unranked workspaces after ranked ones, newest first", () => {
+    const ranked1 = mkWorkspace("ranked-1", [mkSession({ id: "s1", created_at: "2025-01-01T00:00:00Z" })]);
+    const ranked2 = mkWorkspace("ranked-2", [mkSession({ id: "s2", created_at: "2025-02-01T00:00:00Z" })]);
+    const newest = mkWorkspace("new", [mkSession({ id: "s-new", created_at: "2025-12-01T00:00:00Z" })]);
+    const middle = mkWorkspace("mid", [mkSession({ id: "s-mid", created_at: "2025-06-01T00:00:00Z" })]);
 
-    const order = [wsB, wsA].sort(compareWorkspaces).map((w) => w.id);
-    expect(order).toEqual(["a", "b"]);
+    expect(
+      ids(sortWorkspaces([newest, middle, ranked2, ranked1], ["ranked-1", "ranked-2"])),
+    ).toEqual(["ranked-1", "ranked-2", "new", "mid"]);
   });
 
-  it("sorts workspaces with empty created_at to the bottom", () => {
-    const wsReal = mkWorkspace("real", "idle", [
-      mkSession({ id: "s1", created_at: "2025-01-01T00:00:00Z" }),
-    ]);
-    const wsEmpty = mkWorkspace("empty", "idle", [
-      mkSession({ id: "s2", created_at: "" }),
-    ]);
-
-    const order = [wsEmpty, wsReal].sort(compareWorkspaces).map((w) => w.id);
-    expect(order).toEqual(["real", "empty"]);
-  });
-});
-
-describe("makeCompareWorkspaces (user-defined ordering)", () => {
-  function ws(id: string, createdAt: string): Workspace {
-    return mkWorkspace(id, "idle", [mkSession({ id: `s-${id}`, created_at: createdAt })]);
-  }
-
-  it("ranks workspaces by their position in the ordering list (lower index sorts first)", () => {
-    const w1 = ws("a", "2025-01-01T00:00:00Z");
-    const w2 = ws("b", "2025-04-01T00:00:00Z");
-    const w3 = ws("c", "2025-02-01T00:00:00Z");
-
-    const cmp = makeCompareWorkspaces(["c", "a", "b"]);
-    const order = [w1, w2, w3].sort(cmp).map((w) => w.id);
-    expect(order).toEqual(["c", "a", "b"]);
-  });
-
-  it("sorts unranked workspaces after ranked ones, falling back to birth-key order", () => {
-    const ranked1 = ws("ranked-1", "2025-01-01T00:00:00Z");
-    const ranked2 = ws("ranked-2", "2025-02-01T00:00:00Z");
-    const newest = ws("new", "2025-12-01T00:00:00Z");
-    const middle = ws("mid", "2025-06-01T00:00:00Z");
-
-    const cmp = makeCompareWorkspaces(["ranked-1", "ranked-2"]);
-    const order = [newest, middle, ranked2, ranked1].sort(cmp).map((w) => w.id);
-    // Ranked first (in ordering-list order), then unranked newest-first.
-    expect(order).toEqual(["ranked-1", "ranked-2", "new", "mid"]);
-  });
-
-  it("matches the birth-key comparator when the ordering is empty", () => {
-    const wsOld = ws("old", "2025-01-01T00:00:00Z");
-    const wsNew = ws("new", "2025-05-01T00:00:00Z");
-    const cmp = makeCompareWorkspaces([]);
-    const order = [wsOld, wsNew].sort(cmp).map((w) => w.id);
-    const expected = [wsOld, wsNew].sort(compareByBirth).map((w) => w.id);
-    expect(order).toEqual(expected);
-    expect(order).toEqual(["new", "old"]);
-  });
-
-  it("ignores stale entries (ids in the ordering that aren't current workspaces)", () => {
-    const wsA = ws("a", "2025-01-01T00:00:00Z");
-    const wsB = ws("b", "2025-02-01T00:00:00Z");
-
-    // "ghost" is in the ordering but not in the sort input. The
-    // comparator must not crash and must still order live workspaces.
-    const cmp = makeCompareWorkspaces(["ghost", "b", "a"]);
-    const order = [wsA, wsB].sort(cmp).map((w) => w.id);
-    expect(order).toEqual(["b", "a"]);
-  });
-});
-
-describe("workspaceCreatedAt", () => {
-  it("returns the earliest session created_at (workspace birth)", () => {
-    const ws = mkWorkspace("w", "idle", [
-      mkSession({ id: "s2", created_at: "2025-03-01T00:00:00Z" }),
-      mkSession({ id: "s1", created_at: "2025-01-01T00:00:00Z" }),
-      mkSession({ id: "s3", created_at: "2025-02-01T00:00:00Z" }),
-    ]);
-    expect(workspaceCreatedAt(ws)).toBe("2025-01-01T00:00:00Z");
-  });
-
-  it("skips empty/missing created_at strings without crashing", () => {
-    const ws = mkWorkspace("w", "idle", [
-      mkSession({ id: "s1", created_at: "" }),
-      mkSession({ id: "s2", created_at: "2025-02-01T00:00:00Z" }),
-    ]);
-    expect(workspaceCreatedAt(ws)).toBe("2025-02-01T00:00:00Z");
+  it("ignores stale entries in the ordering (ids that aren't current workspaces)", () => {
+    const a = mkWorkspace("a", [mkSession({ id: "sa", created_at: "2025-01-01T00:00:00Z" })]);
+    const b = mkWorkspace("b", [mkSession({ id: "sb", created_at: "2025-02-01T00:00:00Z" })]);
+    expect(ids(sortWorkspaces([a, b], ["ghost", "b", "a"]))).toEqual(["b", "a"]);
   });
 });
 
 describe("groupCreatedAt", () => {
   it("returns the earliest workspace birth across the group", () => {
-    const wsA = mkWorkspace("a", "idle", [
-      mkSession({ id: "sa", created_at: "2025-04-01T00:00:00Z" }),
-    ]);
-    const wsB = mkWorkspace("b", "idle", [
-      mkSession({ id: "sb", created_at: "2025-02-01T00:00:00Z" }),
-    ]);
-    expect(groupCreatedAt([wsA, wsB])).toBe("2025-02-01T00:00:00Z");
+    const a = mkWorkspace("a", [mkSession({ id: "sa", created_at: "2025-04-01T00:00:00Z" })]);
+    const b = mkWorkspace("b", [mkSession({ id: "sb", created_at: "2025-02-01T00:00:00Z" })]);
+    expect(groupCreatedAt([a, b])).toBe("2025-02-01T00:00:00Z");
   });
 });
