@@ -41,6 +41,7 @@ type LiveFixtures = {
   serve: ServeHandle;
   servePassphrase: ServeHandle;
   serveReadOnly: ServeHandle;
+  serveCockpit: ServeHandle;
 };
 
 async function captureCoverage(page: Page, testTitle: string): Promise<void> {
@@ -122,6 +123,19 @@ export const test = base.extend<LiveFixtures>({
     const h = await spawnAoeServe({
       authMode: "none",
       readOnly: true,
+      workerIndex: testInfo.workerIndex,
+      parallelIndex: testInfo.parallelIndex,
+    });
+    await use(h);
+    await h.stop();
+  },
+  serveCockpit: async ({}, use, testInfo) => {
+    const h = await spawnAoeServe({
+      authMode: "none",
+      cockpit: true,
+      // Specs that want a custom script set `FAKE_ACP_SCRIPT` themselves
+      // through testInfo.use() overrides or call `spawnAoeServe` directly.
+      fakeAcpScript: process.env.FAKE_ACP_SCRIPT,
       workerIndex: testInfo.workerIndex,
       parallelIndex: testInfo.parallelIndex,
     });

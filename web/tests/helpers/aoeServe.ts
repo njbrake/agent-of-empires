@@ -37,6 +37,15 @@ export interface SpawnOptions {
   extraArgs?: string[];
   /** Override the spawn timeout (default 10s). */
   spawnTimeoutMs?: number;
+  /**
+   * When true, install `fakeAcpAgent.mjs` as the `claude` / `aoe-agent`
+   * shim instead of the tail-f-dev-null stub, and flip the cockpit
+   * master enable flag via `PATCH /api/cockpit/master` after the server
+   * boots.
+   */
+  cockpit?: boolean;
+  /** Optional path to a FAKE_ACP_SCRIPT for cockpit tests. */
+  fakeAcpScript?: string;
 }
 
 export interface ServeHandle {
@@ -98,13 +107,42 @@ async function waitForServer(baseUrl: string, deadlineMs: number): Promise<void>
 }
 
 function writeFakeClaudeShim(binDir: string): void {
-  // The dashboard tracer specs only need the tmux pane to stay open with a
-  // long-running process. Cockpit specs (C11) will replace this with a fake
-  // ACP agent script via the `cockpit` option.
+  // Dashboard tracer specs only need the tmux pane to stay open with a
+  // long-running process. Cockpit specs swap this for the ACP agent shim
+  // via `writeFakeAcpShim`.
   const script = "#!/bin/bash\nexec tail -f /dev/null\n";
   const path = join(binDir, "claude");
   writeFileSync(path, script);
   chmodSync(path, 0o755);
+}
+
+function writeFakeAcpShim(binDir: string, fakeAcpScript: string | undefined): void {
+  // The cockpit supervisor calls `claude` (or `aoe-agent`) and handshakes
+  // ACP over its stdio. The shim is a tiny bash wrapper that execs the
+  // fake ACP agent under node with the optional script env baked in.
+  const fakeAgentJs = resolve(__dirname, "fakeAcpAgent.mjs");
+  const scriptLine = fakeAcpScript
+    ? `export FAKE_ACP_SCRIPT=${JSON.stringify(fakeAcpScript)}\n`
+    : "";
+  const script = `#!/bin/bash\n${scriptLine}exec node ${JSON.stringify(fakeAgentJs)} "$@"\n`;
+  for (const name of ["claude", "aoe-agent"]) {
+    const path = join(binDir, name);
+    writeFileSync(path, script);
+    chmodSync(path, 0o755);
+  }
+}
+
+async function enableCockpitMaster(baseUrl: string): Promise<void> {
+  const res = await fetch(`${baseUrl}/api/cockpit/master`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled: true }),
+  });
+  if (!res.ok) {
+    throw new Error(
+      `PATCH /api/cockpit/master failed: ${res.status} ${await res.text()}`,
+    );
+  }
 }
 
 async function loginWithPassphrase(
@@ -146,7 +184,11 @@ export async function spawnAoeServe(opts: SpawnOptions): Promise<ServeHandle> {
   for (const dir of [xdg, tmp, tmuxTmp, shimBin]) {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
   }
-  writeFakeClaudeShim(shimBin);
+  if (opts.cockpit) {
+    writeFakeAcpShim(shimBin, opts.fakeAcpScript);
+  } else {
+    writeFakeClaudeShim(shimBin);
+  }
 
   const authMode: AuthMode = opts.authMode ?? "none";
   const passphrase = authMode === "passphrase" ? opts.passphrase ?? DEFAULT_PASSPHRASE : undefined;
@@ -246,6 +288,10 @@ export async function spawnAoeServe(opts: SpawnOptions): Promise<ServeHandle> {
     const { cookie } = await loginWithPassphrase(baseUrl, passphrase, deviceBindingSecret);
     handle.sessionCookie = cookie;
     handle.deviceBindingSecret = deviceBindingSecret;
+  }
+
+  if (opts.cockpit) {
+    await enableCockpitMaster(baseUrl);
   }
 
   return handle;
