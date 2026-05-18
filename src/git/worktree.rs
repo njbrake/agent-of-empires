@@ -209,10 +209,10 @@ impl GitWorktree {
                         if let Some(mut stderr) = child.stderr.take() {
                             let mut msg = String::new();
                             let _ = std::io::Read::read_to_string(&mut stderr, &mut msg);
-                            tracing::warn!("git fetch {remote}/{branch} failed: {}", msg.trim());
+                            tracing::warn!(target: "git.worktree", "git fetch {remote}/{branch} failed: {}", msg.trim());
                         }
                     } else {
-                        tracing::info!("git fetch {remote}/{branch} ok in {:?}", elapsed);
+                        tracing::info!(target: "git.worktree", "git fetch {remote}/{branch} ok in {:?}", elapsed);
                     }
                     return Ok(());
                 }
@@ -220,7 +220,7 @@ impl GitWorktree {
                     if start.elapsed() > timeout {
                         let _ = child.kill();
                         let _ = child.wait();
-                        tracing::warn!(
+                        tracing::warn!(target: "git.worktree",
                             "git fetch {remote}/{branch} timed out after {}s",
                             timeout.as_secs()
                         );
@@ -229,7 +229,7 @@ impl GitWorktree {
                     std::thread::sleep(poll_interval);
                 }
                 Err(e) => {
-                    tracing::warn!("git fetch {remote}/{branch} error: {e}");
+                    tracing::warn!(target: "git.worktree", "git fetch {remote}/{branch} error: {e}");
                     return Ok(());
                 }
             }
@@ -348,7 +348,7 @@ impl GitWorktree {
     ) -> Result<Vec<String>> {
         let total_start = std::time::Instant::now();
         let mut warnings: Vec<String> = Vec::new();
-        tracing::info!(
+        tracing::info!(target: "git.worktree",
             "worktree create: start branch={} path={}",
             branch,
             path.display()
@@ -362,7 +362,7 @@ impl GitWorktree {
         // previously used by a now-deleted worktree directory.
         let t = std::time::Instant::now();
         self.prune_worktrees()?;
-        tracing::info!("worktree create: prune done in {:?}", t.elapsed());
+        tracing::info!(target: "git.worktree", "worktree create: prune done in {:?}", t.elapsed());
 
         // Fetch from remote so the worktree starts from the latest state.
         // For new branches, fetch the base branch (default branch unless the
@@ -393,7 +393,7 @@ impl GitWorktree {
             self.fetch_branch(FETCH_REMOTE, branch)?;
             None
         };
-        tracing::info!("worktree create: fetch step done in {:?}", t.elapsed());
+        tracing::info!(target: "git.worktree", "worktree create: fetch step done in {:?}", t.elapsed());
 
         let t = std::time::Instant::now();
         let repo = open_repo_at(&self.repo_path)?;
@@ -471,7 +471,7 @@ impl GitWorktree {
             }
         }
 
-        tracing::info!("worktree create: branch resolve done in {:?}", t.elapsed());
+        tracing::info!(target: "git.worktree", "worktree create: branch resolve done in {:?}", t.elapsed());
 
         let path_str = path
             .to_str()
@@ -504,7 +504,7 @@ impl GitWorktree {
                     path.display(),
                     combined.trim()
                 );
-                tracing::warn!("worktree create: {}", warning);
+                tracing::warn!(target: "git.worktree", "worktree create: {}", warning);
                 warnings.push(warning);
             } else {
                 return Err(GitError::WorktreeCommandFailed(combined));
@@ -522,7 +522,7 @@ impl GitWorktree {
                 total_bytes,
                 capped,
             } = walk_worktree_stats(path);
-            tracing::info!(
+            tracing::info!(target: "git.worktree",
                 "worktree create: git worktree add done in {:?} ({} files, {} bytes checked out{})",
                 add_elapsed,
                 file_count,
@@ -536,7 +536,7 @@ impl GitWorktree {
         // the repo is mounted at different locations (e.g., in Docker containers).
         let t = std::time::Instant::now();
         Self::convert_git_file_to_relative(path)?;
-        tracing::info!(
+        tracing::info!(target: "git.worktree",
             "worktree create: convert .git file done in {:?}",
             t.elapsed()
         );
@@ -547,13 +547,13 @@ impl GitWorktree {
         } else {
             "disabled-by-config".to_string()
         };
-        tracing::info!(
+        tracing::info!(target: "git.worktree",
             "worktree create: submodules ({}) done in {:?}",
             submodule_status,
             t.elapsed()
         );
 
-        tracing::info!(
+        tracing::info!(target: "git.worktree",
             "worktree create: TOTAL {:?} branch={} path={} warnings={}",
             total_start.elapsed(),
             branch,
@@ -639,7 +639,7 @@ impl GitWorktree {
             let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
             let message = if stderr.is_empty() { stdout } else { stderr };
             if Self::is_file_transport_blocked(&message) {
-                tracing::warn!(
+                tracing::warn!(target: "git.worktree",
                     "skipping submodule initialization in {} because git blocked local file transport: {}",
                     worktree_path.display(),
                     message
@@ -761,7 +761,7 @@ impl GitWorktree {
     /// mid-flight). Returns an error only when git rejects the operation
     /// for a reason other than "not found".
     pub fn delete_branch(&self, branch: &str) -> Result<()> {
-        tracing::debug!(
+        tracing::debug!(target: "git.worktree",
             branch,
             repo = %self.repo_path.display(),
             "delete_branch: invoking `git branch -d`"
@@ -771,7 +771,7 @@ impl GitWorktree {
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             let stdout = String::from_utf8_lossy(&output.stdout);
-            tracing::debug!(
+            tracing::debug!(target: "git.worktree",
                 branch,
                 exit = ?output.status.code(),
                 stderr = %stderr,
@@ -781,7 +781,7 @@ impl GitWorktree {
             // Branch already gone: treat as success. Git emits
             // "error: branch '<name>' not found" in this case.
             if stderr.contains("not found") {
-                tracing::debug!(
+                tracing::debug!(target: "git.worktree",
                     branch,
                     "delete_branch: branch already absent, treating as success"
                 );
@@ -794,7 +794,7 @@ impl GitWorktree {
 
                 if !force_output.status.success() {
                     let force_stderr = String::from_utf8_lossy(&force_output.stderr);
-                    tracing::debug!(
+                    tracing::debug!(target: "git.worktree",
                         branch,
                         exit = ?force_output.status.code(),
                         stderr = %force_stderr,

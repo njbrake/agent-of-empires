@@ -42,6 +42,7 @@ pub enum ProfileCommands {
     },
 }
 
+#[tracing::instrument(target = "cli.session", skip_all)]
 pub async fn run(command: Option<ProfileCommands>) -> Result<()> {
     match command {
         Some(ProfileCommands::List) | None => list_profiles().await,

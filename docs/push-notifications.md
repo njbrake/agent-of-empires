@@ -4,7 +4,7 @@ The web dashboard can send browser push notifications when an agent is waiting f
 
 ## What triggers a notification
 
-Three event types, each independently toggleable in Settings:
+Four event types. The first three are status-driven and independently toggleable in Settings:
 
 - **Waiting** — session transitions to `Waiting` and stays that way for at least five seconds (the most common pattern: agent paused to ask you something). Longer dwell because Claude sometimes pauses briefly before resolving.
 - **Idle** — session finishes a long-running job and settles into `Idle`.
@@ -14,7 +14,11 @@ A shared 60-second post-send cooldown per session prevents rapid re-buzzing when
 
 Each session also has per-session overrides that beat the server-wide defaults: you can enable `Idle` notifications only on the one long-running session you care about, for example, without flooding yourself every time any session finishes.
 
-Notifications are suppressed when you're already looking at aoe:
+The fourth event type comes from cockpit sessions and runs on its own rules:
+
+- **Cockpit approval**, a cockpit-driven agent emits an `ApprovalRequested` event because a tool needs your permission. Fires immediately (no dwell), tag `cockpit-approval-<session>`, and **bypasses** the TUI/web-active suppression below. Even when the dashboard or TUI is foregrounded the approval still routes through web push: the service worker forwards focused clients to an in-app toast instead of an OS banner so you still get an audible/visual cue. The cockpit also plays a browser-side chime keyed off `[sound] on_approval`; see [Sound effects](sounds.md). The corresponding `Waiting` status push is suppressed while the approval is unresolved, so you do not get a second OS banner for the same underlying event.
+
+Status notifications are suppressed when you're already looking at aoe (cockpit approvals ignore this list):
 
 - **Dashboard focused (per-device):** if the PWA browser tab is visible and focused, that device skips the OS notification and shows an in-app toast instead.
 - **TUI active (all devices):** if the `aoe` TUI is running on the same machine as the server, all push notifications to all devices are suppressed. The TUI writes a heartbeat file (`$app_dir/tui.active`) every 10 seconds; the push consumer skips delivery when the file was modified within the last 30 seconds.
@@ -46,7 +50,7 @@ Push notifications on iOS require the dashboard to be installed as a Home Screen
 4. Open the app from your Home Screen (not from Safari).
 5. Go to Settings in the app.
 6. In the Notifications section, tap *Enable notifications* and grant permission when iOS asks.
-7. Tap *Send test notification*. A test notification should appear on your Lock Screen within a few seconds.
+7. Tap *Send test notification*. The server waits a few seconds before firing the push so you have time to lock your phone; the notification should then appear on your Lock Screen.
 
 If the test does not appear:
 - Make sure the app was opened from the Home Screen, not Safari.
@@ -59,7 +63,7 @@ If the test does not appear:
 1. Open the dashboard URL.
 2. Go to Settings. In the Notifications section, click *Enable notifications*.
 3. Grant permission when the browser asks.
-4. Click *Send test notification*.
+4. Click *Send test notification*. The server waits a few seconds before firing, so the notification arrives shortly after the click.
 
 Desktop Safari requires macOS 13 or later and does not require the PWA install step.
 
@@ -118,3 +122,5 @@ Upgrading aoe while the PWA is installed replaces `sw.js` but the new service wo
 **"Disabled by the server".** Ask the operator to flip `web.notifications_enabled` or set it in the TUI.
 
 **Notifications stop after a while, and you need to re-enable.** This is token rotation dropping stale subscriptions. If you use `aoe serve --remote`, the token rotates every four hours; grab a fresh dashboard URL and re-enable in the PWA.
+
+**Tapping a notification opens the wrong port or hostname.** Push payloads carry the origin recorded at subscribe time. If you change `--port`, `--host`, move the deployment behind a different reverse proxy, or your `aoe serve --remote` URL changed, the notification still resolves to the old origin until you refresh the subscription. Open Settings, Notifications, and click **Re-subscribe** on the affected device. Subscriptions created before this tracking landed have no recorded origin and are skipped on send; the same Re-subscribe action upgrades them.

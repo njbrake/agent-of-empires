@@ -80,8 +80,8 @@ export function ProjectStep({ data, onChange, initialTab }: Props) {
   const [showAdvanced, setShowAdvanced] = useState(false);
 
   useEffect(() => {
-    fetchSessions().then((s) => {
-      if (s) setRecent(collectRecentProjects(s).slice(0, 6));
+    fetchSessions().then((envelope) => {
+      if (envelope) setRecent(collectRecentProjects(envelope.sessions).slice(0, 6));
       setLoading(false);
     });
   }, []);

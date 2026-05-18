@@ -96,6 +96,7 @@ fn save_cache(cache: &UpdateCache) -> Result<()> {
     Ok(())
 }
 
+#[tracing::instrument(target = "update.fetch", skip_all, fields(current = %current_version, force))]
 pub async fn check_for_update(current_version: &str, force: bool) -> Result<UpdateInfo> {
     let settings = get_update_settings();
 
@@ -140,7 +141,7 @@ pub async fn check_for_update(current_version: &str, force: bool) -> Result<Upda
     let releases = match fetch_releases(&client).await {
         Ok(r) => r,
         Err(e) => {
-            tracing::debug!("Failed to fetch releases: {e}");
+            tracing::debug!(target: "update.fetch", "Failed to fetch releases: {e}");
             Vec::new()
         }
     };
@@ -206,6 +207,7 @@ pub async fn check_for_update(current_version: &str, force: bool) -> Result<Upda
     })
 }
 
+#[tracing::instrument(target = "update.fetch", skip_all)]
 async fn fetch_releases(client: &reqwest::Client) -> Result<Vec<ReleaseInfo>> {
     let url = github_api_releases_url();
     tracing::debug!(target: "update.fetch", %url, "GET releases");

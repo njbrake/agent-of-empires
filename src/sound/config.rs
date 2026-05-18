@@ -41,6 +41,14 @@ pub struct SoundConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on_error: Option<String>,
 
+    /// Sound to play when a cockpit session emits an `ApprovalRequested`
+    /// event. Surfaced in the browser by the cockpit's approval hook
+    /// (host-side playback intentionally has no approval transition; the
+    /// host audio device is the wrong side of the wire when the user is
+    /// running the dashboard on a separate machine). See #1038.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_approval: Option<String>,
+
     /// Playback volume (0.1 = min, 1.0 = normal, 1.5 = max)
     #[serde(default = "default_volume", skip_serializing_if = "is_default_volume")]
     pub volume: f64,
@@ -56,6 +64,7 @@ impl Default for SoundConfig {
             on_waiting: None,
             on_idle: None,
             on_error: None,
+            on_approval: None,
             volume: default_volume(),
         }
     }
@@ -94,6 +103,9 @@ pub struct SoundConfigOverride {
     pub on_error: Option<String>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_approval: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub volume: Option<f64>,
 }
 
@@ -119,6 +131,9 @@ pub fn apply_sound_overrides(target: &mut SoundConfig, source: &SoundConfigOverr
     }
     if source.on_error.is_some() {
         target.on_error = source.on_error.clone();
+    }
+    if source.on_approval.is_some() {
+        target.on_approval = source.on_approval.clone();
     }
     if let Some(volume) = source.volume {
         target.volume = volume;
@@ -154,6 +169,7 @@ mod tests {
         assert!(config.on_waiting.is_none());
         assert!(config.on_idle.is_none());
         assert!(config.on_error.is_none());
+        assert!(config.on_approval.is_none());
         // Fresh installs load `Config::default()` when no config.toml exists;
         // a 0.0 default here would mute all playback on first run.
         assert!((config.volume - 1.0).abs() < 1e-9);
@@ -208,6 +224,31 @@ mod tests {
         assert_eq!(config.on_error, Some("alarm".to_string()));
         // Non-overridden fields stay default
         assert_eq!(config.mode, SoundMode::Random);
+    }
+
+    #[test]
+    fn test_apply_sound_overrides_on_approval() {
+        let mut config = SoundConfig {
+            on_approval: Some("waiting".to_string()),
+            ..Default::default()
+        };
+        let ovr = SoundConfigOverride {
+            on_approval: Some("alarm".to_string()),
+            ..Default::default()
+        };
+        apply_sound_overrides(&mut config, &ovr);
+        assert_eq!(config.on_approval, Some("alarm".to_string()));
+    }
+
+    #[test]
+    fn test_sound_config_deserialize_on_approval() {
+        let toml = r#"
+            enabled = true
+            on_approval = "alarm"
+        "#;
+        let config: SoundConfig = toml::from_str(toml).unwrap();
+        assert!(config.enabled);
+        assert_eq!(config.on_approval, Some("alarm".to_string()));
     }
 
     #[test]

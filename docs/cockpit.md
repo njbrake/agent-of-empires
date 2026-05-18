@@ -465,6 +465,26 @@ approval_timeout_secs = 300
 destructive_require_double_confirm = true
 ```
 
+### Notifications and sound
+
+When an approval lands, the cockpit fires two channels so a user away
+from the dashboard still sees the agent is blocked:
+
+- **Web push.** If the PWA is installed and notifications are
+  enabled, the daemon sends an OS-level push tagged
+  `cockpit-approval-<session>`. Tapping the notification deep-links
+  back to the cockpit. Unlike status-change pushes, approval pushes
+  are not suppressed when the dashboard or TUI is active; the service
+  worker routes focused clients to an in-app toast instead of an OS
+  banner. See [Push notifications](push-notifications.md).
+- **Browser sound.** The cockpit plays a chime in the dashboard tab
+  whenever pending approvals go from zero to non-zero. Configure the
+  file via `[sound] on_approval` in the daemon config or the Sound
+  category of the Settings TUI. The chime is independent of the
+  host-side audio used by the tmux status flow; the cockpit case
+  often runs `aoe serve` on a remote box and the host speaker would
+  be on the wrong side of the wire.
+
 ## Security
 
 - File system access uses ACP's `fs/read_text_file` and

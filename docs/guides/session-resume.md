@@ -16,10 +16,6 @@ For sandboxed (Docker) sessions, the poller runs the same scan inside the contai
 - Runtime rotation via `/clear`, `--fork-session`, or fresh `claude` invocation in the same pane.
 - Manual override via the CLI when you want to point a session at a specific conversation.
 
-## What's not covered (yet)
-
-- Other agents (OpenCode, Codex, Gemini, Vibe, Pi). They're tracked behind separate follow-up PRs; their sessions still launch fresh until then.
-
 ## Manual override
 
 To point a session at a different Claude conversation ID without launching it:

@@ -221,7 +221,7 @@ pub(crate) fn host_environment_prefix(entries: &[String]) -> String {
             match std::env::var(entry) {
                 Ok(v) => out.push_str(&format!("{}={} ", entry, shell_escape(&v))),
                 Err(_) => {
-                    tracing::warn!("host environment variable {} is not set; skipping", entry)
+                    tracing::warn!(target: "session.create", "host environment variable {} is not set; skipping", entry)
                 }
             }
         }
@@ -239,7 +239,7 @@ pub(crate) fn resolve_env_value(val: &str) -> Option<String> {
         match std::env::var(var_name) {
             Ok(v) => Some(v),
             Err(_) => {
-                tracing::warn!(
+                tracing::warn!(target: "session.create",
                     "Environment variable ${} is not set on host, skipping",
                     var_name
                 );
@@ -384,7 +384,7 @@ pub(crate) fn collect_environment(
                         });
                     }
                     Err(_) => {
-                        tracing::warn!(
+                        tracing::warn!(target: "session.create",
                             "Environment variable {} is not set on host, skipping",
                             entry
                         );
@@ -442,7 +442,7 @@ pub(crate) fn build_docker_env_args(
 ) -> DockerExecEnv {
     let sandbox_config = resolved_sandbox_config(profile, project_path);
 
-    tracing::debug!(
+    tracing::debug!(target: "session.create",
         "build_docker_env_args: profile={:?}, config.sandbox.environment={:?}, extra_env={:?}",
         profile,
         sandbox_config.environment,
@@ -451,12 +451,12 @@ pub(crate) fn build_docker_env_args(
 
     let env_entries = collect_environment(&sandbox_config, sandbox);
 
-    tracing::debug!(
+    tracing::debug!(target: "session.create",
         "build_docker_env_args: resolved {} env entries",
         env_entries.len()
     );
     for entry in &env_entries {
-        tracing::debug!("  env: {}=<set>", entry.key());
+        tracing::debug!(target: "session.create", "  env: {}=<set>", entry.key());
     }
 
     let mut docker_flag_parts: Vec<String> = Vec::new();

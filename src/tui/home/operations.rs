@@ -87,6 +87,7 @@ impl HomeView {
                     delete_branch: options.delete_branch,
                     delete_sandbox: options.delete_sandbox,
                     force_delete: options.force_delete,
+                    detach_hooks: true,
                 };
                 self.deletion_poller.request_deletion(request);
             }
@@ -185,6 +186,7 @@ impl HomeView {
                         delete_branch,
                         delete_sandbox,
                         force_delete: options.force_delete_worktrees,
+                        detach_hooks: true,
                     };
                     self.deletion_poller.request_deletion(request);
                 }
@@ -411,7 +413,7 @@ impl HomeView {
                                 let new_tmux_name =
                                     crate::tmux::Session::generate_name(&id, &effective_title);
                                 if let Err(e) = tmux_session.rename(&new_tmux_name) {
-                                    tracing::warn!("Failed to rename tmux session: {}", e);
+                                    tracing::warn!(target: "tui.home", "Failed to rename tmux session: {}", e);
                                 } else {
                                     crate::tmux::refresh_session_cache();
                                 }
@@ -459,7 +461,7 @@ impl HomeView {
                 if old_tmux_session.exists() {
                     let new_tmux_name = crate::tmux::Session::generate_name(&id, &effective_title);
                     if let Err(e) = old_tmux_session.rename(&new_tmux_name) {
-                        tracing::warn!("Failed to rename tmux session: {}", e);
+                        tracing::warn!(target: "tui.home", "Failed to rename tmux session: {}", e);
                     } else {
                         crate::tmux::refresh_session_cache();
                     }

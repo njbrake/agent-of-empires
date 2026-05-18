@@ -276,7 +276,7 @@ pub fn load_profile_config(profile: &str) -> Result<ProfileConfig> {
 pub fn save_profile_config(profile: &str, config: &ProfileConfig) -> Result<()> {
     let path = get_profile_config_path(profile)?;
     let content = toml::to_string_pretty(config)?;
-    fs::write(&path, content)?;
+    super::atomic_write(&path, content.as_bytes())?;
     Ok(())
 }
 
@@ -312,7 +312,7 @@ pub fn resolve_config_or_warn(profile: &str) -> Config {
     match resolve_config(profile) {
         Ok(config) => config,
         Err(e) => {
-            tracing::warn!(
+            tracing::warn!(target: "session.profile",
                 "Failed to load config for profile '{}', using defaults: {e}",
                 profile
             );

@@ -171,7 +171,7 @@ impl CreationPoller {
                         &workdir,
                         progress_tx,
                     ) {
-                        tracing::warn!("on_create hook failed in container: {:#}", e);
+                        tracing::warn!(target: "session.create", "on_create hook failed in container: {:#}", e);
                         return CreationResult::Error(format!("on_create hook failed: {:#}", e));
                     }
                 }
@@ -197,7 +197,7 @@ impl CreationPoller {
                 if !container_started {
                     if let Err(e) = instance.get_container_for_instance() {
                         let msg = format!("Container startup warning: {:#}", e);
-                        tracing::warn!("{}", msg);
+                        tracing::warn!(target: "session.create", "{}", msg);
                         let _ = progress_tx.send(HookProgress::Output(msg));
                     } else {
                         container_started = true;
@@ -212,7 +212,7 @@ impl CreationPoller {
                             &workdir,
                             progress_tx,
                         ) {
-                            tracing::warn!("on_launch hook failed in container: {}", e);
+                            tracing::warn!(target: "session.create", "on_launch hook failed in container: {}", e);
                         }
                     }
                 }
@@ -221,7 +221,7 @@ impl CreationPoller {
                 std::path::Path::new(&instance.project_path),
                 progress_tx,
             ) {
-                tracing::warn!("on_launch hook failed: {}", e);
+                tracing::warn!(target: "session.create", "on_launch hook failed: {}", e);
             }
         }
 
@@ -258,7 +258,7 @@ impl CreationPoller {
             .send((request, self.progress_tx.clone()))
             .is_err()
         {
-            tracing::error!("Failed to send creation request: receiver thread died");
+            tracing::error!(target: "session.create", "Failed to send creation request: receiver thread died");
             self.pending = false;
         }
     }

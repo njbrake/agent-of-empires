@@ -1403,13 +1403,13 @@ impl NewSessionDialog {
                 && key.modifiers == KeyModifiers::NONE
             {
                 if let Some(ref input) = self.workspace_repo_editing_input {
-                    let cursor = input.visual_cursor();
+                    let cursor = input.cursor();
                     let char_len = input.value().chars().count();
                     if cursor >= char_len {
                         if let Some(ghost) = self.workspace_repo_ghost.take() {
                             if let Some(ref mut input) = self.workspace_repo_editing_input {
                                 let value = input.value().to_string();
-                                let cursor_char = input.visual_cursor().min(value.chars().count());
+                                let cursor_char = input.cursor().min(value.chars().count());
                                 if ghost.input_snapshot == value
                                     && ghost.cursor_snapshot == cursor_char
                                 {
@@ -1687,12 +1687,12 @@ fn persist_last_browse_dir(selected: &str) {
         Ok(Some(c)) => c,
         Ok(None) => Default::default(),
         Err(e) => {
-            tracing::warn!("Failed to load config for last_browse_dir: {}", e);
+            tracing::warn!(target: "tui.dialog", "Failed to load config for last_browse_dir: {}", e);
             return;
         }
     };
     cfg.app_state.last_browse_dir = Some(dir);
     if let Err(e) = save_config(&cfg) {
-        tracing::warn!("Failed to save last_browse_dir: {}", e);
+        tracing::warn!(target: "tui.dialog", "Failed to save last_browse_dir: {}", e);
     }
 }

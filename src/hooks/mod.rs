@@ -89,7 +89,7 @@ pub fn install_hooks(settings_path: &Path, events: &[crate::agents::HookEvent]) 
     let mut settings: Value = if settings_path.exists() {
         let content = std::fs::read_to_string(settings_path)?;
         serde_json::from_str(&content).unwrap_or_else(|e| {
-            tracing::warn!("Failed to parse {}: {}", settings_path.display(), e);
+            tracing::warn!(target: "hooks.install", "Failed to parse {}: {}", settings_path.display(), e);
             serde_json::json!({})
         })
     } else {
@@ -133,7 +133,7 @@ pub fn install_hooks(settings_path: &Path, events: &[crate::agents::HookEvent]) 
     let formatted = serde_json::to_string_pretty(&settings)?;
     std::fs::write(settings_path, formatted)?;
 
-    tracing::info!("Installed AoE hooks in {}", settings_path.display());
+    tracing::info!(target: "hooks.install", "Installed AoE hooks in {}", settings_path.display());
     Ok(())
 }
 
@@ -151,7 +151,7 @@ pub fn uninstall_hooks(settings_path: &Path) -> Result<bool> {
 
     let content = std::fs::read_to_string(settings_path)?;
     let mut settings: Value = serde_json::from_str(&content).unwrap_or_else(|e| {
-        tracing::warn!("Failed to parse {}: {}", settings_path.display(), e);
+        tracing::warn!(target: "hooks.uninstall", "Failed to parse {}: {}", settings_path.display(), e);
         serde_json::json!({})
     });
 
@@ -197,7 +197,7 @@ pub fn uninstall_hooks(settings_path: &Path) -> Result<bool> {
     let formatted = serde_json::to_string_pretty(&settings)?;
     std::fs::write(settings_path, formatted)?;
 
-    tracing::info!("Removed AoE hooks from {}", settings_path.display());
+    tracing::info!(target: "hooks.uninstall", "Removed AoE hooks from {}", settings_path.display());
     Ok(true)
 }
 
@@ -223,7 +223,7 @@ pub fn install_settl_hooks() -> Result<()> {
     let mut config: toml::Value = if config_path.exists() {
         let content = std::fs::read_to_string(&config_path)?;
         toml::from_str(&content).unwrap_or_else(|e| {
-            tracing::warn!("Failed to parse {}: {}", config_path.display(), e);
+            tracing::warn!(target: "hooks.install", "Failed to parse {}: {}", config_path.display(), e);
             toml::Value::Table(toml::map::Map::new())
         })
     } else {
@@ -265,7 +265,7 @@ pub fn install_settl_hooks() -> Result<()> {
     let formatted = toml::to_string_pretty(&config)?;
     std::fs::write(&config_path, formatted)?;
 
-    tracing::info!("Installed AoE hooks in {}", config_path.display());
+    tracing::info!(target: "hooks.install", "Installed AoE hooks in {}", config_path.display());
     Ok(())
 }
 
@@ -280,7 +280,7 @@ pub fn uninstall_settl_hooks() -> Result<bool> {
 
     let content = std::fs::read_to_string(&config_path)?;
     let mut config: toml::Value = toml::from_str(&content).unwrap_or_else(|e| {
-        tracing::warn!("Failed to parse {}: {}", config_path.display(), e);
+        tracing::warn!(target: "hooks.uninstall", "Failed to parse {}: {}", config_path.display(), e);
         toml::Value::Table(toml::map::Map::new())
     });
 
@@ -302,7 +302,7 @@ pub fn uninstall_settl_hooks() -> Result<bool> {
 
     let formatted = toml::to_string_pretty(&config)?;
     std::fs::write(&config_path, formatted)?;
-    tracing::info!("Removed AoE hooks from {}", config_path.display());
+    tracing::info!(target: "hooks.uninstall", "Removed AoE hooks from {}", config_path.display());
     Ok(true)
 }
 
@@ -393,7 +393,7 @@ pub fn install_hermes_hooks(config_path: &Path) -> Result<()> {
     }
     std::fs::write(&allowlist_path, allowlist_formatted)?;
 
-    tracing::info!("Installed AoE hooks in {}", config_path.display());
+    tracing::info!(target: "hooks.install", "Installed AoE hooks in {}", config_path.display());
     Ok(())
 }
 
@@ -461,7 +461,7 @@ pub fn uninstall_hermes_hooks(config_path: &Path) -> Result<bool> {
 
     let formatted = serde_yaml::to_string(&config)?;
     std::fs::write(config_path, formatted)?;
-    tracing::info!("Removed AoE hooks from {}", config_path.display());
+    tracing::info!(target: "hooks.uninstall", "Removed AoE hooks from {}", config_path.display());
     Ok(true)
 }
 
@@ -573,7 +573,7 @@ pub fn install_kiro_hooks(agent_config_path: &Path) -> Result<()> {
     let formatted = serde_json::to_string_pretty(&Value::Object(config))?;
     std::fs::write(agent_config_path, formatted)?;
 
-    tracing::info!("Installed AoE hooks in {}", agent_config_path.display());
+    tracing::info!(target: "hooks.install", "Installed AoE hooks in {}", agent_config_path.display());
     Ok(())
 }
 
@@ -606,20 +606,20 @@ pub fn set_kiro_default_agent_if_builtin() {
             .output();
         match set_result {
             Ok(o) if o.status.success() => {
-                tracing::info!("Set aoe-hooks as default Kiro agent for status detection");
+                tracing::info!(target: "hooks.install", "Set aoe-hooks as default Kiro agent for status detection");
             }
             Ok(o) => {
-                tracing::debug!(
+                tracing::debug!(target: "hooks.install",
                     "kiro-cli agent set-default failed (non-fatal): {}",
                     String::from_utf8_lossy(&o.stderr)
                 );
             }
             Err(e) => {
-                tracing::debug!("kiro-cli not available for set-default: {}", e);
+                tracing::debug!(target: "hooks.install", "kiro-cli not available for set-default: {}", e);
             }
         }
     } else {
-        tracing::info!(
+        tracing::info!(target: "hooks.install",
             "Kiro has a custom default agent; skipping set-default. \
              Run `kiro-cli agent set-default aoe-hooks` to enable status detection."
         );
@@ -679,7 +679,7 @@ pub fn uninstall_kiro_hooks(agent_config_path: &Path) -> Result<bool> {
         std::fs::write(agent_config_path, formatted)?;
     }
 
-    tracing::info!("Removed AoE hooks from {}", agent_config_path.display());
+    tracing::info!(target: "hooks.uninstall", "Removed AoE hooks from {}", agent_config_path.display());
     Ok(true)
 }
 
@@ -690,7 +690,7 @@ pub fn uninstall_all_hooks() {
     match uninstall_settl_hooks() {
         Ok(true) => println!("Removed AoE hooks from ~/.settl/config.toml"),
         Ok(false) => {}
-        Err(e) => tracing::warn!("Failed to remove settl hooks: {}", e),
+        Err(e) => tracing::warn!(target: "hooks.uninstall", "Failed to remove settl hooks: {}", e),
     }
 
     if let Some(home) = dirs::home_dir() {
@@ -699,7 +699,9 @@ pub fn uninstall_all_hooks() {
         match uninstall_hermes_hooks(&hermes_config) {
             Ok(true) => println!("Removed AoE hooks from {}", hermes_config.display()),
             Ok(false) => {}
-            Err(e) => tracing::warn!("Failed to remove hermes hooks: {}", e),
+            Err(e) => {
+                tracing::warn!(target: "hooks.uninstall", "Failed to remove hermes hooks: {}", e)
+            }
         }
 
         // Remove Kiro CLI agent config hooks
@@ -707,7 +709,9 @@ pub fn uninstall_all_hooks() {
         match uninstall_kiro_hooks(&kiro_config) {
             Ok(true) => println!("Removed AoE hooks from {}", kiro_config.display()),
             Ok(false) => {}
-            Err(e) => tracing::warn!("Failed to remove kiro hooks: {}", e),
+            Err(e) => {
+                tracing::warn!(target: "hooks.uninstall", "Failed to remove kiro hooks: {}", e)
+            }
         }
 
         for agent in crate::agents::AGENTS {
@@ -717,7 +721,7 @@ pub fn uninstall_all_hooks() {
                     Ok(true) => println!("Removed AoE hooks from {}", settings_path.display()),
                     Ok(false) => {}
                     Err(e) => {
-                        tracing::warn!(
+                        tracing::warn!(target: "hooks.uninstall",
                             "Failed to remove hooks from {}: {}",
                             settings_path.display(),
                             e
@@ -732,7 +736,7 @@ pub fn uninstall_all_hooks() {
     let base = std::path::Path::new(HOOK_STATUS_BASE);
     if base.exists() {
         if let Err(e) = std::fs::remove_dir_all(base) {
-            tracing::warn!("Failed to remove {}: {}", base.display(), e);
+            tracing::warn!(target: "hooks.uninstall", "Failed to remove {}: {}", base.display(), e);
         }
     }
 }

@@ -65,6 +65,34 @@ export function decideEnterAction(
   return "default";
 }
 
+/** Decision returned by {@link decideBeforeInputAction} for a
+ *  `beforeinput` event on the cockpit composer textarea.
+ *  - `newline`: caller should preventDefault, stop propagation, and
+ *    manually insert a literal "\n" at the caret. Used on touch-primary
+ *    devices where the on-screen keyboard's Enter fires
+ *    `beforeinput` with `insertLineBreak` / `insertParagraph` instead
+ *    of a `keydown` (Android Chrome's GBoard / Samsung Keyboard / many
+ *    others). Without this, assistant-ui's bubble-phase Send wins.
+ *  - `default`: do nothing, let the primitive run. */
+export type BeforeInputAction = "newline" | "default";
+
+/** Pure decision helper for the composer's `beforeinput` event.
+ *  Extracted so the matrix is unit-testable without mounting the
+ *  composer. The textarea handler reads the same matrix at runtime.
+ *  See #1174. */
+export function decideBeforeInputAction(
+  inputType: string,
+  isComposing: boolean,
+  ctx: { isMobile: boolean },
+): BeforeInputAction {
+  if (!ctx.isMobile) return "default";
+  if (isComposing) return "default";
+  if (inputType !== "insertLineBreak" && inputType !== "insertParagraph") {
+    return "default";
+  }
+  return "newline";
+}
+
 /** Wrapper class + inline style for the composer's outer <div>. When the
  *  soft keyboard is open we drop the bottom padding and apply a negative
  *  bottom margin equal to the App root's safe-area-inset-bottom so the
@@ -312,7 +340,13 @@ export function Composer({
   // ~200-500ms after mount and steals focus from us. Re-claim a couple
   // of times so the agent input wins; only when focus is on body or
   // inside .wterm so an intentional click into the host shell sticks.
+  //
+  // Mobile skips this entirely (#1178): auto-focusing the textarea pops
+  // the soft keyboard on every session open / switch, which is the wrong
+  // default for the read-traffic that dominates mobile usage. Users tap
+  // the composer when they want to type.
   useEffect(() => {
+    if (isMobile) return;
     const el = taRef.current;
     if (!el) return;
     el.focus();
@@ -332,7 +366,7 @@ export function Composer({
       window.clearTimeout(t1);
       window.clearTimeout(t2);
     };
-  }, []);
+  }, [isMobile]);
 
   const wrapperLayout = composerWrapperLayout({ keyboardOpen });
   return (
@@ -384,6 +418,43 @@ export function Composer({
                   : "Send a message…  Type @ for files, / for commands"
               }
               onInput={onInput}
+              onFocus={() => {
+                // Defensive scrollIntoView for mobile soft-keyboard cycles.
+                // The App root no longer pins height for cockpit (#1177),
+                // so `h-dvh` shrinks with the keyboard and the composer
+                // should naturally lift into view; this is a belt-and-
+                // braces hop after the keyboard animation completes so
+                // any UA that lags the layout-viewport update still ends
+                // up scrolled to the composer.
+                if (!isMobile) return;
+                window.setTimeout(() => {
+                  taRef.current?.scrollIntoView({
+                    block: "end",
+                    behavior: "smooth",
+                  });
+                }, 300);
+              }}
+              onBeforeInput={(e) => {
+                // Android Chrome's GBoard / Samsung Keyboard often fire
+                // `beforeinput` with `insertLineBreak` / `insertParagraph`
+                // for the on-screen Enter key WITHOUT a usable `keydown`
+                // (key is "Unidentified" or keyCode 229). The keydown
+                // matrix below misses those, so assistant-ui's bubble-
+                // phase Send wins and sends the message. Intercept here
+                // for mobile, insert a literal newline at the caret, and
+                // let the keydown matrix handle the platforms that do
+                // fire a real Enter keydown. See #1174.
+                const ne = e.nativeEvent as InputEvent;
+                const action = decideBeforeInputAction(
+                  ne.inputType,
+                  ne.isComposing,
+                  { isMobile },
+                );
+                if (action === "default") return;
+                e.preventDefault();
+                e.stopPropagation();
+                insertNewlineAtCaret(taRef);
+              }}
               onKeyDown={(e) => {
                 // Three-way Enter dispatch. See decideEnterAction for
                 // the full matrix; the inline branches below handle
@@ -420,7 +491,7 @@ export function Composer({
                 e.stopPropagation();
                 void sendFromTextarea(taRef, composerRuntime, enqueuePrompt);
               }}
-              autoFocus
+              autoFocus={!isMobile}
               className={[
                 "min-h-[56px] max-h-[200px] resize-none bg-transparent",
                 "px-4 pt-3 pb-1 text-sm leading-6 text-text-primary",
@@ -536,6 +607,39 @@ function insertSlashCommand(
   // removed by removeOnExecute, so trailing whitespace is rare.
   const sep = current.length > 0 && !current.endsWith(" ") ? " " : "";
   runtime.setText(`${current}${sep}/${item.id}${suffix}`);
+}
+
+/** Insert a literal "\n" at the textarea's caret. Used by the
+ *  `beforeinput` interception path for mobile Enter (#1174): when
+ *  Android's on-screen keyboard fires `beforeinput` with
+ *  `insertLineBreak` / `insertParagraph` (and possibly no usable
+ *  `keydown`), we preventDefault on the synthetic line-break and
+ *  insert one ourselves so the cursor lands one position past the
+ *  newline. Skips the trigger-detection whitespace padding that
+ *  `insertAtCaret` does for `@` / `/`; a newline doesn't need it. */
+export function insertNewlineAtCaret(
+  ref: React.RefObject<HTMLTextAreaElement | null>,
+): void {
+  const ta = ref.current;
+  if (!ta) return;
+  const start = ta.selectionStart ?? ta.value.length;
+  const end = ta.selectionEnd ?? start;
+  const before = ta.value.slice(0, start);
+  const after = ta.value.slice(end);
+  const next = `${before}\n${after}`;
+  const setter = Object.getOwnPropertyDescriptor(
+    HTMLTextAreaElement.prototype,
+    "value",
+  )?.set;
+  setter?.call(ta, next);
+  ta.dispatchEvent(
+    new InputEvent("input", {
+      bubbles: true,
+      inputType: "insertLineBreak",
+    }),
+  );
+  const pos = before.length + 1;
+  ta.setSelectionRange(pos, pos);
 }
 
 /** Insert `text` at the textarea's caret and re-focus. The toolbar

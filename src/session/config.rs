@@ -65,6 +65,27 @@ pub struct Config {
         deserialize_with = "super::serde_helpers::string_or_vec"
     )]
     pub environment: Vec<String>,
+
+    /// User-defined tool sessions: name -> config.
+    /// Tools are launched in the selected session's working directory and
+    /// persist as independent tmux sessions until the parent agent session
+    /// is deleted. Access via hotkey, the tool picker (`;`), or command
+    /// palette (Ctrl+K).
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub tools: HashMap<String, ToolSessionConfig>,
+}
+
+/// Configuration for a user-defined tool session (lazygit, yazi, tig, etc.)
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ToolSessionConfig {
+    /// Shell command to run (e.g. "lazygit", "yazi", "tig --all").
+    /// The string is passed to the shell, so pipes and `&&` work.
+    #[serde(default)]
+    pub command: String,
+    /// Optional hotkey binding in `Alt+<letter>` format (e.g. "Alt+g", "Alt+f").
+    /// Only Alt+ single-character bindings are supported.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hotkey: Option<String>,
 }
 
 /// Persistent logging configuration. Drives the default tracing
@@ -115,6 +136,16 @@ pub struct LoggingConfig {
     /// Older rotations are dropped.
     #[serde(default = "default_keep_count")]
     pub keep_count: u8,
+
+    /// Whether the tracing formatter prefixes each event with the names
+    /// and fields of the spans wrapping it (e.g. the per-request
+    /// `http_request{request_id=... method=GET path=...}` introduced by
+    /// the axum middleware). Useful for grep-correlation when triaging
+    /// across async boundaries, noisy on idle polling endpoints.
+    /// Defaults to `false` so the log stays readable; flip to `true`
+    /// when investigating. Requires restart.
+    #[serde(default = "default_show_spans")]
+    pub show_spans: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -143,6 +174,7 @@ impl Default for LoggingConfig {
             rotation: RotationKind::default(),
             max_size_mib: default_max_size_mib(),
             keep_count: default_keep_count(),
+            show_spans: default_show_spans(),
         }
     }
 }
@@ -161,6 +193,10 @@ fn default_max_size_mib() -> u64 {
 
 fn default_keep_count() -> u8 {
     5
+}
+
+fn default_show_spans() -> bool {
+    false
 }
 
 /// Configuration for the cockpit (ACP-based native rendering of agent
@@ -477,16 +513,16 @@ impl SessionConfig {
     pub fn warn_custom_agent_issues(&self) {
         for (name, command) in &self.custom_agents {
             if name.is_empty() {
-                tracing::warn!("custom_agents: entry with empty name will be ignored");
+                tracing::warn!(target: "session.store", "custom_agents: entry with empty name will be ignored");
             }
             if command.is_empty() {
-                tracing::warn!(
+                tracing::warn!(target: "session.store",
                     "custom_agents: '{}' has an empty command, session will launch with no command",
                     name
                 );
             }
             if crate::agents::get_agent(name).is_some() {
-                tracing::warn!(
+                tracing::warn!(target: "session.store",
                     "custom_agents: '{}' shadows a built-in agent; use agent_command_override instead",
                     name
                 );
@@ -494,15 +530,15 @@ impl SessionConfig {
         }
         for (name, target) in &self.agent_detect_as {
             if name.is_empty() {
-                tracing::warn!("agent_detect_as: entry with empty agent name will be ignored");
+                tracing::warn!(target: "session.store", "agent_detect_as: entry with empty agent name will be ignored");
             }
             if target.is_empty() {
-                tracing::warn!(
+                tracing::warn!(target: "session.store",
                     "agent_detect_as: '{}' maps to an empty target, status detection will default to Idle",
                     name
                 );
             } else if crate::agents::get_agent(target).is_none() {
-                tracing::warn!(
+                tracing::warn!(target: "session.store",
                     "agent_detect_as: '{}' maps to unknown agent '{}', status detection will default to Idle. Known agents: {}",
                     name,
                     target,
@@ -995,7 +1031,7 @@ impl Config {
         match Self::load() {
             Ok(config) => config,
             Err(e) => {
-                tracing::warn!("Failed to load global config, using defaults: {e}");
+                tracing::warn!(target: "session.store", "Failed to load global config, using defaults: {e}");
                 Config::default()
             }
         }
@@ -1013,7 +1049,7 @@ pub fn load_config() -> Result<Option<Config>> {
 pub fn save_config(config: &Config) -> Result<()> {
     let path = config_path()?;
     let content = toml::to_string_pretty(config)?;
-    fs::write(&path, content)?;
+    super::atomic_write(&path, content.as_bytes())?;
     Ok(())
 }
 

@@ -1,6 +1,6 @@
 # Design System -- Agent of Empires
 
-> **Scope note (2026-04-15):** The system below applies to the TUI, the marketing site (`website/`), and anywhere brand identity is expressed. The **web dashboard** (`web/`) runs a deliberately lighter subset documented in the [Web Dashboard section](#web-dashboard-subset) at the bottom. When you touch `web/`, read that section first.
+> **Scope note (2026-05-17):** Color is unified across the TUI and the web dashboard via the canonical theme TOML model. The TUI renders directly from a `Theme`; the web dashboard renders from a server-side projection (`ResolvedTheme`) of the same `Theme`. Surfaces (TUI vs web vs marketing) still differ on typography, density, and motion, but the color palette follows the user's chosen theme on both code surfaces. See the [Theme system](#theme-system) and [Web Dashboard subset](#web-dashboard-subset) sections below.
 
 ## Product Context
 - **What this is:** Terminal session manager for AI coding agents (Claude Code, Gemini CLI, OpenCode, Codex, Mistral Vibe, etc.)
@@ -206,10 +206,32 @@ This makes the two panels feel like one cohesive surface with a divider rather t
 | 2026-03-22 | Inner padding in TUI panels | 1 char horizontal padding prevents content from touching borders. Gives breathing room without sacrificing density. |
 | 2026-03-22 | Single panel seam | Double-border between list and preview panels looks heavy. One shared divider line reads as a cohesive surface. |
 | 2026-04-15 | Web dashboard diverges to Geist + neutral zinc | The web dashboard is a utility surface (sessions, terminals, diffs) not a brand surface. Warm copper at full saturation competes with terminal content and xterm ANSI colors. Geist + zinc surfaces let the content lead; brand amber stays as the accent for CTAs, focus rings, and the logo. See the Web Dashboard section below. |
+| 2026-05-17 | Unified theme system across TUI and web | Issue #1189: the web dashboard's theme picker did nothing. Surface palette is now driven by the user's chosen `Theme` on both TUI and web via a server-side projection (`ResolvedTheme`); the "web deliberately diverges to neutral zinc" rule from 2026-04-15 is retired in favour of "Empire is the default but the user picks." Builtins moved to TOML (issue #1097) so adding a theme is a one-file drop. Geist typography on the dashboard is unchanged; only color is unified. |
+
+## Theme system
+
+The user's chosen theme is the source of truth for color on both the TUI and the web dashboard. Themes live as TOML files: builtins under `themes/builtin/*.toml` (embedded at compile time via `include_str!`); user-defined themes under `~/.agent-of-empires/themes/*.toml`. The canonical schema is the flat color palette in `src/tui/styles/themes.rs` (24 hex fields) plus two optional metadata fields: `appearance = "dark" | "light"` and `[syntax].shiki_theme = "..."`.
+
+### Surfaces and projections
+
+- **TUI** renders directly from the `Theme` struct via `src/tui/styles/themes.rs`. Every ratatui widget reads from the named fields (`background`, `border`, `text`, `accent`, `running`, ...).
+- **Web dashboard** renders from a server-side projection (`ResolvedTheme` in `src/tui/styles/resolved.rs`) of the same `Theme`. The projection maps named TUI fields onto the Tailwind CSS variables the dashboard consumes (`--color-surface-900`, `--color-text-primary`, `--color-status-running`, etc.) and derives a few shades (surface-950/850, brand ramp, ANSI 16 for the embedded terminal) from background luminance and the appearance flag. Light themes (Catppuccin Latte) invert the ramp direction so the dashboard reads correctly on light surfaces.
+- **Embedded terminal** (`web/src/hooks/useTerminal.ts`) inherits `--term-*` CSS variables (background, foreground, cursor, ANSI 16) from the same projection. wterm reads CSS variables at draw time; the hook fires `term.resize(...)` on theme change so the live terminal repaints under the new palette without waiting for the next PTY byte.
+- **Syntax highlighting** (Shiki) selects a bundled Shiki theme per AoE theme via `[syntax].shiki_theme`. Built-ins map to closely matching upstream Shiki themes (`empire` → `github-dark`, `dracula` → `dracula`, `catppuccin-latte` → `catppuccin-latte`, etc.); user themes default to `github-dark` / `github-light` by appearance.
+
+### Compatibility
+
+- Adding a built-in theme is a one-file drop: `themes/builtin/<name>.toml` + one entry in `BUILTIN_THEMES`. No per-theme Rust constructor, no per-theme test stamp-out.
+- Existing custom TOML themes (`~/.agent-of-empires/themes/*.toml`) parse unchanged. The new optional metadata fields default to `None` / empty for custom themes that omit them; the server falls back to luminance classification and appearance-based syntax theme selection.
+- The TOML schema does **not** declare ANSI 16 colors per theme; the resolver derives them from semantic fields (ANSI 1 = error, 2 = running, ...). An optional `[terminal]` override section is future work; v1 derives so user themes work without authoring 16 hexes.
+
+### Marketing site (`website/`)
+
+The marketing site has its own palette (the original warm-navy Empire-aligned ramp documented in the [Color](#color) section above). It is brand expression, not user surface, so the user's theme picker doesn't affect it.
 
 ## Web Dashboard subset
 
-The web dashboard (`web/`) is a utility that sits between a developer and a terminal. It is dark-only, dense, keyboard-driven, and deliberately quieter than the marketing site. Use these rules when editing anything under `web/`.
+The web dashboard (`web/`) is a utility that sits between a developer and a terminal. It is dense, keyboard-driven, and deliberately quieter than the marketing site. Use these rules when editing anything under `web/`.
 
 ### Typography
 
@@ -220,11 +242,11 @@ The web dashboard (`web/`) is a utility that sits between a developer and a term
 
 ### Color
 
-- **Brand amber** is still the primary and still uses the same brand-400 through brand-700 tokens as the rest of the system. It appears on CTAs, focus rings, the logo mark, section anchors, and the inline code color. Do not introduce a separate brand palette for the dashboard.
-- **Accent teal** appears on secondary affordances: branch names in breadcrumbs, diff file count badges, keyboard shortcut pills in the help overlay.
-- **Surfaces** are neutral zinc (`--color-surface-700` through `--color-surface-950` in `web/src/index.css`), not the warm navy from the brand system. Neutral surfaces keep xterm's ANSI colors legible and prevent the "everything is orange-tinted" feeling that a warm surface palette produces behind a terminal.
-- **Status colors** (running, waiting, idle, error, starting, stopped) are defined as semantic tokens in `web/src/index.css` and are the only non-brand/non-accent colors allowed in the dashboard chrome.
-- **Text contrast.** Every text token in the ramp (`text-primary` through `text-dim`) must clear WCAG AA body contrast (4.5:1) against both `surface-900` and `surface-800`; that's the surface set body copy lives on. The `text-dim` slot is the floor: tertiary descriptive copy under settings controls, helper hints next to inputs, status info rows. Decorative non-text uses that need to read quieter (separator hairlines, faint chrome) can drop to a surface token directly rather than darkening the text ramp.
+- **All color** comes from the user's chosen theme via the resolved theme projection (see [Theme system](#theme-system)). The dashboard does not pin its own palette; the build-time defaults in `web/src/index.css` exist only as a cold-load fallback before `useResolvedTheme` fetches and applies the user's selection.
+- **Empire** (the default theme) is the documented baseline: warm amber/copper brand on warm navy surfaces, derived through the projection. Tailwind utilities like `bg-surface-900`, `text-text-primary`, `text-status-running` resolve to whichever theme the user has selected.
+- **Light theme support.** Catppuccin Latte is a first-class theme on both TUI and web. The projection inverts the surface ramp direction for light backgrounds and sets `color-scheme: light` on the root so native form controls render correctly.
+- **Status colors** (running, waiting, fresh-idle, idle, error, starting, stopped) come from the matching TUI semantic fields. `starting` and `stopped` have no TUI equivalent; the projection derives them by darkening `waiting` and `dimmed` respectively.
+- **Text contrast.** Every text token in the ramp (`text-primary` through `text-dim`) must clear WCAG AA body contrast (4.5:1) against the surfaces body copy lives on. Builtins are tuned for AA; custom themes are the user's responsibility.
 
 ### Density and motion
 
@@ -232,17 +254,15 @@ The web dashboard (`web/`) is a utility that sits between a developer and a term
 - Border radii: `rounded-md` (6px) for inline affordances, `rounded-lg` (8px) for panels and dialogs. No `rounded-xl` or larger in the dashboard.
 - Motion: `animate-fade-in` and `animate-slide-up` are the only named transitions. Prefer `transition-colors` for hover/focus. Avoid scaling, parallax, or layered motion.
 
-### What stays consistent with the brand system
+### What stays per-surface
 
-- Brand amber is still the primary.
-- Accent teal is still the secondary.
-- Status color semantics are unchanged.
-- The "engineer-made, warm when it matters" tone still applies; the dashboard is just quieter about it so the terminal can lead.
+- Font families (Geist on the dashboard, Satoshi/DM Sans on marketing).
+- Density (denser on the dashboard than on the marketing site).
+- Motion (minimal-functional on both; no decorative motion in the dashboard).
 
-### What is explicitly allowed to differ
+### What to avoid
 
-- Font families (Geist everywhere, not Satoshi/DM Sans/JetBrains Mono).
-- Surface palette (neutral zinc, not warm navy).
-- Brand saturation (used as an accent, not a primary surface treatment).
+- **No hardcoded chrome colors.** Use semantic tokens (`bg-surface-900`, `text-status-running`, `border-surface-700`). Hardcoded hex / rgb / `bg-[#...]` arbitrary classes don't repaint under theme changes. The few existing exceptions are: brand-mark SVGs in `Dashboard.tsx` (these stay brand amber regardless of theme), `lib/ansi.ts` (renders user-produced ANSI escape content, not chrome).
+- **No new build-time `@theme [data-theme=...]` blocks.** The runtime palette swap goes through CSS variables on `documentElement`; build-time scoped themes can't support user-defined TOML themes without rebuilds.
 
 If a change to `web/` would require deviating from any of the above, update this section first.

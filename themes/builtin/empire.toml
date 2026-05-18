@@ -1,0 +1,35 @@
+appearance = "dark"
+
+background = "#0f172a"
+border = "#334155"
+terminal_border = "#0d9488"
+selection = "#26324b"
+session_selection = "#37415c"
+title = "#fbbf24"
+text = "#cbd5e1"
+dimmed = "#64748b"
+hint = "#94a3b8"
+running = "#22c55e"
+# Waiting sits at the brightest point in the brand ramp (amber-400) so it
+# wins on luminance against the fresh-idle color. Saturation alone wasn't
+# enough on dark backgrounds; the deeper copper read as dimmer, not more
+# urgent. Fresh-idle drops one rung to amber-500 so the hierarchy is
+# bright-amber > copper-amber > slate.
+waiting = "#fbbf24"
+fresh_idle = "#f59e0b"
+idle = "#64748b"
+error = "#ef4444"
+terminal_active = "#0d9488"
+group = "#cbd5e1"
+search = "#fbbf24"
+accent = "#d97706"
+diff_add = "#22c55e"
+diff_delete = "#ef4444"
+diff_modified = "#fbbf24"
+diff_header = "#0d9488"
+help_key = "#d97706"
+branch = "#0d9488"
+sandbox = "#94a3b8"
+
+[syntax]
+shiki_theme = "github-dark"

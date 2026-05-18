@@ -10,6 +10,7 @@ use super::open_repo_at;
 /// The destination must not already exist. If `shallow` is true, only the
 /// latest commit is fetched (`--depth 1`). The clone is killed after 5
 /// minutes to prevent indefinite hangs (unresponsive remotes, SSH prompts).
+#[tracing::instrument(target = "git.fetch", skip_all, fields(url = %redact_url(url), shallow))]
 pub fn clone_repo(url: &str, destination: &Path, shallow: bool) -> Result<()> {
     if destination.exists() {
         return Err(GitError::CloneFailed(format!(

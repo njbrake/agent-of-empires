@@ -3,6 +3,7 @@
 use ratatui::prelude::*;
 use ratatui::widgets::Paragraph;
 use tui_input::Input;
+use unicode_width::UnicodeWidthStr;
 
 use crate::tui::styles::Theme;
 
@@ -51,7 +52,7 @@ impl GroupGhostCompletion {
         }
 
         let char_len = value.chars().count();
-        let cursor_char = input.visual_cursor().min(char_len);
+        let cursor_char = input.cursor().min(char_len);
 
         // Only show ghost when cursor is at end of input
         if cursor_char < char_len {
@@ -95,7 +96,7 @@ impl GroupGhostCompletion {
     /// if the ghost was still valid (not stale), or `None` if stale.
     pub fn accept(self, input: &Input) -> Option<String> {
         let value = input.value().to_string();
-        let cursor_char = input.visual_cursor().min(value.chars().count());
+        let cursor_char = input.cursor().min(value.chars().count());
 
         // Staleness check
         if self.input_snapshot != value || self.cursor_snapshot != cursor_char {
@@ -170,7 +171,7 @@ pub fn render_text_field_with_ghost(
             spans.push(Span::styled(placeholder_text, value_style));
         }
     } else if is_focused {
-        let cursor_pos = input.visual_cursor();
+        let cursor_pos = input.cursor();
         let cursor_style = Style::default().fg(theme.background).bg(theme.accent);
 
         // Split value into: before cursor, char at cursor, after cursor
@@ -197,11 +198,42 @@ pub fn render_text_field_with_ghost(
     }
 
     frame.render_widget(Paragraph::new(Line::from(spans)), area);
+
+    if is_focused {
+        let prefix = format!("{label} ");
+        set_prefixed_input_cursor_position(frame, area, &prefix, input);
+    }
+}
+
+pub fn set_prefixed_input_cursor_position(
+    frame: &mut Frame,
+    area: Rect,
+    prefix: &str,
+    input: &Input,
+) {
+    set_input_cursor_position(frame, area, prefix.width(), input);
+}
+
+pub fn set_input_cursor_position(
+    frame: &mut Frame,
+    area: Rect,
+    prefix_width: usize,
+    input: &Input,
+) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+
+    let cursor_col = prefix_width.saturating_add(input.visual_cursor());
+    let max_col = area.width.saturating_sub(1) as usize;
+    let x = area.x.saturating_add(cursor_col.min(max_col) as u16);
+    frame.set_cursor_position(Position::new(x, area.y));
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tui::styles::load_theme;
 
     fn groups(names: &[&str]) -> Vec<String> {
         names.iter().map(|s| s.to_string()).collect()
@@ -332,5 +364,63 @@ mod tests {
         // Input changed after computing ghost
         let changed_input = Input::new("pers".to_string());
         assert!(ghost.accept(&changed_input).is_none());
+    }
+
+    #[test]
+    fn focused_text_field_sets_terminal_cursor() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let backend = TestBackend::new(40, 3);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let input = Input::new("hi".to_string());
+        let theme = load_theme("empire");
+
+        terminal
+            .draw(|f| {
+                render_text_field(
+                    f,
+                    Rect::new(2, 1, 30, 1),
+                    "Name:",
+                    &input,
+                    true,
+                    None,
+                    &theme,
+                );
+            })
+            .unwrap();
+
+        terminal
+            .backend_mut()
+            .assert_cursor_position(Position::new(10, 1));
+    }
+
+    #[test]
+    fn focused_text_field_uses_display_columns_for_wide_chars() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let backend = TestBackend::new(40, 3);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let input = Input::new("你".to_string());
+        let theme = load_theme("empire");
+
+        terminal
+            .draw(|f| {
+                render_text_field(
+                    f,
+                    Rect::new(2, 1, 30, 1),
+                    "Name:",
+                    &input,
+                    true,
+                    None,
+                    &theme,
+                );
+            })
+            .unwrap();
+
+        terminal
+            .backend_mut()
+            .assert_cursor_position(Position::new(10, 1));
     }
 }

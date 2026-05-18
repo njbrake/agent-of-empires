@@ -227,7 +227,7 @@ pub async fn send_one(
     match send_one_inner(client, state, subscription, payload).await {
         Ok(outcome) => outcome,
         Err(e) => {
-            tracing::warn!(
+            tracing::warn!(target: "http.middleware",
                 endpoint = %subscription.endpoint,
                 error = %e,
                 "push: send_one error, marking Failed"
@@ -268,7 +268,7 @@ async fn send_one_inner(
             .text()
             .await
             .unwrap_or_else(|_| String::from("(body unreadable)"));
-        tracing::warn!(
+        tracing::warn!(target: "http.middleware",
             endpoint = %subscription.endpoint,
             status = %status,
             body = %text,
@@ -333,6 +333,7 @@ mod tests {
             user_agent: String::new(),
             created_at: chrono::Utc::now(),
             generation: 0,
+            origin: "http://localhost:8080".to_string(),
         };
 
         let body = encrypt_aes128gcm(&subscription, b"hello").expect("encrypt");

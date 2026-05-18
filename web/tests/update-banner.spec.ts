@@ -17,7 +17,7 @@ async function mock(page: Page, status: UpdateStatusFixture) {
     r.fulfill({ json: { required: false, authenticated: true } }),
   );
   await page.route("**/api/sessions", (r) =>
-    r.fulfill({ json: [] }),
+    r.fulfill({ json: { sessions: [], workspace_ordering: [] } }),
   );
   for (const path of [
     "settings",

@@ -26,7 +26,7 @@ use rust_embed::Embed;
 use serde::Serialize;
 use tokio::sync::{broadcast, RwLock};
 use tokio_util::sync::CancellationToken;
-use tracing::info;
+use tracing::{info, Instrument};
 
 use self::push::{PushState, StatusChange, STATUS_CHANNEL_CAPACITY};
 
@@ -350,7 +350,7 @@ fn raise_fd_limit() {
             let target = TARGET.min(hard).max(soft);
             if target > soft {
                 if let Err(e) = setrlimit(Resource::RLIMIT_NOFILE, target, hard) {
-                    tracing::warn!("Failed to raise RLIMIT_NOFILE to {}: {}", target, e);
+                    tracing::warn!(target: "http.middleware", "Failed to raise RLIMIT_NOFILE to {}: {}", target, e);
                 } else {
                     info!(
                         "Raised RLIMIT_NOFILE soft limit from {} to {}",
@@ -359,7 +359,7 @@ fn raise_fd_limit() {
                 }
             }
         }
-        Err(e) => tracing::warn!("Failed to read RLIMIT_NOFILE: {}", e),
+        Err(e) => tracing::warn!(target: "http.middleware", "Failed to read RLIMIT_NOFILE: {}", e),
     }
 }
 
@@ -450,7 +450,7 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
             Ok(dir) => match PushState::init(&dir) {
                 Ok(s) => Some(Arc::new(s)),
                 Err(e) => {
-                    tracing::warn!(
+                    tracing::warn!(target: "http.middleware",
                         "Push notifications disabled: failed to init VAPID/state: {}",
                         e
                     );
@@ -458,7 +458,7 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
                 }
             },
             Err(e) => {
-                tracing::warn!("Push notifications disabled: app_dir unavailable: {}", e);
+                tracing::warn!(target: "http.middleware", "Push notifications disabled: app_dir unavailable: {}", e);
                 None
             }
         }
@@ -486,36 +486,12 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
     };
     #[cfg(feature = "serve")]
     let cockpit_supervisor = {
-        let push_for_sink = push_state.clone();
-        let push_enabled_for_sink = push_enabled;
-        let on_approval =
-            std::sync::Arc::new(move |session_id: &str, title: &str, destructive: bool| {
-                let session_id = session_id.to_string();
-                let title = title.to_string();
-                let push = push_for_sink.clone();
-                tokio::spawn(async move {
-                    if let Some(_push) = push {
-                        if push_enabled_for_sink {
-                            // We re-enter the cockpit_ws helper when we have
-                            // an AppState in scope; the standalone trigger
-                            // here just logs intent. The full server-driven
-                            // path lives at cockpit_ws::trigger_approval_push,
-                            // invoked from the API handler that receives
-                            // the cockpit broadcast.
-                            tracing::debug!(
-                                target: "cockpit.supervisor",
-                                session = %session_id,
-                                title = %title,
-                                destructive,
-                                "approval event observed (push delivery handled via api layer)"
-                            );
-                        }
-                    }
-                });
-            }) as std::sync::Arc<dyn Fn(&str, &str, bool) + Send + Sync>;
+        // Approval pushes are dispatched from `cockpit_event_listener`,
+        // which subscribes to the broadcast that ChannelSink::publish
+        // feeds and has `Arc<AppState>` in scope without a closure
+        // dance through the supervisor. See #1038.
         let sink = std::sync::Arc::new(crate::cockpit::supervisor::ChannelSink {
             tx: cockpit_events_tx.clone(),
-            on_approval,
             event_store: cockpit_event_store.clone(),
         });
         let supervisor =
@@ -591,7 +567,7 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
     // The probe itself also logs details about each underlying call.
     let tailscale_ok = if remote && !no_tailscale {
         let available = tunnel::tailscale_available().await;
-        tracing::debug!(
+        tracing::debug!(target: "http.middleware",
             no_tailscale,
             tailscale_available = available,
             "tunnel: choosing transport"
@@ -599,7 +575,7 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
         available
     } else {
         if remote && no_tailscale {
-            tracing::debug!("tunnel: --no-tailscale set, skipping Tailscale auto-detection");
+            tracing::debug!(target: "http.middleware", "tunnel: --no-tailscale set, skipping Tailscale auto-detection");
         }
         false
     };
@@ -679,7 +655,7 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
             // "tailscale" for Tailscale Funnel, "local" for local-only.
             let mode = format!("{}\n", handle.mode_label());
             if let Err(e) = tokio::fs::write(app_dir.join("serve.mode"), mode).await {
-                tracing::debug!("Failed to write serve.mode: {e}");
+                tracing::debug!(target: "http.middleware", "Failed to write serve.mode: {e}");
             }
         }
 
@@ -746,7 +722,7 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
             }
             write_secret_file(&app_dir.join("serve.url"), &contents).await;
             if let Err(e) = tokio::fs::write(app_dir.join("serve.mode"), "local\n").await {
-                tracing::debug!("Failed to write serve.mode: {e}");
+                tracing::debug!(target: "http.middleware", "Failed to write serve.mode: {e}");
             }
         }
 
@@ -844,11 +820,13 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
                     }
                     match push.store.retain_owners(&valid_hashes).await {
                         Ok(0) => {}
-                        Ok(n) => tracing::info!(
+                        Ok(n) => tracing::info!(target: "http.middleware",
                             removed = n,
                             "push: dropped subscriptions whose owner-hash is no longer valid after rotation"
                         ),
-                        Err(e) => tracing::warn!(error = %e, "push: retain_owners failed"),
+                        Err(e) => {
+                            tracing::warn!(target: "http.middleware", error = %e, "push: retain_owners failed")
+                        }
                     }
                 }
 
@@ -904,20 +882,20 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
             let mut sighup = signal(SignalKind::hangup()).ok();
             tokio::select! {
                 _ = tokio::signal::ctrl_c() => {
-                    info!("Received SIGINT, shutting down...");
+                    tracing::info!(target: "serve.shutdown", signal = "SIGINT", "received signal, shutting down");
                 }
                 _ = async { match sigterm { Some(ref mut s) => { s.recv().await; } None => std::future::pending().await } } => {
-                    info!("Received SIGTERM, shutting down...");
+                    tracing::info!(target: "serve.shutdown", signal = "SIGTERM", "received signal, shutting down");
                 }
                 _ = async { match sighup { Some(ref mut s) => { s.recv().await; } None => std::future::pending().await } } => {
-                    info!("Received SIGHUP, shutting down...");
+                    tracing::info!(target: "serve.shutdown", signal = "SIGHUP", "received signal, shutting down");
                 }
             }
         }
         #[cfg(not(unix))]
         {
             let _ = tokio::signal::ctrl_c().await;
-            info!("Shutting down...");
+            tracing::info!(target: "serve.shutdown", "received ctrl-c, shutting down");
         }
         shutdown_state.shutdown.cancel();
         tokio::spawn(async {
@@ -965,13 +943,17 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
 }
 
 fn build_router(state: Arc<AppState>) -> Router {
-    use axum::routing::{delete, get, patch, post};
+    use axum::routing::{delete, get, patch, post, put};
 
     let app = Router::new()
         // Sessions
         .route(
             "/api/sessions",
             get(api::list_sessions).post(api::create_session),
+        )
+        .route(
+            "/api/workspace-ordering",
+            put(api::update_workspace_ordering),
         )
         .route(
             "/api/sessions/{id}",
@@ -1029,7 +1011,10 @@ fn build_router(state: Arc<AppState>) -> Router {
             get(api::get_settings).patch(api::update_settings),
         )
         .route("/api/themes", get(api::list_themes))
+        .route("/api/themes/{name}", get(api::get_resolved_theme))
+        .route("/api/theme/current", get(api::get_current_theme))
         .route("/api/sounds", get(api::list_sounds))
+        .route("/api/sounds/file/{name}", get(api::serve_sound_file))
         // Push notifications
         .route("/api/push/status", get(push::get_status))
         .route(
@@ -1121,8 +1106,58 @@ fn build_router(state: Arc<AppState>) -> Router {
             auth::auth_middleware,
         ))
         .layer(axum::middleware::from_fn(security_headers))
+        .layer(axum::middleware::from_fn(http_request_span))
         .layer(axum::extract::DefaultBodyLimit::max(1024 * 1024))
         .with_state(state)
+}
+
+/// Middleware that wraps every request in an `http.request` span with a
+/// generated or echoed `X-Request-Id`, then emits one completion event at
+/// the level matching the response status. Logs fired inside the request
+/// (auth middleware, route handlers, downstream `tracing` events) inherit
+/// the span fields, so a single grep on `request_id` reconstructs the call.
+///
+/// Successful completions (2xx/3xx) emit at `debug`, not `info`: the web
+/// UI polls `/api/sessions` every ~2s, so an info-level success log here
+/// would flood `debug.log` at the default `info` filter. Users who want
+/// to see every request can dial `http.request=debug` from settings;
+/// 4xx (`warn`) and 5xx (`error`) stay visible at the default level.
+async fn http_request_span(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let rid = request
+        .headers()
+        .get("x-request-id")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string)
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+    let method = request.method().clone();
+    let path = request.uri().path().to_string();
+    let span = tracing::debug_span!(
+        target: "http.request",
+        "http_request",
+        request_id = %rid,
+        method = %method,
+        path = %path,
+    );
+    let start = std::time::Instant::now();
+    let mut response = next.run(request).instrument(span.clone()).await;
+    let latency_ms = start.elapsed().as_millis() as u64;
+    let status = response.status().as_u16();
+    span.in_scope(|| {
+        if status >= 500 {
+            tracing::error!(target: "http.request", status, latency_ms, "completed");
+        } else if status >= 400 {
+            tracing::warn!(target: "http.request", status, latency_ms, "completed");
+        } else {
+            tracing::debug!(target: "http.request", status, latency_ms, "completed");
+        }
+    });
+    if let Ok(value) = rid.parse() {
+        response.headers_mut().insert("x-request-id", value);
+    }
+    response
 }
 
 /// Content-Security-Policy for the dashboard.
@@ -1203,20 +1238,20 @@ async fn serve_public_file(uri: axum::http::Uri) -> impl axum::response::IntoRes
 /// Failures are logged but never propagate; the server keeps running.
 fn maybe_open_browser(url: &str) {
     if std::env::var_os("SSH_CONNECTION").is_some() || std::env::var_os("SSH_TTY").is_some() {
-        tracing::info!("--open ignored: running over SSH");
+        tracing::info!(target: "http.middleware", "--open ignored: running over SSH");
         return;
     }
 
     #[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "openbsd"))]
     {
         if std::env::var_os("DISPLAY").is_none() && std::env::var_os("WAYLAND_DISPLAY").is_none() {
-            tracing::info!("--open ignored: no DISPLAY or WAYLAND_DISPLAY set");
+            tracing::info!(target: "http.middleware", "--open ignored: no DISPLAY or WAYLAND_DISPLAY set");
             return;
         }
     }
 
     if let Err(e) = webbrowser::open(url) {
-        tracing::warn!("--open: failed to launch browser: {e}");
+        tracing::warn!(target: "http.middleware", "--open: failed to launch browser: {e}");
     }
 }
 
@@ -1593,6 +1628,29 @@ async fn cockpit_event_listener(state: Arc<AppState>) {
                     );
                 }
             }
+        }
+
+        // Approval push: when the worker emits an `ApprovalRequested`
+        // event, trigger a Web Push so the user sees a "needs approval"
+        // alert even when the dashboard is backgrounded. Unlike the
+        // status-change pushes in `push.rs`, approvals do NOT honour
+        // the TUI/web active-session suppression; the service worker
+        // still routes focused clients to an in-app toast via the
+        // existing `aoe-push` postMessage path. See #1038.
+        if let crate::cockpit::state::Event::ApprovalRequested { approval } = frame.event.as_ref() {
+            let state_for_push = state.clone();
+            let session_id = frame.session_id.clone();
+            let approval_title = approval.tool_call.name.clone();
+            let destructive = approval.destructive;
+            tokio::spawn(async move {
+                cockpit_ws::trigger_approval_push(
+                    &state_for_push,
+                    &session_id,
+                    &approval_title,
+                    destructive,
+                )
+                .await;
+            });
         }
 
         let status_intent = derive_cockpit_status(frame.event.as_ref());

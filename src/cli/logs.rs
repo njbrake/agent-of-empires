@@ -71,6 +71,7 @@ fn viewer_name(v: Viewer) -> &'static str {
     }
 }
 
+#[tracing::instrument(target = "cli.logs", skip_all)]
 pub async fn run(args: LogsArgs) -> Result<()> {
     let target_path = resolved_log_path()?;
 

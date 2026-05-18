@@ -105,26 +105,25 @@ fn test_create_session_with_group() -> Result<()> {
 
 #[test]
 #[serial]
-fn test_session_backup_created() -> Result<()> {
+fn test_save_leaves_no_debris() -> Result<()> {
     let _temp = setup_temp_home();
 
     let storage = Storage::new("default")?;
 
-    // First save
-    let instances = vec![Instance::new("First", "/path/first")];
-    storage.save(&instances)?;
+    for i in 0..5 {
+        let instances = vec![Instance::new(&format!("iter{i}"), "/tmp/test")];
+        storage.save(&instances)?;
+    }
 
-    // Second save triggers backup of the first
-    let instances2 = vec![Instance::new("Second", "/path/second")];
-    storage.save(&instances2)?;
-
-    // Verify backup exists by checking the profile directory
+    // Atomic write should leave only sessions.json in the profile dir, no
+    // .json.bak from the old code path and no leftover tempfiles.
     let profile_dir = agent_of_empires::session::get_profile_dir("default")?;
-    let backup_path = profile_dir.join("sessions.json.bak");
-    assert!(backup_path.exists());
-
-    let backup_content = fs::read_to_string(&backup_path)?;
-    assert!(backup_content.contains("First"));
+    let mut entries: Vec<String> = fs::read_dir(&profile_dir)?
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .collect();
+    entries.sort();
+    assert_eq!(entries, vec!["sessions.json"]);
 
     Ok(())
 }

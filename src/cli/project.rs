@@ -93,6 +93,7 @@ struct ProjectInfo {
     scope: String,
 }
 
+#[tracing::instrument(target = "cli.project", skip_all, fields(profile = %profile, profile_explicit))]
 pub async fn run(profile: &str, profile_explicit: bool, command: ProjectCommands) -> Result<()> {
     match command {
         ProjectCommands::List(args) => list(profile, args).await,

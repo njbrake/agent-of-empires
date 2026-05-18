@@ -31,6 +31,7 @@ struct FoundItem {
     path: PathBuf,
 }
 
+#[tracing::instrument(target = "cli.session", skip_all)]
 pub async fn run(args: UninstallArgs) -> Result<()> {
     println!("╔════════════════════════════════════════╗");
     println!("║     Agent of Empires Uninstaller       ║");
