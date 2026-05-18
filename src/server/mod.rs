@@ -927,6 +927,13 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
                 grace_secs = SHUTDOWN_GRACE.as_secs(),
                 "graceful shutdown exceeded grace window, forcing exit"
             );
+            // Force-exit skips the post-`axum::serve` cleanup block below
+            // (cockpit detach, tunnel SIGTERM of cloudflared, removal of
+            // serve.passphrase). The PID file is swept by `daemon_pid`'s
+            // stale-PID check on the next start, but a leftover cloudflared
+            // subprocess and residual passphrase file may survive a forced
+            // exit. The common path (handlers honor cancel) returns from
+            // `axum::serve` normally and runs the full cleanup.
             std::process::exit(0);
         });
     };

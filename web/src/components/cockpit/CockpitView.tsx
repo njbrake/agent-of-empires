@@ -120,6 +120,7 @@ function CockpitChrome({
   removeQueuedPrompt,
   editQueuedPrompt,
   clearQueue,
+  dismissRejectedPrompt,
 }: CockpitContext & {
   sessionId: string;
   cockpitWorkerState: "absent" | "resuming" | "running";
@@ -302,6 +303,7 @@ function CockpitChrome({
           <RejectedPromptsStrip
             rejected={state.rejectedPrompts}
             onRetry={sendPrompt}
+            onDismiss={dismissRejectedPrompt}
             disabled={
               state.workerRestarting ||
               state.workerStopped ||
@@ -1457,16 +1459,21 @@ interface QueuedPromptsStripProps {
 function RejectedPromptsStrip({
   rejected,
   onRetry,
+  onDismiss,
   disabled,
 }: {
   rejected: RejectedPrompt[];
   onRetry: (text: string) => void;
+  /** Drop a single pill without resending. Local-only; the daemon has
+   *  no record of pending rejections so this never goes over the wire. */
+  onDismiss: (id: string) => void;
   /** True while the worker is restarting/stopped/in startup error.
    *  Retry must be gated then: `sendPrompt` would clear
    *  `workerRestarting` / `agentUnresponsive` and the rejected pills
    *  before the respawn has produced a new `AcpSessionAssigned`,
    *  leaving the UI claiming the agent is ready while the daemon
-   *  hasn't reconnected yet. See #1196. */
+   *  hasn't reconnected yet. Dismiss stays available so the user can
+   *  clear stale pills during the respawn. See #1196. */
   disabled: boolean;
 }) {
   // Pills for prompts the daemon refused while another `session/prompt`
@@ -1510,6 +1517,14 @@ function RejectedPromptsStrip({
               >
                 <RotateCcw className="h-3 w-3" />
                 Retry
+              </button>
+              <button
+                type="button"
+                onClick={() => onDismiss(r.id)}
+                className="inline-flex shrink-0 items-center justify-center rounded-md border border-amber-700/40 bg-amber-900/20 p-1 text-amber-200 hover:bg-amber-900/60"
+                aria-label="Dismiss rejected prompt"
+              >
+                <X className="h-3 w-3" />
               </button>
             </li>
           ))}

@@ -81,6 +81,7 @@ export interface CockpitContext {
   removeQueuedPrompt: (id: string) => void;
   editQueuedPrompt: (id: string, text: string) => void;
   clearQueue: () => void;
+  dismissRejectedPrompt: (id: string) => void;
 }
 
 /**
@@ -153,6 +154,7 @@ export function CockpitRuntime({
         removeQueuedPrompt: cockpit.removeQueuedPrompt,
         editQueuedPrompt: cockpit.editQueuedPrompt,
         clearQueue: cockpit.clearQueue,
+        dismissRejectedPrompt: cockpit.dismissRejectedPrompt,
       })}
     </AssistantRuntimeProvider>
   );

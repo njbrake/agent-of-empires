@@ -851,6 +851,18 @@ impl<S: BroadcastSink> Supervisor<S> {
                             }
                         }
                     }
+                    // Cockpit's runner transport is UNIX-socket-only today
+                    // (see `worker_registry::socket_path_for`), so a
+                    // non-unix daemon cannot reach this branch in practice.
+                    // Warn if it ever does so the assumption is loud.
+                    #[cfg(not(unix))]
+                    {
+                        warn!(
+                            target: "cockpit.supervisor",
+                            session = %session_id,
+                            "agent_unresponsive escalation on non-unix: wedged runner kill not implemented; respawn may collide on the runner socket"
+                        );
+                    }
                 }
                 let respawn_config: SpawnConfig =
                     match restart_decision(&workers, &session_id).await {
