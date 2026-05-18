@@ -12,7 +12,7 @@ import App from "./App";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { ToastBusBridge, ToastProvider } from "./components/Toasts";
 import { installFetchErrorToasts } from "./lib/fetchInterceptor";
-import { clog } from "./lib/logger";
+import { clog, refreshClientLogPolicy } from "./lib/logger";
 import "./index.css";
 
 if ("serviceWorker" in navigator) {
@@ -36,6 +36,11 @@ window.addEventListener("offline", () => {
 });
 
 installFetchErrorToasts();
+
+// Pull the server-derived log policy now that `window.fetch` is patched
+// to carry the auth header. The logger installed earlier intentionally
+// deferred this — see the comment in `installClientLogger()`.
+void refreshClientLogPolicy();
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

@@ -357,8 +357,13 @@ export function installClientLogger(): void {
   if (installed) return;
   installed = true;
 
-  // Fetch policy now (and again on user-driven settings/log-level changes).
-  void refreshClientLogPolicy();
+  // NOTE: the policy fetch is intentionally NOT kicked off here. This
+  // function runs from `logging-init.ts` at the very top of the import
+  // graph, before `installFetchErrorToasts()` has patched `window.fetch`
+  // to attach the bearer token. Firing the policy fetch now would issue
+  // a request with no `Authorization` header and 401 in token-only mode.
+  // `main.tsx` calls `refreshClientLogPolicy()` explicitly after the
+  // fetch interceptor is installed.
 
   window.addEventListener("error", (e) => {
     reportError(e.error ?? e.message, { target: "web.client.error" });
