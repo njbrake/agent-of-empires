@@ -269,6 +269,13 @@ pub struct SpawnRequest {
     /// sessions; falls back to the user's default profile when set
     /// to `Some("")`.
     pub source_profile: Option<String>,
+    /// When true, switch the session to `bypassPermissions` mode
+    /// immediately after `session/new` succeeds, so a profile with
+    /// `yolo_mode_default = true` skips permission prompts in cockpit
+    /// the same way `--dangerously-skip-permissions` does in tmux mode.
+    /// Best-effort: adapters that don't advertise bypass mode log a
+    /// warning and stay in default. See #1142.
+    pub yolo_mode: bool,
 }
 
 impl<S: BroadcastSink> Supervisor<S> {
@@ -488,6 +495,7 @@ impl<S: BroadcastSink> Supervisor<S> {
             stored_acp_session_id,
             sandbox_info,
             source_profile,
+            yolo_mode,
         } = req;
         let _reservation = {
             let workers = self.workers.lock().await;
@@ -658,8 +666,9 @@ impl<S: BroadcastSink> Supervisor<S> {
             return Err(SupervisorError::SpawnCancelled(session_id));
         }
         let drain_task = self.start_drain_task(session_id.clone(), inbound);
+        let client_for_yolo = yolo_mode.then(|| Arc::clone(&client));
         workers.insert(
-            session_id,
+            session_id.clone(),
             WorkerHandle {
                 client,
                 drain_task,
@@ -673,6 +682,27 @@ impl<S: BroadcastSink> Supervisor<S> {
                 },
             },
         );
+        drop(workers);
+
+        // Honor the wizard's "Auto-approve" / profile `yolo_mode_default`
+        // by switching the ACP session to bypassPermissions mode. The
+        // tmux path achieves the same with `--dangerously-skip-permissions`
+        // (see `apply_yolo_mode()` in `src/session/instance.rs`); cockpit
+        // can't pass CLI flags through the ACP adapter, so we set the
+        // mode via `session/set_mode` instead. Best-effort: the call is
+        // fire-and-forget through cmd_tx, the connection loop warns on
+        // failure, and adapters that don't advertise bypass mode stay in
+        // default. See #1142.
+        if let Some(client) = client_for_yolo {
+            let client_guard = client.lock().await;
+            if let Err(e) = client_guard.set_mode("bypassPermissions").await {
+                warn!(
+                    target: "cockpit.supervisor",
+                    session = %session_id,
+                    "set_mode(bypassPermissions) after spawn failed: {e}"
+                );
+            }
+        }
         Ok(())
     }
 
@@ -1724,6 +1754,7 @@ mod tests {
                 stored_acp_session_id: None,
                 sandbox_info: None,
                 source_profile: None,
+                yolo_mode: false,
             })
             .await;
         assert!(matches!(result, Err(SupervisorError::UnknownAgent(_))));
@@ -1761,6 +1792,7 @@ mod tests {
                 stored_acp_session_id: None,
                 sandbox_info: None,
                 source_profile: None,
+                yolo_mode: false,
             })
             .await;
         assert!(matches!(result, Err(SupervisorError::AlreadyRunning(_))));
@@ -2461,6 +2493,7 @@ mod tests {
                 stored_acp_session_id: None,
                 sandbox_info: None,
                 source_profile: None,
+                yolo_mode: false,
             })
             .await;
         match result {
@@ -2530,6 +2563,7 @@ mod tests {
                 stored_acp_session_id: None,
                 sandbox_info: None,
                 source_profile: None,
+                yolo_mode: false,
             })
             .await;
         match result {
@@ -2752,6 +2786,7 @@ mod tests {
                 stored_acp_session_id: None,
                 sandbox_info: None,
                 source_profile: None,
+                yolo_mode: false,
             })
             .await;
         match result {
@@ -2802,6 +2837,7 @@ mod tests {
                 stored_acp_session_id: None,
                 sandbox_info: None,
                 source_profile: None,
+                yolo_mode: false,
             })
             .await;
         match result {

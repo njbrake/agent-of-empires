@@ -685,7 +685,11 @@ impl HomeView {
                     tracing::warn!("Failed to reload session state: {e}");
                 }
             } else {
-                let error = result.error;
+                let error = if result.errors.is_empty() {
+                    None
+                } else {
+                    Some(result.errors.join("; "))
+                };
                 self.mutate_instance(&result.session_id, |inst| {
                     inst.status = Status::Error;
                     inst.last_error = error;

@@ -695,6 +695,7 @@ pub async fn delete_session(
             delete_branch: body.delete_branch,
             delete_sandbox: body.delete_sandbox,
             force_delete: body.force_delete,
+            detach_hooks: true,
         })
     })
     .await;
@@ -726,7 +727,11 @@ pub async fn delete_session(
         }
         Ok(result) => {
             // Deletion had errors; set status to Error
-            let error_msg = result.error.unwrap_or_else(|| "Unknown error".to_string());
+            let error_msg = if result.errors.is_empty() {
+                "Unknown error".to_string()
+            } else {
+                result.errors.join("; ")
+            };
             {
                 let mut instances = state.instances.write().await;
                 if let Some(inst) = instances.iter_mut().find(|i| i.id == id) {
@@ -1017,6 +1022,7 @@ pub async fn create_session(
                     instance.project_path.clone(),
                     instance.cockpit_acp_session_id.clone(),
                     instance.source_profile.clone(),
+                    instance.yolo_mode,
                 ))
             } else {
                 None
@@ -1034,6 +1040,7 @@ pub async fn create_session(
                 project_path,
                 stored_acp_session_id,
                 source_profile,
+                yolo_mode,
             )) = cockpit_spawn_target
             {
                 let agent = state
@@ -1083,6 +1090,7 @@ pub async fn create_session(
                             stored_acp_session_id,
                             sandbox_info,
                             source_profile: source_profile_for_spawn,
+                            yolo_mode,
                         })
                         .await
                     {
