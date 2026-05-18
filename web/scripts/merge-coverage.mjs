@@ -75,7 +75,13 @@ async function main() {
       ["lcov"],
       ["html"],
       ["console-summary"],
+      // `coverage-summary.json` + `coverage-final.json` are read by
+      // `davelosert/vitest-coverage-report-action` in CI (see ci.yml
+      // `coverage` job) to post the per-PR comment. The action accepts
+      // any istanbul-shaped summary, not only vitest's, so the merged
+      // report (vitest + playwright) flows through it cleanly.
       ["json-summary", { outputFile: "coverage-summary.json" }],
+      ["json", { outputFile: "coverage-final.json" }],
     ],
   });
 

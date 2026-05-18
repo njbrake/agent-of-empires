@@ -265,68 +265,16 @@ jobs:
           event: push
           name: coverage-baseline
           path: web/coverage/baseline/
-      - name: Post coverage delta comment (PR only)
+      - name: Post coverage report comment (PR only)
         if: ${{ github.event_name == 'pull_request' && !cancelled() }}
-        uses: actions/github-script@v7
+        uses: davelosert/vitest-coverage-report-action@v2
         with:
-          script: |
-            const fs = require('fs');
-            const path = require('path');
-            const summaryPath = 'web/coverage/merged/coverage-summary.json';
-            const baselinePath = 'web/coverage/baseline/coverage-summary.json';
-            if (!fs.existsSync(summaryPath)) {
-              core.warning(`no coverage summary at ${summaryPath}`);
-              return;
-            }
-            const current = JSON.parse(fs.readFileSync(summaryPath, 'utf8'));
-            const summary = current.summary || current;
-            const fmt = (m) => m ? `${m.pct.toFixed(2)}%` : 'n/a';
-            let body = '## Coverage report\n\n';
-            body += '| Metric | Current |';
-            let baseline = null;
-            if (fs.existsSync(baselinePath)) {
-              baseline = JSON.parse(fs.readFileSync(baselinePath, 'utf8')).summary || JSON.parse(fs.readFileSync(baselinePath, 'utf8'));
-              body += ' Baseline (main) | Delta |\n';
-              body += '|---|---|---|---|\n';
-            } else {
-              body += '\n|---|---|\n';
-            }
-            for (const k of ['lines', 'statements', 'branches', 'functions']) {
-              const cur = summary[k];
-              if (!cur) continue;
-              let row = `| ${k} | ${fmt(cur)} |`;
-              if (baseline && baseline[k]) {
-                const base = baseline[k];
-                const delta = cur.pct - base.pct;
-                const sign = delta >= 0 ? '+' : '';
-                row += ` ${fmt(base)} | ${sign}${delta.toFixed(2)}pp |`;
-              }
-              body += row + '\n';
-            }
-            body += '\n_Report-only. Phase-2 threshold enforcement tracked in a follow-up issue._\n';
-            body += `\nFull report: see the \`coverage-merged\` artifact on this run.\n`;
-            const { data: comments } = await github.rest.issues.listComments({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-            });
-            const marker = '## Coverage report';
-            const existing = comments.find(c => c.user.type === 'Bot' && c.body.startsWith(marker));
-            if (existing) {
-              await github.rest.issues.updateComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                comment_id: existing.id,
-                body,
-              });
-            } else {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: context.issue.number,
-                body,
-              });
-            }
+          working-directory: web
+          json-summary-path: coverage/merged/coverage-summary.json
+          json-final-path: coverage/merged/coverage-final.json
+          json-summary-compare-path: coverage/baseline/coverage-summary.json
+          comment-on: pr
+          name: Web coverage (Vitest + Playwright merged)
       - name: Upload to codecov (optional, only when CODECOV_TOKEN is configured)
         if: ${{ !cancelled() && env.CODECOV_TOKEN != '' }}
         env:
