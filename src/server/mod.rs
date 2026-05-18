@@ -16,6 +16,7 @@ pub mod rate_limit;
 pub mod tunnel;
 pub mod ws;
 
+use std::future::IntoFuture;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -25,7 +26,8 @@ use axum::Router;
 use rust_embed::Embed;
 use serde::Serialize;
 use tokio::sync::{broadcast, RwLock};
-use tracing::info;
+use tokio_util::sync::CancellationToken;
+use tracing::{info, warn};
 
 use self::push::{PushState, StatusChange, STATUS_CHANNEL_CAPACITY};
 
@@ -274,6 +276,12 @@ pub struct AppState {
     /// checks this to suppress notifications when someone is actively using
     /// the web dashboard (on any device).
     pub last_web_activity: std::sync::atomic::AtomicI64,
+    /// Resolved when the daemon receives SIGINT/SIGTERM/SIGHUP. Long-lived
+    /// handlers (cockpit WS, terminal WS) clone this and `select!` on
+    /// `cancelled()` so they exit promptly instead of holding axum's
+    /// graceful drain open until the browser tab decides to disconnect.
+    /// See #1198.
+    pub shutdown: CancellationToken,
 }
 
 impl AppState {
@@ -557,6 +565,7 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
         push_enabled,
         web_config: config.web.clone(),
         last_web_activity: std::sync::atomic::AtomicI64::new(0),
+        shutdown: CancellationToken::new(),
     });
 
     let app = build_router(state.clone());
@@ -869,7 +878,14 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
     // Graceful shutdown: SIGINT (Ctrl-C), SIGTERM (`aoe serve --stop`),
     // and SIGHUP (parent session died). Without these, the default handler
     // kills the process immediately, skipping PID/URL file cleanup.
-    let shutdown_signal = async {
+    //
+    // The future resolves the shared `state.shutdown` cancellation token
+    // before returning, so long-lived WS handlers (cockpit + terminal)
+    // wake up from their `select!` and close cleanly instead of holding
+    // axum's graceful drain open until the browser tab decides to
+    // disconnect. See #1198.
+    let shutdown_state = state.clone();
+    let shutdown_signal = async move {
         #[cfg(unix)]
         {
             use tokio::signal::unix::{signal, SignalKind};
@@ -892,14 +908,34 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
             let _ = tokio::signal::ctrl_c().await;
             info!("Shutting down...");
         }
+        shutdown_state.shutdown.cancel();
     };
 
-    axum::serve(
+    // Hard cap on axum's graceful drain. Once `shutdown_signal` fires,
+    // axum stops accepting new connections and waits for existing tasks
+    // to return. Long-lived WS handlers now honor `state.shutdown`, so
+    // the common case completes well under the cap; this timeout is the
+    // safety net for a misbehaving handler that ignores cancellation.
+    // Clients see a TCP RST instead of a Close frame in that case, which
+    // is fine for a process exit.
+    const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
+    let serve_fut = axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
     .with_graceful_shutdown(shutdown_signal)
-    .await?;
+    .into_future();
+    match tokio::time::timeout(SHUTDOWN_GRACE, serve_fut).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => return Err(e.into()),
+        Err(_) => {
+            warn!(
+                target: "shutdown",
+                grace_secs = SHUTDOWN_GRACE.as_secs(),
+                "graceful shutdown exceeded grace window, forcing exit"
+            );
+        }
+    }
 
     // Detach (but do NOT kill) every cockpit ACP worker. The per-session
     // `aoe __cockpit-runner` shims outlive this daemon: a fresh

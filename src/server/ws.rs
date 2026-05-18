@@ -25,8 +25,15 @@ use axum::{
 /// permanently broken pane. Picked from the application-reserved
 /// 4000-4999 range; not used elsewhere. See #1107.
 const CLOSE_CODE_PTY_DEAD: u16 = 4001;
+
+/// WebSocket close code 1001 ("going away"). Sent when the daemon is
+/// shutting down so the client can distinguish a server-side exit from
+/// a transient transport error and skip its reconnect backoff for one
+/// cycle. See #1198.
+const CLOSE_CODE_GOING_AWAY: u16 = 1001;
 use portable_pty::{CommandBuilder, NativePtySystem, PtySize, PtySystem};
 use tokio::sync::RwLock;
+use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, trace, warn};
 
 /// Per-message byte tracing is hidden behind `AOE_TERMINAL_TRACE=1` so the
@@ -55,6 +62,7 @@ pub async fn paired_terminal_ws(
     let read_only = state.read_only;
     let primaries = Arc::clone(&state.session_primaries);
     let pause_counts = Arc::clone(&state.session_pause_counts);
+    let shutdown = state.shutdown.clone();
 
     let Some(inst) = inst else {
         warn!(target: "terminal.ws", session = %id, kind = "paired", "session not found, returning 404");
@@ -91,7 +99,14 @@ pub async fn paired_terminal_ws(
     // itself is not echoed, only the marker.
     ws.protocols(["aoe-auth"])
         .on_upgrade(move |socket| {
-            handle_terminal_ws(socket, tmux_name, read_only, primaries, pause_counts)
+            handle_terminal_ws(
+                socket,
+                tmux_name,
+                read_only,
+                primaries,
+                pause_counts,
+                shutdown,
+            )
         })
         .into_response()
 }
@@ -174,6 +189,7 @@ pub async fn container_terminal_ws(
     let read_only = state.read_only;
     let primaries = Arc::clone(&state.session_primaries);
     let pause_counts = Arc::clone(&state.session_pause_counts);
+    let shutdown = state.shutdown.clone();
 
     let Some(inst) = inst else {
         warn!(target: "terminal.ws", session = %id, kind = "container", "session not found, returning 404");
@@ -205,7 +221,14 @@ pub async fn container_terminal_ws(
     // itself is not echoed, only the marker.
     ws.protocols(["aoe-auth"])
         .on_upgrade(move |socket| {
-            handle_terminal_ws(socket, tmux_name, read_only, primaries, pause_counts)
+            handle_terminal_ws(
+                socket,
+                tmux_name,
+                read_only,
+                primaries,
+                pause_counts,
+                shutdown,
+            )
         })
         .into_response()
 }
@@ -278,6 +301,7 @@ pub async fn terminal_ws(
     let read_only = state.read_only;
     let primaries = Arc::clone(&state.session_primaries);
     let pause_counts = Arc::clone(&state.session_pause_counts);
+    let shutdown = state.shutdown.clone();
 
     match session_info {
         // Accept the "aoe-auth" subprotocol so the browser's handshake
@@ -288,7 +312,14 @@ pub async fn terminal_ws(
         Some(tmux_name) => ws
             .protocols(["aoe-auth"])
             .on_upgrade(move |socket| {
-                handle_terminal_ws(socket, tmux_name, read_only, primaries, pause_counts)
+                handle_terminal_ws(
+                    socket,
+                    tmux_name,
+                    read_only,
+                    primaries,
+                    pause_counts,
+                    shutdown,
+                )
             })
             .into_response(),
         None => {
@@ -341,6 +372,7 @@ async fn handle_terminal_ws(
     read_only: bool,
     primaries: SessionPrimaries,
     pause_counts: SessionPauseCounts,
+    shutdown: CancellationToken,
 ) {
     use futures_util::{SinkExt, StreamExt};
 
@@ -538,6 +570,7 @@ async fn handle_terminal_ws(
     // Task 2: PTY output + control messages -> WebSocket sender
     let send_client = client_id.clone();
     let send_tmux = tmux_name.clone();
+    let send_shutdown = shutdown.clone();
     let send_handle = tokio::spawn(async move {
         let mut ping_interval = tokio::time::interval(PING_INTERVAL);
         ping_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -548,6 +581,16 @@ async fn handle_terminal_ws(
         let exit_reason: &'static str;
         loop {
             tokio::select! {
+                _ = send_shutdown.cancelled() => {
+                    debug!(
+                        target: "terminal.ws",
+                        client = %send_client,
+                        tmux = %send_tmux,
+                        "shutdown signaled, send task exiting"
+                    );
+                    exit_reason = "shutdown";
+                    break;
+                }
                 data = output_rx.recv() => {
                     match data {
                         Some(data) => {
@@ -647,13 +690,16 @@ async fn handle_terminal_ws(
         // at WS upgrade catches the common cases; an exit here that
         // close on the heels of the upgrade is almost always a
         // permanently broken pane that retrying won't fix. See #1107.
-        let close_frame = if exit_reason == "pty_output_channel_closed" {
-            Some(CloseFrame {
+        let close_frame = match exit_reason {
+            "pty_output_channel_closed" => Some(CloseFrame {
                 code: CLOSE_CODE_PTY_DEAD,
                 reason: "pty_dead".into(),
-            })
-        } else {
-            None
+            }),
+            "shutdown" => Some(CloseFrame {
+                code: CLOSE_CODE_GOING_AWAY,
+                reason: "server shutdown".into(),
+            }),
+            _ => None,
         };
         let _ = ws_sender.send(Message::Close(close_frame)).await;
     });
@@ -673,6 +719,7 @@ async fn handle_terminal_ws(
 
     let recv_client = client_id.clone();
     let recv_tmux = tmux_name.clone();
+    let recv_shutdown = shutdown.clone();
     let recv_handle = tokio::spawn(async move {
         // Track the last resize the browser requested so we can apply it
         // when this client becomes primary.
@@ -686,7 +733,25 @@ async fn handle_terminal_ws(
             // child + free its PTY pair. Server-originated Pings in the
             // send task elicit Pongs that arrive here and reset the
             // timer, so live-but-idle sessions stay open indefinitely.
-            let msg = match tokio::time::timeout(IDLE_TIMEOUT, ws_receiver.next()).await {
+            //
+            // The outer `select!` also races against the daemon's
+            // shutdown token so a SIGINT/SIGTERM tears this task down
+            // promptly instead of waiting for the next client message
+            // or the idle timeout. See #1198.
+            let timeout_result = tokio::select! {
+                _ = recv_shutdown.cancelled() => {
+                    debug!(
+                        target: "terminal.ws",
+                        client = %recv_client,
+                        tmux = %recv_tmux,
+                        "shutdown signaled, recv task exiting"
+                    );
+                    exit_reason = "shutdown";
+                    break;
+                }
+                next = tokio::time::timeout(IDLE_TIMEOUT, ws_receiver.next()) => next,
+            };
+            let msg = match timeout_result {
                 Err(_) => {
                     warn!(
                         target: "terminal.ws",

@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::extract::{
-    ws::{Message, WebSocket, WebSocketUpgrade},
+    ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade},
     Path, Query, State,
 };
 use axum::response::IntoResponse;
@@ -27,6 +27,12 @@ use tokio::select;
 use tokio::sync::broadcast::error::RecvError;
 use tokio::time::Instant;
 use tracing::{debug, warn};
+
+/// WebSocket close code 1001 ("going away"). Sent when the daemon is
+/// shutting down so the client can distinguish a server-side exit from
+/// a transient transport error and skip its reconnect backoff for one
+/// cycle. See #1198.
+const CLOSE_CODE_GOING_AWAY: u16 = 1001;
 
 use super::{AppState, CockpitBroadcastFrame};
 
@@ -86,6 +92,12 @@ pub async fn cockpit_ws(
 }
 
 async fn handle(mut socket: WebSocket, session_id: String, state: Arc<AppState>, since: u64) {
+    // Clone the shutdown token so this handler exits promptly when the
+    // daemon receives SIGINT/SIGTERM/SIGHUP, instead of holding axum's
+    // graceful drain open until the browser tab decides to disconnect.
+    // See #1198.
+    let shutdown = state.shutdown.clone();
+
     // Subscribe BEFORE the replay snapshot so events published in the
     // window between snapshot and live-loop entry land in `rx`. Such
     // events also appear in the replay snapshot if the publish
@@ -120,8 +132,14 @@ async fn handle(mut socket: WebSocket, session_id: String, state: Arc<AppState>,
     ping_interval.tick().await;
     let mut last_pong_at = Instant::now();
 
+    let mut shutting_down = false;
     loop {
         select! {
+            _ = shutdown.cancelled() => {
+                debug!(target: "cockpit.ws", session = %session_id, "shutdown signaled, closing");
+                shutting_down = true;
+                break;
+            }
             client_msg = socket.recv() => {
                 match client_msg {
                     Some(Ok(Message::Close(_))) | None => break,
@@ -197,7 +215,15 @@ async fn handle(mut socket: WebSocket, session_id: String, state: Arc<AppState>,
     }
 
     debug!(target: "cockpit.ws", session = %session_id, "cockpit ws disconnected");
-    let _ = socket.send(Message::Close(None)).await;
+    let close_frame = if shutting_down {
+        Some(CloseFrame {
+            code: CLOSE_CODE_GOING_AWAY,
+            reason: "server shutdown".into(),
+        })
+    } else {
+        None
+    };
+    let _ = socket.send(Message::Close(close_frame)).await;
 }
 
 /// Read every stored event for `session_id` with `seq > since` out of
