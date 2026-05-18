@@ -229,11 +229,30 @@ function isPlainLeftClick(event: React.MouseEvent<HTMLAnchorElement>): boolean {
   );
 }
 
-// Wraps a SessionRow with @dnd-kit sortable plumbing. The row's whole
-// click target keeps working because the drag listeners live on a
-// separate handle (`<button aria-label="Drag…">`). On mobile the handle
-// is the only way to start a drag, so long-press on the row still opens
-// the context menu without contention. See #1169.
+// Wraps a SessionRow with @dnd-kit sortable plumbing. The row itself
+// is the drag handle: a short tap/click navigates as before, but a
+// press-and-hold (sensor delay) lifts the row so the user can reorder.
+// See #1169.
+// Module-scoped "drag just ended" flag. The click event Chromium
+// dispatches after a drag-release can bypass React's event delegation
+// (we've seen it land on the inner anchor without firing any wrapping
+// capture handler), so we suppress it from a document-level listener
+// installed once per sidebar mount. See `useSuppressClickAfterDrag`.
+let dragSuppressUntil = 0;
+function useSuppressClickAfterDrag() {
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (Date.now() < dragSuppressUntil) {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+      }
+    };
+    document.addEventListener("click", handler, true);
+    return () => document.removeEventListener("click", handler, true);
+  }, []);
+}
+
 function SortableSessionRow(props: {
   workspace: Workspace;
   isActive: boolean;
@@ -243,54 +262,34 @@ function SortableSessionRow(props: {
 }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
     useSortable({ id: props.workspace.id });
+  useEffect(() => {
+    if (isDragging) {
+      // Keep extending the window while dragging so a slow drag still
+      // suppresses the trailing click on release.
+      dragSuppressUntil = Date.now() + 1000;
+    } else if (dragSuppressUntil > Date.now()) {
+      // Drag just ended; the click is on its way. Hold the suppression
+      // for ~250ms after release (enough to swallow the synthetic click,
+      // short enough that a real tap right after still navigates).
+      dragSuppressUntil = Date.now() + 250;
+    }
+  }, [isDragging]);
   const style = {
     transform: CSS.Transform.toString(transform),
     transition,
     opacity: isDragging ? 0.4 : 1,
+    touchAction: "manipulation",
   } as const;
   return (
     <div
       ref={setNodeRef}
       style={style}
-      className="flex items-stretch"
+      {...attributes}
+      {...listeners}
+      aria-roledescription="Press and hold to reorder"
     >
-      <button
-        type="button"
-        {...attributes}
-        {...listeners}
-        aria-label={`Drag to reorder ${props.workspace.displayName}`}
-        className="flex shrink-0 items-center px-1 cursor-grab active:cursor-grabbing text-text-dim/40 hover:text-text-dim/80 touch-none"
-        // Suppress click-through; the button only exists for drag.
-        onClick={(e) => e.preventDefault()}
-      >
-        <GripVerticalIcon />
-      </button>
-      <div className="flex-1 min-w-0">
-        <SessionRow {...props} indented />
-      </div>
+      <SessionRow {...props} indented />
     </div>
-  );
-}
-
-// Tiny inline grip glyph — lucide's GripVertical is 24x24 by default
-// and visually heavy in a dense sidebar; a 6-dot 2x3 grid at 12px reads
-// as a handle without competing with the status glyph.
-function GripVerticalIcon() {
-  return (
-    <svg
-      width="10"
-      height="14"
-      viewBox="0 0 10 14"
-      fill="currentColor"
-      aria-hidden="true"
-    >
-      <circle cx="3" cy="3" r="1" />
-      <circle cx="3" cy="7" r="1" />
-      <circle cx="3" cy="11" r="1" />
-      <circle cx="7" cy="3" r="1" />
-      <circle cx="7" cy="7" r="1" />
-      <circle cx="7" cy="11" r="1" />
-    </svg>
   );
 }
 
@@ -495,6 +494,11 @@ const SessionRow = memo(function SessionRow({
     <>
       <Link
         to={sessionPath}
+        // Anchors are HTML5-draggable by default; the browser would
+        // start its own drag-the-link gesture in parallel with dnd-kit
+        // and finish with a synthetic click that bypassed React's event
+        // delegation, navigating despite our suppression. See #1169.
+        draggable={false}
         onClick={(e) => {
           if (longPressFired.current) {
             e.preventDefault();
@@ -757,6 +761,7 @@ export function WorkspaceSidebar({
   onDeleteSession,
   readOnly,
 }: Props) {
+  useSuppressClickAfterDrag();
   const offline = useServerDown();
   const [width, setWidth] = useState(loadSavedWidth);
   const [filterOpen, setFilterOpen] = useState(false);
@@ -764,15 +769,14 @@ export function WorkspaceSidebar({
   const filterRef = useRef<HTMLInputElement>(null);
   const dragging = useRef(false);
 
-  // Sensors are scoped to the explicit grip handle on each row (see
-  // SortableSessionRow), so the activation constraints are conservative
-  // mostly to suppress spurious drags from a slow click. MouseSensor's
-  // `distance` prevents click-then-no-movement from registering; the
-  // TouchSensor delay leaves room for the SessionRow long-press context
-  // menu (which fires at ~500ms) before the user feels stuck.
+  // Whole-row press-and-hold drag. The delay lets a quick click or tap
+  // pass through to the row's navigation link unchanged; only a held
+  // pointer (250ms with <8px movement) flips the row into drag mode. We
+  // unify mouse and touch delays so the gesture feels the same on
+  // desktop and mobile.
   const sensors = useSensors(
-    useSensor(MouseSensor, { activationConstraint: { distance: 5 } }),
-    useSensor(TouchSensor, { activationConstraint: { delay: 200, tolerance: 5 } }),
+    useSensor(MouseSensor, { activationConstraint: { delay: 250, tolerance: 8 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 250, tolerance: 8 } }),
   );
 
   const handleDragEnd = useCallback(

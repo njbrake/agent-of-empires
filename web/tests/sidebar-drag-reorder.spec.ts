@@ -144,7 +144,7 @@ test.describe("Sidebar drag-to-reorder (#1169)", () => {
       .toEqual(["new-ws", "old-ws"]);
   });
 
-  test("dragging via the grip handle reorders the row and PUTs the new order", async ({
+  test("press-and-hold drag reorders the row and PUTs the new order", async ({
     page,
   }) => {
     const sessions: MockSession[] = [
@@ -177,7 +177,6 @@ test.describe("Sidebar drag-to-reorder (#1169)", () => {
       putBody = JSON.parse(r.request().postData() || "{}");
       return r.fulfill({ json: { order: putBody?.order ?? [] } });
     });
-
     await page.setViewportSize({ width: 1280, height: 720 });
     await page.goto("/");
 
@@ -186,23 +185,30 @@ test.describe("Sidebar drag-to-reorder (#1169)", () => {
       .poll(() => readWorkspaceOrder(page), { timeout: 8000 })
       .toEqual(["alpha", "beta", "gamma"]);
 
-    // Drag gamma's grip up to alpha's grip. dnd-kit uses pointer events;
-    // Playwright's mouse API drives them. We use explicit mouse.down +
-    // multiple move steps (steps>1 satisfies the activation `distance: 5`
-    // constraint reliably).
-    const grips = page.getByRole("button", { name: /^Drag to reorder/ });
-    await expect(grips).toHaveCount(3);
-    const sourceBox = await grips.nth(2).boundingBox();
-    const targetBox = await grips.nth(0).boundingBox();
+    // Press-and-hold on gamma's row, wait past the 250ms sensor delay,
+    // then drag up onto alpha's row. The press has to target the
+    // sortable wrapper (not the inner Link or its children), because
+    // dnd-kit's MouseSensor only listens on `setNodeRef`'d nodes; clicks
+    // that land on the Link bypass the sensor and just navigate.
+    const wrappers = page.locator(
+      "[aria-roledescription='Press and hold to reorder']",
+    );
+    await expect(wrappers).toHaveCount(3);
+    const sourceBox = await wrappers.nth(2).boundingBox();
+    const targetBox = await wrappers.nth(0).boundingBox();
     expect(sourceBox).not.toBeNull();
     expect(targetBox).not.toBeNull();
-    if (!sourceBox || !targetBox) throw new Error("grip handles missing");
+    if (!sourceBox || !targetBox) throw new Error("rows missing");
 
+    // Press near the right edge to avoid landing on the inner Link's
+    // status glyph. The drag listeners are on the wrapper div, so the
+    // exact pixel doesn't matter as long as it's inside.
     await page.mouse.move(
-      sourceBox.x + sourceBox.width / 2,
+      sourceBox.x + sourceBox.width - 4,
       sourceBox.y + sourceBox.height / 2,
     );
     await page.mouse.down();
+    await page.waitForTimeout(350);
     await page.mouse.move(
       targetBox.x + targetBox.width / 2,
       targetBox.y + targetBox.height / 2,
