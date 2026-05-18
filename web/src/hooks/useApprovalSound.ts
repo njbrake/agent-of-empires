@@ -12,9 +12,10 @@
 //     not interacted with the dashboard yet. We swallow the rejection;
 //     the OS push notification and in-app toast still surface the
 //     approval, so the missing sound is graceful, not fatal.
-//   - Auth: `<audio src>` cannot carry an Authorization header, so the
-//     blob is fetched through the authenticated fetch path and handed
-//     to Audio via `URL.createObjectURL`.
+//   - Auth: the fetch interceptor injects `Authorization: Bearer` on
+//     every fetch (web/src/lib/fetchInterceptor.ts), and `<audio src>`
+//     does not run through that interceptor, so the bytes are fetched
+//     and handed to Audio via `URL.createObjectURL`.
 
 import { useEffect, useRef } from "react";
 import { fetchSettings, fetchSounds, fetchSoundBlob } from "../lib/api";
@@ -36,6 +37,30 @@ let cachedSettingsAt = 0;
 const SETTINGS_TTL_MS = 30_000;
 
 let cachedSound: CachedSound | null = null;
+
+/** Grace window after mount during which 0->>=1 transitions are
+ *  swallowed. The cockpit WS replays every stored event for the
+ *  session on connect, so a fresh page load on a session with pending
+ *  approvals would otherwise ring the chime even though nothing new
+ *  happened. The OS push only fires on the live broadcast edge in the
+ *  supervisor (no replay path), so the two channels stay consistent.
+ *
+ *  Reconnects do not unmount `CockpitView`, so this gate only swallows
+ *  the initial-load case; new approvals that arrive while the socket
+ *  is offline still chime after the reducer applies them on reconnect. */
+const REPLAY_QUIET_MS = 1500;
+
+/** Drop the module-level caches. Called by the logout flow so the next
+ *  authenticated user sees their own settings and doesn't replay the
+ *  previous user's blob URL. */
+export function clearApprovalSoundCache(): void {
+  cachedSettings = null;
+  cachedSettingsAt = 0;
+  if (cachedSound) {
+    URL.revokeObjectURL(cachedSound.url);
+    cachedSound = null;
+  }
+}
 
 async function loadSettings(): Promise<SoundSettings | null> {
   const now = Date.now();
@@ -90,7 +115,10 @@ async function playApprovalSound(): Promise<void> {
   if (!url) return;
   const audio = new Audio(url);
   const volume = typeof sound.volume === "number" ? sound.volume : 1.0;
-  audio.volume = Math.max(0, Math.min(1, volume / 1.5));
+  // The host-side scale is 0.1-1.5 with 1.0 = normal; HTMLAudioElement
+  // tops out at 1.0, so clamp directly rather than rescaling 1.5 down
+  // to a 0.667 audible "normal".
+  audio.volume = Math.max(0, Math.min(1, volume));
   try {
     await audio.play();
   } catch {
@@ -105,11 +133,12 @@ async function playApprovalSound(): Promise<void> {
  *  has no return value. */
 export function useApprovalSound(pendingCount: number): void {
   const lastCount = useRef(pendingCount);
+  const mountedAt = useRef(Date.now());
   useEffect(() => {
     const prev = lastCount.current;
     lastCount.current = pendingCount;
-    if (prev === 0 && pendingCount > 0) {
-      void playApprovalSound();
-    }
+    if (prev !== 0 || pendingCount === 0) return;
+    if (Date.now() - mountedAt.current < REPLAY_QUIET_MS) return;
+    void playApprovalSound();
   }, [pendingCount]);
 }

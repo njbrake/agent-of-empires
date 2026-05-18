@@ -697,6 +697,17 @@ export async function logout(): Promise<void> {
     } catch {
       // ignore
     }
+    // Drop the in-memory approval-sound caches so a future user on the
+    // same tab does not see the previous user's settings snapshot or
+    // hear their cached blob.
+    try {
+      const { clearApprovalSoundCache } = await import(
+        "../hooks/useApprovalSound"
+      );
+      clearApprovalSoundCache();
+    } catch {
+      // ignore
+    }
   }
 }
 
