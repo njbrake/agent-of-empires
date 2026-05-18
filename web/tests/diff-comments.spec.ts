@@ -1,4 +1,5 @@
-import { test, expect, Page } from "@playwright/test";
+import { test, expect } from "./helpers/mockedTest";
+import { Page } from "@playwright/test";
 import { clickSidebarSession } from "./helpers/sidebar";
 
 // In-diff comments end-to-end (#928).

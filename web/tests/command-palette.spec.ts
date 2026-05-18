@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./helpers/mockedTest";
 
 test.describe("Command palette", () => {
   test("opens with Ctrl+K", async ({ page }) => {

@@ -1,4 +1,5 @@
-import { test, expect, Page } from "@playwright/test";
+import { test, expect } from "./helpers/mockedTest";
+import { Page } from "@playwright/test";
 
 // Wizard Advanced → Base branch (#948). Asserts:
 // - "Advanced" section is collapsed by default.

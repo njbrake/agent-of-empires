@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./helpers/mockedTest";
 
 test.describe("Mobile terminal toolbar", () => {
   test("toolbar hidden on desktop viewport (no session)", async ({ page }) => {

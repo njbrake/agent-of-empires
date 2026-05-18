@@ -22,9 +22,9 @@
     },
     {
       "id": "auth.passphrase-login",
-      "kind": "live-playwright",
+      "kind": "deferred",
+      "issue": "https://github.com/njbrake/agent-of-empires/issues/1230",
       "risk": "high",
-      "specs": ["tests/live/auth-login-passphrase.spec.ts"],
       "components": ["web/src/components/LoginPage.tsx"]
     },
     {

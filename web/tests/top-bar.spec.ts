@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./helpers/mockedTest";
 
 test.describe("Top bar", () => {
   test("renders sidebar toggle, brand, palette pill, and overflow", async ({ page }) => {

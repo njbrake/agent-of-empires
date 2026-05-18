@@ -1,4 +1,5 @@
-import { test, expect, Page } from "@playwright/test";
+import { test, expect } from "./helpers/mockedTest";
+import { Page } from "@playwright/test";
 
 // Wizard "Attach to existing branch" toggle (#969). Mirrors the TUI's
 // `Attach to existing branch:` checkbox: when on, the request body

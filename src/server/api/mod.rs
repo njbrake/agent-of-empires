@@ -165,6 +165,11 @@ mod tests {
             ),
             ("api/git.rs", include_str!("git.rs"), &["clone_repo"]),
             (
+                "api/log_level.rs",
+                include_str!("log_level.rs"),
+                &["patch_log_level"],
+            ),
+            (
                 "api/projects.rs",
                 include_str!("projects.rs"),
                 &["create_project", "delete_project"],

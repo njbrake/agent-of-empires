@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./helpers/mockedTest";
 import { clickSidebarSession } from "./helpers/sidebar";
 import { mockTerminalApis } from "./helpers/terminal-mocks";
 import type { Page } from "@playwright/test";

@@ -1,4 +1,5 @@
-import { test, expect, Page } from "@playwright/test";
+import { test, expect } from "./helpers/mockedTest";
+import { Page } from "@playwright/test";
 
 // Two sessions sharing the same `(project_path, branch=null)` collapsed
 // behind `workspace.sessions[0]` and only one rendered in the sidebar.
