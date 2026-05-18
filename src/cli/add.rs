@@ -115,6 +115,7 @@ pub struct AddArgs {
     model: Option<String>,
 }
 
+#[tracing::instrument(target = "cli.add", skip_all, fields(profile = %profile))]
 pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
     let mut path = if args.path.as_os_str() == "." {
         std::env::current_dir()?
@@ -564,7 +565,7 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
                     repo_config::resolve_global_profile_hooks(profile)
                 }
                 Err(e) => {
-                    tracing::warn!("Failed to check repo hooks: {}", e);
+                    tracing::warn!(target: "cli.add", "Failed to check repo hooks: {}", e);
                     repo_config::resolve_global_profile_hooks(profile)
                 }
             };

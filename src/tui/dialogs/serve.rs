@@ -109,12 +109,12 @@ fn recall_passphrase_in_memory() -> Option<String> {
 
 fn recall_passphrase() -> Option<String> {
     if let Some(pp) = recall_passphrase_in_memory() {
-        tracing::debug!("passphrase recalled from in-memory cache");
+        tracing::debug!(target: "tui.dialog", "passphrase recalled from in-memory cache");
         return Some(pp);
     }
     // Durable saved passphrase (survives stop/start cycles).
     if let Some(pp) = load_saved_passphrase() {
-        tracing::debug!("passphrase recalled from serve.saved_passphrase");
+        tracing::debug!(target: "tui.dialog", "passphrase recalled from serve.saved_passphrase");
         return Some(pp);
     }
     // Ephemeral file written by the server on startup. Lets the TUI
@@ -125,7 +125,7 @@ fn recall_passphrase() -> Option<String> {
     if trimmed.is_empty() {
         None
     } else {
-        tracing::debug!("passphrase recalled from serve.passphrase on disk");
+        tracing::debug!(target: "tui.dialog", "passphrase recalled from serve.passphrase on disk");
         Some(trimmed.to_string())
     }
 }

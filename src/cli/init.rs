@@ -14,6 +14,7 @@ pub struct InitArgs {
     path: PathBuf,
 }
 
+#[tracing::instrument(target = "cli.init", skip_all)]
 pub async fn run(args: InitArgs) -> Result<()> {
     let path = if args.path.as_os_str() == "." {
         std::env::current_dir()?

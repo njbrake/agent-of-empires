@@ -1687,12 +1687,12 @@ fn persist_last_browse_dir(selected: &str) {
         Ok(Some(c)) => c,
         Ok(None) => Default::default(),
         Err(e) => {
-            tracing::warn!("Failed to load config for last_browse_dir: {}", e);
+            tracing::warn!(target: "tui.dialog", "Failed to load config for last_browse_dir: {}", e);
             return;
         }
     };
     cfg.app_state.last_browse_dir = Some(dir);
     if let Err(e) = save_config(&cfg) {
-        tracing::warn!("Failed to save last_browse_dir: {}", e);
+        tracing::warn!(target: "tui.dialog", "Failed to save last_browse_dir: {}", e);
     }
 }

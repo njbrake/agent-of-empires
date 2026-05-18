@@ -22,10 +22,12 @@ import { useEffect, useState } from "react";
 import remarkGfm from "remark-gfm";
 
 import {
+  ensureThemeLoaded,
   getHighlighter,
   langKeyForExt,
   loadLanguage,
 } from "../../lib/highlighter";
+import { useShikiTheme } from "../../hooks/useShikiTheme";
 
 interface Props {
   text: string;
@@ -115,15 +117,16 @@ function TableWithScroll({
 
 /**
  * Shiki-backed code block. Loads the language module on demand the
- * first time we see it, then re-renders with the `github-dark` theme.
- * Falls back to a plain <pre> while the language is loading or for
- * unknown languages.
+ * first time we see it, then renders against the current resolved
+ * theme (from useShikiTheme). Falls back to a plain <pre> while the
+ * language is loading or for unknown languages.
  */
 function ShikiSyntaxHighlighter({
   language,
   code,
 }: SyntaxHighlighterProps) {
   const [html, setHtml] = useState<string | null>(null);
+  const shiki = useShikiTheme();
   useEffect(() => {
     let cancelled = false;
     if (!language) return;
@@ -131,10 +134,14 @@ function ShikiSyntaxHighlighter({
       try {
         const langKey = langKeyForExt(language) ?? language;
         await loadLanguage(langKey);
+        const resolvedTheme = await ensureThemeLoaded(
+          shiki.theme,
+          shiki.appearance,
+        );
         const hl = await getHighlighter();
         if (cancelled) return;
         setHtml(
-          hl.codeToHtml(code, { lang: langKey, theme: "github-dark" }),
+          hl.codeToHtml(code, { lang: langKey, theme: resolvedTheme }),
         );
       } catch {
         // Unknown lang → fall through to plain rendering.
@@ -143,7 +150,7 @@ function ShikiSyntaxHighlighter({
     return () => {
       cancelled = true;
     };
-  }, [language, code]);
+  }, [language, code, shiki.theme, shiki.appearance]);
 
   if (html) {
     return (

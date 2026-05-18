@@ -88,6 +88,48 @@
   --color-status-starting: #f59e0b;
   --color-status-stopped: #52525b;
 
+  /* Extended semantic tokens populated by the resolved theme
+     projection (see src/tui/styles/resolved.rs). These build-time
+     defaults paint a sensible Empire-aligned dashboard on cold load
+     before useResolvedTheme has fetched and applied the user's
+     selection. */
+  --color-selection: #26324b;
+  --color-session-selection: #37415c;
+  --color-terminal-active: #0d9488;
+  --color-branch: #0d9488;
+  --color-sandbox: #94a3b8;
+  --color-diff-add: #22c55e;
+  --color-diff-delete: #ef4444;
+  --color-diff-modified: #fbbf24;
+  --color-diff-header: #0d9488;
+
+  /* Embedded terminal cold-load defaults. useResolvedTheme refetches
+     and overrides these once the resolved palette lands, but on a
+     first visit with no localStorage cache the wterm element would
+     otherwise paint with the WASM bridge's hardcoded defaults until
+     the next frame. These match the Empire palette projected by
+     src/tui/styles/resolved.rs::terminal_projection so the pre-fetch
+     paint matches the post-fetch paint for the default theme. */
+  --term-bg: #0f172a;
+  --term-fg: #cbd5e1;
+  --term-cursor: #d97706;
+  --term-color-0: #0f172a;
+  --term-color-1: #ef4444;
+  --term-color-2: #22c55e;
+  --term-color-3: #fbbf24;
+  --term-color-4: #0d9488;
+  --term-color-5: #d97706;
+  --term-color-6: #0d9488;
+  --term-color-7: #cbd5e1;
+  --term-color-8: #64748b;
+  --term-color-9: #f87171;
+  --term-color-10: #4ade80;
+  --term-color-11: #fde68a;
+  --term-color-12: #38bdf8;
+  --term-color-13: #fbbf24;
+  --term-color-14: #2dd4bf;
+  --term-color-15: #fbbf24;
+
   /* Typography */
   --font-sans: 'Geist Sans', system-ui, -apple-system, sans-serif;
   --font-mono: 'Geist Mono', ui-monospace, 'SFMono-Regular', monospace;
@@ -147,15 +189,15 @@ body {
   margin: 0.5rem 0;
 }
 .cockpit-markdown blockquote.cockpit-callout-warn {
-  border-left: 3px solid #f59e0b;
-  background: rgb(245 158 11 / 0.08);
-  color: #fcd34d;
+  border-left: 3px solid var(--color-status-waiting);
+  background: color-mix(in srgb, var(--color-status-waiting) 8%, transparent);
+  color: var(--color-status-waiting);
   font-style: normal;
   padding: 0.5rem 0.75rem;
   border-radius: 0.25rem;
 }
 .cockpit-markdown blockquote.cockpit-callout-warn p { margin: 0; }
-.cockpit-markdown blockquote.cockpit-callout-warn strong { color: #fde68a; }
+.cockpit-markdown blockquote.cockpit-callout-warn strong { color: var(--color-text-bright); }
 .cockpit-markdown :where(p, li) > code {
   background: var(--color-surface-800);
   padding: 0 0.25rem;
@@ -215,10 +257,11 @@ body {
   vertical-align: top;
   white-space: nowrap;
   color: var(--color-text-secondary);
-  border-bottom: 1px solid rgba(28, 28, 31, 0.5);
+  border-bottom: 1px solid
+    color-mix(in srgb, var(--color-surface-900) 50%, transparent);
 }
 .cockpit-markdown tbody tr:nth-child(even) {
-  background: rgba(28, 28, 31, 0.3);
+  background: color-mix(in srgb, var(--color-surface-900) 30%, transparent);
 }
 .cockpit-markdown tbody tr:hover {
   background: var(--color-surface-800);

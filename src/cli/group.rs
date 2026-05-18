@@ -66,6 +66,7 @@ struct GroupInfo {
     children: Vec<String>,
 }
 
+#[tracing::instrument(target = "cli.session", skip_all, fields(profile = %profile))]
 pub async fn run(profile: &str, command: GroupCommands) -> Result<()> {
     match command {
         GroupCommands::List(args) => list_groups(profile, args).await,

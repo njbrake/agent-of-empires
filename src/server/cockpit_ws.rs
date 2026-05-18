@@ -273,13 +273,8 @@ pub async fn trigger_approval_push(
     } else {
         approval_title.to_string()
     };
-    let payload = super::push_send::PushPayload {
-        title,
-        body,
-        url: format!("/sessions/{session_id}/cockpit"),
-        tag: format!("cockpit-approval-{session_id}"),
-        session_id: session_id.to_string(),
-    };
+    let path = format!("/sessions/{session_id}/cockpit");
+    let tag = format!("cockpit-approval-{session_id}");
     let subs = push.store.snapshot().await;
     if subs.is_empty() {
         return;
@@ -291,14 +286,24 @@ pub async fn trigger_approval_push(
             return;
         }
     };
-    let body_bytes = match serde_json::to_vec(&payload) {
-        Ok(b) => b,
-        Err(e) => {
-            warn!(target: "cockpit.push", "serialise payload: {e}");
-            return;
-        }
-    };
     for sub in subs {
+        let Some(url) = super::push::build_push_url(&sub, &path) else {
+            continue;
+        };
+        let payload = super::push_send::PushPayload {
+            title: title.clone(),
+            body: body.clone(),
+            url,
+            tag: tag.clone(),
+            session_id: session_id.to_string(),
+        };
+        let body_bytes = match serde_json::to_vec(&payload) {
+            Ok(b) => b,
+            Err(e) => {
+                warn!(target: "cockpit.push", "serialise payload: {e}");
+                continue;
+            }
+        };
         let auth_header = match super::push_send::vapid_auth_header(push, &sub.endpoint) {
             Ok(h) => h,
             Err(e) => {

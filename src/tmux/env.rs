@@ -169,7 +169,7 @@ pub fn remove_hidden_env_batch(entries: &[(&str, &str)]) -> anyhow::Result<()> {
             Ok(())
         }
         Ok(out) => {
-            tracing::debug!(
+            tracing::debug!(target: "tmux.command",
                 "Batch tmux set-environment -u failed (exit {}), falling back to sequential unsets",
                 out.status
             );
@@ -177,7 +177,7 @@ pub fn remove_hidden_env_batch(entries: &[(&str, &str)]) -> anyhow::Result<()> {
             Ok(())
         }
         Err(e) => {
-            tracing::debug!(
+            tracing::debug!(target: "tmux.command",
                 "Batch tmux set-environment -u error: {}, falling back to sequential unsets",
                 e
             );
@@ -190,7 +190,7 @@ pub fn remove_hidden_env_batch(entries: &[(&str, &str)]) -> anyhow::Result<()> {
 fn sequential_remove_fallback(entries: &[(&str, &str)]) {
     for (session_name, key) in entries {
         if let Err(e) = remove_hidden_env(session_name, key) {
-            tracing::debug!(
+            tracing::debug!(target: "tmux.command",
                 "Sequential unset of {} on {} failed: {}",
                 key,
                 session_name,
@@ -234,7 +234,7 @@ pub fn set_hidden_env_batch(entries: &[(&str, &str, &str)]) -> anyhow::Result<()
             Ok(())
         }
         Ok(out) => {
-            tracing::debug!(
+            tracing::debug!(target: "tmux.command",
                 "Batch tmux set-environment failed (exit {}), falling back to sequential writes",
                 out.status
             );
@@ -242,7 +242,7 @@ pub fn set_hidden_env_batch(entries: &[(&str, &str, &str)]) -> anyhow::Result<()
             Ok(())
         }
         Err(e) => {
-            tracing::debug!(
+            tracing::debug!(target: "tmux.command",
                 "Batch tmux set-environment error: {}, falling back to sequential writes",
                 e
             );
@@ -255,7 +255,7 @@ pub fn set_hidden_env_batch(entries: &[(&str, &str, &str)]) -> anyhow::Result<()
 fn sequential_set_fallback(entries: &[(&str, &str, &str)]) {
     for (session_name, key, value) in entries {
         if let Err(e) = set_hidden_env(session_name, key, value) {
-            tracing::debug!(
+            tracing::debug!(target: "tmux.command",
                 "Sequential set of {} on {} failed: {}",
                 key,
                 session_name,
@@ -312,7 +312,7 @@ pub fn get_hidden_env_batch(session_names: &[&str], key: &str) -> Vec<(String, O
         Ok(out) if out.status.success() => {
             let stdout = String::from_utf8_lossy(&out.stdout);
             parse_batch_output(&stdout, session_names).unwrap_or_else(|| {
-                tracing::debug!(
+                tracing::debug!(target: "tmux.command", 
                     "Batch env parse failed (line count mismatch for {} sessions), falling back to sequential reads",
                     session_names.len()
                 );
@@ -320,14 +320,14 @@ pub fn get_hidden_env_batch(session_names: &[&str], key: &str) -> Vec<(String, O
             })
         }
         Ok(out) => {
-            tracing::debug!(
+            tracing::debug!(target: "tmux.command",
                 "Batch tmux show-environment failed (exit {}), falling back to sequential reads",
                 out.status
             );
             fallback()
         }
         Err(ref e) => {
-            tracing::debug!(
+            tracing::debug!(target: "tmux.command",
                 "Batch tmux show-environment error: {}, falling back to sequential reads",
                 e
             );

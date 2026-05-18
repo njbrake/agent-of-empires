@@ -24,6 +24,7 @@ pub struct UpdateArgs {
     dry_run: bool,
 }
 
+#[tracing::instrument(target = "cli.session", skip_all)]
 pub async fn run(args: UpdateArgs) -> Result<()> {
     let current_version = env!("CARGO_PKG_VERSION");
 

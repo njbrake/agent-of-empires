@@ -292,7 +292,7 @@ fn sync_agent_config(
     // just potentially overwriting container-side customizations).
     let has_prior_data = sandbox_dir.join("projects").exists();
     if has_prior_data {
-        tracing::info!(
+        tracing::info!(target: "session.profile",
             "sync_agent_config: sandbox={} has prior session data, skipping general file copy",
             sandbox_dir.display()
         );
@@ -311,7 +311,7 @@ fn sync_agent_config(
         let metadata = match std::fs::metadata(entry.path()) {
             Ok(m) => m,
             Err(e) => {
-                tracing::warn!("Skipping {}: {}", entry.path().display(), e);
+                tracing::warn!(target: "session.profile", "Skipping {}: {}", entry.path().display(), e);
                 continue;
             }
         };
@@ -320,7 +320,7 @@ fn sync_agent_config(
             if copy_dirs.iter().any(|&d| d == name_str.as_ref()) {
                 let dest = sandbox_dir.join(&name);
                 if let Err(e) = copy_dir_recursive(&entry.path(), &dest) {
-                    tracing::warn!("Failed to copy dir {}: {}", name_str, e);
+                    tracing::warn!(target: "session.profile", "Failed to copy dir {}: {}", name_str, e);
                 }
             }
             continue;
@@ -342,7 +342,7 @@ fn sync_agent_config(
         }
 
         if let Err(e) = std::fs::copy(entry.path(), &dest) {
-            tracing::warn!("Failed to copy {}: {}", name_str, e);
+            tracing::warn!(target: "session.profile", "Failed to copy {}: {}", name_str, e);
         }
     }
 
@@ -377,7 +377,7 @@ fn rewrite_claude_plugin_paths(sandbox_dir: &Path, host_home: &Path) -> Result<(
         let content = match std::fs::read_to_string(&path) {
             Ok(c) => c,
             Err(e) => {
-                tracing::warn!("Failed to read {}: {}", path.display(), e);
+                tracing::warn!(target: "session.profile", "Failed to read {}: {}", path.display(), e);
                 continue;
             }
         };
@@ -385,7 +385,7 @@ fn rewrite_claude_plugin_paths(sandbox_dir: &Path, host_home: &Path) -> Result<(
         let mut value: serde_json::Value = match serde_json::from_str(&content) {
             Ok(v) => v,
             Err(e) => {
-                tracing::warn!("Failed to parse {}: {}", path.display(), e);
+                tracing::warn!(target: "session.profile", "Failed to parse {}: {}", path.display(), e);
                 continue;
             }
         };
@@ -396,7 +396,7 @@ fn rewrite_claude_plugin_paths(sandbox_dir: &Path, host_home: &Path) -> Result<(
         if changed {
             let serialized = serde_json::to_string(&value)?;
             if let Err(e) = std::fs::write(&path, serialized) {
-                tracing::warn!("Failed to write {}: {}", path.display(), e);
+                tracing::warn!(target: "session.profile", "Failed to write {}: {}", path.display(), e);
             }
         }
     }
@@ -492,7 +492,7 @@ fn extract_keychain_credential(service: &str, dest: &Path) -> Result<bool> {
         // Exit code 36 = errSecInteractionNotAllowed (keychain locked or ACL denied)
         // Exit code 44 = errSecItemNotFound
         if code == 36 {
-            tracing::warn!(
+            tracing::warn!(target: "session.profile",
                 "Keychain access denied for service '{}' (exit code 36). \
                  The keychain may be locked. Run 'security unlock-keychain' and restart. \
                  Stderr: {}",
@@ -500,13 +500,13 @@ fn extract_keychain_credential(service: &str, dest: &Path) -> Result<bool> {
                 stderr.trim()
             );
         } else if code == 44 {
-            tracing::debug!(
+            tracing::debug!(target: "session.profile",
                 "No keychain entry found for service '{}' (account '{}')",
                 service,
                 user
             );
         } else {
-            tracing::warn!(
+            tracing::warn!(target: "session.profile",
                 "Failed to extract keychain credential for service '{}' \
                  (account '{}', exit code {}): {}",
                 service,
@@ -521,7 +521,7 @@ fn extract_keychain_credential(service: &str, dest: &Path) -> Result<bool> {
     let content = String::from_utf8_lossy(&output.stdout);
     let trimmed = content.trim();
     if trimmed.is_empty() {
-        tracing::warn!(
+        tracing::warn!(target: "session.profile",
             "Keychain entry for service '{}' exists but has empty content",
             service
         );
@@ -532,7 +532,7 @@ fn extract_keychain_credential(service: &str, dest: &Path) -> Result<bool> {
     if dest.exists() {
         if let Ok(existing_content) = std::fs::read_to_string(dest) {
             if !should_overwrite_credential(&existing_content, trimmed) {
-                tracing::debug!(
+                tracing::debug!(target: "session.profile",
                     "Keychain credential for '{}' is not fresher than sandbox, keeping sandbox",
                     service,
                 );
@@ -542,7 +542,7 @@ fn extract_keychain_credential(service: &str, dest: &Path) -> Result<bool> {
     }
 
     std::fs::write(dest, trimmed)?;
-    tracing::debug!(
+    tracing::debug!(target: "session.profile",
         "Extracted keychain credential for '{}' -> {}",
         service,
         dest.display()
@@ -568,7 +568,7 @@ fn prepare_sandbox_dir(mount: &AgentConfigMount, home: &Path) -> Result<std::pat
         let path = sandbox_dir.join(name);
         if path.exists() {
             if let Err(e) = std::fs::remove_file(&path) {
-                tracing::warn!("Failed to clean {}: {}", path.display(), e);
+                tracing::warn!(target: "session.profile", "Failed to clean {}: {}", path.display(), e);
             }
         }
     }
@@ -585,7 +585,7 @@ fn prepare_sandbox_dir(mount: &AgentConfigMount, home: &Path) -> Result<std::pat
 
         if mount.tool_name == "claude" {
             if let Err(e) = rewrite_claude_plugin_paths(&sandbox_dir, home) {
-                tracing::warn!(
+                tracing::warn!(target: "session.profile",
                     "Failed to rewrite Claude plugin paths in {}: {}",
                     sandbox_dir.display(),
                     e
@@ -595,7 +595,7 @@ fn prepare_sandbox_dir(mount: &AgentConfigMount, home: &Path) -> Result<std::pat
 
         if let Some((service, filename)) = mount.keychain_credential {
             if let Err(e) = extract_keychain_credential(service, &sandbox_dir.join(filename)) {
-                tracing::warn!(
+                tracing::warn!(target: "session.profile",
                     "Failed to extract keychain credential for {}: {}",
                     mount.host_rel,
                     e
@@ -808,7 +808,7 @@ pub(crate) fn refresh_agent_configs() {
 
     for mount in AGENT_CONFIG_MOUNTS {
         if let Err(e) = prepare_sandbox_dir(mount, &home) {
-            tracing::warn!(
+            tracing::warn!(target: "session.profile",
                 "Failed to refresh agent config for {}: {}",
                 mount.host_rel,
                 e
@@ -862,7 +862,7 @@ pub(crate) fn build_container_config(
         let resolved_profile = super::config::effective_profile(profile);
         match super::repo_config::resolve_config_with_repo(&resolved_profile, project_path) {
             Ok(c) => {
-                tracing::debug!(
+                tracing::debug!(target: "session.profile",
                     "Loaded sandbox config: extra_volumes={:?}, mount_ssh={}, volume_ignores={:?}",
                     c.sandbox.extra_volumes,
                     c.sandbox.mount_ssh,
@@ -871,7 +871,7 @@ pub(crate) fn build_container_config(
                 c.sandbox
             }
             Err(e) => {
-                tracing::warn!("Failed to load config, using defaults: {}", e);
+                tracing::warn!(target: "session.profile", "Failed to load config, using defaults: {}", e);
                 Default::default()
             }
         }
@@ -919,7 +919,7 @@ pub(crate) fn build_container_config(
                     read_only: true,
                 });
             } else {
-                tracing::warn!(
+                tracing::warn!(target: "session.profile",
                     "GOOGLE_APPLICATION_CREDENTIALS points to non-existent file: {}",
                     cred_path
                 );
@@ -945,7 +945,7 @@ pub(crate) fn build_container_config(
         let sandbox_dir = match prepare_sandbox_dir(mount, &home) {
             Ok(dir) => dir,
             Err(e) => {
-                tracing::warn!(
+                tracing::warn!(target: "session.profile",
                     "Failed to prepare sandbox dir for {}, skipping: {}",
                     mount.host_rel,
                     e
@@ -954,7 +954,7 @@ pub(crate) fn build_container_config(
             }
         };
 
-        tracing::debug!(
+        tracing::debug!(target: "session.profile",
             "Sandbox dir ready for {}, binding {} -> {}",
             mount.host_rel,
             sandbox_dir.display(),
@@ -992,7 +992,7 @@ pub(crate) fn build_container_config(
             if hermes_hooks || kiro_hooks || agent.hook_config.is_some() {
                 let hook_dir = crate::hooks::hook_status_dir(instance_id);
                 if let Err(e) = std::fs::create_dir_all(&hook_dir) {
-                    tracing::warn!(
+                    tracing::warn!(target: "session.profile",
                         "Failed to create hook directory {}: {}",
                         hook_dir.display(),
                         e
@@ -1009,13 +1009,13 @@ pub(crate) fn build_container_config(
                 let sandbox_dir = home.join(".hermes").join(SANDBOX_SUBDIR);
                 let config_file = sandbox_dir.join("config.yaml");
                 if let Err(e) = crate::hooks::install_hermes_hooks(&config_file) {
-                    tracing::warn!("Failed to install hermes hooks in sandbox: {}", e);
+                    tracing::warn!(target: "session.profile", "Failed to install hermes hooks in sandbox: {}", e);
                 }
             } else if kiro_hooks {
                 let sandbox_dir = home.join(".kiro").join(SANDBOX_SUBDIR);
                 let config_file = sandbox_dir.join("agents").join("aoe-hooks.json");
                 if let Err(e) = crate::hooks::install_kiro_hooks(&config_file) {
-                    tracing::warn!("Failed to install kiro hooks in sandbox: {}", e);
+                    tracing::warn!(target: "session.profile", "Failed to install kiro hooks in sandbox: {}", e);
                 }
             } else if let Some(hook_cfg) = &agent.hook_config {
                 // Install hooks into sandbox settings.json for the containerized agent.
@@ -1030,7 +1030,7 @@ pub(crate) fn build_container_config(
                         let settings_file = sandbox_dir.join("settings.json");
                         if let Err(e) = crate::hooks::install_hooks(&settings_file, hook_cfg.events)
                         {
-                            tracing::warn!("Failed to install hooks in sandbox settings: {}", e);
+                            tracing::warn!(target: "session.profile", "Failed to install hooks in sandbox settings: {}", e);
                         }
                         break;
                     }
@@ -1060,7 +1060,7 @@ pub(crate) fn build_container_config(
 
     // Add extra_volumes from config (host:container format)
     // Also collect container paths to filter conflicting volume_ignores later
-    tracing::debug!(
+    tracing::debug!(target: "session.profile",
         "extra_volumes from config: {:?}",
         sandbox_config.extra_volumes
     );
@@ -1069,7 +1069,7 @@ pub(crate) fn build_container_config(
     for entry in &sandbox_config.extra_volumes {
         let parts: Vec<&str> = entry.splitn(3, ':').collect();
         if parts.len() >= 2 {
-            tracing::info!(
+            tracing::info!(target: "session.profile",
                 "Mounting extra volume: {} -> {} (ro: {})",
                 parts[0],
                 parts[1],
@@ -1082,7 +1082,7 @@ pub(crate) fn build_container_config(
                 read_only: parts.get(2) == Some(&"ro"),
             });
         } else {
-            tracing::warn!("Ignoring malformed extra_volume entry: {}", entry);
+            tracing::warn!(target: "session.profile", "Ignoring malformed extra_volume entry: {}", entry);
         }
     }
 
@@ -1117,7 +1117,7 @@ pub(crate) fn build_container_config(
         if seen.insert(vol.container_path.clone()) {
             deduped.push(vol);
         } else {
-            tracing::debug!("Dropping duplicate mount for {}", vol.container_path);
+            tracing::debug!(target: "session.profile", "Dropping duplicate mount for {}", vol.container_path);
         }
     }
     deduped.reverse();

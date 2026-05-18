@@ -18,7 +18,7 @@ pub(crate) fn resilient_read_dir(
 ) -> Result<impl Iterator<Item = std::fs::DirEntry> + '_> {
     Ok(std::fs::read_dir(dir)?.filter_map(move |entry| {
         entry
-            .map_err(|e| tracing::debug!("Skipping unreadable entry in {}: {}", dir.display(), e))
+            .map_err(|e| tracing::debug!(target: "session.capture", "Skipping unreadable entry in {}: {}", dir.display(), e))
             .ok()
     }))
 }
@@ -47,7 +47,7 @@ pub(crate) fn validated_session_id(id: String) -> Option<String> {
     if is_valid_session_id(&id) {
         Some(id)
     } else {
-        tracing::warn!("Captured session ID failed validation: {:?}", id);
+        tracing::warn!(target: "session.capture", "Captured session ID failed validation: {:?}", id);
         None
     }
 }
@@ -206,7 +206,9 @@ fn read_claude_json_session_id(project_path: &Path) -> Option<String> {
 pub(crate) fn claude_poll_fn(project_path: String) -> impl Fn() -> Option<String> + Send + 'static {
     move || {
         capture_claude_session_id(&project_path)
-            .map_err(|e| tracing::debug!("Claude disk scan failed: {}", e))
+            .map_err(
+                |e| tracing::debug!(target: "session.capture", "Claude disk scan failed: {}", e),
+            )
             .ok()
             .and_then(validated_session_id)
     }
@@ -276,7 +278,7 @@ pub(crate) fn claude_poll_fn_sandboxed(
 ) -> impl Fn() -> Option<String> + Send + 'static {
     move || {
         capture_claude_session_id_in_container(&container_name, &container_cwd)
-            .map_err(|e| tracing::debug!("Claude container scan failed: {}", e))
+            .map_err(|e| tracing::debug!(target: "session.capture", "Claude container scan failed: {}", e))
             .ok()
             .and_then(validated_session_id)
     }
@@ -487,7 +489,9 @@ pub(crate) fn pi_poll_fn(
     move || {
         let exclusion = compose_exclusion(&instance_id, &extra_excludes);
         capture_pi_session_id(&project_path, &exclusion)
-            .map_err(|e| tracing::debug!("Pi poll capture failed: {}", e))
+            .map_err(
+                |e| tracing::debug!(target: "session.capture", "Pi poll capture failed: {}", e),
+            )
             .ok()
             .and_then(validated_session_id)
     }
@@ -591,7 +595,7 @@ pub(crate) fn pi_poll_fn_sandboxed(
     move || {
         let exclusion = compose_exclusion(&instance_id, &extra_excludes);
         try_capture_pi_session_id_in_container(&container_name, &container_cwd, &exclusion)
-            .map_err(|e| tracing::debug!("Pi container poll capture failed: {}", e))
+            .map_err(|e| tracing::debug!(target: "session.capture", "Pi container poll capture failed: {}", e))
             .ok()
             .and_then(validated_session_id)
     }
@@ -781,7 +785,9 @@ pub(crate) fn vibe_poll_fn(
     move || {
         let exclusion = compose_exclusion(&instance_id, &extra_excludes);
         capture_vibe_session_id(&project_path, &exclusion)
-            .map_err(|e| tracing::debug!("Vibe poll capture failed: {}", e))
+            .map_err(
+                |e| tracing::debug!(target: "session.capture", "Vibe poll capture failed: {}", e),
+            )
             .ok()
             .and_then(validated_session_id)
     }
@@ -885,7 +891,7 @@ pub(crate) fn vibe_poll_fn_sandboxed(
     move || {
         let exclusion = compose_exclusion(&instance_id, &extra_excludes);
         try_capture_vibe_session_id_in_container(&container_name, &container_cwd, &exclusion)
-            .map_err(|e| tracing::debug!("Vibe container poll capture failed: {}", e))
+            .map_err(|e| tracing::debug!(target: "session.capture", "Vibe container poll capture failed: {}", e))
             .ok()
             .and_then(validated_session_id)
     }
@@ -1162,7 +1168,7 @@ fn log_opencode_sqlite_fallback_once(err: &anyhow::Error) {
     use std::sync::Once;
     static LOG_ONCE: Once = Once::new();
     LOG_ONCE.call_once(|| {
-        tracing::warn!(
+        tracing::warn!(target: "session.capture", 
             "opencode SQLite read failed ({}); falling back to `opencode session list`. \
              That subprocess leaks /tmp/.<hash>.so files via bun:ffi (see anomalyco/opencode#6523).",
             err
@@ -1259,7 +1265,7 @@ pub(crate) fn opencode_poll_fn(
     move || {
         let exclusion = compose_exclusion(&instance_id, &extra_excludes);
         try_capture_opencode_session_id(&project_path, &exclusion, Some(launch_time_ms))
-            .map_err(|e| tracing::debug!("OpenCode poll capture failed: {}", e))
+            .map_err(|e| tracing::debug!(target: "session.capture", "OpenCode poll capture failed: {}", e))
             .ok()
             .and_then(validated_session_id)
     }
@@ -1281,7 +1287,7 @@ pub(crate) fn opencode_poll_fn_sandboxed(
             &exclusion,
             Some(launch_time_ms),
         )
-        .map_err(|e| tracing::debug!("OpenCode container poll capture failed: {}", e))
+        .map_err(|e| tracing::debug!(target: "session.capture", "OpenCode container poll capture failed: {}", e))
         .ok()
         .and_then(validated_session_id)
     }
@@ -1499,7 +1505,9 @@ pub(crate) fn codex_poll_fn(
     move || {
         let exclusion = compose_exclusion(&instance_id, &extra_excludes);
         capture_codex_session_id(&project_path, &exclusion)
-            .map_err(|e| tracing::debug!("Codex poll capture failed: {}", e))
+            .map_err(
+                |e| tracing::debug!(target: "session.capture", "Codex poll capture failed: {}", e),
+            )
             .ok()
             .and_then(validated_session_id)
     }
@@ -1515,7 +1523,7 @@ pub(crate) fn codex_poll_fn_sandboxed(
     move || {
         let exclusion = compose_exclusion(&instance_id, &extra_excludes);
         try_capture_codex_session_id_in_container(&container_name, &container_cwd, &exclusion)
-            .map_err(|e| tracing::debug!("Codex container poll capture failed: {}", e))
+            .map_err(|e| tracing::debug!(target: "session.capture", "Codex container poll capture failed: {}", e))
             .ok()
             .and_then(validated_session_id)
     }
@@ -1532,7 +1540,9 @@ pub(crate) fn gemini_poll_fn(
     move || {
         let exclusion = compose_exclusion(&instance_id, &extra_excludes);
         capture_gemini_session_id(&project_path, &exclusion)
-            .map_err(|e| tracing::debug!("Gemini poll capture failed: {}", e))
+            .map_err(
+                |e| tracing::debug!(target: "session.capture", "Gemini poll capture failed: {}", e),
+            )
             .ok()
             .and_then(validated_session_id)
     }
@@ -1641,7 +1651,7 @@ pub(crate) fn gemini_poll_fn_sandboxed(
     move || {
         let exclusion = compose_exclusion(&instance_id, &extra_excludes);
         try_capture_gemini_session_id_in_container(&container_name, &container_cwd, &exclusion)
-            .map_err(|e| tracing::debug!("Gemini container poll capture failed: {}", e))
+            .map_err(|e| tracing::debug!(target: "session.capture", "Gemini container poll capture failed: {}", e))
             .ok()
             .and_then(validated_session_id)
     }
@@ -1926,7 +1936,9 @@ pub(crate) fn hermes_poll_fn(
     move || {
         let exclusion = compose_exclusion(&instance_id, &extra_excludes);
         capture_hermes_session_id(&project_path, &exclusion)
-            .map_err(|e| tracing::debug!("Hermes poll capture failed: {}", e))
+            .map_err(
+                |e| tracing::debug!(target: "session.capture", "Hermes poll capture failed: {}", e),
+            )
             .ok()
             .and_then(validated_session_id)
     }
@@ -1942,7 +1954,7 @@ pub(crate) fn hermes_poll_fn_sandboxed(
     move || {
         let exclusion = compose_exclusion(&instance_id, &extra_excludes);
         try_capture_hermes_session_id_in_container(&container_name, &container_cwd, &exclusion)
-            .map_err(|e| tracing::debug!("Hermes container poll capture failed: {}", e))
+            .map_err(|e| tracing::debug!(target: "session.capture", "Hermes container poll capture failed: {}", e))
             .ok()
             .and_then(validated_session_id)
     }

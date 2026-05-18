@@ -32,6 +32,15 @@ pub fn resolve_template(template: &str, vars: &TemplateVars) -> Result<PathBuf> 
         vars.base_path.join(&resolved)
     };
 
+    tracing::debug!(
+        target: "git.template",
+        template = %template,
+        repo = %vars.repo_name,
+        branch = %vars.branch,
+        session_id = %vars.session_id,
+        resolved = %path.display(),
+        "worktree template resolved",
+    );
     Ok(path)
 }
 

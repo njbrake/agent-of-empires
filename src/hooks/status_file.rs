@@ -29,7 +29,7 @@ pub fn read_hook_status(instance_id: &str) -> Option<Status> {
         "waiting" => Some(Status::Waiting),
         "idle" => Some(Status::Idle),
         other => {
-            tracing::warn!("Unexpected hook status value: {:?}", other);
+            tracing::warn!(target: "hooks.status", "Unexpected hook status value: {:?}", other);
             None
         }
     }
@@ -40,7 +40,7 @@ pub fn cleanup_hook_status_dir(instance_id: &str) {
     let dir = hook_status_dir(instance_id);
     if dir.exists() {
         if let Err(e) = std::fs::remove_dir_all(&dir) {
-            tracing::warn!("Failed to cleanup hook status dir {}: {}", dir.display(), e);
+            tracing::warn!(target: "hooks.status", "Failed to cleanup hook status dir {}: {}", dir.display(), e);
         }
     }
 }

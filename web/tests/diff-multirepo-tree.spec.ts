@@ -14,29 +14,32 @@ async function setupMultiRepoSession(page: Page) {
   await page.route("**/api/sessions", (r) => {
     if (r.request().method() === "POST") return r.fulfill({ status: 400 });
     return r.fulfill({
-      json: [
-        {
-          id: "multi-repo",
-          title: "multi-repo",
-          project_path: "/tmp/multi",
-          group_path: "/tmp",
-          tool: "claude",
-          status: "Running",
-          yolo_mode: false,
-          created_at: new Date().toISOString(),
-          last_accessed_at: null,
-          last_error: null,
-          branch: null,
-          main_repo_path: null,
-          is_sandboxed: false,
-          has_terminal: true,
-          profile: "default",
-          workspace_repos: [
-            { name: "repo-a", source_path: "/tmp/multi/repo-a" },
-            { name: "repo-b", source_path: "/tmp/multi/repo-b" },
-          ],
-        },
-      ],
+      json: {
+        sessions: [
+          {
+            id: "multi-repo",
+            title: "multi-repo",
+            project_path: "/tmp/multi",
+            group_path: "/tmp",
+            tool: "claude",
+            status: "Running",
+            yolo_mode: false,
+            created_at: new Date().toISOString(),
+            last_accessed_at: null,
+            last_error: null,
+            branch: null,
+            main_repo_path: null,
+            is_sandboxed: false,
+            has_terminal: true,
+            profile: "default",
+            workspace_repos: [
+              { name: "repo-a", source_path: "/tmp/multi/repo-a" },
+              { name: "repo-b", source_path: "/tmp/multi/repo-b" },
+            ],
+          },
+        ],
+        workspace_ordering: [],
+      },
     });
   });
   await page.route("**/api/sessions/*/ensure", (r) =>

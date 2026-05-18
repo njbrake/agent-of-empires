@@ -244,21 +244,10 @@ export function TerminalView({ session, cockpitMasterEnabled = false }: Props) {
     if (consumePendingTerminalFocus("agent")) focusSelf();
   }, [ensureState, focusSelf]);
 
-  // On initial connect, auto-open the keyboard.
-  useEffect(() => {
-    if (!isMobile || !state.connected) return;
-    const term = termRef.current;
-    if (!term) return;
-    // Retry a few times: wterm's textarea may not exist immediately.
-    const delays = [50, 200, 500];
-    const timers = delays.map((ms) =>
-      setTimeout(() => {
-        const ta = term.element.querySelector("textarea");
-        if (ta instanceof HTMLElement) ta.focus();
-      }, ms),
-    );
-    return () => timers.forEach(clearTimeout);
-  }, [isMobile, state.connected, termRef]);
+  // Auto-keyboard-open on initial connect removed (#1178): the
+  // KeyboardFab is always visible and lets the user open the keyboard
+  // explicitly. Popping the soft keyboard on every session open is the
+  // wrong default for navigation, especially read-only check-ins.
 
   // Toggle keyboard: focus/blur MUST be the first thing in this handler
   // so iOS considers it part of the user-gesture chain. Anything before

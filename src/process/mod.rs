@@ -29,30 +29,60 @@ pub fn get_pane_pid(session_name: &str) -> Option<u32> {
         .ok()?;
 
     if !output.status.success() {
+        // Guarded: hot poll path. Only formats arguments when the user has
+        // enabled `process.ppid=trace` (or finer) on their filter.
+        if tracing::enabled!(target: "process.ppid", tracing::Level::TRACE) {
+            tracing::trace!(
+                target: "process.ppid",
+                session = %session_name,
+                status = ?output.status,
+                "display-message failed; no pane pid",
+            );
+        }
         return None;
     }
 
-    String::from_utf8_lossy(&output.stdout).trim().parse().ok()
+    let pid = String::from_utf8_lossy(&output.stdout).trim().parse().ok();
+    if tracing::enabled!(target: "process.ppid", tracing::Level::TRACE) {
+        tracing::trace!(
+            target: "process.ppid",
+            session = %session_name,
+            pid = ?pid,
+            "resolved pane pid",
+        );
+    }
+    pid
 }
 
 /// Get the foreground process group leader PID for a given shell PID
 /// This finds the actual process that has the terminal foreground
 pub fn get_foreground_pid(shell_pid: u32) -> Option<u32> {
-    #[cfg(target_os = "linux")]
-    {
-        linux::get_foreground_pid(shell_pid)
-    }
+    let pid = {
+        #[cfg(target_os = "linux")]
+        {
+            linux::get_foreground_pid(shell_pid)
+        }
 
-    #[cfg(target_os = "macos")]
-    {
-        macos::get_foreground_pid(shell_pid)
-    }
+        #[cfg(target_os = "macos")]
+        {
+            macos::get_foreground_pid(shell_pid)
+        }
 
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    {
-        let _ = shell_pid;
-        None
+        #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+        {
+            let _ = shell_pid;
+            None
+        }
+    };
+    if tracing::enabled!(target: "process.ppid", tracing::Level::TRACE) {
+        tracing::trace!(
+            target: "process.ppid",
+            shell_pid,
+            foreground_pid = ?pid,
+            "resolved foreground pid",
+        );
     }
+    pid
 }
 
 /// Kill a process and all its descendants

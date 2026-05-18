@@ -204,13 +204,13 @@ mod tests {
     }
 
     fn render_cursor_position(dialog: &SendMessageDialog, width: u16, height: u16) -> Position {
-        use crate::tui::styles::Theme;
+        use crate::tui::styles::load_theme;
         use ratatui::backend::TestBackend;
         use ratatui::Terminal;
 
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).unwrap();
-        let theme = Theme::empire();
+        let theme = load_theme("empire");
         terminal
             .draw(|f| {
                 let area = f.area();

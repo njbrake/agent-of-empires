@@ -7,6 +7,37 @@ use serde::{Deserialize, Serialize};
 
 use super::palette::color_to_palette;
 
+/// Whether a theme renders against a dark or light surface. Drives
+/// web-side surface ramp derivation (dark themes lighten from
+/// background, light themes darken from background) and selects the
+/// fallback syntax highlighter theme when none is specified.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ThemeAppearance {
+    Dark,
+    Light,
+}
+
+/// Per-theme syntax-highlighter metadata. Lives in `[syntax]` in the
+/// TOML so renderer-specific knobs don't pollute the flat semantic
+/// color fields.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ThemeSyntax {
+    /// Name of the Shiki theme module to load on the web (`github-dark`,
+    /// `dracula`, `catppuccin-latte`, etc.). `None` falls back by
+    /// appearance: dark themes get `github-dark`, light themes get
+    /// `github-light`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shiki_theme: Option<String>,
+}
+
+impl ThemeSyntax {
+    fn is_default(&self) -> bool {
+        self.shiki_theme.is_none()
+    }
+}
+
 /// Convert the user-configured decay duration (minutes) into a `Duration`.
 /// `0` returns `Duration::ZERO`, which the freshness logic treats as
 /// "fully decayed immediately" — a documented opt-out: every Idle row
@@ -84,11 +115,70 @@ pub struct Theme {
     pub branch: Color,
     #[serde(with = "hex_color")]
     pub sandbox: Color,
+
+    /// Whether the theme is dark or light. Optional; when absent the
+    /// resolver classifies the theme from `background` luminance. Use
+    /// per-field `#[serde(default)]` so a partial custom TOML that
+    /// omits this field deserializes to `None` rather than inheriting
+    /// Empire's `Dark`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub appearance: Option<ThemeAppearance>,
+
+    /// Renderer-specific syntax-highlighter overrides. Lives in nested
+    /// `[syntax]`; empty by default so custom TOMLs without it round-trip
+    /// without a stray empty section.
+    #[serde(default, skip_serializing_if = "ThemeSyntax::is_default")]
+    pub syntax: ThemeSyntax,
 }
 
 impl Default for Theme {
     fn default() -> Self {
-        Self::empire()
+        // Hardcoded Empire palette used only as serde's per-field
+        // fallback for partial custom TOMLs. Must NOT round-trip
+        // through `load_theme("empire")` + `toml::from_str`: serde's
+        // container-level `#[serde(default)]` calls Theme::default()
+        // every time it deserializes a Theme (to seed the struct
+        // before overwriting present fields), so parsing any TOML
+        // would re-enter Default which would re-parse Empire which
+        // would re-enter Default... a self-referential deadlock. The
+        // values mirror `themes/builtin/empire.toml`; if Empire's
+        // palette ever drifts, sync this manually (or replace with a
+        // build-time codegen step).
+        Self {
+            background: Color::Rgb(0x0f, 0x17, 0x2a),
+            border: Color::Rgb(0x33, 0x41, 0x55),
+            terminal_border: Color::Rgb(0x0d, 0x94, 0x88),
+            selection: Color::Rgb(0x26, 0x32, 0x4b),
+            session_selection: Color::Rgb(0x37, 0x41, 0x5c),
+            title: Color::Rgb(0xfb, 0xbf, 0x24),
+            text: Color::Rgb(0xcb, 0xd5, 0xe1),
+            dimmed: Color::Rgb(0x64, 0x74, 0x8b),
+            hint: Color::Rgb(0x94, 0xa3, 0xb8),
+            running: Color::Rgb(0x22, 0xc5, 0x5e),
+            waiting: Color::Rgb(0xfb, 0xbf, 0x24),
+            fresh_idle: Color::Rgb(0xf5, 0x9e, 0x0b),
+            idle: Color::Rgb(0x64, 0x74, 0x8b),
+            error: Color::Rgb(0xef, 0x44, 0x44),
+            terminal_active: Color::Rgb(0x0d, 0x94, 0x88),
+            group: Color::Rgb(0xcb, 0xd5, 0xe1),
+            search: Color::Rgb(0xfb, 0xbf, 0x24),
+            accent: Color::Rgb(0xd9, 0x77, 0x06),
+            diff_add: Color::Rgb(0x22, 0xc5, 0x5e),
+            diff_delete: Color::Rgb(0xef, 0x44, 0x44),
+            diff_modified: Color::Rgb(0xfb, 0xbf, 0x24),
+            diff_header: Color::Rgb(0x0d, 0x94, 0x88),
+            help_key: Color::Rgb(0xd9, 0x77, 0x06),
+            branch: Color::Rgb(0x0d, 0x94, 0x88),
+            sandbox: Color::Rgb(0x94, 0xa3, 0xb8),
+            // appearance and syntax default to None / empty here,
+            // but the per-field `#[serde(default)]` attributes on
+            // those fields take precedence over this container
+            // default, so partial custom TOMLs that omit them still
+            // resolve to None rather than inheriting Empire's values
+            // (covered by `partial_custom_theme_does_not_inherit_metadata`).
+            appearance: None,
+            syntax: ThemeSyntax { shiki_theme: None },
+        }
     }
 }
 
@@ -113,267 +203,78 @@ impl Theme {
 }
 
 impl Theme {
+    /// Mutable references to every `Color` field, in declaration order. The
+    /// single authoritative list shared by `downsample_to_palette` and the
+    /// structural guard test. New `Color` fields added to `Theme` must be
+    /// added here too; non-color metadata (appearance, syntax, etc.) must not.
+    pub fn color_fields_mut(&mut self) -> [&mut Color; 25] {
+        [
+            &mut self.background,
+            &mut self.border,
+            &mut self.terminal_border,
+            &mut self.selection,
+            &mut self.session_selection,
+            &mut self.title,
+            &mut self.text,
+            &mut self.dimmed,
+            &mut self.hint,
+            &mut self.running,
+            &mut self.waiting,
+            &mut self.fresh_idle,
+            &mut self.idle,
+            &mut self.error,
+            &mut self.terminal_active,
+            &mut self.group,
+            &mut self.search,
+            &mut self.accent,
+            &mut self.diff_add,
+            &mut self.diff_delete,
+            &mut self.diff_modified,
+            &mut self.diff_header,
+            &mut self.help_key,
+            &mut self.branch,
+            &mut self.sandbox,
+        ]
+    }
+
+    /// Read-only counterpart to `color_fields_mut`.
+    pub fn color_fields(&self) -> [Color; 25] {
+        [
+            self.background,
+            self.border,
+            self.terminal_border,
+            self.selection,
+            self.session_selection,
+            self.title,
+            self.text,
+            self.dimmed,
+            self.hint,
+            self.running,
+            self.waiting,
+            self.fresh_idle,
+            self.idle,
+            self.error,
+            self.terminal_active,
+            self.group,
+            self.search,
+            self.accent,
+            self.diff_add,
+            self.diff_delete,
+            self.diff_modified,
+            self.diff_header,
+            self.help_key,
+            self.branch,
+            self.sandbox,
+        ]
+    }
+
     /// Convert every `Color::Rgb` field to the nearest xterm-256 palette index
     /// (`Color::Indexed`). In-place. Idempotent: already-Indexed / named /
     /// Reset colors are untouched. Use when the downstream transport mangles
     /// 24-bit RGB escapes but handles 256-palette fine (e.g. Termius mosh).
     pub fn downsample_to_palette(&mut self) {
-        self.background = color_to_palette(self.background);
-        self.border = color_to_palette(self.border);
-        self.terminal_border = color_to_palette(self.terminal_border);
-        self.selection = color_to_palette(self.selection);
-        self.session_selection = color_to_palette(self.session_selection);
-        self.title = color_to_palette(self.title);
-        self.text = color_to_palette(self.text);
-        self.dimmed = color_to_palette(self.dimmed);
-        self.hint = color_to_palette(self.hint);
-        self.running = color_to_palette(self.running);
-        self.waiting = color_to_palette(self.waiting);
-        self.fresh_idle = color_to_palette(self.fresh_idle);
-        self.idle = color_to_palette(self.idle);
-        self.error = color_to_palette(self.error);
-        self.terminal_active = color_to_palette(self.terminal_active);
-        self.group = color_to_palette(self.group);
-        self.search = color_to_palette(self.search);
-        self.accent = color_to_palette(self.accent);
-        self.diff_add = color_to_palette(self.diff_add);
-        self.diff_delete = color_to_palette(self.diff_delete);
-        self.diff_modified = color_to_palette(self.diff_modified);
-        self.diff_header = color_to_palette(self.diff_header);
-        self.help_key = color_to_palette(self.help_key);
-        self.branch = color_to_palette(self.branch);
-        self.sandbox = color_to_palette(self.sandbox);
-    }
-}
-
-impl Theme {
-    /// Empire theme -- warm amber/copper on navy, aligned with DESIGN.md
-    pub fn empire() -> Self {
-        Self {
-            background: Color::Rgb(15, 23, 42),
-            border: Color::Rgb(51, 65, 85),
-            terminal_border: Color::Rgb(13, 148, 136),
-            selection: Color::Rgb(38, 50, 75),
-            session_selection: Color::Rgb(55, 65, 92),
-
-            title: Color::Rgb(251, 191, 36),
-            text: Color::Rgb(203, 213, 225),
-            dimmed: Color::Rgb(100, 116, 139),
-            hint: Color::Rgb(148, 163, 184),
-
-            running: Color::Rgb(34, 197, 94),
-            // Waiting sits at the brightest point in the brand ramp
-            // (amber-400) so it wins on luminance against the fresh-idle
-            // color. Saturation alone wasn't enough on dark backgrounds —
-            // the deeper copper read as dimmer, not more urgent.
-            // Fresh-idle drops one rung to amber-500 so the hierarchy is
-            // bright-amber > copper-amber > slate.
-            waiting: Color::Rgb(251, 191, 36),
-            fresh_idle: Color::Rgb(245, 158, 11),
-            idle: Color::Rgb(100, 116, 139),
-            error: Color::Rgb(239, 68, 68),
-            terminal_active: Color::Rgb(13, 148, 136),
-
-            group: Color::Rgb(203, 213, 225),
-            search: Color::Rgb(251, 191, 36),
-            accent: Color::Rgb(217, 119, 6),
-
-            diff_add: Color::Rgb(34, 197, 94),
-            diff_delete: Color::Rgb(239, 68, 68),
-            diff_modified: Color::Rgb(251, 191, 36),
-            diff_header: Color::Rgb(13, 148, 136),
-
-            help_key: Color::Rgb(217, 119, 6),
-
-            branch: Color::Rgb(13, 148, 136),
-            sandbox: Color::Rgb(148, 163, 184),
-        }
-    }
-
-    pub fn phosphor() -> Self {
-        Self {
-            background: Color::Rgb(16, 20, 18),
-            border: Color::Rgb(45, 70, 55),
-            terminal_border: Color::Rgb(70, 130, 180),
-            selection: Color::Rgb(30, 50, 40),
-            session_selection: Color::Rgb(60, 60, 60),
-
-            title: Color::Rgb(57, 255, 20),
-            text: Color::Rgb(180, 255, 180),
-            dimmed: Color::Rgb(80, 120, 90),
-            hint: Color::Rgb(100, 160, 120),
-
-            running: Color::Rgb(0, 255, 180),
-            waiting: Color::Rgb(255, 180, 60),
-            fresh_idle: Color::Rgb(255, 123, 28),
-            idle: Color::Rgb(60, 100, 70),
-            error: Color::Rgb(255, 100, 80),
-            terminal_active: Color::Rgb(130, 170, 255),
-
-            group: Color::Rgb(100, 220, 160),
-            search: Color::Rgb(180, 255, 200),
-            accent: Color::Rgb(57, 255, 20),
-
-            diff_add: Color::Rgb(0, 255, 180),
-            diff_delete: Color::Rgb(255, 100, 80),
-            diff_modified: Color::Rgb(255, 180, 60),
-            diff_header: Color::Rgb(100, 160, 200),
-
-            help_key: Color::Rgb(255, 180, 60),
-
-            branch: Color::Rgb(100, 160, 200),
-            sandbox: Color::Rgb(200, 122, 255),
-        }
-    }
-
-    pub fn tokyo_night_storm() -> Self {
-        Self {
-            background: Color::Rgb(36, 40, 59),
-            border: Color::Rgb(65, 72, 104),
-            terminal_border: Color::Rgb(61, 89, 161),
-            selection: Color::Rgb(54, 74, 130),
-            session_selection: Color::Rgb(65, 72, 104),
-
-            title: Color::Rgb(122, 162, 247),
-            text: Color::Rgb(192, 202, 245),
-            dimmed: Color::Rgb(86, 95, 137),
-            hint: Color::Rgb(122, 162, 247),
-
-            running: Color::Rgb(158, 206, 106),
-            waiting: Color::Rgb(224, 175, 104),
-            fresh_idle: Color::Rgb(255, 158, 100),
-            idle: Color::Rgb(86, 95, 137),
-            error: Color::Rgb(247, 118, 142),
-            terminal_active: Color::Rgb(122, 162, 247),
-
-            group: Color::Rgb(125, 207, 255),
-            search: Color::Rgb(187, 154, 247),
-            accent: Color::Rgb(122, 162, 247),
-
-            diff_add: Color::Rgb(158, 206, 106),
-            diff_delete: Color::Rgb(247, 118, 142),
-            diff_modified: Color::Rgb(224, 175, 104),
-            diff_header: Color::Rgb(125, 207, 255),
-
-            help_key: Color::Rgb(224, 175, 104),
-
-            branch: Color::Rgb(125, 207, 255),
-            sandbox: Color::Rgb(187, 154, 247),
-        }
-    }
-
-    pub fn catppuccin_latte() -> Self {
-        Self {
-            background: Color::Rgb(239, 241, 245),
-            border: Color::Rgb(188, 192, 204),
-            terminal_border: Color::Rgb(4, 165, 229),
-            selection: Color::Rgb(220, 224, 232),
-            session_selection: Color::Rgb(204, 208, 218),
-
-            title: Color::Rgb(30, 102, 245),
-            text: Color::Rgb(76, 79, 105),
-            dimmed: Color::Rgb(172, 176, 190),
-            hint: Color::Rgb(32, 159, 181),
-
-            running: Color::Rgb(64, 160, 43),
-            // Light theme: darker = more attention. Waiting takes the
-            // deepest peach, fresh_idle the mid amber, idle the lightest
-            // slate so the row visibly fades into the page over time.
-            waiting: Color::Rgb(254, 100, 11),
-            fresh_idle: Color::Rgb(223, 142, 29),
-            idle: Color::Rgb(156, 160, 176),
-            error: Color::Rgb(210, 15, 57),
-            terminal_active: Color::Rgb(30, 102, 245),
-
-            group: Color::Rgb(23, 146, 153),
-            search: Color::Rgb(114, 135, 253),
-            accent: Color::Rgb(254, 100, 11),
-
-            diff_add: Color::Rgb(64, 160, 43),
-            diff_delete: Color::Rgb(210, 15, 57),
-            diff_modified: Color::Rgb(223, 142, 29),
-            diff_header: Color::Rgb(4, 165, 229),
-
-            help_key: Color::Rgb(223, 142, 29),
-
-            branch: Color::Rgb(4, 165, 229),
-            sandbox: Color::Rgb(136, 57, 239),
-        }
-    }
-
-    /// Dracula theme
-    /// Official palette: https://draculatheme.com/spec
-    pub fn dracula() -> Self {
-        Self {
-            background: Color::Rgb(40, 42, 54),
-            border: Color::Rgb(68, 71, 90),
-            terminal_border: Color::Rgb(139, 233, 253),
-            selection: Color::Rgb(68, 71, 90),
-            session_selection: Color::Rgb(98, 114, 164),
-
-            title: Color::Rgb(189, 147, 249),
-            text: Color::Rgb(248, 248, 242),
-            dimmed: Color::Rgb(98, 114, 164),
-            hint: Color::Rgb(98, 114, 164),
-
-            running: Color::Rgb(80, 250, 123),
-            waiting: Color::Rgb(255, 184, 108),
-            fresh_idle: Color::Rgb(255, 121, 80),
-            idle: Color::Rgb(98, 114, 164),
-            error: Color::Rgb(255, 85, 85),
-            terminal_active: Color::Rgb(139, 233, 253),
-
-            group: Color::Rgb(139, 233, 253),
-            search: Color::Rgb(241, 250, 140),
-            accent: Color::Rgb(255, 121, 198),
-
-            diff_add: Color::Rgb(80, 250, 123),
-            diff_delete: Color::Rgb(255, 85, 85),
-            diff_modified: Color::Rgb(255, 184, 108),
-            diff_header: Color::Rgb(189, 147, 249),
-
-            help_key: Color::Rgb(255, 121, 198),
-
-            branch: Color::Rgb(139, 233, 253),
-            sandbox: Color::Rgb(189, 147, 249),
-        }
-    }
-
-    /// Rosé Pine theme
-    /// Official palette: https://rosepinetheme.com/palette/ingredients/
-    pub fn rose_pine() -> Self {
-        Self {
-            background: Color::Rgb(25, 23, 36),
-            border: Color::Rgb(82, 79, 103),
-            terminal_border: Color::Rgb(156, 207, 216),
-            selection: Color::Rgb(33, 32, 46),
-            session_selection: Color::Rgb(64, 61, 82),
-
-            title: Color::Rgb(196, 167, 231),
-            text: Color::Rgb(224, 222, 244),
-            dimmed: Color::Rgb(110, 106, 134),
-            hint: Color::Rgb(144, 140, 170),
-
-            running: Color::Rgb(156, 207, 216),
-            waiting: Color::Rgb(246, 193, 119),
-            fresh_idle: Color::Rgb(144, 140, 170),
-            idle: Color::Rgb(110, 106, 134),
-            error: Color::Rgb(235, 111, 146),
-            terminal_active: Color::Rgb(156, 207, 216),
-
-            group: Color::Rgb(224, 222, 244),
-            search: Color::Rgb(246, 193, 119),
-            accent: Color::Rgb(235, 188, 186),
-
-            diff_add: Color::Rgb(156, 207, 216),
-            diff_delete: Color::Rgb(235, 111, 146),
-            diff_modified: Color::Rgb(235, 188, 186),
-            diff_header: Color::Rgb(49, 116, 143),
-
-            help_key: Color::Rgb(246, 193, 119),
-
-            branch: Color::Rgb(49, 116, 143),
-            sandbox: Color::Rgb(144, 140, 170),
+        for field in self.color_fields_mut() {
+            *field = color_to_palette(*field);
         }
     }
 }
@@ -424,59 +325,32 @@ pub(super) mod hex_color {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tui::styles::{load_theme, BUILTIN_THEMES};
+    use crate::tui::styles::{builtin_theme_names, load_theme};
 
     #[test]
     fn downsample_to_palette_converts_all_fields() {
-        // Structural guard: serialize Theme to count its fields, then verify
-        // downsample_to_palette touches every one. If a new Color field is
-        // added to Theme but not to downsample_to_palette, this test fails.
-        let value: toml::Value = toml::Value::try_from(Theme::empire()).unwrap();
-        let total_fields = value.as_table().unwrap().len();
-
-        let mut theme = Theme::empire();
+        // Structural guard: every Color field listed in `color_fields_mut`
+        // must survive downsampling without an Rgb left behind.
+        //
+        // Tradeoff vs the pre-PR version: that one cross-checked against
+        // the serialized field count, so a Color field added to Theme but
+        // missing from `downsample_to_palette` failed loud. Here the test
+        // is only as strong as `color_fields_mut`: if a new Color field is
+        // added to Theme but not to `color_fields_mut`, the downsample
+        // silently misses it and this test still passes. We accept that
+        // because `color_fields_mut` is the single source of truth for
+        // "what counts as a color field" (both downsample and the
+        // `default_matches_empire_toml` drift guard consume it), so the
+        // only way to drift is to forget two spots at once instead of one.
+        let mut theme = load_theme("empire");
         theme.downsample_to_palette();
-
-        let all_colors = [
-            theme.background,
-            theme.border,
-            theme.terminal_border,
-            theme.selection,
-            theme.session_selection,
-            theme.title,
-            theme.text,
-            theme.dimmed,
-            theme.hint,
-            theme.running,
-            theme.waiting,
-            theme.fresh_idle,
-            theme.idle,
-            theme.error,
-            theme.terminal_active,
-            theme.group,
-            theme.search,
-            theme.accent,
-            theme.diff_add,
-            theme.diff_delete,
-            theme.diff_modified,
-            theme.diff_header,
-            theme.help_key,
-            theme.branch,
-            theme.sandbox,
-        ];
-
-        assert_eq!(
-            all_colors.len(),
-            total_fields,
-            "Theme has {} fields but downsample test checks {}; update downsample_to_palette and this test",
-            total_fields,
-            all_colors.len()
-        );
-
-        assert!(
-            all_colors.iter().all(|c| !matches!(c, Color::Rgb(_, _, _))),
-            "Rgb still present after downsample"
-        );
+        for color in theme.color_fields() {
+            assert!(
+                !matches!(color, Color::Rgb(_, _, _)),
+                "Rgb still present after downsample: {:?}",
+                color
+            );
+        }
     }
 
     #[test]
@@ -516,7 +390,7 @@ mod tests {
 
     #[test]
     fn idle_color_at_age_boundaries() {
-        let theme = Theme::empire();
+        let theme = load_theme("empire");
         let window = idle_decay_window(20);
         // No timestamp = decayed.
         assert_eq!(theme.idle_color_at_age(None, window), theme.idle);
@@ -543,7 +417,7 @@ mod tests {
     fn idle_color_at_age_zero_window_disables_freshness() {
         // window = 0 is the documented opt-out: every Idle row renders
         // as fully decayed regardless of age. No pulse, no fresh tint.
-        let theme = Theme::empire();
+        let theme = load_theme("empire");
         assert_eq!(
             theme.idle_color_at_age(Some(Duration::from_secs(1)), Duration::ZERO),
             theme.idle
@@ -578,7 +452,7 @@ mod tests {
                 _ => 0.0,
             }
         }
-        for name in BUILTIN_THEMES {
+        for name in builtin_theme_names() {
             let theme = load_theme(name);
             let bg = luminance(theme.background);
             let dark_bg = bg < 128.0;

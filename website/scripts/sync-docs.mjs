@@ -168,6 +168,13 @@ const PAGES = [
       "Per-agent cockpit feature matrix: claude, codex, opencode, gemini. Covers profile data, supported tools, and known limitations.",
   },
   {
+    source: "docs/guides/tool-sessions.md",
+    dest: "guides/tool-sessions.md",
+    title: "Tool Sessions",
+    description:
+      "Configure persistent dev-tool sessions (lazygit, yazi, tig, etc.) tied to each agent session's working directory, with hotkey, picker, and command-palette access.",
+  },
+  {
     source: "docs/api.md",
     dest: "docs/api.md",
     title: "HTTP API Reference",
@@ -202,6 +209,7 @@ const URL_MAP = {
   "docs/guides/agent-override.md": "/guides/agent-override/",
   "docs/guides/session-resume.md": "/guides/session-resume/",
   "docs/guides/multi-repo-workspaces.md": "/guides/multi-repo-workspaces/",
+  "docs/guides/tool-sessions.md": "/guides/tool-sessions/",
 };
 
 const GITHUB_BASE =

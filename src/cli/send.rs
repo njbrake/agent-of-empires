@@ -21,6 +21,7 @@ pub struct SendArgs {
     no_revive: bool,
 }
 
+#[tracing::instrument(target = "cli.send", skip_all, fields(profile = %profile))]
 pub async fn run(profile: &str, args: SendArgs) -> Result<()> {
     let storage = Storage::new(profile)?;
     let (mut instances, _) = storage.load_with_groups()?;

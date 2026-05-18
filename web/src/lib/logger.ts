@@ -6,7 +6,7 @@
 // Throttling: token-bucket (10 cap, 10/s refill) on entries. Batches
 // flush every 2s, on size threshold, on visibilitychange=hidden, and
 // on pagehide. Unload-time flush uses navigator.sendBeacon with a JSON
-// Blob since sendBeacon can't carry the Authorization header — the
+// Blob since sendBeacon can't carry the Authorization header; the
 // cookie-mode auth still works in that path.
 //
 // URL sanitization: never log `window.location.href` raw, because we
@@ -97,7 +97,7 @@ async function flush(viaBeacon: boolean): Promise<void> {
   if (isReporting) return;
   isReporting = true;
   try {
-    let batch = queue;
+    const batch = queue;
     queue = [];
     if (dropped > 0) {
       batch.push({
