@@ -227,10 +227,11 @@ export async function fetchSounds(): Promise<string[]> {
   return (await fetchJson<string[]>("/api/sounds")) ?? [];
 }
 
-/** Fetch a sound file as a Blob through the authenticated fetch path so
- *  the cockpit's browser-side approval player can hand a blob URL to
- *  `new Audio(...)`. Auth lives on a header, not on the audio element,
- *  so the raw `<audio src>` cannot be used directly. See #1038. */
+/** Fetch a sound file as a Blob so the cockpit's browser-side approval
+ *  player can hand a blob URL to `new Audio(...)`. The fetch path runs
+ *  through `fetchInterceptor.ts`, which injects `Authorization: Bearer`
+ *  on every request; an `<audio src="...">` element does not, so a
+ *  blob round-trip is necessary in PWA mode. See #1038. */
 export async function fetchSoundBlob(name: string): Promise<Blob | null> {
   try {
     const res = await fetch(`/api/sounds/file/${encodeURIComponent(name)}`);

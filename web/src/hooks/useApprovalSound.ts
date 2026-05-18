@@ -133,12 +133,24 @@ async function playApprovalSound(): Promise<void> {
  *  has no return value. */
 export function useApprovalSound(pendingCount: number): void {
   const lastCount = useRef(pendingCount);
-  const mountedAt = useRef(Date.now());
+  // `mountedAt` is set once in the mount effect rather than in the
+  // useRef initialiser so `Date.now()` isn't re-evaluated on every
+  // render. The sentinel 0 doubles as a "not yet armed" marker; the
+  // transition effect treats 0 the same as a too-recent mount.
+  const mountedAt = useRef<number>(0);
+  useEffect(() => {
+    mountedAt.current = Date.now();
+  }, []);
   useEffect(() => {
     const prev = lastCount.current;
     lastCount.current = pendingCount;
     if (prev !== 0 || pendingCount === 0) return;
-    if (Date.now() - mountedAt.current < REPLAY_QUIET_MS) return;
+    if (
+      mountedAt.current === 0 ||
+      Date.now() - mountedAt.current < REPLAY_QUIET_MS
+    ) {
+      return;
+    }
     void playApprovalSound();
   }, [pendingCount]);
 }
