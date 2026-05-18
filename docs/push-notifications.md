@@ -59,7 +59,7 @@ If the test does not appear:
 1. Open the dashboard URL.
 2. Go to Settings. In the Notifications section, click *Enable notifications*.
 3. Grant permission when the browser asks.
-4. Click *Send test notification*.
+4. Click *Send test notification*. The server waits a few seconds before firing, so the notification arrives shortly after the click.
 
 Desktop Safari requires macOS 13 or later and does not require the PWA install step.
 

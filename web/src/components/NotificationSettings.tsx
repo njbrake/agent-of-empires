@@ -91,8 +91,8 @@ function StatusRow({ state }: { state: ReturnType<typeof usePushSubscription>["s
     case "sending-test":
       return (
         <p className="text-sm text-text-secondary">
-          Sending test notification in a few seconds. Lock your phone now to
-          see it land on the Lock Screen.
+          Sending test notification in a few seconds. On a phone, lock the
+          screen now to see it land on the Lock Screen.
         </p>
       );
     case "disabling":

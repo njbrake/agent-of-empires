@@ -56,7 +56,7 @@ pub const COOLDOWN_MS: u64 = 60_000;
 /// firing the push. Gives the user time to lock their phone so the
 /// notification lands on the Lock Screen instead of in the foreground
 /// app, which is what they actually want to verify.
-pub const TEST_DELAY_MS: u64 = 3_000;
+const TEST_DELAY_MS: u64 = 3_000;
 
 // ── VAPID keypair ───────────────────────────────────────────────────────────
 
