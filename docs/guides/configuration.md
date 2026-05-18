@@ -44,13 +44,13 @@ All settings below can also be edited from the TUI settings screen (press `s` or
 
 ```toml
 [theme]
-name = "empire"   # empire, phosphor, tokyo-night-storm, catppuccin-latte, dracula, rose-pine
+name = "empire"   # empire, phosphor, tokyo-night-storm, catppuccin-latte, dracula, rose-pine, deep-ocean
 color_mode = "truecolor"   # truecolor | palette (TUI only)
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `name` | `"empire"` | Color theme. Applies to **both the TUI and the web dashboard**. Available builtins: `empire` (warm navy/amber), `phosphor` (green), `tokyo-night-storm` (dark blue/purple), `catppuccin-latte` (light pastel), `dracula` (dark purple/pink), `rose-pine` (dark muted purple/pink). Custom TOML themes in `~/.agent-of-empires/themes/*.toml` also appear in the picker. |
+| `name` | `"empire"` | Color theme. Applies to **both the TUI and the web dashboard**. Available builtins: `empire` (warm navy/amber), `phosphor` (green), `tokyo-night-storm` (dark blue/purple), `catppuccin-latte` (light pastel), `dracula` (dark purple/pink), `rose-pine` (dark muted purple/pink), `deep-ocean` (Material Theme Deep Ocean, dark navy/cyan). Custom TOML themes in `~/.agent-of-empires/themes/*.toml` also appear in the picker. |
 | `color_mode` | `"truecolor"` | TUI only. `palette` downsamples to xterm-256 for transports that mangle 24-bit RGB (e.g. some `mosh` setups). The web dashboard always renders truecolor. |
 
 ### Builtin themes

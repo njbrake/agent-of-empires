@@ -54,6 +54,10 @@ pub const BUILTIN_THEMES: &[BuiltinTheme] = &[
         name: "rose-pine",
         source: include_str!("../../../themes/builtin/rose-pine.toml"),
     },
+    BuiltinTheme {
+        name: "deep-ocean",
+        source: include_str!("../../../themes/builtin/deep-ocean.toml"),
+    },
 ];
 
 /// Iterator over builtin theme names, in declared order.
@@ -242,6 +246,11 @@ mod tests {
             "rose-pine",
             Color::Rgb(0x19, 0x17, 0x24),
             Color::Rgb(0xc4, 0xa7, 0xe7),
+        ),
+        (
+            "deep-ocean",
+            Color::Rgb(0x0f, 0x11, 0x1a),
+            Color::Rgb(0x84, 0xff, 0xff),
         ),
     ];
 
@@ -435,7 +444,7 @@ border = "#414868"
 
     #[test]
     fn test_builtin_themes_count() {
-        assert_eq!(BUILTIN_THEMES.len(), 6);
+        assert_eq!(BUILTIN_THEMES.len(), 7);
         let names: Vec<&str> = builtin_theme_names().collect();
         assert!(names.contains(&"empire"));
         assert!(names.contains(&"phosphor"));
@@ -443,6 +452,7 @@ border = "#414868"
         assert!(names.contains(&"catppuccin-latte"));
         assert!(names.contains(&"dracula"));
         assert!(names.contains(&"rose-pine"));
+        assert!(names.contains(&"deep-ocean"));
     }
 
     #[test]
