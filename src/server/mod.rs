@@ -481,15 +481,10 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
     let cockpit_supervisor = {
         // Approval pushes are dispatched from `cockpit_event_listener`,
         // which subscribes to the broadcast that ChannelSink::publish
-        // feeds and has `Arc<AppState>` in scope without the closure
-        // dance. The supervisor's `on_approval` callback survives only
-        // because the test sinks set it directly; in production it is
-        // a no-op. See #1038.
-        let on_approval = std::sync::Arc::new(|_: &str, _: &str, _: bool| {})
-            as std::sync::Arc<dyn Fn(&str, &str, bool) + Send + Sync>;
+        // feeds and has `Arc<AppState>` in scope without a closure
+        // dance through the supervisor. See #1038.
         let sink = std::sync::Arc::new(crate::cockpit::supervisor::ChannelSink {
             tx: cockpit_events_tx.clone(),
-            on_approval,
             event_store: cockpit_event_store.clone(),
         });
         let supervisor =
