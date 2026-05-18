@@ -11,7 +11,7 @@ pub fn install_hint_for(binary: &str) -> Option<&'static str> {
         "claude-agent-acp" => "npm install -g @agentclientprotocol/claude-agent-acp",
         "codex-acp" => "npm install -g @zed-industries/codex-acp",
         "pi-acp" => {
-            "npm install -g pi-acp  (also requires `npm i -g @earendil-works/pi-coding-agent`)"
+            "npm install -g pi-acp (also requires `npm install -g @earendil-works/pi-coding-agent`)"
         }
         "opencode" => "curl -fsSL https://opencode.ai/install | bash  (then `opencode acp`)",
         "gemini" => "npm install -g @google/gemini-cli  (then `gemini --acp`)",

@@ -110,7 +110,7 @@ Configured agents:
 [!! ] opencode  (OpenCode (SST); native ACP via `opencode acp`)
     install: curl -fsSL https://opencode.ai/install | bash  (then `opencode acp`)
 [!! ] pi  (Pi coding agent (`pi`) via the pi-acp adapter …)
-    install: npm install -g pi-acp  (also requires `npm i -g @earendil-works/pi-coding-agent`)
+    install: npm install -g pi-acp (also requires `npm install -g @earendil-works/pi-coding-agent`)
 [!! ] vibe  (Mistral Vibe; native ACP via the bundled `vibe-acp` binary)
     install: follow https://github.com/mistralai/mistral-vibe (ships the `vibe-acp` binary)
 
