@@ -1,7 +1,8 @@
 //! Status file I/O for hooks-based agent status detection.
 //!
 //! Agent hooks write `running`, `waiting`, or `idle` to a well-known
-//! file path so AoE can detect agent status without parsing tmux pane content.
+//! file path so AoE can prefer hook status over tmux pane content. Callers may
+//! still reconcile agent-specific hook gaps from pane text.
 
 use std::path::PathBuf;
 

@@ -2217,6 +2217,12 @@ impl Instance {
             self.has_command_override()
         );
 
+        let detection_tool = if self.detect_as.is_empty() {
+            &self.tool
+        } else {
+            &self.detect_as
+        };
+
         if let Some(hook_status) = crate::hooks::read_hook_status(&self.id) {
             tracing::trace!(
                 "status '{}': hook detected {:?}, is_dead={}",
@@ -2231,18 +2237,29 @@ impl Instance {
                     self.last_error = Some(summarize_error_from_pane(&pane_content));
                 }
             } else {
-                self.status = hook_status;
+                self.status = if detection_tool == "codex" && hook_status == Status::Running {
+                    match session.capture_pane(50) {
+                        Ok(pane_content) => {
+                            tmux::reconcile_codex_hook_status(hook_status, &pane_content)
+                        }
+                        Err(e) => {
+                            tracing::trace!(
+                                "status '{}': codex hook fallback pane capture failed: {}",
+                                self.title,
+                                e
+                            );
+                            hook_status
+                        }
+                    }
+                } else {
+                    hook_status
+                };
                 self.last_error = None;
             }
             return;
         }
 
         let pane_content = session.capture_pane(50).unwrap_or_default();
-        let detection_tool = if self.detect_as.is_empty() {
-            &self.tool
-        } else {
-            &self.detect_as
-        };
         let detected = tmux::detect_status_from_content(&pane_content, detection_tool);
         tracing::trace!(
             "status '{}': detected={:?}, cmd_override={}, custom_cmd={}",

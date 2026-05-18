@@ -245,7 +245,7 @@ type = "command"
 command = "sh -c '...'"
 ```
 
-Set `hook_config: Some(AgentHookConfig { settings_rel_path: ".codex/config.toml", ... })` in the agent def. Host installs still use `install_codex_hooks()` so `CODEX_HOME`, existing `[hooks.state]` trust data, and `[features].hooks = false` are respected.
+Set `hook_config: Some(AgentHookConfig { settings_rel_path: ".codex/config.toml", ... })` in the agent def. Host installs still use `install_codex_hooks()` so `CODEX_HOME`, existing `[hooks.state]` trust data, and `[features].hooks = false` are respected. Codex status is hook-first, with targeted pane reconciliation for known hook gaps.
 
 ### Hermes (custom YAML)
 

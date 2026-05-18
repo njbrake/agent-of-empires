@@ -1,8 +1,9 @@
 //! Agent hook management for status detection.
 //!
 //! AoE installs hooks into an agent's settings file that write session
-//! status (`running`/`waiting`/`idle`) to a sidecar file. This provides
-//! reliable status detection without parsing tmux pane content.
+//! status (`running`/`waiting`/`idle`) to a sidecar file. This provides a
+//! hook-first status source; agent-specific code may still reconcile known
+//! hook gaps from tmux pane content.
 //!
 //! Hook events are agent-specific and defined in `AgentHookConfig::events`.
 

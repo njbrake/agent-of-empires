@@ -721,7 +721,7 @@ impl HomeView {
                     line_spans.push(Span::styled(badge, Style::default().fg(theme.sandbox)));
                 }
                 if column_fits {
-                    line_spans.push(Span::raw(" ".to_string()));
+                    line_spans.push(Span::raw(" "));
                 }
             }
         }
