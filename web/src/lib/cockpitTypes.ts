@@ -966,6 +966,8 @@ export function normaliseTurnCounters(
   state: CockpitState & {
     pendingUserPromptSeq?: number;
     lastStoppedSeq?: number;
+    rejectedPrompts?: RejectedPrompt[];
+    agentUnresponsive?: boolean;
   },
 ): CockpitState {
   const pendingUserPromptSeq =
@@ -980,8 +982,20 @@ export function normaliseTurnCounters(
       : state.turnActive
         ? 0
         : pendingUserPromptSeq;
+  // Pre-#1196 persisted entries lack rejectedPrompts / agentUnresponsive;
+  // backfill so the reducer and renderers see well-typed values instead
+  // of `undefined` (which crashes RejectedPromptsStrip's `.length` read).
+  const rejectedPrompts = Array.isArray(state.rejectedPrompts)
+    ? state.rejectedPrompts
+    : [];
+  const agentUnresponsive =
+    typeof state.agentUnresponsive === "boolean"
+      ? state.agentUnresponsive
+      : false;
   return {
     ...state,
+    rejectedPrompts,
+    agentUnresponsive,
     pendingUserPromptSeq,
     lastStoppedSeq,
     turnActive: isTurnActive({ pendingUserPromptSeq, lastStoppedSeq }),
