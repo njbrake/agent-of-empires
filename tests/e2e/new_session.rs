@@ -36,12 +36,46 @@ fn test_new_session_dialog_escape_cancels() {
 }
 
 /// Submit the new session dialog, handling the "Path does not exist. Create?"
-/// prompt if it appears. The 'y' keystroke is harmless when the path exists
-/// because there is no 'y' keybinding in the home view.
+/// prompt if it appears.
+///
+/// macOS CI tmux occasionally drops the first Enter when sent right after a
+/// long literal-text burst, leaving the dialog stuck in the input state. We
+/// detect that by polling for the dialog to transition (close, switch to a
+/// loading overlay, or show the create-dir prompt) and re-send Enter if the
+/// dialog still shows its hint line after a grace period. Resending Enter is
+/// idempotent: by the time the dialog has closed it is already gone, so a
+/// late-arriving second Enter falls through to the home view, where Enter is
+/// a no-op when no session row is selected (the Creating stub is auto-selected
+/// only after the dialog closes).
 fn submit_new_session_dialog(h: &TuiTestHarness) {
     h.send_keys("Enter");
-    std::thread::sleep(Duration::from_millis(300));
-    h.send_keys("y");
+    let start = std::time::Instant::now();
+    let mut resent = false;
+    loop {
+        let screen = h.capture_screen();
+        if screen.contains("Path does not exist") {
+            h.send_keys("y");
+            return;
+        }
+        // Any of these means Enter was accepted by the dialog.
+        if !screen.contains(" New Session ")
+            || screen.contains("Running Hooks")
+            || screen.contains("Creating Session")
+            || screen.contains("Creating...")
+        {
+            return;
+        }
+        if !resent && start.elapsed() > Duration::from_millis(800) {
+            // Dialog still in input state. Assume Enter was lost; resend.
+            h.send_keys("Enter");
+            resent = true;
+        }
+        if start.elapsed() > Duration::from_secs(5) {
+            // Give up; downstream wait_for will produce the diagnostic.
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
 }
 
 /// Write a global config with on_create hooks so session creation goes through
