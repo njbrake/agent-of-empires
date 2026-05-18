@@ -167,7 +167,10 @@ pub async fn run_for_endpoint(
 
     let mut toast_deadline: Option<Instant> = None;
 
-    match initial {
+    // Capture both startup-path errors before showing a toast so we
+    // can fold them into a single message when both fail (they
+    // usually share a root cause, e.g. 401 from the auth middleware).
+    let replay_err = match initial {
         Ok(replay) => {
             if replay.lost {
                 state.transcript.set_lagged();
@@ -176,26 +179,28 @@ pub async fn run_for_endpoint(
                 state.transcript.apply(frame);
             }
             state.reconcile_selection();
+            None
         }
         Err(e) => {
             tracing::warn!(target: "cockpit.tui", "initial replay failed: {e}");
-            set_toast(
-                &mut state,
-                &mut toast_deadline,
-                format!("replay failed: {e}"),
-                ToastKind::Error,
-            );
+            Some(e.to_string())
         }
-    }
+    };
 
-    if let Some(e) = ws_err {
+    let ws_err_text = ws_err.map(|e| {
         tracing::warn!(target: "cockpit.tui.ws", "initial ws connect failed: {e}");
-        set_toast(
-            &mut state,
-            &mut toast_deadline,
-            format!("ws connect failed: {e}"),
-            ToastKind::Error,
-        );
+        e.to_string()
+    });
+
+    let startup_toast = match (replay_err, ws_err_text) {
+        (Some(r), Some(w)) => Some(format!("startup failed: replay={r}; ws={w}")),
+        (Some(r), None) => Some(format!("replay failed: {r}")),
+        (None, Some(w)) => Some(format!("ws connect failed: {w}")),
+        (None, None) => None,
+    };
+
+    if let Some(text) = startup_toast {
+        set_toast(&mut state, &mut toast_deadline, text, ToastKind::Error);
     }
 
     redraw(terminal, theme, &state)?;
