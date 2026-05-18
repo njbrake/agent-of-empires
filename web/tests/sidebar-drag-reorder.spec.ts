@@ -54,6 +54,13 @@ async function mockApis(
       },
     });
   });
+  // Catch-all for the prepend-on-first-sight PUT that App.tsx fires
+  // whenever a workspace id isn't yet in the persisted ordering. The
+  // drag test overrides this with `page.route(..., ...)` to capture the
+  // PUT body.
+  await page.route("**/api/workspace-ordering", (r) =>
+    r.fulfill({ json: { order: [] } }),
+  );
   for (const path of [
     "settings",
     "themes",
@@ -115,7 +122,7 @@ test.describe("Sidebar drag-to-reorder (#1169)", () => {
       .toEqual(["old-ws", "new-ws"]);
   });
 
-  test("default ordering (no server entry) is birth-key newest-first", async ({
+  test("default order with no server entry puts newest workspace first", async ({
     page,
   }) => {
     const sessions: MockSession[] = [
@@ -147,13 +154,17 @@ test.describe("Sidebar drag-to-reorder (#1169)", () => {
   test("press-and-hold drag reorders the row and PUTs the new order", async ({
     page,
   }) => {
+    // Array is in creation order (oldest first) — the server returns
+    // sessions in `instances` Vec order, and the client treats that as
+    // "newest is whatever was created last." See useRepoGroups + the
+    // effective-ordering memo in App.tsx.
     const sessions: MockSession[] = [
       {
-        id: "s-a",
-        title: "alpha",
+        id: "s-c",
+        title: "gamma",
         project_path: "/tmp/repo",
-        branch: "feature/a",
-        created_at: "2025-03-01T00:00:00Z",
+        branch: "feature/c",
+        created_at: "2025-01-01T00:00:00Z",
       },
       {
         id: "s-b",
@@ -163,19 +174,22 @@ test.describe("Sidebar drag-to-reorder (#1169)", () => {
         created_at: "2025-02-01T00:00:00Z",
       },
       {
-        id: "s-c",
-        title: "gamma",
+        id: "s-a",
+        title: "alpha",
         project_path: "/tmp/repo",
-        branch: "feature/c",
-        created_at: "2025-01-01T00:00:00Z",
+        branch: "feature/a",
+        created_at: "2025-03-01T00:00:00Z",
       },
     ];
 
-    let putBody: { order?: string[] } | null = null;
+    const puts: string[][] = [];
     await mockApis(page, () => sessions, () => []);
     await page.route("**/api/workspace-ordering", (r) => {
-      putBody = JSON.parse(r.request().postData() || "{}");
-      return r.fulfill({ json: { order: putBody?.order ?? [] } });
+      const body = JSON.parse(r.request().postData() || "{}") as {
+        order?: string[];
+      };
+      if (body.order) puts.push(body.order);
+      return r.fulfill({ json: { order: body.order ?? [] } });
     });
     await page.setViewportSize({ width: 1280, height: 720 });
     await page.goto("/");
@@ -231,10 +245,15 @@ test.describe("Sidebar drag-to-reorder (#1169)", () => {
       .poll(() => readWorkspaceOrder(page), { timeout: 4000 })
       .toEqual(["gamma", "alpha", "beta"]);
 
-    await expect.poll(() => putBody?.order, { timeout: 4000 }).toEqual([
-      "/tmp/repo::feature/c",
-      "/tmp/repo::feature/a",
-      "/tmp/repo::feature/b",
-    ]);
+    // The drag PUT lands after the initial "prepend new workspaces" PUT
+    // that the App-level effect fires on first observation. We assert the
+    // drag's order shows up among the PUTs.
+    await expect
+      .poll(() => puts.at(-1), { timeout: 4000 })
+      .toEqual([
+        "/tmp/repo::feature/c",
+        "/tmp/repo::feature/a",
+        "/tmp/repo::feature/b",
+      ]);
   });
 });

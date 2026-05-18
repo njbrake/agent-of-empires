@@ -1,6 +1,5 @@
 import { useCallback, useMemo, useState } from "react";
 import type { Workspace, RepoGroup } from "../lib/types";
-import { groupCreatedAt, sortWorkspaces } from "../lib/workspaceSort";
 
 const COLLAPSED_KEY_PREFIX = "aoe-repo-collapsed-";
 export const MULTI_REPO_GROUP_ID = "__multi_repo__";
@@ -17,6 +16,11 @@ function isMultiRepoWorkspace(ws: Workspace): boolean {
   return ws.sessions.some((s) => (s.workspace_repos?.length ?? 0) > 1);
 }
 
+// Workspaces and their groups both sort by their position in
+// `workspaceOrdering` (the persisted user order, prepended by App.tsx
+// whenever a new workspace appears). For groups, "position" is the best
+// (lowest) rank held by any of the group's workspaces — newest workspace
+// in the group pulls the group up. See #1169.
 export function useRepoGroups(
   workspaces: Workspace[],
   workspaceOrdering: readonly string[] = [],
@@ -27,6 +31,11 @@ export function useRepoGroups(
   const [collapsedMap, setCollapsedMap] = useState<Record<string, boolean>>({});
 
   const groups = useMemo(() => {
+    const rank = new Map(workspaceOrdering.map((id, i) => [id, i] as const));
+    const rankOf = (id: string) => rank.get(id) ?? Infinity;
+    const sortByRank = (list: Workspace[]) =>
+      [...list].sort((a, b) => rankOf(a.id) - rankOf(b.id));
+
     const byRepo = new Map<string, Workspace[]>();
     const multiRepo: Workspace[] = [];
 
@@ -36,23 +45,17 @@ export function useRepoGroups(
         continue;
       }
       const existing = byRepo.get(ws.projectPath);
-      if (existing) {
-        existing.push(ws);
-      } else {
-        byRepo.set(ws.projectPath, [ws]);
-      }
+      if (existing) existing.push(ws);
+      else byRepo.set(ws.projectPath, [ws]);
     }
 
     const repoGroups: RepoGroup[] = [];
 
     for (const [repoPath, repoWorkspaces] of byRepo) {
-      const sorted = sortWorkspaces(repoWorkspaces, workspaceOrdering);
+      const sorted = sortByRank(repoWorkspaces);
       const hasActive = sorted.some((ws) => ws.status === "active");
-      const collapsed =
-        collapsedMap[repoPath] ?? loadCollapsed(repoPath);
-
-      const remoteOwner =
-        sorted[0]?.sessions[0]?.remote_owner ?? null;
+      const collapsed = collapsedMap[repoPath] ?? loadCollapsed(repoPath);
+      const remoteOwner = sorted[0]?.sessions[0]?.remote_owner ?? null;
 
       repoGroups.push({
         id: repoPath,
@@ -66,7 +69,7 @@ export function useRepoGroups(
     }
 
     if (multiRepo.length > 0) {
-      const sorted = sortWorkspaces(multiRepo, workspaceOrdering);
+      const sorted = sortByRank(multiRepo);
       const hasActive = sorted.some((ws) => ws.status === "active");
       const collapsed =
         collapsedMap[MULTI_REPO_GROUP_ID] ?? loadCollapsed(MULTI_REPO_GROUP_ID);
@@ -84,9 +87,9 @@ export function useRepoGroups(
     repoGroups.sort((a, b) => {
       if (a.id === MULTI_REPO_GROUP_ID) return 1;
       if (b.id === MULTI_REPO_GROUP_ID) return -1;
-      const ak = groupCreatedAt(a.workspaces);
-      const bk = groupCreatedAt(b.workspaces);
-      if (ak !== bk) return bk.localeCompare(ak);
+      const am = Math.min(...a.workspaces.map((w) => rankOf(w.id)));
+      const bm = Math.min(...b.workspaces.map((w) => rankOf(w.id)));
+      if (am !== bm) return am - bm;
       return a.repoPath.localeCompare(b.repoPath);
     });
 

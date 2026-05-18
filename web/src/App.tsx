@@ -190,9 +190,31 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
     setSessionStatus,
   } = useSessions();
   const workspaces = useWorkspaces(sessions);
+
+  // Effective sidebar order: the persisted ordering with any not-yet-
+  // seen workspace prepended (newest first, since useWorkspaces emits
+  // in server creation order). This lets the sort be a pure rank lookup
+  // and removes any need to compute a "birth" timestamp at render time.
+  // The next effect persists the result so other devices catch up.
+  const effectiveOrdering = useMemo(() => {
+    const known = new Set(workspaceOrdering);
+    const newIds = workspaces
+      .map((w) => w.id)
+      .filter((id) => !known.has(id));
+    return newIds.length === 0
+      ? workspaceOrdering
+      : [...newIds.reverse(), ...workspaceOrdering];
+  }, [workspaces, workspaceOrdering]);
+
+  useEffect(() => {
+    if (effectiveOrdering !== workspaceOrdering) {
+      void updateWorkspaceOrdering(effectiveOrdering);
+    }
+  }, [effectiveOrdering, workspaceOrdering]);
+
   const { groups, toggleRepoCollapsed } = useRepoGroups(
     workspaces,
-    workspaceOrdering,
+    effectiveOrdering,
   );
 
   // Drag-end handler for the sidebar. Optimistically applies the new
