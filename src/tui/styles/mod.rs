@@ -198,6 +198,49 @@ mod tests {
     ];
 
     #[test]
+    fn concurrent_load_theme_does_not_deadlock() {
+        // Belt-and-braces: even with the fixed Default impl, exercise
+        // the load path from many threads at once. If some future
+        // change reintroduces a self-referential lock in the load
+        // path, the watchdog timeout catches it.
+        use std::sync::{Arc, Mutex};
+        use std::thread;
+        use std::time::{Duration, Instant};
+
+        let started = Instant::now();
+        let names: Vec<&'static str> = builtin_theme_names().collect();
+        let errors: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let mut handles = Vec::new();
+        for _ in 0..16 {
+            let names = names.clone();
+            let errors = Arc::clone(&errors);
+            handles.push(thread::spawn(move || {
+                for name in names {
+                    let result = std::panic::catch_unwind(|| load_theme(name));
+                    if result.is_err() {
+                        errors.lock().unwrap().push(name.to_string());
+                    }
+                }
+            }));
+        }
+        for h in handles {
+            h.join().expect("worker thread panicked");
+        }
+        let elapsed = started.elapsed();
+        let errs = errors.lock().unwrap();
+        assert!(
+            errs.is_empty(),
+            "themes panicked under concurrent load: {:?}",
+            *errs
+        );
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "16 threads x 6 themes took {:?}; likely a lock contention regression",
+            elapsed
+        );
+    }
+
+    #[test]
     fn default_does_not_recurse_through_load_theme() {
         // Regression for the OnceLock-via-load_theme deadlock the
         // first cut of this work shipped: serde's container-level
