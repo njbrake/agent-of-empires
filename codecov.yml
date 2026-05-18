@@ -1,0 +1,200 @@
+# Codecov configuration for agent-of-empires.
+#
+# Scope today: web/ frontend only (Vitest unit tests + Playwright mocked +
+# Playwright live, all merged into one LCOV by web/scripts/merge-coverage.mjs).
+# Rust backend coverage (cargo-llvm-cov or tarpaulin) is queued as a
+# follow-up; when it lands, add a `cargo` flag and additional components
+# scoped under src/**.
+#
+# Components segment the web frontend by user-facing surface so the PR
+# comment shows exactly which area moved (or regressed). Targets are 90%
+# project + patch with a 1% threshold; first PRs after the foundation
+# merges will run well below this, so the report-only philosophy lives
+# in the Codecov "informational" flag at the project level until the
+# follow-ups (#1217-#1224) lift the baseline.
+
+comment:
+  after_n_builds: 1
+  layout: "header, diff, files, components, sunburst, uncovered, footer"
+  behavior: default
+  require_changes: false
+  require_base: false
+  require_head: false
+  hide_project_coverage: false
+
+codecov:
+  disable_default_path_fixes: false
+
+# Flag for the single merged frontend upload. Add more flags
+# (playwright-mocked, playwright-live, vitest) in a follow-up once we
+# split the upload step into three separate codecov calls.
+flags:
+  frontend:
+    paths:
+      - web/src/
+    carryforward: true
+
+component_management:
+  default_rules:
+    statuses:
+      - type: project
+        target: 90%
+        threshold: 1%
+  individual_components:
+    # ============================================================
+    # COCKPIT (native agent rendering)
+    # ============================================================
+    - component_id: "cockpit-ui"
+      name: "Cockpit UI"
+      paths:
+        - "web/src/components/cockpit/**"
+
+    # ============================================================
+    # DIFF VIEWER + COMMENTS
+    # ============================================================
+    - component_id: "diff-viewer"
+      name: "Diff Viewer"
+      paths:
+        - "web/src/components/diff/**"
+
+    # ============================================================
+    # SESSION WIZARD
+    # ============================================================
+    - component_id: "session-wizard"
+      name: "Session Wizard"
+      paths:
+        - "web/src/components/session-wizard/**"
+
+    # ============================================================
+    # SETTINGS (panels under settings/ + standalone settings components)
+    # ============================================================
+    - component_id: "settings"
+      name: "Settings"
+      paths:
+        - "web/src/components/settings/**"
+        - "web/src/components/NotificationSettings.tsx"
+        - "web/src/components/SecuritySettings.tsx"
+        - "web/src/components/SettingsView.tsx"
+        - "web/src/components/TerminalSettings.tsx"
+
+    # ============================================================
+    # AUTH (LoginPage, TokenEntryPage, ElevationPrompt)
+    # ============================================================
+    - component_id: "auth"
+      name: "Auth"
+      paths:
+        - "web/src/components/LoginPage.tsx"
+        - "web/src/components/TokenEntryPage.tsx"
+        - "web/src/components/ElevationPrompt.tsx"
+
+    # ============================================================
+    # DASHBOARD + SESSION SIDEBAR + LIFECYCLE
+    # ============================================================
+    - component_id: "dashboard-sidebar"
+      name: "Dashboard + Sidebar"
+      paths:
+        - "web/src/components/Dashboard.tsx"
+        - "web/src/components/WorkspaceSidebar.tsx"
+        - "web/src/components/DeleteSessionDialog.tsx"
+        - "web/src/components/TopBar.tsx"
+        - "web/src/components/ProjectsView.tsx"
+
+    # ============================================================
+    # RIGHT PANEL + TERMINAL VIEW
+    # ============================================================
+    - component_id: "right-panel-terminal"
+      name: "Right Panel + Terminal"
+      paths:
+        - "web/src/components/RightPanel.tsx"
+        - "web/src/components/TerminalView.tsx"
+        - "web/src/components/ContentSplit.tsx"
+        - "web/src/components/MobileTerminalToolbar.tsx"
+        - "web/src/components/KeyboardFab.tsx"
+        - "web/src/components/BackToLiveButton.tsx"
+        - "web/src/components/ViewportFullscreenFab.tsx"
+
+    # ============================================================
+    # DIRECTORY BROWSER + CONNECTED DEVICES + DISCONNECT BANNER
+    # ============================================================
+    - component_id: "ancillary-views"
+      name: "Directory Browser, Devices, Connectivity"
+      paths:
+        - "web/src/components/DirectoryBrowser.tsx"
+        - "web/src/components/ConnectedDevices.tsx"
+        - "web/src/components/DisconnectBanner.tsx"
+        - "web/src/components/UpdateBanner.tsx"
+
+    # ============================================================
+    # MODALS
+    # ============================================================
+    - component_id: "modals"
+      name: "Modals"
+      paths:
+        - "web/src/components/AboutModal.tsx"
+        - "web/src/components/HelpOverlay.tsx"
+
+    # ============================================================
+    # COMMAND PALETTE
+    # ============================================================
+    - component_id: "command-palette"
+      name: "Command Palette"
+      paths:
+        - "web/src/components/command-palette/**"
+        - "web/src/components/PaletteTriggerPill.tsx"
+
+    # ============================================================
+    # APP SHELL (App.tsx, main.tsx, routing, primitives)
+    # ============================================================
+    - component_id: "app-shell"
+      name: "App Shell"
+      paths:
+        - "web/src/App.tsx"
+        - "web/src/main.tsx"
+        - "web/src/components/ErrorBoundary.tsx"
+        - "web/src/components/OverflowMenu.tsx"
+        - "web/src/components/OwnerAvatar.tsx"
+        - "web/src/components/StatusGlyph.tsx"
+        - "web/src/components/Toasts.tsx"
+
+    # ============================================================
+    # HOOKS (React hooks layer; cross-cuts every UI component)
+    # ============================================================
+    - component_id: "hooks"
+      name: "Hooks"
+      paths:
+        - "web/src/hooks/**"
+
+    # ============================================================
+    # LIB (API client, utilities, shared logic)
+    # ============================================================
+    - component_id: "lib"
+      name: "Lib (API client + utils)"
+      paths:
+        - "web/src/lib/**"
+
+coverage:
+  status:
+    project:
+      default:
+        target: 90%
+        threshold: 1%
+        base: auto
+        if_ci_failed: error
+        # Report-only on the first few merges after the foundation lands;
+        # flip to informational: false once the baseline stabilizes via
+        # the follow-up coverage PRs (#1217-#1224, then ratcheted by #1225).
+        informational: true
+        only_pulls: false
+    patch:
+      default:
+        # New / changed code on a PR must hit 90% coverage. Stricter than
+        # the project target because the foundation PR purposefully leaves
+        # most surfaces deferred; everything ADDED in a follow-up should
+        # come with the test that covers it.
+        target: 90%
+        threshold: 1%
+        base: auto
+        if_ci_failed: error
+
+github_checks:
+  annotations: true

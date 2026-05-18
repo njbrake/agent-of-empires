@@ -184,4 +184,10 @@ jobs:
         uses: codecov/codecov-action@v6
         with:
           files: web/coverage/merged/lcov.info
+          flags: frontend
+          name: web-frontend-merged
           fail_ci_if_error: false
+          # Components defined in codecov.yml at the repo root segment the
+          # PR comment by user-facing surface. Per-test-type splits
+          # (vitest / playwright-mocked / playwright-live) become
+          # additional uploads with their own flags in a follow-up.
