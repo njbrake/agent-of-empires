@@ -592,6 +592,20 @@ mod tests {
     }
 
     #[test]
+    fn mode_switch_failed_bumps_seq_without_mutating_mode() {
+        let mut s = fresh_state();
+        let before_mode = s.mode;
+        let seq = s
+            .apply_event(Event::ModeSwitchFailed {
+                mode_id: "bypassPermissions".into(),
+                reason: "Mode bypassPermissions is not available.".into(),
+            })
+            .expect("apply ok");
+        assert_eq!(seq, 1);
+        assert_eq!(s.mode, before_mode);
+    }
+
+    #[test]
     fn approval_resolved_with_unknown_nonce_errors() {
         let mut s = fresh_state();
         let result = s.apply_event(Event::ApprovalResolved {

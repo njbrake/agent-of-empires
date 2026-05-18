@@ -1100,3 +1100,59 @@ describe("cockpitHookReducer / dismiss_primer", () => {
     expect(next.contextPrimerAvailable).toBeNull();
   });
 });
+
+describe("applyEvent / ModeSwitchFailed", () => {
+  it("captures the rejected mode + reason", () => {
+    const next = applyEvent(emptyCockpitState(), {
+      session_id: "s-1",
+      seq: 1,
+      event: {
+        ModeSwitchFailed: {
+          mode_id: "bypassPermissions",
+          reason: "Mode bypassPermissions is not available.",
+        },
+      },
+    });
+    expect(next.modeSwitchFailed).not.toBeNull();
+    expect(next.modeSwitchFailed?.modeId).toBe("bypassPermissions");
+    expect(next.modeSwitchFailed?.reason).toBe(
+      "Mode bypassPermissions is not available.",
+    );
+  });
+
+  it("clears when a subsequent CurrentModeChanged lands", () => {
+    let state = applyEvent(emptyCockpitState(), {
+      session_id: "s-1",
+      seq: 1,
+      event: {
+        ModeSwitchFailed: { mode_id: "bypassPermissions", reason: "denied" },
+      },
+    });
+    expect(state.modeSwitchFailed).not.toBeNull();
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 2,
+      event: { CurrentModeChanged: { current_mode_id: "acceptEdits" } },
+    });
+    expect(state.modeSwitchFailed).toBeNull();
+    expect(state.currentModeId).toBe("acceptEdits");
+  });
+});
+
+describe("cockpitHookReducer / dismiss_mode_switch_failed", () => {
+  it("clears the notice", async () => {
+    const { cockpitHookReducer } = await import("../hooks/useCockpit");
+    const seeded: CockpitState = {
+      ...emptyCockpitState(),
+      modeSwitchFailed: {
+        modeId: "bypassPermissions",
+        reason: "denied",
+        at: new Date().toISOString(),
+      },
+    };
+    const next = cockpitHookReducer(seeded, {
+      kind: "dismiss_mode_switch_failed",
+    });
+    expect(next.modeSwitchFailed).toBeNull();
+  });
+});

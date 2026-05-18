@@ -24,6 +24,7 @@ import {
   Check,
   ChevronDown,
   Clock,
+  Info,
   ListChecks,
   RotateCcw,
   X,
@@ -129,6 +130,7 @@ function CockpitChrome({
   editQueuedPrompt,
   clearQueue,
   dismissRejectedPrompt,
+  dismissModeSwitchFailed,
 }: CockpitContext & {
   sessionId: string;
   cockpitWorkerState: "absent" | "resuming" | "running";
@@ -323,6 +325,11 @@ function CockpitChrome({
               state.workerStopped ||
               Boolean(state.startupError)
             }
+          />
+
+          <ModeSwitchFailedNotice
+            failure={state.modeSwitchFailed}
+            onDismiss={dismissModeSwitchFailed}
           />
 
           <ContextPrimerBanner
@@ -1452,6 +1459,54 @@ function StartupErrorBanner({
             </pre>
           </>
         )}
+      </div>
+    </div>
+  );
+}
+
+/* ── Mode-switch-failed notice ────────────────────────────────────── */
+
+interface ModeSwitchFailedNoticeProps {
+  failure: { modeId: string; reason: string; at: string } | null;
+  onDismiss: () => void;
+}
+
+/** Non-blocking notice rendered when the ACP adapter rejected a
+ *  `session/set_mode` request. The most common path: a user enabled
+ *  yolo_mode_default but the claude-agent-acp build does not expose
+ *  `bypassPermissions` (gated on the `ALLOW_BYPASS` env var), so the
+ *  session keeps running in `default` and silently prompts on every
+ *  Write/Edit/Bash. The notice gives them an explicit signal plus a
+ *  pointer to the mode picker. See #1233. */
+function ModeSwitchFailedNotice({
+  failure,
+  onDismiss,
+}: ModeSwitchFailedNoticeProps) {
+  if (!failure) return null;
+  const friendly =
+    failure.modeId === "bypassPermissions"
+      ? "YOLO mode (bypassPermissions) is not available on this adapter; the session is running in default permission mode. claude-agent-acp gates bypass on the ALLOW_BYPASS env var. Pick a different mode from the composer or restart the daemon with ALLOW_BYPASS=1."
+      : `Could not switch to mode "${failure.modeId}"; the session is staying on its previous mode. Pick a different mode from the composer.`;
+  return (
+    <div className="border-t border-amber-900/40 bg-amber-950/20 px-4 py-2">
+      <div className="mx-auto max-w-3xl xl:max-w-4xl 2xl:max-w-5xl">
+        <div className="flex items-start gap-2 rounded-lg border border-amber-700/30 bg-amber-950/15 px-2.5 py-1.5">
+          <Info className="mt-0.5 h-4 w-4 shrink-0 text-amber-300" />
+          <div className="min-w-0 flex-1">
+            <p className="text-xs leading-5 text-amber-100">{friendly}</p>
+            <p className="mt-0.5 font-mono text-[10px] text-amber-400/70">
+              {failure.reason}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onDismiss}
+            className="inline-flex shrink-0 items-center justify-center rounded-md border border-amber-700/40 bg-amber-900/20 p-1 text-amber-200 hover:bg-amber-900/60"
+            aria-label="Dismiss mode-switch notice"
+          >
+            <X className="h-3 w-3" />
+          </button>
+        </div>
       </div>
     </div>
   );

@@ -165,6 +165,7 @@ export type CockpitEvent =
       };
     }
   | { CurrentModeChanged: { current_mode_id: string } }
+  | { ModeSwitchFailed: { mode_id: string; reason: string } }
   | { AvailableCommandsUpdated: { commands: AvailableCommand[] } }
   | { RawAgentUpdate: { payload: unknown } }
   | { AgentMessageChunk: { text: string } }
@@ -262,6 +263,14 @@ export interface CockpitState {
    *  handler to detect "no-op turn" without walking the full
    *  activity array. */
   turnHasOutput: boolean;
+  /** Latest cockpit-side `session/set_mode` rejection from the adapter.
+   *  Populated by the `ModeSwitchFailed` event so the UI can render a
+   *  non-blocking notice ("Yolo / bypassPermissions requested but the
+   *  adapter declined; session is in default mode"). Most common cause:
+   *  claude-agent-acp gates bypassPermissions on the `ALLOW_BYPASS` env
+   *  var. Cleared by the user dismissing the notice or by a successful
+   *  `CurrentModeChanged`. See #1233. */
+  modeSwitchFailed: { modeId: string; reason: string; at: string } | null;
   /** Set true when the daemon publishes `Stopped { reason: "user_stopped" }`,
    *  meaning `aoe cockpit stop|kill` (or an equivalent external
    *  teardown) terminated the runner. The composer disables itself and
@@ -407,6 +416,7 @@ export function emptyCockpitState(): CockpitState {
     contextPrimerAvailable: null,
     rejectedPrompts: [],
     agentUnresponsive: false,
+    modeSwitchFailed: null,
   };
 }
 
@@ -637,6 +647,16 @@ export function applyEvent(
   }
   if ("CurrentModeChanged" in event) {
     next.currentModeId = event.CurrentModeChanged.current_mode_id;
+    // Mode actually switched, so any prior failure notice is stale.
+    next.modeSwitchFailed = null;
+    return next;
+  }
+  if ("ModeSwitchFailed" in event) {
+    next.modeSwitchFailed = {
+      modeId: event.ModeSwitchFailed.mode_id,
+      reason: event.ModeSwitchFailed.reason,
+      at: new Date().toISOString(),
+    };
     return next;
   }
   if ("AvailableCommandsUpdated" in event) {
