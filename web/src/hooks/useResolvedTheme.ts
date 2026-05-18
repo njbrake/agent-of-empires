@@ -28,29 +28,36 @@ export function useResolvedTheme(): ResolvedTheme | null {
   );
 
   useEffect(() => {
-    let cancelled = false;
-    fetchCurrentTheme().then((next) => {
-      if (cancelled || !next) return;
+    // Monotonic sequence numbers tag every in-flight fetch. A fetch's
+    // response is applied only if its sequence is greater than the
+    // most recently applied one, so a slow mount fetch landing after
+    // a faster user-initiated picker fetch can't overwrite the user's
+    // pick. Unmount drops `unmounted` so late responses are no-ops.
+    let nextSeq = 0;
+    let lastAppliedSeq = 0;
+    let unmounted = false;
+    const apply = (next: ResolvedTheme | null, seq: number) => {
+      if (unmounted || !next || seq <= lastAppliedSeq) return;
+      lastAppliedSeq = seq;
       applyResolvedTheme(next);
       dispatchThemeChanged(next);
       setTheme(next);
-    });
+    };
+
+    const mountSeq = ++nextSeq;
+    fetchCurrentTheme().then((next) => apply(next, mountSeq));
 
     const onChange = (event: Event) => {
       const detail = (event as CustomEvent<ThemePickerChangedDetail>).detail;
+      const seq = ++nextSeq;
       const promise = detail?.name
         ? fetchResolvedTheme(detail.name)
         : fetchCurrentTheme();
-      promise.then((next) => {
-        if (!next) return;
-        applyResolvedTheme(next);
-        dispatchThemeChanged(next);
-        setTheme(next);
-      });
+      promise.then((next) => apply(next, seq));
     };
     window.addEventListener(THEME_PICKER_CHANGED_EVENT, onChange);
     return () => {
-      cancelled = true;
+      unmounted = true;
       window.removeEventListener(THEME_PICKER_CHANGED_EVENT, onChange);
     };
   }, []);

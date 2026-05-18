@@ -194,6 +194,13 @@ pub async fn list_themes() -> Json<Vec<String>> {
     )
 }
 
+/// Upper bound on the `:name` path segment for `/api/themes/:name`.
+/// Builtin names are <= 20 chars and custom theme filenames are
+/// inherently capped by the host filesystem; 128 is far past any
+/// real theme name. Past the cap we resolve Empire without logging
+/// the body to keep tracing output sane under fuzzing.
+const MAX_THEME_NAME_LEN: usize = 128;
+
 /// `GET /api/themes/:name` returns the resolved theme projection (web
 /// CSS vars, terminal CSS vars, syntax highlighter selection,
 /// appearance) for the named theme. Unknown names resolve to Empire
@@ -205,6 +212,14 @@ pub async fn list_themes() -> Json<Vec<String>> {
 pub async fn get_resolved_theme(
     axum::extract::Path(name): axum::extract::Path<String>,
 ) -> Json<crate::tui::styles::ResolvedTheme> {
+    if name.len() > MAX_THEME_NAME_LEN {
+        tracing::warn!(
+            len = name.len(),
+            "GET /api/themes/{{name}} rejected: name exceeds {} bytes",
+            MAX_THEME_NAME_LEN,
+        );
+        return Json(crate::tui::styles::resolve_theme("empire"));
+    }
     tracing::debug!(theme = %name, "GET /api/themes/{{name}}");
     let resolved = tokio::task::spawn_blocking(move || crate::tui::styles::resolve_theme(&name))
         .await

@@ -265,4 +265,56 @@ test.describe("Theme picker runtime palette swap (#1189)", () => {
     // rgb(40, 42, 54) -> "rgb(40, 42, 54)" or "rgba(40, 42, 54, 1)"
     expect(bg).toMatch(/40,\s*42,\s*54/);
   });
+
+  test("slow mount fetch does not overwrite a faster picker pick", async ({
+    page,
+  }) => {
+    // Regression test for the in-flight ordering bug: if the user
+    // picks Dracula while the mount-time /api/theme/current is still
+    // pending, the eventual mount response (Empire) used to win the
+    // last-write race. useResolvedTheme now tags each fetch with a
+    // monotonic seq and discards responses older than the last
+    // applied one. Stall /api/theme/current for ~1.5s; the picker
+    // event resolves immediately. Final palette must be Dracula.
+    const empire: ResolvedThemePayload = {
+      name: "empire",
+      source: "builtin",
+      appearance: "dark",
+      web: { cssVars: { "--color-surface-900": "#0f172a" } },
+      terminal: { cssVars: { "--term-bg": "#0f172a" } },
+      syntax: { shikiTheme: "github-dark" },
+    };
+    await page.route("**/api/theme/current", async (route) => {
+      await new Promise((r) => setTimeout(r, 1500));
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(empire),
+      });
+    });
+    await page.route("**/api/themes/*", (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify(dracula()),
+      }),
+    );
+
+    await page.goto("/");
+    await page.evaluate(() => {
+      window.dispatchEvent(
+        new CustomEvent("aoe:theme-picker-changed", {
+          detail: { name: "dracula" },
+        }),
+      );
+    });
+
+    await expect
+      .poll(() => readCssVar(page, "--color-surface-900"))
+      .toBe("#282a36");
+    // Wait past the stalled mount response so we can assert Dracula
+    // is sticky after both fetches have settled.
+    await page.waitForTimeout(2000);
+    expect(await readCssVar(page, "--color-surface-900")).toBe("#282a36");
+  });
 });

@@ -76,8 +76,9 @@ const RIGHT_PANEL_COLLAPSED_KEY = "aoe-right-collapsed";
 export default function App() {
   // Apply the user-selected theme as CSS custom properties on the root
   // element. Runs once on mount + on settings-driven theme changes.
-  // The pre-React script in index.html paints the cached theme before
-  // hydration; this hook keeps it in sync with the server's view.
+  // The pre-React /theme-bootstrap.js (referenced from index.html)
+  // paints the cached theme before hydration; this hook keeps it in
+  // sync with the server's view.
   useResolvedTheme();
   const [loginRequired, setLoginRequired] = useState<boolean | null>(null);
   const [loginAuthenticated, setLoginAuthenticated] = useState(true);
