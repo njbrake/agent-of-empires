@@ -76,6 +76,14 @@ pub struct CockpitRunnerArgs {
     pub session_id: String,
     #[arg(long)]
     pub agent_name: String,
+    /// Registry key for the agent (e.g. `claude`, `codex`,
+    /// `opencode`). Persisted on the WorkerRecord so the daemon's
+    /// attach path resolves the right `AgentProfile` after a restart;
+    /// `agent_name` carries the binary command and is not a valid
+    /// profile key. Defaulted to empty so legacy daemons rolling out
+    /// the new field don't immediately break runners already in flight.
+    #[arg(long, default_value = "")]
+    pub agent_key: String,
     #[arg(long)]
     pub cwd: PathBuf,
     #[arg(long)]
@@ -150,6 +158,7 @@ pub async fn run(args: CockpitRunnerArgs) -> Result<()> {
         our_pid,
         args.socket.clone(),
         args.agent_name.clone(),
+        args.agent_key.clone(),
         args.cwd.clone(),
         args.model.clone(),
         args.additional_dirs.clone(),

@@ -887,6 +887,8 @@ fn spawn_runner_detached(
         .arg(&session_id)
         .arg("--agent-name")
         .arg(&config.spec.command)
+        .arg("--agent-key")
+        .arg(&config.agent_key)
         .arg("--cwd")
         .arg(&config.cwd);
     if !config.additional_dirs.is_empty() {

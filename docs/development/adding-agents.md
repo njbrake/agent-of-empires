@@ -233,6 +233,9 @@ ships a separate `*-acp` adapter binary), wire cockpit support too.
      capabilities: { todos: false, skills: false, wakeup: false, subagents: false },
      parentMetaNamespaces: [],
      mcpPrefixes: ["mcp__"],
+     // Mirror the Rust profile's `clear_aliases`. Empty if the agent
+     // has no conversation-reset slash command.
+     clearAliases: ["/new"],
      aliases: {
        execute: ["shell"],
        read: ["read_file"],

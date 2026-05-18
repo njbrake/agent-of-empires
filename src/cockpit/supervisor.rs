@@ -443,12 +443,13 @@ impl<S: BroadcastSink> Supervisor<S> {
         }
     }
 
-    /// Resolve the agent registry key for a session. Looks at the live
-    /// worker handle first (covers Runner + Attached); falls back to the
-    /// on-disk worker registry record so a session that has been
-    /// detached can still resolve its profile; returns `"claude"` as a
-    /// last-resort default to keep behavior unchanged for legacy
-    /// sessions whose records pre-date this field.
+    /// Resolve the agent registry key for a session. Reads the live
+    /// `Runner` handle's `SpawnConfig` directly when available;
+    /// otherwise loads the on-disk record so an `Attached` worker (or
+    /// a session whose handle has been dropped) still resolves its
+    /// profile correctly. Returns `"claude"` as a last-resort default
+    /// for sessions whose record predates the `agent_key` field
+    /// (empty after the serde default).
     async fn agent_key_for_session(&self, session_id: &str) -> String {
         if let Some(handle) = self.workers.lock().await.get(session_id) {
             if let WorkerKind::Runner { spawn_config } = &handle.kind {
@@ -456,7 +457,9 @@ impl<S: BroadcastSink> Supervisor<S> {
             }
         }
         if let Ok(Some(record)) = super::worker_registry::load(session_id) {
-            return record.agent_name;
+            if !record.agent_key.is_empty() {
+                return record.agent_key;
+            }
         }
         "claude".to_string()
     }
@@ -1294,6 +1297,16 @@ impl<S: BroadcastSink> Supervisor<S> {
             )?),
             None => None,
         };
+        // Prefer the persisted registry key; fall back to the legacy
+        // `agent_name` field for records written before `agent_key`
+        // existed. A truly stale entry without either resolves to
+        // DEFAULT inside `agent_profiles::resolve`, which is the safe
+        // pass-through behavior.
+        let attach_agent_key = if record.agent_key.is_empty() {
+            record.agent_name.clone()
+        } else {
+            record.agent_key.clone()
+        };
         let mut client = AcpClient::attach(
             record.socket_path.clone(),
             cwd,
@@ -1302,7 +1315,7 @@ impl<S: BroadcastSink> Supervisor<S> {
             in_flight_turn,
             cockpit_session_id,
             sandbox_resources,
-            record.agent_name.clone(),
+            attach_agent_key,
         )
         .await?;
         super::worker_registry::mark_attached(&session_id);
@@ -1858,6 +1871,7 @@ mod tests {
             "s-1".into(),
             std::process::id(),
             socket_path,
+            "claude-agent-acp".into(),
             "claude-code".into(),
             std::env::temp_dir(),
             None,
@@ -2312,6 +2326,113 @@ mod tests {
         assert_eq!(frames[1].1, 2, "SessionCleared must use the next seq");
     }
 
+    /// Regression: `agent_key_for_session` must resolve the registry
+    /// key (e.g. `"codex"`), not the binary command stored in
+    /// `agent_name` (e.g. `"codex-acp"`), when only the on-disk
+    /// `WorkerRecord` is available. Before this was wired through,
+    /// `Attached` workers fell back to `agent_name`, which never
+    /// matched a real profile and silently dropped per-agent gates
+    /// like `/new` boundary detection across daemon restarts.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn publish_user_prompt_uses_agent_key_from_registry_for_attached_worker() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        // SAFETY: serialised by `#[serial]`; subsequent serial tests
+        // reassign these env vars, which is the existing pattern.
+        unsafe {
+            std::env::set_var("HOME", tmp.path());
+            std::env::set_var("XDG_CONFIG_HOME", tmp.path().join(".config"));
+        }
+        let session_id = "attached-codex-1";
+        let dir = super::super::worker_registry::workers_dir().unwrap();
+        let record = super::super::worker_registry::WorkerRecord::new(
+            session_id.into(),
+            std::process::id(),
+            dir.join(format!("{session_id}.sock")),
+            "codex-acp".into(),
+            "codex".into(),
+            std::env::temp_dir(),
+            None,
+            vec![],
+            vec![],
+            None,
+        );
+        super::super::worker_registry::save(&record).unwrap();
+
+        let sink = VecSink::new();
+        let sup = Supervisor::new(sink.clone());
+        sup.publish_user_prompt(session_id, "/new".into()).await;
+        let frames = sink.frames.lock().unwrap().clone();
+        assert_eq!(
+            frames.len(),
+            2,
+            "expected UserPromptSent + SessionCleared, got {frames:?}"
+        );
+        assert!(matches!(&frames[0].2, Event::UserPromptSent { .. }));
+        assert!(
+            matches!(&frames[1].2, Event::SessionCleared),
+            "codex /new must clear when agent_key resolves to the codex profile"
+        );
+        // Sanity: claude's `/clear` must NOT fire for a codex-keyed
+        // session, since codex's profile doesn't list it as an alias.
+        let sink2 = VecSink::new();
+        let sup2 = Supervisor::new(sink2.clone());
+        sup2.publish_user_prompt(session_id, "/clear".into()).await;
+        let frames2 = sink2.frames.lock().unwrap().clone();
+        assert_eq!(
+            frames2.len(),
+            1,
+            "no SessionCleared expected for /clear on codex"
+        );
+        super::super::worker_registry::delete(session_id).ok();
+    }
+
+    /// Legacy registry records (written before the `agent_key` field
+    /// existed) fall back to `"claude"` so existing claude sessions
+    /// keep working through the rollout. The supervisor falls through
+    /// the empty `agent_key` and lands on the default claude profile.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn publish_user_prompt_falls_back_to_claude_for_legacy_record() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        unsafe {
+            std::env::set_var("HOME", tmp.path());
+            std::env::set_var("XDG_CONFIG_HOME", tmp.path().join(".config"));
+        }
+        let session_id = "legacy-claude-1";
+        let dir = super::super::worker_registry::workers_dir().unwrap();
+        // Hand-craft a legacy record: pre-`agent_key` schema (empty
+        // string after serde default).
+        let legacy = serde_json::json!({
+            "runner_version": super::super::worker_registry::RUNNER_VERSION,
+            "session_id": session_id,
+            "pid": std::process::id(),
+            "socket_path": dir.join(format!("{session_id}.sock")),
+            "agent_name": "claude-agent-acp",
+            "cwd": std::env::temp_dir(),
+            "model": null,
+            "additional_dirs": [],
+            "provider_env_keys": [],
+            "stored_acp_session_id": null,
+            "started_at": 0,
+            "last_attached_at": null,
+            "detached_at": null
+        });
+        std::fs::write(
+            dir.join(format!("{session_id}.json")),
+            serde_json::to_string(&legacy).unwrap(),
+        )
+        .unwrap();
+
+        let sink = VecSink::new();
+        let sup = Supervisor::new(sink.clone());
+        sup.publish_user_prompt(session_id, "/clear".into()).await;
+        let frames = sink.frames.lock().unwrap().clone();
+        assert_eq!(frames.len(), 2);
+        assert!(matches!(&frames[1].2, Event::SessionCleared));
+        super::super::worker_registry::delete(session_id).ok();
+    }
+
     /// A regular user prompt must not emit `SessionCleared`. Sanity
     /// check that the detection isn't trigger-happy.
     #[tokio::test]
@@ -2550,6 +2671,7 @@ mod tests {
             "detached-1".into(),
             std::process::id(),
             socket_path,
+            "claude-agent-acp".into(),
             "claude-code".into(),
             std::env::temp_dir(),
             None,
