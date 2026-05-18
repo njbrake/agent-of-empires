@@ -1085,11 +1085,17 @@ fn build_router(state: Arc<AppState>) -> Router {
         .with_state(state)
 }
 
-/// Middleware that wraps every request in an `http.request` info span with
-/// a generated or echoed `X-Request-Id`, then emits one completion event at
+/// Middleware that wraps every request in an `http.request` span with a
+/// generated or echoed `X-Request-Id`, then emits one completion event at
 /// the level matching the response status. Logs fired inside the request
 /// (auth middleware, route handlers, downstream `tracing` events) inherit
 /// the span fields, so a single grep on `request_id` reconstructs the call.
+///
+/// Successful completions (2xx/3xx) emit at `debug`, not `info`: the web
+/// UI polls `/api/sessions` every ~2s, so an info-level success log here
+/// would flood `debug.log` at the default `info` filter. Users who want
+/// to see every request can dial `http.request=debug` from settings;
+/// 4xx (`warn`) and 5xx (`error`) stay visible at the default level.
 async fn http_request_span(
     request: axum::extract::Request,
     next: axum::middleware::Next,
@@ -1102,7 +1108,7 @@ async fn http_request_span(
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
     let method = request.method().clone();
     let path = request.uri().path().to_string();
-    let span = tracing::info_span!(
+    let span = tracing::debug_span!(
         target: "http.request",
         "http_request",
         request_id = %rid,
@@ -1119,7 +1125,7 @@ async fn http_request_span(
         } else if status >= 400 {
             tracing::warn!(target: "http.request", status, latency_ms, "completed");
         } else {
-            tracing::info!(target: "http.request", status, latency_ms, "completed");
+            tracing::debug!(target: "http.request", status, latency_ms, "completed");
         }
     });
     if let Ok(value) = rid.parse() {
