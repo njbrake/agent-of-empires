@@ -31,6 +31,10 @@ jobs:
             brew install tmux
           fi
       - run: cargo test
+      # The server-side audit lives under `#[cfg(feature = "serve")]`
+      # (whole `src/server/` tree). Without this run the read-only
+      # guard audit and other serve-gated tests are silently skipped.
+      - run: cargo test --features serve
 
   fmt:
     name: Format

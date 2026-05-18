@@ -551,7 +551,13 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
   useKeyboardShortcuts(
     useCallback(
       () => ({
-        onNew: () => setShowSessionWizard(true),
+        onNew: () => {
+          // Read-only mode hides mutation UI. The "n" shortcut must
+          // not open the wizard or the user gets a dead-end form that
+          // 403s on submit. Caught by the live read-only-mode spec.
+          if (serverAbout?.read_only) return;
+          setShowSessionWizard(true);
+        },
         onDiff: () => toggleDiff(),
         // Escape closes local UI surfaces only (dialogs, palette,
         // wizard, settings, help, file viewer). Never wire this to

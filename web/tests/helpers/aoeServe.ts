@@ -73,6 +73,27 @@ export interface ServeHandle {
   stop(): Promise<void>;
 }
 
+/**
+ * Fetch and unwrap `GET /api/sessions`. As of #1171 the response shape is
+ * `{ sessions: SessionResponse[], workspace_ordering: string[] }`. Callers
+ * typically want only the sessions array, so this helper hides the
+ * envelope change so a future shape tweak is one edit away.
+ */
+export async function listSessions(
+  baseUrl: string,
+): Promise<Array<{ id: string; title: string; status: string; [k: string]: unknown }>> {
+  const res = await fetch(`${baseUrl}/api/sessions`);
+  if (!res.ok) {
+    throw new Error(`GET /api/sessions failed: ${res.status} ${await res.text()}`);
+  }
+  const body = await res.json();
+  if (Array.isArray(body)) return body;
+  if (body && Array.isArray(body.sessions)) return body.sessions;
+  throw new Error(
+    `GET /api/sessions returned an unexpected shape: ${JSON.stringify(body).slice(0, 200)}`,
+  );
+}
+
 export function resolveAoeBinary(): string {
   const fromEnv = process.env.AOE_E2E_BINARY;
   if (fromEnv && existsSync(fromEnv)) return fromEnv;
@@ -132,10 +153,21 @@ function writeFakeAcpShim(binDir: string, fakeAcpScript: string | undefined): vo
   }
 }
 
-async function enableCockpitMaster(baseUrl: string): Promise<void> {
+async function enableCockpitMaster(
+  baseUrl: string,
+  sessionCookie?: { name: string; value: string },
+): Promise<void> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (sessionCookie) {
+    // Required when authMode === "passphrase"; loopback bypass kicks in
+    // for token+loopback callers, but PATCH /api/cockpit/master predates
+    // any browser navigation, so the SPA hasn't yet seeded the cookie
+    // into a Playwright context. Include it on the harness's own request.
+    headers.Cookie = `${sessionCookie.name}=${sessionCookie.value}`;
+  }
   const res = await fetch(`${baseUrl}/api/cockpit/master`, {
     method: "PATCH",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify({ enabled: true }),
   });
   if (!res.ok) {
@@ -291,7 +323,7 @@ export async function spawnAoeServe(opts: SpawnOptions): Promise<ServeHandle> {
   }
 
   if (opts.cockpit) {
-    await enableCockpitMaster(baseUrl);
+    await enableCockpitMaster(baseUrl, handle.sessionCookie);
   }
 
   return handle;

@@ -13,7 +13,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { test, expect } from "../helpers/liveTest";
-import { resolveAoeBinary } from "../helpers/aoeServe";
+import { resolveAoeBinary, listSessions } from "../helpers/aoeServe";
 
 const aoeBinary = resolveAoeBinary();
 
@@ -52,11 +52,9 @@ test("create, view, delete a session via live backend", async ({
 
   // The session record now exists on disk and the live serve picks it
   // up on the next /api/sessions GET. Confirm via API before driving UI.
-  const sessions = await fetch(`${serve.baseUrl}/api/sessions`).then((r) =>
-    r.json(),
-  );
+  const sessions = await listSessions(serve.baseUrl);
   expect(sessions.length).toBeGreaterThan(0);
-  const sessionId: string = sessions[0].id;
+  const sessionId: string = sessions[0]!.id;
 
   await page.goto(`${serve.baseUrl}/`);
   const sessionRow = page.getByRole("button", { name: /^golden claude/ });
@@ -78,8 +76,6 @@ test("create, view, delete a session via live backend", async ({
   expect(deleteRes.ok).toBeTruthy();
   await expect(sessionRow).toBeHidden({ timeout: 10_000 });
 
-  const after = await fetch(`${serve.baseUrl}/api/sessions`).then((r) =>
-    r.json(),
-  );
-  expect(after.find((s: { id: string }) => s.id === sessionId)).toBeUndefined();
+  const after = await listSessions(serve.baseUrl);
+  expect(after.find((s) => s.id === sessionId)).toBeUndefined();
 });

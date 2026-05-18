@@ -13,7 +13,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { test, expect } from "../helpers/liveTest";
-import { resolveAoeBinary } from "../helpers/aoeServe";
+import { resolveAoeBinary, listSessions } from "../helpers/aoeServe";
 
 const aoeBinary = resolveAoeBinary();
 
@@ -52,11 +52,9 @@ test("cockpit spawn + prompt round-trip emits an agent_message_chunk", async ({
 }) => {
   seedSession(serveCockpit.home, serveCockpit.shimBin, "cockpit-trace");
 
-  const sessions = await fetch(`${serveCockpit.baseUrl}/api/sessions`).then(
-    (r) => r.json(),
-  );
+  const sessions = await listSessions(serveCockpit.baseUrl);
   expect(sessions.length).toBeGreaterThan(0);
-  const sessionId: string = sessions[0].id;
+  const sessionId: string = sessions[0]!.id;
 
   // Enable cockpit mode on the session, then spawn.
   const enableRes = await fetch(

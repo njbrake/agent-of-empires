@@ -651,6 +651,14 @@ pub async fn update_session_notifications(
     Path(id): Path<String>,
     Json(body): Json<UpdateNotificationsBody>,
 ) -> impl IntoResponse {
+    if state.read_only {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(
+                serde_json::json!({"error": "read_only", "message": "Server is in read-only mode"}),
+            ),
+        );
+    }
     let mut instances = state.instances.write().await;
     let Some(inst) = instances.iter_mut().find(|i| i.id == id) else {
         return (

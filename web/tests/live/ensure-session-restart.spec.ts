@@ -17,7 +17,7 @@ import { spawnSync } from "node:child_process";
 import { mkdirSync, writeFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { test, expect } from "../helpers/liveTest";
-import { resolveAoeBinary } from "../helpers/aoeServe";
+import { resolveAoeBinary, listSessions } from "../helpers/aoeServe";
 
 const aoeBinary = resolveAoeBinary();
 
@@ -73,15 +73,12 @@ test.describe("ensure_session restart flow", () => {
     const title = "e2e-restart";
     seedSession(serve.home, serve.shimBin, title);
 
-    const sessions = await fetch(`${serve.baseUrl}/api/sessions`).then((r) =>
-      r.json(),
-    );
-    expect(Array.isArray(sessions)).toBe(true);
+    const sessions = await listSessions(serve.baseUrl);
     expect(sessions.length).toBeGreaterThan(0);
-    const sessionId: string = sessions[0].id;
+    const sessionId: string = sessions[0]!.id;
     const tmuxName = `aoe_${title}_${sessionId.slice(0, 8)}`;
 
-    expect(sessions[0].status).toBe("Error");
+    expect(sessions[0]!.status).toBe("Error");
     expect(tmuxHasSession(serve.home, tmuxName)).toBe(false);
 
     const r1 = await fetch(
@@ -137,10 +134,8 @@ test.describe("ensure_session restart flow", () => {
     const title = "e2e-restart";
     seedSession(serve.home, serve.shimBin, title);
 
-    const sessions = await fetch(`${serve.baseUrl}/api/sessions`).then((r) =>
-      r.json(),
-    );
-    const sessionId: string = sessions[0].id;
+    const sessions = await listSessions(serve.baseUrl);
+    const sessionId: string = sessions[0]!.id;
     const tmuxName = `aoe_${title}_${sessionId.slice(0, 8)}`;
 
     spawnSync("tmux", ["kill-session", "-t", tmuxName], {

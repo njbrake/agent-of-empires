@@ -9,7 +9,7 @@ import { mkdirSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { test, expect } from "../helpers/liveTest";
-import { resolveAoeBinary } from "../helpers/aoeServe";
+import { resolveAoeBinary, listSessions } from "../helpers/aoeServe";
 
 const aoeBinary = resolveAoeBinary();
 
@@ -40,10 +40,8 @@ test("session/mode round-trips through the fake ACP agent", async ({
     },
   });
 
-  const sessions = await fetch(`${serveCockpit.baseUrl}/api/sessions`).then((r) =>
-    r.json(),
-  );
-  const sessionId: string = sessions[0].id;
+  const sessions = await listSessions(serveCockpit.baseUrl);
+  const sessionId: string = sessions[0]!.id;
 
   await fetch(
     `${serveCockpit.baseUrl}/api/sessions/${sessionId}/cockpit/enable`,

@@ -122,8 +122,10 @@ mod tests {
     use super::*;
 
     /// Read-only audit: every mutating handler must check `state.read_only`
-    /// and return 403 before performing any write. This static check walks
-    /// the handler source files and looks for the canonical guard pattern.
+    /// (directly, or via the `read_only_block` helper) and return 403
+    /// before performing any write. This static check walks the handler
+    /// source files at compile time via `include_str!` and looks for the
+    /// canonical guard pattern inside each named handler's body.
     ///
     /// Why static: building a full AppState in a unit test requires a tmux
     /// runtime, login manager, token manager, broadcast channels, and an
@@ -131,12 +133,19 @@ mod tests {
     /// `web/tests/live/read-only-mode.spec.ts` covers the runtime path;
     /// this test guards against a contributor adding a new POST/PATCH/DELETE
     /// handler and forgetting the guard.
+    ///
+    /// Body boundaries: each handler's body runs from `fn <name>` up to
+    /// the next `pub async fn `, `pub fn `, or `async fn ` in the same
+    /// file. This is more robust than a fixed-char window, which silently
+    /// misses guards in handlers whose bodies grow past the window
+    /// (caught a real regression on `ensure_session` after an upstream
+    /// rebase).
     #[test]
     fn every_mutating_handler_has_read_only_guard() {
         // (file_label, source, list_of_handler_fn_names_we_expect_guarded).
-        // Each entry is read at compile time via include_str!. If a new
-        // mutating handler is added and the corresponding fn name is added
-        // here, the test will check that the file contains the guard.
+        // When a new POST / PATCH / DELETE handler is added, list its fn
+        // name here. The test then enforces that its body contains the
+        // guard.
         let cases: &[(&str, &str, &[&str])] = &[
             (
                 "api/sessions.rs",
@@ -151,6 +160,7 @@ mod tests {
                     "ensure_container_terminal",
                     "update_session_notifications",
                     "update_session_diff_base",
+                    "update_workspace_ordering",
                 ],
             ),
             ("api/git.rs", include_str!("git.rs"), &["clone_repo"]),
@@ -171,32 +181,65 @@ mod tests {
                     "update_profile_settings",
                 ],
             ),
+            (
+                "api/cockpit.rs",
+                include_str!("cockpit.rs"),
+                &[
+                    "spawn_cockpit",
+                    "shutdown_cockpit",
+                    "cockpit_prompt",
+                    "cockpit_cancel",
+                    "cockpit_force_end_turn",
+                    "cockpit_enable",
+                    "cockpit_disable",
+                    "cockpit_set_mode",
+                    "resolve_approval",
+                    "set_cockpit_master",
+                ],
+            ),
+            (
+                "server/push.rs",
+                include_str!("../push.rs"),
+                &["subscribe", "unsubscribe", "test"],
+            ),
         ];
 
-        let guard_patterns: &[&str] = &["state.read_only", "self.read_only"];
+        let guard_patterns: &[&str] = &[
+            "state.read_only",
+            "self.read_only",
+            // Cockpit handlers use the shared helper from api/cockpit.rs.
+            "read_only_block(",
+        ];
+        let body_terminators: &[&str] = &["\npub async fn ", "\npub fn ", "\nasync fn ", "\nfn "];
+
         let mut missing: Vec<String> = Vec::new();
         for (file_label, source, handler_names) in cases {
             for name in *handler_names {
-                let needle = format!("fn {name}");
+                let needle = format!("fn {name}(");
                 let Some(start) = source.find(&needle) else {
                     missing.push(format!(
                         "{file_label}: handler `{name}` not found (rename/refactor?)"
                     ));
                     continue;
                 };
-                // Look at the next ~3000 chars of the handler body for the
-                // guard. The handlers are short; this window covers them
-                // without false negatives.
-                let window_end = (start + 3000).min(source.len());
-                let body = &source[start..window_end];
+                // Body runs from this function's `fn name(` to the start
+                // of the next function definition in the file.
+                let rest = &source[start + needle.len()..];
+                let end_offset = body_terminators
+                    .iter()
+                    .filter_map(|t| rest.find(t))
+                    .min()
+                    .unwrap_or(rest.len());
+                let body = &rest[..end_offset];
                 let has_guard = guard_patterns.iter().any(|p| body.contains(p));
                 if !has_guard {
                     missing.push(format!(
                         "{file_label}: handler `{name}` is missing read-only guard. \
-                         Mutating handlers must check `state.read_only` and return \
-                         403 before performing any write. Add the guard or, if the \
-                         handler is intentionally read-safe, drop it from this list \
-                         in the same commit with justification."
+                         Mutating handlers must check `state.read_only` (or call \
+                         `read_only_block(&state)`) and return 403 before performing \
+                         any write. Add the guard, or if the handler is intentionally \
+                         read-safe, drop it from this list in the same commit with \
+                         justification."
                     ));
                 }
             }

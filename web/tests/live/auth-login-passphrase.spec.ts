@@ -1,14 +1,20 @@
 // Passphrase mode login flow.
 //
-// servePassphrase boots `aoe serve --passphrase <fixed>` and does an
-// initial POST /api/login from the harness so we have a known-good
-// cookie. This spec drives the browser through the LoginPage instead:
-// wrong passphrase shows an error and the cookie stays absent; correct
-// passphrase replaces the LoginPage with the dashboard.
+// Both tests are SKIPPED in this PR. Reason: upstream #1190 added a
+// loopback-bypass for the passphrase factor — a loopback caller that
+// presents a valid bearer token skips LoginPage entirely. The harness
+// always runs from 127.0.0.1, so the LoginPage that this spec is
+// designed to drive never renders. A non-loopback test environment
+// (or an explicit loopback-bypass override) is needed to revive these.
+//
+// Tracked under #1226 (token-mode auth coverage) alongside the rest of
+// the auth surface. The harness still supports `authMode: "passphrase"`
+// and `loginWithPassphrase` works correctly for non-loopback callers
+// who choose to use it.
 
 import { test, expect } from "../helpers/liveTest";
 
-test("wrong passphrase shows an error and stays on LoginPage", async ({
+test.skip("wrong passphrase shows an error and stays on LoginPage", async ({
   servePassphrase,
   page,
 }) => {
@@ -26,7 +32,7 @@ test("wrong passphrase shows an error and stays on LoginPage", async ({
   });
 });
 
-test("correct passphrase logs in and reveals the dashboard", async ({
+test.skip("correct passphrase logs in and reveals the dashboard", async ({
   servePassphrase,
   page,
 }) => {

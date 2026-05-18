@@ -13,7 +13,7 @@ import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test as base, expect } from "@playwright/test";
-import { spawnAoeServe, resolveAoeBinary } from "../helpers/aoeServe";
+import { spawnAoeServe, resolveAoeBinary, listSessions } from "../helpers/aoeServe";
 
 const aoeBinary = resolveAoeBinary();
 
@@ -80,10 +80,8 @@ base("permission_request flows through to the server", async ({}, testInfo) => {
       },
     });
 
-    const sessions = await fetch(`${serve.baseUrl}/api/sessions`).then((r) =>
-      r.json(),
-    );
-    const sessionId = sessions[0].id;
+    const sessions = await listSessions(serve.baseUrl);
+    const sessionId = sessions[0]!.id;
 
     await fetch(`${serve.baseUrl}/api/sessions/${sessionId}/cockpit/enable`, {
       method: "POST",

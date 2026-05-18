@@ -842,6 +842,9 @@ pub async fn subscribe(
     headers: HeaderMap,
     Json(body): Json<SubscribeBody>,
 ) -> Result<StatusCode, StatusCode> {
+    if state.read_only {
+        return Err(StatusCode::FORBIDDEN);
+    }
     let push = state.push.as_ref().ok_or(StatusCode::NOT_FOUND)?;
 
     // Minimal shape validation so we don't store garbage.
@@ -880,6 +883,9 @@ pub async fn unsubscribe(
     Extension(auth): Extension<AuthenticatedTokenHash>,
     Json(body): Json<EndpointBody>,
 ) -> Result<StatusCode, StatusCode> {
+    if state.read_only {
+        return Err(StatusCode::FORBIDDEN);
+    }
     let push = state.push.as_ref().ok_or(StatusCode::NOT_FOUND)?;
     if body.endpoint.is_empty() {
         return Err(StatusCode::BAD_REQUEST);
@@ -908,6 +914,9 @@ pub async fn test(
     Extension(auth): Extension<AuthenticatedTokenHash>,
     Json(body): Json<EndpointBody>,
 ) -> Result<Json<TestResult>, StatusCode> {
+    if state.read_only {
+        return Err(StatusCode::FORBIDDEN);
+    }
     let push = state.push.as_ref().ok_or(StatusCode::NOT_FOUND)?;
     if body.endpoint.is_empty() {
         return Err(StatusCode::BAD_REQUEST);

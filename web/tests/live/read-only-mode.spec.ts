@@ -15,12 +15,20 @@ test("/api/about reports read_only=true", async ({ serveReadOnly }) => {
 });
 
 test("POST /api/sessions is rejected with 403", async ({ serveReadOnly }) => {
+  // Body shape matches CreateSessionBody (path, tool, ...). The read-only
+  // guard sits AFTER axum's Json<...> extractor today, so a bad-shape
+  // body would 422 before the guard fires. The right-shape body trips
+  // the guard at the top of `create_session` and returns 403.
+  //
+  // Moving the read-only check to precede body validation is tracked as
+  // a follow-up; the test contract here is "POST with a valid shape on a
+  // read-only server returns 403", not "any POST returns 403".
   const res = await fetch(`${serveReadOnly.baseUrl}/api/sessions`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       title: "blocked",
-      project_path: "/tmp/whatever",
+      path: "/tmp/whatever",
       tool: "claude",
     }),
   });
