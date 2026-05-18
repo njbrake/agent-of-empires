@@ -656,6 +656,11 @@ impl SettingsView {
                     s.strict_hotkeys = None;
                 }
             }
+            FieldKey::LockSortOrder => {
+                if let Some(ref mut s) = config.session {
+                    s.lock_sort_order = None;
+                }
+            }
             FieldKey::AgentExtraArgs => {
                 if let Some(ref mut s) = config.session {
                     s.agent_extra_args = None;

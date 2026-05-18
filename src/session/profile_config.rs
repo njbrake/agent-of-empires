@@ -9,8 +9,8 @@ use std::collections::HashMap;
 use std::fs;
 
 use super::config::{
-    ColorMode, Config, ContainerRuntimeName, DefaultTerminalMode, TmuxClipboardMode, TmuxMouseMode,
-    TmuxStatusBarMode,
+    ColorMode, Config, ContainerRuntimeName, DefaultTerminalMode, SortOrder, TmuxClipboardMode,
+    TmuxMouseMode, TmuxStatusBarMode,
 };
 use super::get_profile_dir;
 
@@ -232,6 +232,9 @@ pub struct SessionConfigOverride {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub strict_hotkeys: Option<bool>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lock_sort_order: Option<SortOrder>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -442,6 +445,9 @@ pub fn apply_session_overrides(
     }
     if let Some(strict_hotkeys) = source.strict_hotkeys {
         target.strict_hotkeys = strict_hotkeys;
+    }
+    if source.lock_sort_order.is_some() {
+        target.lock_sort_order = source.lock_sort_order;
     }
 }
 

@@ -458,6 +458,10 @@ pub struct SessionConfig {
     /// Off by default; existing users keep the legacy single-letter UX.
     #[serde(default)]
     pub strict_hotkeys: bool,
+
+    /// Lock the sort order to a specific value, disabling the O / Ctrl+O cycling hotkeys.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lock_sort_order: Option<SortOrder>,
 }
 
 impl SessionConfig {

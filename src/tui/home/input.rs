@@ -1047,10 +1047,14 @@ impl HomeView {
                 self.open_send_message_dialog();
             }
             KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.apply_sort_order(self.sort_order.cycle_reverse());
+                if self.lock_sort_order.is_none() {
+                    self.apply_sort_order(self.sort_order.cycle_reverse());
+                }
             }
             KeyCode::Char('o') => {
-                self.apply_sort_order(self.sort_order.cycle());
+                if self.lock_sort_order.is_none() {
+                    self.apply_sort_order(self.sort_order.cycle());
+                }
             }
             // iPad-friendly ±10 aliases for PageUp/PageDown. iPads have no
             // PageUp/PageDown keys, and Cmd combos are typically stripped by
@@ -1176,7 +1180,7 @@ impl HomeView {
     /// current `flat_items`.
     fn open_command_palette(&mut self) {
         let serve_enabled = cfg!(feature = "serve");
-        let mut entries: Vec<PaletteCommand> = builtin_commands(serve_enabled, self.strict_hotkeys);
+        let mut entries: Vec<PaletteCommand> = builtin_commands(serve_enabled, self.strict_hotkeys, self.lock_sort_order.is_some());
 
         // Quit command (separate so the lifetime mapping is clear and we
         // can keep it out of `builtin_commands` to avoid pulling KeyCode

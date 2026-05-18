@@ -249,6 +249,8 @@ pub struct HomeView {
     // dictation / stray keystrokes triggering destructive actions).
     pub(super) strict_hotkeys: bool,
 
+    pub(super) lock_sort_order: Option<SortOrder>,
+
     // Settings view
     pub(super) settings_view: Option<SettingsView>,
     /// Flag to indicate we're confirming settings close (unsaved changes)
@@ -303,13 +305,16 @@ impl HomeView {
         };
         let sound_config = resolved.sound.clone();
         let strict_hotkeys = resolved.session.strict_hotkeys;
+        let lock_sort_order = resolved.session.lock_sort_order;
         let idle_decay_window =
             crate::tui::styles::idle_decay_window(resolved.theme.idle_decay_minutes);
         let user_config = load_config().ok().flatten();
-        let sort_order = user_config
-            .as_ref()
-            .and_then(|c| c.app_state.sort_order)
-            .unwrap_or_default();
+        let sort_order = lock_sort_order.unwrap_or_else(|| {
+            user_config
+                .as_ref()
+                .and_then(|c| c.app_state.sort_order)
+                .unwrap_or_default()
+        });
         // New users (haven't dismissed the welcome screen) default to Project
         // grouping so they see the same layout as the web dashboard. Existing
         // users keep Manual (the existing behavior) unless they explicitly
@@ -392,6 +397,7 @@ impl HomeView {
             default_terminal_mode,
             sound_config,
             strict_hotkeys,
+            lock_sort_order,
             idle_decay_window,
             settings_view: None,
             settings_close_confirm: false,
@@ -1592,6 +1598,15 @@ impl HomeView {
         };
         self.sound_config = config.sound.clone();
         self.strict_hotkeys = config.session.strict_hotkeys;
+        self.lock_sort_order = config.session.lock_sort_order;
+        if let Some(locked) = self.lock_sort_order {
+            if self.sort_order != locked {
+                self.sort_order = locked;
+                self.flat_items = self.build_flat_items();
+                self.cursor = self.cursor.min(self.flat_items.len().saturating_sub(1));
+                self.update_selected();
+            }
+        }
         self.idle_decay_window =
             crate::tui::styles::idle_decay_window(config.theme.idle_decay_minutes);
     }

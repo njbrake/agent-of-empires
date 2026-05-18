@@ -1,8 +1,8 @@
 //! Setting field definitions and config mapping
 
 use crate::session::{
-    validate_check_interval, Config, ContainerRuntimeName, DefaultTerminalMode, ProfileConfig,
-    TmuxClipboardMode, TmuxMouseMode, TmuxStatusBarMode,
+    config::SortOrder, validate_check_interval, Config, ContainerRuntimeName,
+    DefaultTerminalMode, ProfileConfig, TmuxClipboardMode, TmuxMouseMode, TmuxStatusBarMode,
 };
 use crate::sound::{
     validate_sound_exists, volume_from_option, volume_options, volume_to_index, SoundMode,
@@ -87,6 +87,7 @@ pub enum FieldKey {
     // Session
     DefaultTool,
     StrictHotkeys,
+    LockSortOrder,
     AgentExtraArgs,
     AgentCommandOverride,
     AgentStatusHooks,
@@ -217,6 +218,17 @@ fn parse_key_value_list(items: &[String]) -> std::collections::HashMap<String, S
             Some((k.to_string(), v.to_string()))
         })
         .collect()
+}
+
+fn sort_order_from_select_index(index: usize) -> Option<SortOrder> {
+    match index {
+        1 => Some(SortOrder::Newest),
+        2 => Some(SortOrder::LastActivity),
+        3 => Some(SortOrder::Oldest),
+        4 => Some(SortOrder::AZ),
+        5 => Some(SortOrder::ZA),
+        _ => None,
+    }
 }
 
 /// Value types for settings fields
@@ -1354,6 +1366,38 @@ fn build_session_fields(
         session.and_then(|s| s.strict_hotkeys),
     );
 
+    let (lock_sort_order, lock_sort_override) = resolve_optional(
+        scope,
+        global.session.lock_sort_order,
+        session.and_then(|s| s.lock_sort_order),
+        session.map(|s| s.lock_sort_order.is_some()).unwrap_or(false),
+    );
+
+    let lock_sort_options = vec![
+        "Off".to_string(),
+        "Newest".to_string(),
+        "Recent".to_string(),
+        "Oldest".to_string(),
+        "A-Z".to_string(),
+        "Z-A".to_string(),
+    ];
+    let lock_sort_selected = match lock_sort_order {
+        None => 0,
+        Some(SortOrder::Newest) => 1,
+        Some(SortOrder::LastActivity) => 2,
+        Some(SortOrder::Oldest) => 3,
+        Some(SortOrder::AZ) => 4,
+        Some(SortOrder::ZA) => 5,
+    };
+    let global_lock_sort_selected = match global.session.lock_sort_order {
+        None => 0,
+        Some(SortOrder::Newest) => 1,
+        Some(SortOrder::LastActivity) => 2,
+        Some(SortOrder::Oldest) => 3,
+        Some(SortOrder::AZ) => 4,
+        Some(SortOrder::ZA) => 5,
+    };
+
     let (agent_status_hooks, status_hooks_override) = resolve_value(
         scope,
         global.session.agent_status_hooks,
@@ -1512,6 +1556,24 @@ fn build_session_fields(
             inherited_display: inherited_if(
                 strict_hotkeys_override,
                 FieldValue::Bool(global.session.strict_hotkeys),
+            ),
+        },
+        SettingField {
+            key: FieldKey::LockSortOrder,
+            label: "Lock Sort Order",
+            description: "Lock to a specific sort order and disable the O / Ctrl+O cycling hotkeys",
+            value: FieldValue::Select {
+                selected: lock_sort_selected,
+                options: lock_sort_options.clone(),
+            },
+            category: SettingsCategory::Session,
+            has_override: lock_sort_override,
+            inherited_display: inherited_if(
+                lock_sort_override,
+                FieldValue::Select {
+                    selected: global_lock_sort_selected,
+                    options: lock_sort_options,
+                },
             ),
         },
         SettingField {
@@ -1884,6 +1946,9 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
         }
         (FieldKey::YoloModeDefault, FieldValue::Bool(v)) => config.session.yolo_mode_default = *v,
         (FieldKey::StrictHotkeys, FieldValue::Bool(v)) => config.session.strict_hotkeys = *v,
+        (FieldKey::LockSortOrder, FieldValue::Select { selected, .. }) => {
+            config.session.lock_sort_order = sort_order_from_select_index(*selected);
+        }
         (FieldKey::AgentStatusHooks, FieldValue::Bool(v)) => {
             config.session.agent_status_hooks = *v;
         }
@@ -2279,6 +2344,14 @@ fn apply_field_to_profile(field: &SettingField, _global: &Config, config: &mut P
         }
         (FieldKey::StrictHotkeys, FieldValue::Bool(v)) => {
             set_profile_override(*v, &mut config.session, |s, val| s.strict_hotkeys = val);
+        }
+        (FieldKey::LockSortOrder, FieldValue::Select { selected, .. }) => {
+            let value = sort_order_from_select_index(*selected);
+            use crate::session::SessionConfigOverride;
+            let session = config
+                .session
+                .get_or_insert_with(SessionConfigOverride::default);
+            session.lock_sort_order = value;
         }
         (FieldKey::AgentStatusHooks, FieldValue::Bool(v)) => {
             set_profile_override(*v, &mut config.session, |s, val| {

@@ -162,6 +162,7 @@ impl HelpOverlay {
         theme: &Theme,
         sort_order: SortOrder,
         strict_hotkeys: bool,
+        lock_sort_order: Option<SortOrder>,
     ) {
         let x = area.x + (area.width.saturating_sub(DIALOG_WIDTH)) / 2;
         let y = area.y + (area.height.saturating_sub(DIALOG_HEIGHT)) / 2;
@@ -191,7 +192,11 @@ impl HelpOverlay {
         frame.render_widget(block, dialog_area);
 
         let mut lines: Vec<Line> = Vec::new();
-        let sort_label = format!("(current sort: {})", sort_order.label());
+        let sort_label = if lock_sort_order.is_some() {
+            format!("(sort locked: {})", sort_order.label())
+        } else {
+            format!("(current sort: {})", sort_order.label())
+        };
 
         let sections = shortcuts(strict_hotkeys);
         let last_idx = sections.len().saturating_sub(1);
@@ -201,9 +206,13 @@ impl HelpOverlay {
                 Style::default().fg(theme.accent).bold(),
             )));
             for (key, desc) in keys {
+                let is_locked_sort = lock_sort_order.is_some()
+                    && (*key == "O" || *key == "Ctrl+O" || *key == "o" || *key == "Ctrl+o");
+                let key_color = if is_locked_sort { theme.dimmed } else { theme.waiting };
+                let desc_color = if is_locked_sort { theme.dimmed } else { theme.text };
                 lines.push(Line::from(vec![
-                    Span::styled(format!("  {:11}", key), Style::default().fg(theme.waiting)),
-                    Span::styled(*desc, Style::default().fg(theme.text)),
+                    Span::styled(format!("  {:11}", key), Style::default().fg(key_color)),
+                    Span::styled(*desc, Style::default().fg(desc_color)),
                 ]));
             }
 

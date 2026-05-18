@@ -85,7 +85,7 @@ fn hotkey_label(non_strict: &'static str, strict: &'static str, strict_mode: boo
 /// PageUp/PageDown, h/l for collapse) since those don't belong in a palette.
 /// `strict_hotkeys` controls only the displayed hotkey label; the synthesized
 /// payload bypasses strict-mode normalization either way.
-pub fn builtin_commands(serve_enabled: bool, strict_hotkeys: bool) -> Vec<PaletteCommand> {
+pub fn builtin_commands(serve_enabled: bool, strict_hotkeys: bool, lock_sort_order: bool) -> Vec<PaletteCommand> {
     let mut cmds = vec![
         PaletteCommand {
             id: "new-session",
@@ -168,14 +168,6 @@ pub fn builtin_commands(serve_enabled: bool, strict_hotkeys: bool) -> Vec<Palett
             payload: PaletteAction::Key(key('t')),
         },
         PaletteCommand {
-            id: "cycle-sort",
-            title: "Cycle sort order".to_string(),
-            group: PaletteGroup::Views,
-            keywords: vec!["order", "sort"],
-            hotkey: hotkey_label("o", "O", strict_hotkeys),
-            payload: PaletteAction::Key(key('o')),
-        },
-        PaletteCommand {
             id: "cycle-group-by",
             title: "Cycle group by".to_string(),
             group: PaletteGroup::Views,
@@ -224,6 +216,17 @@ pub fn builtin_commands(serve_enabled: bool, strict_hotkeys: bool) -> Vec<Palett
             payload: PaletteAction::Key(key('?')),
         },
     ];
+
+    if !lock_sort_order {
+        cmds.push(PaletteCommand {
+            id: "cycle-sort",
+            title: "Cycle sort order".to_string(),
+            group: PaletteGroup::Views,
+            keywords: vec!["order", "sort"],
+            hotkey: hotkey_label("o", "O", strict_hotkeys),
+            payload: PaletteAction::Key(key('o')),
+        });
+    }
 
     if serve_enabled {
         cmds.push(PaletteCommand {
@@ -534,7 +537,7 @@ mod tests {
     }
 
     fn make_dialog() -> CommandPaletteDialog {
-        CommandPaletteDialog::new(builtin_commands(false, false))
+        CommandPaletteDialog::new(builtin_commands(false, false, false))
     }
 
     #[test]
@@ -639,8 +642,8 @@ mod tests {
 
     #[test]
     fn serve_command_only_with_feature() {
-        let with = builtin_commands(true, false);
-        let without = builtin_commands(false, false);
+        let with = builtin_commands(true, false, false);
+        let without = builtin_commands(false, false, false);
         assert!(with.iter().any(|c| c.id == "serve"));
         assert!(!without.iter().any(|c| c.id == "serve"));
     }
@@ -650,8 +653,8 @@ mod tests {
         // Picks one entry whose label moves under strict mode and one whose
         // binding gets relocated to Ctrl. Catches regressions where strict
         // mode was forgotten when adding a new entry.
-        let normal = builtin_commands(false, false);
-        let strict = builtin_commands(false, true);
+        let normal = builtin_commands(false, false, false);
+        let strict = builtin_commands(false, true, false);
 
         let new_normal = normal.iter().find(|c| c.id == "new-session").unwrap();
         let new_strict = strict.iter().find(|c| c.id == "new-session").unwrap();
