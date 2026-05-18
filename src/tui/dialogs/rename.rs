@@ -204,7 +204,7 @@ impl RenameDialog {
             && key.modifiers == KeyModifiers::NONE
             && self.group_ghost.is_some()
         {
-            let cursor = self.new_group.visual_cursor();
+            let cursor = self.new_group.cursor();
             let char_len = self.new_group.value().chars().count();
             if cursor >= char_len {
                 self.accept_group_ghost();

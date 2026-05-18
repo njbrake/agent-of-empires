@@ -13,7 +13,7 @@ use super::{
 };
 use crate::session::config::GroupByMode;
 use crate::session::{Item, Status};
-use crate::tui::components::{HelpOverlay, Preview};
+use crate::tui::components::{set_prefixed_input_cursor_position, HelpOverlay, Preview};
 use crate::tui::responsive;
 use crate::tui::styles::Theme;
 use crate::update::UpdateInfo;
@@ -440,7 +440,7 @@ impl HomeView {
             };
 
             let value = self.search_query.value();
-            let cursor_pos = self.search_query.visual_cursor();
+            let cursor_pos = self.search_query.cursor();
             let cursor_style = Style::default().fg(theme.background).bg(theme.search);
             let text_style = Style::default().fg(theme.search);
 
@@ -474,7 +474,36 @@ impl HomeView {
             }
 
             frame.render_widget(Paragraph::new(Line::from(spans)), search_area);
+            if !self.has_overlay_above_search() {
+                set_prefixed_input_cursor_position(frame, search_area, "/", &self.search_query);
+            }
         }
+    }
+
+    fn has_overlay_above_search(&self) -> bool {
+        #[cfg(feature = "serve")]
+        let serve_open = self.serve_view.is_some();
+        #[cfg(not(feature = "serve"))]
+        let serve_open = false;
+
+        self.show_help
+            || self.new_dialog.is_some()
+            || self.confirm_dialog.is_some()
+            || self.unified_delete_dialog.is_some()
+            || self.group_delete_options_dialog.is_some()
+            || self.rename_dialog.is_some()
+            || self.hook_trust_dialog.is_some()
+            || self.hooks_install_dialog.is_some()
+            || self.welcome_dialog.is_some()
+            || self.no_agents_dialog.is_some()
+            || self.changelog_dialog.is_some()
+            || self.info_dialog.is_some()
+            || self.profile_picker_dialog.is_some()
+            || self.projects_dialog.is_some()
+            || self.command_palette.is_some()
+            || self.send_message_dialog.is_some()
+            || self.update_confirm_dialog.is_some()
+            || serve_open
     }
 
     fn render_item_line(

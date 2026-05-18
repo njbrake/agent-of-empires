@@ -1,4 +1,4 @@
-//! Shared session deletion logic used by both TUI and web server.
+//! Shared session deletion logic used by CLI, TUI, and web server.
 
 use std::path::{Path, PathBuf};
 
@@ -15,17 +15,23 @@ pub struct DeletionRequest {
     pub delete_branch: bool,
     pub delete_sandbox: bool,
     pub force_delete: bool,
+    /// When `true`, on_destroy hooks run detached from the controlling
+    /// terminal (TUI/web). When `false`, hooks inherit stdin/stdout so
+    /// interactive prompts work (CLI).
+    pub detach_hooks: bool,
 }
 
 #[derive(Debug)]
 pub struct DeletionResult {
     pub session_id: String,
     pub success: bool,
-    pub error: Option<String>,
+    pub messages: Vec<String>,
+    pub errors: Vec<String>,
 }
 
 pub fn perform_deletion(request: &DeletionRequest) -> DeletionResult {
     let mut errors = Vec::new();
+    let mut messages = Vec::new();
 
     tracing::debug!(
         session_id = %request.session_id,
@@ -44,7 +50,7 @@ pub fn perform_deletion(request: &DeletionRequest) -> DeletionResult {
     // Stage 1: on_destroy hooks. The container and worktree are still
     // alive here so teardown commands have full access.
     tracing::debug!(session_id = %request.session_id, stage = "on_destroy_hooks", "perform_deletion: stage");
-    run_on_destroy_hooks(&request.instance);
+    run_on_destroy_hooks(&request.instance, request.detach_hooks);
 
     // Stage 2: sever the live agent BEFORE we touch the working tree it
     // may be writing to. Killing the tmux session terminates the user's
@@ -57,6 +63,7 @@ pub fn perform_deletion(request: &DeletionRequest) -> DeletionResult {
     tracing::debug!(session_id = %request.session_id, stage = "tmux_kill", "perform_deletion: stage");
     let _ = request.instance.kill();
     let _ = request.instance.kill_terminal();
+    let _ = request.instance.kill_container_terminal();
 
     let is_sandboxed = request
         .instance
@@ -137,6 +144,8 @@ pub fn perform_deletion(request: &DeletionRequest) -> DeletionResult {
         if container.exists().unwrap_or(false) {
             if let Err(e) = container.remove(true) {
                 errors.push(format!("Container: {}", e));
+            } else {
+                messages.push("Container removed".to_string());
             }
         }
     }
@@ -178,6 +187,8 @@ pub fn perform_deletion(request: &DeletionRequest) -> DeletionResult {
                                 request.delete_sandbox,
                             ) {
                                 errors.extend(errs);
+                            } else {
+                                messages.push("Worktree removed".to_string());
                             }
                         }
                         Err(e) => {
@@ -215,6 +226,11 @@ pub fn perform_deletion(request: &DeletionRequest) -> DeletionResult {
                                         errs.into_iter()
                                             .map(|e| format!("Workspace ({}): {}", repo.name, e)),
                                     );
+                                } else {
+                                    messages.push(format!(
+                                        "Workspace ({}) worktree removed",
+                                        repo.name
+                                    ));
                                 }
                             }
                             Err(e) => {
@@ -231,6 +247,8 @@ pub fn perform_deletion(request: &DeletionRequest) -> DeletionResult {
                     if ws_path.exists() {
                         if let Err(e) = std::fs::remove_dir_all(&ws_path) {
                             errors.push(format!("Workspace dir: {}", e));
+                        } else {
+                            messages.push("Workspace directory removed".to_string());
                         }
                     }
                 }
@@ -251,6 +269,8 @@ pub fn perform_deletion(request: &DeletionRequest) -> DeletionResult {
                     if let Err(e) = git_wt.delete_branch(&branch) {
                         tracing::debug!(branch = %branch, error = %e, "perform_deletion: delete_branch returned error");
                         errors.push(format!("Branch: {}", e));
+                    } else {
+                        messages.push(format!("Branch '{}' deleted", branch));
                     }
                 }
                 Err(e) => {
@@ -277,6 +297,11 @@ pub fn perform_deletion(request: &DeletionRequest) -> DeletionResult {
                         if let Ok(git_wt) = GitWorktree::new(main_repo) {
                             if let Err(e) = git_wt.delete_branch(&repo.branch) {
                                 errors.push(format!("Branch ({}): {}", repo.name, e));
+                            } else {
+                                messages.push(format!(
+                                    "Branch '{}' ({}) deleted",
+                                    repo.branch, repo.name
+                                ));
                             }
                         }
                     }
@@ -303,11 +328,8 @@ pub fn perform_deletion(request: &DeletionRequest) -> DeletionResult {
     DeletionResult {
         session_id: request.session_id.clone(),
         success: errors.is_empty(),
-        error: if errors.is_empty() {
-            None
-        } else {
-            Some(errors.join("; "))
-        },
+        messages,
+        errors,
     }
 }
 
@@ -318,7 +340,7 @@ pub fn perform_deletion(request: &DeletionRequest) -> DeletionResult {
 /// Global/profile hooks are implicitly trusted. Repo-level hooks go through
 /// the same trust verification as on_launch: if the hooks hash has changed
 /// since the user last approved, repo hooks are silently skipped.
-fn run_on_destroy_hooks(instance: &Instance) {
+fn run_on_destroy_hooks(instance: &Instance, detach: bool) {
     let profile = if instance.source_profile.is_empty() {
         "default"
     } else {
@@ -353,9 +375,9 @@ fn run_on_destroy_hooks(instance: &Instance) {
 
     let is_sandboxed = instance.sandbox_info.as_ref().is_some_and(|s| s.enabled);
 
-    // perform_deletion is the shared path used by the TUI and web server, so
-    // detach the hook child from the controlling terminal: a credential prompt
-    // would otherwise corrupt the rendered UI (see issue #901).
+    // The caller controls detachment: TUI/web pass detach=true to avoid
+    // corrupting the rendered UI (see issue #901); CLI passes detach=false
+    // so interactive prompts work.
     let errors = if is_sandboxed {
         if let Some(ref sandbox) = instance.sandbox_info {
             let workdir = instance.container_workdir();
@@ -363,13 +385,13 @@ fn run_on_destroy_hooks(instance: &Instance) {
                 &resolved_on_destroy,
                 &sandbox.container_name,
                 &workdir,
-                true,
+                detach,
             )
         } else {
             vec![]
         }
     } else {
-        repo_config::execute_hooks_best_effort(&resolved_on_destroy, project_path, true)
+        repo_config::execute_hooks_best_effort(&resolved_on_destroy, project_path, detach)
     };
 
     if !errors.is_empty() {
@@ -399,12 +421,13 @@ mod tests {
             delete_branch: false,
             delete_sandbox: false,
             force_delete: false,
+            detach_hooks: true,
         };
 
         let result = perform_deletion(&request);
 
         assert!(result.success);
-        assert!(result.error.is_none());
+        assert!(result.errors.is_empty());
         assert_eq!(result.session_id, request.session_id);
     }
 
@@ -418,12 +441,13 @@ mod tests {
             delete_branch: false,
             delete_sandbox: false,
             force_delete: false,
+            detach_hooks: true,
         };
 
         let result = perform_deletion(&request);
 
         assert!(result.success);
-        assert!(result.error.is_none());
+        assert!(result.errors.is_empty());
     }
 
     #[test]
@@ -438,6 +462,7 @@ mod tests {
             delete_branch: false,
             delete_sandbox: false,
             force_delete: false,
+            detach_hooks: true,
         };
 
         let result = perform_deletion(&request);
@@ -583,6 +608,7 @@ mod tests {
                 delete_branch: false,
                 delete_sandbox: true,
                 force_delete: false,
+                detach_hooks: true,
             };
 
             let stages = run_with_capture(|| {
@@ -689,13 +715,14 @@ mod tests {
                 delete_branch: true,
                 delete_sandbox: false,
                 force_delete: false,
+                detach_hooks: true,
             };
 
             let result = perform_deletion(&request);
             assert!(
                 result.success,
                 "perform_deletion failed: {:?}",
-                result.error
+                result.errors
             );
 
             // worktree directory and its admin entry must be gone
@@ -782,6 +809,7 @@ mod tests {
                 delete_branch: false,
                 delete_sandbox: false,
                 force_delete: false,
+                detach_hooks: true,
             };
             let result = perform_deletion(&req_no_force);
             assert!(
@@ -801,12 +829,13 @@ mod tests {
                 delete_branch: true,
                 delete_sandbox: false,
                 force_delete: true,
+                detach_hooks: true,
             };
             let result = perform_deletion(&req_force);
             assert!(
                 result.success,
                 "force delete should succeed: {:?}",
-                result.error
+                result.errors
             );
             assert!(!worktree_path.exists());
             assert!(!main_repo.join(".git/worktrees/worktree").exists());
@@ -897,6 +926,7 @@ mod tests {
                 delete_branch: true,
                 delete_sandbox: true,
                 force_delete: false,
+                detach_hooks: true,
             };
 
             // Stage assertions: preclean must not run when dirty.
@@ -917,9 +947,11 @@ mod tests {
                 !result.success,
                 "dirty worktree must not be deleted without --force"
             );
-            let err = result
-                .error
-                .expect("dirty deletion should surface an error");
+            assert!(
+                !result.errors.is_empty(),
+                "dirty deletion should surface errors"
+            );
+            let err = result.errors.join("; ");
             assert!(
                 err.contains("modified or untracked"),
                 "error should describe dirty state: {}",
@@ -964,6 +996,7 @@ mod tests {
                 delete_branch: true,
                 delete_sandbox: false,
                 force_delete: true,
+                detach_hooks: true,
             };
 
             let stages = run_with_capture(|| {
@@ -1000,6 +1033,7 @@ mod tests {
                 delete_branch: false,
                 delete_sandbox: false,
                 force_delete: false,
+                detach_hooks: true,
             };
 
             let stages = run_with_capture(|| {

@@ -80,7 +80,7 @@ fn path_completion_base(parent_prefix: &str) -> Option<PathBuf> {
 pub(super) fn compute_path_ghost(input: &Input) -> Option<PathGhostCompletion> {
     let value = input.value().to_string();
     let char_len = value.chars().count();
-    let cursor_char = input.visual_cursor().min(char_len);
+    let cursor_char = input.cursor().min(char_len);
 
     if cursor_char < char_len {
         return None;
@@ -149,7 +149,7 @@ impl NewSessionDialog {
 
         // Right arrow at end of input with ghost: accept ghost text
         if key.code == KeyCode::Right && key.modifiers == KeyModifiers::NONE {
-            let cursor = self.path.visual_cursor();
+            let cursor = self.path.cursor();
             let char_len = self.path.value().chars().count();
             if cursor >= char_len && self.path_ghost.is_some() {
                 self.accept_path_ghost();
@@ -160,7 +160,7 @@ impl NewSessionDialog {
 
         // End key at end of input with ghost: accept ghost text
         if key.code == KeyCode::End && key.modifiers == KeyModifiers::NONE {
-            let cursor = self.path.visual_cursor();
+            let cursor = self.path.cursor();
             let char_len = self.path.value().chars().count();
             if cursor >= char_len && self.path_ghost.is_some() {
                 self.accept_path_ghost();
@@ -195,7 +195,7 @@ impl NewSessionDialog {
     fn move_path_cursor_to(&mut self, target_char_idx: usize) {
         let char_len = self.path.value().chars().count();
         let target = target_char_idx.min(char_len);
-        let current = self.path.visual_cursor().min(char_len);
+        let current = self.path.cursor().min(char_len);
 
         if target < current {
             for _ in 0..(current - target) {
@@ -218,7 +218,7 @@ impl NewSessionDialog {
 
     fn move_path_cursor_to_previous_segment(&mut self) {
         let chars: Vec<char> = self.path.value().chars().collect();
-        let mut cursor = self.path.visual_cursor().min(chars.len());
+        let mut cursor = self.path.cursor().min(chars.len());
         if cursor == 0 {
             return;
         }
@@ -259,7 +259,7 @@ impl NewSessionDialog {
         };
 
         let value = self.path.value().to_string();
-        let cursor_char = self.path.visual_cursor().min(value.chars().count());
+        let cursor_char = self.path.cursor().min(value.chars().count());
 
         // Staleness check
         if ghost.input_snapshot != value || ghost.cursor_snapshot != cursor_char {

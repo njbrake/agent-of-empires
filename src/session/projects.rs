@@ -107,14 +107,8 @@ fn read_file(path: &Path, scope: ProjectScope) -> Result<Vec<Project>> {
 }
 
 fn write_file(path: &Path, projects: &[Project]) -> Result<()> {
-    if path.exists() {
-        let backup = path.with_extension("json.bak");
-        if let Err(e) = fs::copy(path, &backup) {
-            warn!("Failed to back up {}: {}", path.display(), e);
-        }
-    }
     let content = serde_json::to_string_pretty(projects)?;
-    fs::write(path, content)?;
+    super::atomic_write(path, content.as_bytes())?;
     Ok(())
 }
 

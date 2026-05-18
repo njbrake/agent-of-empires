@@ -393,9 +393,8 @@ fn format_scroll_indicator(
 }
 
 fn parse_output_text(content: &str) -> Text<'static> {
-    content
-        .into_text()
-        .unwrap_or_else(|_| Text::from(content.to_string()))
+    let cleaned = crate::tmux::utils::strip_osc_st(content);
+    cleaned.into_text().unwrap_or_else(|_| Text::from(cleaned))
 }
 
 fn shorten_path(path: &str) -> String {

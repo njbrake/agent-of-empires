@@ -20,6 +20,13 @@ use tokio::process::Command;
 use tokio::sync::Mutex;
 use tracing::info;
 
+/// Routing target for a terminal command. Built once per session in
+/// `SessionResources::sandbox` and consulted on every `terminal/create`.
+#[derive(Debug, Clone)]
+pub struct TerminalSandbox {
+    pub container_name: String,
+}
+
 #[derive(Debug, Error)]
 pub enum TerminalError {
     #[error("io error: {0}")]
@@ -62,13 +69,18 @@ impl TerminalManager {
     /// `output` after a brief delay) for results.
     ///
     /// `cwd` is the working directory; the caller is responsible for
-    /// passing the session's worktree path.
+    /// passing the session's worktree path. When `sandbox` is `Some`
+    /// the command is routed through `docker exec` so it runs inside
+    /// the session's sandbox container; `cwd` is interpreted as a
+    /// container path in that case (the agent already speaks in
+    /// container paths).
     pub async fn create_and_run(
         &self,
         session_id: &str,
         command: &str,
         args: Vec<String>,
         cwd: PathBuf,
+        sandbox: Option<&TerminalSandbox>,
     ) -> Result<TerminalId, TerminalError> {
         let id = format!("term-{}", uuid::Uuid::new_v4().simple());
         info!(
@@ -77,16 +89,37 @@ impl TerminalManager {
             terminal = %id,
             command = %command,
             cwd = %cwd.display(),
+            sandboxed = sandbox.is_some(),
             "terminal/create"
         );
 
-        let mut child = Command::new(command)
-            .args(&args)
-            .current_dir(&cwd)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()?;
+        let mut child = match sandbox {
+            Some(s) => {
+                let runtime = crate::containers::get_container_runtime();
+                let binary = runtime.base.binary;
+                let mut full_args: Vec<String> = vec![
+                    "exec".into(),
+                    "-w".into(),
+                    cwd.to_string_lossy().into_owned(),
+                    s.container_name.clone(),
+                    command.to_string(),
+                ];
+                full_args.extend(args);
+                Command::new(binary)
+                    .args(&full_args)
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .spawn()?
+            }
+            None => Command::new(command)
+                .args(&args)
+                .current_dir(&cwd)
+                .stdin(Stdio::null())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()?,
+        };
 
         let mut stdout_buf = String::new();
         let mut stderr_buf = String::new();
@@ -138,7 +171,7 @@ mod tests {
         let mgr = TerminalManager::new();
         let cwd = std::env::temp_dir();
         let id = mgr
-            .create_and_run("s-1", "echo", vec!["hello".into()], cwd)
+            .create_and_run("s-1", "echo", vec!["hello".into()], cwd, None)
             .await
             .unwrap();
         let out = mgr.output(&id).await.unwrap();
@@ -151,7 +184,7 @@ mod tests {
         let mgr = TerminalManager::new();
         let cwd = std::env::temp_dir();
         let id = mgr
-            .create_and_run("s-1", "true", vec![], cwd)
+            .create_and_run("s-1", "true", vec![], cwd, None)
             .await
             .unwrap();
         mgr.release(&id).await.unwrap();

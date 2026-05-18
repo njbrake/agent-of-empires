@@ -3,11 +3,7 @@
 use anyhow::{bail, Result};
 use clap::Args;
 
-use crate::containers;
-use crate::git::cleanup::remove_managed_worktree;
-use crate::git::GitWorktree;
 use crate::session::{GroupTree, Instance, Storage};
-use std::path::PathBuf;
 
 #[derive(Args)]
 pub struct RemoveArgs {
@@ -58,175 +54,56 @@ pub async fn run(profile: &str, args: RemoveArgs) -> Result<()> {
                 std::path::Path::new(&inst.project_path),
             );
 
-            // Run on_destroy hooks before cleanup so resources are still available.
-            // Global/profile hooks are implicitly trusted; repo hooks require trust.
-            {
-                let project_path = std::path::Path::new(&inst.project_path);
-                let mut on_destroy = config.hooks.on_destroy.clone();
-
-                // If the resolved config included repo hooks, verify they're still trusted.
-                // Re-check trust to avoid running hooks that changed since approval.
-                match crate::session::repo_config::check_hook_trust(project_path) {
-                    Ok(crate::session::repo_config::HookTrustStatus::Trusted(hooks))
-                        if !hooks.on_destroy.is_empty() =>
-                    {
-                        on_destroy = hooks.on_destroy.clone();
-                    }
-                    Ok(crate::session::repo_config::HookTrustStatus::NeedsTrust { .. }) => {
-                        // Repo hooks changed; fall back to global/profile only.
-                        on_destroy =
-                            crate::session::profile_config::resolve_config_or_warn(profile)
-                                .hooks
-                                .on_destroy;
-                    }
-                    _ => {}
-                }
-
-                if !on_destroy.is_empty() {
-                    let is_sandboxed = inst.sandbox_info.as_ref().is_some_and(|s| s.enabled);
-
-                    // CLI context: leave the terminal attached so a hook that
-                    // legitimately needs user input can still be answered.
-                    let errors = if is_sandboxed {
-                        if let Some(ref sandbox) = inst.sandbox_info {
-                            let workdir = inst.container_workdir();
-                            crate::session::repo_config::execute_hooks_in_container_best_effort(
-                                &on_destroy,
-                                &sandbox.container_name,
-                                &workdir,
-                                false,
-                            )
-                        } else {
-                            vec![]
-                        }
-                    } else {
-                        crate::session::repo_config::execute_hooks_best_effort(
-                            &on_destroy,
-                            project_path,
-                            false,
-                        )
-                    };
-
-                    for err in &errors {
-                        eprintln!("Warning: on_destroy hook: {}", err);
-                    }
-                }
-            }
-
-            let will_cleanup_worktree = needs_worktree_cleanup(&inst, &args);
-            // Delete branch if explicitly requested, or if worktree is being
-            // deleted and config says to also delete the branch.
-            let will_delete_branch = inst
+            let delete_worktree = needs_worktree_cleanup(&inst, &args);
+            let delete_branch = inst
                 .worktree_info
                 .as_ref()
                 .is_some_and(|wt| wt.managed_by_aoe)
                 && (args.delete_branch
-                    || (will_cleanup_worktree && config.worktree.delete_branch_on_cleanup));
+                    || (delete_worktree && config.worktree.delete_branch_on_cleanup));
+            let delete_sandbox = inst.sandbox_info.as_ref().is_some_and(|s| s.enabled)
+                && !args.keep_container
+                && config.sandbox.auto_cleanup;
 
-            // Track whether worktree removal succeeded (needed for branch deletion)
-            let mut worktree_removed = false;
+            let result = crate::session::deletion::perform_deletion(
+                &crate::session::deletion::DeletionRequest {
+                    session_id: inst.id.clone(),
+                    instance: inst.clone(),
+                    delete_worktree,
+                    delete_branch,
+                    delete_sandbox,
+                    force_delete: args.force,
+                    detach_hooks: false,
+                },
+            );
 
-            // Handle worktree cleanup
-            if will_cleanup_worktree {
-                let wt_info = inst.worktree_info.as_ref().unwrap();
-                let worktree_path = PathBuf::from(&inst.project_path);
-                let main_repo = PathBuf::from(&wt_info.main_repo_path);
-
-                match GitWorktree::new(main_repo.clone()) {
-                    Ok(git_wt) => {
-                        // --keep-container means the sandbox fallback
-                        // must not surprise-tear-down the container to
-                        // free a permission-bound worktree.
-                        let allow_container_removal = !args.keep_container;
-                        match remove_managed_worktree(
-                            &git_wt,
-                            &worktree_path,
-                            &main_repo,
-                            &inst,
-                            args.force,
-                            allow_container_removal,
-                        ) {
-                            Ok(()) => {
-                                worktree_removed = true;
-                                println!("  Worktree removed");
-                            }
-                            Err(errs) => {
-                                for e in &errs {
-                                    eprintln!("Warning: {}", e);
-                                }
-                                eprintln!(
-                                    "You may need to remove it manually with: git worktree remove {}",
-                                    inst.project_path
-                                );
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        eprintln!("Warning: failed to access git repository: {}", e);
-                    }
-                }
-            } else if let Some(wt_info) = &inst.worktree_info {
-                if wt_info.managed_by_aoe {
-                    println!(
-                        "Worktree preserved at: {} (use --delete-worktree to remove)",
-                        inst.project_path
-                    );
-                }
+            for msg in &result.messages {
+                println!("  {}", msg);
+            }
+            for err in &result.errors {
+                eprintln!("Warning: {}", err);
             }
 
-            // Handle branch cleanup (only if worktree was removed or wasn't requested)
-            if will_delete_branch {
-                let worktree_ok = !will_cleanup_worktree || worktree_removed;
-                if worktree_ok {
-                    let wt_info = inst.worktree_info.as_ref().unwrap();
-                    let main_repo = PathBuf::from(&wt_info.main_repo_path);
-                    match GitWorktree::new(main_repo) {
-                        Ok(git_wt) => {
-                            if let Err(e) = git_wt.delete_branch(&wt_info.branch) {
-                                eprintln!("Warning: failed to delete branch: {}", e);
-                            } else {
-                                println!("  Branch '{}' deleted", wt_info.branch);
-                            }
-                        }
-                        Err(e) => {
-                            eprintln!("Warning: failed to access git repository: {}", e);
-                        }
-                    }
-                }
-            }
-
-            // Kill tmux session if it exists
-            if let Ok(tmux_session) = crate::tmux::Session::new(&inst.id, &inst.title) {
-                if tmux_session.exists() {
-                    if let Err(e) = tmux_session.kill() {
-                        eprintln!("Warning: failed to kill tmux session: {}", e);
-                        eprintln!(
-                            "Session removed from Agent of Empires but may still be running in tmux"
+            if !delete_worktree {
+                if let Some(wt_info) = &inst.worktree_info {
+                    if wt_info.managed_by_aoe {
+                        println!(
+                            "Worktree preserved at: {} (use --delete-worktree to remove)",
+                            inst.project_path
                         );
                     }
                 }
             }
-
-            // Container cleanup (if config allows and user didn't request --keep-container)
             if let Some(sandbox) = &inst.sandbox_info {
-                if sandbox.enabled && !args.keep_container {
-                    if config.sandbox.auto_cleanup {
-                        let container = containers::DockerContainer::from_session_id(&inst.id);
-                        if container.exists().unwrap_or(false) {
-                            if let Err(e) = container.remove(true) {
-                                eprintln!("Warning: failed to remove container: {}", e);
-                            } else {
-                                println!("  Container removed");
-                            }
-                        }
-                    } else {
+                if sandbox.enabled {
+                    if args.keep_container {
+                        println!("Container preserved: {}", sandbox.container_name);
+                    } else if !config.sandbox.auto_cleanup {
                         println!(
                             "Container preserved: {} (auto_cleanup disabled in config)",
                             sandbox.container_name
                         );
                     }
-                } else if args.keep_container {
-                    println!("Container preserved: {}", sandbox.container_name);
                 }
             }
         } else {

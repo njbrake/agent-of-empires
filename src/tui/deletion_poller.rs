@@ -78,6 +78,7 @@ mod tests {
             delete_branch: false,
             delete_sandbox: false,
             force_delete: false,
+            detach_hooks: true,
         });
 
         let mut result = None;

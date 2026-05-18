@@ -88,7 +88,7 @@ pub struct CockpitRunnerArgs {
     #[arg(long, value_delimiter = ',', default_value = "")]
     pub provider_env_keys: Vec<String>,
     /// Cached ACP session id, written by the daemon and read on
-    /// reattach. The runner doesn't itself use this field — it surfaces
+    /// reattach. The runner doesn't itself use this field; it surfaces
     /// in the registry for the daemon's restart path.
     #[arg(long)]
     pub stored_acp_session_id: Option<String>,
