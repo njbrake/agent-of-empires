@@ -61,7 +61,10 @@ different MCP naming scheme, file an issue or PR adjusting the profile's
   against the profile's `clearAliases`. Claude uses `/clear`; codex and
   opencode use `/new`. Gemini has no slash command verified as a
   conversation-clear boundary; `/restore` is a different semantic, so the
-  cockpit doesn't treat it as a clear.
+  cockpit doesn't treat it as a clear. The composer's `/` palette also
+  surfaces each profile's clear aliases as suggestions, since the
+  adapters' own `available_commands_update` channel does not always
+  advertise them.
 - **Subagent indentation** requires the adapter to emit a
   `_meta.<namespace>.parentToolUseId` field on child tool calls.
   claude-agent-acp emits `_meta.claudeCode.parentToolUseId`. OpenCode's

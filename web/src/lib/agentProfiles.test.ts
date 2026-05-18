@@ -64,4 +64,11 @@ describe("resolveAgentProfile", () => {
     expect(p.aliases.read).toContain("read_many_files");
     expect(p.aliases.fetch).toEqual(["web_fetch"]);
   });
+
+  it("clearAliases match the server-side rust profile", () => {
+    expect(resolveAgentProfile("claude").clearAliases).toEqual(["/clear"]);
+    expect(resolveAgentProfile("codex").clearAliases).toEqual(["/new"]);
+    expect(resolveAgentProfile("opencode").clearAliases).toEqual(["/new"]);
+    expect(resolveAgentProfile("gemini").clearAliases).toEqual([]);
+  });
 });

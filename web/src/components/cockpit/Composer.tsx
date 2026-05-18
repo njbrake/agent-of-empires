@@ -30,6 +30,7 @@ import { useFilesIndex, fuzzyFilter } from "./useFilesIndex";
 import type { CockpitState } from "../../lib/cockpitTypes";
 import { getDraft, setDraft } from "../../lib/cockpitDrafts";
 import { useMobileKeyboard } from "../../hooks/useMobileKeyboard";
+import { useAgentProfile } from "../../lib/agentProfileContext";
 
 /** Decision returned by {@link decideEnterAction} for an Enter
  *  keystroke on the cockpit composer textarea.
@@ -205,21 +206,38 @@ export function Composer({
     [files],
   );
 
-  // Slash commands: built from the agent's AvailableCommandsUpdate.
-  // Each item carries `acceptsInput` so onExecute knows whether to
-  // leave the cursor parked after the name (for commands with args)
-  // or to prepare for an immediate Enter-to-send.
-  const slashItems: Unstable_TriggerItem[] = useMemo(
-    () =>
-      availableCommands.map((c) => ({
-        id: c.name,
-        type: "command",
-        label: `/${c.name}`,
-        description: c.description,
-        acceptsInput: c.accepts_input,
-      })),
-    [availableCommands],
-  );
+  // Slash commands: built from the agent's AvailableCommandsUpdate, plus
+  // any profile-declared clear aliases the agent doesn't advertise
+  // itself (codex / opencode emit `/new` as a UI affordance but their
+  // ACP servers don't list it in `available_commands_update`, so the
+  // palette would otherwise be missing the very command we detect
+  // server-side as a session-clear boundary). See #1133 + multi-agent
+  // parity follow-up.
+  const profile = useAgentProfile();
+  const slashItems: Unstable_TriggerItem[] = useMemo(() => {
+    const advertised = new Set(availableCommands.map((c) => c.name));
+    const items: Unstable_TriggerItem[] = availableCommands.map((c) => ({
+      id: c.name,
+      type: "command",
+      label: `/${c.name}`,
+      description: c.description,
+      acceptsInput: c.accepts_input,
+    }));
+    for (const alias of profile.clearAliases ?? []) {
+      const name = alias.startsWith("/") ? alias.slice(1) : alias;
+      if (!name || advertised.has(name)) continue;
+      const item = {
+        id: name,
+        type: "command" as const,
+        label: `/${name}`,
+        description: "clear conversation",
+        acceptsInput: false,
+      } as Unstable_TriggerItem;
+      items.push(item);
+      advertised.add(name);
+    }
+    return items;
+  }, [availableCommands, profile]);
   const slashAdapter: Unstable_TriggerAdapter = useMemo(
     () => ({
       categories: () => [],
