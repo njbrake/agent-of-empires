@@ -83,6 +83,13 @@ fn build_frontend() {
     // Registered unconditionally so Cargo re-runs build.rs when the var is
     // added or removed, not only when it is already set.
     println!("cargo:rerun-if-env-changed=AOE_WEB_DIST");
+
+    // AOE_COVERAGE=1 instructs Vite to instrument the web bundle with
+    // istanbul (see web/vite.config.ts) so Playwright tests against the
+    // embedded frontend can collect coverage. The env var is read by the
+    // npm child process below; we only need to tell Cargo to invalidate the
+    // build script's cache when it toggles.
+    println!("cargo:rerun-if-env-changed=AOE_COVERAGE");
     if let Ok(dist_src) = std::env::var("AOE_WEB_DIST") {
         eprintln!("Using pre-built web frontend from AOE_WEB_DIST={dist_src}");
         let src = Path::new(&dist_src);
