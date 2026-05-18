@@ -19,6 +19,7 @@ import {
   deleteSession,
   fetchAbout,
   fetchSettings,
+  updateWorkspaceOrdering,
 } from "./lib/api";
 import type { DeleteSessionOptions, ServerAbout } from "./lib/api";
 import {
@@ -180,9 +181,35 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
   const showProjects = projectsMatch !== null;
   const settingsTab = settingsTabMatch?.params.tab ?? null;
 
-  const { sessions, error, injectSession, setSessionStatus } = useSessions();
+  const {
+    sessions,
+    workspaceOrdering,
+    setWorkspaceOrdering,
+    markLocalOrderingUpdate,
+    error,
+    injectSession,
+    setSessionStatus,
+  } = useSessions();
   const workspaces = useWorkspaces(sessions);
-  const { groups, toggleRepoCollapsed } = useRepoGroups(workspaces);
+
+  const { groups, toggleRepoCollapsed } = useRepoGroups(
+    workspaces,
+    workspaceOrdering,
+  );
+
+  // Drag-end handler for the sidebar. Optimistically applies the new
+  // order locally so the row snaps into place, then persists to the
+  // server. `markLocalOrderingUpdate` opens a short window during
+  // which polled responses do not clobber our just-applied state, so a
+  // poll firing mid-PUT can't revert the drag.
+  const handleReorderWorkspaces = useCallback(
+    (newOrder: string[]) => {
+      setWorkspaceOrdering(newOrder);
+      markLocalOrderingUpdate();
+      void updateWorkspaceOrdering(newOrder);
+    },
+    [setWorkspaceOrdering, markLocalOrderingUpdate],
+  );
 
   // Selected diff-file identity. `repoName` is undefined for single-repo
   // sessions and the workspace member name for multi-repo workspaces.
@@ -767,6 +794,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
         {!showSettings && !showProjects && (
           <WorkspaceSidebar
             groups={groups}
+            onReorderWorkspaces={handleReorderWorkspaces}
             activeId={activeWorkspace?.id ?? null}
             open={sidebarOpen}
             onToggle={() => setSidebarOpen(false)}

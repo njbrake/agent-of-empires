@@ -12,7 +12,7 @@ impl NewSessionDialog {
 
         // Right arrow at end of input with ghost: accept ghost text
         if key.code == KeyCode::Right && key.modifiers == KeyModifiers::NONE {
-            let cursor = self.group.visual_cursor();
+            let cursor = self.group.cursor();
             let char_len = self.group.value().chars().count();
             if cursor >= char_len && self.group_ghost.is_some() {
                 self.accept_group_ghost();
@@ -23,7 +23,7 @@ impl NewSessionDialog {
 
         // End key at end of input with ghost: accept ghost text
         if key.code == KeyCode::End && key.modifiers == KeyModifiers::NONE {
-            let cursor = self.group.visual_cursor();
+            let cursor = self.group.cursor();
             let char_len = self.group.value().chars().count();
             if cursor >= char_len && self.group_ghost.is_some() {
                 self.accept_group_ghost();

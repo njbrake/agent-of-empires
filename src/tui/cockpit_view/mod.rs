@@ -155,27 +155,58 @@ pub async fn run_for_endpoint(
     // so the user sees the historical conversation immediately instead
     // of a blank pane until live frames start arriving.
     let initial = http.replay(session_id, 0).await;
-    let ws = ws_connect(&endpoint, session_id, 0).await.ok();
+    let ws_result = ws_connect(&endpoint, session_id, 0).await;
+
+    let (ws, ws_err) = match ws_result {
+        Ok(handle) => (Some(handle), None),
+        Err(e) => (None, Some(e)),
+    };
 
     let mut state = CockpitViewState::new(session_id.to_string(), endpoint, http, ws);
     state.focus = Focus::Transcript;
 
-    if let Ok(replay) = initial {
-        if replay.lost {
-            state.transcript.set_lagged();
+    let mut toast_deadline: Option<Instant> = None;
+
+    // Capture both startup-path errors before showing a toast so we
+    // can fold them into a single message when both fail (they
+    // usually share a root cause, e.g. 401 from the auth middleware).
+    let replay_err = match initial {
+        Ok(replay) => {
+            if replay.lost {
+                state.transcript.set_lagged();
+            }
+            for frame in &replay.frames {
+                state.transcript.apply(frame);
+            }
+            state.reconcile_selection();
+            None
         }
-        for frame in &replay.frames {
-            state.transcript.apply(frame);
+        Err(e) => {
+            tracing::warn!(target: "cockpit.tui", "initial replay failed: {e}");
+            Some(e.to_string())
         }
-        state.reconcile_selection();
+    };
+
+    let ws_err_text = ws_err.map(|e| {
+        tracing::warn!(target: "cockpit.tui.ws", "initial ws connect failed: {e}");
+        e.to_string()
+    });
+
+    let startup_toast = match (replay_err, ws_err_text) {
+        (Some(r), Some(w)) => Some(format!("startup failed: replay={r}; ws={w}")),
+        (Some(r), None) => Some(format!("replay failed: {r}")),
+        (None, Some(w)) => Some(format!("ws connect failed: {w}")),
+        (None, None) => None,
+    };
+
+    if let Some(text) = startup_toast {
+        set_toast(&mut state, &mut toast_deadline, text, ToastKind::Error);
     }
 
     redraw(terminal, theme, &state)?;
 
     let mut redraw_ticker = tokio::time::interval(REDRAW_INTERVAL);
     redraw_ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
-
-    let mut toast_deadline: Option<Instant> = None;
 
     loop {
         tokio::select! {

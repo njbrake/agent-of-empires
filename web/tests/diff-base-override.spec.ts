@@ -113,27 +113,30 @@ test.describe("Diff base override (#970)", () => {
     await page.route("**/api/sessions", (r) => {
       if (r.request().method() === "POST") return r.fulfill({ status: 400 });
       return r.fulfill({
-        json: [
-          {
-            id: "pinch-test",
-            title: "pinch-test",
-            project_path: "/tmp/pinch-test",
-            group_path: "/tmp",
-            tool: "claude",
-            status: "Running",
-            yolo_mode: false,
-            created_at: new Date().toISOString(),
-            last_accessed_at: null,
-            last_error: null,
-            branch: null,
-            main_repo_path: null,
-            base_branch_override: "upstream/main",
-            is_sandboxed: false,
-            has_terminal: true,
-            profile: "default",
-            workspace_repos: [],
-          },
-        ],
+        json: {
+          sessions: [
+            {
+              id: "pinch-test",
+              title: "pinch-test",
+              project_path: "/tmp/pinch-test",
+              group_path: "/tmp",
+              tool: "claude",
+              status: "Running",
+              yolo_mode: false,
+              created_at: new Date().toISOString(),
+              last_accessed_at: null,
+              last_error: null,
+              branch: null,
+              main_repo_path: null,
+              base_branch_override: "upstream/main",
+              is_sandboxed: false,
+              has_terminal: true,
+              profile: "default",
+              workspace_repos: [],
+            },
+          ],
+          workspace_ordering: [],
+        },
       });
     });
     let patched: { base_branch?: string | null } | null = null;

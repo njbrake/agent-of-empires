@@ -4,7 +4,14 @@ use anyhow::{bail, Result};
 use clap::{Args, Subcommand};
 use serde::Serialize;
 
-use crate::session::{GroupTree, Storage};
+use crate::session::{GroupTree, StartOutcome, Storage};
+
+/// Wording used by both single-session and `--all` restart paths when the
+/// resume-fallback cascade cleared a stale agent_session_id. Centralized so
+/// drift between the two surfaces cannot happen.
+pub(crate) fn stale_history_suffix(stale_sid: &str) -> String {
+    format!(" (resume failed for sid {stale_sid}; started fresh, prior history not loaded)")
+}
 
 #[derive(Subcommand)]
 pub enum SessionCommands {
@@ -320,7 +327,7 @@ async fn restart_all_sessions(profile: &str, parallel: usize) -> Result<()> {
         usize,
         String,
         Option<crate::session::Instance>,
-        Result<()>,
+        Result<StartOutcome>,
     )> = tokio::task::JoinSet::new();
 
     for (idx, mut inst) in targets {
@@ -348,9 +355,8 @@ async fn restart_all_sessions(profile: &str, parallel: usize) -> Result<()> {
         });
     }
 
-    let mut succeeded: Vec<String> = Vec::new();
+    let mut succeeded: Vec<(String, Option<String>)> = Vec::new();
     let mut failed: Vec<(String, String)> = Vec::new();
-
     while let Some(joined) = join_set.join_next().await {
         let (idx, title, inst_opt, result) =
             joined.expect("JoinSet shouldn't panic on join itself");
@@ -358,7 +364,8 @@ async fn restart_all_sessions(profile: &str, parallel: usize) -> Result<()> {
             instances[idx] = inst;
         }
         match result {
-            Ok(()) => succeeded.push(title),
+            Ok(StartOutcome::Restarted { stale_sid }) => succeeded.push((title, Some(stale_sid))),
+            Ok(StartOutcome::Resumed | StartOutcome::Fresh) => succeeded.push((title, None)),
             Err(e) => failed.push((title, e.to_string())),
         }
     }
@@ -366,9 +373,22 @@ async fn restart_all_sessions(profile: &str, parallel: usize) -> Result<()> {
     let group_tree = GroupTree::new_with_groups(&instances, &groups);
     storage.save_with_groups(&instances, &group_tree)?;
 
-    println!("✓ Restarted {}/{} sessions:", succeeded.len(), total);
-    for title in &succeeded {
-        println!("  · {}", title);
+    let stale_count = succeeded.iter().filter(|(_, s)| s.is_some()).count();
+    if stale_count == 0 {
+        println!("✓ Restarted {}/{} sessions:", succeeded.len(), total);
+    } else {
+        println!(
+            "✓ Restarted {}/{} sessions ({} without prior history):",
+            succeeded.len(),
+            total,
+            stale_count,
+        );
+    }
+    for (title, stale) in &succeeded {
+        match stale {
+            Some(sid) => println!("  · {}{}", title, stale_history_suffix(sid)),
+            None => println!("  · {}", title),
+        }
     }
     if !failed.is_empty() {
         println!("✗ {} failed:", failed.len());
@@ -425,13 +445,24 @@ async fn restart_session(profile: &str, args: SessionIdArgs) -> Result<()> {
     // so restart-time config resolution honors the right profile's overrides.
     instances[idx].source_profile = profile.to_string();
     bail_if_cockpit(&instances[idx], "restart")?;
-    instances[idx].restart_with_size(crate::terminal::get_size())?;
+    let outcome = instances[idx].restart_with_size(crate::terminal::get_size())?;
     let title = instances[idx].title.clone();
 
     let group_tree = GroupTree::new_with_groups(&instances, &groups);
     storage.save_with_groups(&instances, &group_tree)?;
 
-    println!("✓ Restarted session: {}", title);
+    match outcome {
+        StartOutcome::Restarted { stale_sid } => {
+            println!(
+                "✓ Restarted session: {}{}",
+                title,
+                stale_history_suffix(&stale_sid),
+            );
+        }
+        StartOutcome::Resumed | StartOutcome::Fresh => {
+            println!("✓ Restarted session: {}", title);
+        }
+    }
     Ok(())
 }
 
@@ -948,5 +979,34 @@ mod target_filter_tests {
     #[test]
     fn empty_input_yields_empty_targets() {
         assert!(pick_targets_for_restart_all(&[]).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod stale_history_suffix_tests {
+    use super::stale_history_suffix;
+
+    #[test]
+    fn matches_single_session_wording() {
+        let suffix = stale_history_suffix("11111111-1111-1111-1111-111111111111");
+        assert_eq!(
+            suffix,
+            " (resume failed for sid 11111111-1111-1111-1111-111111111111; \
+             started fresh, prior history not loaded)"
+        );
+    }
+
+    #[test]
+    fn renders_inline_with_title_correctly() {
+        let line = format!(
+            "  · {}{}",
+            "alpha",
+            stale_history_suffix("22222222-2222-2222-2222-222222222222"),
+        );
+        assert_eq!(
+            line,
+            "  · alpha (resume failed for sid 22222222-2222-2222-2222-222222222222; \
+             started fresh, prior history not loaded)"
+        );
     }
 }

@@ -2,11 +2,14 @@
 
 use ratatui::prelude::*;
 use ratatui::widgets::*;
+use tui_input::Input;
 
 use rattles::presets::prelude as spinners;
 
 use super::{NewSessionDialog, FIELD_HELP, HELP_DIALOG_WIDTH};
-use crate::tui::components::{render_text_field, render_text_field_with_ghost};
+use crate::tui::components::{
+    render_text_field, render_text_field_with_ghost, set_prefixed_input_cursor_position,
+};
 use crate::tui::styles::Theme;
 
 impl NewSessionDialog {
@@ -554,7 +557,7 @@ impl NewSessionDialog {
                 spans.push(Span::styled(placeholder_text, value_style));
             }
         } else if is_focused {
-            let cursor_pos = self.path.visual_cursor();
+            let cursor_pos = self.path.cursor();
             let cursor_style = if flashing_invalid {
                 Style::default().fg(theme.background).bg(theme.error)
             } else {
@@ -584,6 +587,29 @@ impl NewSessionDialog {
         }
 
         frame.render_widget(Paragraph::new(Line::from(spans)), area);
+
+        if is_focused {
+            set_prefixed_input_cursor_position(frame, area, "Path: ", &self.path);
+        }
+    }
+
+    fn set_input_cursor_on_row(
+        frame: &mut Frame,
+        area: Rect,
+        row: usize,
+        prefix: &str,
+        input: &Input,
+    ) {
+        if row >= area.height as usize {
+            return;
+        }
+        let row_area = Rect {
+            x: area.x,
+            y: area.y.saturating_add(row as u16),
+            width: area.width,
+            height: 1,
+        };
+        set_prefixed_input_cursor_position(frame, row_area, prefix, input);
     }
 
     fn render_sandbox_config(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
@@ -965,6 +991,7 @@ impl NewSessionDialog {
         } else {
             // Expanded view with list
             let mut lines: Vec<Line> = Vec::new();
+            let mut cursor_row: Option<(usize, &'static str, &Input)> = None;
 
             // Header with controls hint
             let header = Line::from(vec![
@@ -998,6 +1025,7 @@ impl NewSessionDialog {
                         Span::styled("_", Style::default().fg(theme.accent)),
                     ]);
                     lines.push(input_line);
+                    cursor_row = Some((lines.len() - 1, "  + ", input));
                 } else {
                     // Editing existing item
                     for (i, entry) in self.extra_env.iter().enumerate() {
@@ -1012,6 +1040,7 @@ impl NewSessionDialog {
                                 Span::styled("_", Style::default().fg(theme.accent)),
                             ]);
                             lines.push(input_line);
+                            cursor_row = Some((lines.len() - 1, "  > ", input));
                         } else {
                             let prefix = "    ";
                             lines.push(Line::from(Span::styled(
@@ -1046,6 +1075,9 @@ impl NewSessionDialog {
             }
 
             frame.render_widget(Paragraph::new(lines), area);
+            if let Some((row, prefix, input)) = cursor_row {
+                Self::set_input_cursor_on_row(frame, area, row, prefix, input);
+            }
         }
     }
 
@@ -1085,6 +1117,7 @@ impl NewSessionDialog {
         } else {
             // Expanded view with list
             let mut lines: Vec<Line> = Vec::new();
+            let mut cursor_row: Option<(usize, &'static str, &Input)> = None;
 
             let header = Line::from(vec![
                 Span::styled("Extra Repos:", label_style),
@@ -1130,10 +1163,12 @@ impl NewSessionDialog {
                         )));
                     }
                     lines.push(make_input_line("  + ", input.value(), &ghost_text, theme));
+                    cursor_row = Some((lines.len() - 1, "  + ", input));
                 } else {
                     for (i, entry) in self.workspace_repos.iter().enumerate() {
                         if i == self.workspace_repo_selected_index {
                             lines.push(make_input_line("  > ", input.value(), &ghost_text, theme));
+                            cursor_row = Some((lines.len() - 1, "  > ", input));
                         } else {
                             let prefix = "    ";
                             lines.push(Line::from(Span::styled(
@@ -1168,6 +1203,9 @@ impl NewSessionDialog {
             }
 
             frame.render_widget(Paragraph::new(lines), area);
+            if let Some((row, prefix, input)) = cursor_row {
+                Self::set_input_cursor_on_row(frame, area, row, prefix, input);
+            }
         }
     }
 

@@ -171,6 +171,38 @@ fn read_claude_json_session_id(project_path: &Path) -> Option<String> {
 }
 
 /// Polling closure for Claude Code session tracking on the host filesystem.
+///
+/// Unlike other agents' poll factories, this closure does not take an
+/// `extra_excludes` set. Claude is protected from re-importing the sid
+/// `start_with_resume_fallback` just cleared by a layered chain:
+///
+/// 1. `acquire_session_id` mints a fresh UUID for Claude and assigns it
+///    to `agent_session_id` BEFORE `maybe_start_poller` runs, so the
+///    poller's `initial_known` is the new UUID, not the stale one.
+/// 2. The poller's `last_known` dedupes once Claude writes
+///    `<new_uuid>.jsonl` and the disk scan returns it.
+/// 3. The defense-in-depth guard in `apply_session_id_updates`
+///    (`tui/home/mod.rs`) drops any poller report whose sid is in
+///    `retroactive_capture_excludes`. The cascade pre-loads that set
+///    before respawning, so a race where the immediate first poll fires
+///    before Claude writes the new `.jsonl` (and therefore returns the
+///    still-fresh stale `<stale_sid>.jsonl`) is caught here.
+///
+/// The 5-minute mtime check inside `capture_claude_session_id` is an
+/// upper bound on staleness, not a stale-sid filter; a just-crashed
+/// `<stale_sid>.jsonl` has a fresh mtime and passes that check.
+///
+/// Serve-only mode never drains `result_rx` (the only consumer of
+/// `try_recv_session_update` is the TUI tick path), so the stale sid
+/// cannot reach in-memory `agent_session_id` or `sessions.json` via the
+/// poller in that mode either. The only residual effect is that
+/// `on_change` may briefly write the stale sid into the tmux env's
+/// `AOE_CAPTURED_SESSION_ID_KEY`; the next poll cycle overwrites it.
+///
+/// If you ever add a second consumer of the poller channel that
+/// bypasses `apply_session_id_updates`, replicate the
+/// `retroactive_capture_excludes` filter at the consumer or thread an
+/// `extra_excludes` set into this closure mirroring the other agents.
 pub(crate) fn claude_poll_fn(project_path: String) -> impl Fn() -> Option<String> + Send + 'static {
     move || {
         capture_claude_session_id(&project_path)
@@ -450,9 +482,10 @@ pub(crate) fn capture_pi_session_id(
 pub(crate) fn pi_poll_fn(
     project_path: String,
     instance_id: String,
+    extra_excludes: HashSet<String>,
 ) -> impl Fn() -> Option<String> + Send + 'static {
     move || {
-        let exclusion = build_exclusion_set(&instance_id);
+        let exclusion = compose_exclusion(&instance_id, &extra_excludes);
         capture_pi_session_id(&project_path, &exclusion)
             .map_err(|e| tracing::debug!("Pi poll capture failed: {}", e))
             .ok()
@@ -553,9 +586,10 @@ pub(crate) fn pi_poll_fn_sandboxed(
     container_name: String,
     container_cwd: String,
     instance_id: String,
+    extra_excludes: HashSet<String>,
 ) -> impl Fn() -> Option<String> + Send + 'static {
     move || {
-        let exclusion = build_exclusion_set(&instance_id);
+        let exclusion = compose_exclusion(&instance_id, &extra_excludes);
         try_capture_pi_session_id_in_container(&container_name, &container_cwd, &exclusion)
             .map_err(|e| tracing::debug!("Pi container poll capture failed: {}", e))
             .ok()
@@ -571,12 +605,36 @@ pub(crate) fn is_valid_session_id(id: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.')
 }
 
-/// Build a set of session IDs already claimed by other AoE instances.
+/// Compose [`build_exclusion_set`] (cross-instance live tmux scan) with a
+/// per-instance set of IDs the cascade has explicitly cleared but which
+/// may still live on disk for several minutes.
 ///
-/// Lists all tmux sessions with the AoE prefix, reads each one's hidden env vars
-/// to find its instance ID and captured session ID, and collects all captured IDs
-/// from instances other than `current_instance_id`.
-pub(crate) fn build_exclusion_set(current_instance_id: &str) -> HashSet<String> {
+/// Both `Instance::retroactive_capture_exclusion_set` and the post-launch
+/// `*_poll_fn` closures route through this helper so the resume-fallback
+/// cascade's just-crashed sid is filtered identically on the synchronous
+/// pre-launch path and on the asynchronous polling path.
+pub(crate) fn compose_exclusion(
+    current_instance_id: &str,
+    extra: &HashSet<String>,
+) -> HashSet<String> {
+    let mut set = build_exclusion_set(current_instance_id);
+    set.extend(extra.iter().cloned());
+    set
+}
+
+/// Build the set of session IDs already claimed by other live AoE instances.
+///
+/// Reads every other AoE-prefixed tmux session's hidden env to find which
+/// session IDs are currently bound to which instance, and returns the set
+/// of captured IDs that belong to instances OTHER than `current_instance_id`.
+/// Used by post-launch poll closures to avoid re-importing another
+/// instance's session via filesystem scan.
+///
+/// Callers that also need to exclude IDs not yet visible in tmux env (e.g.
+/// the resume-fallback cascade's just-crashed sid) should use
+/// [`compose_exclusion`] instead, which composes this function with the
+/// per-instance exclusion list.
+fn build_exclusion_set(current_instance_id: &str) -> HashSet<String> {
     let output = match std::process::Command::new("tmux")
         .args(["list-sessions", "-F", "#{session_name}"])
         .output()
@@ -718,9 +776,10 @@ fn parse_vibe_meta_json(content: &str) -> Option<(String, Option<String>)> {
 pub(crate) fn vibe_poll_fn(
     project_path: String,
     instance_id: String,
+    extra_excludes: HashSet<String>,
 ) -> impl Fn() -> Option<String> + Send + 'static {
     move || {
-        let exclusion = build_exclusion_set(&instance_id);
+        let exclusion = compose_exclusion(&instance_id, &extra_excludes);
         capture_vibe_session_id(&project_path, &exclusion)
             .map_err(|e| tracing::debug!("Vibe poll capture failed: {}", e))
             .ok()
@@ -821,9 +880,10 @@ pub(crate) fn vibe_poll_fn_sandboxed(
     container_name: String,
     container_cwd: String,
     instance_id: String,
+    extra_excludes: HashSet<String>,
 ) -> impl Fn() -> Option<String> + Send + 'static {
     move || {
-        let exclusion = build_exclusion_set(&instance_id);
+        let exclusion = compose_exclusion(&instance_id, &extra_excludes);
         try_capture_vibe_session_id_in_container(&container_name, &container_cwd, &exclusion)
             .map_err(|e| tracing::debug!("Vibe container poll capture failed: {}", e))
             .ok()
@@ -1194,9 +1254,10 @@ pub(crate) fn opencode_poll_fn(
     project_path: String,
     instance_id: String,
     launch_time_ms: f64,
+    extra_excludes: HashSet<String>,
 ) -> impl Fn() -> Option<String> + Send + 'static {
     move || {
-        let exclusion = build_exclusion_set(&instance_id);
+        let exclusion = compose_exclusion(&instance_id, &extra_excludes);
         try_capture_opencode_session_id(&project_path, &exclusion, Some(launch_time_ms))
             .map_err(|e| tracing::debug!("OpenCode poll capture failed: {}", e))
             .ok()
@@ -1210,9 +1271,10 @@ pub(crate) fn opencode_poll_fn_sandboxed(
     container_cwd: String,
     instance_id: String,
     launch_time_ms: f64,
+    extra_excludes: HashSet<String>,
 ) -> impl Fn() -> Option<String> + Send + 'static {
     move || {
-        let exclusion = build_exclusion_set(&instance_id);
+        let exclusion = compose_exclusion(&instance_id, &extra_excludes);
         try_capture_opencode_session_id_in_container(
             &container_name,
             &container_cwd,
@@ -1432,9 +1494,10 @@ fn select_codex_session_in_container(
 pub(crate) fn codex_poll_fn(
     project_path: String,
     instance_id: String,
+    extra_excludes: HashSet<String>,
 ) -> impl Fn() -> Option<String> + Send + 'static {
     move || {
-        let exclusion = build_exclusion_set(&instance_id);
+        let exclusion = compose_exclusion(&instance_id, &extra_excludes);
         capture_codex_session_id(&project_path, &exclusion)
             .map_err(|e| tracing::debug!("Codex poll capture failed: {}", e))
             .ok()
@@ -1447,9 +1510,10 @@ pub(crate) fn codex_poll_fn_sandboxed(
     container_name: String,
     container_cwd: String,
     instance_id: String,
+    extra_excludes: HashSet<String>,
 ) -> impl Fn() -> Option<String> + Send + 'static {
     move || {
-        let exclusion = build_exclusion_set(&instance_id);
+        let exclusion = compose_exclusion(&instance_id, &extra_excludes);
         try_capture_codex_session_id_in_container(&container_name, &container_cwd, &exclusion)
             .map_err(|e| tracing::debug!("Codex container poll capture failed: {}", e))
             .ok()
@@ -1463,9 +1527,10 @@ pub(crate) fn codex_poll_fn_sandboxed(
 pub(crate) fn gemini_poll_fn(
     project_path: String,
     instance_id: String,
+    extra_excludes: HashSet<String>,
 ) -> impl Fn() -> Option<String> + Send + 'static {
     move || {
-        let exclusion = build_exclusion_set(&instance_id);
+        let exclusion = compose_exclusion(&instance_id, &extra_excludes);
         capture_gemini_session_id(&project_path, &exclusion)
             .map_err(|e| tracing::debug!("Gemini poll capture failed: {}", e))
             .ok()
@@ -1571,9 +1636,10 @@ pub(crate) fn gemini_poll_fn_sandboxed(
     container_name: String,
     container_cwd: String,
     instance_id: String,
+    extra_excludes: HashSet<String>,
 ) -> impl Fn() -> Option<String> + Send + 'static {
     move || {
-        let exclusion = build_exclusion_set(&instance_id);
+        let exclusion = compose_exclusion(&instance_id, &extra_excludes);
         try_capture_gemini_session_id_in_container(&container_name, &container_cwd, &exclusion)
             .map_err(|e| tracing::debug!("Gemini container poll capture failed: {}", e))
             .ok()
@@ -1855,9 +1921,10 @@ pub(crate) fn try_capture_hermes_session_id_in_container(
 pub(crate) fn hermes_poll_fn(
     project_path: String,
     instance_id: String,
+    extra_excludes: HashSet<String>,
 ) -> impl Fn() -> Option<String> + Send + 'static {
     move || {
-        let exclusion = build_exclusion_set(&instance_id);
+        let exclusion = compose_exclusion(&instance_id, &extra_excludes);
         capture_hermes_session_id(&project_path, &exclusion)
             .map_err(|e| tracing::debug!("Hermes poll capture failed: {}", e))
             .ok()
@@ -1870,9 +1937,10 @@ pub(crate) fn hermes_poll_fn_sandboxed(
     container_name: String,
     container_cwd: String,
     instance_id: String,
+    extra_excludes: HashSet<String>,
 ) -> impl Fn() -> Option<String> + Send + 'static {
     move || {
-        let exclusion = build_exclusion_set(&instance_id);
+        let exclusion = compose_exclusion(&instance_id, &extra_excludes);
         try_capture_hermes_session_id_in_container(&container_name, &container_cwd, &exclusion)
             .map_err(|e| tracing::debug!("Hermes container poll capture failed: {}", e))
             .ok()
@@ -2600,6 +2668,55 @@ mod tests {
         assert!(
             result.is_err(),
             "Session with non-matching CWD should not be returned"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_vibe_poll_fn_honors_extra_excludes() {
+        // Regression for the resume-fallback cascade: after the cascade
+        // clears a bad sid, the freshly-spawned poll closure must NOT
+        // re-discover it via filesystem scan (the on-disk meta.json still
+        // references the bad sid for several minutes). Without this,
+        // `apply_session_id_updates` re-imports the cleared sid and the
+        // cascade's work is undone within ~2s.
+        let tmp = tempfile::tempdir().unwrap();
+        let project_dir = tmp.path().join("myproject");
+        std::fs::create_dir_all(&project_dir).unwrap();
+
+        let sessions_dir = tmp.path().join("logs").join("session");
+        let s1_dir = sessions_dir.join("session-stale-on-disk");
+        std::fs::create_dir_all(&s1_dir).unwrap();
+        let s1_meta = serde_json::json!({
+            "session_id": "stale-sid-cleared-by-cascade",
+            "environment": {"working_directory": project_dir.to_str().unwrap()},
+        });
+        std::fs::write(s1_dir.join("meta.json"), s1_meta.to_string()).unwrap();
+
+        let _guard = VibeHomeGuard::set(tmp.path());
+
+        let mut extra = HashSet::new();
+        extra.insert("stale-sid-cleared-by-cascade".to_string());
+        let poll = vibe_poll_fn(
+            project_dir.to_string_lossy().into_owned(),
+            "test-instance".to_string(),
+            extra,
+        );
+        assert_eq!(
+            poll(),
+            None,
+            "poller must not re-import a sid present in extra_excludes",
+        );
+
+        let poll_no_excludes = vibe_poll_fn(
+            project_dir.to_string_lossy().into_owned(),
+            "test-instance".to_string(),
+            HashSet::new(),
+        );
+        assert_eq!(
+            poll_no_excludes(),
+            Some("stale-sid-cleared-by-cascade".to_string()),
+            "negative control: without the exclude, the poller surfaces the on-disk sid",
         );
     }
 

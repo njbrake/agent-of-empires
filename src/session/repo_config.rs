@@ -152,7 +152,7 @@ pub fn save_repo_config(project_path: &Path, config: &RepoConfig) -> Result<()> 
     let content = toml::to_string_pretty(config)
         .with_context(|| "Failed to serialize repo config".to_string())?;
 
-    fs::write(&config_path, content)
+    super::atomic_write(&config_path, content.as_bytes())
         .with_context(|| format!("Failed to write {}", config_path.display()))?;
 
     // Clean up legacy .aoe/config.toml to prevent stale config from reactivating

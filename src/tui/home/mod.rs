@@ -15,8 +15,8 @@ use tui_input::Input;
 
 use crate::session::{
     config::{load_config, save_config, GroupByMode, SortOrder},
-    flatten_tree, flatten_tree_all_profiles, resolve_config_or_warn, DefaultTerminalMode, Group,
-    GroupTree, Instance, Item, Storage,
+    flatten_tree, flatten_tree_all_profiles, resolve_config_or_warn, DefaultTerminalMode,
+    EnsureReadyOutcome, Group, GroupTree, Instance, Item, Storage,
 };
 use crate::tmux::AvailableTools;
 
@@ -716,6 +716,21 @@ impl HomeView {
                 else {
                     continue;
                 };
+                // Defense-in-depth against the resume-fallback cascade: a sid
+                // the cascade just cleared can still live on disk for several
+                // minutes (opencode db, vibe meta.json, codex/gemini/pi/hermes
+                // state). The poller closures filter via `compose_exclusion`,
+                // but if a closure factory ever forgets to thread the per-
+                // instance excludes, this guard prevents the cleared sid from
+                // being re-imported into memory and disk.
+                if inst.retroactive_capture_excludes.contains(&session_id) {
+                    tracing::debug!(
+                        "Ignoring poller-reported sid {} for {}: in retroactive_capture_excludes",
+                        session_id,
+                        inst.id,
+                    );
+                    continue;
+                }
                 if inst.agent_session_id.as_deref() != Some(session_id.as_str()) {
                     updates.push((inst.id.clone(), session_id));
                 }
@@ -1387,19 +1402,31 @@ impl HomeView {
     /// `ensure_pane_ready` (which may auto-start or respawn), then deliver
     /// the keystrokes. Errors are surfaced via `info_dialog` so the caller
     /// (`execute_action`) only has to clear its transient status.
-    pub fn execute_send_message(&mut self, session_id: &str, message: &str) {
-        if let Err(err) = self.try_mutate_instance(session_id, |inst| {
-            inst.ensure_pane_ready().map(drop).map_err(Into::into)
-        }) {
-            self.info_dialog = Some(InfoDialog::new(
-                "Send Failed",
-                &format!("Cannot prepare session: {}", err),
-            ));
-            return;
-        }
-        let Some(inst) = self.get_instance(session_id) else {
-            return;
+    ///
+    /// Returns `Some(stale_sid)` when the resume-fallback cascade fired
+    /// during the implicit respawn so the caller can toast the user about
+    /// the lost history; `None` otherwise.
+    pub fn execute_send_message(&mut self, session_id: &str, message: &str) -> Option<String> {
+        let outcome = self.try_mutate_instance_writeback_on_err(session_id, |inst| {
+            inst.ensure_pane_ready().map_err(Into::into)
+        });
+        let stale_sid = match outcome {
+            Ok(Some(EnsureReadyOutcome::Respawned {
+                stale_sid: Some(sid),
+            }))
+            | Ok(Some(EnsureReadyOutcome::Started {
+                stale_sid: Some(sid),
+            })) => Some(sid),
+            Ok(_) => None,
+            Err(err) => {
+                self.info_dialog = Some(InfoDialog::new(
+                    "Send Failed",
+                    &format!("Cannot prepare session: {}", err),
+                ));
+                return None;
+            }
         };
+        let inst = self.get_instance(session_id)?;
         let tmux_session = match crate::tmux::Session::new(&inst.id, &inst.title) {
             Ok(s) => s,
             Err(e) => {
@@ -1407,7 +1434,7 @@ impl HomeView {
                     "Send Failed",
                     &format!("Failed to resolve session: {}", e),
                 ));
-                return;
+                return None;
             }
         };
         let delay = crate::agents::send_keys_enter_delay(&inst.tool);
@@ -1416,9 +1443,10 @@ impl HomeView {
                 "Send Failed",
                 &format!("Failed to send message: {}", e),
             ));
-            return;
+            return None;
         }
         self.stamp_last_accessed(session_id);
+        stale_sid
     }
 
     pub fn save(&self) -> anyhow::Result<()> {
@@ -1528,18 +1556,47 @@ impl HomeView {
     /// Like `mutate_instance`, but for fallible operations. Clones the entry,
     /// applies `f` to the clone, and writes back to both collections only on
     /// success -- neither collection is modified on error.
-    pub(super) fn try_mutate_instance(
+    pub(super) fn try_mutate_instance<T>(
         &mut self,
         id: &str,
-        f: impl FnOnce(&mut Instance) -> anyhow::Result<()>,
-    ) -> anyhow::Result<()> {
+        f: impl FnOnce(&mut Instance) -> anyhow::Result<T>,
+    ) -> anyhow::Result<Option<T>> {
         if let Some(inst) = self.instances.iter_mut().find(|i| i.id == id) {
             let mut updated = inst.clone();
-            f(&mut updated)?;
+            let out = f(&mut updated)?;
             *inst = updated.clone();
             self.instance_map.insert(id.to_string(), updated);
+            return Ok(Some(out));
         }
-        Ok(())
+        Ok(None)
+    }
+
+    /// Like `try_mutate_instance`, but writes the mutated clone back even
+    /// when `f` returns `Err`.
+    ///
+    /// Required for callers of `Instance::restart_with_size_opts` /
+    /// `ensure_pane_ready`, because the resume-fallback cascade mutates
+    /// `agent_session_id` and `retroactive_capture_excludes` BEFORE
+    /// returning `Err` on Tier-2 failure. The default `try_mutate_instance`
+    /// drops the mutated clone on `Err`, leaving the live entry with the
+    /// stale sid in memory while disk has been cleared. Subsequent restarts
+    /// then loop indefinitely on the same bad sid (the TUI's `reload()`
+    /// merge prefers in-memory, so even the 5s disk refresh does not
+    /// recover). This helper preserves the cascade's partial mutations so
+    /// the live state stays consistent with disk.
+    pub(super) fn try_mutate_instance_writeback_on_err<T>(
+        &mut self,
+        id: &str,
+        f: impl FnOnce(&mut Instance) -> anyhow::Result<T>,
+    ) -> anyhow::Result<Option<T>> {
+        if let Some(inst) = self.instances.iter_mut().find(|i| i.id == id) {
+            let mut updated = inst.clone();
+            let result = f(&mut updated);
+            *inst = updated.clone();
+            self.instance_map.insert(id.to_string(), updated);
+            return result.map(Some);
+        }
+        Ok(None)
     }
 
     pub fn set_instance_error(&mut self, id: &str, error: Option<String>) {
@@ -1561,8 +1618,11 @@ impl HomeView {
         id: &str,
         size: Option<(u16, u16)>,
         skip_on_launch: bool,
-    ) -> anyhow::Result<()> {
-        self.try_mutate_instance(id, |inst| inst.restart_with_size_opts(size, skip_on_launch))
+    ) -> anyhow::Result<crate::session::StartOutcome> {
+        let outcome = self.try_mutate_instance_writeback_on_err(id, |inst| {
+            inst.restart_with_size_opts(size, skip_on_launch)
+        })?;
+        outcome.ok_or_else(|| anyhow::anyhow!("session not found: {}", id))
     }
 
     pub fn select_session_by_id(&mut self, session_id: &str) {
@@ -1616,5 +1676,6 @@ impl HomeView {
         size: Option<(u16, u16)>,
     ) -> anyhow::Result<()> {
         self.try_mutate_instance(id, |inst| inst.start_container_terminal_with_size(size))
+            .map(|_| ())
     }
 }

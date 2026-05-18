@@ -1013,7 +1013,7 @@ pub fn load_config() -> Result<Option<Config>> {
 pub fn save_config(config: &Config) -> Result<()> {
     let path = config_path()?;
     let content = toml::to_string_pretty(config)?;
-    fs::write(&path, content)?;
+    super::atomic_write(&path, content.as_bytes())?;
     Ok(())
 }
 
