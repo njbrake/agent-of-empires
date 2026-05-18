@@ -466,7 +466,7 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
             );
             if let Some(spec) = registry.get(&agent_name) {
                 if !crate::cli::cockpit::command_present(&spec.command) {
-                    let hint = crate::cli::cockpit::install_hint_for(&spec.command)
+                    let hint = crate::cockpit::install_hints::install_hint_for(&spec.command)
                         .unwrap_or("install via your package manager and re-run");
                     bail!(
                         "cockpit ACP adapter `{}` is not installed or not on $PATH.\n\

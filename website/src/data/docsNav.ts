@@ -23,6 +23,7 @@ export const docsNav: NavSection[] = [
       { title: "Docker Sandbox", href: "/guides/sandbox/" },
       { title: "Web Dashboard", href: "/guides/web-dashboard/" },
       { title: "Cockpit (Native Agent Rendering)", href: "/docs/cockpit/" },
+      { title: "Cockpit Multi-Agent Support", href: "/docs/cockpit/multi-agent/" },
       { title: "Remote Phone Access", href: "/guides/remote-phone-access/" },
       { title: "Repo Config & Hooks", href: "/guides/repo-config/" },
       { title: "Git Worktrees", href: "/guides/worktrees/" },

@@ -333,6 +333,7 @@ mod tests {
             user_agent: String::new(),
             created_at: chrono::Utc::now(),
             generation: 0,
+            origin: "http://localhost:8080".to_string(),
         };
 
         let body = encrypt_aes128gcm(&subscription, b"hello").expect("encrypt");

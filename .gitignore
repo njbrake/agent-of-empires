@@ -39,6 +39,7 @@ Thumbs.db
 
 # AI coding tools
 .opencode/
+.omo/
 .sisyphus/
 
 # Per-repo config (created by `aoe init`, should be committed per-repo by users)

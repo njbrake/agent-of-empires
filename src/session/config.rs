@@ -447,7 +447,7 @@ pub struct AppStateConfig {
 }
 
 /// Session-related configuration defaults
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionConfig {
     /// Default coding tool for new sessions (claude, opencode, vibe, codex)
     /// If not set or tool is unavailable, falls back to first available tool
@@ -494,6 +494,21 @@ pub struct SessionConfig {
     /// Off by default; existing users keep the legacy single-letter UX.
     #[serde(default)]
     pub strict_hotkeys: bool,
+}
+
+impl Default for SessionConfig {
+    fn default() -> Self {
+        Self {
+            default_tool: None,
+            yolo_mode_default: false,
+            agent_extra_args: HashMap::new(),
+            agent_command_override: HashMap::new(),
+            agent_status_hooks: default_true(),
+            custom_agents: HashMap::new(),
+            agent_detect_as: HashMap::new(),
+            strict_hotkeys: false,
+        }
+    }
 }
 
 impl SessionConfig {

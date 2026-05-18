@@ -38,7 +38,9 @@ export type Action =
   | { kind: "dequeue_prompts_by_id"; ids: string[] }
   | { kind: "edit_queued_prompt"; id: string; text: string }
   | { kind: "clear_queue" }
-  | { kind: "dismiss_primer" };
+  | { kind: "dismiss_primer" }
+  | { kind: "dismiss_rejected_prompt"; id: string }
+  | { kind: "dismiss_mode_switch_failed" };
 
 // LRU-capped module cache keyed by cockpit session id. Mirrors the
 // per-session CockpitState into `localStorage` under
@@ -346,6 +348,17 @@ function reducer(state: CockpitState, action: Action): CockpitState {
     // with a new `resetSeq`, which the banner reads as a fresh
     // incident and shows again. See #1110.
     return { ...state, contextPrimerAvailable: null };
+  }
+  if (action.kind === "dismiss_rejected_prompt") {
+    return {
+      ...state,
+      rejectedPrompts: state.rejectedPrompts.filter(
+        (r) => r.id !== action.id,
+      ),
+    };
+  }
+  if (action.kind === "dismiss_mode_switch_failed") {
+    return { ...state, modeSwitchFailed: null };
   }
   return emptyCockpitState();
 }
@@ -1012,6 +1025,14 @@ export function useCockpit(
     dispatch({ kind: "dismiss_primer" });
   }, []);
 
+  const dismissRejectedPrompt = useCallback((id: string) => {
+    dispatch({ kind: "dismiss_rejected_prompt", id });
+  }, []);
+
+  const dismissModeSwitchFailed = useCallback(() => {
+    dispatch({ kind: "dismiss_mode_switch_failed" });
+  }, []);
+
   // Cancels the in-flight agent turn (ACP session/cancel). Must only
   // fire on an explicit user gesture against a dedicated cancel/stop
   // affordance; never bind this to the Escape key. Claude Code CLI
@@ -1145,6 +1166,8 @@ export function useCockpit(
     removeQueuedPrompt,
     editQueuedPrompt,
     clearQueue,
+    dismissRejectedPrompt,
+    dismissModeSwitchFailed,
   };
 }
 

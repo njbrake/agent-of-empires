@@ -229,6 +229,30 @@ pub(crate) fn host_environment_prefix(entries: &[String]) -> String {
     out
 }
 
+pub(crate) fn resolve_host_environment_value(
+    entries: &[String],
+    target_key: &str,
+) -> Option<String> {
+    let mut resolved_value = None;
+    for entry in entries {
+        if let Some((key, value)) = entry.split_once('=') {
+            if key == target_key {
+                if let Some(value) = resolve_env_value(value) {
+                    resolved_value = Some(value);
+                }
+            }
+        } else if entry == target_key {
+            match std::env::var(entry) {
+                Ok(value) => resolved_value = Some(value),
+                Err(_) => {
+                    tracing::warn!("host environment variable {} is not set; skipping", entry)
+                }
+            }
+        }
+    }
+    resolved_value
+}
+
 /// Resolve an environment value. If the value starts with `$`, read the
 /// named variable from the host environment (use `$$` to escape a literal `$`).
 /// Otherwise return the literal value.
@@ -750,6 +774,35 @@ environment = ["GH_TOKEN=write_token"]
         let prefix = host_environment_prefix(&["X=a b'c$d".to_string()]);
         // Single-quote wrapping with `'\''` escape for the apostrophe.
         assert_eq!(prefix, "X='a b'\\''c$d' ");
+    }
+
+    #[test]
+    fn test_resolve_host_environment_value_uses_last_resolved_entry() {
+        std::env::remove_var("AOE_TEST_MISSING_HOST_ENV_VALUE");
+        let entries = vec![
+            "CODEX_HOME=/first".to_string(),
+            "OTHER=value".to_string(),
+            "CODEX_HOME=$AOE_TEST_MISSING_HOST_ENV_VALUE".to_string(),
+            "CODEX_HOME=/second".to_string(),
+        ];
+
+        assert_eq!(
+            resolve_host_environment_value(&entries, "CODEX_HOME"),
+            Some("/second".to_string())
+        );
+    }
+
+    #[test]
+    fn test_resolve_host_environment_value_matches_host_env_grammar() {
+        std::env::set_var("AOE_TEST_CODEX_HOME_REF", "/from-host");
+        let entries = vec!["CODEX_HOME=$AOE_TEST_CODEX_HOME_REF".to_string()];
+
+        assert_eq!(
+            resolve_host_environment_value(&entries, "CODEX_HOME"),
+            Some("/from-host".to_string())
+        );
+
+        std::env::remove_var("AOE_TEST_CODEX_HOME_REF");
     }
 
     /// Helper to find an entry by key and check its value

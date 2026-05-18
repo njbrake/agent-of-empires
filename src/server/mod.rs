@@ -25,6 +25,7 @@ use axum::Router;
 use rust_embed::Embed;
 use serde::Serialize;
 use tokio::sync::{broadcast, RwLock};
+use tokio_util::sync::CancellationToken;
 use tracing::{info, Instrument};
 
 use self::push::{PushState, StatusChange, STATUS_CHANNEL_CAPACITY};
@@ -274,6 +275,12 @@ pub struct AppState {
     /// checks this to suppress notifications when someone is actively using
     /// the web dashboard (on any device).
     pub last_web_activity: std::sync::atomic::AtomicI64,
+    /// Resolved when the daemon receives SIGINT/SIGTERM/SIGHUP. Long-lived
+    /// handlers (cockpit WS, terminal WS) clone this and `select!` on
+    /// `cancelled()` so they exit promptly instead of holding axum's
+    /// graceful drain open until the browser tab decides to disconnect.
+    /// See #1198.
+    pub shutdown: CancellationToken,
 }
 
 impl AppState {
@@ -533,6 +540,7 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
         push_enabled,
         web_config: config.web.clone(),
         last_web_activity: std::sync::atomic::AtomicI64::new(0),
+        shutdown: CancellationToken::new(),
     });
 
     let app = build_router(state.clone());
@@ -847,7 +855,26 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
     // Graceful shutdown: SIGINT (Ctrl-C), SIGTERM (`aoe serve --stop`),
     // and SIGHUP (parent session died). Without these, the default handler
     // kills the process immediately, skipping PID/URL file cleanup.
-    let shutdown_signal = async {
+    //
+    // After the signal fires the future:
+    //   1. Cancels `state.shutdown` so long-lived WS handlers (cockpit +
+    //      terminal) wake from their `select!` and close cleanly,
+    //      letting `axum::serve` return promptly instead of blocking
+    //      on the open WebSockets the browser hasn't disconnected.
+    //   2. Spawns a 5s deadline as the safety net: if any handler
+    //      somehow ignores the cancel, the process force-exits so
+    //      `Ctrl-C` and `aoe serve --stop` never hang. See #1198.
+    //
+    // Note: this future is awaited by `with_graceful_shutdown`, which
+    // signals axum to stop accepting new connections once the future
+    // resolves. Wrapping `axum::serve(...).await` itself in a
+    // `tokio::time::timeout` would cap TOTAL server lifetime instead
+    // of just the post-signal drain, which is wrong (the server would
+    // exit after 5s of normal uptime). The deadline lives inside the
+    // signal handler so the clock only starts after the signal fires.
+    const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
+    let shutdown_state = state.clone();
+    let shutdown_signal = async move {
         #[cfg(unix)]
         {
             use tokio::signal::unix::{signal, SignalKind};
@@ -870,6 +897,23 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
             let _ = tokio::signal::ctrl_c().await;
             tracing::info!(target: "serve.shutdown", "received ctrl-c, shutting down");
         }
+        shutdown_state.shutdown.cancel();
+        tokio::spawn(async {
+            tokio::time::sleep(SHUTDOWN_GRACE).await;
+            tracing::warn!(
+                target: "shutdown",
+                grace_secs = SHUTDOWN_GRACE.as_secs(),
+                "graceful shutdown exceeded grace window, forcing exit"
+            );
+            // Force-exit skips the post-`axum::serve` cleanup block below
+            // (cockpit detach, tunnel SIGTERM of cloudflared, removal of
+            // serve.passphrase). The PID file is swept by `daemon_pid`'s
+            // stale-PID check on the next start, but a leftover cloudflared
+            // subprocess and residual passphrase file may survive a forced
+            // exit. The common path (handlers honor cancel) returns from
+            // `axum::serve` normally and runs the full cleanup.
+            std::process::exit(0);
+        });
     };
 
     axum::serve(
@@ -967,6 +1011,8 @@ fn build_router(state: Arc<AppState>) -> Router {
             get(api::get_settings).patch(api::update_settings),
         )
         .route("/api/themes", get(api::list_themes))
+        .route("/api/themes/{name}", get(api::get_resolved_theme))
+        .route("/api/theme/current", get(api::get_current_theme))
         .route("/api/sounds", get(api::list_sounds))
         .route("/api/sounds/file/{name}", get(api::serve_sound_file))
         // Push notifications

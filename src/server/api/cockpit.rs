@@ -219,7 +219,8 @@ pub async fn cockpit_prompt(
     // as authoritative and dedupes against its own optimistic row.
     state
         .cockpit_supervisor
-        .publish_user_prompt(&id, req.text.clone());
+        .publish_user_prompt(&id, req.text.clone())
+        .await;
     match state.cockpit_supervisor.send_prompt(&id, &req.text).await {
         Ok(()) => StatusCode::ACCEPTED.into_response(),
         Err(SupervisorError::UnknownSession(_)) => {

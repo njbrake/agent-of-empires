@@ -3,10 +3,12 @@ import { CommentMarkdown } from "./CommentMarkdown";
 import type { DiffCommentsSentinelPayload } from "./buildPrompt";
 import type { DiffComment } from "./types";
 import {
+  ensureThemeLoaded,
   getHighlighter,
   langKeyForExt,
   loadLanguage,
 } from "../../../lib/highlighter";
+import { useShikiTheme } from "../../../hooks/useShikiTheme";
 
 interface Props {
   payload: DiffCommentsSentinelPayload;
@@ -75,6 +77,7 @@ function HighlightedSnippet({
   filePath: string;
 }) {
   const [html, setHtml] = useState<string | null>(null);
+  const shiki = useShikiTheme();
   useEffect(() => {
     let cancelled = false;
     const hint =
@@ -86,11 +89,15 @@ function HighlightedSnippet({
       try {
         const langKey = langKeyForExt(hint) ?? hint;
         await loadLanguage(langKey);
+        const resolvedTheme = await ensureThemeLoaded(
+          shiki.theme,
+          shiki.appearance,
+        );
         const hl = await getHighlighter();
         if (cancelled) return;
         if (!hl.getLoadedLanguages().includes(langKey)) return;
         setHtml(
-          hl.codeToHtml(code, { lang: langKey, theme: "github-dark" }),
+          hl.codeToHtml(code, { lang: langKey, theme: resolvedTheme }),
         );
       } catch {
         // Unknown lang → fall through to plain rendering.
@@ -99,7 +106,7 @@ function HighlightedSnippet({
     return () => {
       cancelled = true;
     };
-  }, [code, language, filePath]);
+  }, [code, language, filePath, shiki.theme, shiki.appearance]);
 
   if (html) {
     // Shiki HTML-escapes the user-supplied `code` before tokenizing, so

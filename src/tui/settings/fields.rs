@@ -1583,7 +1583,7 @@ fn build_session_fields(
         SettingField {
             key: FieldKey::AgentStatusHooks,
             label: "Agent Status Hooks",
-            description: "Install status-detection hooks into the agent's settings file",
+            description: "Install status-detection hooks into the agent's config file",
             value: FieldValue::Bool(agent_status_hooks),
             category: SettingsCategory::Session,
             has_override: status_hooks_override,

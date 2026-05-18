@@ -1,14 +1,15 @@
 //! Agent hook management for status detection.
 //!
 //! AoE installs hooks into an agent's settings file that write session
-//! status (`running`/`waiting`/`idle`) to a sidecar file. This provides
-//! reliable status detection without parsing tmux pane content.
+//! status (`running`/`waiting`/`idle`) to a sidecar file. This provides a
+//! hook-first status source; agent-specific code may still reconcile known
+//! hook gaps from tmux pane content.
 //!
 //! Hook events are agent-specific and defined in `AgentHookConfig::events`.
 
 mod status_file;
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use serde_json::Value;
@@ -21,6 +22,53 @@ pub(crate) const HOOK_STATUS_BASE: &str = "/tmp/aoe-hooks";
 /// Marker substring used to identify AoE-managed hooks in settings.json.
 /// Any hook command containing this string is considered ours.
 const AOE_HOOK_MARKER: &str = "aoe-hooks";
+
+/// Resolve the host Codex config path.
+///
+/// Codex treats `CODEX_HOME` as the directory containing `config.toml`, falling
+/// back to `~/.codex` when the variable is not set.
+pub fn codex_config_path() -> Result<PathBuf> {
+    if let Ok(codex_home) = std::env::var("CODEX_HOME") {
+        return Ok(PathBuf::from(codex_home).join("config.toml"));
+    }
+
+    Ok(dirs::home_dir()
+        .ok_or_else(|| anyhow::anyhow!("Cannot determine home directory"))?
+        .join(".codex")
+        .join("config.toml"))
+}
+
+pub fn codex_config_path_display() -> String {
+    std::env::var("CODEX_HOME")
+        .map(|codex_home| {
+            PathBuf::from(codex_home)
+                .join("config.toml")
+                .display()
+                .to_string()
+        })
+        .unwrap_or_else(|_| "~/.codex/config.toml".to_string())
+}
+
+pub(crate) fn codex_config_path_for_host_environment(entries: &[String]) -> Result<PathBuf> {
+    if let Some(codex_home) =
+        crate::session::environment::resolve_host_environment_value(entries, "CODEX_HOME")
+    {
+        return Ok(PathBuf::from(codex_home).join("config.toml"));
+    }
+
+    codex_config_path()
+}
+
+pub(crate) fn codex_config_path_display_for_host_environment(entries: &[String]) -> String {
+    crate::session::environment::resolve_host_environment_value(entries, "CODEX_HOME")
+        .map(|codex_home| {
+            PathBuf::from(codex_home)
+                .join("config.toml")
+                .display()
+                .to_string()
+        })
+        .unwrap_or_else(codex_config_path_display)
+}
 
 /// Build the shell command for a hook that writes a status value.
 fn hook_command(status: &str) -> String {
@@ -135,6 +183,309 @@ pub fn install_hooks(settings_path: &Path, events: &[crate::agents::HookEvent]) 
 
     tracing::info!(target: "hooks.install", "Installed AoE hooks in {}", settings_path.display());
     Ok(())
+}
+
+const CODEX_HOOK_EVENT_NAMES: &[&str] = &[
+    "SessionStart",
+    "UserPromptSubmit",
+    "PreToolUse",
+    "PermissionRequest",
+    "PostToolUse",
+    "Stop",
+    "PreCompact",
+    "PostCompact",
+];
+
+/// Install AoE status hooks into Codex's `config.toml`.
+pub fn install_codex_hooks(config_path: &Path, events: &[crate::agents::HookEvent]) -> Result<()> {
+    install_codex_hooks_with_preserved_state(config_path, events, None)
+}
+
+pub(crate) fn snapshot_codex_hooks_state(config_path: &Path) -> Result<Option<toml_edit::Item>> {
+    if !config_path.exists() {
+        return Ok(None);
+    }
+
+    let config = read_codex_config(config_path)?;
+    Ok(config
+        .get("hooks")
+        .and_then(|hooks| hooks.as_table_like())
+        .and_then(|hooks| hooks.get("state"))
+        .cloned())
+}
+
+pub(crate) fn install_codex_hooks_with_preserved_state(
+    config_path: &Path,
+    events: &[crate::agents::HookEvent],
+    preserved_state: Option<toml_edit::Item>,
+) -> Result<()> {
+    if codex_hooks_feature_is_disabled(config_path)? {
+        return Ok(());
+    }
+
+    let mut config = read_codex_config(config_path)?;
+    if let Some(state) = preserved_state {
+        let hooks = ensure_codex_hooks_table(&mut config)?;
+        hooks.insert("state", state);
+    }
+    remove_codex_aoe_hooks(&mut config)?;
+    merge_codex_hooks(&mut config, events)?;
+
+    if let Some(parent) = config_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(config_path, config.to_string())?;
+
+    tracing::info!(target: "hooks.install", "Installed AoE hooks in {}", config_path.display());
+    Ok(())
+}
+
+fn read_codex_config(config_path: &Path) -> Result<toml_edit::DocumentMut> {
+    if config_path.exists() {
+        let content = std::fs::read_to_string(config_path)?;
+        content
+            .parse::<toml_edit::DocumentMut>()
+            .with_context(|| format!("Failed to parse {}", config_path.display()))
+    } else {
+        Ok(toml_edit::DocumentMut::new())
+    }
+}
+
+fn ensure_codex_hooks_table(config: &mut toml_edit::DocumentMut) -> Result<&mut toml_edit::Table> {
+    let root = config.as_table_mut();
+    if !root.contains_key("hooks") {
+        root.insert("hooks", toml_edit::Item::Table(toml_edit::Table::new()));
+    }
+
+    let hooks_item = root
+        .get_mut("hooks")
+        .ok_or_else(|| anyhow::anyhow!("hooks key was not created"))?;
+    if !hooks_item.is_table() {
+        let old_item = std::mem::take(hooks_item);
+        match old_item.into_table() {
+            Ok(table) => {
+                *hooks_item = toml_edit::Item::Table(table);
+            }
+            Err(old_item) => {
+                *hooks_item = old_item;
+                return Err(anyhow::anyhow!("Codex hooks key is not a TOML table"));
+            }
+        }
+    }
+
+    hooks_item
+        .as_table_mut()
+        .ok_or_else(|| anyhow::anyhow!("Codex hooks key is not a TOML table"))
+}
+
+fn ensure_codex_event_array<'a>(
+    hooks: &'a mut toml_edit::Table,
+    event_name: &str,
+) -> Result<&'a mut toml_edit::ArrayOfTables> {
+    if !hooks.contains_key(event_name) {
+        hooks.insert(
+            event_name,
+            toml_edit::Item::ArrayOfTables(toml_edit::ArrayOfTables::new()),
+        );
+    }
+
+    let event_item = hooks
+        .get_mut(event_name)
+        .ok_or_else(|| anyhow::anyhow!("hooks.{event_name} was not created"))?;
+    if !event_item.is_array_of_tables() {
+        if event_item.as_array().is_some_and(|arr| arr.is_empty()) {
+            *event_item = toml_edit::Item::ArrayOfTables(toml_edit::ArrayOfTables::new());
+        } else {
+            let old_item = std::mem::take(event_item);
+            match old_item.into_array_of_tables() {
+                Ok(array) => {
+                    *event_item = toml_edit::Item::ArrayOfTables(array);
+                }
+                Err(old_item) => {
+                    *event_item = old_item;
+                    return Err(anyhow::anyhow!(
+                        "Codex hooks.{event_name} is not an array of matcher groups"
+                    ));
+                }
+            }
+        }
+    }
+
+    event_item.as_array_of_tables_mut().ok_or_else(|| {
+        anyhow::anyhow!("Codex hooks.{event_name} is not an array of matcher groups")
+    })
+}
+
+fn merge_codex_hooks(
+    config: &mut toml_edit::DocumentMut,
+    events: &[crate::agents::HookEvent],
+) -> Result<()> {
+    let hooks = ensure_codex_hooks_table(config)?;
+
+    for event in events {
+        let Some(status) = event.status else {
+            continue;
+        };
+
+        let event_array = ensure_codex_event_array(hooks, event.name)?;
+        event_array.push(codex_matcher_group(event, status));
+    }
+
+    Ok(())
+}
+
+fn codex_matcher_group(event: &crate::agents::HookEvent, status: &str) -> toml_edit::Table {
+    let mut group = toml_edit::Table::new();
+    if let Some(matcher) = event.matcher {
+        group.insert("matcher", toml_edit::value(matcher));
+    }
+
+    let mut handler = toml_edit::Table::new();
+    handler.insert("type", toml_edit::value("command"));
+    handler.insert("command", toml_edit::value(hook_command(status)));
+
+    let mut handlers = toml_edit::ArrayOfTables::new();
+    handlers.push(handler);
+    group.insert("hooks", toml_edit::Item::ArrayOfTables(handlers));
+    group
+}
+
+fn remove_codex_aoe_hooks(config: &mut toml_edit::DocumentMut) -> Result<bool> {
+    let Some(hooks_item) = config.as_table_mut().get_mut("hooks") else {
+        return Ok(false);
+    };
+    let Some(hooks_table) = hooks_item.as_table_like_mut() else {
+        return Err(anyhow::anyhow!("Codex hooks key is not a TOML table"));
+    };
+
+    let mut modified = false;
+    for event_name in CODEX_HOOK_EVENT_NAMES {
+        let Some(event_item) = hooks_table.get_mut(event_name) else {
+            continue;
+        };
+
+        if let Some(matchers) = event_item.as_array_of_tables_mut() {
+            let before = matchers.len();
+            matchers.retain(|matcher| !codex_matcher_group_is_all_aoe(matcher));
+            if matchers.len() != before {
+                modified = true;
+            }
+            if matchers.is_empty() {
+                hooks_table.remove(event_name);
+            }
+        } else if let Some(matchers) = event_item.as_array_mut() {
+            let before = matchers.len();
+            matchers.retain(|matcher| !codex_inline_matcher_group_is_all_aoe(matcher));
+            if matchers.len() != before {
+                modified = true;
+            }
+            if matchers.is_empty() {
+                hooks_table.remove(event_name);
+            }
+        }
+    }
+
+    let remove_hooks_table = config
+        .as_table()
+        .get("hooks")
+        .and_then(|item| item.as_table_like())
+        .is_some_and(|hooks| hooks.is_empty());
+    if remove_hooks_table {
+        config.as_table_mut().remove("hooks");
+        modified = true;
+    }
+
+    Ok(modified)
+}
+
+fn codex_matcher_group_is_all_aoe(group: &toml_edit::Table) -> bool {
+    let Some(hooks_item) = group.get("hooks") else {
+        return false;
+    };
+
+    if let Some(handlers) = hooks_item.as_array_of_tables() {
+        return !handlers.is_empty()
+            && handlers
+                .iter()
+                .all(|handler| codex_toml_table_command(handler).is_some_and(is_aoe_hook_command));
+    }
+
+    if let Some(handlers) = hooks_item.as_array() {
+        return !handlers.is_empty() && handlers.iter().all(codex_inline_hook_handler_is_aoe);
+    }
+
+    false
+}
+
+fn codex_inline_matcher_group_is_all_aoe(group: &toml_edit::Value) -> bool {
+    let Some(group) = group.as_inline_table() else {
+        return false;
+    };
+    let Some(hooks_item) = group.get("hooks") else {
+        return false;
+    };
+    let Some(handlers) = hooks_item.as_array() else {
+        return false;
+    };
+
+    !handlers.is_empty() && handlers.iter().all(codex_inline_hook_handler_is_aoe)
+}
+
+fn codex_inline_hook_handler_is_aoe(handler: &toml_edit::Value) -> bool {
+    handler
+        .as_inline_table()
+        .and_then(|handler| codex_toml_table_command(handler))
+        .is_some_and(is_aoe_hook_command)
+}
+
+fn codex_toml_table_command(table: &dyn toml_edit::TableLike) -> Option<&str> {
+    table.get("command").and_then(toml_edit::Item::as_str)
+}
+
+fn codex_hooks_feature_is_disabled(config_path: &Path) -> Result<bool> {
+    if !config_path.exists() {
+        return Ok(false);
+    }
+
+    let content = std::fs::read_to_string(config_path)?;
+    let config = content
+        .parse::<toml_edit::DocumentMut>()
+        .with_context(|| format!("Failed to parse {}", config_path.display()))?;
+    let disabled = config
+        .get("features")
+        .and_then(|features| {
+            let features = features.as_table_like()?;
+            features
+                .get("hooks")
+                .or_else(|| features.get("codex_hooks"))
+        })
+        .and_then(toml_edit::Item::as_bool)
+        .is_some_and(|enabled| !enabled);
+
+    if disabled {
+        tracing::warn!(target: "hooks.install",
+            "Codex hooks are explicitly disabled in {}; skipping AoE status hooks",
+            config_path.display()
+        );
+    }
+
+    Ok(disabled)
+}
+
+/// Remove AoE status hooks from Codex's `config.toml`.
+pub fn uninstall_codex_hooks(config_path: &Path) -> Result<bool> {
+    if !config_path.exists() {
+        return Ok(false);
+    }
+
+    let mut config = read_codex_config(config_path)?;
+    if !remove_codex_aoe_hooks(&mut config)? {
+        return Ok(false);
+    }
+
+    std::fs::write(config_path, config.to_string())?;
+    tracing::info!(target: "hooks.uninstall", "Removed AoE hooks from {}", config_path.display());
+    Ok(true)
 }
 
 /// Remove all AoE hooks from an agent's `settings.json` file.
@@ -693,7 +1044,8 @@ pub fn uninstall_all_hooks() {
         Err(e) => tracing::warn!(target: "hooks.uninstall", "Failed to remove settl hooks: {}", e),
     }
 
-    if let Some(home) = dirs::home_dir() {
+    let home = dirs::home_dir();
+    if let Some(home) = &home {
         // Remove Hermes YAML hooks
         let hermes_config = home.join(".hermes").join("config.yaml");
         match uninstall_hermes_hooks(&hermes_config) {
@@ -713,20 +1065,38 @@ pub fn uninstall_all_hooks() {
                 tracing::warn!(target: "hooks.uninstall", "Failed to remove kiro hooks: {}", e)
             }
         }
+    }
 
-        for agent in crate::agents::AGENTS {
-            if let Some(hook_cfg) = &agent.hook_config {
-                let settings_path = home.join(hook_cfg.settings_rel_path);
-                match uninstall_hooks(&settings_path) {
+    for agent in crate::agents::AGENTS {
+        if let Some(hook_cfg) = &agent.hook_config {
+            let resolved_paths = if agent.name == "codex" {
+                codex_config_paths_for_uninstall()
+            } else {
+                match &home {
+                    Some(home) => vec![home.join(hook_cfg.settings_rel_path)],
+                    None => {
+                        tracing::warn!(target: "hooks.uninstall",
+                            "Failed to resolve hooks path for {}: Cannot determine home directory",
+                            agent.name
+                        );
+                        Vec::new()
+                    }
+                }
+            };
+            for settings_path in resolved_paths {
+                let result = if agent.name == "codex" {
+                    uninstall_codex_hooks(&settings_path)
+                } else {
+                    uninstall_hooks(&settings_path)
+                };
+                match result {
                     Ok(true) => println!("Removed AoE hooks from {}", settings_path.display()),
                     Ok(false) => {}
-                    Err(e) => {
-                        tracing::warn!(target: "hooks.uninstall",
-                            "Failed to remove hooks from {}: {}",
-                            settings_path.display(),
-                            e
-                        );
-                    }
+                    Err(e) => tracing::warn!(target: "hooks.uninstall",
+                        "Failed to remove hooks from {}: {}",
+                        settings_path.display(),
+                        e
+                    ),
                 }
             }
         }
@@ -737,6 +1107,46 @@ pub fn uninstall_all_hooks() {
     if base.exists() {
         if let Err(e) = std::fs::remove_dir_all(base) {
             tracing::warn!(target: "hooks.uninstall", "Failed to remove {}: {}", base.display(), e);
+        }
+    }
+}
+
+fn codex_config_paths_for_uninstall() -> Vec<PathBuf> {
+    let mut paths = Vec::new();
+    push_unique_path(&mut paths, codex_config_path());
+
+    if let Ok(config) = crate::session::config::Config::load() {
+        push_unique_path(
+            &mut paths,
+            codex_config_path_for_host_environment(&config.environment),
+        );
+    }
+
+    match crate::session::list_profiles() {
+        Ok(profiles) => {
+            for profile in profiles {
+                let environment =
+                    crate::session::profile_config::resolve_config_or_warn(&profile).environment;
+                push_unique_path(
+                    &mut paths,
+                    codex_config_path_for_host_environment(&environment),
+                );
+            }
+        }
+        Err(e) => {
+            tracing::warn!(target: "hooks.uninstall", "Failed to list profiles for Codex hook cleanup: {}", e)
+        }
+    }
+
+    paths
+}
+
+fn push_unique_path(paths: &mut Vec<PathBuf>, path: Result<PathBuf>) {
+    match path {
+        Ok(path) if !paths.contains(&path) => paths.push(path),
+        Ok(_) => {}
+        Err(e) => {
+            tracing::warn!(target: "hooks.uninstall", "Failed to resolve Codex config path: {}", e)
         }
     }
 }
@@ -753,6 +1163,38 @@ mod tests {
             .as_ref()
             .unwrap()
             .events
+    }
+
+    fn codex_events() -> &'static [crate::agents::HookEvent] {
+        crate::agents::get_agent("codex")
+            .unwrap()
+            .hook_config
+            .as_ref()
+            .unwrap()
+            .events
+    }
+
+    struct CodexHomeGuard(Option<String>);
+    impl CodexHomeGuard {
+        fn set(path: &Path) -> Self {
+            let prev = std::env::var("CODEX_HOME").ok();
+            std::env::set_var("CODEX_HOME", path);
+            Self(prev)
+        }
+
+        fn unset() -> Self {
+            let prev = std::env::var("CODEX_HOME").ok();
+            std::env::remove_var("CODEX_HOME");
+            Self(prev)
+        }
+    }
+    impl Drop for CodexHomeGuard {
+        fn drop(&mut self) {
+            match &self.0 {
+                Some(v) => std::env::set_var("CODEX_HOME", v),
+                None => std::env::remove_var("CODEX_HOME"),
+            }
+        }
     }
 
     #[test]
@@ -851,6 +1293,226 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(&settings_path).unwrap()).unwrap();
         assert_eq!(content["apiKey"], "test-key");
         assert_eq!(content["model"], "opus");
+    }
+
+    #[test]
+    fn test_install_codex_hooks_writes_config_toml() {
+        let tmp = TempDir::new().unwrap();
+        let codex_dir = tmp.path().join(".codex");
+        let config_path = codex_dir.join("config.toml");
+
+        install_codex_hooks(&config_path, codex_events()).unwrap();
+
+        let config: toml::Value =
+            toml::from_str(&std::fs::read_to_string(&config_path).unwrap()).unwrap();
+        assert!(config["hooks"]["SessionStart"].is_array());
+        assert!(config["hooks"]["UserPromptSubmit"].is_array());
+        assert!(config["hooks"]["PreToolUse"].is_array());
+        assert!(config["hooks"]["PermissionRequest"].is_array());
+        assert!(config["hooks"]["PostToolUse"].is_array());
+        assert!(config["hooks"]["Stop"].is_array());
+        assert!(!codex_dir.join("hooks.json").exists());
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_codex_config_path_respects_codex_home() {
+        let tmp = TempDir::new().unwrap();
+        let _guard = CodexHomeGuard::set(tmp.path());
+
+        assert_eq!(codex_config_path().unwrap(), tmp.path().join("config.toml"));
+        assert_eq!(
+            codex_config_path_display(),
+            tmp.path().join("config.toml").display().to_string()
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_codex_config_paths_for_uninstall_include_profile_codex_home() {
+        let tmp = TempDir::new().unwrap();
+        let _guard = CodexHomeGuard::unset();
+        std::env::set_var("HOME", tmp.path());
+        #[cfg(target_os = "linux")]
+        std::env::set_var("XDG_CONFIG_HOME", tmp.path().join(".config"));
+
+        let codex_home = tmp.path().join("profile-codex-home");
+        let profile_dir = crate::session::get_profile_dir("codex-profile").unwrap();
+        std::fs::write(
+            profile_dir.join("config.toml"),
+            format!("environment = [\"CODEX_HOME={}\"]\n", codex_home.display()),
+        )
+        .unwrap();
+
+        let paths = codex_config_paths_for_uninstall();
+
+        assert!(paths.contains(&tmp.path().join(".codex").join("config.toml")));
+        assert!(paths.contains(&codex_home.join("config.toml")));
+    }
+
+    #[test]
+    fn test_install_codex_hooks_preserves_disabled_flag_and_skips_install() {
+        let tmp = TempDir::new().unwrap();
+        let codex_dir = tmp.path().join(".codex");
+        std::fs::create_dir_all(&codex_dir).unwrap();
+        std::fs::write(
+            codex_dir.join("config.toml"),
+            "# keep this comment\nmodel = \"gpt-5.3-codex\"\n\n[features]\nweb_search = true\nhooks = false\n",
+        )
+        .unwrap();
+
+        let config_path = codex_dir.join("config.toml");
+        install_codex_hooks(&config_path, codex_events()).unwrap();
+
+        let config = std::fs::read_to_string(&config_path).unwrap();
+        assert!(config.contains("# keep this comment"));
+        assert!(config.contains("model = \"gpt-5.3-codex\""));
+        assert!(config.contains("web_search = true"));
+        assert!(config.contains("hooks = false"));
+        assert!(!config.contains("hooks = true"));
+        assert!(!config.contains("aoe-hooks"));
+    }
+
+    #[test]
+    fn test_install_codex_hooks_preserves_inline_user_hooks_state_and_is_idempotent() {
+        let tmp = TempDir::new().unwrap();
+        let codex_dir = tmp.path().join(".codex");
+        std::fs::create_dir_all(&codex_dir).unwrap();
+        let config_path = codex_dir.join("config.toml");
+        std::fs::write(
+            &config_path,
+            r#"model = "gpt-5.3-codex"
+hooks = { PreToolUse = [{ matcher = "Bash", hooks = [{ type = "command", command = "echo user-hook" }] }], state = { user = { enabled = true, trusted_hash = "keep" } } }
+"#,
+        )
+        .unwrap();
+
+        install_codex_hooks(&config_path, codex_events()).unwrap();
+        install_codex_hooks(&config_path, codex_events()).unwrap();
+
+        let config_text = std::fs::read_to_string(config_path).unwrap();
+        let config: toml::Value = toml::from_str(&config_text).unwrap();
+        let pre_tool = config["hooks"]["PreToolUse"].as_array().unwrap();
+        assert_eq!(pre_tool.len(), 2);
+        assert_eq!(
+            pre_tool[0]["hooks"][0]["command"].as_str(),
+            Some("echo user-hook")
+        );
+        assert_eq!(
+            config["hooks"]["state"]["user"]["trusted_hash"].as_str(),
+            Some("keep")
+        );
+        assert_eq!(config_text.matches("sh -c").count(), codex_events().len());
+    }
+
+    #[test]
+    fn test_install_codex_hooks_preserves_hooks_state_on_existing_aoe_hooks() {
+        let tmp = TempDir::new().unwrap();
+        let codex_dir = tmp.path().join(".codex");
+        std::fs::create_dir_all(&codex_dir).unwrap();
+        let config_path = codex_dir.join("config.toml");
+        std::fs::write(
+            &config_path,
+            format!(
+                r#"[hooks.state]
+existing = {{ enabled = true, trusted_hash = "hook-trust" }}
+
+[[hooks.PreToolUse]]
+
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = {:?}
+"#,
+                hook_command("running")
+            ),
+        )
+        .unwrap();
+
+        install_codex_hooks(&config_path, codex_events()).unwrap();
+        install_codex_hooks(&config_path, codex_events()).unwrap();
+
+        let config_text = std::fs::read_to_string(config_path).unwrap();
+        let config: toml::Value = toml::from_str(&config_text).unwrap();
+        let pre_tool = config["hooks"]["PreToolUse"].as_array().unwrap();
+        assert_eq!(pre_tool.len(), 1);
+        assert_eq!(
+            config["hooks"]["state"]["existing"]["trusted_hash"].as_str(),
+            Some("hook-trust")
+        );
+        assert_eq!(config_text.matches("sh -c").count(), codex_events().len());
+    }
+
+    #[test]
+    fn test_install_codex_hooks_preserves_inline_disabled_flag_and_skips_install() {
+        let tmp = TempDir::new().unwrap();
+        let codex_dir = tmp.path().join(".codex");
+        std::fs::create_dir_all(&codex_dir).unwrap();
+        std::fs::write(
+            codex_dir.join("config.toml"),
+            r#"model = "gpt-5.3-codex"
+features = { web_search = true, hooks = false }
+"#,
+        )
+        .unwrap();
+
+        let config_path = codex_dir.join("config.toml");
+        install_codex_hooks(&config_path, codex_events()).unwrap();
+
+        let config = std::fs::read_to_string(&config_path).unwrap();
+        assert!(config.contains("model = \"gpt-5.3-codex\""));
+        assert!(config.contains("web_search = true"));
+        assert!(config.contains("hooks = false"));
+        assert!(!config.contains("aoe-hooks"));
+    }
+
+    #[test]
+    fn test_install_codex_hooks_respects_deprecated_disabled_alias() {
+        let tmp = TempDir::new().unwrap();
+        let codex_dir = tmp.path().join(".codex");
+        std::fs::create_dir_all(&codex_dir).unwrap();
+        std::fs::write(
+            codex_dir.join("config.toml"),
+            r#"model = "gpt-5.3-codex"
+features = { web_search = true, codex_hooks = false }
+"#,
+        )
+        .unwrap();
+
+        let config_path = codex_dir.join("config.toml");
+        install_codex_hooks(&config_path, codex_events()).unwrap();
+
+        let config = std::fs::read_to_string(config_path).unwrap();
+        assert!(!config.contains("aoe-hooks"));
+    }
+
+    #[test]
+    fn test_uninstall_codex_hooks_removes_toml_entries() {
+        let tmp = TempDir::new().unwrap();
+        let codex_dir = tmp.path().join(".codex");
+        std::fs::create_dir_all(&codex_dir).unwrap();
+        let config_path = codex_dir.join("config.toml");
+        std::fs::write(
+            &config_path,
+            r#"[hooks.state]
+user = { enabled = true, trusted_hash = "keep" }
+
+[[hooks.PreToolUse]]
+matcher = "Bash"
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = "echo user-hook"
+"#,
+        )
+        .unwrap();
+
+        install_codex_hooks(&config_path, codex_events()).unwrap();
+        let modified = uninstall_codex_hooks(&config_path).unwrap();
+        assert!(modified);
+
+        let config = std::fs::read_to_string(config_path).unwrap();
+        assert!(config.contains("echo user-hook"));
+        assert!(config.contains("trusted_hash = \"keep\""));
+        assert!(!config.contains("aoe-hooks"));
     }
 
     #[test]

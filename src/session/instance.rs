@@ -1,7 +1,7 @@
 //! Session instance definition and operations
 
 use std::collections::HashSet;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
@@ -1240,9 +1240,10 @@ impl Instance {
     /// so this only acts on host sessions by writing to the user's home directory.
     /// Respects the `agent_status_hooks` config setting.
     fn install_agent_status_hooks(&self, agent: Option<&'static crate::agents::AgentDef>) {
-        let hooks_enabled = crate::session::config::Config::load()
-            .map(|c| c.session.agent_status_hooks)
-            .unwrap_or(true);
+        let profile = self.effective_profile();
+        let hooks_enabled = super::profile_config::resolve_config_or_warn(&profile)
+            .session
+            .agent_status_hooks;
         if !hooks_enabled {
             return;
         }
@@ -1271,6 +1272,19 @@ impl Instance {
                     }
                 }
             }
+        } else if agent.is_some_and(|a| a.name == "codex") && !self.is_sandboxed() {
+            if let Some(hook_cfg) = agent.and_then(|a| a.hook_config.as_ref()) {
+                match self.codex_config_path_for_launch_env() {
+                    Ok(config_path) => {
+                        if let Err(e) =
+                            crate::hooks::install_codex_hooks(&config_path, hook_cfg.events)
+                        {
+                            tracing::warn!("Failed to install codex hooks: {}", e);
+                        }
+                    }
+                    Err(e) => tracing::warn!("Failed to resolve codex config path: {}", e),
+                }
+            }
         } else if let Some(hook_cfg) = agent.and_then(|a| a.hook_config.as_ref()) {
             if self.is_sandboxed() {
                 // For sandboxed sessions, hooks are installed via build_container_config
@@ -1284,6 +1298,10 @@ impl Instance {
                 }
             }
         }
+    }
+
+    fn codex_config_path_for_launch_env(&self) -> Result<PathBuf> {
+        crate::hooks::codex_config_path_for_host_environment(&self.profile_host_environment())
     }
 
     /// Build the tmux command for a sandboxed (Docker) session.
@@ -1469,7 +1487,7 @@ impl Instance {
         container_config::build_container_config(
             &self.project_path,
             sandbox,
-            &self.tool,
+            container_config::ContainerAgentSelection::new(&self.tool, Some(&self.detect_as)),
             self.is_yolo_mode(),
             &self.id,
             self.workspace_info.as_ref(),
@@ -2202,6 +2220,12 @@ impl Instance {
             self.has_command_override()
         );
 
+        let detection_tool = if self.detect_as.is_empty() {
+            &self.tool
+        } else {
+            &self.detect_as
+        };
+
         if let Some(hook_status) = crate::hooks::read_hook_status(&self.id) {
             tracing::trace!(target: "session.store",
                 "status '{}': hook detected {:?}, is_dead={}",
@@ -2216,18 +2240,29 @@ impl Instance {
                     self.last_error = Some(summarize_error_from_pane(&pane_content));
                 }
             } else {
-                self.status = hook_status;
+                self.status = if detection_tool == "codex" && hook_status == Status::Running {
+                    match session.capture_pane(50) {
+                        Ok(pane_content) => {
+                            tmux::reconcile_codex_hook_status(hook_status, &pane_content)
+                        }
+                        Err(e) => {
+                            tracing::trace!(
+                                "status '{}': codex hook fallback pane capture failed: {}",
+                                self.title,
+                                e
+                            );
+                            hook_status
+                        }
+                    }
+                } else {
+                    hook_status
+                };
                 self.last_error = None;
             }
             return;
         }
 
         let pane_content = session.capture_pane(50).unwrap_or_default();
-        let detection_tool = if self.detect_as.is_empty() {
-            &self.tool
-        } else {
-            &self.detect_as
-        };
         let detected = tmux::detect_status_from_content(&pane_content, detection_tool);
         tracing::trace!(target: "session.store",
             "status '{}': detected={:?}, cmd_override={}, custom_cmd={}",
@@ -2485,6 +2520,23 @@ fn pane_has_agent_content(raw_content: &str, tool: &str) -> bool {
 mod tests {
     use super::*;
 
+    struct CodexHomeGuard(Option<String>);
+    impl CodexHomeGuard {
+        fn unset() -> Self {
+            let prev = std::env::var("CODEX_HOME").ok();
+            std::env::remove_var("CODEX_HOME");
+            Self(prev)
+        }
+    }
+    impl Drop for CodexHomeGuard {
+        fn drop(&mut self) {
+            match &self.0 {
+                Some(v) => std::env::set_var("CODEX_HOME", v),
+                None => std::env::remove_var("CODEX_HOME"),
+            }
+        }
+    }
+
     #[test]
     fn test_new_instance() {
         let inst = Instance::new("test", "/tmp/test");
@@ -2492,6 +2544,123 @@ mod tests {
         assert_eq!(inst.project_path, "/tmp/test");
         assert_eq!(inst.status, Status::Idle);
         assert_eq!(inst.id.len(), 16);
+    }
+
+    #[test]
+    fn test_codex_gets_status_hook_env_prefix() {
+        let agent = crate::agents::get_agent("codex");
+        assert_eq!(
+            status_hook_env_prefix("abc123", "codex", agent),
+            "AOE_INSTANCE_ID=abc123 "
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_custom_codex_detected_agent_uses_codex_hook_installer() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _codex_home_guard = CodexHomeGuard::unset();
+        std::env::set_var("HOME", tmp.path());
+        #[cfg(target_os = "linux")]
+        std::env::set_var("XDG_CONFIG_HOME", tmp.path().join(".config"));
+
+        let mut inst = Instance::new("wrapped", "/tmp/test");
+        inst.tool = "my-codex-wrapper".to_string();
+        inst.detect_as = "codex".to_string();
+        inst.install_agent_status_hooks(crate::agents::get_agent(&inst.detect_as));
+
+        let config_path = tmp.path().join(".codex").join("config.toml");
+        let config = std::fs::read_to_string(config_path).unwrap();
+        assert!(config.contains("[[hooks.PreToolUse]]"));
+        assert!(config.contains("aoe-hooks"));
+        assert!(!tmp.path().join(".codex").join("hooks.json").exists());
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_codex_hook_installer_uses_profile_codex_home() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _codex_home_guard = CodexHomeGuard::unset();
+        std::env::set_var("HOME", tmp.path());
+        #[cfg(target_os = "linux")]
+        std::env::set_var("XDG_CONFIG_HOME", tmp.path().join(".config"));
+
+        let codex_home = tmp.path().join("profile-codex-home");
+        let profile_dir = crate::session::get_profile_dir("codex-profile").unwrap();
+        std::fs::write(
+            profile_dir.join("config.toml"),
+            format!("environment = [\"CODEX_HOME={}\"]\n", codex_home.display()),
+        )
+        .unwrap();
+
+        let mut inst = Instance::new("codex", "/tmp/test");
+        inst.tool = "codex".to_string();
+        inst.detect_as = "codex".to_string();
+        inst.source_profile = "codex-profile".to_string();
+        inst.install_agent_status_hooks(crate::agents::get_agent(&inst.detect_as));
+
+        let config_path = codex_home.join("config.toml");
+        let config = std::fs::read_to_string(config_path).unwrap();
+        assert!(config.contains("[[hooks.PreToolUse]]"));
+        assert!(config.contains("aoe-hooks"));
+        assert!(!tmp.path().join(".codex").join("config.toml").exists());
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_codex_hook_installer_respects_profile_hooks_disabled() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _codex_home_guard = CodexHomeGuard::unset();
+        std::env::set_var("HOME", tmp.path());
+        #[cfg(target_os = "linux")]
+        std::env::set_var("XDG_CONFIG_HOME", tmp.path().join(".config"));
+
+        let profile_dir = crate::session::get_profile_dir("hooks-disabled").unwrap();
+        std::fs::write(
+            profile_dir.join("config.toml"),
+            "[session]\nagent_status_hooks = false\n",
+        )
+        .unwrap();
+
+        let mut inst = Instance::new("codex", "/tmp/test");
+        inst.tool = "codex".to_string();
+        inst.detect_as = "codex".to_string();
+        inst.source_profile = "hooks-disabled".to_string();
+        inst.install_agent_status_hooks(crate::agents::get_agent(&inst.detect_as));
+
+        assert!(!tmp.path().join(".codex").join("config.toml").exists());
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_codex_hook_installer_respects_profile_hooks_enabled() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        let _codex_home_guard = CodexHomeGuard::unset();
+        std::env::set_var("HOME", tmp.path());
+        #[cfg(target_os = "linux")]
+        std::env::set_var("XDG_CONFIG_HOME", tmp.path().join(".config"));
+
+        let mut global = crate::session::config::Config::default();
+        global.session.agent_status_hooks = false;
+        crate::session::config::save_config(&global).unwrap();
+
+        let profile_dir = crate::session::get_profile_dir("hooks-enabled").unwrap();
+        std::fs::write(
+            profile_dir.join("config.toml"),
+            "[session]\nagent_status_hooks = true\n",
+        )
+        .unwrap();
+
+        let mut inst = Instance::new("codex", "/tmp/test");
+        inst.tool = "codex".to_string();
+        inst.detect_as = "codex".to_string();
+        inst.source_profile = "hooks-enabled".to_string();
+        inst.install_agent_status_hooks(crate::agents::get_agent(&inst.detect_as));
+
+        let config_path = tmp.path().join(".codex").join("config.toml");
+        let config = std::fs::read_to_string(config_path).unwrap();
+        assert!(config.contains("[[hooks.PreToolUse]]"));
+        assert!(config.contains("aoe-hooks"));
     }
 
     #[test]

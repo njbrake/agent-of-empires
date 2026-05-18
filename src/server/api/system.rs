@@ -194,6 +194,69 @@ pub async fn list_themes() -> Json<Vec<String>> {
     )
 }
 
+/// Upper bound on the `:name` path segment for `/api/themes/:name`.
+/// Builtin names are <= 20 chars and custom theme filenames are
+/// inherently capped by the host filesystem; 128 is far past any
+/// real theme name. Past the cap we resolve Empire without logging
+/// the body to keep tracing output sane under fuzzing.
+const MAX_THEME_NAME_LEN: usize = 128;
+
+/// `GET /api/themes/:name` returns the resolved theme projection (web
+/// CSS vars, terminal CSS vars, syntax highlighter selection,
+/// appearance) for the named theme. Unknown names resolve to Empire
+/// with `source: "fallback"`, mirroring `load_theme`'s behaviour.
+///
+/// Wrapped in `spawn_blocking`: the resolver does sync file I/O
+/// (`discover_custom_themes` directory scan + TOML parse) which must
+/// not run on a tokio worker thread.
+pub async fn get_resolved_theme(
+    axum::extract::Path(name): axum::extract::Path<String>,
+) -> Json<crate::tui::styles::ResolvedTheme> {
+    if name.len() > MAX_THEME_NAME_LEN {
+        tracing::warn!(
+            len = name.len(),
+            "GET /api/themes/{{name}} rejected: name exceeds {} bytes",
+            MAX_THEME_NAME_LEN,
+        );
+        return Json(crate::tui::styles::resolve_theme("empire"));
+    }
+    tracing::debug!(theme = %name, "GET /api/themes/{{name}}");
+    let resolved = tokio::task::spawn_blocking(move || crate::tui::styles::resolve_theme(&name))
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "theme resolve task panicked, falling back to empire");
+            crate::tui::styles::resolve_theme("empire")
+        });
+    Json(resolved)
+}
+
+/// `GET /api/theme/current` returns the resolved theme for the active
+/// profile (the picker's current selection). Resolved through
+/// `profile_config::resolve_config_or_warn` so per-profile theme
+/// overrides land in the right place. Sync work runs in
+/// `spawn_blocking`.
+pub async fn get_current_theme(
+    State(state): State<Arc<AppState>>,
+) -> Json<crate::tui::styles::ResolvedTheme> {
+    let profile = state.profile.clone();
+    tracing::debug!(profile = %profile, "GET /api/theme/current");
+    let resolved = tokio::task::spawn_blocking(move || {
+        let cfg = crate::session::profile_config::resolve_config_or_warn(&profile);
+        let name = if cfg.theme.name.is_empty() {
+            "empire".to_string()
+        } else {
+            cfg.theme.name
+        };
+        crate::tui::styles::resolve_theme(&name)
+    })
+    .await
+    .unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "current theme resolve task panicked, falling back to empire");
+        crate::tui::styles::resolve_theme("empire")
+    });
+    Json(resolved)
+}
+
 // --- Wizard support ---
 
 #[derive(Serialize)]

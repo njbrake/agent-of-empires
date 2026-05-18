@@ -168,6 +168,13 @@ const PAGES = [
       "Mobile-first native rendering of AI agent state via the Agent Client Protocol (ACP). Plan panels, tool-call cards, swipe-to-approve, multi-provider support.",
   },
   {
+    source: "docs/cockpit/multi-agent.md",
+    dest: "docs/cockpit/multi-agent.md",
+    title: "Cockpit Multi-Agent Support",
+    description:
+      "Per-agent cockpit feature matrix: claude, codex, opencode, gemini. Covers profile data, supported tools, and known limitations.",
+  },
+  {
     source: "docs/guides/tool-sessions.md",
     dest: "guides/tool-sessions.md",
     title: "Tool Sessions",
@@ -197,6 +204,7 @@ const URL_MAP = {
   "docs/guides/configuration.md": "/docs/guides/configuration/",
   "docs/cli/reference.md": "/docs/cli/reference/",
   "docs/cockpit.md": "/docs/cockpit/",
+  "docs/cockpit/multi-agent.md": "/docs/cockpit/multi-agent/",
   "docs/api.md": "/docs/api/",
   // Guides
   "docs/guides/diff-view.md": "/guides/diff-view/",

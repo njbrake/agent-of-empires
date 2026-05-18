@@ -38,7 +38,7 @@ The wizard greys out the cockpit option for tools not in this set.
 | `gemini`   | `gemini --acp` (native, Google)                            | `GEMINI_API_KEY` env var, OAuth via `gemini auth`, or Vertex `GOOGLE_API_KEY` |
 | `codex`    | `codex-acp` (Zed adapter, npm `@zed-industries/codex-acp`) | `OPENAI_API_KEY` env var, or ChatGPT login (local-only) |
 | `vibe`     | `vibe-acp` (native, Mistral)                               | Mistral API key; set up via `vibe` first |
-| `pi`       | `pi-acp` (adapter, requires `@mariozechner/pi-coding-agent`) | `pi-acp --terminal-login` for OAuth, or env vars per provider |
+| `pi`       | `pi-acp` (adapter, requires `@earendil-works/pi-coding-agent`) | `pi-acp --terminal-login` for OAuth, or env vars per provider |
 | `aoe-agent`| Bundled multi-provider agent (Vercel AI SDK 6)             | Whatever provider env vars Vercel AI SDK expects |
 | *aider, cursor, copilot, droid, settl, hermes* | not yet wired into the cockpit registry; fall back to terminal mode |
 
@@ -109,8 +109,8 @@ Configured agents:
     install: npm install -g @google/gemini-cli  (then `gemini --acp`)
 [!! ] opencode  (OpenCode (SST); native ACP via `opencode acp`)
     install: curl -fsSL https://opencode.ai/install | bash  (then `opencode acp`)
-[!! ] pi  (Hermes coding agent (`pi`) via the pi-acp adapter …)
-    install: npm install -g pi-acp  (also requires `npm i -g @mariozechner/pi-coding-agent`)
+[!! ] pi  (Pi coding agent (`pi`) via the pi-acp adapter …)
+    install: npm install -g pi-acp (also requires `npm install -g @earendil-works/pi-coding-agent`)
 [!! ] vibe  (Mistral Vibe; native ACP via the bundled `vibe-acp` binary)
     install: follow https://github.com/mistralai/mistral-vibe (ships the `vibe-acp` binary)
 
@@ -445,6 +445,53 @@ transcript still replays from disk, but the model starts fresh on each
 spawn. Tracked in
 [#1005](https://github.com/njbrake/agent-of-empires/issues/1005).
 
+## Permission modes and YOLO
+
+Cockpit sessions run in one of the permission modes advertised by the
+ACP adapter. The composer's mode picker shows whatever the agent
+reports in its `NewSessionResponse.modes`; for `claude-agent-acp` the
+typical set is:
+
+| Mode id              | Meaning                                                                 |
+|----------------------|-------------------------------------------------------------------------|
+| `default`            | Every Write/Edit/Bash routes through an approval card.                  |
+| `acceptEdits`        | Edit-kind tools auto-approved; Bash and unknown tools still prompt.     |
+| `bypassPermissions`  | All tools auto-approved. The cockpit analogue of YOLO.                  |
+| `plan`               | Read-only; the agent drafts a plan but does not run side-effectful tools. |
+
+### YOLO mode maps to `bypassPermissions`
+
+When `[session] yolo_mode_default = true` (or the wizard's "Auto-approve
+actions" toggle is on), cockpit asks the adapter to start the session
+in `bypassPermissions` immediately after `session/new`. This mirrors
+what the tmux substrate does by appending
+`--dangerously-skip-permissions` to the Claude CLI argv.
+
+The wiring is best-effort: the cockpit fires `session/set_mode` after
+the handshake and continues regardless of the response. If the adapter
+accepts, the mode picker flips to `bypassPermissions` and you stop
+seeing approval cards. If it rejects (see next section), a non-blocking
+amber notice appears above the composer with the adapter's reason and
+the session keeps running in whichever mode it landed on.
+
+### `bypassPermissions` may not be available
+
+`claude-agent-acp` gates `bypassPermissions` on the `ALLOW_BYPASS`
+environment variable. If the daemon spawned the adapter without
+`ALLOW_BYPASS=1` in its env, `session/set_mode("bypassPermissions")`
+returns "Mode bypassPermissions is not available" and the session
+stays in `default`. Two ways out:
+
+1. Restart `aoe serve` with `ALLOW_BYPASS=1` so the adapter advertises
+   the mode. The cockpit then drives it automatically on every new
+   YOLO-mode session.
+2. Live with `default` and approve as you go, or pick `acceptEdits`
+   from the composer mode picker for edit-only auto-approval.
+
+The Auto-approve toggle in the wizard does not configure
+`ALLOW_BYPASS`; the env var is a daemon-process input set wherever
+`aoe serve` actually launches.
+
 ## Approvals
 
 When the agent wants to run a tool that requires approval, the cockpit
@@ -570,6 +617,12 @@ The session's working directory was renamed, moved, or deleted out from under `a
 2. **Stop `aoe serve`**, edit `project_path` for this session in `~/.agent-of-empires/profiles/<profile>/sessions.json` to point at the new location, then start `aoe serve` again. If the worktree's branch was also renamed, update `worktree_info.branch` in the same file. Cockpit history + `cockpit_acp_session_id` are preserved; the conversation resumes against the new path.
 
 Reinstalling the adapter does not help here; the adapter is fine, the cwd is gone.
+
+### Agent stopped responding to cancel
+
+If the agent ignores `session/cancel` mid-tool-call (most commonly a `block: true` TaskOutput against a wedged background shell), aoe escalates after a ~10s grace window: the daemon ends the ACP connection, SIGTERMs the wedged `aoe __cockpit-runner` subprocess, and the supervisor respawns a fresh worker via `session/load` so the transcript continues uninterrupted. The cockpit view shows "Agent stopped responding to cancel. Restarting worker; your transcript will be preserved" while the respawn is in flight; the banner clears automatically once the new worker comes online.
+
+Follow-up prompts the daemon refused while the original turn was still in flight no longer vanish silently. The composer shows them as amber "Rejected" pills with a Retry button; clicking Retry re-dispatches the prompt through the normal send path against the freshly-respawned worker.
 
 ### Cockpit feels "stuck" with no events
 

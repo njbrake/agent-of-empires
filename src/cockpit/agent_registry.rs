@@ -45,7 +45,7 @@ impl AgentRegistry {
     ///   gemini   → `gemini --acp`       (native, Google)
     ///   codex    → codex-acp            (Zed adapter, OpenAI Codex CLI)
     ///   vibe     → vibe-acp             (native, Mistral)
-    ///   pi       → pi-acp               (adapter, Hermes coding agent)
+    ///   pi       → pi-acp               (adapter, Pi coding agent)
     ///
     /// We deliberately don't use `npx -y` for these. First-run
     /// downloads can hang for tens of seconds with no output, which
@@ -120,7 +120,7 @@ impl AgentRegistry {
             AgentSpec {
                 command: "pi-acp".into(),
                 args: vec![],
-                description: "Hermes coding agent (`pi`) via the pi-acp adapter (npm i -g pi-acp)"
+                description: "Pi coding agent (`pi`) via the pi-acp adapter (npm i -g pi-acp)"
                     .into(),
                 env_allowlist: None,
             },

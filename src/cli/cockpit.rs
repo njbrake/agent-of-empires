@@ -9,6 +9,7 @@ use anyhow::Result;
 use clap::Subcommand;
 
 use crate::cockpit::agent_registry::AgentRegistry;
+use crate::cockpit::install_hints::install_hint_for;
 use crate::cockpit::node;
 
 #[derive(Subcommand)]
@@ -194,25 +195,6 @@ const NPM_INSTALLABLE_ACP: &[(&str, &str)] = &[
     ("codex-acp", "@zed-industries/codex-acp"),
     ("pi-acp", "pi-acp"),
 ];
-
-/// Native CLIs whose ACP server is shipped as part of the agent
-/// itself, not as a separate npm adapter. These get a one-line
-/// install hint in the doctor output instead of an `npm i -g`.
-pub(crate) fn install_hint_for(binary: &str) -> Option<&'static str> {
-    Some(match binary {
-        "claude-agent-acp" => "npm install -g @agentclientprotocol/claude-agent-acp",
-        "codex-acp" => "npm install -g @zed-industries/codex-acp",
-        "pi-acp" => {
-            "npm install -g pi-acp  (also requires `npm i -g @mariozechner/pi-coding-agent`)"
-        }
-        "opencode" => "curl -fsSL https://opencode.ai/install | bash  (then `opencode acp`)",
-        "gemini" => "npm install -g @google/gemini-cli  (then `gemini --acp`)",
-        "vibe-acp" => {
-            "follow https://github.com/mistralai/mistral-vibe (ships the `vibe-acp` binary)"
-        }
-        _ => return None,
-    })
-}
 
 async fn doctor(json: bool, fix: bool) -> Result<()> {
     if fix {
@@ -836,6 +818,7 @@ fn event_kind(event: &crate::cockpit::Event) -> &'static str {
         Event::ModeChanged { .. } => "mode_changed",
         Event::ModesAvailable { .. } => "modes_available",
         Event::CurrentModeChanged { .. } => "current_mode_changed",
+        Event::ModeSwitchFailed { .. } => "mode_switch_failed",
         Event::AvailableCommandsUpdated { .. } => "available_commands_updated",
         Event::RawAgentUpdate { .. } => "raw_agent_update",
         Event::AgentMessageChunk { .. } => "agent_message_chunk",
@@ -847,6 +830,7 @@ fn event_kind(event: &crate::cockpit::Event) -> &'static str {
         Event::SessionCleared => "session_cleared",
         Event::ConversationCompacted => "conversation_compacted",
         Event::WakeupScheduled { .. } => "wakeup_scheduled",
+        Event::PromptRejected { .. } => "prompt_rejected",
     }
 }
 

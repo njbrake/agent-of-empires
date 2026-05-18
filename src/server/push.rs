@@ -52,6 +52,12 @@ pub const DWELL_TERMINAL_MS: u64 = 2_000;
 /// OR this long has passed, whichever comes second.
 pub const COOLDOWN_MS: u64 = 60_000;
 
+/// Delay between hitting "Send test notification" and the server actually
+/// firing the push. Gives the user time to lock their phone so the
+/// notification lands on the Lock Screen instead of in the foreground
+/// app, which is what they actually want to verify.
+const TEST_DELAY_MS: u64 = 3_000;
+
 // ── VAPID keypair ───────────────────────────────────────────────────────────
 
 /// Persisted form of the VAPID keypair. PKCS#8 PEM for the private key,
@@ -193,6 +199,14 @@ pub struct Subscription {
     /// counter still matches. Prevents wiping a freshly re-subscribed
     /// entry when a concurrent send returns 410.
     pub generation: u64,
+    /// Origin (scheme + host + optional port) the subscriber registered
+    /// from, e.g. `http://localhost:42041` or `https://aoe.example.com`.
+    /// Used to build absolute URLs in push payloads so the SW's
+    /// `clients.openWindow` resolves to the right deployment regardless
+    /// of its registration scope. Empty on legacy entries that predate
+    /// #1188; the send path skips those with a one-time info log.
+    #[serde(default)]
+    pub origin: String,
 }
 
 pub struct SubscriptionStore {
@@ -635,24 +649,22 @@ async fn fire_due_pushes(
         } else {
             format!("{}: {}", body_prefix, instance_title)
         };
-        let payload = super::push_send::PushPayload {
-            title: title.to_string(),
-            body,
-            url: format!("/session/{}", instance_id),
-            tag: format!("session-{}", instance_id),
-            session_id: instance_id.clone(),
-        };
+        let path = format!("/session/{}", instance_id);
+        let tag = format!("session-{}", instance_id);
 
         for sub in subs {
+            let Some(url) = build_push_url(&sub, &path) else {
+                continue;
+            };
             let permit_sem = semaphore.clone();
             let client = client.clone();
             let push = push.clone();
             let payload_clone = super::push_send::PushPayload {
-                title: payload.title.clone(),
-                body: payload.body.clone(),
-                url: payload.url.clone(),
-                tag: payload.tag.clone(),
-                session_id: payload.session_id.clone(),
+                title: title.to_string(),
+                body: body.clone(),
+                url,
+                tag: tag.clone(),
+                session_id: instance_id.clone(),
             };
             tokio::spawn(async move {
                 let Ok(_permit) = permit_sem.acquire_owned().await else {
@@ -734,23 +746,21 @@ pub async fn fire_wake_fired_push(
         Some(r) if !r.is_empty() => format!("Agent resumed{}: {}", body_suffix, r),
         _ => format!("Agent resumed{}", body_suffix),
     };
-    let payload = super::push_send::PushPayload {
-        title: "Scheduled wakeup fired".to_string(),
-        body,
-        url: format!("/session/{}", session_id),
-        tag: format!("session-{}", session_id),
-        session_id: session_id.to_string(),
-    };
+    let path = format!("/session/{}", session_id);
+    let tag = format!("session-{}", session_id);
 
     for sub in subs {
+        let Some(url) = build_push_url(&sub, &path) else {
+            continue;
+        };
         let client = client.clone();
         let push = push.clone();
         let payload_clone = super::push_send::PushPayload {
-            title: payload.title.clone(),
-            body: payload.body.clone(),
-            url: payload.url.clone(),
-            tag: payload.tag.clone(),
-            session_id: payload.session_id.clone(),
+            title: "Scheduled wakeup fired".to_string(),
+            body: body.clone(),
+            url,
+            tag: tag.clone(),
+            session_id: session_id.to_string(),
         };
         tokio::spawn(async move {
             let outcome =
@@ -762,6 +772,32 @@ pub async fn fire_wake_fired_push(
             }
         });
     }
+}
+
+/// Build an absolute URL for a push payload by joining the
+/// subscription's recorded origin with a leading-slash path. Returns
+/// `None` for legacy subscriptions with no origin recorded (predate
+/// #1188): the caller should skip those entries and rely on the
+/// re-subscribe affordance in the UI to refresh the entry.
+///
+/// One info log per call site fires once we hit an empty-origin
+/// subscription so the operator can see why pushes are being dropped.
+pub fn build_push_url(sub: &Subscription, path: &str) -> Option<String> {
+    if sub.origin.is_empty() {
+        tracing::info!(
+            target: "push",
+            endpoint = %sub.endpoint,
+            "skipping push: subscription has no origin, ask user to re-subscribe (#1188)"
+        );
+        return None;
+    }
+    let origin = sub.origin.trim_end_matches('/');
+    let path = if path.starts_with('/') {
+        path.to_string()
+    } else {
+        format!("/{}", path)
+    };
+    Some(format!("{origin}{path}"))
 }
 
 pub fn sha256_token(token: &str) -> [u8; 32] {
@@ -858,6 +894,8 @@ pub async fn subscribe(
         .unwrap_or("")
         .to_string();
 
+    let origin = extract_request_origin(&headers).unwrap_or_default();
+
     let sub = Subscription {
         endpoint: body.endpoint,
         p256dh: body.keys.p256dh,
@@ -866,12 +904,42 @@ pub async fn subscribe(
         user_agent,
         created_at: Utc::now(),
         generation: 0,
+        origin,
     };
     push.store
         .upsert(sub)
         .await
         .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
     Ok(StatusCode::NO_CONTENT)
+}
+
+/// Extract the client's origin (scheme + host + optional port) from the
+/// request headers. Prefers the `Origin` header (sent by browsers on
+/// fetch() and cross-origin requests, and on same-origin POSTs with a
+/// JSON body, which covers /api/push/subscribe). Falls back to building
+/// from `X-Forwarded-Proto` + `Host` for reverse-proxy deployments
+/// (Cloudflare, nginx, Traefik) where `Origin` may be stripped. Returns
+/// `None` when neither produces a usable value. See #1188.
+pub fn extract_request_origin(headers: &HeaderMap) -> Option<String> {
+    let origin_header = headers
+        .get(axum::http::header::ORIGIN)
+        .and_then(|v| v.to_str().ok())
+        .filter(|s| !s.is_empty() && *s != "null");
+    if let Some(s) = origin_header {
+        return Some(s.trim_end_matches('/').to_string());
+    }
+    let host = headers
+        .get(axum::http::header::HOST)
+        .and_then(|v| v.to_str().ok())
+        .filter(|s| !s.is_empty())?;
+    let scheme = headers
+        .get("x-forwarded-proto")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|s| s.split(',').next())
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .unwrap_or("https");
+    Some(format!("{scheme}://{host}"))
 }
 
 /// POST /api/push/unsubscribe
@@ -942,14 +1010,26 @@ pub async fn test(
         }
     };
 
+    let Some(url) = build_push_url(&subscription, "/") else {
+        // Stale subscription with no recorded origin. Test path can't be
+        // useful without an absolute URL; ask the user to re-subscribe.
+        tracing::info!(
+            target: "push",
+            endpoint = %subscription.endpoint,
+            "test push skipped: subscription has no origin, ask user to re-subscribe (#1188)"
+        );
+        return Err(StatusCode::CONFLICT);
+    };
     let payload = super::push_send::PushPayload {
         title: "Agent of Empires".to_string(),
         body: "Test notification. If you see this on your lock screen, push is working."
             .to_string(),
-        url: "/".to_string(),
+        url,
         tag: "aoe-test".to_string(),
         session_id: String::new(),
     };
+
+    tokio::time::sleep(std::time::Duration::from_millis(TEST_DELAY_MS)).await;
 
     let outcome = super::push_send::send_one(&client, push, &subscription, &payload).await;
     let mut result = TestResult {
@@ -1012,6 +1092,7 @@ mod tests {
             user_agent: "UA".into(),
             created_at: Utc::now(),
             generation: 0,
+            origin: "http://localhost:8080".into(),
         };
         store.upsert(base.clone()).await.unwrap();
         store.upsert(base.clone()).await.unwrap();
@@ -1035,6 +1116,7 @@ mod tests {
             user_agent: "UA".into(),
             created_at: Utc::now(),
             generation: 5,
+            origin: "http://localhost:8080".into(),
         };
         store.upsert(sub.clone()).await.unwrap();
 
@@ -1063,6 +1145,7 @@ mod tests {
             user_agent: "UA".into(),
             created_at: Utc::now(),
             generation: 0,
+            origin: "http://localhost:8080".into(),
         };
         store.upsert(mk([1u8; 32], "https://x/1")).await.unwrap();
         store.upsert(mk([2u8; 32], "https://x/2")).await.unwrap();
@@ -1102,6 +1185,7 @@ mod tests {
             user_agent: "UA".into(),
             created_at: Utc::now(),
             generation: 0,
+            origin: "http://localhost:8080".into(),
         };
         store.upsert(sub).await.unwrap();
 
@@ -1120,6 +1204,136 @@ mod tests {
             .unwrap();
         assert!(removed);
         assert_eq!(store.snapshot().await.len(), 0);
+    }
+
+    #[test]
+    fn extract_origin_prefers_origin_header() {
+        let mut h = HeaderMap::new();
+        h.insert(
+            axum::http::header::ORIGIN,
+            "http://localhost:42041".parse().unwrap(),
+        );
+        h.insert(axum::http::header::HOST, "ignored.example".parse().unwrap());
+        assert_eq!(
+            extract_request_origin(&h).as_deref(),
+            Some("http://localhost:42041")
+        );
+    }
+
+    #[test]
+    fn extract_origin_trims_trailing_slash_from_origin_header() {
+        let mut h = HeaderMap::new();
+        h.insert(
+            axum::http::header::ORIGIN,
+            "https://aoe.example.com/".parse().unwrap(),
+        );
+        assert_eq!(
+            extract_request_origin(&h).as_deref(),
+            Some("https://aoe.example.com")
+        );
+    }
+
+    #[test]
+    fn extract_origin_ignores_null_origin() {
+        let mut h = HeaderMap::new();
+        h.insert(axum::http::header::ORIGIN, "null".parse().unwrap());
+        h.insert(axum::http::header::HOST, "aoe.example.com".parse().unwrap());
+        // Falls back to Host + default scheme.
+        assert_eq!(
+            extract_request_origin(&h).as_deref(),
+            Some("https://aoe.example.com")
+        );
+    }
+
+    #[test]
+    fn extract_origin_falls_back_to_forwarded_proto_and_host() {
+        let mut h = HeaderMap::new();
+        h.insert("x-forwarded-proto", "https".parse().unwrap());
+        h.insert(axum::http::header::HOST, "aoe.example.com".parse().unwrap());
+        assert_eq!(
+            extract_request_origin(&h).as_deref(),
+            Some("https://aoe.example.com")
+        );
+    }
+
+    #[test]
+    fn extract_origin_forwarded_proto_handles_chained_values() {
+        // X-Forwarded-Proto can carry a comma-separated chain when there
+        // are multiple proxies in front. Take the first value.
+        let mut h = HeaderMap::new();
+        h.insert("x-forwarded-proto", "https, http".parse().unwrap());
+        h.insert(axum::http::header::HOST, "aoe.example.com".parse().unwrap());
+        assert_eq!(
+            extract_request_origin(&h).as_deref(),
+            Some("https://aoe.example.com")
+        );
+    }
+
+    #[test]
+    fn extract_origin_defaults_scheme_to_https_when_only_host_set() {
+        let mut h = HeaderMap::new();
+        h.insert(axum::http::header::HOST, "aoe.example.com".parse().unwrap());
+        assert_eq!(
+            extract_request_origin(&h).as_deref(),
+            Some("https://aoe.example.com")
+        );
+    }
+
+    #[test]
+    fn extract_origin_returns_none_when_no_signal() {
+        let h = HeaderMap::new();
+        assert_eq!(extract_request_origin(&h), None);
+    }
+
+    #[test]
+    fn build_push_url_joins_origin_and_path() {
+        let sub = Subscription {
+            endpoint: "https://push.example/abc".into(),
+            p256dh: "pk".into(),
+            auth: "auth".into(),
+            owner_token_hash: [1u8; 32],
+            user_agent: "UA".into(),
+            created_at: Utc::now(),
+            generation: 0,
+            origin: "http://localhost:42041".into(),
+        };
+        assert_eq!(
+            build_push_url(&sub, "/session/abc").as_deref(),
+            Some("http://localhost:42041/session/abc")
+        );
+    }
+
+    #[test]
+    fn build_push_url_trims_origin_trailing_slash() {
+        let sub = Subscription {
+            endpoint: "https://push.example/abc".into(),
+            p256dh: "pk".into(),
+            auth: "auth".into(),
+            owner_token_hash: [1u8; 32],
+            user_agent: "UA".into(),
+            created_at: Utc::now(),
+            generation: 0,
+            origin: "https://aoe.example.com/".into(),
+        };
+        assert_eq!(
+            build_push_url(&sub, "/").as_deref(),
+            Some("https://aoe.example.com/")
+        );
+    }
+
+    #[test]
+    fn build_push_url_none_for_empty_origin() {
+        let sub = Subscription {
+            endpoint: "https://push.example/abc".into(),
+            p256dh: "pk".into(),
+            auth: "auth".into(),
+            owner_token_hash: [1u8; 32],
+            user_agent: "UA".into(),
+            created_at: Utc::now(),
+            generation: 0,
+            origin: String::new(),
+        };
+        assert_eq!(build_push_url(&sub, "/session/abc"), None);
     }
 
     #[test]

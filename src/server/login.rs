@@ -779,13 +779,8 @@ async fn trigger_new_login_push(state: &AppState, user_agent: &str) {
         return;
     }
     let truncated_ua = user_agent.chars().take(80).collect::<String>();
-    let payload = super::push_send::PushPayload {
-        title: "New aoe dashboard login".to_string(),
-        body: format!("New device signed in. UA: {truncated_ua}"),
-        url: "/".to_string(),
-        tag: "aoe-new-login".to_string(),
-        session_id: String::new(),
-    };
+    let title = "New aoe dashboard login".to_string();
+    let body = format!("New device signed in. UA: {truncated_ua}");
     let client = match super::push_send::build_client() {
         Ok(c) => c,
         Err(e) => {
@@ -793,14 +788,24 @@ async fn trigger_new_login_push(state: &AppState, user_agent: &str) {
             return;
         }
     };
-    let body_bytes = match serde_json::to_vec(&payload) {
-        Ok(b) => b,
-        Err(e) => {
-            tracing::warn!(target: "auth.passphrase", "serialise payload: {e}");
-            return;
-        }
-    };
     for sub in subs {
+        let Some(url) = super::push::build_push_url(&sub, "/") else {
+            continue;
+        };
+        let payload = super::push_send::PushPayload {
+            title: title.clone(),
+            body: body.clone(),
+            url,
+            tag: "aoe-new-login".to_string(),
+            session_id: String::new(),
+        };
+        let body_bytes = match serde_json::to_vec(&payload) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::warn!(target: "auth.passphrase", "serialise payload: {e}");
+                continue;
+            }
+        };
         let auth_header = match super::push_send::vapid_auth_header(push, &sub.endpoint) {
             Ok(h) => h,
             Err(e) => {

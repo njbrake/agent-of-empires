@@ -245,5 +245,16 @@ export function usePushSubscription() {
     }
   }, []);
 
-  return { state, enable, disable, sendTest, refresh };
+  // Re-subscribe: unsubscribe then re-subscribe in a single click. Used
+  // by the "Re-subscribe" affordance in NotificationSettings to refresh
+  // the server-side `Subscription.origin` field after the user moved
+  // the deployment to a different port or origin. Existing subs from
+  // before the origin-tracking landed have no recorded origin and get
+  // skipped on send (#1188); re-subscribing refreshes the entry.
+  const resubscribe = useCallback(async () => {
+    await disable();
+    await enable();
+  }, [disable, enable]);
+
+  return { state, enable, disable, sendTest, refresh, resubscribe };
 }

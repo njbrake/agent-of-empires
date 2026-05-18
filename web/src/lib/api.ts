@@ -237,8 +237,28 @@ export async function updateProfileSettings(
 
 // --- Themes & Sounds ---
 
+import type { ResolvedTheme } from "./theme";
+
 export async function fetchThemes(): Promise<string[]> {
   return (await fetchJson<string[]>("/api/themes")) ?? [];
+}
+
+/** Fetch the resolved theme projection (web CSS vars, terminal CSS
+ *  vars, syntax highlighter selection) for a named theme. The server
+ *  falls back to Empire for unknown names; check `source` to detect. */
+export function fetchResolvedTheme(
+  name: string,
+): Promise<ResolvedTheme | null> {
+  return fetchJson<ResolvedTheme>(
+    `/api/themes/${encodeURIComponent(name)}`,
+  );
+}
+
+/** Fetch the resolved theme for the active profile's current
+ *  selection. Server reads from profile_config so per-profile overrides
+ *  land in the right place. */
+export function fetchCurrentTheme(): Promise<ResolvedTheme | null> {
+  return fetchJson<ResolvedTheme>("/api/theme/current");
 }
 
 export async function fetchSounds(): Promise<string[]> {

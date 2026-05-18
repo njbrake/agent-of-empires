@@ -33,6 +33,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_yaml = "0.9"
 toml = "1.1"
+toml_edit = "0.23"
 
 # File watching
 notify = "8.2"

@@ -48,6 +48,7 @@ async fn shim_agent_round_trips_prompt() {
 
     let cwd = std::env::temp_dir();
     let config = SpawnConfig {
+        agent_key: "claude".into(),
         spec: AgentSpec {
             command: "node".into(),
             args: vec![shim.to_string_lossy().to_string()],
@@ -171,6 +172,7 @@ async fn shim_agent_round_trips_approval_allow() {
 
     let cwd = std::env::temp_dir();
     let config = SpawnConfig {
+        agent_key: "claude".into(),
         spec: AgentSpec {
             command: "node".into(),
             args: vec![shim.to_string_lossy().to_string()],
@@ -269,6 +271,7 @@ async fn shim_agent_round_trips_fs() {
     let temp = tempfile::tempdir().expect("tempdir");
     let cwd = temp.path().to_path_buf();
     let config = SpawnConfig {
+        agent_key: "claude".into(),
         spec: AgentSpec {
             command: "node".into(),
             args: vec![shim.to_string_lossy().to_string()],
@@ -341,6 +344,7 @@ async fn shim_agent_round_trips_terminal() {
     let temp = tempfile::tempdir().expect("tempdir");
     let cwd = temp.path().to_path_buf();
     let config = SpawnConfig {
+        agent_key: "claude".into(),
         spec: AgentSpec {
             command: "node".into(),
             args: vec![shim.to_string_lossy().to_string()],
@@ -426,6 +430,7 @@ async fn shim_agent_set_mode_emits_current_mode_changed() {
 
     let cwd = std::env::temp_dir();
     let config = SpawnConfig {
+        agent_key: "claude".into(),
         spec: AgentSpec {
             command: "node".into(),
             args: vec![shim.to_string_lossy().to_string()],

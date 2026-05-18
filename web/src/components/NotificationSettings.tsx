@@ -6,7 +6,8 @@ import { usePushSubscription } from "../hooks/usePushSubscription";
 // secondary test-send button when enabled.
 
 export function NotificationSettings() {
-  const { state, enable, disable, sendTest } = usePushSubscription();
+  const { state, enable, disable, sendTest, resubscribe } =
+    usePushSubscription();
 
   const isBusy =
     state.kind === "asking" ||
@@ -42,6 +43,13 @@ export function NotificationSettings() {
               className="px-3 py-2 rounded-md bg-surface-700 hover:bg-surface-700/70 text-sm font-medium text-text-primary transition-colors"
             >
               Send test notification
+            </button>
+            <button
+              onClick={resubscribe}
+              title="Re-register this device. Use after changing the server port or hostname so notifications open the right URL."
+              className="px-3 py-2 rounded-md border border-surface-700 hover:bg-surface-700/40 text-sm font-medium text-text-secondary transition-colors"
+            >
+              Re-subscribe
             </button>
             <button
               onClick={disable}
@@ -91,7 +99,8 @@ function StatusRow({ state }: { state: ReturnType<typeof usePushSubscription>["s
     case "sending-test":
       return (
         <p className="text-sm text-text-secondary">
-          Sending test notification...
+          Sending test notification in a few seconds. On a phone, lock the
+          screen now to see it land on the Lock Screen.
         </p>
       );
     case "disabling":

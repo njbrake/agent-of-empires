@@ -140,6 +140,7 @@ async fn attach_in_flight_synthesizes_reattach_idle_stopped() {
         true, // in_flight_turn
         CockpitSessionId("midturn-true".into()),
         None,
+        "claude".into(),
     )
     .await
     .expect("attach in_flight=true");
@@ -178,6 +179,7 @@ async fn attach_idle_session_does_not_synthesize_stopped() {
         false, // NOT in flight
         CockpitSessionId("midturn-false".into()),
         None,
+        "claude".into(),
     )
     .await
     .expect("attach in_flight=false");
@@ -224,6 +226,7 @@ async fn socket_transport_round_trips_prompt_via_attach() {
         false, // not in flight; this is a fresh round-trip
         CockpitSessionId("roundtrip".into()),
         None,
+        "claude".into(),
     )
     .await
     .expect("attach to bridge");

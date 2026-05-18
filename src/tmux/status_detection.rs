@@ -316,12 +316,11 @@ pub fn detect_vibe_status(raw_content: &str) -> Status {
     Status::Idle
 }
 
-/// Codex doesn't use hooks yet (tracked in #1126), so we infer status from the
-/// pane text. Strategy, in priority order:
+/// Fallback Codex status detection from pane text. Strategy, in priority order:
 ///
-///   1. Explicit `Waiting` signals like `enter to submit answer` /
-///      `(unanswered)` win immediately, since Codex sometimes renders these
-///      alongside a stale spinner from earlier in the turn.
+///   1. Structured Plan-mode radio prompts win immediately, since Codex
+///      sometimes renders these alongside a stale spinner from earlier in the
+///      turn.
 ///   2. Running is detected from the *current turn block* only, i.e. the lines
 ///      below the most recent `─ Worked for ... ─` divider. This stops stale
 ///      `• Working ...` markers from a previous turn leaking into a turn that
@@ -329,8 +328,8 @@ pub fn detect_vibe_status(raw_content: &str) -> Status {
 ///   3. Within the current block we look for two shapes: a bullet-prefixed
 ///      live status line carrying an `esc to interrupt` hint (anywhere in the
 ///      block), or a bare activity verb / spinner+verb in the last ~10 lines.
-///   4. Waiting is detected from approval prompts, numbered `›`/`❯` choices,
-///      free-form `›`/`❯` prompts, and the `codex>` REPL prompt.
+///   4. Waiting is detected from approval prompts and numbered `›`/`❯`
+///      choices. A normal free-form prompt means the turn is done.
 ///
 /// All comparisons are case-insensitive (content is lowercased on entry).
 pub fn detect_codex_status(raw_content: &str) -> Status {
@@ -352,9 +351,7 @@ pub fn detect_codex_status(raw_content: &str) -> Status {
         .join("\n");
     let last_lines_lower = last_lines.to_lowercase();
 
-    if last_lines_lower.contains("enter to submit answer")
-        || last_lines_lower.contains("(unanswered)")
-    {
+    if codex_has_plan_radio_prompt(&non_empty_lines) {
         return Status::Waiting;
     }
 
@@ -376,31 +373,205 @@ pub fn detect_codex_status(raw_content: &str) -> Status {
         return Status::Waiting;
     }
 
-    for line in non_empty_lines.iter().rev().take(10) {
+    if codex_has_recent_numbered_choice_prompt(&non_empty_lines) {
+        return Status::Waiting;
+    }
+
+    if codex_has_interrupted_turn_without_new_activity(&non_empty_lines) {
+        return Status::Idle;
+    }
+
+    Status::Idle
+}
+
+pub(crate) fn reconcile_codex_hook_status(hook_status: Status, raw_content: &str) -> Status {
+    if hook_status != Status::Running {
+        return hook_status;
+    }
+
+    detect_codex_hook_gap_status(raw_content).unwrap_or(hook_status)
+}
+
+fn detect_codex_hook_gap_status(raw_content: &str) -> Option<Status> {
+    let clean = strip_ansi(raw_content);
+    let content = clean.to_lowercase();
+    let non_empty_lines: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
+
+    // A cancelled Plan-mode radio prompt remains in scrollback above the
+    // interruption marker, so the newer interruption must win here.
+    if codex_has_interrupted_turn_without_new_activity(&non_empty_lines) {
+        return Some(Status::Idle);
+    }
+
+    if codex_has_plan_radio_prompt(&non_empty_lines)
+        || codex_has_recent_numbered_choice_prompt(&non_empty_lines)
+    {
+        return Some(Status::Waiting);
+    }
+
+    None
+}
+
+fn codex_has_plan_radio_prompt(non_empty_lines: &[&str]) -> bool {
+    let recent_start = non_empty_lines.len().saturating_sub(40);
+    let recent = &non_empty_lines[recent_start..];
+
+    let Some(question_index) = recent.iter().rposition(|line| {
         let trimmed = line.trim();
-        let after_cursor = trimmed
+        trimmed.starts_with("question ") && trimmed.contains("unanswered")
+    }) else {
+        return false;
+    };
+    let Some(choice_index) = recent
+        .iter()
+        .rposition(|line| codex_line_has_numbered_choice_cursor(line.trim()))
+    else {
+        return false;
+    };
+    let Some(submit_hint_index) = recent
+        .iter()
+        .rposition(|line| line.contains("enter to submit answer"))
+    else {
+        return false;
+    };
+
+    if !(question_index <= choice_index && choice_index <= submit_hint_index) {
+        return false;
+    }
+
+    !codex_has_running_signal(&recent[submit_hint_index + 1..])
+}
+
+fn codex_line_has_numbered_choice_cursor(line: &str) -> bool {
+    let Some(rest) = line
+        .strip_prefix("❯")
+        .or_else(|| line.strip_prefix("›"))
+        .map(str::trim_start)
+    else {
+        return false;
+    };
+
+    let mut chars = rest.chars();
+    matches!(chars.next(), Some('1'..='9')) && matches!(chars.next(), Some('.'))
+}
+
+fn codex_has_recent_numbered_choice_prompt(non_empty_lines: &[&str]) -> bool {
+    let recent_start = non_empty_lines.len().saturating_sub(10);
+    let recent = &non_empty_lines[recent_start..];
+    let Some(choice_index) = recent
+        .iter()
+        .rposition(|line| codex_line_has_numbered_choice_cursor(line.trim()))
+    else {
+        return false;
+    };
+    let lines_after_choice = &recent[choice_index + 1..];
+
+    !codex_has_running_signal(lines_after_choice)
+        && !codex_has_non_numbered_cursor_prompt(lines_after_choice)
+}
+
+fn codex_has_non_numbered_cursor_prompt(non_empty_lines: &[&str]) -> bool {
+    non_empty_lines.iter().any(|line| {
+        let trimmed = line.trim();
+        let Some(rest) = trimmed
             .strip_prefix("❯")
-            .or_else(|| trimmed.strip_prefix("›"));
-        if let Some(rest) = after_cursor {
-            let after_cursor = rest.trim_start();
-            if after_cursor.starts_with("1.")
-                || after_cursor.starts_with("2.")
-                || after_cursor.starts_with("3.")
-            {
-                return Status::Waiting;
+            .or_else(|| trimmed.strip_prefix("›"))
+        else {
+            return false;
+        };
+
+        !rest.trim_start().is_empty() && !codex_line_has_numbered_choice_cursor(trimmed)
+    })
+}
+
+fn codex_has_interrupted_turn_without_new_activity(non_empty_lines: &[&str]) -> bool {
+    let Some(marker_index) = codex_interruption_marker_end_index(non_empty_lines) else {
+        return false;
+    };
+
+    let lines_after_marker = &non_empty_lines[marker_index + 1..];
+    if codex_has_running_signal(lines_after_marker)
+        || codex_has_plan_radio_prompt(lines_after_marker)
+        || codex_has_recent_numbered_choice_prompt(lines_after_marker)
+        || codex_has_approval_prompt(lines_after_marker)
+        || codex_cursor_prompt_count(lines_after_marker) > 1
+    {
+        return false;
+    }
+
+    true
+}
+
+fn codex_interruption_marker_end_index(non_empty_lines: &[&str]) -> Option<usize> {
+    const INTERRUPTED_MARKER: &str =
+        "conversation interrupted - tell the model what to do differently";
+    const MAX_MARKER_LINES: usize = 4;
+
+    for start in (0..non_empty_lines.len()).rev() {
+        let end_exclusive = (start + MAX_MARKER_LINES).min(non_empty_lines.len());
+        let mut joined = String::new();
+
+        for (end, line) in non_empty_lines
+            .iter()
+            .enumerate()
+            .take(end_exclusive)
+            .skip(start)
+        {
+            if !joined.is_empty() {
+                joined.push(' ');
+            }
+            joined.push_str(codex_interruption_line_body(line));
+
+            if collapse_ascii_whitespace(&joined).contains(INTERRUPTED_MARKER) {
+                return Some(end);
             }
         }
     }
 
-    if codex_has_input_prompt(&non_empty_lines) {
-        return Status::Waiting;
-    }
+    None
+}
 
-    if matches_input_prompt(&non_empty_lines, 10, &["codex>"]) {
-        return Status::Waiting;
-    }
+fn codex_interruption_line_body(line: &str) -> &str {
+    let trimmed = line.trim_start();
+    trimmed
+        .strip_prefix('■')
+        .map(str::trim_start)
+        .unwrap_or(trimmed)
+}
 
-    Status::Idle
+fn collapse_ascii_whitespace(text: &str) -> String {
+    text.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn codex_has_approval_prompt(non_empty_lines: &[&str]) -> bool {
+    let text = non_empty_lines.join("\n");
+    contains_approval_prompt(
+        &text,
+        &[
+            "continue?",
+            "proceed?",
+            "execute?",
+            "run command?",
+            "enter to select",
+            "esc to cancel",
+        ],
+    )
+}
+
+fn codex_cursor_prompt_count(non_empty_lines: &[&str]) -> usize {
+    non_empty_lines
+        .iter()
+        .filter(|line| {
+            let trimmed = line.trim();
+            let Some(rest) = trimmed
+                .strip_prefix("❯")
+                .or_else(|| trimmed.strip_prefix("›"))
+            else {
+                return false;
+            };
+            !rest.trim_start().is_empty()
+        })
+        .count()
 }
 
 fn codex_line_starts_with_activity(line: &str) -> bool {
@@ -494,20 +665,6 @@ fn status_line_starts_with_phrase(line: &str, phrase: &str) -> bool {
     rest.chars()
         .next()
         .is_none_or(|c| c.is_whitespace() || c == '.' || c == '…' || c == ':')
-}
-
-fn codex_has_input_prompt(non_empty_lines: &[&str]) -> bool {
-    non_empty_lines.iter().rev().take(5).any(|line| {
-        let trimmed = line.trim();
-        let Some(rest) = trimmed
-            .strip_prefix("›")
-            .or_else(|| trimmed.strip_prefix("❯"))
-        else {
-            return false;
-        };
-        let rest = rest.trim_start();
-        !rest.starts_with("1.") && !rest.starts_with("2.") && !rest.starts_with("3.")
-    })
 }
 
 /// Cursor agent status is detected via hooks (file-based), same as Claude Code.
@@ -1096,8 +1253,6 @@ mod tests {
             detect_codex_status("execute this action? [y/n]"),
             Status::Waiting
         );
-        assert_eq!(detect_codex_status("ready\ncodex>"), Status::Waiting);
-        assert_eq!(detect_codex_status("done\n>"), Status::Waiting);
     }
 
     #[test]
@@ -1124,10 +1279,46 @@ mod tests {
             detect_codex_status("• Running command examples can be misleading"),
             Status::Idle
         );
+        assert_eq!(detect_codex_status("ready\ncodex>"), Status::Idle);
+        assert_eq!(detect_codex_status("done\n>"), Status::Idle);
+        assert_eq!(
+            detect_codex_status("› Find and fix a bug in @filename"),
+            Status::Idle
+        );
+        assert_eq!(
+            detect_codex_status("› Run /review on my current changes"),
+            Status::Idle
+        );
     }
 
     #[test]
-    fn test_detect_codex_status_waiting_after_interruption() {
+    fn test_detect_codex_status_idle_for_normal_prompt_tails() {
+        let lithuanians = r#"
+• Fixed and staged src/tui/home/render.rs:695. The margin span now uses Span::raw(" "), avoiding clippy::repeat_once.
+
+  Verification passed: cargo clippy --lib -- -D warnings.
+
+
+› Find and fix a bug in @filename
+
+  gpt-5.5 xhigh fast · ~/appsSource/agent-of-empires
+"#;
+
+        let persians = r#"
+• You picked: Banana.
+
+
+› Run /review on my current changes
+
+  gpt-5.5 xhigh fast · ~/appsSource/agent-of-empires
+"#;
+
+        assert_eq!(detect_codex_status(lithuanians), Status::Idle);
+        assert_eq!(detect_codex_status(persians), Status::Idle);
+    }
+
+    #[test]
+    fn test_detect_codex_status_idle_after_interruption() {
         let pane = r#"
   If your API supports an array/operator filter like value_in, then this could be shorter,
   but based on your working example, aliases are the safest GraphQL-native way to query all of them in one request.
@@ -1144,11 +1335,39 @@ mod tests {
   gpt-5.5 medium · ~/tomatom/connector-plus-shopty/shopty
 "#;
 
+        assert_eq!(detect_codex_status(pane), Status::Idle);
+    }
+
+    #[test]
+    fn test_detect_codex_status_waiting_after_stale_interruption_before_approval() {
+        let pane = r#"
+■ Conversation interrupted - tell the model what to do differently. Something went wrong? Hit `/feedback` to report the issue.
+
+› Try again
+
+run this command? (y/n)
+"#;
+
         assert_eq!(detect_codex_status(pane), Status::Waiting);
     }
 
     #[test]
-    fn test_detect_codex_status_waiting_after_completed_turn() {
+    fn test_detect_codex_status_idle_after_stale_interruption_before_prompt() {
+        let pane = r#"
+■ Conversation interrupted - tell the model what to do differently. Something went wrong? Hit `/feedback` to report the issue.
+
+› Try again
+
+• No action taken.
+
+› What next?
+"#;
+
+        assert_eq!(detect_codex_status(pane), Status::Idle);
+    }
+
+    #[test]
+    fn test_detect_codex_status_idle_after_completed_turn() {
         let pane = r#"
   Note: git status still shows MM src/tmux/status_detection.rs, meaning earlier staged changes exist and this latest fix is
   unstaged on top.
@@ -1166,11 +1385,11 @@ mod tests {
   gpt-5.5 high · ~/appsSource/agent-of-empires
 "#;
 
-        assert_eq!(detect_codex_status(pane), Status::Waiting);
+        assert_eq!(detect_codex_status(pane), Status::Idle);
     }
 
     #[test]
-    fn test_detect_codex_status_waiting_with_spinner_examples_in_scrollback() {
+    fn test_detect_codex_status_idle_with_spinner_examples_in_scrollback() {
         let pane = r#"
   tmux capture-pane -p -e -S -50
 
@@ -1189,8 +1408,8 @@ mod tests {
   That logic is in src/tmux/status_detection.rs:344.
 
   If those running signals are not present, it then checks
-  waiting signals like prompts, approvals, numbered choices,
-  or › .... If none match, it falls back to Idle.
+  waiting signals like approvals or numbered choices.
+  If none match, it falls back to Idle.
 
   So this is not OS process-state detection like “is the
   process using CPU.” It is mostly agent UI/state detection
@@ -1204,7 +1423,7 @@ mod tests {
   gpt-5.5 high · ~/appsSource/agent-of-empires
 "#;
 
-        assert_eq!(detect_codex_status(pane), Status::Waiting);
+        assert_eq!(detect_codex_status(pane), Status::Idle);
     }
 
     #[test]
@@ -1372,6 +1591,281 @@ To continue this session, run codex resume 019e270b-5139-7752-ac61-86fe4bb5170c
     3. Maybe
 ";
         assert_eq!(detect_codex_status(pane), Status::Waiting);
+    }
+
+    #[test]
+    fn test_detect_codex_status_running_after_stale_radio_prompt() {
+        let pane = r#"
+  Question 1/1 (1 unanswered)
+  Do you want apple, banana, orange, or something else?
+
+  › 1. Apple (Recommended)  Pick apple for the default simple choice.
+    2. Banana               Pick banana for a second common option.
+    3. Orange               Pick orange for a citrus option.
+    4. None of the above    Optionally, add details in notes (tab).
+
+  tab to add notes | enter to submit answer | esc to interrupt
+
+› Apple
+
+• Working (4s • esc to interrupt)
+"#;
+
+        assert_eq!(detect_codex_status(pane), Status::Running);
+    }
+
+    #[test]
+    fn test_reconcile_codex_hook_status_waiting_for_plan_radio_input() {
+        let pane = r#"
+│                                                    │
+│ model:     gpt-5.5 xhigh   fast   /model to change │
+│ directory: ~/appsSource/agent-of-empires           │
+╰────────────────────────────────────────────────────╯
+
+  Tip: See the Codex keymap documentation for supported actions and examples.
+
+
+› ask me something using codex radio button selection
+
+
+• I tried to open the Codex radio selector, but request_user_input is unavailable in Default mode.
+
+  To show actual radio buttons, switch this session to Plan mode and ask again.
+
+
+› okay i switched to plan mode
+
+
+
+  Question 1/1 (1 unanswered)
+  Do you want apple, banana, orange, or something else?
+
+  › 1. Apple (Recommended)  Pick apple for the default simple choice.
+    2. Banana               Pick banana for a second common option.
+    3. Orange               Pick orange for a citrus option.
+    4. None of the above    Optionally, add details in notes (tab).
+
+  tab to add notes | enter to submit answer | esc to interrupt
+"#;
+
+        assert_eq!(
+            reconcile_codex_hook_status(Status::Running, pane),
+            Status::Waiting
+        );
+    }
+
+    #[test]
+    fn test_reconcile_codex_hook_status_waiting_for_radio_only_input() {
+        let pane = "\
+  › 1. Yes
+    2. No
+    3. Maybe
+";
+
+        assert_eq!(
+            reconcile_codex_hook_status(Status::Running, pane),
+            Status::Waiting
+        );
+    }
+
+    #[test]
+    fn test_reconcile_codex_hook_status_ignores_stale_radio_prompt_before_activity() {
+        let pane = r#"
+  Question 1/1 (1 unanswered)
+  Do you want apple, banana, orange, or something else?
+
+  › 1. Apple (Recommended)  Pick apple for the default simple choice.
+    2. Banana               Pick banana for a second common option.
+    3. Orange               Pick orange for a citrus option.
+    4. None of the above    Optionally, add details in notes (tab).
+
+  tab to add notes | enter to submit answer | esc to interrupt
+
+› Apple
+
+• Working (4s • esc to interrupt)
+"#;
+
+        assert_eq!(
+            reconcile_codex_hook_status(Status::Running, pane),
+            Status::Running
+        );
+    }
+
+    #[test]
+    fn test_reconcile_codex_hook_status_idle_after_cancelled_radio_prompt() {
+        let pane = r#"
+  Question 1/1 (1 unanswered)
+  Do you want apple, banana, orange, or something else?
+
+  › 1. Apple (Recommended)  Pick apple for the default simple choice.
+    2. Banana               Pick banana for a second common option.
+    3. Orange               Pick orange for a citrus option.
+    4. None of the above    Optionally, add details in notes (tab).
+
+  tab to add notes | enter to submit answer | esc to interrupt
+
+
+■ Conversation interrupted - tell the model what to do differently. Something went wrong? Hit `/feedback` to
+report the issue.
+
+
+› Write tests for @filename
+
+  gpt-5.5 xhigh fast · ~/appsSource/agent-of-empires
+"#;
+
+        assert_eq!(
+            reconcile_codex_hook_status(Status::Running, pane),
+            Status::Idle
+        );
+    }
+
+    #[test]
+    fn test_reconcile_codex_hook_status_idle_after_wrapped_esc_interruption() {
+        let pane = r#"
+› something
+
+
+■ Conversation interrupted - tell the model what to
+do differently. Something went wrong? Hit `/feedback` to
+report the issue.
+
+
+› Write tests for @filename
+
+  gpt-5.5 xhigh fast · ~/appsSource/agent-of-empires
+"#;
+
+        assert_eq!(
+            reconcile_codex_hook_status(Status::Running, pane),
+            Status::Idle
+        );
+    }
+
+    #[test]
+    fn test_reconcile_codex_hook_status_idle_after_wrapped_interruption_without_glyph() {
+        let pane = r#"
+› something
+
+
+Conversation interrupted - tell the model what to
+do differently. Something went wrong? Hit `/feedback` to
+report the issue.
+
+
+› Write tests for @filename
+
+  gpt-5.5 xhigh fast · ~/appsSource/agent-of-empires
+"#;
+
+        assert_eq!(
+            reconcile_codex_hook_status(Status::Running, pane),
+            Status::Idle
+        );
+    }
+
+    #[test]
+    fn test_reconcile_codex_hook_status_idle_after_esc_interruption() {
+        let pane = r#"
+╭────────────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.130.0)                         │
+│                                                    │
+│ model:     gpt-5.5 xhigh   fast   /model to change │
+│ directory: ~/appsSource/agent-of-empires           │
+╰────────────────────────────────────────────────────╯
+
+  Tip: Use /rename to rename your threads for easier thread resuming.
+
+
+› something
+
+
+■ Conversation interrupted - tell the model what to do differently. Something went wrong? Hit `/feedback` to
+report the issue.
+
+
+› Write tests for @filename
+
+  gpt-5.5 xhigh fast · ~/appsSource/agent-of-empires
+"#;
+
+        assert_eq!(
+            reconcile_codex_hook_status(Status::Running, pane),
+            Status::Idle
+        );
+    }
+
+    #[test]
+    fn test_reconcile_codex_hook_status_does_not_use_generic_pane_states() {
+        assert_eq!(
+            reconcile_codex_hook_status(Status::Running, "run this command? (y/n)"),
+            Status::Running
+        );
+        assert_eq!(
+            reconcile_codex_hook_status(Status::Running, "› Write tests for @filename"),
+            Status::Running
+        );
+        assert_eq!(
+            reconcile_codex_hook_status(Status::Running, "file saved"),
+            Status::Running
+        );
+    }
+
+    #[test]
+    fn test_reconcile_codex_hook_status_only_overrides_running_hooks() {
+        let pane = "\
+  Question 1/1 (1 unanswered)
+  Pick one
+
+  › 1. Apple
+    2. Banana
+
+  tab to add notes | enter to submit answer | esc to interrupt
+";
+
+        assert_eq!(
+            reconcile_codex_hook_status(Status::Waiting, pane),
+            Status::Waiting
+        );
+        assert_eq!(
+            reconcile_codex_hook_status(Status::Idle, pane),
+            Status::Idle
+        );
+    }
+
+    #[test]
+    fn test_reconcile_codex_hook_status_ignores_stale_interruption_before_activity() {
+        let pane = r#"
+■ Conversation interrupted - tell the model what to do differently. Something went wrong? Hit `/feedback` to
+report the issue.
+
+› Try again
+
+• Working (4s • esc to interrupt)
+"#;
+
+        assert_eq!(
+            reconcile_codex_hook_status(Status::Running, pane),
+            Status::Running
+        );
+    }
+
+    #[test]
+    fn test_reconcile_codex_hook_status_ignores_stale_interruption_before_approval() {
+        let pane = r#"
+■ Conversation interrupted - tell the model what to do differently. Something went wrong? Hit `/feedback` to
+report the issue.
+
+› Try again
+
+run this command? (y/n)
+"#;
+
+        assert_eq!(
+            reconcile_codex_hook_status(Status::Running, pane),
+            Status::Running
+        );
     }
 
     #[test]

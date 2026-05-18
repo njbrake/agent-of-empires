@@ -581,13 +581,36 @@ async fn capture_session(profile: &str, args: CaptureArgs) -> Result<()> {
         (String::new(), "stopped".to_string())
     } else {
         let raw = tmux_session.capture_pane(args.lines)?;
+        let detection_tool = if inst.detect_as.is_empty() {
+            &inst.tool
+        } else {
+            &inst.detect_as
+        };
+        let status = if let Some(hook_status) = crate::hooks::read_hook_status(&inst.id) {
+            if detection_tool == "codex" && hook_status == crate::session::Status::Running {
+                let status_raw;
+                let status_content = if args.lines >= 50 {
+                    raw.as_str()
+                } else {
+                    status_raw = tmux_session
+                        .capture_pane(50)
+                        .unwrap_or_else(|_| raw.clone());
+                    status_raw.as_str()
+                };
+                crate::tmux::reconcile_codex_hook_status(hook_status, status_content)
+            } else {
+                hook_status
+            }
+        } else {
+            tmux_session
+                .detect_status(detection_tool)
+                .unwrap_or_default()
+        };
         let content = if args.strip_ansi {
             crate::tmux::utils::strip_ansi(&raw)
         } else {
             raw
         };
-        let status = crate::hooks::read_hook_status(&inst.id)
-            .unwrap_or_else(|| tmux_session.detect_status(&inst.tool).unwrap_or_default());
         (content, format!("{:?}", status).to_lowercase())
     };
 

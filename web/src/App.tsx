@@ -7,6 +7,7 @@ import { CockpitPrefsProvider } from "./lib/cockpitPrefs";
 import { useWorkspaces } from "./hooks/useWorkspaces";
 import { useRepoGroups } from "./hooks/useRepoGroups";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
+import { useResolvedTheme } from "./hooks/useResolvedTheme";
 import { useDiffFiles } from "./hooks/useDiffFiles";
 import { useDiffComments } from "./hooks/useDiffComments";
 import { SendCommentsDialog } from "./components/diff/comments/SendCommentsDialog";
@@ -73,6 +74,12 @@ import { UpdateBanner } from "./components/UpdateBanner";
 const RIGHT_PANEL_COLLAPSED_KEY = "aoe-right-collapsed";
 
 export default function App() {
+  // Apply the user-selected theme as CSS custom properties on the root
+  // element. Runs once on mount + on settings-driven theme changes.
+  // The pre-React /theme-bootstrap.js (referenced from index.html)
+  // paints the cached theme before hydration; this hook keeps it in
+  // sync with the server's view.
+  useResolvedTheme();
   const [loginRequired, setLoginRequired] = useState<boolean | null>(null);
   const [loginAuthenticated, setLoginAuthenticated] = useState(true);
   const [tokenExpired, setTokenExpired] = useState(false);
@@ -671,6 +678,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
                       key={activeSessionId}
                       sessionId={activeSessionId!}
                       cockpitWorkerState={activeSession.cockpit_worker_state ?? "absent"}
+                      tool={activeSession.tool}
                     />
                   </Suspense>
                 ) : (
@@ -759,11 +767,19 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
   // Pinning to the no-keyboard height combined with the keyboard
   // reservation in TerminalView keeps the layout stable across the
   // keyboard cycle.
+  //
+  // Cockpit substrate doesn't host xterm.js, so the SIGWINCH concern
+  // doesn't apply; leaving the pin on for cockpit traps the composer
+  // below the keyboard on Android Chrome PWA (#1177). Drop the pin when
+  // the active session is cockpit so `h-dvh` plus the viewport meta's
+  // `interactive-widget=resizes-content` shrink the container with the
+  // keyboard and lift the composer back into view.
   const { isMobile, stableViewportHeight } = useMobileKeyboard();
-  const rootStyle =
-    isMobile && stableViewportHeight > 0
-      ? { height: `${stableViewportHeight}px` }
-      : undefined;
+  const pinRootHeight =
+    isMobile && stableViewportHeight > 0 && !activeSession?.cockpit_mode;
+  const rootStyle = pinRootHeight
+    ? { height: `${stableViewportHeight}px` }
+    : undefined;
 
   const cockpitPrefs = useMemo(
     () => ({

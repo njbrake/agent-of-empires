@@ -8,12 +8,18 @@
 //! Public surface is re-exported here so callers keep `crate::tui::styles::*`.
 
 mod palette;
+#[cfg(feature = "serve")]
+mod resolved;
 mod themes;
 
+#[cfg(feature = "serve")]
+pub use resolved::{resolve_theme, ResolvedTheme};
+#[cfg(any(feature = "serve", test))]
+pub use themes::ThemeAppearance;
 pub use themes::{idle_decay_window, Theme};
 
 use std::path::PathBuf;
-use tracing::warn;
+use tracing::{debug, warn};
 
 /// One built-in theme. `source` is the TOML body embedded at compile time
 /// via `include_str!`. Adding a new builtin is: drop `themes/builtin/X.toml`
@@ -134,11 +140,18 @@ fn parse_builtin(builtin: &BuiltinTheme) -> Theme {
 
 pub fn load_theme(name: &str) -> Theme {
     if let Some(builtin) = BUILTIN_THEMES.iter().find(|b| b.name == name) {
+        debug!(theme = name, source = "builtin", "loaded theme");
         return parse_builtin(builtin);
     }
     for (theme_name, path) in discover_custom_themes() {
         if theme_name == name {
             if let Some(theme) = load_custom_theme(&path) {
+                debug!(
+                    theme = name,
+                    source = "custom",
+                    path = %path.display(),
+                    "loaded theme"
+                );
                 return theme;
             }
         }
@@ -283,7 +296,7 @@ mod tests {
         // hex in `themes/builtin/empire.toml`. A future Empire palette
         // tweak that updates the TOML but not the hand-mirrored Default
         // would otherwise leave partial custom TOMLs inheriting stale
-        // colors silently.
+        // colors silently. Per the review on PR #1197.
         let defaulted = Theme::default();
         let from_toml = load_theme("empire");
         assert_eq!(
