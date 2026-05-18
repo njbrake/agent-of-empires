@@ -18,7 +18,7 @@ are first-class but lighter on per-tool polish.
 | OpenCode (SST) | `opencode acp` (native) | `curl -fsSL https://opencode.ai/install \| bash` |
 | Gemini (Google) | `gemini --acp` (native) | `npm install -g @google/gemini-cli` |
 | Vibe (Mistral) | `vibe-acp` (native) | See https://github.com/mistralai/mistral-vibe |
-| Pi (Hermes) | `pi-acp` (adapter) | `npm install -g pi-acp` (plus `@mariozechner/pi-coding-agent`) |
+| Pi (Hermes) | `pi-acp` (adapter) | `npm install -g pi-acp` (plus `@earendil-works/pi-coding-agent`) |
 | aoe-agent | bundled | shipped with `aoe` |
 
 Adding a new ACP-capable agent: see `docs/development/adding-agents.md`,

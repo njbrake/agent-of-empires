@@ -38,7 +38,7 @@ The wizard greys out the cockpit option for tools not in this set.
 | `gemini`   | `gemini --acp` (native, Google)                            | `GEMINI_API_KEY` env var, OAuth via `gemini auth`, or Vertex `GOOGLE_API_KEY` |
 | `codex`    | `codex-acp` (Zed adapter, npm `@zed-industries/codex-acp`) | `OPENAI_API_KEY` env var, or ChatGPT login (local-only) |
 | `vibe`     | `vibe-acp` (native, Mistral)                               | Mistral API key; set up via `vibe` first |
-| `pi`       | `pi-acp` (adapter, requires `@mariozechner/pi-coding-agent`) | `pi-acp --terminal-login` for OAuth, or env vars per provider |
+| `pi`       | `pi-acp` (adapter, requires `@earendil-works/pi-coding-agent`) | `pi-acp --terminal-login` for OAuth, or env vars per provider |
 | `aoe-agent`| Bundled multi-provider agent (Vercel AI SDK 6)             | Whatever provider env vars Vercel AI SDK expects |
 | *aider, cursor, copilot, droid, settl, hermes* | not yet wired into the cockpit registry; fall back to terminal mode |
 
@@ -110,7 +110,7 @@ Configured agents:
 [!! ] opencode  (OpenCode (SST); native ACP via `opencode acp`)
     install: curl -fsSL https://opencode.ai/install | bash  (then `opencode acp`)
 [!! ] pi  (Hermes coding agent (`pi`) via the pi-acp adapter …)
-    install: npm install -g pi-acp  (also requires `npm i -g @mariozechner/pi-coding-agent`)
+    install: npm install -g pi-acp  (also requires `npm i -g @earendil-works/pi-coding-agent`)
 [!! ] vibe  (Mistral Vibe; native ACP via the bundled `vibe-acp` binary)
     install: follow https://github.com/mistralai/mistral-vibe (ships the `vibe-acp` binary)
 
