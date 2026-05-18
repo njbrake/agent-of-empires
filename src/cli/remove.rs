@@ -61,10 +61,7 @@ pub async fn run(profile: &str, args: RemoveArgs) -> Result<()> {
                 .is_some_and(|wt| wt.managed_by_aoe)
                 && (args.delete_branch
                     || (delete_worktree && config.worktree.delete_branch_on_cleanup));
-            let delete_sandbox = inst
-                .sandbox_info
-                .as_ref()
-                .is_some_and(|s| s.enabled)
+            let delete_sandbox = inst.sandbox_info.as_ref().is_some_and(|s| s.enabled)
                 && !args.keep_container
                 && config.sandbox.auto_cleanup;
 
