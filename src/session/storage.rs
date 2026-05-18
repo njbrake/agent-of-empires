@@ -102,7 +102,6 @@ impl Storage {
 
         Ok(())
     }
-
 }
 
 // Workspace ordering is stored at the app-data root, not per-profile:
