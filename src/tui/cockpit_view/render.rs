@@ -164,6 +164,14 @@ fn render_composer(frame: &mut Frame, area: Rect, theme: &Theme, state: &Cockpit
     let inner = block.inner(area);
     frame.render_widget(block, area);
     frame.render_widget(&state.composer, inner);
+    if matches!(state.focus, Focus::Composer) && inner.width > 0 && inner.height > 0 {
+        let cursor = state.composer.screen_cursor();
+        let max_x = inner.x.saturating_add(inner.width.saturating_sub(1));
+        let max_y = inner.y.saturating_add(inner.height.saturating_sub(1));
+        let cursor_x = inner.x.saturating_add(cursor.col as u16).min(max_x);
+        let cursor_y = inner.y.saturating_add(cursor.row as u16).min(max_y);
+        frame.set_cursor_position((cursor_x, cursor_y));
+    }
 }
 
 fn transcript_lines<'a>(

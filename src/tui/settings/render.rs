@@ -11,8 +11,10 @@ use ratatui::{
     Frame,
 };
 use tui_input::Input;
+use unicode_width::UnicodeWidthStr;
 
 use super::{FieldValue, SettingsCategory, SettingsFocus, SettingsScope, SettingsView};
+use crate::tui::components::set_input_cursor_position;
 use crate::tui::styles::Theme;
 
 /// Detect if we're running over SSH
@@ -527,8 +529,11 @@ impl SettingsView {
         input: &Input,
         theme: &Theme,
     ) {
-        let spans = Self::build_cursor_spans(input.value(), input.visual_cursor(), theme);
+        let spans = Self::build_cursor_spans(input.value(), input.cursor(), theme);
         frame.render_widget(Paragraph::new(Line::from(spans)), area);
+        if self.editing_cursor_visible() {
+            set_input_cursor_position(frame, area, 0, input);
+        }
     }
 
     /// Render a list item with prefix and inverse-video cursor
@@ -544,10 +549,17 @@ impl SettingsView {
         let mut spans = vec![Span::styled(prefix.to_string(), value_style)];
         spans.extend(Self::build_cursor_spans(
             input.value(),
-            input.visual_cursor(),
+            input.cursor(),
             theme,
         ));
         frame.render_widget(Paragraph::new(Line::from(spans)), area);
+        if self.editing_cursor_visible() {
+            set_input_cursor_position(frame, area, prefix.width(), input);
+        }
+    }
+
+    fn editing_cursor_visible(&self) -> bool {
+        self.custom_instruction_dialog.is_none() && !self.show_help
     }
 
     fn render_number_field(

@@ -260,7 +260,18 @@ fn truncate_title(s: &str, max: usize) -> String {
     out
 }
 
-pub async fn list_sessions(State(state): State<Arc<AppState>>) -> Json<Vec<SessionResponse>> {
+// Envelope for `GET /api/sessions`. Wraps the sessions list with the
+// user's persisted workspace ordering so the client can render the
+// sidebar in the requested order on the first paint, with no extra
+// round-trip. The order is a list of workspace ids; ids not present
+// fall back to the client's default newest-first ordering. See #1169.
+#[derive(serde::Serialize)]
+pub struct SessionsEnvelope {
+    pub sessions: Vec<SessionResponse>,
+    pub workspace_ordering: Vec<String>,
+}
+
+pub async fn list_sessions(State(state): State<Arc<AppState>>) -> Json<SessionsEnvelope> {
     let instances = state.instances.read().await;
     let claude_fullscreen = crate::claude_settings::read_tui_fullscreen();
     // Snapshot the supervisor's worker lifecycle map once per request
@@ -386,7 +397,144 @@ pub async fn list_sessions(State(state): State<Arc<AppState>>) -> Json<Vec<Sessi
         }
     }
 
-    Json(sessions)
+    let workspace_ordering =
+        merge_workspace_ordering(&sessions, state.read_only).unwrap_or_else(|e| {
+            tracing::error!(target: "http.api.sessions", "Failed to merge workspace ordering: {e}");
+            Vec::new()
+        });
+
+    Json(SessionsEnvelope {
+        sessions,
+        workspace_ordering,
+    })
+}
+
+// Workspace id derivation. Mirrors the client logic in `useWorkspaces.ts`:
+// a session with a branch collapses to `${repoPath}::${branch}`; a
+// branchless session gets its own workspace at `${repoPath}::__session__::${id}`.
+// `repoPath` strips trailing slashes so the server and client compute the
+// same string for the same session row.
+fn workspace_id_for_session(s: &SessionResponse) -> String {
+    let raw = s.main_repo_path.as_deref().unwrap_or(&s.project_path);
+    let repo_path = raw.trim_end_matches('/');
+    match &s.branch {
+        Some(branch) => format!("{repo_path}::{branch}"),
+        None => format!("{repo_path}::__session__::{}", s.id),
+    }
+}
+
+// Prepend any workspace id we haven't seen before to the persisted
+// ordering and return the merged list. Done server-side so concurrent
+// clients (multiple tabs, multiple devices) converge on a single
+// ordering without each racing to PUT their own prepend. In read-only
+// mode we still compute the merge for the response, but we skip the
+// disk write.
+fn merge_workspace_ordering(
+    sessions: &[SessionResponse],
+    read_only: bool,
+) -> anyhow::Result<Vec<String>> {
+    let mut ordering = crate::session::load_workspace_ordering()
+        .map(|w| w.order)
+        .unwrap_or_default();
+    let known: std::collections::HashSet<&str> = ordering.iter().map(String::as_str).collect();
+
+    let mut seen_unknown: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut new_ids: Vec<String> = Vec::new();
+    for s in sessions {
+        let id = workspace_id_for_session(s);
+        if known.contains(id.as_str()) {
+            continue;
+        }
+        if seen_unknown.insert(id.clone()) {
+            new_ids.push(id);
+        }
+    }
+
+    if new_ids.is_empty() {
+        return Ok(ordering);
+    }
+
+    // Newest first: `instances` is in creation order, so reverse the
+    // collected unknowns and prepend.
+    new_ids.reverse();
+    new_ids.append(&mut ordering);
+    let merged = new_ids;
+
+    if !read_only {
+        crate::session::save_workspace_ordering(&crate::session::WorkspaceOrdering {
+            order: merged.clone(),
+        })?;
+    }
+    Ok(merged)
+}
+
+// --- Workspace ordering ---
+//
+// `PUT /api/workspace-ordering` overwrites the persisted workspace order
+// with a fresh client-supplied list. Workspaces are a client construct
+// (a group of sessions keyed on `repoPath::branch`), so the server
+// treats the entries as opaque strings. New workspaces are folded in
+// server-side by `merge_workspace_ordering` on every `GET /api/sessions`,
+// so the file always covers every observed workspace; this PUT just
+// reorders existing entries. Persisted globally (not per-profile)
+// because the sidebar shows sessions across all profiles. See #1169.
+
+// Caps on the inbound body. The order list is one entry per workspace
+// row and workspaces map 1:1 to sessions in the worst case, so 4096 is
+// comfortably above any realistic ceiling. Per-entry cap covers a
+// long repo path plus a long branch name; ids longer than this can't
+// come from the client's workspace id derivation in any sane setup.
+const MAX_ORDER_ENTRIES: usize = 4096;
+const MAX_ORDER_ENTRY_LEN: usize = 1024;
+
+#[derive(Deserialize)]
+pub struct UpdateWorkspaceOrderingBody {
+    pub order: Vec<String>,
+}
+
+pub async fn update_workspace_ordering(
+    State(state): State<Arc<AppState>>,
+    Json(body): Json<UpdateWorkspaceOrderingBody>,
+) -> impl IntoResponse {
+    if state.read_only {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(serde_json::json!({
+                "error": "read_only",
+                "message": "Server is in read-only mode"
+            })),
+        );
+    }
+
+    if body.order.len() > MAX_ORDER_ENTRIES {
+        return (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            Json(serde_json::json!({
+                "message": format!("order has {} entries, max is {}", body.order.len(), MAX_ORDER_ENTRIES)
+            })),
+        );
+    }
+    if let Some(bad) = body.order.iter().find(|e| e.len() > MAX_ORDER_ENTRY_LEN) {
+        return (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            Json(serde_json::json!({
+                "message": format!("order entry is {} bytes, max is {}", bad.len(), MAX_ORDER_ENTRY_LEN)
+            })),
+        );
+    }
+
+    let ordering = crate::session::WorkspaceOrdering { order: body.order };
+    if let Err(e) = crate::session::save_workspace_ordering(&ordering) {
+        tracing::error!(target: "http.api.sessions", "Failed to persist workspace ordering: {e}");
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "message": "Failed to persist ordering" })),
+        );
+    }
+    (
+        StatusCode::OK,
+        Json(serde_json::json!({ "order": ordering.order })),
+    )
 }
 
 // --- Rename session ---
@@ -695,6 +843,7 @@ pub async fn delete_session(
             delete_branch: body.delete_branch,
             delete_sandbox: body.delete_sandbox,
             force_delete: body.force_delete,
+            detach_hooks: true,
         })
     })
     .await;
@@ -726,7 +875,11 @@ pub async fn delete_session(
         }
         Ok(result) => {
             // Deletion had errors; set status to Error
-            let error_msg = result.error.unwrap_or_else(|| "Unknown error".to_string());
+            let error_msg = if result.errors.is_empty() {
+                "Unknown error".to_string()
+            } else {
+                result.errors.join("; ")
+            };
             {
                 let mut instances = state.instances.write().await;
                 if let Some(inst) = instances.iter_mut().find(|i| i.id == id) {
@@ -1017,6 +1170,7 @@ pub async fn create_session(
                     instance.project_path.clone(),
                     instance.cockpit_acp_session_id.clone(),
                     instance.source_profile.clone(),
+                    instance.yolo_mode,
                 ))
             } else {
                 None
@@ -1034,6 +1188,7 @@ pub async fn create_session(
                 project_path,
                 stored_acp_session_id,
                 source_profile,
+                yolo_mode,
             )) = cockpit_spawn_target
             {
                 let agent = state
@@ -1083,6 +1238,7 @@ pub async fn create_session(
                             stored_acp_session_id,
                             sandbox_info,
                             source_profile: source_profile_for_spawn,
+                            yolo_mode,
                         })
                         .await
                     {
@@ -1154,6 +1310,24 @@ fn apply_post_restart_sync(live: &mut Instance, started: &Instance) {
     live.last_error = None;
     live.agent_session_id = started.agent_session_id.clone();
     live.last_start_time = started.last_start_time;
+    live.retroactive_capture_excludes = started.retroactive_capture_excludes.clone();
+}
+
+/// Narrow sibling of [`apply_post_restart_sync`] that propagates only the
+/// fields the resume-fallback cascade is responsible for: the post-cascade
+/// `agent_session_id` (either `None` after a bailed Tier-1 cleanup, or a
+/// fresh UUID acquired by Tier-2's `start_with_size_opts` ->
+/// `acquire_session_id`) and the updated `retroactive_capture_excludes`.
+///
+/// Intended for error paths where the cascade may have run but the caller
+/// does not want to touch user-visible status fields. `NotRunning` is the
+/// canonical use case: a recoverable transient state where overwriting
+/// `live.status` with `started.status` (typically `Starting` from the
+/// post-cascade `finalize_launch`) would briefly mis-paint a broken pane
+/// as `Starting` until the 2s status poll loop reconciles.
+fn apply_cascade_state_sync(live: &mut Instance, started: &Instance) {
+    live.agent_session_id = started.agent_session_id.clone();
+    live.retroactive_capture_excludes = started.retroactive_capture_excludes.clone();
 }
 
 /// Ensure the main agent tmux session is alive, restarting it if dead.
@@ -1169,6 +1343,20 @@ fn apply_post_restart_sync(live: &mut Instance, started: &Instance) {
 ///
 /// Read-only: in read-only mode, the endpoint may report `alive` but will
 /// refuse to kill+restart a session. Returns 403 when a restart is needed.
+///
+/// Latency: bounded by `RESUME_PROBE_MAX` (~3s) per probe.
+///   * No-op (pane alive): inspect-only, ~tmux RTT.
+///   * Healthy resume: Tier-1 probe only, returns after the
+///     `RESUME_PROBE_POST_SHELL_GRACE` (~2s) shortcut. Shell-wrapper
+///     overrides charitably burn the full ~3s instead (see
+///     `Instance::probe_settle`).
+///   * Cascade fires (Tier-1 detects a dead pane): Tier-1 returns Dead
+///     fast (`pane_dead`/`!exists` is unambiguous), then `kill_clean`
+///     (~100ms macOS grace) + Tier-2 tmux spawn + up to another
+///     `RESUME_PROBE_MAX`.
+///
+/// HTTP clients should budget ~6-7s worst-case for the full Tier-1 +
+/// Tier-2 cascade and configure timeouts accordingly.
 pub async fn ensure_session(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -1268,34 +1456,59 @@ pub async fn ensure_session(
         }
     }
 
-    let restart_result = tokio::task::spawn_blocking(move || -> anyhow::Result<Instance> {
-        let tmux_session = instance.tmux_session()?;
-        if tmux_session.exists() {
-            let _ = tmux_session.kill();
-        }
-        let mut inst = instance;
-        inst.start_with_size_opts(None, false)?;
-        Ok(inst)
-    })
+    let restart_result = tokio::task::spawn_blocking(
+        move || -> Result<(Instance, crate::session::StartOutcome), Box<(Instance, anyhow::Error)>> {
+            let mut inst = instance;
+            // Use kill_clean (vs bare tmux kill) so a remain-on-exit dead
+            // pane is respawned-then-killed; bare kill races against the
+            // session cache on macOS and can leave the corpse pane behind,
+            // which then trips the next start_with_resume_fallback's
+            // `pane_was_preexisting` short-circuit. See `Instance::kill_clean`.
+            if let Err(e) = inst.kill_clean() {
+                return Err(Box::new((inst, e)));
+            }
+            // Surface the moved Instance on the Err arm so the caller can
+            // sync the cascade-cleared `agent_session_id` and updated
+            // `retroactive_capture_excludes` back to live state. Otherwise
+            // the live entry retains the stale sid in memory while disk has
+            // already been cleared, and subsequent calls within the
+            // `status_poll_loop` reload window (~2s) keep re-attempting
+            // resume with the bad sid. See `apply_post_restart_sync`.
+            match inst.start_with_resume_fallback(None, false) {
+                Ok(outcome) => Ok((inst, outcome)),
+                Err(e) => Err(Box::new((inst, e))),
+            }
+        },
+    )
     .await;
 
     match restart_result {
-        Ok(Ok(started)) => {
+        Ok(Ok((started, outcome))) => {
             let mut instances = state.instances.write().await;
             if let Some(inst) = instances.iter_mut().find(|i| i.id == id) {
                 apply_post_restart_sync(inst, &started);
             }
-            (
-                StatusCode::OK,
-                Json(serde_json::json!({"status": "restarted"})),
-            )
-                .into_response()
+            let resume_outcome = match &outcome {
+                crate::session::StartOutcome::Resumed => "resumed",
+                crate::session::StartOutcome::Restarted { .. } => "restarted",
+                crate::session::StartOutcome::Fresh => "fresh",
+            };
+            let mut body = serde_json::json!({
+                "status": "restarted",
+                "resume_outcome": resume_outcome,
+            });
+            if let crate::session::StartOutcome::Restarted { stale_sid } = &outcome {
+                body["stale_session_id"] = serde_json::Value::String(stale_sid.clone());
+            }
+            (StatusCode::OK, Json(body)).into_response()
         }
-        Ok(Err(e)) => {
+        Ok(Err(boxed)) => {
+            let (started, e) = *boxed;
             let msg = e.to_string();
             tracing::warn!(target: "http.api.sessions", "ensure_session restart failed for {id}: {msg}");
             let mut instances = state.instances.write().await;
             if let Some(inst) = instances.iter_mut().find(|i| i.id == id) {
+                apply_post_restart_sync(inst, &started);
                 inst.status = crate::session::Status::Error;
                 inst.last_error = Some(msg.clone());
             }
@@ -2496,6 +2709,9 @@ enum SendKeysError {
     Tmux(anyhow::Error),
 }
 
+type SendKeysResult =
+    Result<(EnsureReadyOutcome, Instance), Box<(Instance, EnsureReadyOutcome, SendKeysError)>>;
+
 pub async fn send_message(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -2537,32 +2753,66 @@ pub async fn send_message(
     let tool = instance.tool.clone();
     let message = req.message;
     let revive = req.revive;
-    let send_result = tokio::task::spawn_blocking(
-        move || -> Result<(EnsureReadyOutcome, Instance), SendKeysError> {
-            // Revive the pane before sending. Without this, a send to a dead
-            // pane silently writes keystrokes to a corpse with no agent.
-            // Skipped when the caller opts out via `revive: false`.
-            let mut inst_owned = instance;
-            let outcome = if revive {
-                inst_owned.ensure_pane_ready().map_err(|e| match e {
-                    EnsureReadyError::Transient(s) => SendKeysError::Transient(s),
-                    EnsureReadyError::CockpitMode => SendKeysError::CockpitMode,
-                    EnsureReadyError::Tmux(e) => SendKeysError::Tmux(e),
-                })?
-            } else {
-                EnsureReadyOutcome::AlreadyAlive
-            };
-            let tmux_session = inst_owned.tmux_session().map_err(SendKeysError::Tmux)?;
-            if !tmux_session.exists() {
-                return Err(SendKeysError::NotRunning);
+    let send_result = tokio::task::spawn_blocking(move || -> SendKeysResult {
+        // Revive the pane before sending. Without this, a send to a dead
+        // pane silently writes keystrokes to a corpse with no agent.
+        // Skipped when the caller opts out via `revive: false`.
+        //
+        // The closure surfaces both `inst_owned` AND the
+        // `EnsureReadyOutcome` on the Err arm so the caller can sync
+        // the post-cascade `agent_session_id` (None after Tier-1
+        // cleanup, or the fresh UUID acquired by Tier-2) and the
+        // updated `retroactive_capture_excludes` back to live state
+        // regardless of which post-cascade failure path fires. The
+        // outcome lets the caller distinguish cascade-fired
+        // (`Respawned`/`Started`) from the no-op `AlreadyAlive` path
+        // so a sync only happens when there's actual cascade state to
+        // propagate; this avoids clobbering live `last_error` on the
+        // `revive=false + NotRunning` path where `started` is
+        // unmutated.
+        let mut inst_owned = instance;
+        let outcome = if revive {
+            match inst_owned.ensure_pane_ready() {
+                Ok(o) => o,
+                Err(e) => {
+                    let mapped = match e {
+                        EnsureReadyError::Transient(s) => SendKeysError::Transient(s),
+                        EnsureReadyError::CockpitMode => SendKeysError::CockpitMode,
+                        EnsureReadyError::Tmux(e) => SendKeysError::Tmux(e),
+                    };
+                    // ensure_pane_ready did not mutate user-visible
+                    // state via the outcome path. Tag as AlreadyAlive
+                    // so the outer match's `did_work` flag stays
+                    // false. `EnsureReadyError::Tmux` may be either
+                    // pre-cascade (tmux_session() / start_with_size
+                    // subprocess failure: `inst_owned` unmutated) or
+                    // post-cascade (Tier-2 bail: mutations committed).
+                    // The Tmux outer arm syncs unconditionally and
+                    // covers both shapes; the others (Transient /
+                    // CockpitMode) bail before any mutation.
+                    return Err(Box::new((
+                        inst_owned,
+                        EnsureReadyOutcome::AlreadyAlive,
+                        mapped,
+                    )));
+                }
             }
-            let delay = crate::agents::send_keys_enter_delay(&tool);
-            tmux_session
-                .send_keys_with_delay(&message, delay)
-                .map_err(SendKeysError::Tmux)?;
-            Ok((outcome, inst_owned))
-        },
-    )
+        } else {
+            EnsureReadyOutcome::AlreadyAlive
+        };
+        let tmux_session = match inst_owned.tmux_session() {
+            Ok(s) => s,
+            Err(e) => return Err(Box::new((inst_owned, outcome, SendKeysError::Tmux(e)))),
+        };
+        if !tmux_session.exists() {
+            return Err(Box::new((inst_owned, outcome, SendKeysError::NotRunning)));
+        }
+        let delay = crate::agents::send_keys_enter_delay(&tool);
+        if let Err(e) = tmux_session.send_keys_with_delay(&message, delay) {
+            return Err(Box::new((inst_owned, outcome, SendKeysError::Tmux(e))));
+        }
+        Ok((outcome, inst_owned))
+    })
     .await;
 
     match send_result {
@@ -2602,33 +2852,94 @@ pub async fn send_message(
                     }
                 }
             });
-            (StatusCode::OK, Json(serde_json::json!({"sent": true}))).into_response()
+            let mut body = serde_json::json!({"sent": true});
+            let stale_sid = match &outcome {
+                EnsureReadyOutcome::Respawned {
+                    stale_sid: Some(sid),
+                }
+                | EnsureReadyOutcome::Started {
+                    stale_sid: Some(sid),
+                } => Some(sid.clone()),
+                _ => None,
+            };
+            if let Some(sid) = stale_sid {
+                body["stale_session_id"] = serde_json::Value::String(sid);
+            }
+            (StatusCode::OK, Json(body)).into_response()
         }
-        Ok(Err(SendKeysError::NotRunning)) => (
-            StatusCode::CONFLICT,
-            Json(serde_json::json!({"error": "session_not_running"})),
-        )
-            .into_response(),
-        Ok(Err(SendKeysError::Transient(status))) => (
-            StatusCode::CONFLICT,
-            Json(serde_json::json!({
-                "error": "session_transient",
-                "status": format!("{status:?}"),
-            })),
-        )
-            .into_response(),
-        Ok(Err(SendKeysError::CockpitMode)) => (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({"error": "cockpit_mode_unsupported"})),
-        )
-            .into_response(),
-        Ok(Err(SendKeysError::Tmux(e))) => {
-            tracing::error!(target: "http.api.sessions", "send_message: tmux error for {id}: {e}");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": "tmux_error"})),
-            )
-                .into_response()
+        Ok(Err(boxed)) => {
+            let (started, outcome, send_err) = *boxed;
+            // ensure_pane_ready did mutate state when the outcome is
+            // anything other than AlreadyAlive. The cascade itself only
+            // runs in `Respawned { stale_sid: Some(_) }`, but `Started`
+            // and `Respawned { stale_sid: None }` also touch fields the
+            // live entry needs to reflect (fresh sid from acquire,
+            // last_start_time, etc.). Sync only when work happened.
+            let did_work = !matches!(outcome, EnsureReadyOutcome::AlreadyAlive);
+            match send_err {
+                SendKeysError::NotRunning => {
+                    // External kill or remain-on-exit-off Tier-2 crash can
+                    // race ensure_pane_ready's Alive decision against the
+                    // tmux_session.exists() check. Propagate the
+                    // post-cascade agent_session_id (fresh UUID acquired
+                    // in place of the stale, or None for Tier-1 cleanup)
+                    // and the updated excludes when applicable so the
+                    // next call won't orphan or re-attempt resume with
+                    // the bad sid; use the narrow sync helper to leave
+                    // status and last_error untouched (NotRunning is
+                    // recoverable; `started.status = Starting` from
+                    // finalize_launch would briefly mis-paint a broken
+                    // pane).
+                    if did_work {
+                        let mut instances = state.instances.write().await;
+                        if let Some(i) = instances.iter_mut().find(|i| i.id == id) {
+                            apply_cascade_state_sync(i, &started);
+                        }
+                    }
+                    (
+                        StatusCode::CONFLICT,
+                        Json(serde_json::json!({"error": "session_not_running"})),
+                    )
+                        .into_response()
+                }
+                SendKeysError::Transient(status) => (
+                    StatusCode::CONFLICT,
+                    Json(serde_json::json!({
+                        "error": "session_transient",
+                        "status": format!("{status:?}"),
+                    })),
+                )
+                    .into_response(),
+                SendKeysError::CockpitMode => (
+                    StatusCode::BAD_REQUEST,
+                    Json(serde_json::json!({"error": "cockpit_mode_unsupported"})),
+                )
+                    .into_response(),
+                SendKeysError::Tmux(e) => {
+                    tracing::error!(target: "http.api.sessions", "send_message: tmux error for {id}: {e}");
+                    let msg = e.to_string();
+                    // Sync cascade-mutated fields back to live state. Mirror
+                    // `ensure_session`'s Err arm: full sync, then override
+                    // `status` and `last_error` so observers don't see
+                    // `Status::Starting` (set by `finalize_launch` before
+                    // Tier-2 bail) on a broken session. Tmux Err is the
+                    // catch-all for both pre-cascade tmux failures (where
+                    // `started` is unmutated and the sync is a no-op) and
+                    // post-cascade Tier-2 bails (where the sync propagates
+                    // the cleared sid + updated excludes).
+                    let mut instances = state.instances.write().await;
+                    if let Some(i) = instances.iter_mut().find(|i| i.id == id) {
+                        apply_post_restart_sync(i, &started);
+                        i.status = crate::session::Status::Error;
+                        i.last_error = Some(msg);
+                    }
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({"error": "tmux_error"})),
+                    )
+                        .into_response()
+                }
+            }
         }
         Err(e) => {
             tracing::error!(target: "http.api.sessions", "send_message: blocking task panicked for {id}: {e}");
@@ -2741,6 +3052,188 @@ pub async fn read_output(
             )
                 .into_response()
         }
+    }
+}
+
+#[cfg(test)]
+mod workspace_ordering_tests {
+    use super::*;
+    use serial_test::serial;
+    use tempfile::tempdir;
+
+    fn setup_test_home(temp: &std::path::Path) {
+        std::env::set_var("HOME", temp);
+        #[cfg(target_os = "linux")]
+        std::env::set_var("XDG_CONFIG_HOME", temp.join(".config"));
+    }
+
+    fn mock_response(id: &str, project_path: &str, branch: Option<&str>) -> SessionResponse {
+        SessionResponse {
+            id: id.to_string(),
+            title: id.to_string(),
+            project_path: project_path.to_string(),
+            group_path: String::new(),
+            tool: "claude".to_string(),
+            status: "Idle".to_string(),
+            yolo_mode: false,
+            created_at: "2025-01-01T00:00:00Z".to_string(),
+            last_accessed_at: None,
+            idle_entered_at: None,
+            last_error: None,
+            branch: branch.map(str::to_string),
+            main_repo_path: None,
+            base_branch: None,
+            base_branch_override: None,
+            is_sandboxed: false,
+            has_managed_worktree: false,
+            has_terminal: false,
+            profile: "default".to_string(),
+            cleanup_defaults: CleanupDefaults {
+                delete_worktree: false,
+                delete_branch: false,
+                delete_sandbox: false,
+            },
+            remote_owner: None,
+            notify_on_waiting: None,
+            notify_on_idle: None,
+            notify_on_error: None,
+            #[cfg(feature = "serve")]
+            cockpit_mode: false,
+            #[cfg(feature = "serve")]
+            cockpit_worker_state: crate::cockpit::supervisor::CockpitWorkerState::Absent,
+            claude_fullscreen: false,
+            workspace_repos: Vec::new(),
+            warnings: Vec::new(),
+            plan_summary: None,
+            next_wakeup_at: None,
+            next_wakeup_reason: None,
+        }
+    }
+
+    #[test]
+    fn id_uses_branch_when_present() {
+        let r = mock_response("s1", "/tmp/repo", Some("feature/x"));
+        assert_eq!(workspace_id_for_session(&r), "/tmp/repo::feature/x");
+    }
+
+    #[test]
+    fn id_falls_back_to_session_id_when_branchless() {
+        let r = mock_response("abc123", "/tmp/repo", None);
+        assert_eq!(
+            workspace_id_for_session(&r),
+            "/tmp/repo::__session__::abc123"
+        );
+    }
+
+    #[test]
+    fn id_strips_trailing_slash() {
+        // The client's `useWorkspaces.normalizePath` strips trailing
+        // slashes. Server must match so the merged ordering keys line up.
+        let r = mock_response("s1", "/tmp/repo/", Some("main"));
+        assert_eq!(workspace_id_for_session(&r), "/tmp/repo::main");
+    }
+
+    #[test]
+    fn id_prefers_main_repo_path_over_project_path() {
+        let mut r = mock_response("s1", "/tmp/worktree", Some("main"));
+        r.main_repo_path = Some("/tmp/repo".to_string());
+        assert_eq!(workspace_id_for_session(&r), "/tmp/repo::main");
+    }
+
+    #[test]
+    #[serial]
+    fn merge_prepends_unseen_newest_first() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        setup_test_home(temp.path());
+
+        // Persisted ordering already contains `b`. Sessions come in
+        // creation order (oldest first) `[b, a, c]`; `a` and `c` are
+        // unseen and should land at the top in newest-first order: `[c, a, b]`.
+        crate::session::save_workspace_ordering(&crate::session::WorkspaceOrdering {
+            order: vec!["/tmp/repo::b".to_string()],
+        })?;
+
+        let sessions = vec![
+            mock_response("sb", "/tmp/repo", Some("b")),
+            mock_response("sa", "/tmp/repo", Some("a")),
+            mock_response("sc", "/tmp/repo", Some("c")),
+        ];
+
+        let merged = merge_workspace_ordering(&sessions, /* read_only */ false)?;
+        assert_eq!(
+            merged,
+            vec![
+                "/tmp/repo::c".to_string(),
+                "/tmp/repo::a".to_string(),
+                "/tmp/repo::b".to_string(),
+            ]
+        );
+
+        // And the merge was persisted.
+        let on_disk = crate::session::load_workspace_ordering()?;
+        assert_eq!(on_disk.order, merged);
+
+        Ok(())
+    }
+
+    #[test]
+    #[serial]
+    fn merge_dedupes_within_a_single_request() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        setup_test_home(temp.path());
+
+        // Two sessions on the same workspace (rare but legal: multiple
+        // agents in one worktree). The workspace id appears once.
+        let sessions = vec![
+            mock_response("sa1", "/tmp/repo", Some("main")),
+            mock_response("sa2", "/tmp/repo", Some("main")),
+        ];
+
+        let merged = merge_workspace_ordering(&sessions, false)?;
+        assert_eq!(merged, vec!["/tmp/repo::main".to_string()]);
+        Ok(())
+    }
+
+    #[test]
+    #[serial]
+    fn merge_no_op_when_all_known() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        setup_test_home(temp.path());
+
+        crate::session::save_workspace_ordering(&crate::session::WorkspaceOrdering {
+            order: vec!["/tmp/repo::a".to_string(), "/tmp/repo::b".to_string()],
+        })?;
+
+        let sessions = vec![
+            mock_response("sa", "/tmp/repo", Some("a")),
+            mock_response("sb", "/tmp/repo", Some("b")),
+        ];
+
+        let merged = merge_workspace_ordering(&sessions, false)?;
+        assert_eq!(
+            merged,
+            vec!["/tmp/repo::a".to_string(), "/tmp/repo::b".to_string()]
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[serial]
+    fn merge_read_only_returns_merged_but_does_not_write() -> anyhow::Result<()> {
+        let temp = tempdir()?;
+        setup_test_home(temp.path());
+
+        // Empty starting state. Read-only request observes a new
+        // workspace; the response includes it but disk is untouched.
+        let sessions = vec![mock_response("sa", "/tmp/repo", Some("a"))];
+
+        let merged = merge_workspace_ordering(&sessions, /* read_only */ true)?;
+        assert_eq!(merged, vec!["/tmp/repo::a".to_string()]);
+
+        let on_disk = crate::session::load_workspace_ordering()?;
+        assert!(on_disk.order.is_empty(), "read-only path must not persist");
+
+        Ok(())
     }
 }
 

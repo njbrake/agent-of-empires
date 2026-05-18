@@ -87,6 +87,7 @@ impl HomeView {
                     delete_branch: options.delete_branch,
                     delete_sandbox: options.delete_sandbox,
                     force_delete: options.force_delete,
+                    detach_hooks: true,
                 };
                 self.deletion_poller.request_deletion(request);
             }
@@ -185,6 +186,7 @@ impl HomeView {
                         delete_branch,
                         delete_sandbox,
                         force_delete: options.force_delete_worktrees,
+                        detach_hooks: true,
                     };
                     self.deletion_poller.request_deletion(request);
                 }

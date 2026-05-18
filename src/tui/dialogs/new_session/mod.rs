@@ -1403,13 +1403,13 @@ impl NewSessionDialog {
                 && key.modifiers == KeyModifiers::NONE
             {
                 if let Some(ref input) = self.workspace_repo_editing_input {
-                    let cursor = input.visual_cursor();
+                    let cursor = input.cursor();
                     let char_len = input.value().chars().count();
                     if cursor >= char_len {
                         if let Some(ghost) = self.workspace_repo_ghost.take() {
                             if let Some(ref mut input) = self.workspace_repo_editing_input {
                                 let value = input.value().to_string();
-                                let cursor_char = input.visual_cursor().min(value.chars().count());
+                                let cursor_char = input.cursor().min(value.chars().count());
                                 if ghost.input_snapshot == value
                                     && ghost.cursor_snapshot == cursor_char
                                 {
