@@ -44,13 +44,13 @@ All settings below can also be edited from the TUI settings screen (press `s` or
 
 ```toml
 [theme]
-name = "empire"   # empire, phosphor, tokyo-night-storm, catppuccin-latte, dracula, rose-pine
+name = "default"   # default, empire, phosphor, tokyo-night-storm, catppuccin-latte, dracula, rose-pine
 color_mode = "truecolor"   # truecolor | palette (TUI only)
 ```
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `name` | `"empire"` | Color theme. Applies to **both the TUI and the web dashboard**. Available builtins: `empire` (warm navy/amber), `phosphor` (green), `tokyo-night-storm` (dark blue/purple), `catppuccin-latte` (light pastel), `dracula` (dark purple/pink), `rose-pine` (dark muted purple/pink). Custom TOML themes in `~/.agent-of-empires/themes/*.toml` also appear in the picker. |
+| `name` | `"default"` | Color theme. Applies to **both the TUI and the web dashboard**. Available builtins: `default` (neutral zinc/amber), `empire` (warm navy/copper), `phosphor` (green), `tokyo-night-storm` (dark blue/purple), `catppuccin-latte` (light pastel), `dracula` (dark purple/pink), `rose-pine` (dark muted purple/pink). Custom TOML themes in `~/.agent-of-empires/themes/*.toml` also appear in the picker. An empty `name` resolves to `default`. |
 | `color_mode` | `"truecolor"` | TUI only. `palette` downsamples to xterm-256 for transports that mangle 24-bit RGB (e.g. some `mosh` setups). The web dashboard always renders truecolor. |
 
 ### Builtin themes
@@ -73,7 +73,7 @@ aoe theme list                      # show all available themes
 aoe theme dir                       # print the custom themes directory
 ```
 
-The schema is flat; every field is optional and missing fields fall back to Empire's defaults. The 24 color fields cover background, borders, text, status semantics, diff colors, branch/sandbox chips, and accent. Add the optional `appearance` and `[syntax]` table to control the web surface.
+The schema is flat; every field is optional. Missing fields in a partial custom TOML fall back to Empire's hex values (the canonical baseline `Theme` struct defaults); fully unknown theme names at lookup time fall back to the `default` builtin. The 24 color fields cover background, borders, text, status semantics, diff colors, branch/sandbox chips, and accent. Add the optional `appearance` and `[syntax]` table to control the web surface.
 
 ## Session
 
