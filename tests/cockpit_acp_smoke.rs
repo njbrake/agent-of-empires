@@ -406,3 +406,72 @@ async fn shim_agent_round_trips_terminal() {
 // End-to-end coverage of the spawn path itself still wants a real
 // `aoe` binary; that test belongs in `tests/e2e/` and is tracked as
 // follow-up work.
+
+/// set_mode round-trip: cockpit dispatches `session/set_mode` to the
+/// shim, observes a synthetic `CurrentModeChanged` event with the
+/// requested id. Covers the cockpit-side wiring that the wizard's
+/// `yolo_mode_default = true` (#1142) and the post-`session/new` bypass
+/// in `Supervisor::spawn` depend on.
+#[tokio::test]
+async fn shim_agent_set_mode_emits_current_mode_changed() {
+    if !node_available() {
+        eprintln!("skipping: node not on PATH");
+        return;
+    }
+    let shim = shim_path();
+    if !shim.exists() {
+        eprintln!("skipping: shim missing at {}", shim.display());
+        return;
+    }
+
+    let cwd = std::env::temp_dir();
+    let config = SpawnConfig {
+        spec: AgentSpec {
+            command: "node".into(),
+            args: vec![shim.to_string_lossy().to_string()],
+            description: "test shim".into(),
+            env_allowlist: None,
+        },
+        cwd,
+        additional_dirs: vec![],
+        provider_env: vec![],
+        socket_path: None,
+        stored_acp_session_id: None,
+        sandbox_info: None,
+        source_profile: None,
+    };
+
+    let mut client = AcpClient::spawn(config, CockpitSessionId("set-mode".into()))
+        .await
+        .expect("spawn shim agent");
+
+    client
+        .set_mode("bypassPermissions")
+        .await
+        .expect("set_mode dispatch through cmd_tx");
+
+    // CurrentModeChanged is emitted by the cockpit connection loop after
+    // session/set_mode succeeds, not by the shim's response payload (the
+    // shim's setSessionMode returns {}). We drain events with a short
+    // deadline since no prompt is in flight; the only event we expect
+    // is the synthesized one.
+    let mut saw_change = false;
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while std::time::Instant::now() < deadline {
+        match tokio::time::timeout(Duration::from_millis(500), client.next_event()).await {
+            Ok(Some(Event::CurrentModeChanged { current_mode_id })) => {
+                assert_eq!(current_mode_id, "bypassPermissions");
+                saw_change = true;
+                break;
+            }
+            Ok(Some(_)) => continue,
+            Ok(None) | Err(_) => continue,
+        }
+    }
+
+    let _ = client.shutdown().await;
+    assert!(
+        saw_change,
+        "expected CurrentModeChanged(bypassPermissions) after set_mode"
+    );
+}
