@@ -1,16 +1,21 @@
 //! Session storage - JSON file persistence
 
-use anyhow::Result;
+use anyhow::{anyhow, Result};
 use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use super::{get_profile_dir, Group, GroupTree, Instance, DEFAULT_PROFILE};
 
+/// Write `content` to `path` atomically (temp file + fsync + rename + dir fsync).
+/// Existing perms are preserved; on a fresh file the result is tempfile's 0o600 default.
 pub(crate) fn atomic_write(path: &Path, content: &[u8]) -> Result<()> {
-    let dir = path
-        .parent()
-        .expect("atomic_write requires a path with a parent directory");
+    let dir = path.parent().ok_or_else(|| {
+        anyhow!(
+            "atomic_write needs a path with a parent: {}",
+            path.display()
+        )
+    })?;
     let existing_perms = fs::metadata(path).ok().map(|m| m.permissions());
     let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
     tmp.write_all(content)?;
@@ -18,6 +23,10 @@ pub(crate) fn atomic_write(path: &Path, content: &[u8]) -> Result<()> {
     let file = tmp.persist(path)?;
     if let Some(perms) = existing_perms {
         file.set_permissions(perms)?;
+    }
+    // Best-effort dir fsync so the rename itself survives power loss.
+    if let Ok(dir_file) = fs::File::open(dir) {
+        let _ = dir_file.sync_all();
     }
     Ok(())
 }
