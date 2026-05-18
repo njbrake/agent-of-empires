@@ -16,7 +16,6 @@ pub mod rate_limit;
 pub mod tunnel;
 pub mod ws;
 
-use std::future::IntoFuture;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -27,7 +26,7 @@ use rust_embed::Embed;
 use serde::Serialize;
 use tokio::sync::{broadcast, RwLock};
 use tokio_util::sync::CancellationToken;
-use tracing::{info, warn};
+use tracing::info;
 
 use self::push::{PushState, StatusChange, STATUS_CHANNEL_CAPACITY};
 
@@ -879,11 +878,23 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
     // and SIGHUP (parent session died). Without these, the default handler
     // kills the process immediately, skipping PID/URL file cleanup.
     //
-    // The future resolves the shared `state.shutdown` cancellation token
-    // before returning, so long-lived WS handlers (cockpit + terminal)
-    // wake up from their `select!` and close cleanly instead of holding
-    // axum's graceful drain open until the browser tab decides to
-    // disconnect. See #1198.
+    // After the signal fires the future:
+    //   1. Cancels `state.shutdown` so long-lived WS handlers (cockpit +
+    //      terminal) wake from their `select!` and close cleanly,
+    //      letting `axum::serve` return promptly instead of blocking
+    //      on the open WebSockets the browser hasn't disconnected.
+    //   2. Spawns a 5s deadline as the safety net: if any handler
+    //      somehow ignores the cancel, the process force-exits so
+    //      `Ctrl-C` and `aoe serve --stop` never hang. See #1198.
+    //
+    // Note: this future is awaited by `with_graceful_shutdown`, which
+    // signals axum to stop accepting new connections once the future
+    // resolves. Wrapping `axum::serve(...).await` itself in a
+    // `tokio::time::timeout` would cap TOTAL server lifetime instead
+    // of just the post-signal drain, which is wrong (the server would
+    // exit after 5s of normal uptime). The deadline lives inside the
+    // signal handler so the clock only starts after the signal fires.
+    const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
     let shutdown_state = state.clone();
     let shutdown_signal = async move {
         #[cfg(unix)]
@@ -909,33 +920,23 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
             info!("Shutting down...");
         }
         shutdown_state.shutdown.cancel();
-    };
-
-    // Hard cap on axum's graceful drain. Once `shutdown_signal` fires,
-    // axum stops accepting new connections and waits for existing tasks
-    // to return. Long-lived WS handlers now honor `state.shutdown`, so
-    // the common case completes well under the cap; this timeout is the
-    // safety net for a misbehaving handler that ignores cancellation.
-    // Clients see a TCP RST instead of a Close frame in that case, which
-    // is fine for a process exit.
-    const SHUTDOWN_GRACE: Duration = Duration::from_secs(5);
-    let serve_fut = axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
-    )
-    .with_graceful_shutdown(shutdown_signal)
-    .into_future();
-    match tokio::time::timeout(SHUTDOWN_GRACE, serve_fut).await {
-        Ok(Ok(())) => {}
-        Ok(Err(e)) => return Err(e.into()),
-        Err(_) => {
-            warn!(
+        tokio::spawn(async {
+            tokio::time::sleep(SHUTDOWN_GRACE).await;
+            tracing::warn!(
                 target: "shutdown",
                 grace_secs = SHUTDOWN_GRACE.as_secs(),
                 "graceful shutdown exceeded grace window, forcing exit"
             );
-        }
-    }
+            std::process::exit(0);
+        });
+    };
+
+    axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal)
+    .await?;
 
     // Detach (but do NOT kill) every cockpit ACP worker. The per-session
     // `aoe __cockpit-runner` shims outlive this daemon: a fresh
