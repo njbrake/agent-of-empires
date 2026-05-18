@@ -1031,6 +1031,9 @@ impl App {
                 self.home.execute_send_message(&id, &message);
                 self.update_status = None;
             }
+            Action::AttachToolSession(id, tool_name) => {
+                self.attach_tool_session(&id, &tool_name, terminal)?;
+            }
             #[cfg(feature = "serve")]
             Action::OpenCockpit(id) => {
                 // Stash for the async main loop. The cockpit view needs
@@ -1248,6 +1251,77 @@ impl App {
         Ok(())
     }
 
+    fn attach_tool_session(
+        &mut self,
+        session_id: &str,
+        tool_name: &str,
+        terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+    ) -> Result<()> {
+        let instance = match self.home.get_instance(session_id) {
+            Some(inst) => inst.clone(),
+            None => return Ok(()),
+        };
+
+        let tool_config = match self.home.tool_configs.get(tool_name) {
+            Some(tc) => tc.clone(),
+            None => return Ok(()),
+        };
+
+        if tool_config.command.is_empty() {
+            self.home.set_instance_error(
+                session_id,
+                Some(format!("Tool '{}' has no command configured", tool_name)),
+            );
+            return Ok(());
+        }
+
+        let size = crate::terminal::get_size();
+        let tool_session = crate::tmux::ToolSession::new(&instance.id, &instance.title, tool_name);
+
+        if !tool_session.exists() || tool_session.is_pane_dead() {
+            if tool_session.exists() {
+                let _ = tool_session.kill();
+            }
+            if let Err(e) =
+                tool_session.create_with_size(&instance.project_path, &tool_config.command, size)
+            {
+                self.home
+                    .set_instance_error(session_id, Some(e.to_string()));
+                return Ok(());
+            }
+        }
+
+        let branch = instance
+            .worktree_info
+            .as_ref()
+            .map(|w| w.branch.as_str())
+            .or_else(|| instance.workspace_info.as_ref().map(|w| w.branch.as_str()));
+        crate::tmux::status_bar::apply_all_tmux_options(
+            tool_session.session_name(),
+            &format!("{} ({})", instance.title, tool_name),
+            branch,
+            None,
+        );
+
+        let attach_fn: Box<dyn FnOnce() -> Result<()>> = Box::new(move || tool_session.attach());
+        let attach_result = self.with_raw_mode_disabled(terminal, attach_fn)?;
+
+        self.needs_redraw = true;
+        crate::tmux::refresh_session_cache();
+        self.home.reload()?;
+        self.home.select_session_by_id(session_id);
+
+        if let Err(e) = attach_result {
+            tracing::warn!(
+                "tmux tool session '{}' attach returned error: {}",
+                tool_name,
+                e
+            );
+        }
+
+        Ok(())
+    }
+
     fn edit_file(
         &mut self,
         path: &std::path::Path,
@@ -1321,6 +1395,9 @@ pub enum Action {
     /// can render a "Reviving..." status before the potentially-slow
     /// ensure_pane_ready call.
     SendMessage(String, String),
+    /// Attach to a tool session (lazygit, yazi, etc.) for the given agent
+    /// session. The tool_name indexes into Config.tools.
+    AttachToolSession(String, String),
     /// Open the native cockpit view for `session_id`. The action handler
     /// stashes the id in `pending_cockpit_open`; the main loop drains it
     /// after `execute_action` returns and runs the async cockpit loop

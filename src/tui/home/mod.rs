@@ -63,11 +63,13 @@ pub(super) struct GroupRenameContext {
 }
 
 /// View mode for the home screen
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum ViewMode {
     #[default]
     Agent,
     Terminal,
+    /// Previewing a tool session (lazygit, yazi, etc.)
+    Tool(String),
 }
 
 /// Terminal mode for sandboxed sessions (container vs host)
@@ -224,6 +226,7 @@ pub struct HomeView {
     pub(super) preview_cache: PreviewCache,
     pub(super) terminal_preview_cache: PreviewCache,
     pub(super) container_terminal_preview_cache: PreviewCache,
+    pub(super) tool_preview_cache: PreviewCache,
 
     /// Mouse wheel offset for the preview pane, in lines back from the bottom.
     /// Reset to 0 whenever the selected session changes.
@@ -259,6 +262,19 @@ pub struct HomeView {
 
     // Resizable list column width (percentage-like units)
     pub(super) list_width: u16,
+
+    // Tool sessions config (lazygit, yazi, etc.)
+    pub(super) tool_configs: HashMap<String, crate::session::config::ToolSessionConfig>,
+    /// Pre-parsed and sorted view of valid tool hotkeys: (name, KeyCode, KeyModifiers).
+    /// Built once at construction and on settings reload, then iterated on every
+    /// keystroke to look up matching tools. Sorted by name so the alphabetically-first
+    /// tool wins on duplicate hotkeys.
+    pub(super) tool_hotkey_cache: Vec<(
+        String,
+        crossterm::event::KeyCode,
+        crossterm::event::KeyModifiers,
+    )>,
+    pub(super) tool_picker_dialog: Option<super::dialogs::ToolPickerDialog>,
 }
 
 impl HomeView {
@@ -385,6 +401,7 @@ impl HomeView {
             preview_cache: PreviewCache::default(),
             terminal_preview_cache: PreviewCache::default(),
             container_terminal_preview_cache: PreviewCache::default(),
+            tool_preview_cache: PreviewCache::default(),
             preview_scroll_offset: 0,
             preview_area: Rect::default(),
             diff_area: Rect::default(),
@@ -397,9 +414,25 @@ impl HomeView {
             settings_close_confirm: false,
             diff_view: None,
             list_width: user_config
+                .as_ref()
                 .and_then(|c| c.app_state.home_list_width)
                 .unwrap_or(35),
+            tool_configs: user_config
+                .as_ref()
+                .map(|c| c.tools.clone())
+                .unwrap_or_default(),
+            tool_hotkey_cache: Vec::new(),
+            tool_picker_dialog: None,
         };
+
+        view.tool_hotkey_cache = input::build_tool_hotkey_cache(&view.tool_configs);
+        let hotkey_warnings = input::validate_tool_hotkeys(&view.tool_configs);
+        if !hotkey_warnings.is_empty() && view.info_dialog.is_none() {
+            view.info_dialog = Some(InfoDialog::new(
+                "Tool hotkey config errors",
+                &hotkey_warnings.join("\n"),
+            ));
+        }
 
         // Clean up orphaned Creating instances from a prior crash
         let orphan_ids: Vec<String> = view
@@ -1159,6 +1192,7 @@ impl HomeView {
             || self.profile_picker_dialog.is_some()
             || self.projects_dialog.is_some()
             || self.command_palette.is_some()
+            || self.tool_picker_dialog.is_some()
             || self.send_message_dialog.is_some()
             || self.update_confirm_dialog.is_some()
             || serve_open
@@ -1322,6 +1356,7 @@ impl HomeView {
         self.preview_cache = PreviewCache::default();
         self.terminal_preview_cache = PreviewCache::default();
         self.container_terminal_preview_cache = PreviewCache::default();
+        self.tool_preview_cache = PreviewCache::default();
         self.preview_scroll_offset = 0;
         // Clear search since match indices are invalid with new flat_items
         if self.search_active {
@@ -1598,6 +1633,15 @@ impl HomeView {
         self.strict_hotkeys = config.session.strict_hotkeys;
         self.idle_decay_window =
             crate::tui::styles::idle_decay_window(config.theme.idle_decay_minutes);
+        self.tool_configs = config.tools;
+        self.tool_hotkey_cache = input::build_tool_hotkey_cache(&self.tool_configs);
+        let hotkey_warnings = input::validate_tool_hotkeys(&self.tool_configs);
+        if !hotkey_warnings.is_empty() && self.info_dialog.is_none() {
+            self.info_dialog = Some(InfoDialog::new(
+                "Tool hotkey config errors",
+                &hotkey_warnings.join("\n"),
+            ));
+        }
     }
 
     /// Toggle terminal mode between Container and Host for a session

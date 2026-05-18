@@ -236,6 +236,22 @@ web_poll_interval_minutes = 60
 | `notify_in_cli` | `true` | Show update notifications in CLI output |
 | `web_poll_interval_minutes` | `60` | How often the web dashboard re-polls `/api/system/update-status` while open (min 5) |
 
+## Tools
+
+The `[tools.*]` block configures persistent dev tool sessions (lazygit, yazi, tig, etc.) tied to each agent session's working directory. Each entry has a required `command` and an optional `hotkey` in `Alt+<single-char>` format.
+
+```toml
+[tools.lazygit]
+command = "lazygit"
+hotkey = "Alt+g"
+
+[tools.yazi]
+command = "yazi"
+hotkey = "Alt+f"
+```
+
+See [Tool Sessions](tool-sessions.md) for the full reference, hotkey rules, and lifecycle.
+
 ## Profiles
 
 Profiles provide separate workspaces with their own sessions and groups. Each profile can override any of the settings above.

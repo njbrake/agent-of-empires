@@ -65,6 +65,27 @@ pub struct Config {
         deserialize_with = "super::serde_helpers::string_or_vec"
     )]
     pub environment: Vec<String>,
+
+    /// User-defined tool sessions: name -> config.
+    /// Tools are launched in the selected session's working directory and
+    /// persist as independent tmux sessions until the parent agent session
+    /// is deleted. Access via hotkey, the tool picker (`;`), or command
+    /// palette (Ctrl+K).
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub tools: HashMap<String, ToolSessionConfig>,
+}
+
+/// Configuration for a user-defined tool session (lazygit, yazi, tig, etc.)
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ToolSessionConfig {
+    /// Shell command to run (e.g. "lazygit", "yazi", "tig --all").
+    /// The string is passed to the shell, so pipes and `&&` work.
+    #[serde(default)]
+    pub command: String,
+    /// Optional hotkey binding in `Alt+<letter>` format (e.g. "Alt+g", "Alt+f").
+    /// Only Alt+ single-character bindings are supported.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hotkey: Option<String>,
 }
 
 /// Persistent logging configuration. Drives the default tracing

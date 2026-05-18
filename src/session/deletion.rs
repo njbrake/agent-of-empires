@@ -64,6 +64,7 @@ pub fn perform_deletion(request: &DeletionRequest) -> DeletionResult {
     let _ = request.instance.kill();
     let _ = request.instance.kill_terminal();
     let _ = request.instance.kill_container_terminal();
+    crate::tmux::kill_all_tool_sessions_for_id(&request.session_id);
 
     let is_sandboxed = request
         .instance

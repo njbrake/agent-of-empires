@@ -5,12 +5,14 @@ mod session;
 pub mod status_bar;
 pub(crate) mod status_detection;
 mod terminal_session;
+mod tool_session;
 pub(crate) mod utils;
 
 pub use session::Session;
 pub use status_bar::{get_session_info_for_current, get_status_for_current_session};
 pub use status_detection::detect_status_from_content;
 pub use terminal_session::{ContainerTerminalSession, TerminalSession};
+pub use tool_session::{kill_all_tool_sessions_for_id, ToolSession};
 pub use utils::tmux_prefix_display;
 
 #[cfg(any(test, feature = "test-support"))]
@@ -44,6 +46,11 @@ pub const CONTAINER_TERMINAL_PREFIX: &str = if cfg!(debug_assertions) {
     "aoe_dev_cterm_"
 } else {
     "aoe_cterm_"
+};
+pub const TOOL_PREFIX: &str = if cfg!(debug_assertions) {
+    "aoe_dev_tool_"
+} else {
+    "aoe_tool_"
 };
 
 /// Pre-fetched pane metadata from a single `tmux list-panes -a` call.
