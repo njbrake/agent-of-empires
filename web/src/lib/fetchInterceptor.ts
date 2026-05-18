@@ -1,6 +1,5 @@
 import { isServerDown } from "./connectionState";
 import { getOrCreateDeviceBindingSecret } from "./deviceBinding";
-import { clog } from "./logger";
 import { reportError } from "./toastBus";
 import { clearToken, getToken, saveToken } from "./token";
 
@@ -73,13 +72,13 @@ export function installFetchErrorToasts(): void {
     const sameOrigin = isSameOrigin(rawUrl);
 
     // Generate a per-request id and inject as X-Request-Id so the backend
-    // request-id middleware echoes the same id on its http.request span.
-    // A single grep on request_id then ties browser → handler → downstream.
-    let requestId: string | undefined;
+    // `http.request` middleware echoes the same id on its span. With it,
+    // a network entry seen in devtools can be grep-correlated against the
+    // backend log via `request_id=...`.
     let patchedInit = attachAuthHeader(sameOrigin, init);
     if (sameOrigin && isApi) {
       try {
-        requestId =
+        const requestId =
           typeof crypto !== "undefined" && "randomUUID" in crypto
             ? crypto.randomUUID()
             : Math.random().toString(36).slice(2);
@@ -91,17 +90,6 @@ export function installFetchErrorToasts(): void {
       } catch {
         // Fall through without a request id; the middleware generates one.
       }
-    }
-
-    const method =
-      (patchedInit?.method ?? init?.method ?? "GET").toUpperCase();
-    const start = performance.now();
-    if (isApi) {
-      clog.debug("web.client.api", "request start", {
-        method,
-        path,
-        request_id: requestId,
-      });
     }
 
     try {
@@ -134,30 +122,6 @@ export function installFetchErrorToasts(): void {
       if (isApi && res.status >= 500 && !isServerDown()) {
         reportError(`Server error ${res.status} from ${path}`);
       }
-      if (isApi) {
-        const latency_ms = Math.round(performance.now() - start);
-        const fields = {
-          method,
-          path,
-          status: res.status,
-          latency_ms,
-          request_id: requestId,
-        };
-        // Both lifecycle events (start above + ok here) at debug:
-        // per-fetch detail is per-operation, not a semantic user action,
-        // and the web UI polls /api/sessions every ~2s, which would
-        // dominate the log at info. The backend http.request middleware
-        // already emits one info line per request; the frontend pair is
-        // for correlation when the user explicitly dials web.client.api
-        // to debug. Failures stay at warn/error so they show at info.
-        if (res.status >= 500) {
-          clog.error("web.client.api", "request failed", fields);
-        } else if (res.status >= 400) {
-          clog.warn("web.client.api", "request failed", fields);
-        } else {
-          clog.debug("web.client.api", "request ok", fields);
-        }
-      }
       return res;
     } catch (err) {
       // Ignore aborts (triggered by deliberate cleanup).
@@ -166,16 +130,6 @@ export function installFetchErrorToasts(): void {
         (err.name === "AbortError" || err.name === "TimeoutError")
       ) {
         throw err;
-      }
-      if (isApi) {
-        const latency_ms = Math.round(performance.now() - start);
-        clog.warn("web.client.api", "request network error", {
-          method,
-          path,
-          latency_ms,
-          request_id: requestId,
-          error: err instanceof Error ? err.message : String(err),
-        });
       }
       // When the server is known to be down, suppress per-request toasts.
       // The DisconnectBanner handles the user-facing notification instead.

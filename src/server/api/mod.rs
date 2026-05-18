@@ -28,7 +28,7 @@ pub use cockpit::{
 };
 
 #[cfg(feature = "serve")]
-pub use client_log::{get_client_log_policy, post_client_log};
+pub use client_log::post_client_log;
 pub use git::{clone_repo, list_branches};
 pub use log_level::{get_log_level, patch_log_level};
 pub use projects::{create_project, delete_project, list_projects};
