@@ -28,6 +28,19 @@
 //! file *after* fork+exec, leaving a tens-to-hundreds-of-millisecond window
 //! where both sides observe "no daemon running" and both decide they own
 //! recovery.
+//!
+//! # Hung-hook caveat (cross-process consequence)
+//!
+//! `restart_with_size_opts` runs the agent's `on_launch` hooks (`npm install`,
+//! `nvm use`, env setup, etc.) inline. If a hook hangs (interactive prompt,
+//! deadlocked subprocess), the recovery worker's `spawn_blocking` thread
+//! cannot be cancelled (`tokio::time::timeout` on the `JoinHandle` does not
+//! interrupt the underlying OS thread), so the worker holds its semaphore
+//! permit indefinitely AND the cross-process file lock above is never
+//! released. A peer process started after the hang is locked out of recovery
+//! for the entire daemon uptime; the only mitigation today is "hooks must be
+//! non-interactive and complete in <30s". Hardening is tracked as a follow-up
+//! (graceful timeout + force-kill path on the cascade).
 
 use std::path::PathBuf;
 #[cfg(feature = "serve")]
@@ -102,12 +115,19 @@ pub fn warm_tmux_server() {
 }
 
 /// Time-to-live entries in the `recently_restarted` map remain authoritative
-/// for. Sized to cover the worst-case cascade latency
-/// (`RESUME_PROBE_MAX` ~3s × 2 tiers + kill_clean grace ~150ms ≈ 6.5s) plus a
-/// 1.5s margin for slow cold-start agents (opencode importing on a cold
+/// for. Sized to cover the typical worst-case cascade latency
+/// (`RESUME_PROBE_MAX` ~3s × 2 tiers + kill_clean grace ~150ms ≈ 6.15s) plus
+/// a ~1.85s margin for slow cold-start agents (opencode importing on a cold
 /// cache). Lower values cause spurious `Status::Error` chips on still-starting
 /// sessions; higher values delay the first real status update past the user's
 /// patience window.
+///
+/// The absolute worst case (both tiers running the full
+/// `RESUME_PROBE_POST_SHELL_GRACE` of 2s on top of `RESUME_PROBE_MAX`) would
+/// reach ~10s and exceed this TTL. In practice the cascade aborts early on a
+/// confirmed-Dead pane, so the typical bound holds; if production telemetry
+/// shows the absolute case occurring, raise this to 11s rather than relying
+/// on early abort.
 #[cfg(feature = "serve")]
 pub const RECENTLY_RESTARTED_TTL: Duration = Duration::from_secs(8);
 
