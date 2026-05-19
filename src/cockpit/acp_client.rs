@@ -11,7 +11,7 @@
 //! initialize once, create one ACP session, then pump commands from an
 //! mpsc channel into ACP requests until shutdown.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -250,6 +250,90 @@ const RESUME_IDLE_GRACE_DEFAULT: std::time::Duration = std::time::Duration::from
 /// daemon waits. See #1196.
 const CANCEL_ESCALATION_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
 
+/// Vendor-agnostic silent-orphan grace fallback used when no config
+/// value is available. Mirrors `CockpitConfig::silent_orphan_grace_secs`
+/// default. See `silent_orphan_grace()`.
+const SILENT_ORPHAN_GRACE_DEFAULT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Accelerated silent-orphan grace fallback used when a cost-populated
+/// `UsageUpdate` notification has arrived for the current prompt. The
+/// daemon treats that frame as claude-agent-acp's "wrap up accounting"
+/// terminal-candidate marker emitted just before `PromptResponse`;
+/// when the prompt response then fails to arrive, recovery doesn't
+/// need the full vendor-agnostic grace. Mirrors
+/// `CockpitConfig::silent_orphan_fast_grace_secs` default. See
+/// `silent_orphan_fast_grace()`.
+const SILENT_ORPHAN_FAST_GRACE_DEFAULT: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// Cadence at which the silent-orphan select arm wakes up to evaluate
+/// whether the watchdog should fire. Polling cadence rather than reset-
+/// on-signal so the prompt loop owns the timer without needing the
+/// notification handler to reach back into a pinned `tokio::time::sleep`.
+const SILENT_ORPHAN_CHECK_INTERVAL: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Classification of an inbound ACP `SessionUpdate` for the silent-
+/// orphan watchdog state machine. Sent from the notification handler
+/// to the prompt loop via a dedicated mpsc; the prompt loop owns the
+/// `Instant`-based timers and the tool-id set, so the handler doesn't
+/// need to touch shared atomics on the hot path.
+#[derive(Debug, Clone)]
+enum LifecycleSignal {
+    /// Transcript-producing event that resets the silent-orphan timer:
+    /// `AgentMessageChunk`, `AgentThoughtChunk`, `Plan`, or a
+    /// non-terminal `ToolCallUpdate` other than `InProgress`.
+    Progress,
+    /// A new tool call has started (`SessionUpdate::ToolCall`) or
+    /// transitioned to `InProgress` (`ToolCallUpdate`). Added to the
+    /// prompt-loop's `tool_calls_in_flight` set; while non-empty, the
+    /// watchdog stays suppressed so long-running tools (npm install,
+    /// Playwright runs, Task subagents) never false-positive.
+    ToolStarted(String),
+    /// A tool call reached terminal status (`Completed` or `Failed`).
+    /// Removed from `tool_calls_in_flight`; when the set drains to
+    /// empty after at least one progress event, the watchdog arms.
+    ToolCompleted(String),
+    /// Cost-populated `UsageUpdate`: claude-agent-acp's "wrap up
+    /// accounting" marker. Switches the effective grace from the
+    /// vendor-agnostic default to the accelerated value for this
+    /// prompt only. Does NOT count as progress (it's accounting
+    /// telemetry, not lifecycle), so the silent-orphan timer keeps
+    /// running from the previous progress event.
+    TerminalUsage,
+}
+
+/// Classify a `SessionUpdate` into a `LifecycleSignal`, or `None` for
+/// ambient state (mode changes, available_commands, raw metadata,
+/// usage-without-cost) that shouldn't influence the silent-orphan
+/// watchdog timer. Out-of-band notifications must NOT reset the timer:
+/// claude-agent-acp can interleave mode and command refreshes mid-turn
+/// or after final accounting, and treating those as progress would
+/// mask the exact wedge the watchdog is designed to detect. See #1240.
+fn classify_lifecycle_signal(
+    update: &agent_client_protocol::schema::SessionUpdate,
+) -> Option<LifecycleSignal> {
+    use agent_client_protocol::schema::{SessionUpdate, ToolCallStatus};
+    match update {
+        SessionUpdate::UsageUpdate(u) if u.cost.is_some() => Some(LifecycleSignal::TerminalUsage),
+        SessionUpdate::AgentMessageChunk(_)
+        | SessionUpdate::AgentThoughtChunk(_)
+        | SessionUpdate::Plan(_) => Some(LifecycleSignal::Progress),
+        SessionUpdate::ToolCall(tc) => {
+            Some(LifecycleSignal::ToolStarted(tc.tool_call_id.0.to_string()))
+        }
+        SessionUpdate::ToolCallUpdate(update) => {
+            let id = update.tool_call_id.0.to_string();
+            match update.fields.status {
+                Some(ToolCallStatus::Completed) | Some(ToolCallStatus::Failed) => {
+                    Some(LifecycleSignal::ToolCompleted(id))
+                }
+                Some(ToolCallStatus::InProgress) => Some(LifecycleSignal::ToolStarted(id)),
+                _ => Some(LifecycleSignal::Progress),
+            }
+        }
+        _ => None,
+    }
+}
+
 /// Monotonic counter appended to synthetic tool-call IDs so two events
 /// minted within the same millisecond don't collide on the
 /// `(session_id, tool_id)` keys used by the cockpit event store.
@@ -270,6 +354,59 @@ fn resume_idle_grace() -> std::time::Duration {
         }
     }
     RESUME_IDLE_GRACE_DEFAULT
+}
+
+/// Read the silent-orphan watchdog grace. In debug builds, honors
+/// `AOE_SILENT_ORPHAN_GRACE_MS` so the integration test can drive a
+/// sub-second cadence without making real failures racy. Otherwise
+/// reads `cockpit.silent_orphan_grace_secs` from the user's config,
+/// falling back to `SILENT_ORPHAN_GRACE_DEFAULT`. A value of `0`
+/// means "disabled" and the caller skips the watchdog entirely; for
+/// non-zero values smaller than 10s, clamps up so a typo can't
+/// produce an absurdly tight grace that false-positives on healthy
+/// turns.
+fn silent_orphan_grace() -> std::time::Duration {
+    #[cfg(debug_assertions)]
+    if let Ok(raw) = std::env::var("AOE_SILENT_ORPHAN_GRACE_MS") {
+        if let Ok(ms) = raw.parse::<u64>() {
+            if ms == 0 {
+                return std::time::Duration::ZERO;
+            }
+            return std::time::Duration::from_millis(ms);
+        }
+    }
+    match crate::session::load_config() {
+        Ok(Some(cfg)) => {
+            let secs = cfg.cockpit.silent_orphan_grace_secs;
+            if secs == 0 {
+                std::time::Duration::ZERO
+            } else {
+                std::time::Duration::from_secs(u64::from(secs).max(10))
+            }
+        }
+        _ => SILENT_ORPHAN_GRACE_DEFAULT,
+    }
+}
+
+/// Read the accelerated silent-orphan grace. Same env-var override
+/// pattern as `silent_orphan_grace`; reads
+/// `cockpit.silent_orphan_fast_grace_secs` from config with a 5s
+/// minimum clamp on non-zero values. Only consulted by the prompt
+/// loop when `silent_orphan_grace()` is non-zero.
+fn silent_orphan_fast_grace() -> std::time::Duration {
+    #[cfg(debug_assertions)]
+    if let Ok(raw) = std::env::var("AOE_SILENT_ORPHAN_FAST_GRACE_MS") {
+        if let Ok(ms) = raw.parse::<u64>() {
+            return std::time::Duration::from_millis(ms.max(100));
+        }
+    }
+    match crate::session::load_config() {
+        Ok(Some(cfg)) => {
+            let secs = cfg.cockpit.silent_orphan_fast_grace_secs;
+            std::time::Duration::from_secs(u64::from(secs).max(5))
+        }
+        _ => SILENT_ORPHAN_FAST_GRACE_DEFAULT,
+    }
 }
 
 /// Resolution channel + the option set the agent offered. Stored in the
@@ -2143,6 +2280,18 @@ async fn run_connection_task<W, R>(
     let pending_for_perm = pending_responders.clone();
     let mut cmd_rx = cmd_rx;
     let session_label_for_log = session_label.clone();
+
+    // Silent-orphan watchdog plumbing. The notification handler
+    // classifies each inbound `SessionUpdate` into a `LifecycleSignal`
+    // (or `None` for ambient state like mode/available_commands) and
+    // sends it over a dedicated mpsc to the prompt loop, which owns the
+    // `Instant` timers and the `HashSet` of in-flight tool ids. Keeping
+    // the timer state inside the prompt loop avoids the cross-task
+    // contention of a shared atomic and scopes liveness cleanly to the
+    // current prompt. See #1240.
+    let (lifecycle_signal_tx, lifecycle_signal_rx) = mpsc::channel::<LifecycleSignal>(128);
+    let lifecycle_signal_tx_for_notif = lifecycle_signal_tx.clone();
+    let mut lifecycle_signal_rx = lifecycle_signal_rx;
     let res_read = resources.clone();
     let res_write = resources.clone();
     let res_term_create = resources.clone();
@@ -2190,10 +2339,21 @@ async fn run_connection_task<W, R>(
                 let suppress = suppress_for_notif.clone();
                 let session_label = session_label_for_notif.clone();
                 let last_event_at = last_event_at_for_notif.clone();
+                let lifecycle_signal_tx = lifecycle_signal_tx_for_notif.clone();
                 async move {
                     last_event_at
                         .store(chrono::Utc::now().timestamp_millis(), Ordering::Relaxed);
                     let suppressing = suppress.load(Ordering::Relaxed);
+                    // Classify before consuming `notification.update` in
+                    // the event mapping below; emit only when we're not
+                    // in the post-load history-replay window so stale
+                    // chunks from a prior turn can't influence the
+                    // current prompt's silent-orphan state machine.
+                    let lifecycle_signal = if suppressing {
+                        None
+                    } else {
+                        classify_lifecycle_signal(&notification.update)
+                    };
                     for event in map_update_to_events(notification.update, profile) {
                         // During the post-load replay window, drop only
                         // events that would reproduce the prior turns'
@@ -2214,6 +2374,21 @@ async fn run_connection_task<W, R>(
                         }
                         if event_tx.send(event).await.is_err() {
                             break;
+                        }
+                    }
+                    if let Some(sig) = lifecycle_signal {
+                        // Non-blocking try_send: if the prompt loop is
+                        // already in the middle of a watchdog escalation
+                        // the channel could backpressure; dropping a
+                        // signal is safer than blocking the notification
+                        // handler since the watchdog is itself a
+                        // recovery mechanism.
+                        if lifecycle_signal_tx.try_send(sig).is_err() {
+                            trace!(
+                                target: "cockpit.acp",
+                                session = %session_label,
+                                "lifecycle signal channel full or closed; dropping"
+                            );
                         }
                     }
                     Ok(())
@@ -2581,6 +2756,42 @@ async fn run_connection_task<W, R>(
                         // we serialise the loop on the prompt's await, the
                         // cancel sits idle in the channel and only goes
                         // out after the turn already finished.
+                        // Drain any lifecycle signals left over from the
+                        // previous prompt before resetting state. Stale
+                        // ToolStarted entries from a prior turn would
+                        // suppress the watchdog on this turn; stale
+                        // TerminalUsage would accelerate it. Drop them.
+                        while lifecycle_signal_rx.try_recv().is_ok() {}
+
+                        // Per-prompt silent-orphan state machine. All
+                        // fields reset each prompt; signals from prior
+                        // prompts are drained above. The watchdog stays
+                        // disarmed until `saw_first_progress` becomes
+                        // true (some progress notification arrived for
+                        // this turn) AND `tool_calls_in_flight` is
+                        // empty (no open tool to legitimately be
+                        // silent for), at which point it counts down
+                        // `effective_grace` from `last_progress_at`.
+                        // `cost_seen` lowers `effective_grace` from
+                        // the vendor-agnostic default to the
+                        // accelerated value when claude-agent-acp's
+                        // "wrap up accounting" marker arrives. See
+                        // #1240.
+                        let mut tool_calls_in_flight: HashSet<String> = HashSet::new();
+                        let mut last_progress_at: Option<tokio::time::Instant> = None;
+                        let mut saw_first_progress = false;
+                        let mut cost_seen = false;
+                        let mut orphan_cancel_sent = false;
+                        let mut prompt_orphaned = false;
+
+                        let silent_orphan_grace_default = silent_orphan_grace();
+                        let silent_orphan_grace_fast = silent_orphan_fast_grace();
+                        let silent_orphan_enabled =
+                            silent_orphan_grace_default > std::time::Duration::ZERO;
+                        let silent_orphan_check =
+                            tokio::time::sleep(SILENT_ORPHAN_CHECK_INTERVAL);
+                        tokio::pin!(silent_orphan_check);
+
                         let prompt_fut = connection
                             .send_request(PromptRequest::new(
                                 acp_session_id.clone(),
@@ -2588,6 +2799,36 @@ async fn run_connection_task<W, R>(
                             ))
                             .block_task();
                         tokio::pin!(prompt_fut);
+
+                        // Debug-only fault injection: when this env var
+                        // is set, the prompt_fut select arm is gated
+                        // off so the response is never observed even
+                        // if it arrives. The silent-orphan watchdog
+                        // must then fire to break the loop, which is
+                        // the entire point of the manual repro recipe
+                        // for #1240. Single-shot: the env var is
+                        // cleared after first read so subsequent
+                        // prompts are healthy. Release builds set
+                        // this to `false` const and the prompt_fut
+                        // arm is unconditionally polled.
+                        #[cfg(debug_assertions)]
+                        let simulate_orphan = {
+                            let on = std::env::var("AOE_COCKPIT_SIMULATE_ORPHAN_NEXT_PROMPT")
+                                .ok()
+                                .as_deref()
+                                == Some("1");
+                            if on {
+                                warn!(
+                                    target: "cockpit.acp",
+                                    session = %session_label,
+                                    "AOE_COCKPIT_SIMULATE_ORPHAN_NEXT_PROMPT set; suppressing prompt_fut completion to trigger silent-orphan watchdog"
+                                );
+                                std::env::remove_var("AOE_COCKPIT_SIMULATE_ORPHAN_NEXT_PROMPT");
+                            }
+                            on
+                        };
+                        #[cfg(not(debug_assertions))]
+                        let simulate_orphan = false;
 
                         let mut shutdown = false;
                         // Cancel-escalation watchdog. The first
@@ -2613,7 +2854,7 @@ async fn run_connection_task<W, R>(
 
                         loop {
                             tokio::select! {
-                                res = &mut prompt_fut => {
+                                res = &mut prompt_fut, if !simulate_orphan => {
                                     match res {
                                         Ok(_) => {}
                                         Err(e) => {
@@ -2647,6 +2888,109 @@ async fn run_connection_task<W, R>(
                                         }
                                     }
                                     break;
+                                }
+                                sig = lifecycle_signal_rx.recv() => {
+                                    match sig {
+                                        Some(LifecycleSignal::Progress) => {
+                                            saw_first_progress = true;
+                                            last_progress_at = Some(tokio::time::Instant::now());
+                                            // A progress event after
+                                            // terminal usage means the
+                                            // turn isn't actually
+                                            // wrapping up; clear the
+                                            // accelerator so the next
+                                            // window uses the full
+                                            // vendor-agnostic grace.
+                                            cost_seen = false;
+                                        }
+                                        Some(LifecycleSignal::ToolStarted(id)) => {
+                                            saw_first_progress = true;
+                                            tool_calls_in_flight.insert(id);
+                                            last_progress_at = Some(tokio::time::Instant::now());
+                                            cost_seen = false;
+                                        }
+                                        Some(LifecycleSignal::ToolCompleted(id)) => {
+                                            tool_calls_in_flight.remove(&id);
+                                            last_progress_at = Some(tokio::time::Instant::now());
+                                            cost_seen = false;
+                                        }
+                                        Some(LifecycleSignal::TerminalUsage) => {
+                                            // Don't touch
+                                            // `last_progress_at`: cost
+                                            // is accounting, not
+                                            // progress. The watchdog
+                                            // measures elapsed time
+                                            // since the last real
+                                            // transcript event; this
+                                            // signal only changes the
+                                            // grace value.
+                                            cost_seen = true;
+                                        }
+                                        None => {
+                                            // sender dropped; ignore
+                                        }
+                                    }
+                                }
+                                _ = &mut silent_orphan_check,
+                                    if silent_orphan_enabled && !orphan_cancel_sent =>
+                                {
+                                    let now = tokio::time::Instant::now();
+                                    let effective_grace = if cost_seen {
+                                        silent_orphan_grace_fast
+                                    } else {
+                                        silent_orphan_grace_default
+                                    };
+                                    let elapsed = last_progress_at
+                                        .map(|t| now.duration_since(t));
+                                    let should_fire = saw_first_progress
+                                        && tool_calls_in_flight.is_empty()
+                                        && elapsed
+                                            .map(|d| d >= effective_grace)
+                                            .unwrap_or(false);
+                                    if should_fire {
+                                        warn!(
+                                            target: "cockpit.acp",
+                                            session = %session_label,
+                                            cost_seen,
+                                            grace_secs = effective_grace.as_secs(),
+                                            elapsed_secs = elapsed.map(|d| d.as_secs()).unwrap_or(0),
+                                            "silent-orphan watchdog fired: no progress past grace and no in-flight tools; sending session/cancel"
+                                        );
+                                        // Best-effort cancel; reuse
+                                        // existing escalation path. If
+                                        // the adapter resolves within
+                                        // CANCEL_ESCALATION_GRACE the
+                                        // prompt_fut arm wins; if not,
+                                        // the cancel_grace arm fires
+                                        // and we synthesize Stopped
+                                        // with reason "prompt_orphaned".
+                                        if let Err(err) = connection.send_notification(
+                                            CancelNotification::new(acp_session_id.clone()),
+                                        ) {
+                                            warn!(
+                                                target: "cockpit.acp",
+                                                session = %session_label,
+                                                error = %err,
+                                                "silent-orphan: session/cancel send failed; escalating immediately"
+                                            );
+                                            prompt_orphaned = true;
+                                            shutdown = true;
+                                            break;
+                                        }
+                                        orphan_cancel_sent = true;
+                                        prompt_orphaned = true;
+                                        if !cancelling {
+                                            cancelling = true;
+                                            cancel_grace.as_mut().reset(
+                                                tokio::time::Instant::now()
+                                                    + CANCEL_ESCALATION_GRACE,
+                                            );
+                                        }
+                                    }
+                                    silent_orphan_check.as_mut().reset(
+                                        tokio::time::Instant::now()
+                                            + SILENT_ORPHAN_CHECK_INTERVAL,
+                                    );
                                 }
                                 _ = &mut cancel_grace, if cancelling => {
                                     warn!(
@@ -2795,8 +3139,25 @@ async fn run_connection_task<W, R>(
                         // Consumers (reducer, persisted status) need a single
                         // turn-end event per turn or they sit on a stale
                         // "in flight" state forever.
+                        //
+                        // Reason precedence:
+                        //   - `rate_limited` wins because it's a typed
+                        //     non-crash signal from prompt_fut Err; the
+                        //     drain task short-circuits respawn on it
+                        //     (#1281), so collapsing it into a generic
+                        //     reason would burn restart budget.
+                        //   - `prompt_orphaned` next because the
+                        //     silent-orphan path is the proximate cause;
+                        //     if the cancel-escalation watchdog then
+                        //     fires it's a downstream effect of the same
+                        //     wedge, and collapsing both into
+                        //     "agent_unresponsive" would lose the
+                        //     failure signature in postmortems. See
+                        //     #1240.
                         let reason = if rate_limited {
                             "rate_limited"
+                        } else if prompt_orphaned {
+                            "prompt_orphaned"
                         } else if agent_unresponsive {
                             "agent_unresponsive"
                         } else if shutdown {
