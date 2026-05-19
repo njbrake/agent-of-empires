@@ -2068,6 +2068,80 @@ fn test_all_profiles_view_shows_all_sessions_flat() {
     }
 }
 
+/// Flatten a rendered row into its plain text, dropping styling.
+fn rendered_row_text(view: &HomeView, item: &Item) -> String {
+    use crate::tui::styles::Theme;
+    let theme = Theme::default();
+    view.render_item_line(item, false, false, &theme, 200)
+        .spans
+        .iter()
+        .map(|s| s.content.as_ref())
+        .collect()
+}
+
+#[test]
+#[serial]
+fn test_all_profiles_view_renders_per_row_profile_tag() {
+    let temp = TempDir::new().unwrap();
+    setup_test_home(&temp);
+
+    let storage_a = Storage::new("alpha").unwrap();
+    storage_a.save(&[Instance::new("A1", "/tmp/a")]).unwrap();
+
+    let storage_b = Storage::new("beta").unwrap();
+    storage_b.save(&[Instance::new("B1", "/tmp/b")]).unwrap();
+
+    let tools = AvailableTools::with_tools(&["claude"]);
+    let mut view = HomeView::new(None, tools).unwrap();
+    view.group_by = crate::session::config::GroupByMode::Manual;
+    view.flat_items = view.build_flat_items();
+    view.update_selected();
+
+    // Every session row in all-profiles view carries its own profile tag,
+    // since the list title only shows `[all]`.
+    let mut seen = 0;
+    for item in &view.flat_items {
+        if let Item::Session { id, .. } = item {
+            let profile = view.get_instance(id).unwrap().source_profile.clone();
+            let text = rendered_row_text(&view, item);
+            assert!(
+                text.contains(&format!("[{}]", profile)),
+                "all-view row for profile {profile} missing tag: {text:?}"
+            );
+            seen += 1;
+        }
+    }
+    assert_eq!(seen, 2, "expected both profile sessions to render");
+}
+
+#[test]
+#[serial]
+fn test_filtered_view_omits_per_row_profile_tag() {
+    let temp = TempDir::new().unwrap();
+    setup_test_home(&temp);
+
+    let storage_a = Storage::new("alpha").unwrap();
+    storage_a.save(&[Instance::new("A1", "/tmp/a")]).unwrap();
+
+    let tools = AvailableTools::with_tools(&["claude"]);
+    let mut view = HomeView::new(Some("alpha".to_string()), tools).unwrap();
+    view.group_by = crate::session::config::GroupByMode::Manual;
+    view.flat_items = view.build_flat_items();
+    view.update_selected();
+
+    // A filtered view names the profile in the list title, so the per-row
+    // tag is redundant and must not be rendered.
+    for item in &view.flat_items {
+        if let Item::Session { .. } = item {
+            let text = rendered_row_text(&view, item);
+            assert!(
+                !text.contains("[alpha]"),
+                "filtered view should not render a per-row profile tag: {text:?}"
+            );
+        }
+    }
+}
+
 #[test]
 #[serial]
 fn test_create_session_in_all_mode_is_findable() {

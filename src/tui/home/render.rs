@@ -606,7 +606,7 @@ impl HomeView {
             || serve_open
     }
 
-    fn render_item_line(
+    pub(super) fn render_item_line(
         &self,
         item: &Item,
         is_selected: bool,
@@ -887,6 +887,20 @@ impl HomeView {
                             Style::default().fg(theme.branch),
                         ));
                     }
+                }
+
+                // In all-profiles view the list block title only shows
+                // `[all]`, so each row carries its own profile tag; without
+                // it, sessions from different profiles are indistinguishable.
+                // A filtered view already names the profile in the title, so
+                // the per-row tag would be redundant there and is omitted.
+                // Counted into `used_width` below so the activity column
+                // still right-aligns past the tag.
+                if self.active_profile.is_none() {
+                    line_spans.push(Span::styled(
+                        format!("  [{}]", inst.source_profile),
+                        Style::default().fg(theme.dimmed),
+                    ));
                 }
 
                 // Right edge of the row: optional terminal-mode badge, and
