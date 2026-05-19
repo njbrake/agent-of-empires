@@ -115,6 +115,7 @@ base.describe("ensure_session restart flow", () => {
 
     try {
       const sessions = await listSessions(serve.baseUrl);
+      expect(sessions.length).toBeGreaterThan(0);
       const sessionId: string = sessions[0]!.id;
       const tmuxName = `${serve.tmuxPrefix}${title}_${sessionId.slice(0, 8)}`;
 
