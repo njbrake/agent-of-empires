@@ -82,7 +82,7 @@ fn recovery_lock_path() -> Result<PathBuf> {
 /// cascade? Excludes cockpit-mode sessions (handled by `cockpit_reconciler`),
 /// sessions whose agent has `ResumeStrategy::Unsupported`, and sessions
 /// without a valid `agent_session_id`. Live tmux panes are filtered separately
-/// by the caller using `Instance::tmux_session().exists() && !is_pane_dead()`.
+/// by the caller using `Instance::has_live_tmux_pane()`.
 pub fn is_recovery_candidate(inst: &Instance) -> bool {
     !inst.is_cockpit_mode() && should_attempt_resume(inst.agent_session_id.as_deref(), &inst.tool)
 }

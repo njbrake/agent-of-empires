@@ -526,10 +526,7 @@ impl HomeView {
 
         // Recover session IDs for pre-existing sessions via pollers.
         for inst in &mut view.instances {
-            let has_live_tmux = inst
-                .tmux_session()
-                .map(|s| s.exists() && !s.is_pane_dead())
-                .unwrap_or(false);
+            let has_live_tmux = inst.has_live_tmux_pane();
             if !has_live_tmux {
                 continue;
             }
@@ -964,10 +961,7 @@ impl HomeView {
 
         let mut candidates: Vec<crate::session::Instance> = Vec::new();
         for inst in &mut self.instances {
-            let has_live_tmux = inst
-                .tmux_session()
-                .map(|s| s.exists() && !s.is_pane_dead())
-                .unwrap_or(false);
+            let has_live_tmux = inst.has_live_tmux_pane();
             if has_live_tmux {
                 continue;
             }

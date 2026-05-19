@@ -1638,10 +1638,7 @@ async fn daemon_startup_recovery(state: Arc<AppState>) {
         instances
             .iter()
             .filter(|i| {
-                let has_live_tmux = i
-                    .tmux_session()
-                    .map(|s| s.exists() && !s.is_pane_dead())
-                    .unwrap_or(false);
+                let has_live_tmux = i.has_live_tmux_pane();
                 !has_live_tmux && crate::session::recovery::is_recovery_candidate(i)
             })
             .cloned()

@@ -981,6 +981,14 @@ impl Instance {
             .unwrap_or(false)
     }
 
+    /// `exists()` alone is insufficient: a pane can exist while its agent
+    /// has died. Used by recovery, status polling, and TUI reload.
+    pub fn has_live_tmux_pane(&self) -> bool {
+        self.tmux_session()
+            .map(|s| s.exists() && !s.is_pane_dead())
+            .unwrap_or(false)
+    }
+
     pub fn start_container_terminal_with_size(&mut self, size: Option<(u16, u16)>) -> Result<()> {
         if !self.is_sandboxed() {
             anyhow::bail!("Cannot create container terminal for non-sandboxed session");
