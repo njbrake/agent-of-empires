@@ -52,19 +52,63 @@
       "components": ["web/src/components/settings/SoundSettings.tsx"]
     },
     {
-      "id": "settings.other-panels",
-      "kind": "deferred",
-      "issue": "https://github.com/njbrake/agent-of-empires/issues/1217",
+      "id": "settings.update-payload",
+      "kind": "vitest",
       "risk": "medium",
+      "specs": ["src/components/settings/__tests__/UpdateSettings.test.tsx"],
+      "components": ["web/src/components/settings/UpdateSettings.tsx"]
+    },
+    {
+      "id": "settings.tmux-payload",
+      "kind": "vitest",
+      "risk": "low",
+      "specs": ["src/components/settings/__tests__/TmuxSettings.test.tsx"],
+      "components": ["web/src/components/settings/TmuxSettings.tsx"]
+    },
+    {
+      "id": "settings.tmux-persistence",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": ["tests/live/settings-persistence-tmux.spec.ts"],
+      "components": []
+    },
+    {
+      "id": "settings.theme-payload",
+      "kind": "vitest",
+      "risk": "low",
+      "specs": ["src/components/settings/__tests__/ThemeSettings.test.tsx"],
+      "components": []
+    },
+    {
+      "id": "settings.logging-payload",
+      "kind": "vitest",
+      "risk": "medium",
+      "specs": ["src/components/settings/__tests__/LoggingSettings.test.tsx"],
       "components": [
-        "web/src/components/NotificationSettings.tsx",
-        "web/src/components/SecuritySettings.tsx",
-        "web/src/components/TerminalSettings.tsx",
         "web/src/components/settings/LoggingSettings.tsx",
-        "web/src/components/settings/TmuxSettings.tsx",
-        "web/src/components/settings/UpdateSettings.tsx",
         "web/src/components/settings/FormFields.tsx"
       ]
+    },
+    {
+      "id": "settings.notifications",
+      "kind": "vitest",
+      "risk": "medium",
+      "specs": ["src/components/__tests__/NotificationSettings.test.tsx"],
+      "components": ["web/src/components/NotificationSettings.tsx"]
+    },
+    {
+      "id": "settings.security-readonly",
+      "kind": "vitest",
+      "risk": "low",
+      "specs": ["src/components/__tests__/SecuritySettings.test.tsx"],
+      "components": ["web/src/components/SecuritySettings.tsx"]
+    },
+    {
+      "id": "settings.terminal-localstorage",
+      "kind": "vitest",
+      "risk": "medium",
+      "specs": ["src/components/__tests__/TerminalSettings.test.tsx"],
+      "components": ["web/src/components/TerminalSettings.tsx"]
     },
     {
       "id": "profiles",
