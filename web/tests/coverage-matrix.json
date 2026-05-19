@@ -111,17 +111,39 @@
       "components": ["web/src/components/TerminalSettings.tsx"]
     },
     {
-      "id": "profiles",
-      "kind": "deferred",
-      "issue": "https://github.com/njbrake/agent-of-empires/issues/1218",
+      "id": "profiles.lifecycle",
+      "kind": "live-playwright",
       "risk": "high",
+      "specs": ["tests/live/profile-lifecycle.spec.ts"],
       "components": ["web/src/components/settings/ProfileSelector.tsx"]
     },
     {
-      "id": "wizard",
-      "kind": "deferred",
-      "issue": "https://github.com/njbrake/agent-of-empires/issues/1219",
+      "id": "profiles.override",
+      "kind": "live-playwright",
       "risk": "high",
+      "specs": ["tests/live/profile-override.spec.ts"],
+      "components": []
+    },
+    {
+      "id": "profiles.name-validation",
+      "kind": "vitest",
+      "risk": "medium",
+      "specs": ["src/components/settings/__tests__/ProfileSelector.test.tsx"],
+      "components": []
+    },
+    {
+      "id": "wizard",
+      "kind": "mocked-playwright",
+      "risk": "high",
+      "specs": [
+        "tests/wizard-attach-existing.spec.ts",
+        "tests/wizard-base-branch.spec.ts",
+        "tests/wizard-project-step.spec.ts",
+        "tests/wizard-session-step.spec.ts",
+        "tests/wizard-agent-step.spec.ts",
+        "tests/wizard-review-step.spec.ts",
+        "tests/wizard-extra-repos.spec.ts"
+      ],
       "components": [
         "web/src/components/session-wizard/SessionWizard.tsx",
         "web/src/components/session-wizard/StepIndicator.tsx",
@@ -134,9 +156,9 @@
     },
     {
       "id": "directory-browser",
-      "kind": "deferred",
-      "issue": "https://github.com/njbrake/agent-of-empires/issues/1219",
+      "kind": "live-playwright",
       "risk": "medium",
+      "specs": ["tests/live/directory-browser.spec.ts"],
       "components": ["web/src/components/DirectoryBrowser.tsx"]
     },
     {
