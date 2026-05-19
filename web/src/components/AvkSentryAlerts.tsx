@@ -184,7 +184,7 @@ function IssueRow({ issue }: { issue: SentryIssue }) {
           title={issue.title}
         >
           <span className="font-mono text-text-muted mr-1">{issue.short_id}</span>
-          {issue.title}
+          <span className="line-clamp-2 [overflow-wrap:anywhere]">{issue.title}</span>
         </a>
       </div>
       {issue.culprit && (
