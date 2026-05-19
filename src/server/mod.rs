@@ -1745,7 +1745,20 @@ async fn daemon_startup_recovery_cascade(
             // the (possibly older) Phase A snapshot.
             crate::session::recovery::mark_recently_restarted(&inst_state.recently_restarted, &id);
 
-            let mut working = inst;
+            // Refresh the working snapshot from latest in-memory state.
+            // Between Phase A's snapshot and acquiring instance_lock, a
+            // serialised REST writer (ensure_session, set-session-id, etc.)
+            // could have mutated this instance. Without the refresh, the
+            // final `*slot = updated` would silently revert that writer's
+            // changes (e.g. a freshly-set agent_session_id).
+            let mut working = {
+                let instances = inst_state.instances.read().await;
+                instances
+                    .iter()
+                    .find(|i| i.id == id)
+                    .cloned()
+                    .unwrap_or(inst)
+            };
             let title = working.title.clone();
             let result = tokio::task::spawn_blocking(move || {
                 let res = crate::session::recovery::run_recovery_for_instance(&mut working);
