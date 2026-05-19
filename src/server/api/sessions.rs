@@ -494,7 +494,7 @@ pub struct UpdateWorkspaceOrderingBody {
 
 pub async fn update_workspace_ordering(
     State(state): State<Arc<AppState>>,
-    Json(body): Json<UpdateWorkspaceOrderingBody>,
+    body: Result<Json<UpdateWorkspaceOrderingBody>, axum::extract::rejection::JsonRejection>,
 ) -> impl IntoResponse {
     if state.read_only {
         return (
@@ -503,8 +503,13 @@ pub async fn update_workspace_ordering(
                 "error": "read_only",
                 "message": "Server is in read-only mode"
             })),
-        );
+        )
+            .into_response();
     }
+    let Json(body) = match body {
+        Ok(b) => b,
+        Err(rej) => return rej.into_response(),
+    };
 
     if body.order.len() > MAX_ORDER_ENTRIES {
         return (
@@ -512,7 +517,8 @@ pub async fn update_workspace_ordering(
             Json(serde_json::json!({
                 "message": format!("order has {} entries, max is {}", body.order.len(), MAX_ORDER_ENTRIES)
             })),
-        );
+        )
+            .into_response();
     }
     if let Some(bad) = body.order.iter().find(|e| e.len() > MAX_ORDER_ENTRY_LEN) {
         return (
@@ -520,7 +526,8 @@ pub async fn update_workspace_ordering(
             Json(serde_json::json!({
                 "message": format!("order entry is {} bytes, max is {}", bad.len(), MAX_ORDER_ENTRY_LEN)
             })),
-        );
+        )
+            .into_response();
     }
 
     let ordering = crate::session::WorkspaceOrdering { order: body.order };
@@ -529,12 +536,14 @@ pub async fn update_workspace_ordering(
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(serde_json::json!({ "message": "Failed to persist ordering" })),
-        );
+        )
+            .into_response();
     }
     (
         StatusCode::OK,
         Json(serde_json::json!({ "order": ordering.order })),
     )
+        .into_response()
 }
 
 // --- Rename session ---
@@ -551,7 +560,7 @@ fn apply_session_title_rename(inst: &mut Instance, title: String) {
 pub async fn rename_session(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-    Json(body): Json<RenameSessionBody>,
+    body: Result<Json<RenameSessionBody>, axum::extract::rejection::JsonRejection>,
 ) -> impl IntoResponse {
     if state.read_only {
         return (
@@ -559,20 +568,27 @@ pub async fn rename_session(
             Json(
                 serde_json::json!({"error": "read_only", "message": "Server is in read-only mode"}),
             ),
-        );
+        )
+            .into_response();
     }
+    let Json(body) = match body {
+        Ok(b) => b,
+        Err(rej) => return rej.into_response(),
+    };
     let title = body.title.trim().to_string();
     if title.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({ "message": "Title cannot be empty" })),
-        );
+        )
+            .into_response();
     }
     if let Err(msg) = validate_no_shell_injection(&title, "title") {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({ "message": msg })),
-        );
+        )
+            .into_response();
     }
 
     let mut instances = state.instances.write().await;
@@ -580,7 +596,8 @@ pub async fn rename_session(
         return (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({ "message": "Session not found" })),
-        );
+        )
+            .into_response();
     };
 
     apply_session_title_rename(inst, title.clone());
@@ -600,7 +617,7 @@ pub async fn rename_session(
         }
     }
 
-    (StatusCode::OK, Json(serde_json::json!(response)))
+    (StatusCode::OK, Json(serde_json::json!(response))).into_response()
 }
 
 // --- Update session notification preferences ---
@@ -649,7 +666,7 @@ where
 pub async fn update_session_notifications(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-    Json(body): Json<UpdateNotificationsBody>,
+    body: Result<Json<UpdateNotificationsBody>, axum::extract::rejection::JsonRejection>,
 ) -> impl IntoResponse {
     if state.read_only {
         return (
@@ -657,14 +674,20 @@ pub async fn update_session_notifications(
             Json(
                 serde_json::json!({"error": "read_only", "message": "Server is in read-only mode"}),
             ),
-        );
+        )
+            .into_response();
     }
+    let Json(body) = match body {
+        Ok(b) => b,
+        Err(rej) => return rej.into_response(),
+    };
     let mut instances = state.instances.write().await;
     let Some(inst) = instances.iter_mut().find(|i| i.id == id) else {
         return (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({ "message": "Session not found" })),
-        );
+        )
+            .into_response();
     };
 
     // Apply each field independently. `Unset` leaves the stored value
@@ -696,7 +719,7 @@ pub async fn update_session_notifications(
         }
     }
 
-    (StatusCode::OK, Json(serde_json::json!(response)))
+    (StatusCode::OK, Json(serde_json::json!(response))).into_response()
 }
 
 // --- Diff base override ---
@@ -719,7 +742,7 @@ pub struct UpdateDiffBaseBody {
 pub async fn update_session_diff_base(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-    Json(body): Json<UpdateDiffBaseBody>,
+    body: Result<Json<UpdateDiffBaseBody>, axum::extract::rejection::JsonRejection>,
 ) -> impl IntoResponse {
     if state.read_only {
         return (
@@ -728,15 +751,21 @@ pub async fn update_session_diff_base(
                 "error": "read_only",
                 "message": "Server is in read-only mode"
             })),
-        );
+        )
+            .into_response();
     }
+    let Json(body) = match body {
+        Ok(b) => b,
+        Err(rej) => return rej.into_response(),
+    };
 
     let mut instances = state.instances.write().await;
     let Some(inst) = instances.iter_mut().find(|i| i.id == id) else {
         return (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({ "message": "Session not found" })),
-        );
+        )
+            .into_response();
     };
 
     inst.base_branch_override = body
@@ -761,7 +790,7 @@ pub async fn update_session_diff_base(
         }
     }
 
-    (StatusCode::OK, Json(serde_json::json!(response)))
+    (StatusCode::OK, Json(serde_json::json!(response))).into_response()
 }
 
 // --- Delete session ---
@@ -976,7 +1005,7 @@ pub struct CreateSessionBody {
 
 pub async fn create_session(
     State(state): State<Arc<AppState>>,
-    Json(body): Json<CreateSessionBody>,
+    body: Result<Json<CreateSessionBody>, axum::extract::rejection::JsonRejection>,
 ) -> impl IntoResponse {
     if state.read_only {
         return (
@@ -987,6 +1016,10 @@ pub async fn create_session(
         )
             .into_response();
     }
+    let Json(body) = match body {
+        Ok(b) => b,
+        Err(rej) => return rej.into_response(),
+    };
 
     // Validate user inputs for shell injection
     for (value, name) in [
@@ -2749,7 +2782,7 @@ type SendKeysResult =
 pub async fn send_message(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-    Json(req): Json<SendMessageRequest>,
+    req: Result<Json<SendMessageRequest>, axum::extract::rejection::JsonRejection>,
 ) -> impl IntoResponse {
     if state.read_only {
         return (
@@ -2758,6 +2791,10 @@ pub async fn send_message(
         )
             .into_response();
     }
+    let Json(req) = match req {
+        Ok(j) => j,
+        Err(rej) => return rej.into_response(),
+    };
 
     if req.message.trim().is_empty() {
         return (
