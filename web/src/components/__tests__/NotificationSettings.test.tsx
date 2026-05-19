@@ -130,8 +130,9 @@ describe("NotificationSettings", () => {
     expect(beforeBtn.disabled).toBe(false);
     setState({ kind: "asking" });
     rerender(<NotificationSettings />);
-    // 'asking' has no button; verify Working... is not stuck on a stale
-    // 'off' button (i.e. that the rerender switched to status text).
+    // 'asking' has no button; verify we switched away from the actionable
+    // 'off' UI (the stale Enable button is gone) onto the status text.
     expect(container.textContent).toContain("Asking your browser");
+    expect(buttonByText(container, "Enable notifications")).toBeNull();
   });
 });
