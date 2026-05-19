@@ -379,13 +379,19 @@ mod tests {
                 if !signature.contains("Json<") {
                     continue;
                 }
-                let has_eager = signature
-                    .split(',')
-                    .any(|arg| arg.trim_start().starts_with("Json("));
+                // Catch both eager forms:
+                //   `Json(body): Json<T>`  -- pattern destructure
+                //   `body: Json<T>`        -- typed parameter (still eager)
+                // Either parameter triggers axum's extractor before the
+                // handler body runs, defeating the read-only short-circuit.
+                let has_eager = signature.split(',').any(|arg| {
+                    let trimmed = arg.trim_start();
+                    trimmed.starts_with("Json(") || trimmed.contains(": Json<")
+                });
                 if has_eager {
                     failures.push(format!(
-                        "{file_label}: handler `{name}` uses eager `Json(...): Json<T>` \
-                         extractor. Mutating handlers must extract the body via \
+                        "{file_label}: handler `{name}` uses eager JSON extraction. \
+                         Mutating handlers must extract the body via \
                          `Result<Json<T>, axum::extract::rejection::JsonRejection>` (or \
                          `Option<Json<T>>`) so the read-only short-circuit can run \
                          before body shape validation. See #1229."
