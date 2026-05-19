@@ -1668,8 +1668,9 @@ async fn status_poll_loop(state: Arc<AppState>) {
 /// 3. Run `restart_with_size_opts(None, false)` via `spawn_blocking`.
 /// 4. Update `state.instances` in place with the post-cascade `Instance`.
 ///
-/// Concurrency is capped at 3 to bound cold-start latency without
-/// thundering-herd-ing tmux at server warm-up.
+/// Concurrency is capped at `recovery::STARTUP_RECOVERY_CONCURRENCY` to
+/// bound cold-start latency without thundering-herd-ing tmux at server
+/// warm-up.
 /// Phase A: acquire the cross-process lock, warm tmux, snapshot the
 /// candidate set, and pre-mark every candidate in `recently_restarted`.
 ///
@@ -1749,7 +1750,9 @@ async fn daemon_startup_recovery_cascade(
     lock: crate::session::recovery::RecoveryLock,
     candidates: Vec<crate::session::Instance>,
 ) {
-    let semaphore = Arc::new(tokio::sync::Semaphore::new(3));
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(
+        crate::session::recovery::STARTUP_RECOVERY_CONCURRENCY,
+    ));
     let mut tasks: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
 
     for inst in candidates {
@@ -1833,6 +1836,22 @@ async fn daemon_startup_recovery_cascade(
                     if let Some(slot) = instances.iter_mut().find(|i| i.id == id) {
                         *slot = updated;
                     }
+                    drop(instances);
+                    // Release the suppression now that the cascade has
+                    // succeeded and the pane is alive. Without this, the
+                    // next `status_poll_loop` tick (within 2s) would force
+                    // `Status::Starting` for the rest of the TTL window,
+                    // broadcasting a phantom `Idle -> Starting` transition
+                    // followed by `Starting -> Idle/Running` at TTL expiry.
+                    // The suppression's purpose is to cover the in-cascade
+                    // window where `last_start_time` is lost on the disk
+                    // reload; once the cascade has finished the on-disk
+                    // status is current and the poll path resolves to the
+                    // correct status without help.
+                    crate::session::recovery::unmark_recently_restarted(
+                        &inst_state.recently_restarted,
+                        &id,
+                    );
                 }
                 Ok((mut updated, Err(e))) => {
                     tracing::warn!(

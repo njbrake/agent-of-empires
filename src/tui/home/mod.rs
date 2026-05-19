@@ -945,6 +945,18 @@ impl HomeView {
     /// otherwise leaves it `None` (the daemon owns recovery, the lock is
     /// contended, or there are no candidates).
     fn maybe_start_startup_recovery(&mut self) {
+        // Requires a tokio runtime: each worker is `tokio::spawn`-ed below.
+        // `HomeView::new` is sync and called from production via
+        // `#[tokio::main]`, so the runtime is present at the real call site.
+        // Unit tests construct `HomeView` directly without a runtime; today
+        // they do not panic only because their test instances lack a valid
+        // `agent_session_id` and `is_recovery_candidate` filters them out
+        // before any spawn is attempted. This guard makes the function
+        // resilient to a future test that constructs an instance with a
+        // valid sid and no live tmux.
+        if tokio::runtime::Handle::try_current().is_err() {
+            return;
+        }
         // Defer to the daemon if one is running. The daemon's own
         // `daemon_startup_recovery` will handle the candidates from this
         // TUI's profile (and every other profile). Recovery split-brain
@@ -1011,7 +1023,9 @@ impl HomeView {
         );
 
         let (tx, rx) = std::sync::mpsc::channel::<RecoveryUpdate>();
-        let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(3));
+        let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(
+            crate::session::recovery::STARTUP_RECOVERY_CONCURRENCY,
+        ));
 
         for inst in candidates {
             let tx = tx.clone();

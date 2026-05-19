@@ -114,6 +114,17 @@ pub fn warm_tmux_server() {
         .status();
 }
 
+/// Maximum number of recovery workers running concurrently. Sized to cover
+/// the typical case (a handful of resume-capable sessions surviving a
+/// daemon restart) without thundering-herd-ing tmux at server warm-up.
+/// Shared between the TUI standalone path and the daemon path so both sides
+/// behave identically when run separately. Users with more than this many
+/// simultaneously-missing sessions will see the 4th+ candidate enter its
+/// cascade after `RECENTLY_RESTARTED_TTL` has expired for it, producing a
+/// brief `Starting -> Error` blip before completion; raising both this
+/// constant and the TTL together is the right knob if telemetry warrants.
+pub const STARTUP_RECOVERY_CONCURRENCY: usize = 3;
+
 /// Time-to-live entries in the `recently_restarted` map remain authoritative
 /// for. Sized to cover the typical worst-case cascade latency
 /// (`RESUME_PROBE_MAX` ~3s × 2 tiers + kill_clean grace ~150ms ≈ 6.15s) plus
