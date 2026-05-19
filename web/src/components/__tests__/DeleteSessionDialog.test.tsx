@@ -91,6 +91,24 @@ describe("DeleteSessionDialog keyboard affordances", () => {
     resolveConfirm?.();
   });
 
+  it("Enter while focus is on the Delete button does not double-fire onConfirm", () => {
+    // When the Delete button is focused (the default on mount), the
+    // browser already activates the button on Enter via a synthetic
+    // click. The document-level keydown handler must skip Enter when
+    // the event target is a button, or onConfirm would be called twice.
+    const onConfirm = vi.fn().mockResolvedValue(undefined);
+    const { container } = setup({ onConfirm });
+    const deleteBtn = Array.from(container.querySelectorAll("button")).find(
+      (b) => b.textContent?.includes("Delete") && !b.textContent.includes("Deleting"),
+    )!;
+    expect(document.activeElement).toBe(deleteBtn);
+    // Dispatch keydown from the focused button (bubbles up to document)
+    // and the native button activation (click) that the browser would emit.
+    fireEvent.keyDown(deleteBtn, { key: "Enter" });
+    fireEvent.click(deleteBtn);
+    expect(onConfirm).toHaveBeenCalledTimes(1);
+  });
+
   it("Enter while focus is on the Cancel button cancels rather than confirms", () => {
     const onConfirm = vi.fn().mockResolvedValue(undefined);
     const onCancel = vi.fn();

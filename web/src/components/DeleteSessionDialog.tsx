@@ -55,17 +55,16 @@ export function DeleteSessionDialog({
         return;
       }
       if (e.key === "Enter") {
-        // Skip when focus is on an element that has its own Enter semantics
-        // (Cancel button, native input/textarea), so the user can still
-        // tab to Cancel and press Enter to dismiss without confirming.
+        // Skip when focus is on an element that has its own Enter
+        // semantics so we don't double-fire or override defaults:
+        //   - native input/textarea: leave their own behavior alone
+        //   - any button (including the Delete button itself): the
+        //     browser already activates the focused button on Enter,
+        //     so handling it here would call handleConfirm twice.
         const target = e.target as HTMLElement | null;
         if (target) {
           const tag = target.tagName;
-          if (tag === "INPUT" || tag === "TEXTAREA") return;
-          if (
-            tag === "BUTTON" &&
-            target !== confirmButtonRef.current
-          )
+          if (tag === "INPUT" || tag === "TEXTAREA" || tag === "BUTTON")
             return;
         }
         if (deleting) return;
