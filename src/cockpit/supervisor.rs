@@ -1391,16 +1391,17 @@ impl<S: BroadcastSink> Supervisor<S> {
         };
 
         let cockpit_session_id = CockpitSessionId(session_id.clone());
-        // On reattach we don't know the original `source_profile` because
-        // it isn't persisted in `WorkerRecord`. `terminal/create` env
-        // resolution falls back to the global default profile in that
-        // case. The interactive tmux pane is unaffected because it reads
-        // profile from `Instance::source_profile` via `build_docker_env_args`.
+        // Reattach: read the original profile from the persisted
+        // `WorkerRecord` so `terminal/create` env resolution stays on the
+        // session's actual profile across daemon restarts. Legacy records
+        // written before the field existed serialize to `None`, in which
+        // case `current_env_entries` warns and falls back to the global
+        // default profile (matching pre-persistence behavior).
         let sandbox_resources = match sandbox {
             Some(info) => Some(super::acp_client::SessionSandbox::from_info(
                 &info,
                 cwd.as_path(),
-                None,
+                record.source_profile.clone(),
             )?),
             None => None,
         };
@@ -1965,6 +1966,7 @@ mod tests {
             vec![],
             vec![],
             None,
+            None,
         );
         crate::cockpit::worker_registry::save(&record).unwrap();
         {
@@ -2443,6 +2445,7 @@ mod tests {
             vec![],
             vec![],
             None,
+            None,
         );
         super::super::worker_registry::save(&record).unwrap();
 
@@ -2764,6 +2767,7 @@ mod tests {
             None,
             vec![],
             vec![],
+            None,
             None,
         );
         crate::cockpit::worker_registry::save(&record).unwrap();

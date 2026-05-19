@@ -301,8 +301,24 @@ impl SessionSandbox {
     /// `terminal/create` so rotated host values (e.g. refreshed tokens)
     /// reach the agent's shell commands without requiring a container
     /// recreate.
+    ///
+    /// A missing `source_profile` only happens for legacy `WorkerRecord`
+    /// entries written before the field was persisted. Warns once per
+    /// call rather than failing, since refusing resolution would break
+    /// `terminal/create` for sessions that are otherwise healthy.
     pub fn current_env_entries(&self) -> Vec<crate::containers::container_interface::EnvEntry> {
-        let profile = self.source_profile.as_deref().unwrap_or("");
+        let profile = match self.source_profile.as_deref() {
+            Some(p) => p,
+            None => {
+                tracing::warn!(
+                    target: "cockpit.terminal",
+                    container = %self.container_name,
+                    "SessionSandbox has no source_profile (likely a legacy WorkerRecord); \
+                     resolving terminal/create env against the global default profile"
+                );
+                ""
+            }
+        };
         let sandbox_config =
             crate::session::environment::resolved_sandbox_config(profile, &self.project_path);
         crate::session::environment::collect_environment(&sandbox_config, &self.sandbox_info)
@@ -949,6 +965,9 @@ fn spawn_runner_detached(
         .collect();
     if !provider_keys.is_empty() {
         cmd.arg("--provider-env-keys").arg(provider_keys.join(","));
+    }
+    if let Some(profile) = config.source_profile.as_deref().filter(|s| !s.is_empty()) {
+        cmd.arg("--source-profile").arg(profile);
     }
     if let Some(stored) = &config.stored_acp_session_id {
         cmd.arg("--stored-acp-session-id").arg(stored);
