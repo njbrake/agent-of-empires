@@ -13,6 +13,7 @@ use ratatui::widgets::*;
 
 use super::DialogResult;
 use crate::session::profile_config::resolve_config_or_warn;
+use crate::tui::components::{profile_cycler_spans, tool_cycler_spans};
 use crate::tui::styles::Theme;
 
 /// Data returned when the restart dialog is submitted.
@@ -233,72 +234,40 @@ impl RestartDialog {
         self.render_hints(frame, chunks[7], theme);
     }
 
-    /// Profile picker, rendered to match `NewSessionDialog::render_profile_field`
-    /// so the New / Restart modals look identical: underlined label when
-    /// focused, `< name >` cycler when more than one profile exists.
+    /// Profile picker, rendered via the shared `profile_cycler_spans` so the
+    /// New and Restart modals stay visually identical.
     fn render_profile_selector(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
-        let focused = self.is_profile_field();
-        let label_style = if focused {
-            Style::default().fg(theme.accent).underlined()
-        } else {
-            Style::default().fg(theme.text)
-        };
-        let value_style = if focused {
-            Style::default().fg(theme.accent).bold()
-        } else {
-            Style::default().fg(theme.accent)
-        };
         let value = self
             .available_profiles
             .get(self.profile_index)
             .map(String::as_str)
             .unwrap_or("(none)");
-        let mut spans = vec![Span::styled("Profile:", label_style), Span::raw(" ")];
-        if self.available_profiles.len() > 1 {
-            spans.push(Span::styled("< ", Style::default().fg(theme.dimmed)));
-            spans.push(Span::styled(value.to_string(), value_style));
-            spans.push(Span::styled(" >", Style::default().fg(theme.dimmed)));
-        } else {
-            spans.push(Span::styled(value.to_string(), value_style));
-        }
+        let spans = profile_cycler_spans(
+            "Profile:",
+            value,
+            self.available_profiles.len(),
+            self.is_profile_field(),
+            theme,
+        );
         frame.render_widget(Paragraph::new(Line::from(spans)), area);
     }
 
-    /// AI-engine picker, rendered to match the `Tool:` field in
-    /// `NewSessionDialog`: the label reads "Tool:" (not "AI:"), and the
-    /// cycler uses the same `← ● name  [n/m] →` styling as the New dialog.
+    /// AI-engine picker, rendered via the shared `tool_cycler_spans` so the
+    /// label reads "Tool:" and the cycler matches the New dialog exactly.
     fn render_tool_selector(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
-        let focused = self.is_tool_field();
-        let label_style = if focused {
-            Style::default().fg(theme.accent).underlined()
-        } else {
-            Style::default().fg(theme.text)
-        };
-        let dimmed = Style::default().fg(theme.dimmed);
-        let accent = Style::default().fg(theme.accent).bold();
         let value = self
             .available_tools
             .get(self.tool_index)
             .map(String::as_str)
             .unwrap_or("(none)");
-        let total = self.available_tools.len();
-        let mut spans = vec![Span::styled("Tool:", label_style), Span::raw(" ")];
-        if total > 1 {
-            if focused {
-                spans.push(Span::styled("← ", dimmed));
-            }
-            spans.push(Span::styled("● ", accent));
-            spans.push(Span::styled(value.to_string(), accent));
-            spans.push(Span::styled(
-                format!("  [{}/{}]", self.tool_index + 1, total),
-                dimmed,
-            ));
-            if focused {
-                spans.push(Span::styled("  →", dimmed));
-            }
-        } else {
-            spans.push(Span::styled(value.to_string(), accent));
-        }
+        let spans = tool_cycler_spans(
+            "Tool:",
+            value,
+            self.tool_index,
+            self.available_tools.len(),
+            self.is_tool_field(),
+            theme,
+        );
         frame.render_widget(Paragraph::new(Line::from(spans)), area);
     }
 

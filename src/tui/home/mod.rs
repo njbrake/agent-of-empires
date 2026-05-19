@@ -28,8 +28,7 @@ use super::dialogs::{
     ChangelogDialog, CommandPaletteDialog, ConfirmDialog, GroupDeleteOptionsDialog,
     HookTrustDialog, HooksInstallDialog, InfoDialog, NewSessionData, NewSessionDialog,
     NoAgentsDialog, ProfilePickerDialog, ProjectsDialog, RenameDialog, RestartDialog,
-    SnoozeDurationDialog,
-    UnifiedDeleteDialog, UpdateConfirmDialog, WelcomeDialog,
+    SnoozeDurationDialog, UnifiedDeleteDialog, UpdateConfirmDialog, WelcomeDialog,
 };
 use super::diff::DiffView;
 use super::settings::SettingsView;
