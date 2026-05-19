@@ -876,11 +876,12 @@ pub async fn subscribe(
     State(state): State<Arc<AppState>>,
     Extension(auth): Extension<AuthenticatedTokenHash>,
     headers: HeaderMap,
-    Json(body): Json<SubscribeBody>,
+    body: Result<Json<SubscribeBody>, axum::extract::rejection::JsonRejection>,
 ) -> Result<StatusCode, StatusCode> {
     if state.read_only {
         return Err(StatusCode::FORBIDDEN);
     }
+    let Json(body) = body.map_err(|rej| rej.status())?;
     let push = state.push.as_ref().ok_or(StatusCode::NOT_FOUND)?;
 
     // Minimal shape validation so we don't store garbage.
@@ -949,11 +950,12 @@ pub fn extract_request_origin(headers: &HeaderMap) -> Option<String> {
 pub async fn unsubscribe(
     State(state): State<Arc<AppState>>,
     Extension(auth): Extension<AuthenticatedTokenHash>,
-    Json(body): Json<EndpointBody>,
+    body: Result<Json<EndpointBody>, axum::extract::rejection::JsonRejection>,
 ) -> Result<StatusCode, StatusCode> {
     if state.read_only {
         return Err(StatusCode::FORBIDDEN);
     }
+    let Json(body) = body.map_err(|rej| rej.status())?;
     let push = state.push.as_ref().ok_or(StatusCode::NOT_FOUND)?;
     if body.endpoint.is_empty() {
         return Err(StatusCode::BAD_REQUEST);
@@ -980,11 +982,12 @@ pub async fn unsubscribe(
 pub async fn test(
     State(state): State<Arc<AppState>>,
     Extension(auth): Extension<AuthenticatedTokenHash>,
-    Json(body): Json<EndpointBody>,
+    body: Result<Json<EndpointBody>, axum::extract::rejection::JsonRejection>,
 ) -> Result<Json<TestResult>, StatusCode> {
     if state.read_only {
         return Err(StatusCode::FORBIDDEN);
     }
+    let Json(body) = body.map_err(|rej| rej.status())?;
     let push = state.push.as_ref().ok_or(StatusCode::NOT_FOUND)?;
     if body.endpoint.is_empty() {
         return Err(StatusCode::BAD_REQUEST);
