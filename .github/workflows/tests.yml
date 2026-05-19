@@ -124,6 +124,12 @@ jobs:
           name: playwright-report
           path: web/playwright-report/
           retention-days: 14
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ !cancelled() }}
+        with:
+          name: playwright-mocked-coverage
+          path: web/coverage/merged/
+          retention-days: 14
 
   playwright-live:
     name: Playwright (live)
@@ -174,4 +180,10 @@ jobs:
         with:
           name: playwright-live-report
           path: web/playwright-live-report/
+          retention-days: 14
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ !cancelled() }}
+        with:
+          name: playwright-live-coverage
+          path: web/coverage/merged/
           retention-days: 14
