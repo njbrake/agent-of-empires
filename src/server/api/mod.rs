@@ -257,6 +257,149 @@ mod tests {
         );
     }
 
+    /// Companion to `every_mutating_handler_has_read_only_guard`: enforce
+    /// that any mutating handler taking a typed JSON body extracts it
+    /// lazily, so the read-only short-circuit can run BEFORE body shape
+    /// validation. Otherwise axum's `Json<T>` extractor returns 422 on a
+    /// malformed body and the read-only guard never fires (see #1229).
+    ///
+    /// Accepted signatures for a Json-bearing handler:
+    ///   - `body: Result<Json<T>, ...JsonRejection>` (preferred)
+    ///   - `body: Option<Json<T>>`                   (already lazy)
+    ///   - `_: Json<serde_json::Value>` does NOT save you: even a Value
+    ///     extractor 422s on non-JSON bytes. Wrap it in `Result<...>`.
+    ///
+    /// The rejected pattern is the eager destructure
+    /// `Json(body): Json<T>` (or `Json(_): Json<T>`).
+    #[test]
+    fn mutating_handlers_extract_body_lazily() {
+        let cases: &[(&str, &str, &[&str])] = &[
+            (
+                "api/sessions.rs",
+                include_str!("sessions.rs"),
+                &[
+                    "create_session",
+                    "delete_session",
+                    "rename_session",
+                    "send_message",
+                    "ensure_session",
+                    "ensure_terminal",
+                    "ensure_container_terminal",
+                    "update_session_notifications",
+                    "update_session_diff_base",
+                    "update_workspace_ordering",
+                ],
+            ),
+            ("api/git.rs", include_str!("git.rs"), &["clone_repo"]),
+            (
+                "api/log_level.rs",
+                include_str!("log_level.rs"),
+                &["patch_log_level"],
+            ),
+            (
+                "api/projects.rs",
+                include_str!("projects.rs"),
+                &["create_project", "delete_project"],
+            ),
+            (
+                "api/system.rs",
+                include_str!("system.rs"),
+                &[
+                    "update_settings",
+                    "create_profile",
+                    "delete_profile",
+                    "rename_profile",
+                    "default_profile",
+                    "update_profile_settings",
+                ],
+            ),
+            (
+                "api/cockpit.rs",
+                include_str!("cockpit.rs"),
+                &[
+                    "spawn_cockpit",
+                    "shutdown_cockpit",
+                    "cockpit_prompt",
+                    "cockpit_cancel",
+                    "cockpit_force_end_turn",
+                    "cockpit_enable",
+                    "cockpit_disable",
+                    "cockpit_set_mode",
+                    "resolve_approval",
+                    "set_cockpit_master",
+                ],
+            ),
+            (
+                "server/push.rs",
+                include_str!("../push.rs"),
+                &["subscribe", "unsubscribe", "test"],
+            ),
+        ];
+
+        let mut failures: Vec<String> = Vec::new();
+        for (file_label, source, handler_names) in cases {
+            for name in *handler_names {
+                let needle = format!("fn {name}(");
+                let Some(start) = source.find(&needle) else {
+                    failures.push(format!(
+                        "{file_label}: handler `{name}` not found (rename/refactor?)"
+                    ));
+                    continue;
+                };
+                let rest = &source[start..];
+                // Signature spans `fn name(` ... `)` matching the opening
+                // paren. Walk a depth counter so nested generics like
+                // `Result<Json<T>, JsonRejection>` don't trip the close.
+                let after_open = &rest[needle.len()..];
+                let mut depth = 1usize;
+                let mut end = None;
+                for (i, c) in after_open.char_indices() {
+                    match c {
+                        '(' => depth += 1,
+                        ')' => {
+                            depth -= 1;
+                            if depth == 0 {
+                                end = Some(i);
+                                break;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                let Some(end_off) = end else {
+                    failures.push(format!(
+                        "{file_label}: handler `{name}` signature parse failed"
+                    ));
+                    continue;
+                };
+                let signature = &after_open[..end_off];
+                // Only handlers that take a JSON body need the lazy
+                // pattern. If the signature mentions `Json<` at all,
+                // the only safe forms are inside `Result<` or `Option<`.
+                if !signature.contains("Json<") {
+                    continue;
+                }
+                let has_eager = signature
+                    .split(',')
+                    .any(|arg| arg.trim_start().starts_with("Json("));
+                if has_eager {
+                    failures.push(format!(
+                        "{file_label}: handler `{name}` uses eager `Json(...): Json<T>` \
+                         extractor. Mutating handlers must extract the body via \
+                         `Result<Json<T>, axum::extract::rejection::JsonRejection>` (or \
+                         `Option<Json<T>>`) so the read-only short-circuit can run \
+                         before body shape validation. See #1229."
+                    ));
+                }
+            }
+        }
+        assert!(
+            failures.is_empty(),
+            "Lazy-body-extraction audit failed:\n{}",
+            failures.join("\n")
+        );
+    }
+
     #[test]
     fn shell_metacharacters_blocklist_is_exhaustive() {
         // Every character here has a documented shell-injection vector when
