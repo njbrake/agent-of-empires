@@ -100,7 +100,7 @@ export interface TerminalState {
  * Called at terminal construction and again on `aoe:theme-changed` so a
  * live palette swap doesn't require a reconnect.
  */
-function readThemeFromCss(): ITheme {
+export function readThemeFromCss(): ITheme {
   const root = document.documentElement;
   const cs = getComputedStyle(root);
   const v = (name: string, fallback: string) =>
