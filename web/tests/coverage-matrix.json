@@ -329,6 +329,13 @@
       "components": ["web/src/components/cockpit/RateLimitRecoveryModal.tsx"]
     },
     {
+      "id": "cockpit.silent-orphan-watchdog",
+      "kind": "vitest",
+      "risk": "medium",
+      "specs": ["src/lib/cockpitTypes.test.ts"],
+      "components": []
+    },
+    {
       "id": "read-only.mode",
       "kind": "live-playwright",
       "risk": "high",

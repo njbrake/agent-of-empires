@@ -263,7 +263,10 @@ function CockpitChrome({
         <WorkerStoppedBanner sessionId={sessionId} />
       )}
       {state.workerRestarting && !state.startupError && !state.workerStopped && (
-        <WorkerRestartingBanner agentUnresponsive={state.agentUnresponsive} />
+        <WorkerRestartingBanner
+          agentUnresponsive={state.agentUnresponsive}
+          agentOrphaned={state.agentOrphaned}
+        />
       )}
       {cockpitWorkerState === "resuming" &&
         !state.startupError &&
@@ -1201,21 +1204,28 @@ function InteractionErrorBanner({
 
 function WorkerRestartingBanner({
   agentUnresponsive,
+  agentOrphaned,
 }: {
   agentUnresponsive: boolean;
+  agentOrphaned: boolean;
 }) {
-  // Two reasons land here:
+  // Three reasons land here:
   //   - `aoe cockpit restart` (deletes registry, daemon's reaper
   //     publishes Stopped{reason:"restart_pending"}, reconciler spawns
   //     a fresh worker with the cached acp_session_id).
   //   - Cancel-escalation watchdog fired: claude-agent-acp ignored
   //     `session/cancel` for the grace window, the supervisor SIGTERMed
   //     the wedged runner and is respawning via `session/load`.
-  // Both end with `AcpSessionAssigned` clearing the banner.
+  //   - Silent-orphan watchdog fired: the adapter finished streaming
+  //     the turn but never sent the JSON-RPC `PromptResponse`; the
+  //     supervisor restarts the runner the same way. See #1240.
+  // All paths end with `AcpSessionAssigned` clearing the banner.
   // See #1196 for the agent_unresponsive variant.
-  const message = agentUnresponsive
-    ? "Agent stopped responding to cancel. Restarting worker; your transcript will be preserved."
-    : "Restarting cockpit worker… the daemon will respawn the agent with your existing transcript shortly.";
+  const message = agentOrphaned
+    ? "Agent finished but didn't notify the daemon. Restarting worker; your transcript will be preserved."
+    : agentUnresponsive
+      ? "Agent stopped responding to cancel. Restarting worker; your transcript will be preserved."
+      : "Restarting cockpit worker… the daemon will respawn the agent with your existing transcript shortly.";
   return (
     <div className="flex items-center gap-2 border-b border-sky-900/60 bg-sky-950/40 px-4 py-2 text-xs text-sky-200">
       <span
