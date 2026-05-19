@@ -1671,15 +1671,22 @@ async fn daemon_startup_recovery(state: Arc<AppState>) {
                 .expect("recovery semaphore not closed");
             let _guard = lock_handle.lock().await;
 
-            // Re-check `is_recovery_candidate` after acquiring the lock:
-            // a REST handler toggling `cockpit_mode` between snapshot and
-            // cascade could otherwise race here.
+            // Re-check both `is_recovery_candidate` AND tmux liveness after
+            // acquiring the lock: between the snapshot and this point a
+            // REST handler (e.g. ensure_session) could have toggled
+            // `cockpit_mode` OR brought the tmux pane back. Without the
+            // tmux re-check, recovery would `kill_clean` a freshly-started
+            // pane the user just attached to. The lock + this re-check
+            // serialise against any other AoE writer.
             let still_candidate = {
                 let instances = inst_state.instances.read().await;
                 instances
                     .iter()
                     .find(|i| i.id == id)
-                    .map(crate::session::recovery::is_recovery_candidate)
+                    .map(|i| {
+                        !i.has_live_tmux_pane()
+                            && crate::session::recovery::is_recovery_candidate(i)
+                    })
                     .unwrap_or(false)
             };
             if !still_candidate {
