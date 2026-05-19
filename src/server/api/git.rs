@@ -45,7 +45,7 @@ fn repo_name_from_url(url: &str) -> Option<String> {
 
 pub async fn clone_repo(
     State(state): State<Arc<AppState>>,
-    Json(body): Json<CloneRepoBody>,
+    body: Result<Json<CloneRepoBody>, axum::extract::rejection::JsonRejection>,
 ) -> impl IntoResponse {
     if state.read_only {
         return (
@@ -56,6 +56,10 @@ pub async fn clone_repo(
         )
             .into_response();
     }
+    let Json(body) = match body {
+        Ok(b) => b,
+        Err(rej) => return rej.into_response(),
+    };
 
     let url = body.url.trim().to_string();
     if url.is_empty() {

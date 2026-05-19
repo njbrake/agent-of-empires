@@ -99,10 +99,18 @@ pub struct CreateProjectBody {
     pub allow_override: bool,
 }
 
-#[tracing::instrument(target = "http.api.projects", skip_all, fields(path = %body.path, scope = body.scope.as_deref().unwrap_or("global"), allow_override = body.allow_override))]
+#[tracing::instrument(
+    target = "http.api.projects",
+    skip_all,
+    fields(
+        path = tracing::field::Empty,
+        scope = tracing::field::Empty,
+        allow_override = tracing::field::Empty,
+    ),
+)]
 pub async fn create_project(
     State(state): State<Arc<AppState>>,
-    Json(body): Json<CreateProjectBody>,
+    body: Result<Json<CreateProjectBody>, axum::extract::rejection::JsonRejection>,
 ) -> impl IntoResponse {
     if state.read_only {
         tracing::warn!(target: "http.api.projects", reason = "read_only", "rejected create");
@@ -114,6 +122,14 @@ pub async fn create_project(
         )
             .into_response();
     }
+    let Json(body) = match body {
+        Ok(b) => b,
+        Err(rej) => return rej.into_response(),
+    };
+    let span = tracing::Span::current();
+    span.record("path", body.path.as_str());
+    span.record("scope", body.scope.as_deref().unwrap_or("global"));
+    span.record("allow_override", body.allow_override);
 
     let scope = match body.scope.as_deref() {
         Some("profile") => ProjectScope::Profile,
