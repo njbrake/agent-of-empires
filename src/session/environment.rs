@@ -280,6 +280,12 @@ pub(crate) fn resolve_env_value(val: &str) -> Option<String> {
 /// Mirrors what `collect_environment` will silently drop at container
 /// create or docker exec time, so callers can surface the same warnings
 /// to the user via toast or stderr before the failure becomes invisible.
+///
+/// `DEFAULT_TERMINAL_ENV_VARS` are pass-through-if-set toggles (FORCE_COLOR
+/// and NO_COLOR in particular are mutually exclusive and intentionally
+/// unset on most hosts), so we skip them. Without this skip, every new
+/// sandboxed session pops a warning dialog for env vars the user never
+/// set on purpose.
 pub fn validate_env_entries<I, S>(entries: I) -> Vec<String>
 where
     I: IntoIterator<Item = S>,
@@ -287,7 +293,15 @@ where
 {
     entries
         .into_iter()
-        .filter_map(|e| validate_env_entry(e.as_ref()))
+        .filter_map(|e| {
+            let s = e.as_ref();
+            let key = s.split_once('=').map(|(k, _)| k).unwrap_or(s);
+            if DEFAULT_TERMINAL_ENV_VARS.contains(&key) {
+                None
+            } else {
+                validate_env_entry(s)
+            }
+        })
         .collect()
 }
 
@@ -1051,6 +1065,23 @@ environment = ["GH_TOKEN=write_token"]
     #[test]
     fn test_validate_env_entries_empty_list() {
         assert!(validate_env_entries(Vec::<String>::new()).is_empty());
+    }
+
+    #[test]
+    fn test_validate_env_entries_skips_default_terminal_vars_when_unset() {
+        for key in DEFAULT_TERMINAL_ENV_VARS {
+            std::env::remove_var(key);
+        }
+        let entries: Vec<String> = DEFAULT_TERMINAL_ENV_VARS
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let warnings = validate_env_entries(&entries);
+        assert!(
+            warnings.is_empty(),
+            "expected no warnings for default terminal vars even when unset, got: {:?}",
+            warnings
+        );
     }
 
     #[test]

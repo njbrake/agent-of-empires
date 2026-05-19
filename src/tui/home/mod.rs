@@ -1026,13 +1026,29 @@ impl HomeView {
 
                 if !warnings.is_empty() {
                     let body = warnings.join("\n\n");
-                    self.info_dialog = Some(InfoDialog::new(
-                        "Worktree warnings",
-                        &format!(
-                            "Session was created, but the following warnings were emitted during worktree setup:\n\n{}",
-                            body
-                        ),
-                    ));
+                    let message = format!(
+                        "Session was created, but the following warnings were emitted during worktree setup:\n\n{}",
+                        body
+                    );
+                    // Size to fit content. The default 50x9 truncates everything
+                    // past the prefix sentence, so the user only sees the prefix
+                    // and a blank line. Mirrors the math in app.rs:show_startup_warning.
+                    const WIDTH: u16 = 96;
+                    let inner_width = WIDTH.saturating_sub(4) as usize;
+                    let visual_lines: usize = message
+                        .lines()
+                        .map(|l| {
+                            if l.is_empty() {
+                                1
+                            } else {
+                                l.len().div_ceil(inner_width)
+                            }
+                        })
+                        .sum();
+                    let height = ((visual_lines as u16).saturating_add(7)).clamp(9, 35);
+                    self.info_dialog = Some(
+                        InfoDialog::new("Worktree warnings", &message).with_size(WIDTH, height),
+                    );
                 }
 
                 Some(session_id)
