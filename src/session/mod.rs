@@ -24,7 +24,7 @@ pub use config::{
     TmuxMouseMode, TmuxStatusBarMode, UpdatesConfig, WorktreeConfig,
 };
 pub(crate) use environment::user_shell;
-pub use environment::validate_env_entry;
+pub use environment::{validate_env_entries, validate_env_entry};
 pub use groups::{flatten_tree, flatten_tree_all_profiles, Group, GroupTree, Item};
 pub use instance::{
     EnsureReadyError, EnsureReadyOutcome, Instance, SandboxInfo, StartOutcome, Status,

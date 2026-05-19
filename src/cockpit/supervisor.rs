@@ -1391,10 +1391,16 @@ impl<S: BroadcastSink> Supervisor<S> {
         };
 
         let cockpit_session_id = CockpitSessionId(session_id.clone());
+        // On reattach we don't know the original `source_profile` because
+        // it isn't persisted in `WorkerRecord`. `terminal/create` env
+        // resolution falls back to the global default profile in that
+        // case. The interactive tmux pane is unaffected because it reads
+        // profile from `Instance::source_profile` via `build_docker_env_args`.
         let sandbox_resources = match sandbox {
             Some(info) => Some(super::acp_client::SessionSandbox::from_info(
                 &info,
                 cwd.as_path(),
+                None,
             )?),
             None => None,
         };

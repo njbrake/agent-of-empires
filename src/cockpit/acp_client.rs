@@ -253,6 +253,17 @@ pub struct AcpClient {
 pub struct SessionSandbox {
     pub container_name: String,
     pub container_workdir: PathBuf,
+    /// Snapshot of the session's sandbox info, used to re-resolve env on
+    /// every `terminal/create` so the agent's shell commands see the same
+    /// env entries (including any rotated host values) as the interactive
+    /// tmux pane.
+    pub sandbox_info: SandboxInfo,
+    /// Profile the session was created under. Required for
+    /// `resolved_sandbox_config` to pick up per-profile env overrides.
+    pub source_profile: Option<String>,
+    /// Host-side project path. `resolved_sandbox_config` walks up from
+    /// here to find any repo-local config overrides.
+    pub project_path: PathBuf,
 }
 
 impl SessionSandbox {
@@ -264,6 +275,7 @@ impl SessionSandbox {
     pub fn from_info(
         sandbox: &SandboxInfo,
         project_path: &Path,
+        source_profile: Option<String>,
     ) -> Result<(Self, SandboxPathMap), AcpError> {
         let project_path_str = project_path.to_string_lossy().to_string();
         let (volumes, workdir) =
@@ -277,9 +289,23 @@ impl SessionSandbox {
             Self {
                 container_name: sandbox.container_name.clone(),
                 container_workdir: PathBuf::from(workdir),
+                sandbox_info: sandbox.clone(),
+                source_profile,
+                project_path: project_path.to_path_buf(),
             },
             SandboxPathMap::new(mounts),
         ))
+    }
+
+    /// Re-resolve env entries for this session's sandbox. Called on every
+    /// `terminal/create` so rotated host values (e.g. refreshed tokens)
+    /// reach the agent's shell commands without requiring a container
+    /// recreate.
+    pub fn current_env_entries(&self) -> Vec<crate::containers::container_interface::EnvEntry> {
+        let profile = self.source_profile.as_deref().unwrap_or("");
+        let sandbox_config =
+            crate::session::environment::resolved_sandbox_config(profile, &self.project_path);
+        crate::session::environment::collect_environment(&sandbox_config, &self.sandbox_info)
     }
 }
 
@@ -344,7 +370,11 @@ impl AcpClient {
             stored_acp_session_id: config.stored_acp_session_id.clone(),
         };
         let sandbox_pair = if let Some(info) = &config.sandbox_info {
-            Some(SessionSandbox::from_info(info, config.cwd.as_path())?)
+            Some(SessionSandbox::from_info(
+                info,
+                config.cwd.as_path(),
+                config.source_profile.clone(),
+            )?)
         } else {
             None
         };
@@ -1039,7 +1069,7 @@ fn build_sandbox_docker_argv(
     sandbox: &SandboxInfo,
     container_workdir: &str,
 ) -> Result<SandboxArgv, AcpError> {
-    use crate::containers::container_interface::EnvEntry;
+    use crate::containers::container_interface::docker_env_args;
 
     let runtime = crate::containers::get_container_runtime();
     let docker_binary = runtime.base.binary.to_string();
@@ -1056,26 +1086,14 @@ fn build_sandbox_docker_argv(
         "-w".into(),
         container_workdir.to_string(),
     ];
-    let mut inherit_env: Vec<(String, String)> = Vec::new();
-    let mut seen_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
-
-    for entry in env_entries {
-        match entry {
-            EnvEntry::Inherit { key, value } => {
-                if seen_keys.insert(key.clone()) {
-                    docker_args.push("-e".into());
-                    docker_args.push(key.clone());
-                    inherit_env.push((key, value));
-                }
-            }
-            EnvEntry::Literal { key, value } => {
-                if seen_keys.insert(key.clone()) {
-                    docker_args.push("-e".into());
-                    docker_args.push(format!("{}={}", key, value));
-                }
-            }
-        }
-    }
+    // `collect_environment` already dedupes by key, so the entry list is
+    // unique. We still track `seen_keys` so the provider-auth block below
+    // can skip keys we've already forwarded.
+    let mut seen_keys: std::collections::HashSet<String> =
+        env_entries.iter().map(|e| e.key().to_string()).collect();
+    let (env_argv, inherit_pairs) = docker_env_args(&env_entries);
+    docker_args.extend(env_argv);
+    let mut inherit_env: Vec<(String, String)> = inherit_pairs;
 
     // Provider auth keys: forward into the container only when set on
     // the host AND not already in the sandbox env list. Value-typed
@@ -2979,6 +2997,7 @@ async fn handle_create_terminal(
         .as_ref()
         .map(|s| super::terminal_handler::TerminalSandbox {
             container_name: s.container_name.clone(),
+            env_entries: s.current_env_entries(),
         });
     let result = match res
         .terminals
