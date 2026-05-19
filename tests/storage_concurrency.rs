@@ -166,9 +166,12 @@ fn test_commit_overwrites_concurrent_update_by_design() -> Result<()> {
 /// Concurrent per-field updates on the same instance must not clobber each
 /// other. Mirrors the cockpit-handler / status-poll pattern: thread A
 /// mutates one field (`title`, simulating status poll), thread B mutates
-/// a different field (`cockpit_mode`, simulating the cockpit handler).
-/// Both should land. Regression guard for review #5: a wholesale-replace
-/// closure (using a pre-lock snapshot) would lose one of the writes.
+/// a different field (`notify_on_idle`, standing in for the cockpit
+/// handler's `cockpit_mode`; the latter is `#[cfg(feature = "serve")]`,
+/// `notify_on_idle` is always available and exhibits the same lost-update
+/// class). Both should land. Regression guard for review #5: a
+/// wholesale-replace closure (using a pre-lock snapshot) would lose one
+/// of the writes.
 #[test]
 #[serial]
 fn test_concurrent_per_field_updates_no_clobber() -> Result<()> {
@@ -206,7 +209,7 @@ fn test_concurrent_per_field_updates_no_clobber() -> Result<()> {
         for _ in 0..n_iterations {
             storage.update(|all, _groups| {
                 if let Some(slot) = all.iter_mut().find(|i| i.id == id_for_b) {
-                    slot.cockpit_mode = true;
+                    slot.notify_on_idle = Some(true);
                 }
                 Ok(())
             })?;
@@ -224,9 +227,10 @@ fn test_concurrent_per_field_updates_no_clobber() -> Result<()> {
         "thread A's title write must be preserved (got: {})",
         loaded[0].title
     );
-    assert!(
-        loaded[0].cockpit_mode,
-        "thread B's cockpit_mode write must be preserved"
+    assert_eq!(
+        loaded[0].notify_on_idle,
+        Some(true),
+        "thread B's notify_on_idle write must be preserved"
     );
     Ok(())
 }
