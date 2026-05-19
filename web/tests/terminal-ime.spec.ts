@@ -8,7 +8,7 @@ test.use({ viewport: { width: 1280, height: 800 }, hasTouch: false });
 async function openSession(page: Page, handle: MockHandle) {
   await clickSidebarSession(page, "pinch-test");
   await page
-    .locator(".wterm")
+    .locator(".xterm")
     .first()
     .waitFor({ state: "visible", timeout: 10_000 });
   await expect
@@ -29,7 +29,7 @@ test.describe("Terminal IME input", () => {
     await openSession(page, handle);
 
     const start = handle.wsMessages.length;
-    await page.locator(".wterm").first().locator("textarea").focus();
+    await page.locator(".xterm").first().locator("textarea").focus();
     await page.keyboard.type("a");
 
     await expect
@@ -46,8 +46,8 @@ test.describe("Terminal IME input", () => {
 
     const start = handle.wsMessages.length;
     await page.evaluate(() => {
-      const ta = document.querySelector<HTMLTextAreaElement>(".wterm textarea");
-      if (!ta) throw new Error("wterm textarea not found");
+      const ta = document.querySelector<HTMLTextAreaElement>(".xterm textarea");
+      if (!ta) throw new Error("xterm textarea not found");
       ta.focus();
 
       ta.dispatchEvent(

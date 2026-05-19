@@ -18,7 +18,7 @@ test.describe("Terminal Ctrl+wheel zoom (desktop)", () => {
   async function openSession(page: Page) {
     await clickSidebarSession(page, "pinch-test");
     await page
-      .locator(".wterm")
+      .locator(".xterm")
       .first()
       .waitFor({ state: "visible", timeout: 10_000 });
   }
@@ -29,15 +29,15 @@ test.describe("Terminal Ctrl+wheel zoom (desktop)", () => {
     );
   }
 
-  // Dispatch wheel events on .wterm with configurable ctrlKey/deltaY.
+  // Dispatch wheel events on .xterm with configurable ctrlKey/deltaY.
   async function fireWheel(
     page: Page,
     opts: { deltaY: number; ctrlKey: boolean; times?: number },
   ) {
     await page.evaluate(
       ({ deltaY, ctrlKey, times }) => {
-        const target = document.querySelector<HTMLElement>(".wterm");
-        if (!target) throw new Error(".wterm not mounted");
+        const target = document.querySelector<HTMLElement>(".xterm");
+        if (!target) throw new Error(".xterm not mounted");
         for (let i = 0; i < (times ?? 1); i++) {
           target.dispatchEvent(
             new WheelEvent("wheel", {
@@ -129,7 +129,7 @@ test.describe("Terminal Ctrl+wheel zoom (desktop)", () => {
     // persisting a new font size (via pinch/wheel → update()) must NOT
     // tear down and rebuild the terminal. We can't drive this via the
     // settings UI because SettingsView fully replaces the app view (and
-    // unmounts TerminalView). Instead, we tag the live .wterm before a
+    // unmounts TerminalView). Instead, we tag the live .xterm before a
     // Ctrl+wheel zoom and assert the same element survives the persist.
     await installTerminalSpies(page);
     await mockTerminalApis(page);
@@ -138,10 +138,10 @@ test.describe("Terminal Ctrl+wheel zoom (desktop)", () => {
     await page.reload();
     await openSession(page);
 
-    const tag = `wterm-${Date.now()}`;
+    const tag = `xterm-${Date.now()}`;
     await page.evaluate((id) => {
-      const el = document.querySelector(".wterm");
-      if (!el) throw new Error("no .wterm to tag");
+      const el = document.querySelector(".xterm");
+      if (!el) throw new Error("no .xterm to tag");
       el.setAttribute("data-test-id", id);
     }, tag);
 

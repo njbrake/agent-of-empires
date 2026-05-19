@@ -108,12 +108,12 @@
   --color-diff-header: #0d9488;
 
   /* Embedded terminal cold-load defaults. useResolvedTheme refetches
-     and overrides these once the resolved palette lands, but on a
-     first visit with no localStorage cache the wterm element would
-     otherwise paint with the WASM bridge's hardcoded defaults until
-     the next frame. These match the `default` builtin projected by
-     src/tui/styles/resolved.rs::terminal_projection so the pre-fetch
-     paint matches the post-fetch paint for the default theme. */
+     and overrides these once the resolved palette lands; the terminal
+     hook reads them on construction and on `aoe:theme-changed` to
+     build xterm.js's ITheme. These match the `default` builtin
+     projected by src/tui/styles/resolved.rs::terminal_projection so
+     the pre-fetch paint matches the post-fetch paint for the default
+     theme. */
   --term-bg: #1c1c1f;
   --term-fg: #e4e4e7;
   --term-cursor: #f59e0b;
@@ -324,24 +324,24 @@ select:focus-visible,
   outline-offset: 2px;
 }
 
-/* wterm overrides: strip default chrome for embedded use.
-   `overflow: hidden` (not auto): wterm's content matches the container,
-   and `auto` gives iOS Safari a target for native rubber-band on small
-   touches that haven't yet crossed our gesture-lock threshold. */
-.wterm {
+/* xterm.js overrides: strip default chrome for embedded use.
+   `overflow: hidden` (not auto): xterm.js manages its own viewport
+   scroll, and `auto` gives iOS Safari a target for native rubber-band
+   on small touches that haven't yet crossed our gesture-lock
+   threshold. */
+.xterm {
   padding: 4px 8px;
   border-radius: 0;
   box-shadow: none;
   overflow: hidden;
-  --term-row-height: calc(var(--term-font-size) * var(--term-line-height));
 }
 
-.wterm ::selection {
+.xterm ::selection {
   background: rgba(161, 161, 170, 0.2);
 }
 
 /* Subtle focus ring for terminal panels (desktop only).
-   Uses a pseudo-element overlay so it paints above wterm's background. */
+   Uses a pseudo-element overlay so it paints above xterm's background. */
 @media (pointer: fine) {
   .term-panel::after {
     content: '';

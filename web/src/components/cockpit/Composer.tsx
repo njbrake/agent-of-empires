@@ -354,10 +354,11 @@ export function Composer({
     };
   }, [composerRuntime, sessionId]);
 
-  // wterm's async init() in the right pane focuses its hidden textarea
-  // ~200-500ms after mount and steals focus from us. Re-claim a couple
-  // of times so the agent input wins; only when focus is on body or
-  // inside .wterm so an intentional click into the host shell sticks.
+  // xterm.js's autoFocus path in the right pane focuses its hidden
+  // textarea ~200-500ms after mount and steals focus from us. Re-claim
+  // a couple of times so the agent input wins; only when focus is on
+  // body or inside .xterm so an intentional click into the host shell
+  // sticks.
   //
   // Mobile skips this entirely (#1178): auto-focusing the textarea pops
   // the soft keyboard on every session open / switch, which is the wrong
@@ -374,7 +375,7 @@ export function Composer({
         el.focus();
         return;
       }
-      if (active.closest?.(".wterm")) {
+      if (active.closest?.(".xterm")) {
         el.focus();
       }
     };
