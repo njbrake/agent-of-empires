@@ -445,6 +445,53 @@ transcript still replays from disk, but the model starts fresh on each
 spawn. Tracked in
 [#1005](https://github.com/njbrake/agent-of-empires/issues/1005).
 
+## Permission modes and YOLO
+
+Cockpit sessions run in one of the permission modes advertised by the
+ACP adapter. The composer's mode picker shows whatever the agent
+reports in its `NewSessionResponse.modes`; for `claude-agent-acp` the
+typical set is:
+
+| Mode id              | Meaning                                                                 |
+|----------------------|-------------------------------------------------------------------------|
+| `default`            | Every Write/Edit/Bash routes through an approval card.                  |
+| `acceptEdits`        | Edit-kind tools auto-approved; Bash and unknown tools still prompt.     |
+| `bypassPermissions`  | All tools auto-approved. The cockpit analogue of YOLO.                  |
+| `plan`               | Read-only; the agent drafts a plan but does not run side-effectful tools. |
+
+### YOLO mode maps to `bypassPermissions`
+
+When `[session] yolo_mode_default = true` (or the wizard's "Auto-approve
+actions" toggle is on), cockpit asks the adapter to start the session
+in `bypassPermissions` immediately after `session/new`. This mirrors
+what the tmux substrate does by appending
+`--dangerously-skip-permissions` to the Claude CLI argv.
+
+The wiring is best-effort: the cockpit fires `session/set_mode` after
+the handshake and continues regardless of the response. If the adapter
+accepts, the mode picker flips to `bypassPermissions` and you stop
+seeing approval cards. If it rejects (see next section), a non-blocking
+amber notice appears above the composer with the adapter's reason and
+the session keeps running in whichever mode it landed on.
+
+### `bypassPermissions` may not be available
+
+`claude-agent-acp` gates `bypassPermissions` on the `ALLOW_BYPASS`
+environment variable. If the daemon spawned the adapter without
+`ALLOW_BYPASS=1` in its env, `session/set_mode("bypassPermissions")`
+returns "Mode bypassPermissions is not available" and the session
+stays in `default`. Two ways out:
+
+1. Restart `aoe serve` with `ALLOW_BYPASS=1` so the adapter advertises
+   the mode. The cockpit then drives it automatically on every new
+   YOLO-mode session.
+2. Live with `default` and approve as you go, or pick `acceptEdits`
+   from the composer mode picker for edit-only auto-approval.
+
+The Auto-approve toggle in the wizard does not configure
+`ALLOW_BYPASS`; the env var is a daemon-process input set wherever
+`aoe serve` actually launches.
+
 ## Approvals
 
 When the agent wants to run a tool that requires approval, the cockpit

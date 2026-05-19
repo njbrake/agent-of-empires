@@ -39,7 +39,8 @@ export type Action =
   | { kind: "edit_queued_prompt"; id: string; text: string }
   | { kind: "clear_queue" }
   | { kind: "dismiss_primer" }
-  | { kind: "dismiss_rejected_prompt"; id: string };
+  | { kind: "dismiss_rejected_prompt"; id: string }
+  | { kind: "dismiss_mode_switch_failed" };
 
 // LRU-capped module cache keyed by cockpit session id. Mirrors the
 // per-session CockpitState into `localStorage` under
@@ -355,6 +356,9 @@ function reducer(state: CockpitState, action: Action): CockpitState {
         (r) => r.id !== action.id,
       ),
     };
+  }
+  if (action.kind === "dismiss_mode_switch_failed") {
+    return { ...state, modeSwitchFailed: null };
   }
   return emptyCockpitState();
 }
@@ -1025,6 +1029,10 @@ export function useCockpit(
     dispatch({ kind: "dismiss_rejected_prompt", id });
   }, []);
 
+  const dismissModeSwitchFailed = useCallback(() => {
+    dispatch({ kind: "dismiss_mode_switch_failed" });
+  }, []);
+
   // Cancels the in-flight agent turn (ACP session/cancel). Must only
   // fire on an explicit user gesture against a dedicated cancel/stop
   // affordance; never bind this to the Escape key. Claude Code CLI
@@ -1159,6 +1167,7 @@ export function useCockpit(
     editQueuedPrompt,
     clearQueue,
     dismissRejectedPrompt,
+    dismissModeSwitchFailed,
   };
 }
 

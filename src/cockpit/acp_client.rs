@@ -2595,10 +2595,17 @@ async fn run_connection_task<W, R>(
                                                             .await;
                                                     }
                                                     Err(e) => {
+                                                        let reason = format!("{e}");
                                                         warn!(
                                                             target: "cockpit.acp",
-                                                            "session/set_mode failed mid-turn: {e}"
+                                                            "session/set_mode failed mid-turn: {reason}"
                                                         );
+                                                        let _ = tx
+                                                            .send(Event::ModeSwitchFailed {
+                                                                mode_id,
+                                                                reason,
+                                                            })
+                                                            .await;
                                                     }
                                                 }
                                             });
@@ -2704,7 +2711,11 @@ async fn run_connection_task<W, R>(
                                         .await;
                                 }
                                 Err(e) => {
-                                    warn!(target: "cockpit.acp", "session/set_mode failed: {e}");
+                                    let reason = format!("{e}");
+                                    warn!(target: "cockpit.acp", "session/set_mode failed: {reason}");
+                                    let _ = tx
+                                        .send(Event::ModeSwitchFailed { mode_id, reason })
+                                        .await;
                                 }
                             }
                         });

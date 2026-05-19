@@ -17,6 +17,8 @@ const SHIKI_THEME_IMPORTS: Record<string, () => Promise<unknown>> = {
   "catppuccin-latte": () => import("shiki/themes/catppuccin-latte.mjs"),
   dracula: () => import("shiki/themes/dracula.mjs"),
   "rose-pine": () => import("shiki/themes/rose-pine.mjs"),
+  "material-theme-ocean": () =>
+    import("shiki/themes/material-theme-ocean.mjs"),
 };
 
 /** Fallback Shiki themes when the resolver names a theme this bundle

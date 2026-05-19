@@ -323,6 +323,17 @@ pub enum Event {
     CurrentModeChanged {
         current_mode_id: String,
     },
+    /// `session/set_mode` round-trip rejected by the adapter. Fired when
+    /// the cockpit asked for a mode the adapter does not advertise
+    /// (claude-agent-acp gates `bypassPermissions` on `ALLOW_BYPASS`, so
+    /// a YOLO-driven post-spawn `set_mode("bypassPermissions")` lands
+    /// here when the env var is unset). UI renders a non-blocking notice
+    /// so the user knows their requested mode did not take effect; the
+    /// session keeps whatever mode the adapter last reported. See #1233.
+    ModeSwitchFailed {
+        mode_id: String,
+        reason: String,
+    },
     /// Full snapshot of the slash commands the agent advertises. Comes
     /// from ACP `SessionUpdate::AvailableCommandsUpdate`. Replaces the
     /// previous list (the agent re-broadcasts the full set whenever it
@@ -500,6 +511,7 @@ impl CockpitState {
             // replay), so this is just a no-op that bumps seq.
             Event::ModesAvailable { .. } => {}
             Event::CurrentModeChanged { .. } => {}
+            Event::ModeSwitchFailed { .. } => {}
             Event::AvailableCommandsUpdated { commands } => {
                 self.available_commands = commands;
             }
@@ -577,6 +589,20 @@ mod tests {
         assert_eq!(seq, 1);
         assert!(s.thinking.is_some());
         assert!(s.updated_at >= before);
+    }
+
+    #[test]
+    fn mode_switch_failed_bumps_seq_without_mutating_mode() {
+        let mut s = fresh_state();
+        let before_mode = s.mode;
+        let seq = s
+            .apply_event(Event::ModeSwitchFailed {
+                mode_id: "bypassPermissions".into(),
+                reason: "Mode bypassPermissions is not available.".into(),
+            })
+            .expect("apply ok");
+        assert_eq!(seq, 1);
+        assert_eq!(s.mode, before_mode);
     }
 
     #[test]

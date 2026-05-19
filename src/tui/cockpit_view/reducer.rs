@@ -379,7 +379,8 @@ impl CockpitTranscript {
             | Event::UsageUpdated { .. }
             | Event::RawAgentUpdate { .. }
             | Event::WakeupScheduled { .. }
-            | Event::PromptRejected { .. } => {
+            | Event::PromptRejected { .. }
+            | Event::ModeSwitchFailed { .. } => {
                 // Surface as info notes for now; richer renderers are
                 // followup work tracked in the plan's "out of scope".
             }
