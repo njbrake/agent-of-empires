@@ -11,7 +11,14 @@ import {
   seedSessionViaAoeAdd,
 } from "../helpers/aoeServe";
 
-base("session/mode round-trips through the fake ACP agent", async ({}, testInfo) => {
+// Skipped pending #1237: the supervisor's ACP handshake against the
+// fake agent fails with "Authentication required" before the worker
+// registers, so set-mode 404s. Sibling cockpit live specs
+// (cockpit-spawn-prompt, cockpit-approval) are skipped for the same
+// reason. Unskip once the harness installs a `claude-agent-acp` shim
+// (or the supervisor's agent registry honors an env-var override) so
+// the fake ACP agent actually drives the handshake.
+base.skip("session/mode round-trips through the fake ACP agent", async ({}, testInfo) => {
   const serve = await spawnAoeServe({
     authMode: "none",
     cockpit: true,
