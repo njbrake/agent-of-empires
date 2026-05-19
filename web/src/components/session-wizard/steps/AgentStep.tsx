@@ -99,7 +99,7 @@ function Toggle({ checked, onChange, disabled }: { checked: boolean; onChange: (
 
 export function AgentStep({ data, onChange, agents, profiles, dockerAvailable, onApplyProfileDefaults, cockpitMasterEnabled }: Props) {
   const selectableAgents = agents.filter(
-    (agent) => (agent.kind === "builtin" && agent.installed) || agent.kind === "custom",
+    (agent) => agent.kind === "custom" || agent.installed,
   );
   const selectedAgent = agents.find((a) => a.name === data.tool);
   const selectedCustomAgent = selectedAgent?.kind === "custom";
