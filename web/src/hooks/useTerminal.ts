@@ -265,18 +265,6 @@ export function useTerminal(
       tdbg("webgl addon unavailable, using DOM renderer", err);
     }
 
-    // Synchronous initial fit. xterm.js's open() triggers layout, so the
-    // container has its real size by the time we get here; fit() now
-    // populates lastMeasuredRef before connect() opens the WS so
-    // ws.onopen has a real measurement to send instead of falling back
-    // to the 80x24 default. RAF backup below covers the case where the
-    // container hasn't laid out yet (panel mounts mid-transition).
-    try {
-      fitAddon.fit();
-    } catch {
-      // ignore -- the RAF + ResizeObserver below will retry
-    }
-
     // Resize messaging. FitAddon measures the container and calls
     // term.resize(cols, rows), which triggers term.onResize below.
     // Debounce the WS message so a splitter drag or keyboard
@@ -326,9 +314,18 @@ export function useTerminal(
       }, delay);
     });
 
-    // RAF backup fit. Covers the case where the synchronous fit above
-    // landed during a layout transition and measured an intermediate
-    // size; the next frame has the resting size.
+    // Initial fit, scheduled AFTER onResize is registered so the first
+    // term.resize() call from the fit emits to our callback. xterm.js's
+    // open() triggers layout, so the container has its real size by the
+    // time we get here; fit() populates lastMeasuredRef before ws.onopen
+    // fires so the 80x24 default never reaches the server. RAF backup
+    // covers the case where the container hasn't laid out yet (panel
+    // mounts mid-transition).
+    try {
+      fitAddon.fit();
+    } catch {
+      // ignore -- the RAF + ResizeObserver below will retry
+    }
     const initialFitRaf = requestAnimationFrame(() => {
       try {
         fitAddon.fit();

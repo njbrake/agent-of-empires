@@ -79,6 +79,19 @@ test.describe("Terminal IME input", () => {
           cancelable: true,
         }),
       );
+      // Real browsers populate the textarea value at compositionend and
+      // fire an InputEvent with inputType="insertCompositionText" that
+      // carries the committed text. xterm.js reads onData from that
+      // event, not from compositionend.data alone, so the synthetic
+      // sequence needs both.
+      ta.value = "你好";
+      ta.dispatchEvent(
+        new InputEvent("input", {
+          data: "你好",
+          inputType: "insertCompositionText",
+          bubbles: true,
+        }),
+      );
     });
 
     await expect
