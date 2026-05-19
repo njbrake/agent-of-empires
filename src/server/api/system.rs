@@ -533,6 +533,13 @@ pub struct ServerAbout {
     /// honours the user's chosen ceiling instead of clipping at a
     /// hard-coded constant. See #1111.
     pub cockpit_replay_events: u32,
+    /// `"debug"` when built with `debug_assertions`, `"release"`
+    /// otherwise. The web UI renders a "DEV" badge in the topbar
+    /// when this is `"debug"` so users can tell concurrently-running
+    /// debug (port 8081) and release (port 8080) instances apart at
+    /// a glance, including PWA installs where the port disappears
+    /// from the window chrome. See #1055.
+    pub build_flavor: &'static str,
 }
 
 pub async fn get_about(State(state): State<Arc<AppState>>) -> Json<ServerAbout> {
@@ -569,6 +576,11 @@ pub async fn get_about(State(state): State<Arc<AppState>>) -> Json<ServerAbout> 
         cockpit_max_concurrent_resumes,
         cockpit_force_end_turn_threshold_secs,
         cockpit_replay_events,
+        build_flavor: if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        },
     })
 }
 

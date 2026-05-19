@@ -111,6 +111,13 @@
       "components": ["web/src/components/TerminalSettings.tsx"]
     },
     {
+      "id": "app-shell.topbar-dev-badge",
+      "kind": "vitest",
+      "risk": "low",
+      "specs": ["src/components/__tests__/TopBar.test.tsx"],
+      "components": ["web/src/components/TopBar.tsx"]
+    },
+    {
       "id": "profiles.lifecycle",
       "kind": "live-playwright",
       "risk": "high",

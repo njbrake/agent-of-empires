@@ -325,6 +325,13 @@ export interface ServerAbout {
    *  so the rendered transcript matches the user's chosen ceiling
    *  instead of clipping at a hard-coded frontend constant. See #1111. */
   cockpit_replay_events: number;
+  /** `"debug"` when the backend was built with `debug_assertions`,
+   *  `"release"` otherwise. The topbar renders a small amber "DEV"
+   *  badge when this is `"debug"` so users can tell concurrently
+   *  running debug (port 8081) and release (port 8080) instances
+   *  apart at a glance, including PWA installs where the port
+   *  disappears from the window chrome. See #1055. */
+  build_flavor: "debug" | "release";
 }
 
 export async function setCockpitMaster(
