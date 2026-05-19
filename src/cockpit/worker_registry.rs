@@ -64,6 +64,14 @@ pub struct WorkerRecord {
     /// On reattach, the daemon sends `session/load <stored_acp_session_id>`
     /// to resume the agent-side transcript.
     pub stored_acp_session_id: Option<String>,
+    /// Profile the session was created under. Persisted so reattach can
+    /// re-resolve sandbox env (`terminal/create` env entries) against the
+    /// same profile the session originally used, instead of silently
+    /// falling back to the global default profile. Defaulted on load for
+    /// legacy records that pre-date this field; an absent value falls
+    /// back to the default profile, matching pre-persistence behavior.
+    #[serde(default)]
+    pub source_profile: Option<String>,
     pub started_at: u64,
     pub last_attached_at: Option<u64>,
     pub detached_at: Option<u64>,
@@ -82,6 +90,7 @@ impl WorkerRecord {
         additional_dirs: Vec<PathBuf>,
         provider_env_keys: Vec<String>,
         stored_acp_session_id: Option<String>,
+        source_profile: Option<String>,
     ) -> Self {
         Self {
             runner_version: RUNNER_VERSION,
@@ -95,6 +104,7 @@ impl WorkerRecord {
             additional_dirs,
             provider_env_keys,
             stored_acp_session_id,
+            source_profile,
             started_at: now_secs(),
             last_attached_at: None,
             detached_at: None,
@@ -445,6 +455,7 @@ mod tests {
                 vec![],
                 vec!["ANTHROPIC_API_KEY".into()],
                 None,
+                Some("personal".into()),
             );
             save(&rec).unwrap();
             let loaded = load("sess-abc").unwrap().unwrap();
@@ -494,6 +505,66 @@ mod tests {
         });
     }
 
+    /// Same legacy-record guarantee for `source_profile`: records written
+    /// before the field existed must load with `None` (the documented
+    /// fallback), not surface a deserialization error.
+    #[test]
+    #[serial]
+    fn load_legacy_record_without_source_profile() {
+        with_temp_home(|| {
+            let dir = workers_dir().unwrap();
+            let legacy = serde_json::json!({
+                "runner_version": RUNNER_VERSION,
+                "session_id": "legacy-sp-1",
+                "pid": 7,
+                "socket_path": "/tmp/legacy-sp.sock",
+                "agent_name": "claude-agent-acp",
+                "agent_key": "claude",
+                "cwd": "/repo",
+                "model": null,
+                "additional_dirs": [],
+                "provider_env_keys": [],
+                "stored_acp_session_id": null,
+                "started_at": 0,
+                "last_attached_at": null,
+                "detached_at": null
+            });
+            std::fs::write(
+                dir.join("legacy-sp-1.json"),
+                serde_json::to_string(&legacy).unwrap(),
+            )
+            .unwrap();
+            let loaded = load("legacy-sp-1").unwrap().unwrap();
+            assert_eq!(loaded.source_profile, None);
+        });
+    }
+
+    /// Fresh records carry `source_profile` end-to-end (write + read).
+    /// The roundtrip case is covered above; this asserts the field
+    /// specifically because the reattach path depends on it.
+    #[test]
+    #[serial]
+    fn source_profile_roundtrips() {
+        with_temp_home(|| {
+            let rec = WorkerRecord::new(
+                "sess-sp".into(),
+                1,
+                PathBuf::from("/tmp/sess-sp.sock"),
+                "aoe-agent".into(),
+                "aoe-agent".into(),
+                PathBuf::from("/repo"),
+                None,
+                vec![],
+                vec![],
+                None,
+                Some("personal".into()),
+            );
+            save(&rec).unwrap();
+            let loaded = load("sess-sp").unwrap().unwrap();
+            assert_eq!(loaded.source_profile.as_deref(), Some("personal"));
+        });
+    }
+
     #[test]
     #[serial]
     fn list_filters_non_json_and_unparseable() {
@@ -511,6 +582,7 @@ mod tests {
                 None,
                 vec![],
                 vec![],
+                None,
                 None,
             );
             save(&rec).unwrap();
@@ -538,6 +610,7 @@ mod tests {
                 vec![],
                 vec![],
                 None,
+                None,
             );
             save(&rec).unwrap();
             assert!(record_path("sess").unwrap().exists());
@@ -561,6 +634,7 @@ mod tests {
                 None,
                 vec![],
                 vec![],
+                None,
                 None,
             );
             rec.detached_at = Some(100);

@@ -14,7 +14,15 @@
 // See `docs/development/playwright.md` for the full recipe.
 
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { existsSync, mkdtempSync, writeFileSync, chmodSync, mkdirSync, rmSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  writeFileSync,
+  chmodSync,
+  mkdirSync,
+  realpathSync,
+  rmSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -308,7 +316,15 @@ export async function spawnAoeServe(opts: SpawnOptions): Promise<ServeHandle> {
     );
   }
 
-  const home = mkdtempSync(join(tmpdir(), `aoe-pw-w${opts.workerIndex}-p${opts.parallelIndex}-`));
+  // realpathSync resolves any symlinks in the tmpdir path (on macOS,
+  // `/var/folders/...` lives under `/private/var/...`). The server's
+  // `/api/filesystem/browse` endpoint canonicalizes the requested path
+  // and checks `starts_with(dirs::home_dir())`; if HOME is the un-
+  // canonicalized form, that check fails on macOS and any browse call
+  // against the test's HOME tree returns "outside the home directory".
+  const home = realpathSync(
+    mkdtempSync(join(tmpdir(), `aoe-pw-w${opts.workerIndex}-p${opts.parallelIndex}-`)),
+  );
   const xdg = join(home, "config");
   const tmp = join(home, "tmp");
   const tmuxTmp = join(home, "tmux");

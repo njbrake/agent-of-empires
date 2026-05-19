@@ -43,7 +43,16 @@ base.describe("ensure_session restart flow", () => {
       const sessionId: string = sessions[0]!.id;
       const tmuxName = `${serve.tmuxPrefix}${title}_${sessionId.slice(0, 8)}`;
 
-      expect(sessions[0]!.status).toBe("Error");
+      // The server's status_poll_loop runs every 2s and reconciles the
+      // on-disk session record (initial status: Idle) against tmux. There
+      // is no tmux session for this seed, so it eventually flips to Error,
+      // but a freshly booted server may not have polled yet.
+      await expect
+        .poll(
+          async () => (await listSessions(serve.baseUrl))[0]?.status,
+          { timeout: 10_000 },
+        )
+        .toBe("Error");
       expect(tmuxHasSession(serve.home, tmuxName)).toBe(false);
 
       const r1 = await fetch(
@@ -106,6 +115,7 @@ base.describe("ensure_session restart flow", () => {
 
     try {
       const sessions = await listSessions(serve.baseUrl);
+      expect(sessions.length).toBeGreaterThan(0);
       const sessionId: string = sessions[0]!.id;
       const tmuxName = `${serve.tmuxPrefix}${title}_${sessionId.slice(0, 8)}`;
 

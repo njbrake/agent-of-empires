@@ -501,6 +501,13 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
                 );
             }
         } else {
+            // Surface env-resolution warnings before container creation so
+            // typos and missing host vars don't silently produce empty
+            // values inside the sandbox. Same source the TUI path uses.
+            for w in crate::session::validate_env_entries(&config.sandbox.environment) {
+                eprintln!("⚠ {}", w);
+            }
+
             let container_name = containers::DockerContainer::generate_name(&instance.id);
             let image = args
                 .sandbox_image

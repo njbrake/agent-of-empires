@@ -517,6 +517,17 @@ pub fn build_instance(
     }
 
     if params.sandbox {
+        // Surface env-resolution warnings up-front. `collect_environment`
+        // silently drops entries whose host source var is unset (typo,
+        // shell sourcing gap, daemon's frozen env). Without this check
+        // the value is missing in the container with no UI signal.
+        let effective_env: &[String] = if params.extra_env.is_empty() {
+            &config.sandbox.environment
+        } else {
+            &params.extra_env
+        };
+        warnings.extend(crate::session::validate_env_entries(effective_env));
+
         instance.sandbox_info = Some(SandboxInfo {
             enabled: true,
             container_id: None,

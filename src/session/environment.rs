@@ -275,6 +275,22 @@ pub(crate) fn resolve_env_value(val: &str) -> Option<String> {
     }
 }
 
+/// Validate every entry in a list and return any warnings.
+///
+/// Mirrors what `collect_environment` will silently drop at container
+/// create or docker exec time, so callers can surface the same warnings
+/// to the user via toast or stderr before the failure becomes invisible.
+pub fn validate_env_entries<I, S>(entries: I) -> Vec<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    entries
+        .into_iter()
+        .filter_map(|e| validate_env_entry(e.as_ref()))
+        .collect()
+}
+
 /// Validate an env entry string and return a warning message if it references
 /// a host variable that doesn't exist.
 ///
@@ -293,7 +309,7 @@ pub fn validate_env_entry(entry: &str) -> Option<String> {
                 Some("Warning: bare '$' in value has no variable name".to_string())
             } else if resolve_env_value(value).is_none() {
                 Some(format!(
-                    "Warning: ${} is not set on the host -- it will be empty in the container",
+                    "Warning: ${} is not set on the host, so the value will be empty in the container",
                     var_name
                 ))
             } else {
@@ -307,7 +323,7 @@ pub fn validate_env_entry(entry: &str) -> Option<String> {
         // Bare key -- pass through from host
         if std::env::var(entry).is_err() {
             Some(format!(
-                "Warning: {} is not set on the host -- it will be empty in the container",
+                "Warning: {} is not set on the host, so the value will be empty in the container",
                 entry
             ))
         } else {
@@ -1000,6 +1016,41 @@ environment = ["GH_TOKEN=write_token"]
     #[test]
     fn test_validate_env_entry_escaped_dollar() {
         assert_eq!(validate_env_entry("MY_KEY=$$ESCAPED"), None);
+    }
+
+    #[test]
+    fn test_validate_env_entries_returns_one_warning_per_missing_var() {
+        // Use unique names to avoid collisions with other tests' env state.
+        std::env::remove_var("AOE_TEST_BATCH_MISSING_A");
+        std::env::remove_var("AOE_TEST_BATCH_MISSING_B");
+        std::env::set_var("AOE_TEST_BATCH_PRESENT", "ok");
+
+        let entries = vec![
+            "GH_TOKEN=$AOE_TEST_BATCH_MISSING_A".to_string(),
+            "OK=$AOE_TEST_BATCH_PRESENT".to_string(),
+            "ALSO_BROKEN=$AOE_TEST_BATCH_MISSING_B".to_string(),
+            "LITERAL=fine".to_string(),
+        ];
+        let warnings = validate_env_entries(&entries);
+        assert_eq!(
+            warnings.len(),
+            2,
+            "expected 2 warnings, got: {:?}",
+            warnings
+        );
+        assert!(warnings
+            .iter()
+            .any(|w| w.contains("AOE_TEST_BATCH_MISSING_A")));
+        assert!(warnings
+            .iter()
+            .any(|w| w.contains("AOE_TEST_BATCH_MISSING_B")));
+
+        std::env::remove_var("AOE_TEST_BATCH_PRESENT");
+    }
+
+    #[test]
+    fn test_validate_env_entries_empty_list() {
+        assert!(validate_env_entries(Vec::<String>::new()).is_empty());
     }
 
     #[test]
