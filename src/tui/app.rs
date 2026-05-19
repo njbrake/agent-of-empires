@@ -154,9 +154,10 @@ impl App {
         // Check if we need to show welcome or changelog dialogs
         let mut config = Config::load_or_warn();
 
-        // Load theme from config, defaulting to empire if empty
+        // Load theme from config, defaulting to the `default` builtin if
+        // empty so the TUI matches the web dashboard's empty-name fallback.
         let theme_name = if config.theme.name.is_empty() {
-            "empire"
+            "default"
         } else {
             &config.theme.name
         };

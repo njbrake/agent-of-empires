@@ -35,7 +35,7 @@ pub enum ResolvedThemeSource {
     Builtin,
     Custom,
     /// The requested theme name didn't match any builtin or custom
-    /// theme; the resolver returned Empire as a safety net.
+    /// theme; the resolver returned the `default` builtin as a safety net.
     Fallback,
 }
 

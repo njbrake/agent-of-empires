@@ -154,7 +154,7 @@ impl HomeView {
                             self.active_profile.as_deref().unwrap_or("default"),
                         );
                         let theme_name = if config.theme.name.is_empty() {
-                            "empire".to_string()
+                            "default".to_string()
                         } else {
                             config.theme.name
                         };
@@ -178,7 +178,7 @@ impl HomeView {
                     let config =
                         resolve_config_or_warn(self.active_profile.as_deref().unwrap_or("default"));
                     let theme_name = if config.theme.name.is_empty() {
-                        "empire".to_string()
+                        "default".to_string()
                     } else {
                         config.theme.name
                     };
