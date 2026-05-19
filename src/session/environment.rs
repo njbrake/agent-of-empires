@@ -1068,15 +1068,33 @@ environment = ["GH_TOKEN=write_token"]
     }
 
     #[test]
+    #[serial_test::serial(shell_env)]
     fn test_validate_env_entries_skips_default_terminal_vars_when_unset() {
+        // Stash + remove the defaults so the test catches all four keys even
+        // on CI hosts where TERM/COLORTERM are set. `serial(shell_env)` matches
+        // the pattern used by other tests in this file that mutate globally-
+        // shared env vars.
+        let originals: Vec<(&&str, Option<String>)> = DEFAULT_TERMINAL_ENV_VARS
+            .iter()
+            .map(|k| (k, std::env::var(*k).ok()))
+            .collect();
         for key in DEFAULT_TERMINAL_ENV_VARS {
             std::env::remove_var(key);
         }
+
         let entries: Vec<String> = DEFAULT_TERMINAL_ENV_VARS
             .iter()
             .map(|s| s.to_string())
             .collect();
         let warnings = validate_env_entries(&entries);
+
+        for (key, original) in originals {
+            match original {
+                Some(v) => std::env::set_var(*key, v),
+                None => std::env::remove_var(*key),
+            }
+        }
+
         assert!(
             warnings.is_empty(),
             "expected no warnings for default terminal vars even when unset, got: {:?}",
