@@ -8,7 +8,10 @@ use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use serde::{Deserialize, Serialize};
 
 use super::AppState;
-use super::{validate_profile_name, ALLOWED_SETTINGS_SECTIONS, SESSION_BLOCKED_FIELDS};
+use super::{
+    validate_profile_name, ALLOWED_GLOBAL_SETTINGS_SECTIONS, ALLOWED_PROFILE_SETTINGS_SECTIONS,
+    SESSION_BLOCKED_FIELDS,
+};
 
 // --- Agents ---
 
@@ -124,10 +127,11 @@ pub async fn update_settings(
         )
             .into_response();
     }
-    // Validate that only allowed sections are being updated
+    // Validate that only allowed sections are being updated. Use the
+    // narrower global allowlist here (no `description`, which is profile-only).
     if let Some(obj) = body.as_object() {
         for key in obj.keys() {
-            if !ALLOWED_SETTINGS_SECTIONS.contains(&key.as_str()) {
+            if !ALLOWED_GLOBAL_SETTINGS_SECTIONS.contains(&key.as_str()) {
                 return (
                     StatusCode::BAD_REQUEST,
                     Json(serde_json::json!({
@@ -304,40 +308,50 @@ pub struct ProfileInfo {
 }
 
 pub async fn list_profiles(State(state): State<Arc<AppState>>) -> Json<Vec<ProfileInfo>> {
-    let profiles = crate::session::list_profiles().unwrap_or_default();
-    // Treat empty profile (server launched without --profile) as "default"
-    let active = if state.profile.is_empty() {
-        "default"
-    } else {
-        &state.profile
-    };
-    let mut result: Vec<ProfileInfo> = profiles
-        .into_iter()
-        .map(|name| {
-            let is_default = name == active;
-            let description = crate::session::load_profile_config(&name)
-                .ok()
-                .and_then(|c| c.description);
-            ProfileInfo {
-                name,
-                is_default,
-                description,
-            }
-        })
-        .collect();
-    // Ensure the active profile appears even if list_profiles missed it
-    if !active.is_empty() && !result.iter().any(|p| p.name == active) {
-        result.insert(
-            0,
-            ProfileInfo {
-                name: active.to_string(),
-                is_default: true,
-                description: crate::session::load_profile_config(active)
+    // Profile enumeration plus per-profile description lookups all hit disk;
+    // do that off the async runtime so a slow filesystem (network home, fuse,
+    // etc.) cannot stall Tokio workers for every API client. See CodeRabbit
+    // feedback on #1274.
+    let active_profile = state.profile.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let profiles = crate::session::list_profiles().unwrap_or_default();
+        // Treat empty profile (server launched without --profile) as "default"
+        let active: &str = if active_profile.is_empty() {
+            "default"
+        } else {
+            &active_profile
+        };
+        let mut result: Vec<ProfileInfo> = profiles
+            .into_iter()
+            .map(|name| {
+                let is_default = name == active;
+                let description = crate::session::load_profile_config(&name)
                     .ok()
-                    .and_then(|c| c.description),
-            },
-        );
-    }
+                    .and_then(|c| c.description);
+                ProfileInfo {
+                    name,
+                    is_default,
+                    description,
+                }
+            })
+            .collect();
+        // Ensure the active profile appears even if list_profiles missed it
+        if !active.is_empty() && !result.iter().any(|p| p.name == active) {
+            result.insert(
+                0,
+                ProfileInfo {
+                    name: active.to_string(),
+                    is_default: true,
+                    description: crate::session::load_profile_config(active)
+                        .ok()
+                        .and_then(|c| c.description),
+                },
+            );
+        }
+        result
+    })
+    .await
+    .unwrap_or_default();
     Json(result)
 }
 
@@ -897,10 +911,11 @@ pub async fn update_profile_settings(
         )
             .into_response();
     }
-    // Validate allowed sections
+    // Validate allowed sections. Use the per-profile allowlist here, which
+    // is the global list plus `description` (a profile-only field).
     if let Some(obj) = body.as_object() {
         for key in obj.keys() {
-            if !ALLOWED_SETTINGS_SECTIONS.contains(&key.as_str()) {
+            if !ALLOWED_PROFILE_SETTINGS_SECTIONS.contains(&key.as_str()) {
                 return (
                     StatusCode::BAD_REQUEST,
                     Json(serde_json::json!({
