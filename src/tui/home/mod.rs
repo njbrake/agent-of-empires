@@ -285,6 +285,14 @@ pub struct HomeView {
     /// reported back.
     recovery_lock: Option<crate::session::recovery::RecoveryLock>,
 
+    /// Ids whose startup-recovery cascade is still in flight. Filtered
+    /// out of `request_status_refresh` so the 500ms poller does not
+    /// observe missing tmux state and broadcast `Status::Error` while a
+    /// worker is mid-cascade. Drained per-id by `apply_recovery_updates`
+    /// (success, error, or panic). Mirrors the `on_launch_hooks_ran`
+    /// HashSet pattern: TUI-local, event-driven, no TTL needed.
+    recovery_in_flight: std::collections::HashSet<String>,
+
     // Tool sessions config (lazygit, yazi, etc.)
     pub(super) tool_configs: HashMap<String, crate::session::config::ToolSessionConfig>,
     /// Pre-parsed and sorted view of valid tool hotkeys: (name, KeyCode, KeyModifiers).
@@ -441,6 +449,7 @@ impl HomeView {
                 .unwrap_or(35),
             recovery_rx: None,
             recovery_lock: None,
+            recovery_in_flight: std::collections::HashSet::new(),
             tool_configs: user_config
                 .as_ref()
                 .map(|c| c.tools.clone())
@@ -686,7 +695,12 @@ impl HomeView {
     /// Call `apply_status_updates` to check for and apply results.
     pub fn request_status_refresh(&mut self) {
         if !self.pending_status_refresh {
-            let instances: Vec<Instance> = self.instances.clone();
+            let instances: Vec<Instance> = self
+                .instances
+                .iter()
+                .filter(|i| !self.recovery_in_flight.contains(&i.id))
+                .cloned()
+                .collect();
             self.status_poller.request_refresh(instances);
             self.pending_status_refresh = true;
         }
@@ -889,12 +903,10 @@ impl HomeView {
                             );
                         }
                     }
-                    // Replace the in-memory snapshot with the post-cascade
-                    // `Instance`. The disk has already been written by
-                    // `restart_with_size_opts`; this keeps the runtime-only
-                    // fields (`last_start_time`, `session_id_poller`,
-                    // `retroactive_capture_excludes`) consistent with the
-                    // ones the worker mutated.
+                    // Drop the in-flight marker BEFORE replacing the
+                    // snapshot so the next status poll sees the post-cascade
+                    // instance through the normal pipeline.
+                    self.recovery_in_flight.remove(&instance_id);
                     if let Some(slot) = self.instances.iter_mut().find(|i| i.id == instance_id) {
                         *slot = *instance;
                         touched = true;
@@ -910,9 +922,12 @@ impl HomeView {
         if disconnected {
             // All workers exited: drop the receiver and the lock so a
             // peer (a daemon that just started) can run recovery for any
-            // session this TUI did not own.
+            // session this TUI did not own. Clear the in-flight set
+            // defensively in case a future early-return path bypassed
+            // the per-id remove above.
             self.recovery_rx = None;
             self.recovery_lock = None;
+            self.recovery_in_flight.clear();
         }
         if touched {
             self.instance_map = self
@@ -978,6 +993,7 @@ impl HomeView {
             inst.status = crate::session::Status::Starting;
             inst.last_error = None;
             inst.last_start_time = Some(std::time::Instant::now());
+            self.recovery_in_flight.insert(inst.id.clone());
             candidates.push(inst.clone());
         }
 
@@ -1007,6 +1023,7 @@ impl HomeView {
                     .expect("recovery semaphore not closed");
                 let id = inst.id.clone();
                 let title = inst.title.clone();
+                let inst_pre_panic = inst.clone();
                 let mut working = inst;
                 let result = tokio::task::spawn_blocking(move || {
                     let res = crate::session::recovery::run_recovery_for_instance(&mut working);
@@ -1033,7 +1050,21 @@ impl HomeView {
                             error = %join_err,
                             "recovery worker panicked",
                         );
-                        return;
+                        // Surface the panic as a synthetic error update so
+                        // `apply_recovery_updates` clears `recovery_in_flight`
+                        // and the user sees Status::Error with a useful
+                        // last_error instead of an instance stuck in
+                        // `Status::Starting` until HomeView drops.
+                        let mut recovered = inst_pre_panic;
+                        recovered.status = crate::session::Status::Error;
+                        recovered.last_error =
+                            Some(format!("recovery worker panicked: {}", join_err));
+                        RecoveryUpdate {
+                            instance_id: id,
+                            title,
+                            instance: Box::new(recovered),
+                            result: Err(format!("worker panicked: {}", join_err)),
+                        }
                     }
                 };
                 let _ = tx.send(update);

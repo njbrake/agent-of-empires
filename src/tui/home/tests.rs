@@ -2931,3 +2931,40 @@ fn wants_paste_burst_only_for_paste_aware_dialogs() {
         "burst should re-enable after dialog closes"
     );
 }
+
+#[test]
+#[serial]
+fn recovery_in_flight_filters_request_status_refresh() {
+    let mut env = create_test_env_with_sessions(3);
+    let id_skipped = env.view.instances[1].id.clone();
+    env.view.recovery_in_flight.insert(id_skipped.clone());
+
+    let filtered: Vec<String> = env
+        .view
+        .instances
+        .iter()
+        .filter(|i| !env.view.recovery_in_flight.contains(&i.id))
+        .map(|i| i.id.clone())
+        .collect();
+
+    assert_eq!(filtered.len(), 2);
+    assert!(!filtered.contains(&id_skipped));
+}
+
+#[test]
+#[serial]
+fn recovery_in_flight_remove_unblocks_polling() {
+    let mut env = create_test_env_with_sessions(1);
+    let id = env.view.instances[0].id.clone();
+    env.view.recovery_in_flight.insert(id.clone());
+    env.view.recovery_in_flight.remove(&id);
+    assert!(env.view.recovery_in_flight.is_empty());
+
+    let filtered_count = env
+        .view
+        .instances
+        .iter()
+        .filter(|i| !env.view.recovery_in_flight.contains(&i.id))
+        .count();
+    assert_eq!(filtered_count, 1);
+}

@@ -1742,6 +1742,16 @@ async fn daemon_startup_recovery(state: Arc<AppState>) {
                         error = %join_err,
                         "recovery worker panicked",
                     );
+                    // Surface the panic to the in-memory snapshot so the
+                    // user sees Status::Error with a useful last_error
+                    // instead of waiting 8s for the recently_restarted TTL
+                    // to expire and the next poll to flip to Error with a
+                    // generic "tmux session is gone" message.
+                    let mut instances = inst_state.instances.write().await;
+                    if let Some(slot) = instances.iter_mut().find(|i| i.id == id) {
+                        slot.status = crate::session::Status::Error;
+                        slot.last_error = Some(format!("recovery worker panicked: {}", join_err));
+                    }
                 }
             }
         });
