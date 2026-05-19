@@ -150,6 +150,16 @@ pub fn mark_recently_restarted(map: &RecentlyRestarted, id: &str) {
     }
 }
 
+/// Inverse of `mark_recently_restarted`. Called when a pre-marked
+/// candidate turns out not to need recovery (post-lock re-check fails),
+/// to avoid suppressing the real status for the full TTL.
+#[cfg(feature = "serve")]
+pub fn unmark_recently_restarted(map: &RecentlyRestarted, id: &str) {
+    if let Ok(mut guard) = map.write() {
+        guard.remove(id);
+    }
+}
+
 /// Remove entries older than `2 × RECENTLY_RESTARTED_TTL`. The 2x factor
 /// avoids a tight read-vs-GC race where a reader observes an entry just
 /// before GC removes it; with 2x, a reader that saw the entry at age T has

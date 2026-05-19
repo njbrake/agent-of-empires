@@ -747,16 +747,14 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
     // lifecycle event arrives. See #1103.
     seed_cockpit_statuses(state.clone()).await;
 
-    // Spawn the startup-recovery worker pool. Tries to acquire the
-    // cross-process recovery lock; if another process (TUI or another
-    // daemon) holds it, this is a no-op. The lock is held for the entire
-    // recovery pass so a late-starting peer cannot duplicate cascades.
-    {
-        let recovery_state = state.clone();
-        tokio::spawn(async move {
-            daemon_startup_recovery(recovery_state).await;
-        });
-    }
+    // Two-phase startup recovery. Phase A runs synchronously (acquire
+    // lock, snapshot candidates, mark them in `recently_restarted`) so
+    // that the marks are in place before `status_poll_loop` is spawned
+    // and its first tick fires; otherwise the first poll could observe
+    // missing tmux state and broadcast a phantom Idle->Error transition.
+    // Phase B (the cascade workers) runs in a spawned task and holds
+    // the lock until done.
+    let recovery_inputs = daemon_startup_recovery_mark(state.clone()).await;
 
     // GC the recently_restarted suppression map periodically; the TTL
     // check on read filters but does not remove entries. Without this,
@@ -775,6 +773,13 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
                     _ = shutdown.cancelled() => break,
                 }
             }
+        });
+    }
+
+    if let Some((lock, candidates)) = recovery_inputs {
+        let cascade_state = state.clone();
+        tokio::spawn(async move {
+            daemon_startup_recovery_cascade(cascade_state, lock, candidates).await;
         });
     }
 
@@ -1611,7 +1616,23 @@ async fn status_poll_loop(state: Arc<AppState>) {
 ///
 /// Concurrency is capped at 3 to bound cold-start latency without
 /// thundering-herd-ing tmux at server warm-up.
-async fn daemon_startup_recovery(state: Arc<AppState>) {
+/// Phase A: acquire the cross-process lock, warm tmux, snapshot the
+/// candidate set, and pre-mark every candidate in `recently_restarted`.
+///
+/// Returning the marked candidates synchronously (before
+/// `status_poll_loop` is spawned) closes the first-tick race where the
+/// poller's immediate first iteration could observe missing tmux state
+/// and broadcast a phantom Idle->Error transition before any worker
+/// has had a chance to mark.
+///
+/// Uses `batch_pane_metadata()` instead of per-instance probes to keep
+/// the listener-bind path under ~20ms regardless of session count.
+async fn daemon_startup_recovery_mark(
+    state: Arc<AppState>,
+) -> Option<(
+    crate::session::recovery::RecoveryLock,
+    Vec<crate::session::Instance>,
+)> {
     let lock = match crate::session::recovery::try_acquire_recovery_lock() {
         Ok(Some(l)) => l,
         Ok(None) => {
@@ -1619,7 +1640,7 @@ async fn daemon_startup_recovery(state: Arc<AppState>) {
                 target: "session.startup_recovery",
                 "another process holds the recovery lock; skipping daemon startup recovery",
             );
-            return;
+            return None;
         }
         Err(e) => {
             tracing::warn!(
@@ -1627,18 +1648,24 @@ async fn daemon_startup_recovery(state: Arc<AppState>) {
                 error = %e,
                 "failed to acquire recovery lock; skipping daemon startup recovery",
             );
-            return;
+            return None;
         }
     };
 
     crate::session::recovery::warm_tmux_server();
+    crate::tmux::refresh_session_cache();
+    let pane_meta = crate::tmux::batch_pane_metadata();
 
     let candidates: Vec<crate::session::Instance> = {
         let instances = state.instances.read().await;
         instances
             .iter()
             .filter(|i| {
-                let has_live_tmux = i.has_live_tmux_pane();
+                let session_name = crate::tmux::Session::generate_name(&i.id, &i.title);
+                let has_live_tmux = pane_meta
+                    .get(&session_name)
+                    .map(|m| !m.pane_dead)
+                    .unwrap_or(false);
                 !has_live_tmux && crate::session::recovery::is_recovery_candidate(i)
             })
             .cloned()
@@ -1646,8 +1673,11 @@ async fn daemon_startup_recovery(state: Arc<AppState>) {
     };
 
     if candidates.is_empty() {
-        drop(lock);
-        return;
+        return None;
+    }
+
+    for inst in &candidates {
+        crate::session::recovery::mark_recently_restarted(&state.recently_restarted, &inst.id);
     }
 
     tracing::info!(
@@ -1656,6 +1686,15 @@ async fn daemon_startup_recovery(state: Arc<AppState>) {
         "starting daemon recovery for missing tmux sessions",
     );
 
+    Some((lock, candidates))
+}
+
+/// Phase B: drive the cascade workers for the pre-marked candidates.
+async fn daemon_startup_recovery_cascade(
+    state: Arc<AppState>,
+    lock: crate::session::recovery::RecoveryLock,
+    candidates: Vec<crate::session::Instance>,
+) {
     let semaphore = Arc::new(tokio::sync::Semaphore::new(3));
     let mut tasks: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
 
@@ -1690,13 +1729,20 @@ async fn daemon_startup_recovery(state: Arc<AppState>) {
                     .unwrap_or(false)
             };
             if !still_candidate {
+                // Phase A pre-marked this id; without unmarking, the
+                // status_poll_loop would suppress the real status for
+                // the full TTL even though we are not running a cascade.
+                crate::session::recovery::unmark_recently_restarted(
+                    &inst_state.recently_restarted,
+                    &id,
+                );
                 return;
             }
 
-            // Mark BEFORE the cascade so the suppression window covers
-            // the cascade's full latency, not just the post-success
-            // interval. Otherwise a 2s tick fired mid-cascade observes
-            // the still-missing tmux state and broadcasts Status::Error.
+            // Phase A already marked this id, but re-mark now to refresh
+            // the timestamp so the suppression window covers the full
+            // cascade latency starting from this point rather than from
+            // the (possibly older) Phase A snapshot.
             crate::session::recovery::mark_recently_restarted(&inst_state.recently_restarted, &id);
 
             let mut working = inst;
