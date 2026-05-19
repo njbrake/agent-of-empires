@@ -1,0 +1,376 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+#
+# CodeRabbit configuration for agent-of-empires.
+# Reference: https://docs.coderabbit.ai/reference/yaml-template
+# Schema:    https://coderabbit.ai/integrations/schema.v2.json
+#
+# Style note: this repo bans em dashes everywhere (see AGENTS.md), including
+# yaml comments. Use commas, semicolons, or rephrase.
+
+language: en-US
+
+# Defines the personality of every bot comment. Keep it calm and senior.
+tone_instructions: "Review code like a calm, friendly senior engineer. Be clear, constructive, and encouraging. Explain the reasoning behind suggestions, assume good intentions, and occasionally use light, friendly humor when appropriate."
+
+# Opt in to beta features the moment they ship.
+early_access: true
+
+# Surface CodeRabbit's free tier even on accounts that could be paid.
+enable_free_tier: true
+
+reviews:
+  # 'chill' = informative review, fewer nitpicks. 'assertive' = stricter.
+  profile: chill
+
+  # When true, CodeRabbit posts GitHub "Request changes" reviews that block
+  # merging. We rely on regular comments plus the commit status below.
+  request_changes_workflow: false
+
+  # Posts a TL;DR section in the PR description.
+  high_level_summary: true
+  high_level_summary_instructions: "Provide a concise, high-level summary of the code changes, focusing on the most significant improvements and potential areas for further enhancement. Use clear and concise language, and avoid overly technical jargon. We just want to know what changed, what moved, what was added, what was removed. Not technically. Then you can add technical jargons in another block if needed. Provide the benefits of the PR if you can"
+  high_level_summary_placeholder: "@coderabbitai summary"
+  high_level_summary_in_walkthrough: false
+
+  # Placeholder + instructions for the auto-generated PR title feature.
+  auto_title_placeholder: "@coderabbitai title"
+  auto_title_instructions: "Generate a short, action-oriented PR title. Start with a verb in the imperative form. Focus only on what changed, not why. Keep it concise and specific"
+
+  # Posts a "review in progress / complete" status alongside the GitHub check.
+  review_status: true
+  commit_status: true
+  # Mark the GitHub commit check as failed when review surfaces issues.
+  fail_commit_status: true
+
+  # Keep walkthrough expanded by default; AoE PRs are usually small enough.
+  collapse_walkthrough: false
+  changed_files_summary: true
+  # Auto-generate mermaid diagrams for non-trivial flow changes.
+  sequence_diagrams: true
+  estimate_code_review_effort: true
+  # Compare the diff against any linked issue and call out drift.
+  assess_linked_issues: true
+  related_issues: true
+  related_prs: true
+
+  # Bot suggests labels; we still apply them manually.
+  suggested_labels: true
+  labeling_instructions: []
+  auto_apply_labels: false
+
+  # Suggest reviewers and assign them automatically. Useful once AoE has
+  # multiple maintainers; harmless as a solo repo.
+  suggested_reviewers: true
+  auto_assign_reviewers: true
+
+  # Tiny ASCII fortune in the "review in progress" comment. Pure flavor.
+  in_progress_fortune: true
+  # Limerick at the end of every review. Off; too much noise.
+  poem: false
+
+  # Adds an "Ask an AI agent" prompt CodeRabbit reviewers can copy into
+  # their own assistant. Handy for triage.
+  enable_prompt_for_ai_agents: true
+
+  # path_filters globs to skip entirely (e.g. generated files). Empty = no skips.
+  path_filters: []
+
+  # Path-scoped guidance fed to the reviewer alongside the diff.
+  # Order matters: more specific patterns first so they win over fallbacks.
+  path_instructions:
+    - path: "src/**/*.rs"
+      instructions: |
+        Core Rust crate (binary + library).
+
+        Hard rules from AGENTS.md:
+        - No em dashes or `--` separators in comments or strings (use commas, semicolons, or rephrase).
+        - No dead code. Never introduce `#[allow(dead_code)]` or fields/functions nothing reads.
+        - Let `cargo fmt` and `cargo clippy` decide style; flag clippy lints that would fail CI.
+        - OS-specific logic belongs in `src/process/{macos,linux}.rs`, not scattered `cfg` blocks.
+        - Don't preserve backwards compatibility by default; if a change is breaking, call it out.
+
+        Settings parity (critical):
+        When a new field is added to `SandboxConfig`, `WorktreeConfig`, or similar config structs,
+        confirm the PR also wires up:
+          1. `FieldKey` in `src/tui/settings/fields.rs`
+          2. matching `SettingField` entry in `build_*_fields()`
+          3. `apply_field_to_global()` and `apply_field_to_profile()`
+          4. `clear_profile_override()` case in `src/tui/settings/input.rs`
+          5. `*ConfigOverride` struct + `merge_configs()` in `profile_config.rs`
+        Flag any missing piece.
+
+        Other checks:
+        - Comments must explain non-obvious "why"; flag comments that restate the code.
+        - Debug builds use the `_dev` namespace (`~/.agent-of-empires-dev`, `aoe_dev_` prefix, port 8081); release uses `agent-of-empires`, `aoe_`, port 8080. Flag hard-coded values that ignore this split.
+
+    - path: "src/migrations/**/*.rs"
+      instructions: |
+        Versioned data migrations. Stricter rules.
+
+        - Migrations must be idempotent (safe to re-run after partial failure).
+        - Use `tracing::info!` for progress, not `println!`.
+        - Platform-specific migrations must be gated with `#[cfg(target_os = "...")]`.
+        - Confirm `CURRENT_VERSION` in `src/migrations/mod.rs` was bumped and the new `Migration { ... }` entry was appended.
+        - Flag any inline backwards-compatibility shim outside a migration; breaking schema changes belong here, not in the call site.
+
+    - path: "src/server/**/*.rs"
+      instructions: |
+        Web dashboard backend (axum server, REST API, WebSocket PTY relay, auth).
+
+        - Token-based auth is the default; flag changes that weaken or bypass it.
+        - PTY relay handles untrusted input; flag missing rate limits, missing size caps, or unbounded buffering.
+        - File paths written under `~/.agent-of-empires/` for secrets must be 0600 (owner-only). Flag world-readable writes.
+        - Tunnel/Tailscale/local mode files (`serve.pid`, `serve.url`, `serve.passphrase`, ...) must be cleaned up by the daemon on shutdown; flag missing cleanup paths.
+
+    - path: "xtask/**/*.rs"
+      instructions: |
+        Build automation workspace. Touch lightly.
+
+        - `cargo xtask gen-docs` regenerates `docs/cli/reference.md` from clap help; do not hand-edit the output file. Flag direct edits to generated docs.
+        - `cargo xtask check-skill` validates `contrib/` integration files; preserve its invariants.
+
+    - path: "tests/e2e/**/*.rs"
+      instructions: |
+        Full-binary end-to-end tests via tmux.
+
+        - Use unique tmux names like `aoe_e2e_*` to avoid collisions with developer sessions.
+        - Use `#[serial]` for tmux-touching tests; mark Docker tests `#[ignore]`.
+        - Prefer `TuiTestHarness` helpers (`spawn_tui`, `wait_for`, `assert_screen_contains`) over raw tmux calls.
+        - Tests must clean up tmux sessions and temp dirs they create.
+
+    - path: "tests/**/*.rs"
+      instructions: |
+        Rust integration tests.
+
+        - Deterministic only; no time-of-day or network-dependent assertions.
+        - Use `tempfile` for state; never read or write the real user app dir.
+        - tmux-touching tests should use unique names (`aoe_test_*`).
+
+    - path: "**/*.rs"
+      instructions: |
+        Fallback for Rust files outside src/ and tests/.
+
+        - Run `cargo fmt` and `cargo clippy` and fix warnings unless there is a strong reason not to.
+        - No em dashes; no dead code; no `#[allow(dead_code)]`.
+
+    - path: "web/src/**/*.{ts,tsx}"
+      instructions: |
+        React 19 + TypeScript dashboard.
+
+        - Tailwind v4 + xterm.js v6. Visual changes must match `DESIGN.md`; flag deviations.
+        - Use the `clog` discipline for frontend logging (see AGENTS.md / docs); flag raw `console.log`.
+        - Strong typing: avoid `any`; prefer typed API responses from the OpenAPI types if present.
+        - No em dashes in user-facing strings.
+
+    - path: "web/src/**/__tests__/**/*.{ts,tsx}"
+      instructions: |
+        Vitest + React Testing Library + MSW.
+
+        - Use this suite for request-payload permutations (does control X emit the right JSON keys).
+        - Canonical example: `web/src/components/settings/__tests__/SoundSettings.test.tsx`.
+        - Tests must not depend on a running `aoe serve`.
+
+    - path: "web/tests/live/**/*.spec.ts"
+      instructions: |
+        Live Playwright (spawns real `aoe serve` per test via the harness).
+
+        - Use for flows that need real backend state: auth, persistence, sessions, tmux, git, read-only, cockpit.
+        - Use isolated `HOME` via `web/tests/helpers/aoeServe.ts`; never touch the developer's app dir.
+        - `workerIndex`-based port allocation; do not hard-code ports.
+
+    - path: "web/tests/**/*.spec.ts"
+      instructions: |
+        Mocked Playwright (stubs `/api/*` via `page.route()`).
+
+        - Use for browser-specific behavior not practical in Vitest (focus, keyboard, drag/drop, modal escape, mobile viewport, touch).
+        - Synthetic touchmove events fire back-to-back (delta-t about 1ms). Cap velocity and per-frame emit counts; otherwise tests will diverge from real devices.
+        - Do not test backend persistence here; route that to the live suite.
+
+    - path: "web/tests/coverage-matrix.json"
+      instructions: |
+        Test coverage matrix. CI fails if a user-facing dashboard change lacks a matrix entry (`web/tests/validate-coverage-matrix.mjs`).
+
+        - PRs touching auth, wizard / session creation, settings, profiles, sessions / sidebar, right panel / diff / notifications, directory browser, devices, git clone, connectivity, or read-only behavior must add or update an entry.
+        - Pure styling or copy-only changes may use `kind: "deferred"` with a `reason` and linked issue.
+
+    - path: "docs/**/*.md"
+      instructions: |
+        User-facing documentation. Canonical source for both repo docs and the public website.
+
+        - No em dashes or `--` separators (use commas, semicolons, or rephrase).
+        - Any PR with user-visible, perf, debug, or API behavior change must update `docs/` in the same PR. Flag missing doc edits.
+        - `docs/cli/reference.md` is generated by `cargo xtask gen-docs`; flag hand edits there.
+        - When adding a new page to the public site, confirm the PR also touches `website/scripts/sync-docs.mjs` (PAGES + URL_MAP) and `website/src/data/docsNav.ts`.
+
+    - path: "website/**/*"
+      instructions: |
+        Astro static site (agent-of-empires.com).
+
+        - `docs/` is canonical for content; do not duplicate doc prose into the website source. Flag content edits that should have happened in `docs/`.
+        - `.astro` pages are hand-edited (not generated); other doc pages come from the sync script.
+
+    - path: "contrib/**/*"
+      instructions: |
+        Community-maintained integration files (e.g. the OpenClaw skill).
+
+        - `cargo xtask check-skill` enforces invariants in CI; do not break its expectations.
+        - Treat these as user-contributed: keep diffs minimal and behavior-preserving unless the contributor asked for restructuring.
+
+    - path: ".github/workflows/**/*.{yml,yaml}"
+      instructions: |
+        GitHub Actions workflows. `actionlint` covers structural issues; focus review on:
+        - Pinned action versions (commit SHA preferred over tags for third-party actions).
+        - Secret handling: no plaintext secrets in `env` or logs.
+        - Cache keys: avoid collisions across branches.
+
+  # Stop reviewing the moment a PR is closed; saves tokens on noisy branches.
+  abort_on_close: true
+  # Keep cache on; speeds up incremental reviews on rebased branches.
+  disable_cache: false
+
+  auto_review:
+    enabled: true
+    # Re-review on every push to the PR.
+    auto_incremental_review: true
+    # Skip auto-review on PRs whose titles contain these words.
+    ignore_title_keywords:
+      - "Dependencies"
+      - "update dependency"
+      - "wip"
+      - "dependabot"
+    labels: []
+    drafts: false
+    # AoE's default branch.
+    base_branches: ["main"]
+    ignore_usernames: []
+
+  # Optional auto-commits CodeRabbit can offer at the end of a review.
+  # Each one shows up as a "click to accept" suggestion; nothing lands without approval.
+  finishing_touches:
+    docstrings:
+      # Generates Rust /// docs and TS JSDoc for new public items.
+      enabled: true
+    unit_tests:
+      # Generates unit tests for changed code. Useful seed; we still review.
+      enabled: true
+    simplify:
+      # Flags duplication and over-abstraction in the diff.
+      enabled: true
+
+  # Gates that run before merge. Mode controls severity:
+  #   off     = silent
+  #   warning = comment only
+  #   error   = fail the commit status (blocks merge if branch protection requires it)
+  pre_merge_checks:
+    # Require new public APIs to be documented. Strict because /// docs feed the website.
+    docstrings:
+      mode: error
+      threshold: 80
+    # Verify the diff matches the linked issue's scope; strict because AoE PRs
+    # are expected to close exactly the issues they reference.
+    issue_assessment:
+      mode: error
+    # Encourage conventional-commit style titles (feat:, fix:, docs:, refactor:, chore:).
+    title:
+      mode: warning
+      requirements: |
+        PR titles should start with a Conventional Commit prefix: `feat:`, `fix:`, `docs:`, `refactor:`, `chore:`, `test:`, `perf:`, or `ci:`.
+        Use imperative mood. Keep the title under ~70 chars and let the body carry the detail.
+    # Encourage a complete PR description matching the template.
+    description:
+      mode: warning
+
+  tools:
+    # Generic / cross-language linters kept from the nexus baseline.
+    shellcheck:
+      enabled: true
+    markdownlint:
+      enabled: true
+    github-checks:
+      enabled: true
+      timeout_ms: 90000
+    languagetool:
+      enabled: true
+      enabled_rules: []
+      disabled_rules: []
+      enabled_categories: []
+      disabled_categories: []
+      enabled_only: false
+      # Strictest grammar level; docs and PR bodies benefit.
+      level: "picky"
+    yamllint:
+      enabled: true
+    # Secret scanner.
+    gitleaks:
+      enabled: true
+    # Infra-as-code policy scanner (catches obvious Docker / GH Actions misconfig).
+    checkov:
+      enabled: true
+    # GitHub Actions linter; supplements the path_instructions above.
+    actionlint:
+      enabled: true
+    # Pattern-based security and bug scanner.
+    semgrep:
+      enabled: true
+    # `.env*` template / drift linter.
+    dotenvLint:
+      enabled: true
+    # Rust linter (project core is Rust).
+    clippy:
+      enabled: true
+    # JS/TS linter; `web/` ships an `eslint.config.js`.
+    eslint:
+      enabled: true
+
+chat:
+  # Tiny rabbit ASCII art in bot replies. Cosmetic.
+  art: true
+  # Bot answers `@coderabbitai` mentions without manual trigger.
+  auto_reply: true
+
+knowledge_base:
+  # Keep the knowledge base active. Disabling wipes stored learnings.
+  opt_out: false
+  web_search:
+    # Bot can fetch external URLs during review (e.g. RFCs, crate docs).
+    enabled: true
+  code_guidelines:
+    # Load these files as binding review guidelines. AGENTS.md/CLAUDE.md carry
+    # AoE's hard rules (no em dashes, no dead code, settings parity, etc.).
+    enabled: true
+    filePatterns:
+      - "**/AGENTS.md"
+      - "**/AGENT.md"
+      - "**/CLAUDE.md"
+      - "**/DESIGN.md"
+      - ".github/copilot-instructions.md"
+      - ".github/instructions/*.instructions.md"
+  # Global scope so learnings, issues, and PRs are shared across future
+  # agent-of-empires repos if this becomes an org. Switch to `local` (or
+  # `auto`) if you want strict per-repo isolation.
+  learnings:
+    scope: global
+  issues:
+    scope: global
+  pull_requests:
+    scope: global
+  mcp:
+    usage: enabled
+
+code_generation:
+  docstrings:
+    language: en-US
+
+# Issue enrichment intentionally disabled for now.
+# Open a follow-up issue to decide:
+#   1. issue_enrichment.auto_enrich.enabled (auto-context block on new issues)
+#   2. issue_enrichment.planning.auto_planning.enabled (auto-drafted plans)
+# Both default to off until we agree on scope.
+issue_enrichment:
+  auto_enrich:
+    enabled: false
+  planning:
+    enabled: false
+    auto_planning:
+      enabled: false
+      labels: []
