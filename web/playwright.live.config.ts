@@ -19,11 +19,13 @@ export default defineConfig({
   // Live specs do real I/O (cargo binary spawn, tmux, fetch). Give them more
   // headroom than the mocked suite's 30s.
   timeout: 60_000,
-  // Two workers from day one. Port allocation uses (workerIndex, parallelIndex)
-  // and tmux is isolated via TMUX_TMPDIR inside each test's HOME, so workers
-  // do not collide. See `tests/helpers/aoeServe.ts`.
+  // Four workers on the 4-core GitHub runner. Each worker spawns its
+  // own `aoe serve` against an isolated HOME / TMUX_TMPDIR with a
+  // (workerIndex, parallelIndex)-derived port, so workers don't
+  // collide. Bumped from 2 because the live suite is mostly idle
+  // (waiting on tmux / fetch round-trips) and CPU isn't the bottleneck.
   fullyParallel: true,
-  workers: 2,
+  workers: 4,
   // No retries: a flaky live spec doubles CI wall time on every flake.
   // Better to surface the flake and fix it (or quarantine via test.skip
   // until fixed) than to mask it with a retry budget.
