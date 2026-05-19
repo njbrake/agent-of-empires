@@ -1497,8 +1497,14 @@ async fn status_poll_loop(state: Arc<AppState>) {
             instances.iter().map(|i| (i.id.clone(), i.status)).collect()
         };
 
-        // Run blocking tmux subprocess calls in a dedicated thread
-        let recently_restarted = state.recently_restarted.clone();
+        // Run blocking tmux subprocess calls in a dedicated thread.
+        // Snapshot the suppression set BEFORE `batch_pane_metadata()` so
+        // a worker that unmarks between the scrape and the per-instance
+        // decision cannot combine "pane missing" metadata with a cleared
+        // mark and re-emit the phantom Error transition the suppression
+        // exists to prevent.
+        let suppressed_ids =
+            crate::session::recovery::snapshot_recently_restarted(&state.recently_restarted);
         let updated = tokio::task::spawn_blocking(move || {
             let mut instances = load_all_instances().unwrap_or_default();
 
@@ -1506,7 +1512,7 @@ async fn status_poll_loop(state: Arc<AppState>) {
             let pane_metadata = crate::tmux::batch_pane_metadata();
 
             for inst in &mut instances {
-                if crate::session::recovery::is_recently_restarted(&recently_restarted, &inst.id) {
+                if suppressed_ids.contains(&inst.id) {
                     // Suppress the status update: a recovery cascade just
                     // ran for this id, and `last_start_time` was lost on
                     // the disk reload above. Surfacing `Status::Error`

@@ -163,15 +163,24 @@ pub fn new_recently_restarted() -> RecentlyRestarted {
     Arc::new(std::sync::RwLock::new(std::collections::HashMap::new()))
 }
 
+/// Tick-local snapshot of the suppression set, capturing every id whose
+/// mark is currently fresh. `status_poll_loop` takes this snapshot once
+/// per tick *before* `batch_pane_metadata()` runs, then uses it for the
+/// `Status::Starting` decision so that a worker which unmarks mid-tick
+/// (after the pane scrape, before the decision) cannot combine stale
+/// pane-missing metadata with a cleared mark and re-emit the phantom
+/// `Status::Error` the suppression is there to prevent.
 #[cfg(feature = "serve")]
-pub fn is_recently_restarted(map: &RecentlyRestarted, id: &str) -> bool {
+pub fn snapshot_recently_restarted(map: &RecentlyRestarted) -> std::collections::HashSet<String> {
     let guard = match map.read() {
         Ok(g) => g,
-        Err(_) => return false,
+        Err(_) => return std::collections::HashSet::new(),
     };
     guard
-        .get(id)
-        .is_some_and(|t| t.elapsed() < RECENTLY_RESTARTED_TTL)
+        .iter()
+        .filter(|(_, t)| t.elapsed() < RECENTLY_RESTARTED_TTL)
+        .map(|(id, _)| id.clone())
+        .collect()
 }
 
 #[cfg(feature = "serve")]
@@ -221,14 +230,42 @@ pub fn run_recovery_for_instance(inst: &mut Instance) -> Result<StartOutcome> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
+
+    /// Point `HOME` (and `XDG_CONFIG_HOME` on Linux) at a temp dir so
+    /// `get_app_dir()` resolves into the sandbox instead of touching the
+    /// user's real app dir. Mirrors the helper in `session::tests`.
+    fn isolate_app_dir() -> tempfile::TempDir {
+        let temp_home = tempfile::TempDir::new().unwrap();
+        std::env::set_var("HOME", temp_home.path());
+        #[cfg(target_os = "linux")]
+        std::env::set_var("XDG_CONFIG_HOME", temp_home.path().join(".config"));
+        temp_home
+    }
 
     #[cfg(feature = "serve")]
     #[test]
-    fn recently_restarted_is_recently_restarted_returns_true_within_ttl() {
+    fn snapshot_recently_restarted_includes_fresh_excludes_missing() {
         let map = new_recently_restarted();
         mark_recently_restarted(&map, "abc");
-        assert!(is_recently_restarted(&map, "abc"));
-        assert!(!is_recently_restarted(&map, "other"));
+        let snap = snapshot_recently_restarted(&map);
+        assert!(snap.contains("abc"));
+        assert!(!snap.contains("other"));
+    }
+
+    #[cfg(feature = "serve")]
+    #[test]
+    fn snapshot_recently_restarted_excludes_expired() {
+        let map = new_recently_restarted();
+        let stale = Instant::now() - RECENTLY_RESTARTED_TTL * 2;
+        {
+            let mut g = map.write().unwrap();
+            g.insert("stale".into(), stale);
+        }
+        mark_recently_restarted(&map, "fresh");
+        let snap = snapshot_recently_restarted(&map);
+        assert!(!snap.contains("stale"));
+        assert!(snap.contains("fresh"));
     }
 
     #[cfg(feature = "serve")]
@@ -256,7 +293,15 @@ mod tests {
     /// releases the lock without erroring. The cross-process behavior
     /// is exercised by the e2e suite (TUI + daemon spawned together).
     #[test]
+    #[serial]
     fn recovery_lock_acquires_and_releases() {
+        // Sandbox HOME/XDG_CONFIG_HOME so this never touches the real
+        // <app_dir>/.recovery.lock, where a concurrent `aoe` / `aoe serve`
+        // would otherwise either fail the test or have its own lock
+        // hijacked. `#[serial]` against the same env-var mutators in the
+        // rest of the suite.
+        let _sandbox = isolate_app_dir();
+
         let first = try_acquire_recovery_lock().unwrap();
         assert!(first.is_some(), "acquisition should succeed");
         drop(first);
