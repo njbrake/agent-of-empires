@@ -1,7 +1,8 @@
 //! Status file I/O for hooks-based agent status detection.
 //!
 //! Agent hooks write `running`, `waiting`, or `idle` to a well-known
-//! file path so AoE can detect agent status without parsing tmux pane content.
+//! file path so AoE can prefer hook status over tmux pane content. Callers may
+//! still reconcile agent-specific hook gaps from pane text.
 
 use std::path::PathBuf;
 
@@ -29,7 +30,7 @@ pub fn read_hook_status(instance_id: &str) -> Option<Status> {
         "waiting" => Some(Status::Waiting),
         "idle" => Some(Status::Idle),
         other => {
-            tracing::warn!("Unexpected hook status value: {:?}", other);
+            tracing::warn!(target: "hooks.status", "Unexpected hook status value: {:?}", other);
             None
         }
     }
@@ -40,7 +41,7 @@ pub fn cleanup_hook_status_dir(instance_id: &str) {
     let dir = hook_status_dir(instance_id);
     if dir.exists() {
         if let Err(e) = std::fs::remove_dir_all(&dir) {
-            tracing::warn!("Failed to cleanup hook status dir {}: {}", dir.display(), e);
+            tracing::warn!(target: "hooks.status", "Failed to cleanup hook status dir {}: {}", dir.display(), e);
         }
     }
 }

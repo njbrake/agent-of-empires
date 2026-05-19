@@ -1,28 +1,78 @@
 //! TUI theme and styling.
 //!
 //! The module is split into:
-//!   - `themes`   — the `Theme` struct and built-in theme constructors
-//!   - `palette`  — 24-bit RGB -> xterm-256 downsampling for `palette_mode`
-//!   - this file  — theme discovery / loading / serialization glue
+//!   - `themes`: the `Theme` struct, its `Default` (Empire mirror), and palette downsampling
+//!   - `palette`: 24-bit RGB -> xterm-256 downsampling for `palette_mode`
+//!   - this file: builtin TOML embedding, custom theme discovery, load/serialize glue
 //!
 //! Public surface is re-exported here so callers keep `crate::tui::styles::*`.
 
 mod palette;
+#[cfg(feature = "serve")]
+mod resolved;
 mod themes;
 
+#[cfg(feature = "serve")]
+pub use resolved::{resolve_theme, ResolvedTheme};
+#[cfg(any(feature = "serve", test))]
+pub use themes::ThemeAppearance;
 pub use themes::{idle_decay_window, Theme};
 
 use std::path::PathBuf;
-use tracing::warn;
+use tracing::{debug, warn};
 
-pub const BUILTIN_THEMES: &[&str] = &[
-    "empire",
-    "phosphor",
-    "tokyo-night-storm",
-    "catppuccin-latte",
-    "dracula",
-    "rose-pine",
+/// One built-in theme. `source` is the TOML body embedded at compile time
+/// via `include_str!`. Adding a new builtin is: drop `themes/builtin/X.toml`
+/// + add one entry here.
+pub struct BuiltinTheme {
+    pub name: &'static str,
+    pub source: &'static str,
+}
+
+pub const BUILTIN_THEMES: &[BuiltinTheme] = &[
+    BuiltinTheme {
+        name: "default",
+        source: include_str!("../../../themes/builtin/default.toml"),
+    },
+    BuiltinTheme {
+        name: "empire",
+        source: include_str!("../../../themes/builtin/empire.toml"),
+    },
+    BuiltinTheme {
+        name: "phosphor",
+        source: include_str!("../../../themes/builtin/phosphor.toml"),
+    },
+    BuiltinTheme {
+        name: "tokyo-night-storm",
+        source: include_str!("../../../themes/builtin/tokyo-night-storm.toml"),
+    },
+    BuiltinTheme {
+        name: "catppuccin-latte",
+        source: include_str!("../../../themes/builtin/catppuccin-latte.toml"),
+    },
+    BuiltinTheme {
+        name: "dracula",
+        source: include_str!("../../../themes/builtin/dracula.toml"),
+    },
+    BuiltinTheme {
+        name: "rose-pine",
+        source: include_str!("../../../themes/builtin/rose-pine.toml"),
+    },
+    BuiltinTheme {
+        name: "deep-ocean",
+        source: include_str!("../../../themes/builtin/deep-ocean.toml"),
+    },
 ];
+
+/// Iterator over builtin theme names, in declared order.
+pub fn builtin_theme_names() -> impl Iterator<Item = &'static str> {
+    BUILTIN_THEMES.iter().map(|b| b.name)
+}
+
+/// Whether `name` refers to a builtin theme.
+pub fn is_builtin_theme(name: &str) -> bool {
+    BUILTIN_THEMES.iter().any(|b| b.name == name)
+}
 
 /// Return the directory where custom theme TOML files are stored.
 pub fn custom_themes_dir() -> Option<PathBuf> {
@@ -48,7 +98,7 @@ pub fn discover_custom_themes() -> Vec<(String, PathBuf)> {
         if path.extension().and_then(|e| e.to_str()) == Some("toml") {
             if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
                 let name = stem.to_string();
-                if !BUILTIN_THEMES.contains(&name.as_str()) {
+                if !is_builtin_theme(&name) {
                     themes.push((name, path));
                 }
             }
@@ -61,7 +111,7 @@ pub fn discover_custom_themes() -> Vec<(String, PathBuf)> {
 
 /// Return the full list of available theme names: built-in themes first, then custom.
 pub fn available_themes() -> Vec<String> {
-    let mut names: Vec<String> = BUILTIN_THEMES.iter().map(|s| s.to_string()).collect();
+    let mut names: Vec<String> = builtin_theme_names().map(|s| s.to_string()).collect();
     for (name, _) in discover_custom_themes() {
         names.push(name);
     }
@@ -87,34 +137,50 @@ fn load_custom_theme(path: &std::path::Path) -> Option<Theme> {
     }
 }
 
+/// Parse a builtin's embedded TOML. Builtin TOMLs are committed to the repo
+/// and embedded at build time; a parse failure here is a developer bug, not
+/// user input. The `all_builtins_parse_with_expected_anchors` test guards
+/// against that landing in main.
+fn parse_builtin(builtin: &BuiltinTheme) -> Theme {
+    toml::from_str(builtin.source)
+        .unwrap_or_else(|e| panic!("builtin theme '{}' failed to parse: {}", builtin.name, e))
+}
+
 pub fn load_theme(name: &str) -> Theme {
-    match name {
-        "empire" => Theme::empire(),
-        "phosphor" => Theme::phosphor(),
-        "tokyo-night-storm" => Theme::tokyo_night_storm(),
-        "catppuccin-latte" => Theme::catppuccin_latte(),
-        "dracula" => Theme::dracula(),
-        "rose-pine" => Theme::rose_pine(),
-        _ => {
-            // Try loading from custom themes directory
-            for (theme_name, path) in discover_custom_themes() {
-                if theme_name == name {
-                    if let Some(theme) = load_custom_theme(&path) {
-                        return theme;
-                    }
-                }
+    if let Some(builtin) = BUILTIN_THEMES.iter().find(|b| b.name == name) {
+        debug!(theme = name, source = "builtin", "loaded theme");
+        return parse_builtin(builtin);
+    }
+    for (theme_name, path) in discover_custom_themes() {
+        if theme_name == name {
+            if let Some(theme) = load_custom_theme(&path) {
+                debug!(
+                    theme = name,
+                    source = "custom",
+                    path = %path.display(),
+                    "loaded theme"
+                );
+                return theme;
             }
-            warn!("Unknown theme '{}', falling back to empire", name);
-            Theme::empire()
         }
     }
+    warn!("Unknown theme '{}', falling back to default", name);
+    // Inline the default fallback rather than recursing through `load_theme`,
+    // so a future rename or removal of the "default" builtin would surface
+    // as a clear panic here instead of looping.
+    let default = BUILTIN_THEMES
+        .iter()
+        .find(|b| b.name == "default")
+        .expect("'default' builtin missing from BUILTIN_THEMES");
+    parse_builtin(default)
 }
 
 /// Load a theme and, when `palette_mode` is true, convert every `Color::Rgb`
 /// field to `Color::Indexed` (nearest xterm-256 index). Use this from callers
-/// that have access to `ThemeConfig::color_mode`. Builtin themes construct
-/// colors directly in Rust (bypassing the serde hex helper), so the conversion
-/// must be applied at the Theme level after construction.
+/// that have access to `ThemeConfig::color_mode`. Hex strings in the embedded
+/// and custom TOMLs deserialize to `Color::Rgb`; `palette_mode` consumers need
+/// xterm-256 `Color::Indexed`, so the downsample runs at the `Theme` level
+/// after parsing.
 pub fn load_theme_with_mode(name: &str, palette_mode: bool) -> Theme {
     let mut theme = load_theme(name);
     if palette_mode {
@@ -130,6 +196,7 @@ pub fn export_theme_toml(theme: &Theme) -> Result<String, toml::ser::Error> {
 
 #[cfg(test)]
 mod tests {
+    use super::themes::ThemeAppearance;
     use super::*;
     use ratatui::style::Color;
     use std::io::Write;
@@ -146,69 +213,261 @@ mod tests {
         assert!(matches!(theme.title, Color::Rgb(_, _, _)));
     }
 
+    /// Anchor colors for the builtin themes. Each row is
+    /// `(name, background, title)`. The structural test
+    /// `all_builtins_parse_with_expected_anchors` walks the list and asserts
+    /// every embedded TOML deserializes to the expected hex on both anchors.
+    /// Two anchors per theme is the minimum that catches a typo anywhere
+    /// other than the anchors themselves; cross-field rendering tests cover
+    /// the rest. Adding a new builtin requires one row here.
+    const BUILTIN_COLOR_ANCHORS: &[(&str, Color, Color)] = &[
+        (
+            "default",
+            Color::Rgb(0x1c, 0x1c, 0x1f),
+            Color::Rgb(0xfb, 0xbf, 0x24),
+        ),
+        (
+            "empire",
+            Color::Rgb(0x0f, 0x17, 0x2a),
+            Color::Rgb(0xfb, 0xbf, 0x24),
+        ),
+        (
+            "phosphor",
+            Color::Rgb(0x10, 0x14, 0x12),
+            Color::Rgb(0x39, 0xff, 0x14),
+        ),
+        (
+            "tokyo-night-storm",
+            Color::Rgb(0x24, 0x28, 0x3b),
+            Color::Rgb(0x7a, 0xa2, 0xf7),
+        ),
+        (
+            "catppuccin-latte",
+            Color::Rgb(0xef, 0xf1, 0xf5),
+            Color::Rgb(0x1e, 0x66, 0xf5),
+        ),
+        (
+            "dracula",
+            Color::Rgb(0x28, 0x2a, 0x36),
+            Color::Rgb(0xbd, 0x93, 0xf9),
+        ),
+        (
+            "rose-pine",
+            Color::Rgb(0x19, 0x17, 0x24),
+            Color::Rgb(0xc4, 0xa7, 0xe7),
+        ),
+        (
+            "deep-ocean",
+            Color::Rgb(0x0f, 0x11, 0x1a),
+            Color::Rgb(0x84, 0xff, 0xff),
+        ),
+    ];
+
     #[test]
-    fn test_load_phosphor() {
-        let theme = load_theme("phosphor");
-        assert_eq!(theme.title, Color::Rgb(57, 255, 20));
-        assert_eq!(theme.background, Color::Rgb(16, 20, 18));
+    fn concurrent_load_theme_does_not_deadlock() {
+        // Belt-and-braces: even with the fixed Default impl, exercise
+        // the load path from many threads at once. If some future
+        // change reintroduces a self-referential lock in the load
+        // path, the watchdog timeout catches it.
+        use std::sync::{Arc, Mutex};
+        use std::thread;
+        use std::time::{Duration, Instant};
+
+        let started = Instant::now();
+        let names: Vec<&'static str> = builtin_theme_names().collect();
+        let errors: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let mut handles = Vec::new();
+        for _ in 0..16 {
+            let names = names.clone();
+            let errors = Arc::clone(&errors);
+            handles.push(thread::spawn(move || {
+                for name in names {
+                    let result = std::panic::catch_unwind(|| load_theme(name));
+                    if result.is_err() {
+                        errors.lock().unwrap().push(name.to_string());
+                    }
+                }
+            }));
+        }
+        for h in handles {
+            h.join().expect("worker thread panicked");
+        }
+        let elapsed = started.elapsed();
+        let errs = errors.lock().unwrap();
+        assert!(
+            errs.is_empty(),
+            "themes panicked under concurrent load: {:?}",
+            *errs
+        );
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "16 threads x 6 themes took {:?}; likely a lock contention regression",
+            elapsed
+        );
     }
 
     #[test]
-    fn test_load_catppuccin_latte() {
-        let theme = load_theme("catppuccin-latte");
-        assert_eq!(theme.title, Color::Rgb(30, 102, 245));
-        assert_eq!(theme.background, Color::Rgb(239, 241, 245));
+    fn default_matches_empire_toml() {
+        // Drift guard: every color field in `impl Default for Theme`
+        // (which serde's container `#[serde(default)]` uses as the
+        // fallback for partial custom TOMLs) must match the corresponding
+        // hex in `themes/builtin/empire.toml`. A future Empire palette
+        // tweak that updates the TOML but not the hand-mirrored Default
+        // would otherwise leave partial custom TOMLs inheriting stale
+        // colors silently. Per the review on PR #1197.
+        let defaulted = Theme::default();
+        let from_toml = load_theme("empire");
+        assert_eq!(
+            defaulted.color_fields().to_vec(),
+            from_toml.color_fields().to_vec(),
+            "Theme::default() color fields drifted from themes/builtin/empire.toml; \
+             sync the hand-mirrored values in `impl Default for Theme` (themes.rs)"
+        );
     }
 
     #[test]
-    fn test_load_empire() {
-        let theme = load_theme("empire");
-        assert_eq!(theme.title, Color::Rgb(251, 191, 36));
-        assert_eq!(theme.background, Color::Rgb(15, 23, 42));
+    fn default_does_not_recurse_through_load_theme() {
+        // Regression for the OnceLock-via-load_theme deadlock the
+        // first cut of this work shipped: serde's container-level
+        // `#[serde(default)]` calls Theme::default() to seed before
+        // overwriting present fields, so if Default ran load_theme
+        // (which runs toml::from_str which calls Default which runs
+        // load_theme...) every theme load deadlocked. Default must
+        // build the struct inline.
+        //
+        // Asserting the timing alone would be flaky in CI; instead
+        // confirm Default returns the Empire palette directly and
+        // that parsing every builtin completes within a tight wall
+        // clock (toml::from_str on ~500B is microseconds, not
+        // seconds).
+        use std::time::{Duration, Instant};
+        let started = Instant::now();
+        let d = Theme::default();
+        assert_eq!(d.background, Color::Rgb(0x0f, 0x17, 0x2a));
+        assert_eq!(d.title, Color::Rgb(0xfb, 0xbf, 0x24));
+        for name in builtin_theme_names() {
+            let _ = load_theme(name);
+        }
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "loading all builtins took {:?}; serde default likely re-entered load_theme",
+            elapsed
+        );
     }
 
     #[test]
-    fn test_load_invalid_fallback() {
+    fn all_builtins_parse_with_expected_anchors() {
+        // Mandatory parse-all guard: every entry in BUILTIN_THEMES must
+        // deserialize cleanly from its embedded TOML and match the expected
+        // background and title hex. Without this, a typo in a builtin TOML
+        // would only show up at first runtime load via load_theme's panic
+        // message.
+        for (name, expected_bg, expected_title) in BUILTIN_COLOR_ANCHORS {
+            let theme = load_theme(name);
+            assert_eq!(
+                theme.background, *expected_bg,
+                "builtin theme '{}' background mismatch",
+                name
+            );
+            assert_eq!(
+                theme.title, *expected_title,
+                "builtin theme '{}' title mismatch",
+                name
+            );
+        }
+        // Defensive: ensure every builtin in BUILTIN_THEMES has an entry
+        // in BUILTIN_COLOR_ANCHORS so the test covers all builtins.
+        let table_names: Vec<&str> = BUILTIN_COLOR_ANCHORS.iter().map(|(n, _, _)| *n).collect();
+        for name in builtin_theme_names() {
+            assert!(
+                table_names.contains(&name),
+                "builtin '{}' missing from BUILTIN_COLOR_ANCHORS test table",
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn builtin_appearance_matches_palette() {
+        // Catppuccin Latte is the lone light builtin; the rest are dark.
+        for name in builtin_theme_names() {
+            let theme = load_theme(name);
+            let expected = if name == "catppuccin-latte" {
+                Some(ThemeAppearance::Light)
+            } else {
+                Some(ThemeAppearance::Dark)
+            };
+            assert_eq!(
+                theme.appearance, expected,
+                "builtin theme '{}' appearance mismatch",
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn builtin_syntax_shiki_theme_present() {
+        for name in builtin_theme_names() {
+            let theme = load_theme(name);
+            assert!(
+                theme.syntax.shiki_theme.is_some(),
+                "builtin theme '{}' missing [syntax].shiki_theme",
+                name
+            );
+        }
+    }
+
+    #[test]
+    fn partial_custom_theme_does_not_inherit_metadata() {
+        // Container-level #[serde(default)] would otherwise have a
+        // missing `appearance` fall back to Empire's `Dark`. The
+        // per-field #[serde(default)] on Option<ThemeAppearance> /
+        // ThemeSyntax must override that so absent metadata resolves
+        // to None / empty.
+        let toml_str = r##"
+background = "#1a1b26"
+border = "#414868"
+"##;
+        let theme: Theme = toml::from_str(toml_str).unwrap();
+        assert_eq!(
+            theme.appearance, None,
+            "partial custom TOML must not inherit Empire's appearance"
+        );
+        assert!(
+            theme.syntax.shiki_theme.is_none(),
+            "partial custom TOML must not inherit Empire's syntax.shiki_theme"
+        );
+    }
+
+    #[test]
+    fn unknown_theme_falls_back_to_default() {
         let theme = load_theme("nonexistent-theme");
-        assert_eq!(theme.title, Color::Rgb(251, 191, 36));
-        assert_eq!(theme.background, Color::Rgb(15, 23, 42));
-    }
-
-    #[test]
-    fn test_load_tokyo_night_storm() {
-        let theme = load_theme("tokyo-night-storm");
-        assert_eq!(theme.title, Color::Rgb(122, 162, 247));
-        assert_eq!(theme.background, Color::Rgb(36, 40, 59));
-    }
-
-    #[test]
-    fn test_load_dracula() {
-        let theme = load_theme("dracula");
-        assert_eq!(theme.title, Color::Rgb(189, 147, 249));
-        assert_eq!(theme.background, Color::Rgb(40, 42, 54));
-    }
-
-    #[test]
-    fn test_load_rose_pine() {
-        let theme = load_theme("rose-pine");
-        assert_eq!(theme.title, Color::Rgb(196, 167, 231));
-        assert_eq!(theme.background, Color::Rgb(25, 23, 36));
+        let default = load_theme("default");
+        assert_eq!(
+            theme.color_fields(),
+            default.color_fields(),
+            "fallback theme color fields drifted from default"
+        );
     }
 
     #[test]
     fn test_builtin_themes_count() {
-        assert_eq!(BUILTIN_THEMES.len(), 6);
-        assert!(BUILTIN_THEMES.contains(&"empire"));
-        assert!(BUILTIN_THEMES.contains(&"phosphor"));
-        assert!(BUILTIN_THEMES.contains(&"tokyo-night-storm"));
-        assert!(BUILTIN_THEMES.contains(&"catppuccin-latte"));
-        assert!(BUILTIN_THEMES.contains(&"dracula"));
-        assert!(BUILTIN_THEMES.contains(&"rose-pine"));
+        assert_eq!(BUILTIN_THEMES.len(), 8);
+        let names: Vec<&str> = builtin_theme_names().collect();
+        assert!(names.contains(&"default"));
+        assert!(names.contains(&"empire"));
+        assert!(names.contains(&"phosphor"));
+        assert!(names.contains(&"tokyo-night-storm"));
+        assert!(names.contains(&"catppuccin-latte"));
+        assert!(names.contains(&"dracula"));
+        assert!(names.contains(&"rose-pine"));
+        assert!(names.contains(&"deep-ocean"));
     }
 
     #[test]
     fn test_theme_serialize_roundtrip() {
-        let original = Theme::empire();
+        let original = load_theme("empire");
         let toml_str = export_theme_toml(&original).unwrap();
         let loaded: Theme = toml::from_str(&toml_str).unwrap();
 
@@ -222,7 +481,7 @@ mod tests {
 
     #[test]
     fn test_theme_toml_format() {
-        let theme = Theme::empire();
+        let theme = load_theme("empire");
         let toml_str = export_theme_toml(&theme).unwrap();
 
         assert!(toml_str.contains(r##"background = "#0f172a""##));
@@ -234,7 +493,7 @@ mod tests {
     fn test_load_custom_theme_from_file() {
         let dir = tempfile::tempdir().unwrap();
         let theme_path = dir.path().join("my-theme.toml");
-        let toml_str = export_theme_toml(&Theme::dracula()).unwrap();
+        let toml_str = export_theme_toml(&load_theme("dracula")).unwrap();
         std::fs::write(&theme_path, &toml_str).unwrap();
 
         let loaded = load_custom_theme(&theme_path).unwrap();
@@ -266,7 +525,7 @@ mod tests {
         std::fs::create_dir_all(&themes_dir).unwrap();
 
         // Write two valid theme files
-        let dracula_toml = export_theme_toml(&Theme::dracula()).unwrap();
+        let dracula_toml = export_theme_toml(&load_theme("dracula")).unwrap();
         std::fs::write(themes_dir.join("my-dark.toml"), &dracula_toml).unwrap();
         std::fs::write(themes_dir.join("my-light.toml"), &dracula_toml).unwrap();
         // Write a non-toml file (should be ignored)
@@ -291,7 +550,7 @@ mod tests {
 
     #[test]
     fn test_all_builtin_themes_roundtrip() {
-        for name in BUILTIN_THEMES {
+        for name in builtin_theme_names() {
             let theme = load_theme(name);
             let toml_str = export_theme_toml(&theme)
                 .unwrap_or_else(|e| panic!("{} export failed: {}", name, e));
@@ -345,8 +604,8 @@ border = "#414868"
         assert_eq!(theme.background, Color::Rgb(26, 27, 38));
         assert_eq!(theme.border, Color::Rgb(65, 72, 104));
         // Missing fields get empire defaults
-        assert_eq!(theme.title, Theme::empire().title);
-        assert_eq!(theme.running, Theme::empire().running);
+        assert_eq!(theme.title, load_theme("empire").title);
+        assert_eq!(theme.running, load_theme("empire").running);
     }
 
     #[test]
@@ -360,7 +619,6 @@ border = "#414868"
 
         // The file can be loaded directly, but discover_custom_themes
         // filters out builtin names. We test the filter logic here.
-        let name = "empire";
-        assert!(BUILTIN_THEMES.contains(&name));
+        assert!(is_builtin_theme("empire"));
     }
 }

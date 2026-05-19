@@ -1,0 +1,33 @@
+appearance = "light"
+
+background = "#eff1f5"
+border = "#bcc0cc"
+terminal_border = "#04a5e5"
+selection = "#dce0e8"
+session_selection = "#ccd0da"
+title = "#1e66f5"
+text = "#4c4f69"
+dimmed = "#acb0be"
+hint = "#209fb5"
+running = "#40a02b"
+# Light theme: darker = more attention. Waiting takes the deepest peach,
+# fresh_idle the mid amber, idle the lightest slate so the row visibly
+# fades into the page over time.
+waiting = "#fe640b"
+fresh_idle = "#df8e1d"
+idle = "#9ca0b0"
+error = "#d20f39"
+terminal_active = "#1e66f5"
+group = "#179299"
+search = "#7287fd"
+accent = "#fe640b"
+diff_add = "#40a02b"
+diff_delete = "#d20f39"
+diff_modified = "#df8e1d"
+diff_header = "#04a5e5"
+help_key = "#df8e1d"
+branch = "#04a5e5"
+sandbox = "#8839ef"
+
+[syntax]
+shiki_theme = "catppuccin-latte"

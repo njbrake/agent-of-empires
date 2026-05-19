@@ -40,7 +40,19 @@ pub struct WorkerRecord {
     /// to decide whether the registry entry corresponds to a live owner.
     pub pid: u32,
     pub socket_path: PathBuf,
+    /// Binary command name that the runner was invoked with
+    /// (e.g. `"claude-agent-acp"`, `"codex-acp"`). Surfaced in
+    /// `aoe cockpit ps`, logs, and the doctor's install-hint lookup.
+    /// NOT the registry key; use `agent_key` to resolve a profile.
     pub agent_name: String,
+    /// Registry key for the agent (e.g. `"claude"`, `"codex"`,
+    /// `"opencode"`). Drives `cockpit::agent_profiles::resolve` and any
+    /// other per-agent gate keyed on the registry name. Defaulted on
+    /// load for legacy records that pre-date this field; the empty
+    /// string falls back to `DEFAULT_AGENT_PROFILE` at the call site,
+    /// which is the safest behavior for an unknown agent.
+    #[serde(default)]
+    pub agent_key: String,
     pub cwd: PathBuf,
     pub model: Option<String>,
     pub additional_dirs: Vec<PathBuf>,
@@ -52,6 +64,14 @@ pub struct WorkerRecord {
     /// On reattach, the daemon sends `session/load <stored_acp_session_id>`
     /// to resume the agent-side transcript.
     pub stored_acp_session_id: Option<String>,
+    /// Profile the session was created under. Persisted so reattach can
+    /// re-resolve sandbox env (`terminal/create` env entries) against the
+    /// same profile the session originally used, instead of silently
+    /// falling back to the global default profile. Defaulted on load for
+    /// legacy records that pre-date this field; an absent value falls
+    /// back to the default profile, matching pre-persistence behavior.
+    #[serde(default)]
+    pub source_profile: Option<String>,
     pub started_at: u64,
     pub last_attached_at: Option<u64>,
     pub detached_at: Option<u64>,
@@ -64,11 +84,13 @@ impl WorkerRecord {
         pid: u32,
         socket_path: PathBuf,
         agent_name: String,
+        agent_key: String,
         cwd: PathBuf,
         model: Option<String>,
         additional_dirs: Vec<PathBuf>,
         provider_env_keys: Vec<String>,
         stored_acp_session_id: Option<String>,
+        source_profile: Option<String>,
     ) -> Self {
         Self {
             runner_version: RUNNER_VERSION,
@@ -76,11 +98,13 @@ impl WorkerRecord {
             pid,
             socket_path,
             agent_name,
+            agent_key,
             cwd,
             model,
             additional_dirs,
             provider_env_keys,
             stored_acp_session_id,
+            source_profile,
             started_at: now_secs(),
             last_attached_at: None,
             detached_at: None,
@@ -424,19 +448,120 @@ mod tests {
                 "sess-abc".into(),
                 42,
                 PathBuf::from("/tmp/sock"),
+                "claude-agent-acp".into(),
                 "claude".into(),
                 PathBuf::from("/repo"),
                 Some("claude-opus-4-7".into()),
                 vec![],
                 vec!["ANTHROPIC_API_KEY".into()],
                 None,
+                Some("personal".into()),
             );
             save(&rec).unwrap();
             let loaded = load("sess-abc").unwrap().unwrap();
             assert_eq!(loaded.session_id, "sess-abc");
             assert_eq!(loaded.pid, 42);
             assert_eq!(loaded.runner_version, RUNNER_VERSION);
-            assert_eq!(loaded.agent_name, "claude");
+            assert_eq!(loaded.agent_name, "claude-agent-acp");
+            assert_eq!(loaded.agent_key, "claude");
+        });
+    }
+
+    /// Legacy records written before the `agent_key` field existed
+    /// must still load without surfacing a deserialization error;
+    /// `serde(default)` fills in the empty string and call sites are
+    /// responsible for falling back to `agent_name` or a default
+    /// profile. See `Supervisor::agent_key_for_session`.
+    #[test]
+    #[serial]
+    fn load_legacy_record_without_agent_key() {
+        with_temp_home(|| {
+            let dir = workers_dir().unwrap();
+            // Hand-craft a record missing `agent_key` to simulate a
+            // file written by an older daemon.
+            let legacy = serde_json::json!({
+                "runner_version": RUNNER_VERSION,
+                "session_id": "legacy-1",
+                "pid": 99,
+                "socket_path": "/tmp/legacy.sock",
+                "agent_name": "claude-agent-acp",
+                "cwd": "/repo",
+                "model": null,
+                "additional_dirs": [],
+                "provider_env_keys": [],
+                "stored_acp_session_id": null,
+                "started_at": 0,
+                "last_attached_at": null,
+                "detached_at": null
+            });
+            std::fs::write(
+                dir.join("legacy-1.json"),
+                serde_json::to_string(&legacy).unwrap(),
+            )
+            .unwrap();
+            let loaded = load("legacy-1").unwrap().unwrap();
+            assert_eq!(loaded.agent_name, "claude-agent-acp");
+            assert_eq!(loaded.agent_key, "");
+        });
+    }
+
+    /// Same legacy-record guarantee for `source_profile`: records written
+    /// before the field existed must load with `None` (the documented
+    /// fallback), not surface a deserialization error.
+    #[test]
+    #[serial]
+    fn load_legacy_record_without_source_profile() {
+        with_temp_home(|| {
+            let dir = workers_dir().unwrap();
+            let legacy = serde_json::json!({
+                "runner_version": RUNNER_VERSION,
+                "session_id": "legacy-sp-1",
+                "pid": 7,
+                "socket_path": "/tmp/legacy-sp.sock",
+                "agent_name": "claude-agent-acp",
+                "agent_key": "claude",
+                "cwd": "/repo",
+                "model": null,
+                "additional_dirs": [],
+                "provider_env_keys": [],
+                "stored_acp_session_id": null,
+                "started_at": 0,
+                "last_attached_at": null,
+                "detached_at": null
+            });
+            std::fs::write(
+                dir.join("legacy-sp-1.json"),
+                serde_json::to_string(&legacy).unwrap(),
+            )
+            .unwrap();
+            let loaded = load("legacy-sp-1").unwrap().unwrap();
+            assert_eq!(loaded.source_profile, None);
+        });
+    }
+
+    /// Fresh records carry `source_profile` end-to-end (write + read).
+    /// The roundtrip case is covered above; this asserts the field
+    /// specifically because the reattach path depends on it.
+    #[test]
+    #[serial]
+    fn source_profile_roundtrips() {
+        with_temp_home(|| {
+            let rec = WorkerRecord::new(
+                "sess-sp".into(),
+                1,
+                PathBuf::from("/tmp/sess-sp.sock"),
+                "aoe-agent".into(),
+                "aoe-agent".into(),
+                PathBuf::from("/repo"),
+                None,
+                vec![],
+                vec![],
+                None,
+                Some("personal".into()),
+            );
+            save(&rec).unwrap();
+            let loaded = load("sess-sp").unwrap().unwrap();
+            assert_eq!(loaded.source_profile.as_deref(), Some("personal"));
         });
     }
 
@@ -452,10 +577,12 @@ mod tests {
                 1,
                 PathBuf::from("/tmp/sock-live"),
                 "aoe-agent".into(),
+                "aoe-agent".into(),
                 PathBuf::from("/repo"),
                 None,
                 vec![],
                 vec![],
+                None,
                 None,
             );
             save(&rec).unwrap();
@@ -477,10 +604,12 @@ mod tests {
                 1,
                 sock.clone(),
                 "aoe-agent".into(),
+                "aoe-agent".into(),
                 PathBuf::from("/repo"),
                 None,
                 vec![],
                 vec![],
+                None,
                 None,
             );
             save(&rec).unwrap();
@@ -500,10 +629,12 @@ mod tests {
                 1,
                 PathBuf::from("/tmp/x.sock"),
                 "aoe-agent".into(),
+                "aoe-agent".into(),
                 PathBuf::from("/repo"),
                 None,
                 vec![],
                 vec![],
+                None,
                 None,
             );
             rec.detached_at = Some(100);

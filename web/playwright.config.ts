@@ -2,7 +2,9 @@ import { defineConfig } from "@playwright/test";
 
 export default defineConfig({
   testDir: "./tests",
-  testIgnore: ["**/ensure-session-restart*"],
+  // Live-backend specs (spawn real `aoe serve`) live under tests/live/ and
+  // run via playwright.live.config.ts.
+  testIgnore: ["**/live/**"],
   timeout: 30000,
   retries: process.env.CI ? 1 : 0,
   use: {

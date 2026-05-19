@@ -221,12 +221,36 @@ pub(crate) fn host_environment_prefix(entries: &[String]) -> String {
             match std::env::var(entry) {
                 Ok(v) => out.push_str(&format!("{}={} ", entry, shell_escape(&v))),
                 Err(_) => {
-                    tracing::warn!("host environment variable {} is not set; skipping", entry)
+                    tracing::warn!(target: "session.create", "host environment variable {} is not set; skipping", entry)
                 }
             }
         }
     }
     out
+}
+
+pub(crate) fn resolve_host_environment_value(
+    entries: &[String],
+    target_key: &str,
+) -> Option<String> {
+    let mut resolved_value = None;
+    for entry in entries {
+        if let Some((key, value)) = entry.split_once('=') {
+            if key == target_key {
+                if let Some(value) = resolve_env_value(value) {
+                    resolved_value = Some(value);
+                }
+            }
+        } else if entry == target_key {
+            match std::env::var(entry) {
+                Ok(value) => resolved_value = Some(value),
+                Err(_) => {
+                    tracing::warn!("host environment variable {} is not set; skipping", entry)
+                }
+            }
+        }
+    }
+    resolved_value
 }
 
 /// Resolve an environment value. If the value starts with `$`, read the
@@ -239,7 +263,7 @@ pub(crate) fn resolve_env_value(val: &str) -> Option<String> {
         match std::env::var(var_name) {
             Ok(v) => Some(v),
             Err(_) => {
-                tracing::warn!(
+                tracing::warn!(target: "session.create",
                     "Environment variable ${} is not set on host, skipping",
                     var_name
                 );
@@ -249,6 +273,22 @@ pub(crate) fn resolve_env_value(val: &str) -> Option<String> {
     } else {
         Some(val.to_string())
     }
+}
+
+/// Validate every entry in a list and return any warnings.
+///
+/// Mirrors what `collect_environment` will silently drop at container
+/// create or docker exec time, so callers can surface the same warnings
+/// to the user via toast or stderr before the failure becomes invisible.
+pub fn validate_env_entries<I, S>(entries: I) -> Vec<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    entries
+        .into_iter()
+        .filter_map(|e| validate_env_entry(e.as_ref()))
+        .collect()
 }
 
 /// Validate an env entry string and return a warning message if it references
@@ -269,7 +309,7 @@ pub fn validate_env_entry(entry: &str) -> Option<String> {
                 Some("Warning: bare '$' in value has no variable name".to_string())
             } else if resolve_env_value(value).is_none() {
                 Some(format!(
-                    "Warning: ${} is not set on the host -- it will be empty in the container",
+                    "Warning: ${} is not set on the host, so the value will be empty in the container",
                     var_name
                 ))
             } else {
@@ -283,7 +323,7 @@ pub fn validate_env_entry(entry: &str) -> Option<String> {
         // Bare key -- pass through from host
         if std::env::var(entry).is_err() {
             Some(format!(
-                "Warning: {} is not set on the host -- it will be empty in the container",
+                "Warning: {} is not set on the host, so the value will be empty in the container",
                 entry
             ))
         } else {
@@ -384,7 +424,7 @@ pub(crate) fn collect_environment(
                         });
                     }
                     Err(_) => {
-                        tracing::warn!(
+                        tracing::warn!(target: "session.create",
                             "Environment variable {} is not set on host, skipping",
                             entry
                         );
@@ -442,7 +482,7 @@ pub(crate) fn build_docker_env_args(
 ) -> DockerExecEnv {
     let sandbox_config = resolved_sandbox_config(profile, project_path);
 
-    tracing::debug!(
+    tracing::debug!(target: "session.create",
         "build_docker_env_args: profile={:?}, config.sandbox.environment={:?}, extra_env={:?}",
         profile,
         sandbox_config.environment,
@@ -451,12 +491,12 @@ pub(crate) fn build_docker_env_args(
 
     let env_entries = collect_environment(&sandbox_config, sandbox);
 
-    tracing::debug!(
+    tracing::debug!(target: "session.create",
         "build_docker_env_args: resolved {} env entries",
         env_entries.len()
     );
     for entry in &env_entries {
-        tracing::debug!("  env: {}=<set>", entry.key());
+        tracing::debug!(target: "session.create", "  env: {}=<set>", entry.key());
     }
 
     let mut docker_flag_parts: Vec<String> = Vec::new();
@@ -752,6 +792,35 @@ environment = ["GH_TOKEN=write_token"]
         assert_eq!(prefix, "X='a b'\\''c$d' ");
     }
 
+    #[test]
+    fn test_resolve_host_environment_value_uses_last_resolved_entry() {
+        std::env::remove_var("AOE_TEST_MISSING_HOST_ENV_VALUE");
+        let entries = vec![
+            "CODEX_HOME=/first".to_string(),
+            "OTHER=value".to_string(),
+            "CODEX_HOME=$AOE_TEST_MISSING_HOST_ENV_VALUE".to_string(),
+            "CODEX_HOME=/second".to_string(),
+        ];
+
+        assert_eq!(
+            resolve_host_environment_value(&entries, "CODEX_HOME"),
+            Some("/second".to_string())
+        );
+    }
+
+    #[test]
+    fn test_resolve_host_environment_value_matches_host_env_grammar() {
+        std::env::set_var("AOE_TEST_CODEX_HOME_REF", "/from-host");
+        let entries = vec!["CODEX_HOME=$AOE_TEST_CODEX_HOME_REF".to_string()];
+
+        assert_eq!(
+            resolve_host_environment_value(&entries, "CODEX_HOME"),
+            Some("/from-host".to_string())
+        );
+
+        std::env::remove_var("AOE_TEST_CODEX_HOME_REF");
+    }
+
     /// Helper to find an entry by key and check its value
     fn find_entry<'a>(entries: &'a [EnvEntry], key: &str) -> Option<&'a EnvEntry> {
         entries.iter().find(|e| e.key() == key)
@@ -947,6 +1016,41 @@ environment = ["GH_TOKEN=write_token"]
     #[test]
     fn test_validate_env_entry_escaped_dollar() {
         assert_eq!(validate_env_entry("MY_KEY=$$ESCAPED"), None);
+    }
+
+    #[test]
+    fn test_validate_env_entries_returns_one_warning_per_missing_var() {
+        // Use unique names to avoid collisions with other tests' env state.
+        std::env::remove_var("AOE_TEST_BATCH_MISSING_A");
+        std::env::remove_var("AOE_TEST_BATCH_MISSING_B");
+        std::env::set_var("AOE_TEST_BATCH_PRESENT", "ok");
+
+        let entries = vec![
+            "GH_TOKEN=$AOE_TEST_BATCH_MISSING_A".to_string(),
+            "OK=$AOE_TEST_BATCH_PRESENT".to_string(),
+            "ALSO_BROKEN=$AOE_TEST_BATCH_MISSING_B".to_string(),
+            "LITERAL=fine".to_string(),
+        ];
+        let warnings = validate_env_entries(&entries);
+        assert_eq!(
+            warnings.len(),
+            2,
+            "expected 2 warnings, got: {:?}",
+            warnings
+        );
+        assert!(warnings
+            .iter()
+            .any(|w| w.contains("AOE_TEST_BATCH_MISSING_A")));
+        assert!(warnings
+            .iter()
+            .any(|w| w.contains("AOE_TEST_BATCH_MISSING_B")));
+
+        std::env::remove_var("AOE_TEST_BATCH_PRESENT");
+    }
+
+    #[test]
+    fn test_validate_env_entries_empty_list() {
+        assert!(validate_env_entries(Vec::<String>::new()).is_empty());
     }
 
     #[test]

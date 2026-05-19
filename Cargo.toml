@@ -3,7 +3,7 @@ members = [".", "xtask"]
 
 [package]
 name = "agent-of-empires"
-version = "1.7.0"
+version = "1.7.1"
 edition = "2021"
 rust-version = "1.85"
 authors = ["Agent of Empires Contributors"]
@@ -33,6 +33,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 serde_yaml = "0.9"
 toml = "1.1"
+toml_edit = "0.23"
 
 # File watching
 notify = "8.2"

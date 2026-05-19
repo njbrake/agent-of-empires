@@ -21,6 +21,76 @@ use crate::tui::dialogs::{
 use crate::tui::diff::{DiffAction, DiffView};
 use crate::tui::settings::{SettingsAction, SettingsView};
 
+fn resolve_hook_install_agent(
+    tool_name: &str,
+    session_config: &crate::session::config::SessionConfig,
+) -> Option<&'static crate::agents::AgentDef> {
+    crate::agents::get_agent(tool_name)
+        .or_else(|| {
+            session_config
+                .agent_detect_as
+                .get(tool_name)
+                .and_then(|detect_as| crate::agents::get_agent(detect_as))
+        })
+        .filter(|agent| agent.hook_config.is_some())
+}
+
+pub(super) fn parse_hotkey(s: &str) -> Option<(KeyCode, KeyModifiers)> {
+    let (modifier, key) = s.split_once('+')?;
+    if !modifier.eq_ignore_ascii_case("alt") {
+        return None;
+    }
+    let mut chars = key.chars();
+    let ch = chars.next()?;
+    if chars.next().is_some() {
+        return None;
+    }
+    Some((KeyCode::Char(ch.to_ascii_lowercase()), KeyModifiers::ALT))
+}
+
+/// Validate tool hotkey strings, returning a list of human-readable warning
+/// lines for any that fail to parse. Tool hotkeys must match the
+/// `Alt+<single-char>` shape; everything else is rejected so the user gets
+/// a clear error rather than a silently dead binding.
+pub(super) fn validate_tool_hotkeys(
+    tools: &std::collections::HashMap<String, crate::session::config::ToolSessionConfig>,
+) -> Vec<String> {
+    let mut warnings = Vec::new();
+    for (name, config) in tools {
+        if let Some(ref hotkey) = config.hotkey {
+            if parse_hotkey(hotkey).is_none() {
+                let msg = format!(
+                    "Tool '{}': invalid hotkey '{}' (expected format: Alt+<letter>)",
+                    name, hotkey
+                );
+                tracing::warn!("{}", msg);
+                warnings.push(msg);
+            }
+        }
+    }
+    warnings
+}
+
+/// Build a sorted lookup list of `(tool_name, KeyCode, KeyModifiers)` for
+/// every tool whose `hotkey` parses. Sorted by tool name so the
+/// alphabetically-first tool wins on duplicate hotkeys. Built once at
+/// startup and on settings reload, then iterated on every keystroke;
+/// keep it cheap.
+pub(super) fn build_tool_hotkey_cache(
+    tools: &std::collections::HashMap<String, crate::session::config::ToolSessionConfig>,
+) -> Vec<(String, KeyCode, KeyModifiers)> {
+    let mut sorted: Vec<_> = tools.iter().collect();
+    sorted.sort_by_key(|(name, _)| name.to_owned());
+    sorted
+        .into_iter()
+        .filter_map(|(name, config)| {
+            let hotkey_str = config.hotkey.as_deref()?;
+            let (code, modifiers) = parse_hotkey(hotkey_str)?;
+            Some((name.clone(), code, modifiers))
+        })
+        .collect()
+}
+
 impl HomeView {
     pub fn is_diff_open(&self) -> bool {
         self.diff_view.is_some()
@@ -36,6 +106,24 @@ impl HomeView {
 
     pub fn hit_diff(&self, col: u16, row: u16) -> bool {
         self.diff_area.contains(Position::from((col, row)))
+    }
+
+    fn open_tool_picker(&mut self) {
+        self.tool_picker_dialog = Some(crate::tui::dialogs::ToolPickerDialog::new(
+            &self.tool_configs,
+        ));
+    }
+
+    /// Check if the key event matches any configured tool session hotkey.
+    /// On duplicate hotkeys, the alphabetically-first tool name wins
+    /// (the cache is built sorted by tool name).
+    fn match_tool_hotkey(&self, key: &KeyEvent) -> Option<String> {
+        for (name, code, modifiers) in &self.tool_hotkey_cache {
+            if key.code == *code && key.modifiers == *modifiers {
+                return Some(name.clone());
+            }
+        }
+        None
     }
 
     pub fn handle_key(
@@ -66,7 +154,7 @@ impl HomeView {
                             self.active_profile.as_deref().unwrap_or("default"),
                         );
                         let theme_name = if config.theme.name.is_empty() {
-                            "empire".to_string()
+                            "default".to_string()
                         } else {
                             config.theme.name
                         };
@@ -90,7 +178,7 @@ impl HomeView {
                     let config =
                         resolve_config_or_warn(self.active_profile.as_deref().unwrap_or("default"));
                     let theme_name = if config.theme.name.is_empty() {
-                        "empire".to_string()
+                        "default".to_string()
                     } else {
                         config.theme.name
                     };
@@ -208,6 +296,24 @@ impl HomeView {
             }
         }
 
+        // Handle tool picker dialog
+        if let Some(picker) = &mut self.tool_picker_dialog {
+            match picker.handle_key(key) {
+                DialogResult::Continue => return None,
+                DialogResult::Cancel => {
+                    self.tool_picker_dialog = None;
+                    return None;
+                }
+                DialogResult::Submit(tool_name) => {
+                    self.tool_picker_dialog = None;
+                    self.view_mode = ViewMode::Tool(tool_name);
+                    self.preview_scroll_offset = 0;
+                    self.tool_preview_cache = super::PreviewCache::default();
+                    return None;
+                }
+            }
+        }
+
         // Handle other dialog input
         if self.show_help {
             if matches!(
@@ -234,7 +340,7 @@ impl HomeView {
                     {
                         config.app_state.has_acknowledged_agent_hooks = true;
                         if let Err(e) = crate::session::config::save_config(&config) {
-                            tracing::warn!("Failed to save config: {e}");
+                            tracing::warn!(target: "tui.input", "Failed to save config: {e}");
                         }
                     }
                     // Resume session creation
@@ -266,7 +372,7 @@ impl HomeView {
                                     std::path::Path::new(&project_path),
                                     &hooks_hash,
                                 ) {
-                                    tracing::error!("Failed to trust repo: {}", e);
+                                    tracing::error!(target: "tui.input", "Failed to trust repo: {}", e);
                                 }
                                 let merged =
                                     repo_config::merge_hooks_with_config(&data.profile, hooks);
@@ -307,23 +413,23 @@ impl HomeView {
                     } else {
                         data.tool.clone()
                     };
-                    let has_hooks = crate::agents::get_agent(&tool_name)
-                        .and_then(|a| a.hook_config.as_ref())
-                        .is_some();
 
-                    if has_hooks {
+                    let resolved_config = resolve_config_or_warn(&data.profile);
+                    if let Some(hook_agent) =
+                        resolve_hook_install_agent(&tool_name, &resolved_config.session)
+                    {
                         let config = crate::session::config::load_config().ok().flatten();
-                        let hooks_enabled = config
-                            .as_ref()
-                            .map(|c| c.session.agent_status_hooks)
-                            .unwrap_or(true);
+                        let hooks_enabled = resolved_config.session.agent_status_hooks;
                         let acknowledged = config
                             .as_ref()
                             .map(|c| c.app_state.has_acknowledged_agent_hooks)
                             .unwrap_or(false);
 
                         if hooks_enabled && !acknowledged {
-                            self.hooks_install_dialog = Some(HooksInstallDialog::new(&tool_name));
+                            self.hooks_install_dialog = Some(HooksInstallDialog::new_for_profile(
+                                hook_agent.name,
+                                Some(&data.profile),
+                            ));
                             self.pending_hooks_install_data = Some(data);
                             return None;
                         }
@@ -348,7 +454,7 @@ impl HomeView {
                     self.confirm_dialog = None;
                     if action == "delete_group" {
                         if let Err(e) = self.delete_selected_group() {
-                            tracing::error!("Failed to delete group: {}", e);
+                            tracing::error!(target: "tui.input", "Failed to delete group: {}", e);
                         }
                     } else if action == "stop_session" {
                         if let Some(session_id) = self.pending_stop_session.take() {
@@ -357,7 +463,7 @@ impl HomeView {
                     } else if action == "force_remove_session" {
                         if let Some(session_id) = self.pending_force_remove_session.take() {
                             if let Err(e) = self.force_remove_session(&session_id) {
-                                tracing::error!("Failed to force remove session: {}", e);
+                                tracing::error!(target: "tui.input", "Failed to force remove session: {}", e);
                             }
                         }
                     } else if action == "quit_during_creation" {
@@ -377,7 +483,7 @@ impl HomeView {
                 DialogResult::Submit(options) => {
                     self.unified_delete_dialog = None;
                     if let Err(e) = self.delete_selected(&options) {
-                        tracing::error!("Failed to delete session: {}", e);
+                        tracing::error!(target: "tui.input", "Failed to delete session: {}", e);
                     }
                 }
             }
@@ -394,10 +500,10 @@ impl HomeView {
                     self.group_delete_options_dialog = None;
                     if options.delete_sessions {
                         if let Err(e) = self.delete_group_with_sessions(&options) {
-                            tracing::error!("Failed to delete group with sessions: {}", e);
+                            tracing::error!(target: "tui.input", "Failed to delete group with sessions: {}", e);
                         }
                     } else if let Err(e) = self.delete_selected_group() {
-                        tracing::error!("Failed to delete group: {}", e);
+                        tracing::error!(target: "tui.input", "Failed to delete group: {}", e);
                     }
                 }
             }
@@ -421,7 +527,7 @@ impl HomeView {
                                 data.group.as_deref(),
                                 data.profile.as_deref(),
                             ) {
-                                tracing::error!("Failed to rename session: {}", e);
+                                tracing::error!(target: "tui.input", "Failed to rename session: {}", e);
                             }
                         }
                         RenameMode::Group => {
@@ -429,7 +535,7 @@ impl HomeView {
                                 data.group.as_deref(),
                                 data.profile.as_deref(),
                             ) {
-                                tracing::error!("Failed to rename group: {}", e);
+                                tracing::error!(target: "tui.input", "Failed to rename group: {}", e);
                             }
                         }
                     }
@@ -465,7 +571,7 @@ impl HomeView {
                             Some(name)
                         };
                         if let Err(e) = self.switch_profile(profile) {
-                            tracing::error!("Failed to switch profile: {}", e);
+                            tracing::error!(target: "tui.input", "Failed to switch profile: {}", e);
                         }
                     }
                     ProfilePickerAction::Created(name) => {
@@ -473,7 +579,7 @@ impl HomeView {
                         match crate::session::create_profile(&name) {
                             Ok(()) => {
                                 if let Err(e) = self.switch_profile(Some(name)) {
-                                    tracing::error!("Failed to switch to new profile: {}", e);
+                                    tracing::error!(target: "tui.input", "Failed to switch to new profile: {}", e);
                                 }
                             }
                             Err(e) => {
@@ -609,12 +715,27 @@ impl HomeView {
         key: KeyEvent,
         update_info: Option<&crate::update::UpdateInfo>,
     ) -> Option<Action> {
+        // Dynamic tool session hotkeys (checked before static match block)
+        if let Some(tool_name) = self.match_tool_hotkey(&key) {
+            if matches!(&self.view_mode, ViewMode::Tool(current) if current == &tool_name) {
+                self.view_mode = ViewMode::Agent;
+            } else {
+                self.view_mode = ViewMode::Tool(tool_name);
+                self.preview_scroll_offset = 0;
+                self.tool_preview_cache = super::PreviewCache::default();
+            }
+            return None;
+        }
+
         // Normal mode keybindings
         match key.code {
             KeyCode::Esc if !self.search_matches.is_empty() => {
                 self.search_matches.clear();
                 self.search_match_index = 0;
                 self.search_query = Input::default();
+            }
+            KeyCode::Esc if matches!(self.view_mode, ViewMode::Tool(_)) => {
+                self.view_mode = ViewMode::Agent;
             }
             KeyCode::Char('q') => return Some(Action::Quit),
             KeyCode::Char('?') => {
@@ -649,7 +770,7 @@ impl HomeView {
             KeyCode::Char('t') => {
                 self.view_mode = match self.view_mode {
                     ViewMode::Agent => ViewMode::Terminal,
-                    ViewMode::Terminal => ViewMode::Agent,
+                    ViewMode::Terminal | ViewMode::Tool(_) => ViewMode::Agent,
                 };
             }
             KeyCode::Char('T') => {
@@ -685,6 +806,13 @@ impl HomeView {
                             ));
                         }
                     }
+                }
+            }
+            KeyCode::Char(';') => {
+                if matches!(self.view_mode, ViewMode::Tool(_)) {
+                    self.view_mode = ViewMode::Agent;
+                } else if !self.tool_configs.is_empty() {
+                    self.open_tool_picker();
                 }
             }
             KeyCode::Char('/') => {
@@ -798,7 +926,7 @@ impl HomeView {
                 ) {
                     Ok(view) => self.settings_view = Some(view),
                     Err(e) => {
-                        tracing::error!("Failed to open settings: {}", e);
+                        tracing::error!(target: "tui.input", "Failed to open settings: {}", e);
                         self.info_dialog = Some(InfoDialog::new(
                             "Error",
                             &format!("Failed to open settings: {}", e),
@@ -812,7 +940,7 @@ impl HomeView {
                         let method = match crate::update::install::detect_install_method() {
                             Ok(m) => m,
                             Err(e) => {
-                                tracing::warn!("update detection failed: {e}");
+                                tracing::warn!(target: "tui.input", "update detection failed: {e}");
                                 return None;
                             }
                         };
@@ -878,7 +1006,7 @@ impl HomeView {
                 ) {
                     Ok(view) => self.diff_view = Some(view),
                     Err(e) => {
-                        tracing::error!("Failed to open diff view: {}", e);
+                        tracing::error!(target: "tui.input", "Failed to open diff view: {}", e);
                         self.info_dialog = Some(InfoDialog::new(
                             "Error",
                             &format!("Failed to open diff view: {}", e),
@@ -1128,6 +1256,9 @@ impl HomeView {
                             };
                             Some(Action::AttachTerminal(id.clone(), terminal_mode))
                         }
+                        ViewMode::Tool(ref tool_name) => {
+                            Some(Action::AttachToolSession(id.clone(), tool_name.clone()))
+                        }
                     };
                 } else if let Some(Item::Group { path, .. }) = self.flat_items.get(self.cursor) {
                     let path = path.clone();
@@ -1242,6 +1373,26 @@ impl HomeView {
             }
         }
 
+        // Tool session entries, sorted by name for stable palette ordering
+        // (matches the tool picker dialog's alphabetical order).
+        let mut tools_sorted: Vec<_> = self.tool_configs.iter().collect();
+        tools_sorted.sort_by_key(|(name, _)| name.to_owned());
+        for (name, config) in tools_sorted {
+            let hotkey_label = config
+                .hotkey
+                .as_deref()
+                .map(|h| format!(" [{}]", h))
+                .unwrap_or_default();
+            entries.push(PaletteCommand {
+                id: "tool-session",
+                title: format!("Open tool: {}{}", name, hotkey_label),
+                group: PaletteGroup::Actions,
+                keywords: vec!["tool", "session"],
+                hotkey: "",
+                payload: PaletteAction::ToolSession(name.clone()),
+            });
+        }
+
         self.command_palette = Some(CommandPaletteDialog::new(entries));
     }
 
@@ -1272,6 +1423,12 @@ impl HomeView {
                     self.cursor = idx.min(self.flat_items.len() - 1);
                     self.update_selected();
                 }
+                None
+            }
+            PaletteAction::ToolSession(tool_name) => {
+                self.view_mode = ViewMode::Tool(tool_name);
+                self.preview_scroll_offset = 0;
+                self.tool_preview_cache = super::PreviewCache::default();
                 None
             }
         }
@@ -1399,7 +1556,7 @@ impl HomeView {
         if let Ok(mut config) = load_config().map(|c| c.unwrap_or_default()) {
             config.app_state.sort_order = Some(self.sort_order);
             if let Err(e) = save_config(&config) {
-                tracing::warn!("Failed to save sort order: {}", e);
+                tracing::warn!(target: "tui.input", "Failed to save sort order: {}", e);
             }
         }
     }
@@ -1413,11 +1570,11 @@ impl HomeView {
             Ok(mut config) => {
                 config.app_state.group_by = Some(self.group_by);
                 if let Err(e) = save_config(&config) {
-                    tracing::warn!("Failed to save group_by mode: {}", e);
+                    tracing::warn!(target: "tui.input", "Failed to save group_by mode: {}", e);
                 }
             }
             Err(e) => {
-                tracing::warn!("Failed to load config for group_by save: {}", e);
+                tracing::warn!(target: "tui.input", "Failed to load config for group_by save: {}", e);
             }
         }
     }
@@ -1443,7 +1600,7 @@ impl HomeView {
         }
         self.flat_items = self.build_flat_items();
         if let Err(e) = self.save() {
-            tracing::error!("Failed to save group state: {}", e);
+            tracing::error!(target: "tui.input", "Failed to save group state: {}", e);
         }
     }
 
@@ -1480,6 +1637,7 @@ impl HomeView {
                     TerminalMode::Host => &self.terminal_preview_cache,
                 }
             }
+            ViewMode::Tool(_) => &self.tool_preview_cache,
         };
 
         let visible_height = active_cache.dimensions.1.saturating_sub(1) as usize;
@@ -1744,7 +1902,7 @@ impl HomeView {
                 self.create_session_with_hooks(data, fallback)
             }
             Err(e) => {
-                tracing::warn!("Failed to check repo hooks: {}", e);
+                tracing::warn!(target: "tui.input", "Failed to check repo hooks: {}", e);
                 let fallback = repo_config::resolve_global_profile_hooks(&data.profile);
                 self.create_session_with_hooks(data, fallback)
             }
@@ -1776,7 +1934,7 @@ impl HomeView {
                 Some(Action::AttachSession(session_id))
             }
             Err(e) => {
-                tracing::error!("Failed to create session: {}", e);
+                tracing::error!(target: "tui.input", "Failed to create session: {}", e);
                 if let Some(dialog) = &mut self.new_dialog {
                     dialog.set_error(e.to_string());
                 }
@@ -1844,5 +2002,213 @@ impl HomeView {
             // Everything else passes through unchanged (navigation, ?, /, Enter, etc.)
             _ => Some(key),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session::config::{SessionConfig, ToolSessionConfig};
+
+    #[test]
+    fn hook_install_agent_uses_detect_as_for_custom_codex_wrapper() {
+        let mut config = SessionConfig::default();
+        config
+            .agent_detect_as
+            .insert("wrapped-codex".to_string(), "codex".to_string());
+
+        let agent = resolve_hook_install_agent("wrapped-codex", &config).unwrap();
+
+        assert_eq!(agent.name, "codex");
+    }
+
+    #[test]
+    fn hook_install_agent_keeps_builtin_agent_resolution_first() {
+        let mut config = SessionConfig::default();
+        config
+            .agent_detect_as
+            .insert("opencode".to_string(), "codex".to_string());
+
+        assert!(resolve_hook_install_agent("opencode", &config).is_none());
+    }
+
+    #[test]
+    fn hook_install_agent_ignores_unknown_detect_as_target() {
+        let mut config = SessionConfig::default();
+        config
+            .agent_detect_as
+            .insert("wrapped-agent".to_string(), "missing-agent".to_string());
+
+        assert!(resolve_hook_install_agent("wrapped-agent", &config).is_none());
+    }
+
+    #[test]
+    fn parse_hotkey_accepts_alt_letter() {
+        let (code, mods) = parse_hotkey("Alt+g").expect("valid");
+        assert_eq!(code, KeyCode::Char('g'));
+        assert_eq!(mods, KeyModifiers::ALT);
+    }
+
+    #[test]
+    fn parse_hotkey_is_case_insensitive_on_modifier() {
+        assert!(parse_hotkey("alt+g").is_some());
+        assert!(parse_hotkey("ALT+g").is_some());
+        assert!(parse_hotkey("aLt+g").is_some());
+    }
+
+    #[test]
+    fn parse_hotkey_normalizes_letter_to_lowercase() {
+        let (code, _) = parse_hotkey("Alt+G").expect("valid");
+        assert_eq!(code, KeyCode::Char('g'));
+    }
+
+    #[test]
+    fn parse_hotkey_accepts_digit() {
+        let (code, mods) = parse_hotkey("Alt+1").expect("valid");
+        assert_eq!(code, KeyCode::Char('1'));
+        assert_eq!(mods, KeyModifiers::ALT);
+    }
+
+    #[test]
+    fn parse_hotkey_rejects_non_alt_modifier() {
+        assert!(parse_hotkey("Ctrl+g").is_none());
+        assert!(parse_hotkey("Shift+g").is_none());
+        assert!(parse_hotkey("Cmd+g").is_none());
+    }
+
+    #[test]
+    fn parse_hotkey_rejects_multi_char_key() {
+        assert!(parse_hotkey("Alt+gg").is_none());
+        assert!(parse_hotkey("Alt+F1").is_none());
+    }
+
+    #[test]
+    fn parse_hotkey_rejects_missing_modifier() {
+        assert!(parse_hotkey("g").is_none());
+        assert!(parse_hotkey("Alt").is_none());
+        assert!(parse_hotkey("").is_none());
+    }
+
+    #[test]
+    fn parse_hotkey_rejects_wrong_separator() {
+        assert!(parse_hotkey("Alt-g").is_none());
+        assert!(parse_hotkey("Alt g").is_none());
+    }
+
+    #[test]
+    fn validate_tool_hotkeys_reports_each_invalid_entry() {
+        let mut tools = std::collections::HashMap::new();
+        tools.insert(
+            "lazygit".to_string(),
+            ToolSessionConfig {
+                command: "lazygit".into(),
+                hotkey: Some("Alt+g".into()),
+            },
+        );
+        tools.insert(
+            "yazi".to_string(),
+            ToolSessionConfig {
+                command: "yazi".into(),
+                hotkey: Some("Ctrl+f".into()),
+            },
+        );
+        tools.insert(
+            "tig".to_string(),
+            ToolSessionConfig {
+                command: "tig".into(),
+                hotkey: Some("Alt+too-long".into()),
+            },
+        );
+        let warnings = validate_tool_hotkeys(&tools);
+        assert_eq!(warnings.len(), 2);
+        let joined = warnings.join("|");
+        assert!(joined.contains("yazi"));
+        assert!(joined.contains("tig"));
+        assert!(!joined.contains("lazygit"));
+    }
+
+    #[test]
+    fn validate_tool_hotkeys_empty_when_all_valid_or_unset() {
+        let mut tools = std::collections::HashMap::new();
+        tools.insert(
+            "lazygit".to_string(),
+            ToolSessionConfig {
+                command: "lazygit".into(),
+                hotkey: Some("Alt+g".into()),
+            },
+        );
+        tools.insert(
+            "rg".to_string(),
+            ToolSessionConfig {
+                command: "rg --files".into(),
+                hotkey: None,
+            },
+        );
+        assert!(validate_tool_hotkeys(&tools).is_empty());
+    }
+
+    #[test]
+    fn build_tool_hotkey_cache_sorts_by_name_and_skips_invalid() {
+        let mut tools = std::collections::HashMap::new();
+        tools.insert(
+            "zoxide".to_string(),
+            ToolSessionConfig {
+                command: "z".into(),
+                hotkey: Some("Alt+z".into()),
+            },
+        );
+        tools.insert(
+            "lazygit".to_string(),
+            ToolSessionConfig {
+                command: "lazygit".into(),
+                hotkey: Some("Alt+g".into()),
+            },
+        );
+        tools.insert(
+            "broken".to_string(),
+            ToolSessionConfig {
+                command: "x".into(),
+                hotkey: Some("Ctrl+x".into()),
+            },
+        );
+        tools.insert(
+            "no-hotkey".to_string(),
+            ToolSessionConfig {
+                command: "y".into(),
+                hotkey: None,
+            },
+        );
+
+        let cache = build_tool_hotkey_cache(&tools);
+        // Two valid entries, sorted by name.
+        assert_eq!(cache.len(), 2);
+        assert_eq!(cache[0].0, "lazygit");
+        assert_eq!(cache[0].1, KeyCode::Char('g'));
+        assert_eq!(cache[0].2, KeyModifiers::ALT);
+        assert_eq!(cache[1].0, "zoxide");
+        assert_eq!(cache[1].1, KeyCode::Char('z'));
+    }
+
+    #[test]
+    fn build_tool_hotkey_cache_tie_break_favors_alphabetically_first_name() {
+        let mut tools = std::collections::HashMap::new();
+        // Both bind Alt+g; alphabetical winner is "alpha".
+        tools.insert(
+            "beta".to_string(),
+            ToolSessionConfig {
+                command: "b".into(),
+                hotkey: Some("Alt+g".into()),
+            },
+        );
+        tools.insert(
+            "alpha".to_string(),
+            ToolSessionConfig {
+                command: "a".into(),
+                hotkey: Some("Alt+g".into()),
+            },
+        );
+        let cache = build_tool_hotkey_cache(&tools);
+        assert_eq!(cache[0].0, "alpha");
+        assert_eq!(cache[1].0, "beta");
     }
 }

@@ -1,0 +1,207 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  cargo:
+    name: Cargo Test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          # Cache compiled binaries too. Same-PR pushes that don't
+          # touch Rust deps get a warm `target/` and skip the 4-minute
+          # cargo build entirely; the first push still pays cold cost.
+          cache-bin: "true"
+          # Save on PRs too. Swatinem keys the cache on Cargo.lock +
+          # toolchain hash, so successive pushes to the same PR reuse
+          # the slot rather than thrashing the 10GB repo cache budget.
+          save-if: true
+      - name: Install tmux
+        run: |
+          if [ "$RUNNER_OS" = "Linux" ]; then
+            sudo apt-get update && sudo apt-get install -y tmux
+          else
+            brew install tmux
+          fi
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: '22'
+      # tests/cockpit_acp_smoke.rs spawns the Node ACP shim under
+      # cockpit-worker/test-shim/. The shim depends on @agentclientprotocol/sdk,
+      # so its deps must be installed before `cargo test --features serve`
+      # runs. The shim itself auto-skips if node is missing, but on a
+      # GitHub runner node is always present; without the install step
+      # the shim crashes before the ACP handshake completes.
+      - name: Install ACP shim deps
+        working-directory: cockpit-worker/test-shim
+        run: npm ci
+      - run: cargo test
+      # The server-side audit lives under `#[cfg(feature = "serve")]`
+      # (whole `src/server/` tree). Without this run the read-only
+      # guard audit and other serve-gated tests are silently skipped.
+      - run: cargo test --features serve
+
+  vitest:
+    name: Vitest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: '22'
+      - name: Install dependencies
+        working-directory: web
+        run: npm ci
+      - name: Run Vitest with coverage
+        working-directory: web
+        run: npm run test:unit -- --coverage
+      - name: Upload to Codecov (vitest flag)
+        if: ${{ !cancelled() }}
+        uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2 # v6.0.0
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: web/coverage/vitest/lcov.info
+          flags: vitest
+          name: vitest
+          fail_ci_if_error: false
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ !cancelled() }}
+        with:
+          name: vitest-coverage
+          path: web/coverage/vitest/
+          retention-days: 14
+
+  playwright:
+    name: Playwright (mocked)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: '22'
+      - name: Install dependencies
+        working-directory: web
+        run: npm ci
+      - name: Build web with coverage instrumentation
+        working-directory: web
+        env:
+          AOE_COVERAGE: '1'
+        run: npm run build
+      - name: Validate coverage matrix
+        working-directory: web
+        run: node tests/validate-coverage-matrix.mjs
+      - name: Install Playwright browsers
+        working-directory: web
+        run: npx playwright install --with-deps chromium
+      - name: Run Playwright (mocked) with coverage
+        working-directory: web
+        env:
+          AOE_COVERAGE: '1'
+        run: npx playwright test --config=playwright.config.ts
+      - name: Build LCOV from collected Playwright coverage
+        working-directory: web
+        if: ${{ !cancelled() }}
+        run: npm run coverage:merge
+      - name: Upload to Codecov (playwright-mocked flag)
+        if: ${{ !cancelled() }}
+        uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2 # v6.0.0
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: web/coverage/merged/lcov.info
+          flags: playwright-mocked
+          name: playwright-mocked
+          fail_ci_if_error: false
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ !cancelled() }}
+        with:
+          name: playwright-report
+          path: web/playwright-report/
+          retention-days: 14
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ !cancelled() }}
+        with:
+          name: playwright-mocked-coverage
+          path: web/coverage/merged/
+          retention-days: 14
+
+  playwright-live:
+    name: Playwright (live)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: '22'
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        with:
+          # Cache compiled binaries too. Same-PR pushes that don't
+          # touch Rust deps get a warm `target/` and skip the 4-minute
+          # cargo build entirely; the first push still pays cold cost.
+          cache-bin: "true"
+          # Save on PRs too. Swatinem keys the cache on Cargo.lock +
+          # toolchain hash, so successive pushes to the same PR reuse
+          # the slot rather than thrashing the 10GB repo cache budget.
+          save-if: true
+      - name: Install tmux
+        run: sudo apt-get update && sudo apt-get install -y tmux
+      # Debug build instead of --release: --release with LTO and
+      # codegen-units=1 cost ~6 min on the GitHub runner; debug builds
+      # the same binary in ~2 min with no relevant runtime difference
+      # for e2e tests. The harness derives the tmux prefix from the
+      # binary path (aoe_dev_ for debug, aoe_ for release) so specs
+      # don't hard-code either.
+      - name: Build aoe with instrumented web bundle
+        env:
+          AOE_COVERAGE: '1'
+        run: cargo build --features serve
+      - name: Install web deps
+        working-directory: web
+        run: npm ci
+      - name: Install Playwright browsers
+        working-directory: web
+        run: npx playwright install --with-deps chromium
+      - name: Run live Playwright with coverage
+        working-directory: web
+        env:
+          AOE_COVERAGE: '1'
+          AOE_E2E_BINARY: ${{ github.workspace }}/target/debug/aoe
+        run: npx playwright test --config=playwright.live.config.ts
+      - name: Build LCOV from collected Playwright coverage
+        working-directory: web
+        if: ${{ !cancelled() }}
+        run: npm run coverage:merge
+      - name: Upload to Codecov (playwright-live flag)
+        if: ${{ !cancelled() }}
+        uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2 # v6.0.0
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: web/coverage/merged/lcov.info
+          flags: playwright-live
+          name: playwright-live
+          fail_ci_if_error: false
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ !cancelled() }}
+        with:
+          name: playwright-live-report
+          path: web/playwright-live-report/
+          retention-days: 14
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: ${{ !cancelled() }}
+        with:
+          name: playwright-live-coverage
+          path: web/coverage/merged/
+          retention-days: 14

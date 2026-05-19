@@ -13,7 +13,7 @@ use super::{
 };
 use crate::session::config::GroupByMode;
 use crate::session::{Item, Status};
-use crate::tui::components::{HelpOverlay, Preview};
+use crate::tui::components::{set_prefixed_input_cursor_position, HelpOverlay, Preview};
 use crate::tui::responsive;
 use crate::tui::styles::Theme;
 use crate::update::UpdateInfo;
@@ -302,6 +302,7 @@ impl HomeView {
             profile_picker_dialog,
             projects_dialog,
             command_palette,
+            tool_picker_dialog,
             send_message_dialog,
             update_confirm_dialog,
         );
@@ -341,17 +342,25 @@ impl HomeView {
         } else {
             ""
         };
-        let title = match self.view_mode {
+        let title = match &self.view_mode {
             ViewMode::Agent => format!(" aoe [{}]{} ", self.active_profile_display(), group_suffix),
             ViewMode::Terminal => format!(
                 " Terminals [{}]{} ",
                 self.active_profile_display(),
                 group_suffix
             ),
+            ViewMode::Tool(name) => format!(
+                " Tool: {} [{}]{} ",
+                name,
+                self.active_profile_display(),
+                group_suffix
+            ),
         };
         let (border_color, title_color) = match self.view_mode {
             ViewMode::Agent => (theme.border, theme.title),
-            ViewMode::Terminal => (theme.terminal_border, theme.terminal_border),
+            ViewMode::Terminal | ViewMode::Tool(_) => {
+                (theme.terminal_border, theme.terminal_border)
+            }
         };
         let block = Block::default()
             .borders(Borders::TOP | Borders::LEFT | Borders::BOTTOM)
@@ -440,7 +449,7 @@ impl HomeView {
             };
 
             let value = self.search_query.value();
-            let cursor_pos = self.search_query.visual_cursor();
+            let cursor_pos = self.search_query.cursor();
             let cursor_style = Style::default().fg(theme.background).bg(theme.search);
             let text_style = Style::default().fg(theme.search);
 
@@ -474,7 +483,36 @@ impl HomeView {
             }
 
             frame.render_widget(Paragraph::new(Line::from(spans)), search_area);
+            if !self.has_overlay_above_search() {
+                set_prefixed_input_cursor_position(frame, search_area, "/", &self.search_query);
+            }
         }
+    }
+
+    fn has_overlay_above_search(&self) -> bool {
+        #[cfg(feature = "serve")]
+        let serve_open = self.serve_view.is_some();
+        #[cfg(not(feature = "serve"))]
+        let serve_open = false;
+
+        self.show_help
+            || self.new_dialog.is_some()
+            || self.confirm_dialog.is_some()
+            || self.unified_delete_dialog.is_some()
+            || self.group_delete_options_dialog.is_some()
+            || self.rename_dialog.is_some()
+            || self.hook_trust_dialog.is_some()
+            || self.hooks_install_dialog.is_some()
+            || self.welcome_dialog.is_some()
+            || self.no_agents_dialog.is_some()
+            || self.changelog_dialog.is_some()
+            || self.info_dialog.is_some()
+            || self.profile_picker_dialog.is_some()
+            || self.projects_dialog.is_some()
+            || self.command_palette.is_some()
+            || self.send_message_dialog.is_some()
+            || self.update_confirm_dialog.is_some()
+            || serve_open
     }
 
     fn render_item_line(
@@ -568,6 +606,19 @@ impl HomeView {
                                     .unwrap_or(false),
                             };
                             let (icon, color) = if terminal_running {
+                                (spinner_running(&inst.created_at), theme.terminal_active)
+                            } else {
+                                (ICON_IDLE, theme.dimmed)
+                            };
+                            let style = Style::default().fg(color);
+                            (icon, Cow::Owned(inst.title.clone()), style)
+                        }
+                        ViewMode::Tool(ref tool_name) => {
+                            let tool_session =
+                                crate::tmux::ToolSession::new(&inst.id, &inst.title, tool_name);
+                            let tool_running =
+                                tool_session.exists() && !tool_session.is_pane_dead();
+                            let (icon, color) = if tool_running {
                                 (spinner_running(&inst.created_at), theme.terminal_active)
                             } else {
                                 (ICON_IDLE, theme.dimmed)
@@ -837,11 +888,54 @@ impl HomeView {
         }
     }
 
+    fn refresh_tool_preview_cache_if_needed(&mut self, width: u16, height: u16, tool_name: &str) {
+        const PREVIEW_REFRESH_MS: u128 = 250;
+
+        let scroll_offset = self.preview_scroll_offset;
+        let needs_refresh = match &self.selected_session {
+            Some(id) => {
+                self.tool_preview_cache.session_id.as_ref() != Some(id)
+                    || self.tool_preview_cache.dimensions != (width, height)
+                    || scroll_exceeds_cache(
+                        self.tool_preview_cache.captured_lines,
+                        height,
+                        scroll_offset,
+                    )
+                    || self.tool_preview_cache.last_refresh.elapsed().as_millis()
+                        > PREVIEW_REFRESH_MS
+            }
+            None => false,
+        };
+
+        if needs_refresh {
+            if let Some(id) = &self.selected_session {
+                if let Some(inst) = self.get_instance(id) {
+                    let capture_lines = capture_lines_for(height, scroll_offset);
+                    let tool_session =
+                        crate::tmux::ToolSession::new(&inst.id, &inst.title, tool_name);
+                    let content = tool_session.capture_pane(capture_lines).unwrap_or_default();
+                    self.tool_preview_cache.captured_lines = content.lines().count();
+                    self.tool_preview_cache.content = content;
+                    self.tool_preview_cache.session_id = Some(id.clone());
+                    self.tool_preview_cache.dimensions = (width, height);
+                    self.tool_preview_cache.last_refresh = Instant::now();
+                    self.preview_scroll_offset = clamp_scroll_to_capture(
+                        self.preview_scroll_offset,
+                        self.tool_preview_cache.captured_lines,
+                        height,
+                    );
+                }
+            }
+        }
+    }
+
     fn render_preview(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let compact = area.width < responsive::STACKED_BREAKPOINT;
         let (border_color, title_color) = match self.view_mode {
             ViewMode::Agent => (theme.border, theme.title),
-            ViewMode::Terminal => (theme.terminal_border, theme.terminal_border),
+            ViewMode::Terminal | ViewMode::Tool(_) => {
+                (theme.terminal_border, theme.terminal_border)
+            }
         };
 
         let mut block = Block::default()
@@ -893,9 +987,10 @@ impl HomeView {
         if let Some(line) = compact_title {
             block = block.title(line);
         } else {
-            let title = match self.view_mode {
-                ViewMode::Agent => " Preview ",
-                ViewMode::Terminal => " Terminal Preview ",
+            let title = match &self.view_mode {
+                ViewMode::Agent => " Preview ".to_string(),
+                ViewMode::Terminal => " Terminal Preview ".to_string(),
+                ViewMode::Tool(name) => format!(" {} Preview ", name),
             };
             block = block
                 .title(title)
@@ -1007,6 +1102,40 @@ impl HomeView {
                     }
                 } else {
                     let hint = Paragraph::new("Select a session to preview terminal")
+                        .style(Style::default().fg(theme.dimmed))
+                        .alignment(Alignment::Center);
+                    frame.render_widget(hint, inner);
+                }
+            }
+            ViewMode::Tool(ref tool_name) => {
+                let tool_name = tool_name.clone();
+                let selected_id = self.selected_session.clone();
+
+                if let Some(id) = selected_id {
+                    self.refresh_tool_preview_cache_if_needed(
+                        inner.width,
+                        inner.height,
+                        &tool_name,
+                    );
+
+                    if let Some(inst) = self.get_instance(&id) {
+                        let tool_session =
+                            crate::tmux::ToolSession::new(&inst.id, &inst.title, &tool_name);
+                        let tool_running = tool_session.exists() && !tool_session.is_pane_dead();
+
+                        Preview::render_terminal_preview(
+                            frame,
+                            inner,
+                            inst,
+                            tool_running,
+                            &self.tool_preview_cache.content,
+                            self.preview_scroll_offset,
+                            theme,
+                            compact,
+                        );
+                    }
+                } else {
+                    let hint = Paragraph::new("Select a session to preview tool")
                         .style(Style::default().fg(theme.dimmed))
                         .alignment(Alignment::Center);
                     frame.render_widget(hint, inner);
@@ -1206,6 +1335,11 @@ impl HomeView {
         }
 
         groups.push((2, mk(if strict { "T" } else { "t" }, "View")));
+        if matches!(self.view_mode, ViewMode::Tool(_)) {
+            groups.push((1, mk(";", "Back")));
+        } else if !self.tool_configs.is_empty() {
+            groups.push((2, mk(";", "Tools")));
+        }
         groups.push((3, mk(if strict { "^G" } else { "g" }, "Group")));
 
         // c: container/host toggle hint for sandboxed sessions in Terminal view

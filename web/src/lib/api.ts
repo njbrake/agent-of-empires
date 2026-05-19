@@ -24,8 +24,26 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T | null> 
 
 // --- Sessions ---
 
-export function fetchSessions(): Promise<SessionResponse[] | null> {
-  return fetchJson<SessionResponse[]>("/api/sessions");
+export interface SessionsEnvelope {
+  sessions: SessionResponse[];
+  workspace_ordering: string[];
+}
+
+export function fetchSessions(): Promise<SessionsEnvelope | null> {
+  return fetchJson<SessionsEnvelope>("/api/sessions");
+}
+
+export async function updateWorkspaceOrdering(order: string[]): Promise<boolean> {
+  try {
+    const res = await fetch("/api/workspace-ordering", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ order }),
+    });
+    return res.ok;
+  } catch {
+    return false;
+  }
 }
 
 export interface EnsureSessionResult {
@@ -219,12 +237,47 @@ export async function updateProfileSettings(
 
 // --- Themes & Sounds ---
 
+import type { ResolvedTheme } from "./theme";
+
 export async function fetchThemes(): Promise<string[]> {
   return (await fetchJson<string[]>("/api/themes")) ?? [];
 }
 
+/** Fetch the resolved theme projection (web CSS vars, terminal CSS
+ *  vars, syntax highlighter selection) for a named theme. The server
+ *  falls back to Empire for unknown names; check `source` to detect. */
+export function fetchResolvedTheme(
+  name: string,
+): Promise<ResolvedTheme | null> {
+  return fetchJson<ResolvedTheme>(
+    `/api/themes/${encodeURIComponent(name)}`,
+  );
+}
+
+/** Fetch the resolved theme for the active profile's current
+ *  selection. Server reads from profile_config so per-profile overrides
+ *  land in the right place. */
+export function fetchCurrentTheme(): Promise<ResolvedTheme | null> {
+  return fetchJson<ResolvedTheme>("/api/theme/current");
+}
+
 export async function fetchSounds(): Promise<string[]> {
   return (await fetchJson<string[]>("/api/sounds")) ?? [];
+}
+
+/** Fetch a sound file as a Blob so the cockpit's browser-side approval
+ *  player can hand a blob URL to `new Audio(...)`. The fetch path runs
+ *  through `fetchInterceptor.ts`, which injects `Authorization: Bearer`
+ *  on every request; an `<audio src="...">` element does not, so a
+ *  blob round-trip is necessary in PWA mode. See #1038. */
+export async function fetchSoundBlob(name: string): Promise<Blob | null> {
+  try {
+    const res = await fetch(`/api/sounds/file/${encodeURIComponent(name)}`);
+    if (!res.ok) return null;
+    return await res.blob();
+  } catch {
+    return null;
+  }
 }
 
 // --- About / server info ---
@@ -680,6 +733,17 @@ export async function logout(): Promise<void> {
     try {
       const { clearDeviceBindingSecret } = await import("./deviceBinding");
       clearDeviceBindingSecret();
+    } catch {
+      // ignore
+    }
+    // Drop the in-memory approval-sound caches so a future user on the
+    // same tab does not see the previous user's settings snapshot or
+    // hear their cached blob.
+    try {
+      const { clearApprovalSoundCache } = await import(
+        "../hooks/useApprovalSound"
+      );
+      clearApprovalSoundCache();
     } catch {
       // ignore
     }

@@ -1,4 +1,4 @@
-use super::container_interface::{ContainerConfig, EnvEntry};
+use super::container_interface::{docker_env_args, ContainerConfig};
 use super::error::{DockerError, Result};
 use std::process::Command;
 
@@ -135,11 +135,11 @@ impl RuntimeBase {
 
     pub fn ensure_image(&self, image: &str) -> Result<()> {
         if self.image_exists_locally(image) {
-            tracing::info!("Using local {} image '{}'", self.name, image);
+            tracing::info!(target: "containers.runtime", "Using local {} image '{}'", self.name, image);
             return Ok(());
         }
 
-        tracing::info!("Pulling {} image '{}'", self.name, image);
+        tracing::info!(target: "containers.runtime", "Pulling {} image '{}'", self.name, image);
         self.pull_image(image)
     }
 
@@ -171,7 +171,7 @@ impl RuntimeBase {
 
         for vol in &config.volumes {
             if !self.supports_read_only_volumes && vol.read_only {
-                tracing::warn!(
+                tracing::warn!(target: "containers.runtime",
                     "{} does not support read-only volumes, mounting {} read-write",
                     self.name,
                     vol.container_path
@@ -191,18 +191,8 @@ impl RuntimeBase {
             args.push(path.clone());
         }
 
-        for entry in &config.environment {
-            args.push("-e".to_string());
-            match entry {
-                EnvEntry::Inherit { key, .. } => {
-                    // Only the key in argv; value stays in process env
-                    args.push(key.clone());
-                }
-                EnvEntry::Literal { key, value } => {
-                    args.push(format!("{}={}", key, value));
-                }
-            }
-        }
+        let (env_argv, _inherit) = docker_env_args(&config.environment);
+        args.extend(env_argv);
 
         for port in &config.port_mappings {
             args.push("-p".to_string());
@@ -229,22 +219,21 @@ impl RuntimeBase {
     /// Run the container creation command (after existence has already been checked by the caller).
     pub fn run_create(&self, name: &str, image: &str, config: &ContainerConfig) -> Result<String> {
         let args = self.build_create_args(name, image, config);
-        tracing::debug!("{} create args: {}", self.name, args.join(" "));
+        tracing::debug!(target: "containers.runtime", "{} create args: {}", self.name, args.join(" "));
 
         let mut cmd = self.command();
         cmd.args(&args);
         // Set inherited env vars on the child process so docker can read them
         // via `-e KEY` without the values appearing in argv
-        for entry in &config.environment {
-            if let EnvEntry::Inherit { key, value } = entry {
-                cmd.env(key, value);
-            }
+        let (_, inherit) = docker_env_args(&config.environment);
+        for (key, value) in inherit {
+            cmd.env(key, value);
         }
         let output = cmd.output()?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            tracing::debug!("stderr: {}", stderr);
+            tracing::debug!(target: "containers.runtime", "stderr: {}", stderr);
             if stderr.contains("permission denied") {
                 return Err(DockerError::PermissionDenied);
             }

@@ -71,7 +71,26 @@ export function installFetchErrorToasts(): void {
     const isApi = path.startsWith("/api/");
     const sameOrigin = isSameOrigin(rawUrl);
 
-    const patchedInit = attachAuthHeader(sameOrigin, init);
+    // Generate a per-request id and inject as X-Request-Id so the backend
+    // `http.request` middleware echoes the same id on its span. With it,
+    // a network entry seen in devtools can be grep-correlated against the
+    // backend log via `request_id=...`.
+    let patchedInit = attachAuthHeader(sameOrigin, init);
+    if (sameOrigin && isApi) {
+      try {
+        const requestId =
+          typeof crypto !== "undefined" && "randomUUID" in crypto
+            ? crypto.randomUUID()
+            : Math.random().toString(36).slice(2);
+        const h = new Headers(patchedInit?.headers ?? init?.headers);
+        if (!h.has("X-Request-Id")) {
+          h.set("X-Request-Id", requestId);
+        }
+        patchedInit = { ...(patchedInit ?? init ?? {}), headers: h };
+      } catch {
+        // Fall through without a request id; the middleware generates one.
+      }
+    }
 
     try {
       const res = await original(input, patchedInit);

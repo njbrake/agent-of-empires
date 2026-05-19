@@ -35,14 +35,15 @@ pub use projects::{create_project, delete_project, list_projects};
 pub use sessions::{
     create_session, delete_session, ensure_container_terminal, ensure_session, ensure_terminal,
     list_sessions, read_output, rename_session, send_message, session_diff_file,
-    session_diff_files, update_session_diff_base, update_session_notifications, CleanupDefaults,
-    OutputQuery, SendMessageRequest, SessionResponse,
+    session_diff_files, update_session_diff_base, update_session_notifications,
+    update_workspace_ordering, CleanupDefaults, OutputQuery, SendMessageRequest, SessionResponse,
 };
 pub use system::{
     browse_filesystem, create_profile, default_profile, delete_profile, docker_status,
-    filesystem_home, get_about, get_profile_settings, get_settings, get_update_status, list_agents,
-    list_devices, list_groups, list_profiles, list_sounds, list_themes, rename_profile,
-    update_profile_settings, update_settings,
+    filesystem_home, get_about, get_current_theme, get_profile_settings, get_resolved_theme,
+    get_settings, get_update_status, list_agents, list_devices, list_groups, list_profiles,
+    list_sounds, list_themes, rename_profile, serve_sound_file, update_profile_settings,
+    update_settings,
 };
 
 const SHELL_METACHARACTERS: &[char] = &[
@@ -112,7 +113,7 @@ mod tests {
     //! refactor PR that claimed "no behavior changes" dropped 4 shell
     //! metacharacters (`#`, `[`, `]`, `~`) from the injection blocklist,
     //! added `"hooks"` to the settings-write allowlist (a hooks section
-    //! set via the API runs arbitrary shell commands on session start —
+    //! set via the API runs arbitrary shell commands on session start;
     //! local RCE), and replaced the `SESSION_BLOCKED_FIELDS` contents
     //! with two field names that don't exist on `SessionConfig`,
     //! turning the blocklist into a no-op.
@@ -120,6 +121,141 @@ mod tests {
     //! Pin the contents here so the next refactor that touches this
     //! file fails CI instead of silently regressing security.
     use super::*;
+
+    /// Read-only audit: every mutating handler must check `state.read_only`
+    /// (directly, or via the `read_only_block` helper) and return 403
+    /// before performing any write. This static check walks the handler
+    /// source files at compile time via `include_str!` and looks for the
+    /// canonical guard pattern inside each named handler's body.
+    ///
+    /// Why static: building a full AppState in a unit test requires a tmux
+    /// runtime, login manager, token manager, broadcast channels, and an
+    /// app-data dir. The end-to-end Playwright spec in
+    /// `web/tests/live/read-only-mode.spec.ts` covers the runtime path;
+    /// this test guards against a contributor adding a new POST/PATCH/DELETE
+    /// handler and forgetting the guard.
+    ///
+    /// Body boundaries: each handler's body runs from `fn <name>` up to
+    /// the next `pub async fn `, `pub fn `, or `async fn ` in the same
+    /// file. This is more robust than a fixed-char window, which silently
+    /// misses guards in handlers whose bodies grow past the window
+    /// (caught a real regression on `ensure_session` after an upstream
+    /// rebase).
+    #[test]
+    fn every_mutating_handler_has_read_only_guard() {
+        // (file_label, source, list_of_handler_fn_names_we_expect_guarded).
+        // When a new POST / PATCH / DELETE handler is added, list its fn
+        // name here. The test then enforces that its body contains the
+        // guard.
+        let cases: &[(&str, &str, &[&str])] = &[
+            (
+                "api/sessions.rs",
+                include_str!("sessions.rs"),
+                &[
+                    "create_session",
+                    "delete_session",
+                    "rename_session",
+                    "send_message",
+                    "ensure_session",
+                    "ensure_terminal",
+                    "ensure_container_terminal",
+                    "update_session_notifications",
+                    "update_session_diff_base",
+                    "update_workspace_ordering",
+                ],
+            ),
+            ("api/git.rs", include_str!("git.rs"), &["clone_repo"]),
+            (
+                "api/log_level.rs",
+                include_str!("log_level.rs"),
+                &["patch_log_level"],
+            ),
+            (
+                "api/projects.rs",
+                include_str!("projects.rs"),
+                &["create_project", "delete_project"],
+            ),
+            (
+                "api/system.rs",
+                include_str!("system.rs"),
+                &[
+                    "update_settings",
+                    "create_profile",
+                    "delete_profile",
+                    "rename_profile",
+                    "default_profile",
+                    "update_profile_settings",
+                ],
+            ),
+            (
+                "api/cockpit.rs",
+                include_str!("cockpit.rs"),
+                &[
+                    "spawn_cockpit",
+                    "shutdown_cockpit",
+                    "cockpit_prompt",
+                    "cockpit_cancel",
+                    "cockpit_force_end_turn",
+                    "cockpit_enable",
+                    "cockpit_disable",
+                    "cockpit_set_mode",
+                    "resolve_approval",
+                    "set_cockpit_master",
+                ],
+            ),
+            (
+                "server/push.rs",
+                include_str!("../push.rs"),
+                &["subscribe", "unsubscribe", "test"],
+            ),
+        ];
+
+        let guard_patterns: &[&str] = &[
+            "state.read_only",
+            "self.read_only",
+            // Cockpit handlers use the shared helper from api/cockpit.rs.
+            "read_only_block(",
+        ];
+        let body_terminators: &[&str] = &["\npub async fn ", "\npub fn ", "\nasync fn ", "\nfn "];
+
+        let mut missing: Vec<String> = Vec::new();
+        for (file_label, source, handler_names) in cases {
+            for name in *handler_names {
+                let needle = format!("fn {name}(");
+                let Some(start) = source.find(&needle) else {
+                    missing.push(format!(
+                        "{file_label}: handler `{name}` not found (rename/refactor?)"
+                    ));
+                    continue;
+                };
+                // Body runs from this function's `fn name(` to the start
+                // of the next function definition in the file.
+                let rest = &source[start + needle.len()..];
+                let end_offset = body_terminators
+                    .iter()
+                    .filter_map(|t| rest.find(t))
+                    .min()
+                    .unwrap_or(rest.len());
+                let body = &rest[..end_offset];
+                let has_guard = guard_patterns.iter().any(|p| body.contains(p));
+                if !has_guard {
+                    missing.push(format!(
+                        "{file_label}: handler `{name}` is missing read-only guard. \
+                         Mutating handlers must check `state.read_only` (or call \
+                         `read_only_block(&state)`) and return 403 before performing \
+                         any write. Add the guard, or if the handler is intentionally \
+                         read-safe, drop it from this list in the same commit with \
+                         justification."
+                    ));
+                }
+            }
+        }
+        assert!(
+            missing.is_empty(),
+            "Read-only audit failed:\n{}",
+            missing.join("\n")
+        );
+    }
 
     #[test]
     fn shell_metacharacters_blocklist_is_exhaustive() {

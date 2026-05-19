@@ -84,7 +84,7 @@ impl Session {
 
         // Note: With -d flag, tmux new-session returns 0 even if the shell command fails.
         // Log args at debug level for troubleshooting.
-        tracing::debug!(
+        tracing::debug!(target: "tmux.command",
             "tmux new-session args: {:?}",
             args.iter()
                 .map(|a| crate::session::environment::redact_env_values(a))
@@ -374,7 +374,7 @@ impl Session {
         const PASTE_BYTE_THRESHOLD: usize = 2048;
         let use_paste_buffer = byte_len >= PASTE_BYTE_THRESHOLD || text.contains('\n');
 
-        tracing::debug!(
+        tracing::debug!(target: "tmux.command",
             "send_keys_with_delay: bytes={} lines={} max_line={} use_paste_buffer={} target={}",
             byte_len,
             line_count,

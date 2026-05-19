@@ -135,11 +135,30 @@ pub const DEFAULT_TARGET_ROOTS: &[&str] = &[
     // (`log.runtime`). Without this, `log.runtime` would be dropped
     // under any expanded-level filter that has no global default.
     "log",
+    // User-facing surfaces that previously fell under `agent_of_empires`
+    // and were therefore indistinguishable from generic library code.
+    // Each is a separate ownership boundary the user can dial up/down.
+    "cli",
+    "tui",
+    "session",
+    "tmux",
+    "http",
+    "serve",
+    "hooks",
+    "sound",
 ];
 
 /// Sub-targets users can tune individually from the settings UI.
 /// Order is the UI ordering. Anything not in this list still works
 /// in the runtime endpoint as a raw filter, but won't have a dropdown.
+///
+/// Kept intentionally short. The list is for the UI dropdown only;
+/// callers can always set arbitrary EnvFilter directives via the
+/// settings TUI's raw field or `PATCH /api/log-level`. Adding an
+/// entry here is only worth it when we have evidence we'll want to
+/// dial that area in isolation. Sub-targets emitted by code (e.g.
+/// `http.request`, `cli.serve`, `tui.home`) work fine even when not
+/// listed; they just won't have a one-click row in the settings UI.
 pub const KNOWN_SUB_TARGETS: &[&str] = &[
     "cockpit.acp",
     "cockpit.acp.stderr",
@@ -445,6 +464,51 @@ impl std::fmt::Display for LogFilterError {
 impl std::error::Error for LogFilterError {}
 
 pub fn init_subscriber(target: SubscriberTarget, filter: String) -> InitResult {
+    init_subscriber_with_options(target, filter, false)
+}
+
+/// Event formatter that mirrors the default Full output (RFC3339-ish
+/// timestamp, level, target, fields, message) but omits the span chain
+/// prefix. Used when `[logging].show_spans = false`, the project
+/// default, so that idle polling requests do not flood the log with
+/// `http_request{request_id=... method=GET path=...}` prefixes on every
+/// downstream event. The full default formatter is still available when
+/// the user opts in via the settings toggle.
+struct NoSpanFormat;
+
+impl<S, N> tracing_subscriber::fmt::FormatEvent<S, N> for NoSpanFormat
+where
+    S: tracing::Subscriber + for<'a> tracing_subscriber::registry::LookupSpan<'a>,
+    N: for<'a> tracing_subscriber::fmt::FormatFields<'a> + 'static,
+{
+    fn format_event(
+        &self,
+        ctx: &tracing_subscriber::fmt::FmtContext<'_, S, N>,
+        mut writer: tracing_subscriber::fmt::format::Writer<'_>,
+        event: &tracing::Event<'_>,
+    ) -> std::fmt::Result {
+        let meta = event.metadata();
+        write!(
+            writer,
+            "{}  {} {}: ",
+            chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Micros, true),
+            meta.level(),
+            meta.target(),
+        )?;
+        ctx.field_format().format_fields(writer.by_ref(), event)?;
+        writeln!(writer)
+    }
+}
+
+/// Initialize tracing with explicit formatter options. `show_spans = true`
+/// prefixes every event with the span chain (e.g. `http_request{request_id=...}`),
+/// which enables grep-correlation across async boundaries but adds noise on
+/// idle polling endpoints. `false` (the default) drops the prefix.
+pub fn init_subscriber_with_options(
+    target: SubscriberTarget,
+    filter: String,
+    show_spans: bool,
+) -> InitResult {
     let parsed = match EnvFilter::builder().with_regex(false).parse(&filter) {
         Ok(f) => f,
         Err(e) => {
@@ -456,6 +520,14 @@ pub fn init_subscriber(target: SubscriberTarget, filter: String) -> InitResult {
     };
     let (reload_layer, handle) = reload::Layer::new(parsed);
 
+    // tracing-subscriber's default Full formatter hard-codes the span
+    // chain prefix into the event line, and the `with_current_span` /
+    // `with_span_list` toggles only exist on the JSON formatter (not on
+    // `fmt::Layer` or `format::Format<Full, _>` for non-JSON output).
+    // When `show_spans` is false we therefore install a small custom
+    // FormatEvent that emits the same timestamp / level / target /
+    // message but skips the span list. When true we install the default
+    // Full formatter.
     let install_result = match target {
         SubscriberTarget::File(path, policy) => match SizeRotatingWriter::new(path.clone(), policy)
         {
@@ -466,14 +538,26 @@ pub fn init_subscriber(target: SubscriberTarget, filter: String) -> InitResult {
                 // for the TUI dialog (which uses captured offset).
                 write_raw_startup_marker(&mut writer);
                 let mw = std::sync::Mutex::new(writer);
-                let fmt_layer = tracing_subscriber::fmt::layer()
-                    .with_writer(mw)
-                    .with_ansi(false);
-                Registry::default()
-                    .with(reload_layer)
-                    .with(fmt_layer)
-                    .try_init()
-                    .map_err(|e| e.to_string())
+                if show_spans {
+                    let fmt_layer = tracing_subscriber::fmt::layer()
+                        .with_writer(mw)
+                        .with_ansi(false);
+                    Registry::default()
+                        .with(reload_layer)
+                        .with(fmt_layer)
+                        .try_init()
+                        .map_err(|e| e.to_string())
+                } else {
+                    let fmt_layer = tracing_subscriber::fmt::layer()
+                        .with_writer(mw)
+                        .with_ansi(false)
+                        .event_format(NoSpanFormat);
+                    Registry::default()
+                        .with(reload_layer)
+                        .with(fmt_layer)
+                        .try_init()
+                        .map_err(|e| e.to_string())
+                }
             }
             Err(e) => Err(format!("open log file {}: {e}", path.display())),
         },
@@ -481,12 +565,23 @@ pub fn init_subscriber(target: SubscriberTarget, filter: String) -> InitResult {
             // Marker on stdout too so a piped foreground serve preserves the
             // boundary in tools that grep the captured output.
             write_raw_startup_marker(&mut std::io::stdout());
-            let fmt_layer = tracing_subscriber::fmt::layer().with_ansi(false);
-            Registry::default()
-                .with(reload_layer)
-                .with(fmt_layer)
-                .try_init()
-                .map_err(|e| e.to_string())
+            if show_spans {
+                let fmt_layer = tracing_subscriber::fmt::layer().with_ansi(false);
+                Registry::default()
+                    .with(reload_layer)
+                    .with(fmt_layer)
+                    .try_init()
+                    .map_err(|e| e.to_string())
+            } else {
+                let fmt_layer = tracing_subscriber::fmt::layer()
+                    .with_ansi(false)
+                    .event_format(NoSpanFormat);
+                Registry::default()
+                    .with(reload_layer)
+                    .with(fmt_layer)
+                    .try_init()
+                    .map_err(|e| e.to_string())
+            }
         }
     };
 
@@ -1052,6 +1147,7 @@ mod tests {
             rotation,
             max_size_mib: max_mib,
             keep_count: keep,
+            show_spans: false,
         }
     }
 

@@ -323,6 +323,17 @@ pub enum Event {
     CurrentModeChanged {
         current_mode_id: String,
     },
+    /// `session/set_mode` round-trip rejected by the adapter. Fired when
+    /// the cockpit asked for a mode the adapter does not advertise
+    /// (claude-agent-acp gates `bypassPermissions` on `ALLOW_BYPASS`, so
+    /// a YOLO-driven post-spawn `set_mode("bypassPermissions")` lands
+    /// here when the env var is unset). UI renders a non-blocking notice
+    /// so the user knows their requested mode did not take effect; the
+    /// session keeps whatever mode the adapter last reported. See #1233.
+    ModeSwitchFailed {
+        mode_id: String,
+        reason: String,
+    },
     /// Full snapshot of the slash commands the agent advertises. Comes
     /// from ACP `SessionUpdate::AvailableCommandsUpdate`. Replaces the
     /// previous list (the agent re-broadcasts the full set whenever it
@@ -361,6 +372,20 @@ pub enum Event {
     /// reload/session-switch reconstructs only the agent's chunks and
     /// every turn collapses into one assistant blob.
     UserPromptSent {
+        text: String,
+    },
+    /// A user prompt arrived at the daemon while another `session/prompt`
+    /// was still in flight. The daemon refused to forward it (claude-agent-acp
+    /// serializes prompts internally and a second concurrent prompt would
+    /// race the pending one). Carries the rejected text so the UI can
+    /// render a Retry pill near the composer. The text was already
+    /// persisted as `UserPromptSent` upstream of this rejection by the
+    /// `/cockpit/prompt` handler, so this event does not introduce new
+    /// PII exposure relative to the existing transcript. Reason is an
+    /// opaque tag for forward extensibility; today only `"agent_busy"`
+    /// is used. See #1196.
+    PromptRejected {
+        reason: String,
         text: String,
     },
     /// Agent-assigned ACP session id from a successful `session/new`.
@@ -486,6 +511,7 @@ impl CockpitState {
             // replay), so this is just a no-op that bumps seq.
             Event::ModesAvailable { .. } => {}
             Event::CurrentModeChanged { .. } => {}
+            Event::ModeSwitchFailed { .. } => {}
             Event::AvailableCommandsUpdated { commands } => {
                 self.available_commands = commands;
             }
@@ -531,6 +557,11 @@ impl CockpitState {
             // in-memory mirror needed yet. Bumps seq so the WS replay
             // surfaces it to live clients.
             Event::WakeupScheduled { .. } => {}
+            // Rejected follow-up prompt while another prompt was in flight.
+            // No durable in-memory mutation; the reducer surfaces a Retry
+            // pill from the broadcast frame and the event_store entry
+            // carries the historical record. See #1196.
+            Event::PromptRejected { .. } => {}
         }
         self.last_seq = self.last_seq.saturating_add(1);
         self.updated_at = Utc::now();
@@ -558,6 +589,20 @@ mod tests {
         assert_eq!(seq, 1);
         assert!(s.thinking.is_some());
         assert!(s.updated_at >= before);
+    }
+
+    #[test]
+    fn mode_switch_failed_bumps_seq_without_mutating_mode() {
+        let mut s = fresh_state();
+        let before_mode = s.mode;
+        let seq = s
+            .apply_event(Event::ModeSwitchFailed {
+                mode_id: "bypassPermissions".into(),
+                reason: "Mode bypassPermissions is not available.".into(),
+            })
+            .expect("apply ok");
+        assert_eq!(seq, 1);
+        assert_eq!(s.mode, before_mode);
     }
 
     #[test]

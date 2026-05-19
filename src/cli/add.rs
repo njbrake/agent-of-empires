@@ -119,6 +119,7 @@ pub struct AddArgs {
     model: Option<String>,
 }
 
+#[tracing::instrument(target = "cli.add", skip_all, fields(profile = %profile))]
 pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
     let mut path = if args.path.as_os_str() == "." {
         std::env::current_dir()?
@@ -475,7 +476,7 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
             );
             if let Some(spec) = registry.get(&agent_name) {
                 if !crate::cli::cockpit::command_present(&spec.command) {
-                    let hint = crate::cli::cockpit::install_hint_for(&spec.command)
+                    let hint = crate::cockpit::install_hints::install_hint_for(&spec.command)
                         .unwrap_or("install via your package manager and re-run");
                     bail!(
                         "cockpit ACP adapter `{}` is not installed or not on $PATH.\n\
@@ -510,6 +511,13 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
                 );
             }
         } else {
+            // Surface env-resolution warnings before container creation so
+            // typos and missing host vars don't silently produce empty
+            // values inside the sandbox. Same source the TUI path uses.
+            for w in crate::session::validate_env_entries(&config.sandbox.environment) {
+                eprintln!("⚠ {}", w);
+            }
+
             let container_name = containers::DockerContainer::generate_name(&instance.id);
             let image = args
                 .sandbox_image
@@ -574,7 +582,7 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
                     repo_config::resolve_global_profile_hooks(profile)
                 }
                 Err(e) => {
-                    tracing::warn!("Failed to check repo hooks: {}", e);
+                    tracing::warn!(target: "cli.add", "Failed to check repo hooks: {}", e);
                     repo_config::resolve_global_profile_hooks(profile)
                 }
             };

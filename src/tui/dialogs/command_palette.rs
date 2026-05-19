@@ -14,6 +14,7 @@ use tui_input::Input;
 use unicode_width::UnicodeWidthStr;
 
 use super::DialogResult;
+use crate::tui::components::set_prefixed_input_cursor_position;
 use crate::tui::styles::Theme;
 
 /// Group buckets, rendered in this order. Mirrors `web/src/components/command-palette/groups.ts`.
@@ -56,6 +57,8 @@ pub enum PaletteAction {
     Key(KeyEvent),
     /// Move the cursor to a position in `flat_items` (used for session/group jump items).
     JumpToCursor(usize),
+    /// Open a tool session by name (lazygit, yazi, etc.)
+    ToolSession(String),
 }
 
 /// One entry in the palette. `payload` is what gets returned when the user picks it.
@@ -386,6 +389,7 @@ impl CommandPaletteDialog {
             Span::styled("_", Style::default().fg(theme.accent)),
         ]);
         frame.render_widget(Paragraph::new(input_line), chunks[0]);
+        set_prefixed_input_cursor_position(frame, chunks[0], "> ", &self.input);
 
         // Separator
         let sep = "─".repeat(chunks[1].width as usize);
@@ -400,13 +404,9 @@ impl CommandPaletteDialog {
         // List
         let list_area = chunks[2];
         let visible = list_area.height as usize;
-        let scroll_offset = if self.selected >= visible {
-            self.selected - visible + 1
-        } else {
-            0
-        };
 
         let mut lines: Vec<Line> = Vec::new();
+        let mut selected_line: usize = 0;
         if self.matches.is_empty() {
             lines.push(Line::from(Span::styled(
                 "  No matches",
@@ -414,13 +414,7 @@ impl CommandPaletteDialog {
             )));
         } else {
             let mut last_group: Option<PaletteGroup> = None;
-            for (display_idx, &entry_idx) in self
-                .matches
-                .iter()
-                .enumerate()
-                .skip(scroll_offset)
-                .take(visible)
-            {
+            for (display_idx, &entry_idx) in self.matches.iter().enumerate() {
                 let cmd = &self.entries[entry_idx];
 
                 // Show group header on transition (only when no query, since
@@ -435,6 +429,9 @@ impl CommandPaletteDialog {
                 }
 
                 let is_selected = display_idx == self.selected;
+                if is_selected {
+                    selected_line = lines.len();
+                }
                 let prefix = if is_selected { "▶ " } else { "  " };
                 let title_style = if is_selected {
                     Style::default().fg(theme.title).bold()
@@ -468,7 +465,9 @@ impl CommandPaletteDialog {
                 lines.push(Line::from(spans));
             }
         }
-        frame.render_widget(Paragraph::new(lines), list_area);
+        let start = selected_line.saturating_sub(visible.saturating_sub(1));
+        let end = (start + visible).min(lines.len());
+        frame.render_widget(Paragraph::new(lines[start..end].to_vec()), list_area);
 
         // Hint footer
         let footer_left = Line::from(vec![

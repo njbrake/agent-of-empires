@@ -21,6 +21,7 @@ pub enum SoundsCommands {
     },
 }
 
+#[tracing::instrument(target = "cli.session", skip_all)]
 pub async fn run(command: SoundsCommands) -> Result<()> {
     match command {
         SoundsCommands::Install => install_bundled().await,

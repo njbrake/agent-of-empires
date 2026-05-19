@@ -2854,14 +2854,14 @@ fn paste_on_group_header_stashes_instead_of_misrouting() {
 #[test]
 #[serial]
 fn update_bar_renders_status_toast_without_update_info() {
-    use crate::tui::styles::Theme;
+    use crate::tui::styles::load_theme;
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
 
     let mut env = create_test_env_empty();
     let backend = TestBackend::new(100, 30);
     let mut terminal = Terminal::new(backend).unwrap();
-    let theme = Theme::empire();
+    let theme = load_theme("empire");
 
     let toast = "restart failed: tmux session unreachable";
 

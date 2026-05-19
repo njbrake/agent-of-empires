@@ -26,7 +26,7 @@ fn get_audio_command(path: &str, volume: f64) -> Result<(String, Vec<String>), s
                     vec![format!("--volume={}", pa_volume), path.to_string()],
                 ))
             } else if which_command("aplay").is_ok() {
-                tracing::warn!("paplay not found, using aplay (may not support .ogg files)");
+                tracing::warn!(target: "sound.playback", "paplay not found, using aplay (may not support .ogg files)");
                 warn_aplay_volume_once(volume);
                 Ok(("aplay".to_string(), vec![path.to_string()]))
             } else {
@@ -62,7 +62,7 @@ fn warn_aplay_volume_once(volume: f64) {
     use std::sync::atomic::{AtomicBool, Ordering};
     static WARNED: AtomicBool = AtomicBool::new(false);
     if !is_default_volume(&volume) && !WARNED.swap(true, Ordering::Relaxed) {
-        tracing::warn!(
+        tracing::warn!(target: "sound.playback",
             "aplay does not support volume control; ignoring configured volume {:.1}. Install pulseaudio-utils (paplay) to enable volume.",
             volume
         );
@@ -119,7 +119,7 @@ pub fn play_sound_blocking(name: &str, volume: f64) -> Result<(), std::io::Error
 /// Play a sound file by name (fire-and-forget, non-blocking)
 pub fn play_sound(name: &str, volume: f64) {
     let Some(path) = find_sound_file(name) else {
-        tracing::debug!("Sound file not found: {}", name);
+        tracing::debug!(target: "sound.playback", "Sound file not found: {}", name);
         return;
     };
 
@@ -129,7 +129,7 @@ pub fn play_sound(name: &str, volume: f64) {
         let (cmd, args) = match get_audio_command(&path_str, volume) {
             Ok(result) => result,
             Err(e) => {
-                tracing::warn!("Audio player not available: {}", e);
+                tracing::warn!(target: "sound.playback", "Audio player not available: {}", e);
                 return;
             }
         };
@@ -141,7 +141,7 @@ pub fn play_sound(name: &str, volume: f64) {
             .output();
 
         if let Err(e) = result {
-            tracing::debug!("Failed to play sound: {}", e);
+            tracing::debug!(target: "sound.playback", "Failed to play sound: {}", e);
         }
     });
 }

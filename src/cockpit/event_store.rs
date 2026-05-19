@@ -364,14 +364,13 @@ impl EventStore {
             .optional()
             .ok()
             .flatten();
-        let Some(json) = json else {
-            trace!(
-                target: "cockpit.event_store",
-                session = %session_id,
-                "latest_pending_wakeup: no WakeupScheduled row"
-            );
-            return None;
-        };
+        // No log for the "no row" branch. The web UI polls /api/sessions
+        // every ~2-3s and fans this query out per cockpit session; every
+        // idle session would land here on every poll. The "still pending"
+        // and "treated as fired" branches below stay at trace because
+        // those carry the wake `at` timestamp, which is the only
+        // diagnostic value of this function.
+        let json = json?;
         let event: Event = match serde_json::from_str(&json) {
             Ok(e) => e,
             Err(e) => {
@@ -831,6 +830,7 @@ fn event_kind(event: &Event) -> &'static str {
         Event::ModeChanged { .. } => "mode_changed",
         Event::ModesAvailable { .. } => "modes_available",
         Event::CurrentModeChanged { .. } => "current_mode_changed",
+        Event::ModeSwitchFailed { .. } => "mode_switch_failed",
         Event::AvailableCommandsUpdated { .. } => "available_commands_updated",
         Event::RawAgentUpdate { .. } => "raw_agent_update",
         Event::AgentMessageChunk { .. } => "agent_message_chunk",
@@ -842,6 +842,7 @@ fn event_kind(event: &Event) -> &'static str {
         Event::SessionCleared => "session_cleared",
         Event::ConversationCompacted => "conversation_compacted",
         Event::WakeupScheduled { .. } => "wakeup_scheduled",
+        Event::PromptRejected { .. } => "prompt_rejected",
     }
 }
 

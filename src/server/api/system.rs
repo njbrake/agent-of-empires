@@ -26,7 +26,9 @@ fn build_custom_agent_infos(custom_agents: &HashMap<String, String>) -> Vec<Agen
     let mut entries: Vec<_> = custom_agents
         .iter()
         .filter(|(name, command)| {
-            !name.is_empty() && !command.is_empty() && crate::agents::get_agent(name).is_none()
+            !name.trim().is_empty()
+                && !command.trim().is_empty()
+                && crate::agents::get_agent(name).is_none()
         })
         .map(|(name, _command)| AgentInfo {
             kind: "custom".to_string(),
@@ -42,9 +44,10 @@ fn build_custom_agent_infos(custom_agents: &HashMap<String, String>) -> Vec<Agen
 }
 
 pub async fn list_agents(State(state): State<Arc<AppState>>) -> Json<Vec<AgentInfo>> {
-    let config = crate::session::profile_config::resolve_config_or_warn(&state.profile);
-    let custom_agents = config.session.custom_agents;
+    let profile = state.profile.clone();
     let result = tokio::task::spawn_blocking(move || {
+        let config = crate::session::profile_config::resolve_config_or_warn(&profile);
+        let custom_agents = config.session.custom_agents;
         let tools = crate::tmux::AvailableTools::detect();
         let available = tools.available_list();
         let mut agents = crate::agents::AGENTS
@@ -89,7 +92,7 @@ pub async fn get_settings(
         Ok(config) => match serde_json::to_value(&config) {
             Ok(val) => (StatusCode::OK, Json(val)).into_response(),
             Err(e) => {
-                tracing::error!("Settings serialization failed: {}", e);
+                tracing::error!(target: "http.api.system", "Settings serialization failed: {}", e);
                 (
                     StatusCode::INTERNAL_SERVER_ERROR,
                     Json(serde_json::json!({"error": "serialize_failed", "message": "Failed to serialize settings"})),
@@ -98,7 +101,7 @@ pub async fn get_settings(
             }
         },
         Err(e) => {
-            tracing::error!("Settings load failed: {}", e);
+            tracing::error!(target: "http.api.system", "Settings load failed: {}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": "load_failed", "message": "Failed to load settings"})),
@@ -175,7 +178,7 @@ pub async fn update_settings(
             match serde_json::to_value(&config) {
                 Ok(val) => (StatusCode::OK, Json(val)).into_response(),
                 Err(e) => {
-                    tracing::error!("Settings serialization failed: {}", e);
+                    tracing::error!(target: "http.api.system", "Settings serialization failed: {}", e);
                     (
                         StatusCode::INTERNAL_SERVER_ERROR,
                         Json(serde_json::json!({"error": "serialize_failed", "message": "Failed to serialize settings"})),
@@ -185,7 +188,7 @@ pub async fn update_settings(
             }
         }
         Ok(Err(e)) => {
-            tracing::warn!("Settings update failed: {}", e);
+            tracing::warn!(target: "http.api.system", "Settings update failed: {}", e);
             (
                 StatusCode::BAD_REQUEST,
                 Json(serde_json::json!({"error": "update_failed", "message": "Failed to update settings"})),
@@ -193,7 +196,7 @@ pub async fn update_settings(
                 .into_response()
         }
         Err(e) => {
-            tracing::error!("Settings update panicked: {}", e);
+            tracing::error!(target: "http.api.system", "Settings update panicked: {}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({"error": "internal", "message": "Internal server error"})),
@@ -221,6 +224,70 @@ pub async fn list_themes() -> Json<Vec<String>> {
             .map(|s| s.to_string())
             .collect(),
     )
+}
+
+/// Upper bound on the `:name` path segment for `/api/themes/:name`.
+/// Builtin names are <= 20 chars and custom theme filenames are
+/// inherently capped by the host filesystem; 128 is far past any
+/// real theme name. Past the cap we resolve Empire without logging
+/// the body to keep tracing output sane under fuzzing.
+const MAX_THEME_NAME_LEN: usize = 128;
+
+/// `GET /api/themes/:name` returns the resolved theme projection (web
+/// CSS vars, terminal CSS vars, syntax highlighter selection,
+/// appearance) for the named theme. Unknown names resolve to the
+/// `default` builtin with `source: "fallback"`, mirroring
+/// `load_theme`'s behaviour.
+///
+/// Wrapped in `spawn_blocking`: the resolver does sync file I/O
+/// (`discover_custom_themes` directory scan + TOML parse) which must
+/// not run on a tokio worker thread.
+pub async fn get_resolved_theme(
+    axum::extract::Path(name): axum::extract::Path<String>,
+) -> Json<crate::tui::styles::ResolvedTheme> {
+    if name.len() > MAX_THEME_NAME_LEN {
+        tracing::warn!(
+            len = name.len(),
+            "GET /api/themes/{{name}} rejected: name exceeds {} bytes",
+            MAX_THEME_NAME_LEN,
+        );
+        return Json(crate::tui::styles::resolve_theme("default"));
+    }
+    tracing::debug!(theme = %name, "GET /api/themes/{{name}}");
+    let resolved = tokio::task::spawn_blocking(move || crate::tui::styles::resolve_theme(&name))
+        .await
+        .unwrap_or_else(|e| {
+            tracing::warn!(error = %e, "theme resolve task panicked, falling back to default");
+            crate::tui::styles::resolve_theme("default")
+        });
+    Json(resolved)
+}
+
+/// `GET /api/theme/current` returns the resolved theme for the active
+/// profile (the picker's current selection). Resolved through
+/// `profile_config::resolve_config_or_warn` so per-profile theme
+/// overrides land in the right place. Sync work runs in
+/// `spawn_blocking`.
+pub async fn get_current_theme(
+    State(state): State<Arc<AppState>>,
+) -> Json<crate::tui::styles::ResolvedTheme> {
+    let profile = state.profile.clone();
+    tracing::debug!(profile = %profile, "GET /api/theme/current");
+    let resolved = tokio::task::spawn_blocking(move || {
+        let cfg = crate::session::profile_config::resolve_config_or_warn(&profile);
+        let name = if cfg.theme.name.is_empty() {
+            "default".to_string()
+        } else {
+            cfg.theme.name
+        };
+        crate::tui::styles::resolve_theme(&name)
+    })
+    .await
+    .unwrap_or_else(|e| {
+        tracing::warn!(error = %e, "current theme resolve task panicked, falling back to default");
+        crate::tui::styles::resolve_theme("default")
+    });
+    Json(resolved)
 }
 
 // --- Wizard support ---
@@ -934,9 +1001,64 @@ pub async fn list_sounds() -> Json<Vec<String>> {
     Json(crate::sound::list_available_sounds())
 }
 
+/// Serve a sound file by name so the cockpit's browser-side approval
+/// player can fetch it from the same origin as the dashboard. The name
+/// is validated against `list_available_sounds()` to block path
+/// traversal: an attacker who can hit `/api/sounds/file/<x>` cannot
+/// read arbitrary disk paths, only files already present in the user's
+/// `sounds/` directory.
+pub async fn serve_sound_file(
+    axum::extract::Path(name): axum::extract::Path<String>,
+) -> impl IntoResponse {
+    // The validation step (directory enumeration) stays on the blocking
+    // pool because `list_available_sounds` does sync `read_dir`. The
+    // file read itself uses `tokio::fs::read` so the larger I/O cost
+    // does not block a runtime worker.
+    let lookup_name = name.clone();
+    let validated = tokio::task::spawn_blocking(move || {
+        if !crate::sound::list_available_sounds().contains(&lookup_name) {
+            return None;
+        }
+        crate::sound::get_sounds_dir().map(|dir| dir.join(&lookup_name))
+    })
+    .await;
+
+    let path = match validated {
+        Ok(Some(p)) => p,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+
+    let bytes = match tokio::fs::read(&path).await {
+        Ok(b) => b,
+        Err(_) => return StatusCode::NOT_FOUND.into_response(),
+    };
+
+    let content_type = match std::path::Path::new(&name)
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("ogg") => "audio/ogg",
+        _ => "audio/wav",
+    };
+
+    (
+        StatusCode::OK,
+        [
+            (axum::http::header::CONTENT_TYPE, content_type),
+            (axum::http::header::CACHE_CONTROL, "private, max-age=3600"),
+        ],
+        bytes,
+    )
+        .into_response()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::body::to_bytes;
     use std::collections::HashMap;
 
     fn custom_agents(entries: &[(&str, &str)]) -> HashMap<String, String> {
@@ -1003,6 +1125,8 @@ mod tests {
         let entries = build_custom_agent_infos(&custom_agents(&[
             ("", "codex"),
             ("empty-command", ""),
+            ("   ", "codex"),
+            ("whitespace-command", "   "),
             ("claude", "ssh -t prod.example claude"),
             ("remote-codex", "ssh -t prod.example codex"),
         ]));
@@ -1022,5 +1146,26 @@ mod tests {
 
         let names: Vec<_> = entries.iter().map(|entry| entry.name.as_str()).collect();
         assert_eq!(names, vec!["alpha", "middle", "zeta"]);
+    }
+
+    #[tokio::test]
+    async fn serve_sound_file_rejects_unknown_name() {
+        let resp = serve_sound_file(axum::extract::Path("does-not-exist-xyz.wav".to_string()))
+            .await
+            .into_response();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn serve_sound_file_rejects_path_traversal() {
+        let resp = serve_sound_file(axum::extract::Path("../../../etc/passwd".to_string()))
+            .await
+            .into_response();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        // A NOT_FOUND that somehow still streamed a body would be a
+        // worse failure than the wrong status, so assert the body is
+        // empty rather than just "not /etc/passwd".
+        let body = to_bytes(resp.into_body(), 1024).await.unwrap();
+        assert!(body.is_empty(), "unexpected body bytes: {body:?}");
     }
 }

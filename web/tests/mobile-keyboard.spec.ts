@@ -1,4 +1,5 @@
-import { test, expect, devices, type Page } from "@playwright/test";
+import { test, expect } from "./helpers/mockedTest";
+import { devices, type Page } from "@playwright/test";
 import { clickSidebarSession } from "./helpers/sidebar";
 import { mockTerminalApis, seedSettings } from "./helpers/terminal-mocks";
 

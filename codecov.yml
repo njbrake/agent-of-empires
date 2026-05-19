@@ -1,0 +1,219 @@
+# Codecov configuration for agent-of-empires.
+#
+# Scope today: web/ frontend only (Vitest unit tests + Playwright mocked +
+# Playwright live, all merged into one LCOV by web/scripts/merge-coverage.mjs).
+# Rust backend coverage (cargo-llvm-cov or tarpaulin) is queued as a
+# follow-up; when it lands, add a `cargo` flag and additional components
+# scoped under src/**.
+#
+# Components segment the web frontend by user-facing surface so the PR
+# comment shows exactly which area moved (or regressed). Targets are 90%
+# project + patch with a 1% threshold; first PRs after the foundation
+# merges will run well below this, so the report-only philosophy lives
+# in the Codecov "informational" flag at the project level until the
+# follow-ups (#1217-#1224) lift the baseline.
+
+comment:
+  after_n_builds: 1
+  layout: "header, diff, files, components, sunburst, uncovered, footer"
+  behavior: default
+  require_changes: false
+  require_base: false
+  require_head: false
+  hide_project_coverage: false
+
+codecov:
+  disable_default_path_fixes: false
+
+# One flag per test type. Each CI job uploads its own LCOV with its own
+# flag, and Codecov merges them server-side into the combined coverage
+# report (see https://docs.codecov.com/docs/flags). `carryforward: true`
+# means a flag whose job did not run on a given PR (e.g. docs-only PR
+# skipping playwright-live) does not zero out that slice; the last
+# known value carries forward instead.
+flags:
+  vitest:
+    paths:
+      - web/src/
+    carryforward: true
+  playwright-mocked:
+    paths:
+      - web/src/
+    carryforward: true
+  playwright-live:
+    paths:
+      - web/src/
+    carryforward: true
+
+component_management:
+  default_rules:
+    # No per-component GitHub status checks. Components still appear
+    # in the codecov PR comment under the "components" layout block
+    # so authors see which surface moved, but we don't spam the merge
+    # box with a separate row per component. The repo-wide gates are
+    # enforced by the aggregate `codecov/project` and `codecov/patch`
+    # statuses defined under `coverage.status` below.
+    statuses: []
+  individual_components:
+    # ============================================================
+    # COCKPIT (native agent rendering)
+    # ============================================================
+    - component_id: "cockpit-ui"
+      name: "Cockpit UI"
+      paths:
+        - "web/src/components/cockpit/**"
+
+    # ============================================================
+    # DIFF VIEWER + COMMENTS
+    # ============================================================
+    - component_id: "diff-viewer"
+      name: "Diff Viewer"
+      paths:
+        - "web/src/components/diff/**"
+
+    # ============================================================
+    # SESSION WIZARD
+    # ============================================================
+    - component_id: "session-wizard"
+      name: "Session Wizard"
+      paths:
+        - "web/src/components/session-wizard/**"
+
+    # ============================================================
+    # SETTINGS (panels under settings/ + standalone settings components)
+    # ============================================================
+    - component_id: "settings"
+      name: "Settings"
+      paths:
+        - "web/src/components/settings/**"
+        - "web/src/components/NotificationSettings.tsx"
+        - "web/src/components/SecuritySettings.tsx"
+        - "web/src/components/SettingsView.tsx"
+        - "web/src/components/TerminalSettings.tsx"
+
+    # ============================================================
+    # AUTH (LoginPage, TokenEntryPage, ElevationPrompt)
+    # ============================================================
+    - component_id: "auth"
+      name: "Auth"
+      paths:
+        - "web/src/components/LoginPage.tsx"
+        - "web/src/components/TokenEntryPage.tsx"
+        - "web/src/components/ElevationPrompt.tsx"
+
+    # ============================================================
+    # DASHBOARD + SESSION SIDEBAR + LIFECYCLE
+    # ============================================================
+    - component_id: "dashboard-sidebar"
+      name: "Dashboard + Sidebar"
+      paths:
+        - "web/src/components/Dashboard.tsx"
+        - "web/src/components/WorkspaceSidebar.tsx"
+        - "web/src/components/DeleteSessionDialog.tsx"
+        - "web/src/components/TopBar.tsx"
+        - "web/src/components/ProjectsView.tsx"
+
+    # ============================================================
+    # RIGHT PANEL + TERMINAL VIEW
+    # ============================================================
+    - component_id: "right-panel-terminal"
+      name: "Right Panel + Terminal"
+      paths:
+        - "web/src/components/RightPanel.tsx"
+        - "web/src/components/TerminalView.tsx"
+        - "web/src/components/ContentSplit.tsx"
+        - "web/src/components/MobileTerminalToolbar.tsx"
+        - "web/src/components/KeyboardFab.tsx"
+        - "web/src/components/BackToLiveButton.tsx"
+        - "web/src/components/ViewportFullscreenFab.tsx"
+
+    # ============================================================
+    # DIRECTORY BROWSER + CONNECTED DEVICES + DISCONNECT BANNER
+    # ============================================================
+    - component_id: "ancillary-views"
+      name: "Directory Browser, Devices, Connectivity"
+      paths:
+        - "web/src/components/DirectoryBrowser.tsx"
+        - "web/src/components/ConnectedDevices.tsx"
+        - "web/src/components/DisconnectBanner.tsx"
+        - "web/src/components/UpdateBanner.tsx"
+
+    # ============================================================
+    # MODALS
+    # ============================================================
+    - component_id: "modals"
+      name: "Modals"
+      paths:
+        - "web/src/components/AboutModal.tsx"
+        - "web/src/components/HelpOverlay.tsx"
+
+    # ============================================================
+    # COMMAND PALETTE
+    # ============================================================
+    - component_id: "command-palette"
+      name: "Command Palette"
+      paths:
+        - "web/src/components/command-palette/**"
+        - "web/src/components/PaletteTriggerPill.tsx"
+
+    # ============================================================
+    # APP SHELL (App.tsx, main.tsx, routing, primitives)
+    # ============================================================
+    - component_id: "app-shell"
+      name: "App Shell"
+      paths:
+        - "web/src/App.tsx"
+        - "web/src/main.tsx"
+        - "web/src/components/ErrorBoundary.tsx"
+        - "web/src/components/OverflowMenu.tsx"
+        - "web/src/components/OwnerAvatar.tsx"
+        - "web/src/components/StatusGlyph.tsx"
+        - "web/src/components/Toasts.tsx"
+
+    # ============================================================
+    # HOOKS (React hooks layer; cross-cuts every UI component)
+    # ============================================================
+    - component_id: "hooks"
+      name: "Hooks"
+      paths:
+        - "web/src/hooks/**"
+
+    # ============================================================
+    # LIB (API client, utilities, shared logic)
+    # ============================================================
+    - component_id: "lib"
+      name: "Lib (API client + utils)"
+      paths:
+        - "web/src/lib/**"
+
+coverage:
+  status:
+    project:
+      default:
+        # Project status compares the whole repo's coverage against the
+        # base (auto-resolved to main on PRs). `auto` target means
+        # "don't drop below where main is today", which is the right
+        # behavior while the baseline climbs from the foundation
+        # baseline (~16%) toward the 90% goal across follow-ups
+        # #1217-#1224. The hard 90% target is enforced on `patch` below.
+        target: auto
+        threshold: 1%
+        base: auto
+        if_ci_failed: error
+        informational: false
+        only_pulls: false
+    patch:
+      default:
+        # New / changed code on a PR must hit 75% coverage. The eventual
+        # end-state is 90% (tracked in #1225, the threshold-enforcement
+        # follow-up), but the foundation PR adds tiny TSX deltas alongside
+        # large test infrastructure, where a single unhit line can tank a
+        # short-patch ratio. 75% leaves room for one missed line on small
+        # patches while still requiring that most new code be covered.
+        target: 75%
+        threshold: 1%
+        base: auto
+        if_ci_failed: error
+
+github_checks:
+  annotations: true

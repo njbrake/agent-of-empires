@@ -7,6 +7,7 @@ use tui_input::backend::crossterm::EventHandler;
 use tui_input::Input;
 
 use super::DialogResult;
+use crate::tui::components::set_prefixed_input_cursor_position;
 use crate::tui::styles::Theme;
 
 /// Result when profile picker submits
@@ -357,6 +358,7 @@ impl ProfilePickerDialog {
             Span::styled("_", Style::default().fg(theme.accent)),
         ]);
         frame.render_widget(Paragraph::new(input_line), chunks[0]);
+        set_prefixed_input_cursor_position(frame, chunks[0], "Name: ", &self.name_input);
 
         let mut chunk_idx = 2;
 

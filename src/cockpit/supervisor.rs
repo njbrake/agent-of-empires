@@ -73,11 +73,14 @@ pub enum SupervisorError {
 /// Frame published to the broadcast channel; mirrors
 /// `crate::server::CockpitBroadcastFrame` so the supervisor can be
 /// tested without pulling in the server module.
+///
+/// Approval pushes are no longer driven from here: the cockpit event
+/// listener in the server module subscribes to the same broadcast and
+/// matches `Event::ApprovalRequested` with `Arc<AppState>` already in
+/// scope, which removed the need for a separate approval callback path.
+/// See #1038.
 pub trait BroadcastSink: Send + Sync + 'static {
     fn publish(&self, session_id: &str, seq: u64, event: &Event);
-    fn approval_requested(&self, _session_id: &str, _approval_title: &str, _destructive: bool) {
-        // Default: no-op. The server impl fires a push notification.
-    }
     /// Approval nonces from `ApprovalRequested` events on disk with no
     /// matching `ApprovalResolved`. Used by `Supervisor::attach` to
     /// cancel approvals whose responder died with the previous daemon.
@@ -269,6 +272,13 @@ pub struct SpawnRequest {
     /// sessions; falls back to the user's default profile when set
     /// to `Some("")`.
     pub source_profile: Option<String>,
+    /// When true, switch the session to `bypassPermissions` mode
+    /// immediately after `session/new` succeeds, so a profile with
+    /// `yolo_mode_default = true` skips permission prompts in cockpit
+    /// the same way `--dangerously-skip-permissions` does in tmux mode.
+    /// Best-effort: adapters that don't advertise bypass mode log a
+    /// warning and stay in default. See #1142.
+    pub yolo_mode: bool,
 }
 
 impl<S: BroadcastSink> Supervisor<S> {
@@ -416,15 +426,17 @@ impl<S: BroadcastSink> Supervisor<S> {
     /// chunks; otherwise a reconnecting client sees only assistant text
     /// and every turn concatenates into one giant message.
     ///
-    /// Also detects `/clear` (claude-agent-acp's reset-conversation
-    /// command) and emits a follow-up `Event::SessionCleared` so the
-    /// UI can fold the pre-clear transcript and drop now-stale
-    /// session-scoped capability caches. The adapter sends no
-    /// structured signal for `/clear` (text-only `agent_message_chunk`
-    /// notifications), so this is a deliberate server-side detection.
-    /// See #1101.
-    pub fn publish_user_prompt(&self, session_id: &str, text: String) {
-        let is_clear = is_clear_command(&text);
+    /// Also detects the conversation-reset slash command (claude's
+    /// `/clear`, codex's / opencode's `/new`) and emits a follow-up
+    /// `Event::SessionCleared` so the UI can fold the pre-clear
+    /// transcript and drop now-stale session-scoped capability caches.
+    /// Adapters don't emit a structured signal for these, so detection
+    /// is text-based but routed through the session's `AgentProfile`
+    /// so each agent's aliases match the right surface. See #1101.
+    pub async fn publish_user_prompt(&self, session_id: &str, text: String) {
+        let agent_key = self.agent_key_for_session(session_id).await;
+        let profile = super::agent_profiles::resolve(&agent_key);
+        let is_clear = profile.is_clear_command(&text);
         let seq = next_seq(&self.next_seqs, session_id);
         self.sink
             .publish(session_id, seq, &Event::UserPromptSent { text });
@@ -432,6 +444,27 @@ impl<S: BroadcastSink> Supervisor<S> {
             let seq = next_seq(&self.next_seqs, session_id);
             self.sink.publish(session_id, seq, &Event::SessionCleared);
         }
+    }
+
+    /// Resolve the agent registry key for a session. Reads the live
+    /// `Runner` handle's `SpawnConfig` directly when available;
+    /// otherwise loads the on-disk record so an `Attached` worker (or
+    /// a session whose handle has been dropped) still resolves its
+    /// profile correctly. Returns `"claude"` as a last-resort default
+    /// for sessions whose record predates the `agent_key` field
+    /// (empty after the serde default).
+    async fn agent_key_for_session(&self, session_id: &str) -> String {
+        if let Some(handle) = self.workers.lock().await.get(session_id) {
+            if let WorkerKind::Runner { spawn_config } = &handle.kind {
+                return spawn_config.agent_key.clone();
+            }
+        }
+        if let Ok(Some(record)) = super::worker_registry::load(session_id) {
+            if !record.agent_key.is_empty() {
+                return record.agent_key;
+            }
+        }
+        "claude".to_string()
     }
 
     /// Drop per-session bookkeeping (replay seq counter). Called when
@@ -488,6 +521,7 @@ impl<S: BroadcastSink> Supervisor<S> {
             stored_acp_session_id,
             sandbox_info,
             source_profile,
+            yolo_mode,
         } = req;
         let _reservation = {
             let workers = self.workers.lock().await;
@@ -589,6 +623,7 @@ impl<S: BroadcastSink> Supervisor<S> {
         })?;
 
         let config = SpawnConfig {
+            agent_key: agent.clone(),
             spec,
             cwd,
             additional_dirs,
@@ -658,8 +693,9 @@ impl<S: BroadcastSink> Supervisor<S> {
             return Err(SupervisorError::SpawnCancelled(session_id));
         }
         let drain_task = self.start_drain_task(session_id.clone(), inbound);
+        let client_for_yolo = yolo_mode.then(|| Arc::clone(&client));
         workers.insert(
-            session_id,
+            session_id.clone(),
             WorkerHandle {
                 client,
                 drain_task,
@@ -673,6 +709,27 @@ impl<S: BroadcastSink> Supervisor<S> {
                 },
             },
         );
+        drop(workers);
+
+        // Honor the wizard's "Auto-approve" / profile `yolo_mode_default`
+        // by switching the ACP session to bypassPermissions mode. The
+        // tmux path achieves the same with `--dangerously-skip-permissions`
+        // (see `apply_yolo_mode()` in `src/session/instance.rs`); cockpit
+        // can't pass CLI flags through the ACP adapter, so we set the
+        // mode via `session/set_mode` instead. Best-effort: the call is
+        // fire-and-forget through cmd_tx, the connection loop warns on
+        // failure, and adapters that don't advertise bypass mode stay in
+        // default. See #1142.
+        if let Some(client) = client_for_yolo {
+            let client_guard = client.lock().await;
+            if let Err(e) = client_guard.set_mode("bypassPermissions").await {
+                warn!(
+                    target: "cockpit.supervisor",
+                    session = %session_id,
+                    "set_mode(bypassPermissions) after spawn failed: {e}"
+                );
+            }
+        }
         Ok(())
     }
 
@@ -691,7 +748,21 @@ impl<S: BroadcastSink> Supervisor<S> {
         tokio::spawn(async move {
             let mut inbound = initial_inbound;
             loop {
+                // Tracks whether the connection task ended because the
+                // cancel-escalation watchdog declared the agent
+                // unresponsive (see acp_client.rs's CANCEL_ESCALATION_GRACE).
+                // When true, the runner subprocess is alive but wedged
+                // around a tool call the agent never cancelled, so the
+                // supervisor must SIGTERM it before respawning;
+                // otherwise the next `session/load` would attach to the
+                // same wedged process. See #1196.
+                let mut agent_unresponsive = false;
                 while let Some(event) = inbound.recv().await {
+                    if let Event::Stopped { reason } = &event {
+                        if reason == "agent_unresponsive" {
+                            agent_unresponsive = true;
+                        }
+                    }
                     // Mirror the agent-assigned id into the cached
                     // spawn_config so a subsequent crash respawn picks
                     // up the latest id and calls session/load instead
@@ -741,13 +812,6 @@ impl<S: BroadcastSink> Supervisor<S> {
                     }
                     let seq = next_seq(&next_seqs, &session_id);
                     sink.publish(&session_id, seq, &event);
-                    if let Event::ApprovalRequested { approval } = &event {
-                        sink.approval_requested(
-                            &session_id,
-                            &approval.tool_call.name,
-                            approval.destructive,
-                        );
-                    }
                 }
 
                 // Channel closed: the agent's connection task ended.
@@ -757,8 +821,99 @@ impl<S: BroadcastSink> Supervisor<S> {
                 warn!(
                     target: "cockpit.supervisor",
                     session = %session_id,
+                    agent_unresponsive,
                     "drain channel closed (agent connection task ended); evaluating respawn"
                 );
+                // The connection task observed the cancel-escalation
+                // watchdog fire: the agent ignored `session/cancel` for
+                // CANCEL_ESCALATION_GRACE while a prompt was in flight.
+                // The runner subprocess is still alive but wedged on a
+                // tool call the agent never cancelled, and the next
+                // `AcpClient::spawn` reuses the same UNIX socket path
+                // (`<workers_dir>/<session_id>.sock`), so a respawn
+                // before the old runner exits either binds against a
+                // collided socket or reconnects to the wedged process.
+                //
+                // Sequence here:
+                //   1. SIGTERM the old PID.
+                //   2. Poll for PID death + socket file removal (cap 3s).
+                //   3. SIGKILL if the wedged runner is still alive past
+                //      the SIGTERM grace.
+                //   4. Best-effort `remove_file` on the socket so the
+                //      respawn binds cleanly.
+                //
+                // Do NOT call `terminate_runner_for_session` here: that
+                // helper deletes the worker_registry entry, which
+                // makes `restart_decision` interpret it as a
+                // user-initiated stop and skip the respawn. See #1196.
+                if agent_unresponsive {
+                    #[cfg(unix)]
+                    {
+                        use nix::sys::signal::{kill, Signal};
+                        use nix::unistd::Pid;
+                        let old_pid = super::worker_registry::load(&session_id)
+                            .ok()
+                            .flatten()
+                            .map(|r| r.pid);
+                        if let Some(pid) = old_pid {
+                            if super::worker_registry::is_pid_alive(pid) {
+                                info!(
+                                    target: "cockpit.supervisor",
+                                    session = %session_id,
+                                    pid,
+                                    "SIGTERM wedged runner before respawn (agent_unresponsive)"
+                                );
+                                let _ = kill(Pid::from_raw(pid as i32), Signal::SIGTERM);
+                            }
+                            // Poll for the runner to exit before
+                            // proceeding to respawn. ~3s budget, 100ms
+                            // tick. claude-agent-acp's shutdown path
+                            // is fast in practice; if it's truly
+                            // unkillable by SIGTERM we escalate to
+                            // SIGKILL below.
+                            for _ in 0..30 {
+                                if !super::worker_registry::is_pid_alive(pid) {
+                                    break;
+                                }
+                                tokio::time::sleep(Duration::from_millis(100)).await;
+                            }
+                            if super::worker_registry::is_pid_alive(pid) {
+                                warn!(
+                                    target: "cockpit.supervisor",
+                                    session = %session_id,
+                                    pid,
+                                    "wedged runner survived SIGTERM grace; escalating to SIGKILL"
+                                );
+                                let _ = kill(Pid::from_raw(pid as i32), Signal::SIGKILL);
+                                // One more brief tick for the kernel
+                                // to reap and the socket inode to
+                                // drop. We don't loop forever; spawn
+                                // will surface its own error if the
+                                // process is somehow still around.
+                                tokio::time::sleep(Duration::from_millis(200)).await;
+                            }
+                        }
+                        if let Ok(socket_path) =
+                            super::worker_registry::socket_path_for(&session_id)
+                        {
+                            if socket_path.exists() {
+                                let _ = std::fs::remove_file(&socket_path);
+                            }
+                        }
+                    }
+                    // Cockpit's runner transport is UNIX-socket-only today
+                    // (see `worker_registry::socket_path_for`), so a
+                    // non-unix daemon cannot reach this branch in practice.
+                    // Warn if it ever does so the assumption is loud.
+                    #[cfg(not(unix))]
+                    {
+                        warn!(
+                            target: "cockpit.supervisor",
+                            session = %session_id,
+                            "agent_unresponsive escalation on non-unix: wedged runner kill not implemented; respawn may collide on the runner socket"
+                        );
+                    }
+                }
                 let respawn_config: SpawnConfig =
                     match restart_decision(&workers, &session_id).await {
                         RestartDecision::Respawn(cfg) => {
@@ -1236,12 +1391,29 @@ impl<S: BroadcastSink> Supervisor<S> {
         };
 
         let cockpit_session_id = CockpitSessionId(session_id.clone());
+        // Reattach: read the original profile from the persisted
+        // `WorkerRecord` so `terminal/create` env resolution stays on the
+        // session's actual profile across daemon restarts. Legacy records
+        // written before the field existed serialize to `None`, in which
+        // case `current_env_entries` warns and falls back to the global
+        // default profile (matching pre-persistence behavior).
         let sandbox_resources = match sandbox {
             Some(info) => Some(super::acp_client::SessionSandbox::from_info(
                 &info,
                 cwd.as_path(),
+                record.source_profile.clone(),
             )?),
             None => None,
+        };
+        // Prefer the persisted registry key; fall back to the legacy
+        // `agent_name` field for records written before `agent_key`
+        // existed. A truly stale entry without either resolves to
+        // DEFAULT inside `agent_profiles::resolve`, which is the safe
+        // pass-through behavior.
+        let attach_agent_key = if record.agent_key.is_empty() {
+            record.agent_name.clone()
+        } else {
+            record.agent_key.clone()
         };
         let mut client = AcpClient::attach(
             record.socket_path.clone(),
@@ -1251,6 +1423,7 @@ impl<S: BroadcastSink> Supervisor<S> {
             in_flight_turn,
             cockpit_session_id,
             sandbox_resources,
+            attach_agent_key,
         )
         .await?;
         super::worker_registry::mark_attached(&session_id);
@@ -1561,22 +1734,6 @@ async fn restart_decision(
     }
 }
 
-/// True when the user prompt is a `/clear` invocation. Matches `/clear`
-/// exact or `/clear ...flags`, tolerates surrounding whitespace.
-/// Conservative on purpose: a false positive renders an extra divider
-/// (harmless), a false negative leaves the UI showing stale capability
-/// state (the current bug we're fixing). claude-agent-acp doesn't emit
-/// a structured boundary event for `/clear`, so this is text-match
-/// detection. See #1101.
-fn is_clear_command(text: &str) -> bool {
-    let trimmed = text.trim();
-    trimmed == "/clear"
-        || trimmed
-            .strip_prefix("/clear")
-            .map(|rest| rest.starts_with(char::is_whitespace))
-            .unwrap_or(false)
-}
-
 /// Increment and return the per-session seq counter. Lives at the
 /// supervisor level so the no-worker `publish_startup_error` path
 /// and the drain task share a single source of truth — otherwise
@@ -1593,11 +1750,6 @@ fn next_seq(next_seqs: &SeqMap, session_id: &str) -> u64 {
     *entry
 }
 
-/// Callback fired when the supervisor observes an ApprovalRequested
-/// event for a session. The server impl uses this to trigger a Web
-/// Push notification; the test impl just records the call.
-pub type ApprovalHook = Arc<dyn Fn(&str, &str, bool) + Send + Sync>;
-
 /// A `BroadcastSink` impl backed by a tokio broadcast channel. The
 /// AppState in the server module wires this so cockpit events flow
 /// straight into the existing WebSocket fanout, and snapshots them
@@ -1611,7 +1763,6 @@ pub type ApprovalHook = Arc<dyn Fn(&str, &str, bool) + Send + Sync>;
 /// this lock briefly.
 pub struct ChannelSink {
     pub tx: broadcast::Sender<crate::server::CockpitBroadcastFrame>,
-    pub on_approval: ApprovalHook,
     /// Disk-backed event log. The single source of truth for replay:
     /// the WS-on-connect drain, the `/cockpit/replay` REST endpoint,
     /// and the supervisor's startup `hydrate_seqs` all read from here.
@@ -1655,10 +1806,6 @@ impl BroadcastSink for ChannelSink {
         let _ = self.tx.send(frame);
     }
 
-    fn approval_requested(&self, session_id: &str, approval_title: &str, destructive: bool) {
-        (self.on_approval)(session_id, approval_title, destructive);
-    }
-
     fn unresolved_approval_nonces(&self, session_id: &str) -> Vec<Nonce> {
         self.event_store.unresolved_approval_nonces(session_id)
     }
@@ -1671,21 +1818,18 @@ mod tests {
     /// In-memory sink that captures published frames.
     struct VecSink {
         frames: std::sync::Mutex<Vec<(String, u64, Event)>>,
-        approvals: std::sync::Mutex<Vec<(String, String, bool)>>,
         stale_nonces: std::sync::Mutex<Vec<Nonce>>,
     }
     impl VecSink {
         fn new() -> Arc<Self> {
             Arc::new(Self {
                 frames: std::sync::Mutex::new(Vec::new()),
-                approvals: std::sync::Mutex::new(Vec::new()),
                 stale_nonces: std::sync::Mutex::new(Vec::new()),
             })
         }
         fn with_stale_nonces(nonces: Vec<Nonce>) -> Arc<Self> {
             Arc::new(Self {
                 frames: std::sync::Mutex::new(Vec::new()),
-                approvals: std::sync::Mutex::new(Vec::new()),
                 stale_nonces: std::sync::Mutex::new(nonces),
             })
         }
@@ -1696,13 +1840,6 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push((session_id.to_string(), seq, event.clone()));
-        }
-        fn approval_requested(&self, session: &str, title: &str, destructive: bool) {
-            self.approvals.lock().unwrap().push((
-                session.to_string(),
-                title.to_string(),
-                destructive,
-            ));
         }
         fn unresolved_approval_nonces(&self, _session_id: &str) -> Vec<Nonce> {
             self.stale_nonces.lock().unwrap().clone()
@@ -1724,6 +1861,7 @@ mod tests {
                 stored_acp_session_id: None,
                 sandbox_info: None,
                 source_profile: None,
+                yolo_mode: false,
             })
             .await;
         assert!(matches!(result, Err(SupervisorError::UnknownAgent(_))));
@@ -1761,6 +1899,7 @@ mod tests {
                 stored_acp_session_id: None,
                 sandbox_info: None,
                 source_profile: None,
+                yolo_mode: false,
             })
             .await;
         assert!(matches!(result, Err(SupervisorError::AlreadyRunning(_))));
@@ -1804,6 +1943,7 @@ mod tests {
         };
         let socket_path = tmp.path().join("budget.sock");
         let dummy_config = SpawnConfig {
+            agent_key: "claude".into(),
             spec: dummy_spec,
             cwd: std::env::temp_dir(),
             additional_dirs: vec![],
@@ -1819,11 +1959,13 @@ mod tests {
             "s-1".into(),
             std::process::id(),
             socket_path,
+            "claude-agent-acp".into(),
             "claude-code".into(),
             std::env::temp_dir(),
             None,
             vec![],
             vec![],
+            None,
             None,
         );
         crate::cockpit::worker_registry::save(&record).unwrap();
@@ -1890,6 +2032,7 @@ mod tests {
             env_allowlist: None,
         };
         let dummy_config = SpawnConfig {
+            agent_key: "claude".into(),
             spec: dummy_spec,
             cwd: std::env::temp_dir(),
             additional_dirs: vec![],
@@ -1961,6 +2104,7 @@ mod tests {
             env_allowlist: None,
         };
         let dummy_config = SpawnConfig {
+            agent_key: "claude".into(),
             spec: dummy_spec,
             cwd: std::env::temp_dir(),
             additional_dirs: vec![],
@@ -2032,6 +2176,7 @@ mod tests {
             env_allowlist: None,
         };
         let dummy_config = SpawnConfig {
+            agent_key: "claude".into(),
             spec: dummy_spec,
             cwd: std::env::temp_dir(),
             additional_dirs: vec![],
@@ -2157,6 +2302,7 @@ mod tests {
             env_allowlist: None,
         };
         let dummy_config = SpawnConfig {
+            agent_key: "claude".into(),
             spec: dummy_spec,
             cwd: std::env::temp_dir(),
             additional_dirs: vec![],
@@ -2230,21 +2376,23 @@ mod tests {
         );
     }
 
-    /// `is_clear_command` matches the user's `/clear` invocation in
-    /// the shapes the adapter accepts: bare, with flags, surrounded
-    /// by whitespace. Anything else falls through so a prompt that
-    /// merely mentions /clear (e.g. quoting a help string) doesn't
-    /// trip the divider. See #1101.
+    /// Claude profile's `is_clear_command` matches the user's `/clear`
+    /// invocation in the shapes the adapter accepts: bare, with flags,
+    /// surrounded by whitespace. Anything else falls through so a
+    /// prompt that merely mentions /clear (e.g. quoting a help string)
+    /// doesn't trip the divider. See #1101. The profile-keyed check
+    /// itself is unit-tested in `cockpit::agent_profiles::tests`.
     #[test]
-    fn is_clear_command_matches_invocations() {
-        assert!(is_clear_command("/clear"));
-        assert!(is_clear_command(" /clear "));
-        assert!(is_clear_command("/clear\n"));
-        assert!(is_clear_command("/clear --foo"));
-        assert!(!is_clear_command("clear"));
-        assert!(!is_clear_command("/cleart"));
-        assert!(!is_clear_command("hello /clear world"));
-        assert!(!is_clear_command(""));
+    fn claude_profile_is_clear_command_matches_invocations() {
+        let claude = &super::super::agent_profiles::CLAUDE;
+        assert!(claude.is_clear_command("/clear"));
+        assert!(claude.is_clear_command(" /clear "));
+        assert!(claude.is_clear_command("/clear\n"));
+        assert!(claude.is_clear_command("/clear --foo"));
+        assert!(!claude.is_clear_command("clear"));
+        assert!(!claude.is_clear_command("/cleart"));
+        assert!(!claude.is_clear_command("hello /clear world"));
+        assert!(!claude.is_clear_command(""));
     }
 
     /// `publish_user_prompt` emits a synthetic `SessionCleared` event
@@ -2256,7 +2404,7 @@ mod tests {
     async fn publish_user_prompt_emits_session_cleared_for_clear_command() {
         let sink = VecSink::new();
         let sup = Supervisor::new(sink.clone());
-        sup.publish_user_prompt("s-1", "/clear".into());
+        sup.publish_user_prompt("s-1", "/clear".into()).await;
         let frames = sink.frames.lock().unwrap().clone();
         assert_eq!(frames.len(), 2);
         assert!(matches!(
@@ -2267,13 +2415,122 @@ mod tests {
         assert_eq!(frames[1].1, 2, "SessionCleared must use the next seq");
     }
 
+    /// Regression: `agent_key_for_session` must resolve the registry
+    /// key (e.g. `"codex"`), not the binary command stored in
+    /// `agent_name` (e.g. `"codex-acp"`), when only the on-disk
+    /// `WorkerRecord` is available. Before this was wired through,
+    /// `Attached` workers fell back to `agent_name`, which never
+    /// matched a real profile and silently dropped per-agent gates
+    /// like `/new` boundary detection across daemon restarts.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn publish_user_prompt_uses_agent_key_from_registry_for_attached_worker() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        // SAFETY: serialised by `#[serial]`; subsequent serial tests
+        // reassign these env vars, which is the existing pattern.
+        unsafe {
+            std::env::set_var("HOME", tmp.path());
+            std::env::set_var("XDG_CONFIG_HOME", tmp.path().join(".config"));
+        }
+        let session_id = "attached-codex-1";
+        let dir = super::super::worker_registry::workers_dir().unwrap();
+        let record = super::super::worker_registry::WorkerRecord::new(
+            session_id.into(),
+            std::process::id(),
+            dir.join(format!("{session_id}.sock")),
+            "codex-acp".into(),
+            "codex".into(),
+            std::env::temp_dir(),
+            None,
+            vec![],
+            vec![],
+            None,
+            None,
+        );
+        super::super::worker_registry::save(&record).unwrap();
+
+        let sink = VecSink::new();
+        let sup = Supervisor::new(sink.clone());
+        sup.publish_user_prompt(session_id, "/new".into()).await;
+        let frames = sink.frames.lock().unwrap().clone();
+        assert_eq!(
+            frames.len(),
+            2,
+            "expected UserPromptSent + SessionCleared, got {frames:?}"
+        );
+        assert!(matches!(&frames[0].2, Event::UserPromptSent { .. }));
+        assert!(
+            matches!(&frames[1].2, Event::SessionCleared),
+            "codex /new must clear when agent_key resolves to the codex profile"
+        );
+        // Sanity: claude's `/clear` must NOT fire for a codex-keyed
+        // session, since codex's profile doesn't list it as an alias.
+        let sink2 = VecSink::new();
+        let sup2 = Supervisor::new(sink2.clone());
+        sup2.publish_user_prompt(session_id, "/clear".into()).await;
+        let frames2 = sink2.frames.lock().unwrap().clone();
+        assert_eq!(
+            frames2.len(),
+            1,
+            "no SessionCleared expected for /clear on codex"
+        );
+        super::super::worker_registry::delete(session_id).ok();
+    }
+
+    /// Legacy registry records (written before the `agent_key` field
+    /// existed) fall back to `"claude"` so existing claude sessions
+    /// keep working through the rollout. The supervisor falls through
+    /// the empty `agent_key` and lands on the default claude profile.
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn publish_user_prompt_falls_back_to_claude_for_legacy_record() {
+        let tmp = tempfile::TempDir::new().unwrap();
+        unsafe {
+            std::env::set_var("HOME", tmp.path());
+            std::env::set_var("XDG_CONFIG_HOME", tmp.path().join(".config"));
+        }
+        let session_id = "legacy-claude-1";
+        let dir = super::super::worker_registry::workers_dir().unwrap();
+        // Hand-craft a legacy record: pre-`agent_key` schema (empty
+        // string after serde default).
+        let legacy = serde_json::json!({
+            "runner_version": super::super::worker_registry::RUNNER_VERSION,
+            "session_id": session_id,
+            "pid": std::process::id(),
+            "socket_path": dir.join(format!("{session_id}.sock")),
+            "agent_name": "claude-agent-acp",
+            "cwd": std::env::temp_dir(),
+            "model": null,
+            "additional_dirs": [],
+            "provider_env_keys": [],
+            "stored_acp_session_id": null,
+            "started_at": 0,
+            "last_attached_at": null,
+            "detached_at": null
+        });
+        std::fs::write(
+            dir.join(format!("{session_id}.json")),
+            serde_json::to_string(&legacy).unwrap(),
+        )
+        .unwrap();
+
+        let sink = VecSink::new();
+        let sup = Supervisor::new(sink.clone());
+        sup.publish_user_prompt(session_id, "/clear".into()).await;
+        let frames = sink.frames.lock().unwrap().clone();
+        assert_eq!(frames.len(), 2);
+        assert!(matches!(&frames[1].2, Event::SessionCleared));
+        super::super::worker_registry::delete(session_id).ok();
+    }
+
     /// A regular user prompt must not emit `SessionCleared`. Sanity
     /// check that the detection isn't trigger-happy.
     #[tokio::test]
     async fn publish_user_prompt_does_not_emit_session_cleared_for_normal_prompts() {
         let sink = VecSink::new();
         let sup = Supervisor::new(sink.clone());
-        sup.publish_user_prompt("s-1", "tell me about /clear".into());
+        sup.publish_user_prompt("s-1", "tell me about /clear".into())
+            .await;
         let frames = sink.frames.lock().unwrap().clone();
         assert_eq!(frames.len(), 1);
         assert!(matches!(&frames[0].2, Event::UserPromptSent { .. }));
@@ -2305,8 +2562,8 @@ mod tests {
     async fn publish_user_prompt_emits_event_and_increments_seq() {
         let sink = VecSink::new();
         let sup = Supervisor::new(sink.clone());
-        sup.publish_user_prompt("s-1", "first prompt".into());
-        sup.publish_user_prompt("s-1", "second prompt".into());
+        sup.publish_user_prompt("s-1", "first prompt".into()).await;
+        sup.publish_user_prompt("s-1", "second prompt".into()).await;
 
         let frames = sink.frames.lock().unwrap().clone();
         assert_eq!(frames.len(), 2);
@@ -2337,7 +2594,7 @@ mod tests {
         // Simulate: we've persisted up to seq=42 for s-1 and seq=7 for s-2.
         sup.hydrate_seqs([("s-1".to_string(), 42), ("s-2".to_string(), 7)]);
 
-        sup.publish_user_prompt("s-1", "after restart".into());
+        sup.publish_user_prompt("s-1", "after restart".into()).await;
         sup.publish_startup_error("s-2", "retry".into());
 
         let frames = sink.frames.lock().unwrap().clone();
@@ -2461,6 +2718,7 @@ mod tests {
                 stored_acp_session_id: None,
                 sandbox_info: None,
                 source_profile: None,
+                yolo_mode: false,
             })
             .await;
         match result {
@@ -2503,11 +2761,13 @@ mod tests {
             "detached-1".into(),
             std::process::id(),
             socket_path,
+            "claude-agent-acp".into(),
             "claude-code".into(),
             std::env::temp_dir(),
             None,
             vec![],
             vec![],
+            None,
             None,
         );
         crate::cockpit::worker_registry::save(&record).unwrap();
@@ -2530,6 +2790,7 @@ mod tests {
                 stored_acp_session_id: None,
                 sandbox_info: None,
                 source_profile: None,
+                yolo_mode: false,
             })
             .await;
         match result {
@@ -2568,10 +2829,8 @@ mod tests {
         let db_path = tmp.path().join("cockpit.db");
         let event_store = Arc::new(EventStore::open(&db_path, 1000).unwrap());
         let (tx, mut rx) = broadcast::channel(16);
-        let on_approval: ApprovalHook = Arc::new(|_, _, _| {});
         let sink = Arc::new(ChannelSink {
             tx,
-            on_approval,
             event_store: event_store.clone(),
         });
 
@@ -2630,16 +2889,14 @@ mod tests {
         {
             let event_store = Arc::new(EventStore::open(&db_path, 1000).unwrap());
             let (tx, _rx) = broadcast::channel(16);
-            let on_approval: ApprovalHook = Arc::new(|_, _, _| {});
             let sink = Arc::new(ChannelSink {
                 tx,
-                on_approval,
                 event_store: event_store.clone(),
             });
             let sup = Supervisor::new(sink);
-            sup.publish_user_prompt("s-99", "first".into());
-            sup.publish_user_prompt("s-99", "second".into());
-            sup.publish_user_prompt("s-99", "third".into());
+            sup.publish_user_prompt("s-99", "first".into()).await;
+            sup.publish_user_prompt("s-99", "second".into()).await;
+            sup.publish_user_prompt("s-99", "third".into()).await;
             // sup, sink, and the in-memory replay ring drop here.
         }
 
@@ -2650,15 +2907,14 @@ mod tests {
         assert_eq!(event_store.highest_seq("s-99"), 3);
 
         let (tx, mut rx) = broadcast::channel(16);
-        let on_approval: ApprovalHook = Arc::new(|_, _, _| {});
         let sink = Arc::new(ChannelSink {
             tx,
-            on_approval,
             event_store: event_store.clone(),
         });
         let sup = Supervisor::new(sink);
         sup.hydrate_seqs(event_store.all_session_seqs());
-        sup.publish_user_prompt("s-99", "after restart".into());
+        sup.publish_user_prompt("s-99", "after restart".into())
+            .await;
 
         // The fresh publish must be seq=4, not seq=1. A seq=1
         // publish would be a no-op on disk (INSERT OR IGNORE) and
@@ -2752,6 +3008,7 @@ mod tests {
                 stored_acp_session_id: None,
                 sandbox_info: None,
                 source_profile: None,
+                yolo_mode: false,
             })
             .await;
         match result {
@@ -2802,6 +3059,7 @@ mod tests {
                 stored_acp_session_id: None,
                 sandbox_info: None,
                 source_profile: None,
+                yolo_mode: false,
             })
             .await;
         match result {

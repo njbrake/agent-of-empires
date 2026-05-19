@@ -15,8 +15,8 @@ use tui_input::Input;
 
 use crate::session::{
     config::{load_config, save_config, GroupByMode, SortOrder},
-    flatten_tree, flatten_tree_all_profiles, resolve_config_or_warn, DefaultTerminalMode, Group,
-    GroupTree, Instance, Item, Storage,
+    flatten_tree, flatten_tree_all_profiles, resolve_config_or_warn, DefaultTerminalMode,
+    EnsureReadyOutcome, Group, GroupTree, Instance, Item, Storage,
 };
 use crate::tmux::AvailableTools;
 
@@ -63,11 +63,13 @@ pub(super) struct GroupRenameContext {
 }
 
 /// View mode for the home screen
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum ViewMode {
     #[default]
     Agent,
     Terminal,
+    /// Previewing a tool session (lazygit, yazi, etc.)
+    Tool(String),
 }
 
 /// Terminal mode for sandboxed sessions (container vs host)
@@ -224,6 +226,7 @@ pub struct HomeView {
     pub(super) preview_cache: PreviewCache,
     pub(super) terminal_preview_cache: PreviewCache,
     pub(super) container_terminal_preview_cache: PreviewCache,
+    pub(super) tool_preview_cache: PreviewCache,
 
     /// Mouse wheel offset for the preview pane, in lines back from the bottom.
     /// Reset to 0 whenever the selected session changes.
@@ -259,6 +262,19 @@ pub struct HomeView {
 
     // Resizable list column width (percentage-like units)
     pub(super) list_width: u16,
+
+    // Tool sessions config (lazygit, yazi, etc.)
+    pub(super) tool_configs: HashMap<String, crate::session::config::ToolSessionConfig>,
+    /// Pre-parsed and sorted view of valid tool hotkeys: (name, KeyCode, KeyModifiers).
+    /// Built once at construction and on settings reload, then iterated on every
+    /// keystroke to look up matching tools. Sorted by name so the alphabetically-first
+    /// tool wins on duplicate hotkeys.
+    pub(super) tool_hotkey_cache: Vec<(
+        String,
+        crossterm::event::KeyCode,
+        crossterm::event::KeyModifiers,
+    )>,
+    pub(super) tool_picker_dialog: Option<super::dialogs::ToolPickerDialog>,
 }
 
 impl HomeView {
@@ -385,6 +401,7 @@ impl HomeView {
             preview_cache: PreviewCache::default(),
             terminal_preview_cache: PreviewCache::default(),
             container_terminal_preview_cache: PreviewCache::default(),
+            tool_preview_cache: PreviewCache::default(),
             preview_scroll_offset: 0,
             preview_area: Rect::default(),
             diff_area: Rect::default(),
@@ -397,9 +414,25 @@ impl HomeView {
             settings_close_confirm: false,
             diff_view: None,
             list_width: user_config
+                .as_ref()
                 .and_then(|c| c.app_state.home_list_width)
                 .unwrap_or(35),
+            tool_configs: user_config
+                .as_ref()
+                .map(|c| c.tools.clone())
+                .unwrap_or_default(),
+            tool_hotkey_cache: Vec::new(),
+            tool_picker_dialog: None,
         };
+
+        view.tool_hotkey_cache = input::build_tool_hotkey_cache(&view.tool_configs);
+        let hotkey_warnings = input::validate_tool_hotkeys(&view.tool_configs);
+        if !hotkey_warnings.is_empty() && view.info_dialog.is_none() {
+            view.info_dialog = Some(InfoDialog::new(
+                "Tool hotkey config errors",
+                &hotkey_warnings.join("\n"),
+            ));
+        }
 
         // Clean up orphaned Creating instances from a prior crash
         let orphan_ids: Vec<String> = view
@@ -412,9 +445,9 @@ impl HomeView {
             view.remove_instance(id);
         }
         if !orphan_ids.is_empty() {
-            tracing::info!("Cleaned up {} orphaned creating sessions", orphan_ids.len());
+            tracing::info!(target: "tui.home", "Cleaned up {} orphaned creating sessions", orphan_ids.len());
             if let Err(e) = view.save() {
-                tracing::warn!("Failed to save view state: {e}");
+                tracing::warn!(target: "tui.home", "Failed to save view state: {e}");
             }
         }
 
@@ -453,7 +486,7 @@ impl HomeView {
                     .map(|(s, k, v)| (s.as_str(), k.as_str(), v.as_str()))
                     .collect();
                 if let Err(e) = crate::tmux::env::set_hidden_env_batch(&batch_refs) {
-                    tracing::warn!("Batch env sync failed: {}", e);
+                    tracing::warn!(target: "tui.home", "Batch env sync failed: {}", e);
                 }
             }
             if !unset_batch.is_empty() {
@@ -462,7 +495,7 @@ impl HomeView {
                     .map(|(s, k)| (s.as_str(), k.as_str()))
                     .collect();
                 if let Err(e) = crate::tmux::env::remove_hidden_env_batch(&batch_refs) {
-                    tracing::warn!("Batch env unset failed: {}", e);
+                    tracing::warn!(target: "tui.home", "Batch env unset failed: {}", e);
                 }
             }
         }
@@ -679,13 +712,17 @@ impl HomeView {
                 self.rebuild_group_trees();
 
                 if let Err(e) = self.save() {
-                    tracing::error!("Failed to save after deletion: {}", e);
+                    tracing::error!(target: "tui.home", "Failed to save after deletion: {}", e);
                 }
                 if let Err(e) = self.reload() {
-                    tracing::warn!("Failed to reload session state: {e}");
+                    tracing::warn!(target: "tui.home", "Failed to reload session state: {e}");
                 }
             } else {
-                let error = result.error;
+                let error = if result.errors.is_empty() {
+                    None
+                } else {
+                    Some(result.errors.join("; "))
+                };
                 self.mutate_instance(&result.session_id, |inst| {
                     inst.status = Status::Error;
                     inst.last_error = error;
@@ -712,6 +749,22 @@ impl HomeView {
                 else {
                     continue;
                 };
+                // Defense-in-depth against the resume-fallback cascade: a sid
+                // the cascade just cleared can still live on disk for several
+                // minutes (opencode db, vibe meta.json, codex/gemini/pi/hermes
+                // state). The poller closures filter via `compose_exclusion`,
+                // but if a closure factory ever forgets to thread the per-
+                // instance excludes, this guard prevents the cleared sid from
+                // being re-imported into memory and disk.
+                if inst.retroactive_capture_excludes.contains(&session_id) {
+                    tracing::debug!(
+                        target: "tui.home",
+                        "Ignoring poller-reported sid {} for {}: in retroactive_capture_excludes",
+                        session_id,
+                        inst.id,
+                    );
+                    continue;
+                }
                 if inst.agent_session_id.as_deref() != Some(session_id.as_str()) {
                     updates.push((inst.id.clone(), session_id));
                 }
@@ -734,7 +787,7 @@ impl HomeView {
                 });
             }
             if let Err(e) = self.save() {
-                tracing::error!("Failed to save after session ID update: {}", e);
+                tracing::error!(target: "tui.home", "Failed to save after session ID update: {}", e);
                 for (id, old_val) in &prev {
                     self.mutate_instance(id, |inst| {
                         inst.agent_session_id = old_val.clone();
@@ -951,7 +1004,7 @@ impl HomeView {
                 }
 
                 if let Err(e) = self.save() {
-                    tracing::error!("Failed to save after creation: {}", e);
+                    tracing::error!(target: "tui.home", "Failed to save after creation: {}", e);
                 }
 
                 if on_launch_hooks_ran {
@@ -959,7 +1012,7 @@ impl HomeView {
                 }
 
                 if let Err(e) = self.reload() {
-                    tracing::warn!("Failed to reload session state: {e}");
+                    tracing::warn!(target: "tui.home", "Failed to reload session state: {e}");
                 }
                 self.new_dialog = None;
 
@@ -1054,7 +1107,7 @@ impl HomeView {
                         main_repo_path: std::path::PathBuf::from(&wt.main_repo_path),
                     });
             crate::session::builder::cleanup_instance(instance, worktree.as_ref(), &[]);
-            tracing::info!("Cleaned up cancelled session on exit");
+            tracing::info!(target: "tui.home", "Cleaned up cancelled session on exit");
         }
     }
 
@@ -1155,6 +1208,7 @@ impl HomeView {
             || self.profile_picker_dialog.is_some()
             || self.projects_dialog.is_some()
             || self.command_palette.is_some()
+            || self.tool_picker_dialog.is_some()
             || self.send_message_dialog.is_some()
             || self.update_confirm_dialog.is_some()
             || serve_open
@@ -1202,25 +1256,34 @@ impl HomeView {
         if let Ok(mut config) = load_config().map(|c| c.unwrap_or_default()) {
             config.app_state.home_list_width = Some(self.list_width);
             if let Err(e) = save_config(&config) {
-                tracing::warn!("Failed to save config: {e}");
+                tracing::warn!(target: "tui.home", "Failed to save config: {e}");
             }
         }
     }
 
     pub fn show_welcome(&mut self) {
+        tracing::info!(target: "tui.dialog", dialog = "welcome", "opening");
         self.welcome_dialog = Some(WelcomeDialog::new());
     }
 
     pub fn show_no_agents(&mut self) {
+        tracing::info!(target: "tui.dialog", dialog = "no_agents", "opening");
         self.no_agents_dialog = Some(NoAgentsDialog::new());
     }
 
     /// Replace available tools (used after re-check from no-agents dialog).
     pub fn set_available_tools(&mut self, tools: AvailableTools) {
+        tracing::debug!(target: "tui.home", count = tools.available_list().len(), "available tools refreshed");
         self.available_tools = tools;
     }
 
     pub fn show_changelog(&mut self, from_version: Option<String>) {
+        tracing::info!(
+            target: "tui.dialog",
+            dialog = "changelog",
+            from_version = ?from_version,
+            "opening",
+        );
         self.changelog_dialog = Some(ChangelogDialog::new(from_version));
     }
 
@@ -1318,6 +1381,7 @@ impl HomeView {
         self.preview_cache = PreviewCache::default();
         self.terminal_preview_cache = PreviewCache::default();
         self.container_terminal_preview_cache = PreviewCache::default();
+        self.tool_preview_cache = PreviewCache::default();
         self.preview_scroll_offset = 0;
         // Clear search since match indices are invalid with new flat_items
         if self.search_active {
@@ -1383,19 +1447,31 @@ impl HomeView {
     /// `ensure_pane_ready` (which may auto-start or respawn), then deliver
     /// the keystrokes. Errors are surfaced via `info_dialog` so the caller
     /// (`execute_action`) only has to clear its transient status.
-    pub fn execute_send_message(&mut self, session_id: &str, message: &str) {
-        if let Err(err) = self.try_mutate_instance(session_id, |inst| {
-            inst.ensure_pane_ready().map(drop).map_err(Into::into)
-        }) {
-            self.info_dialog = Some(InfoDialog::new(
-                "Send Failed",
-                &format!("Cannot prepare session: {}", err),
-            ));
-            return;
-        }
-        let Some(inst) = self.get_instance(session_id) else {
-            return;
+    ///
+    /// Returns `Some(stale_sid)` when the resume-fallback cascade fired
+    /// during the implicit respawn so the caller can toast the user about
+    /// the lost history; `None` otherwise.
+    pub fn execute_send_message(&mut self, session_id: &str, message: &str) -> Option<String> {
+        let outcome = self.try_mutate_instance_writeback_on_err(session_id, |inst| {
+            inst.ensure_pane_ready().map_err(Into::into)
+        });
+        let stale_sid = match outcome {
+            Ok(Some(EnsureReadyOutcome::Respawned {
+                stale_sid: Some(sid),
+            }))
+            | Ok(Some(EnsureReadyOutcome::Started {
+                stale_sid: Some(sid),
+            })) => Some(sid),
+            Ok(_) => None,
+            Err(err) => {
+                self.info_dialog = Some(InfoDialog::new(
+                    "Send Failed",
+                    &format!("Cannot prepare session: {}", err),
+                ));
+                return None;
+            }
         };
+        let inst = self.get_instance(session_id)?;
         let tmux_session = match crate::tmux::Session::new(&inst.id, &inst.title) {
             Ok(s) => s,
             Err(e) => {
@@ -1403,7 +1479,7 @@ impl HomeView {
                     "Send Failed",
                     &format!("Failed to resolve session: {}", e),
                 ));
-                return;
+                return None;
             }
         };
         let delay = crate::agents::send_keys_enter_delay(&inst.tool);
@@ -1412,9 +1488,10 @@ impl HomeView {
                 "Send Failed",
                 &format!("Failed to send message: {}", e),
             ));
-            return;
+            return None;
         }
         self.stamp_last_accessed(session_id);
+        stale_sid
     }
 
     pub fn save(&self) -> anyhow::Result<()> {
@@ -1524,18 +1601,47 @@ impl HomeView {
     /// Like `mutate_instance`, but for fallible operations. Clones the entry,
     /// applies `f` to the clone, and writes back to both collections only on
     /// success -- neither collection is modified on error.
-    pub(super) fn try_mutate_instance(
+    pub(super) fn try_mutate_instance<T>(
         &mut self,
         id: &str,
-        f: impl FnOnce(&mut Instance) -> anyhow::Result<()>,
-    ) -> anyhow::Result<()> {
+        f: impl FnOnce(&mut Instance) -> anyhow::Result<T>,
+    ) -> anyhow::Result<Option<T>> {
         if let Some(inst) = self.instances.iter_mut().find(|i| i.id == id) {
             let mut updated = inst.clone();
-            f(&mut updated)?;
+            let out = f(&mut updated)?;
             *inst = updated.clone();
             self.instance_map.insert(id.to_string(), updated);
+            return Ok(Some(out));
         }
-        Ok(())
+        Ok(None)
+    }
+
+    /// Like `try_mutate_instance`, but writes the mutated clone back even
+    /// when `f` returns `Err`.
+    ///
+    /// Required for callers of `Instance::restart_with_size_opts` /
+    /// `ensure_pane_ready`, because the resume-fallback cascade mutates
+    /// `agent_session_id` and `retroactive_capture_excludes` BEFORE
+    /// returning `Err` on Tier-2 failure. The default `try_mutate_instance`
+    /// drops the mutated clone on `Err`, leaving the live entry with the
+    /// stale sid in memory while disk has been cleared. Subsequent restarts
+    /// then loop indefinitely on the same bad sid (the TUI's `reload()`
+    /// merge prefers in-memory, so even the 5s disk refresh does not
+    /// recover). This helper preserves the cascade's partial mutations so
+    /// the live state stays consistent with disk.
+    pub(super) fn try_mutate_instance_writeback_on_err<T>(
+        &mut self,
+        id: &str,
+        f: impl FnOnce(&mut Instance) -> anyhow::Result<T>,
+    ) -> anyhow::Result<Option<T>> {
+        if let Some(inst) = self.instances.iter_mut().find(|i| i.id == id) {
+            let mut updated = inst.clone();
+            let result = f(&mut updated);
+            *inst = updated.clone();
+            self.instance_map.insert(id.to_string(), updated);
+            return result.map(Some);
+        }
+        Ok(None)
     }
 
     pub fn set_instance_error(&mut self, id: &str, error: Option<String>) {
@@ -1557,8 +1663,11 @@ impl HomeView {
         id: &str,
         size: Option<(u16, u16)>,
         skip_on_launch: bool,
-    ) -> anyhow::Result<()> {
-        self.try_mutate_instance(id, |inst| inst.restart_with_size_opts(size, skip_on_launch))
+    ) -> anyhow::Result<crate::session::StartOutcome> {
+        let outcome = self.try_mutate_instance_writeback_on_err(id, |inst| {
+            inst.restart_with_size_opts(size, skip_on_launch)
+        })?;
+        outcome.ok_or_else(|| anyhow::anyhow!("session not found: {}", id))
     }
 
     pub fn select_session_by_id(&mut self, session_id: &str) {
@@ -1594,6 +1703,15 @@ impl HomeView {
         self.strict_hotkeys = config.session.strict_hotkeys;
         self.idle_decay_window =
             crate::tui::styles::idle_decay_window(config.theme.idle_decay_minutes);
+        self.tool_configs = config.tools;
+        self.tool_hotkey_cache = input::build_tool_hotkey_cache(&self.tool_configs);
+        let hotkey_warnings = input::validate_tool_hotkeys(&self.tool_configs);
+        if !hotkey_warnings.is_empty() && self.info_dialog.is_none() {
+            self.info_dialog = Some(InfoDialog::new(
+                "Tool hotkey config errors",
+                &hotkey_warnings.join("\n"),
+            ));
+        }
     }
 
     /// Toggle terminal mode between Container and Host for a session
@@ -1612,5 +1730,6 @@ impl HomeView {
         size: Option<(u16, u16)>,
     ) -> anyhow::Result<()> {
         self.try_mutate_instance(id, |inst| inst.start_container_terminal_with_size(size))
+            .map(|_| ())
     }
 }

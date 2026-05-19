@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./helpers/mockedTest";
 
 const NEW_SESSION_PANE_NAME = /New session Pick a project, then launch a new session/i;
 

@@ -171,6 +171,15 @@ impl SendMessageDialog {
         text_area_clone.set_cursor_style(Style::default().fg(theme.background).bg(theme.accent));
 
         frame.render_widget(&text_area_clone, inner);
+
+        if inner.width > 0 && inner.height > 0 {
+            let cursor = text_area_clone.screen_cursor();
+            let max_x = inner.x.saturating_add(inner.width.saturating_sub(1));
+            let max_y = inner.y.saturating_add(inner.height.saturating_sub(1));
+            let cursor_x = inner.x.saturating_add(cursor.col as u16).min(max_x);
+            let cursor_y = inner.y.saturating_add(cursor.row as u16).min(max_y);
+            frame.set_cursor_position(Position::new(cursor_x, cursor_y));
+        }
     }
 }
 
@@ -192,6 +201,23 @@ mod tests {
 
     fn ctrl_key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::CONTROL)
+    }
+
+    fn render_cursor_position(dialog: &SendMessageDialog, width: u16, height: u16) -> Position {
+        use crate::tui::styles::load_theme;
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let theme = load_theme("empire");
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                dialog.render(f, area, &theme);
+            })
+            .unwrap();
+        terminal.backend_mut().get_cursor_position().unwrap()
     }
 
     #[test]
@@ -222,6 +248,33 @@ mod tests {
         let mut dialog = SendMessageDialog::new("Test Session");
         let result = dialog.handle_key(key(KeyCode::Char('a')));
         assert!(matches!(result, DialogResult::Continue));
+    }
+
+    #[test]
+    fn render_places_terminal_cursor_at_textarea_cursor() {
+        let mut dialog = SendMessageDialog::new("Test Session");
+        dialog.handle_key(key(KeyCode::Char('h')));
+        dialog.handle_key(key(KeyCode::Char('i')));
+
+        // 80-col viewport -> 64-col dialog centered at x=8, inner x=9.
+        // 3-row dialog centered at y=10, inner y=11. Cursor is after "hi".
+        assert_eq!(
+            render_cursor_position(&dialog, 80, 24),
+            Position::new(11, 11)
+        );
+    }
+
+    #[test]
+    fn render_cursor_uses_display_columns_for_wide_chars() {
+        let mut dialog = SendMessageDialog::new("Test Session");
+        dialog.handle_key(key(KeyCode::Char('你')));
+
+        // The visual cursor should move two cells for an East Asian wide char,
+        // not one Unicode scalar position.
+        assert_eq!(
+            render_cursor_position(&dialog, 80, 24),
+            Position::new(11, 11)
+        );
     }
 
     #[test]

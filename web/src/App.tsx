@@ -7,6 +7,7 @@ import { CockpitPrefsProvider } from "./lib/cockpitPrefs";
 import { useWorkspaces } from "./hooks/useWorkspaces";
 import { useRepoGroups } from "./hooks/useRepoGroups";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
+import { useResolvedTheme } from "./hooks/useResolvedTheme";
 import { useDiffFiles } from "./hooks/useDiffFiles";
 import { useDiffComments } from "./hooks/useDiffComments";
 import { SendCommentsDialog } from "./components/diff/comments/SendCommentsDialog";
@@ -19,6 +20,7 @@ import {
   deleteSession,
   fetchAbout,
   fetchSettings,
+  updateWorkspaceOrdering,
 } from "./lib/api";
 import type { DeleteSessionOptions, ServerAbout } from "./lib/api";
 import {
@@ -72,6 +74,12 @@ import { UpdateBanner } from "./components/UpdateBanner";
 const RIGHT_PANEL_COLLAPSED_KEY = "aoe-right-collapsed";
 
 export default function App() {
+  // Apply the user-selected theme as CSS custom properties on the root
+  // element. Runs once on mount + on settings-driven theme changes.
+  // The pre-React /theme-bootstrap.js (referenced from index.html)
+  // paints the cached theme before hydration; this hook keeps it in
+  // sync with the server's view.
+  useResolvedTheme();
   const [loginRequired, setLoginRequired] = useState<boolean | null>(null);
   const [loginAuthenticated, setLoginAuthenticated] = useState(true);
   const [tokenExpired, setTokenExpired] = useState(false);
@@ -180,9 +188,35 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
   const showProjects = projectsMatch !== null;
   const settingsTab = settingsTabMatch?.params.tab ?? null;
 
-  const { sessions, error, injectSession, setSessionStatus } = useSessions();
+  const {
+    sessions,
+    workspaceOrdering,
+    setWorkspaceOrdering,
+    markLocalOrderingUpdate,
+    error,
+    injectSession,
+    setSessionStatus,
+  } = useSessions();
   const workspaces = useWorkspaces(sessions);
-  const { groups, toggleRepoCollapsed } = useRepoGroups(workspaces);
+
+  const { groups, toggleRepoCollapsed } = useRepoGroups(
+    workspaces,
+    workspaceOrdering,
+  );
+
+  // Drag-end handler for the sidebar. Optimistically applies the new
+  // order locally so the row snaps into place, then persists to the
+  // server. `markLocalOrderingUpdate` opens a short window during
+  // which polled responses do not clobber our just-applied state, so a
+  // poll firing mid-PUT can't revert the drag.
+  const handleReorderWorkspaces = useCallback(
+    (newOrder: string[]) => {
+      setWorkspaceOrdering(newOrder);
+      markLocalOrderingUpdate();
+      void updateWorkspaceOrdering(newOrder);
+    },
+    [setWorkspaceOrdering, markLocalOrderingUpdate],
+  );
 
   // Selected diff-file identity. `repoName` is undefined for single-repo
   // sessions and the workspace member name for multi-repo workspaces.
@@ -524,7 +558,13 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
   useKeyboardShortcuts(
     useCallback(
       () => ({
-        onNew: () => setShowSessionWizard(true),
+        onNew: () => {
+          // Read-only mode hides mutation UI. The "n" shortcut must
+          // not open the wizard or the user gets a dead-end form that
+          // 403s on submit. Caught by the live read-only-mode spec.
+          if (serverAbout?.read_only) return;
+          setShowSessionWizard(true);
+        },
         onDiff: () => toggleDiff(),
         // Escape closes local UI surfaces only (dialogs, palette,
         // wizard, settings, help, file viewer). Never wire this to
@@ -554,7 +594,16 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
         onToggleRightPanel: () => setDiffCollapsed((c) => !c),
         onToggleTerminalFocus: handleToggleTerminalFocus,
       }),
-      [toggleDiff, showPalette, deletingWorkspaceId, showSettings, handleCloseSettings, navigate, handleToggleTerminalFocus],
+      [
+        toggleDiff,
+        showPalette,
+        deletingWorkspaceId,
+        showSettings,
+        handleCloseSettings,
+        navigate,
+        handleToggleTerminalFocus,
+        serverAbout,
+      ],
     ),
   );
 
@@ -629,6 +678,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
                       key={activeSessionId}
                       sessionId={activeSessionId!}
                       cockpitWorkerState={activeSession.cockpit_worker_state ?? "absent"}
+                      tool={activeSession.tool}
                     />
                   </Suspense>
                 ) : (
@@ -717,11 +767,19 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
   // Pinning to the no-keyboard height combined with the keyboard
   // reservation in TerminalView keeps the layout stable across the
   // keyboard cycle.
+  //
+  // Cockpit substrate doesn't host xterm.js, so the SIGWINCH concern
+  // doesn't apply; leaving the pin on for cockpit traps the composer
+  // below the keyboard on Android Chrome PWA (#1177). Drop the pin when
+  // the active session is cockpit so `h-dvh` plus the viewport meta's
+  // `interactive-widget=resizes-content` shrink the container with the
+  // keyboard and lift the composer back into view.
   const { isMobile, stableViewportHeight } = useMobileKeyboard();
-  const rootStyle =
-    isMobile && stableViewportHeight > 0
-      ? { height: `${stableViewportHeight}px` }
-      : undefined;
+  const pinRootHeight =
+    isMobile && stableViewportHeight > 0 && !activeSession?.cockpit_mode;
+  const rootStyle = pinRootHeight
+    ? { height: `${stableViewportHeight}px` }
+    : undefined;
 
   const cockpitPrefs = useMemo(
     () => ({
@@ -767,6 +825,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
         {!showSettings && !showProjects && (
           <WorkspaceSidebar
             groups={groups}
+            onReorderWorkspaces={handleReorderWorkspaces}
             activeId={activeWorkspace?.id ?? null}
             open={sidebarOpen}
             onToggle={() => setSidebarOpen(false)}

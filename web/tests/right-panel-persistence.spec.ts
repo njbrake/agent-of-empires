@@ -1,4 +1,4 @@
-import { test, expect } from "@playwright/test";
+import { test, expect } from "./helpers/mockedTest";
 
 const STORAGE_KEY = "aoe-right-collapsed";
 

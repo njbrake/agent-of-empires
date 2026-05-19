@@ -1,4 +1,5 @@
-import { test, expect, type Page } from "@playwright/test";
+import { test, expect } from "./helpers/mockedTest";
+import type { Page } from "@playwright/test";
 import { clickSidebarSession } from "./helpers/sidebar";
 
 // Verifies useTerminal.ts reconnects after a WS drop and that the first
@@ -17,26 +18,29 @@ async function mockApisExceptWs(page: Page, sessionTitle: string) {
   await page.route("**/api/sessions", (r) => {
     if (r.request().method() === "POST") return r.fulfill({ status: 400 });
     return r.fulfill({
-      json: [
-        {
-          id: sessionTitle,
-          title: sessionTitle,
-          project_path: `/tmp/${sessionTitle}`,
-          group_path: "/tmp",
-          tool: "claude",
-          status: "Running",
-          yolo_mode: false,
-          created_at: new Date().toISOString(),
-          last_accessed_at: null,
-          last_error: null,
-          branch: null,
-          main_repo_path: null,
-          is_sandboxed: false,
-          has_terminal: true,
-          profile: "default",
-          workspace_repos: [],
-        },
-      ],
+      json: {
+        sessions: [
+          {
+            id: sessionTitle,
+            title: sessionTitle,
+            project_path: `/tmp/${sessionTitle}`,
+            group_path: "/tmp",
+            tool: "claude",
+            status: "Running",
+            yolo_mode: false,
+            created_at: new Date().toISOString(),
+            last_accessed_at: null,
+            last_error: null,
+            branch: null,
+            main_repo_path: null,
+            is_sandboxed: false,
+            has_terminal: true,
+            profile: "default",
+            workspace_repos: [],
+          },
+        ],
+        workspace_ordering: [],
+      },
     });
   });
   await page.route("**/api/sessions/*/ensure", (r) =>

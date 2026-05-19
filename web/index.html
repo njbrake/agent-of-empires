@@ -13,6 +13,16 @@
     <link rel="apple-touch-icon" href="/icon-192.png" />
     <link rel="preload" href="/fonts/Geist-Regular.woff2" as="font" type="font/woff2" crossorigin />
     <link rel="preload" href="/fonts/GeistMono-Regular.woff2" as="font" type="font/woff2" crossorigin />
+    <!--
+      Pre-React theme bootstrap. Applies the cached ResolvedTheme
+      payload from localStorage to documentElement before React
+      mounts so the dashboard doesn't flash the default Empire
+      palette when the user has picked a different theme. Loaded as
+      an external script (not inline) because the dashboard's CSP
+      is `script-src 'self' 'wasm-unsafe-eval'` with no unsafe-inline.
+      See #1189 + the review on PR #1197.
+    -->
+    <script src="/theme-bootstrap.js"></script>
   </head>
   <body>
     <div id="root"></div>

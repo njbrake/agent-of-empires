@@ -1,7 +1,33 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  createContext,
+  memo,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MutableRefObject,
+} from "react";
 import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
 import { Pencil } from "lucide-react";
+import {
+  DndContext,
+  MouseSensor,
+  TouchSensor,
+  useSensor,
+  useSensors,
+  closestCenter,
+  type DragEndEvent,
+} from "@dnd-kit/core";
+import {
+  SortableContext,
+  useSortable,
+  verticalListSortingStrategy,
+  arrayMove,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import type {
   RepoGroup,
   SessionResponse,
@@ -39,6 +65,7 @@ function closeOtherContextMenus() {
 
 interface Props {
   groups: RepoGroup[];
+  onReorderWorkspaces: (newOrder: string[]) => void;
   activeId: string | null;
   open: boolean;
   onToggle: () => void;
@@ -209,6 +236,110 @@ function isPlainLeftClick(event: React.MouseEvent<HTMLAnchorElement>): boolean {
     !event.altKey &&
     !event.ctrlKey &&
     !event.shiftKey
+  );
+}
+
+// Wraps a SessionRow with @dnd-kit sortable plumbing. The row itself
+// is the drag handle: a short tap/click navigates as before, but a
+// press-and-hold (sensor delay) lifts the row so the user can reorder.
+// See #1169.
+
+// "Drag just ended" timestamp shared by every sortable row and the
+// document-level click suppressor. Lives as a ref on the sidebar so
+// HMR resets don't leave it in a weird state and so siblings can't
+// see each other through a module-scoped global. The document
+// listener checks `ref.current` on every click; rows write to it
+// while dragging and on release.
+const DragSuppressContext = createContext<MutableRefObject<number> | null>(null);
+function useDragSuppressRef(): MutableRefObject<number> {
+  const ref = useContext(DragSuppressContext);
+  if (!ref) {
+    throw new Error("DragSuppressContext used outside provider");
+  }
+  return ref;
+}
+
+function useSuppressClickAfterDrag(ref: MutableRefObject<number>) {
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (Date.now() < ref.current) {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+      }
+    };
+    // The click Chromium dispatches after a drag-release can bypass
+    // React's event delegation and land on the inner Link without
+    // firing any wrapping capture handler. A document-level capture
+    // listener catches it before navigation kicks in.
+    document.addEventListener("click", handler, true);
+    return () => document.removeEventListener("click", handler, true);
+  }, [ref]);
+}
+
+function SortableSessionRow(props: {
+  workspace: Workspace;
+  isActive: boolean;
+  onClick: () => void;
+  onDelete?: (workspaceId: string) => void;
+  readOnly?: boolean;
+}) {
+  const dragSuppressRef = useDragSuppressRef();
+  // `disabled: readOnly` no-ops the sensor listeners, so a read-only
+  // viewer can't drag the row (and can't fire the PUT, which the
+  // server would reject anyway). Skipping the sortable wiring entirely
+  // would also drop the click suppressor; that's harmless in read-only
+  // since nothing else triggers a drag.
+  const { listeners, setNodeRef, transform, transition, isDragging } =
+    useSortable({ id: props.workspace.id, disabled: props.readOnly });
+  useEffect(() => {
+    if (isDragging) {
+      // Keep extending the window while dragging so a slow drag still
+      // suppresses the trailing click on release.
+      dragSuppressRef.current = Date.now() + 1000;
+    } else if (dragSuppressRef.current > Date.now()) {
+      // Drag just ended; the click is on its way. Hold the suppression
+      // for ~250ms after release (enough to swallow the synthetic click,
+      // short enough that a real tap right after still navigates).
+      dragSuppressRef.current = Date.now() + 250;
+    }
+  }, [isDragging, dragSuppressRef]);
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    touchAction: "manipulation",
+    // Lift the active row above its siblings so the ring/shadow aren't
+    // clipped by the next row in the list.
+    zIndex: isDragging ? 10 : "auto",
+    position: "relative",
+  } as const;
+  return (
+    // We intentionally spread only `listeners` (pointer-down etc.) and
+    // not dnd-kit's `attributes`. The latter inject role="button" and a
+    // tabIndex which would duplicate the inner Link as a focusable,
+    // button-styled affordance for assistive tech. Keyboard drag isn't
+    // supported here, so the omitted attributes don't cost anything.
+    <div
+      ref={setNodeRef}
+      style={style}
+      {...(props.readOnly ? {} : listeners)}
+      aria-roledescription={
+        props.readOnly ? undefined : "Press and hold to reorder"
+      }
+      // While dragging, the row gets an amber ring (matches the active
+      // session accent) and a soft shadow so it reads as elevated above
+      // the rest of the list. ring-inset keeps the highlight tight to
+      // the row rectangle; the transition runs in both directions so
+      // the lift and the drop both feel intentional. The inner
+      // SessionRow keeps its own background, so we only style the
+      // outline here.
+      className={
+        "transition-shadow duration-150 " +
+        (isDragging ? "ring-2 ring-inset ring-brand-500 shadow-lg" : "")
+      }
+    >
+      <SessionRow {...props} indented />
+    </div>
   );
 }
 
@@ -413,6 +544,11 @@ const SessionRow = memo(function SessionRow({
     <>
       <Link
         to={sessionPath}
+        // Anchors are HTML5-draggable by default; the browser would
+        // start its own drag-the-link gesture in parallel with dnd-kit
+        // and finish with a synthetic click that bypassed React's event
+        // delegation, navigating despite our suppression. See #1169.
+        draggable={false}
         onClick={(e) => {
           if (longPressFired.current) {
             e.preventDefault();
@@ -662,6 +798,7 @@ function workspaceMatchesFilter(ws: Workspace, q: string): boolean {
 
 export function WorkspaceSidebar({
   groups,
+  onReorderWorkspaces,
   activeId,
   open,
   onToggle,
@@ -674,12 +811,58 @@ export function WorkspaceSidebar({
   onDeleteSession,
   readOnly,
 }: Props) {
+  const dragSuppressRef = useRef<number>(0);
+  useSuppressClickAfterDrag(dragSuppressRef);
   const offline = useServerDown();
   const [width, setWidth] = useState(loadSavedWidth);
   const [filterOpen, setFilterOpen] = useState(false);
   const [filterQuery, setFilterQuery] = useState("");
   const filterRef = useRef<HTMLInputElement>(null);
   const dragging = useRef(false);
+
+  // Whole-row press-and-hold drag. The delay lets a quick click or tap
+  // pass through to the row's navigation link unchanged; only a held
+  // pointer (150ms with <8px movement) flips the row into drag mode.
+  // 150ms is the iOS Reminders/Notes ballpark: long enough to filter
+  // out scroll-flicks and accidental taps, short enough that the lift
+  // feels immediate. Same delay on mouse and touch so the gesture is
+  // identical on desktop and mobile.
+  const sensors = useSensors(
+    useSensor(MouseSensor, { activationConstraint: { delay: 150, tolerance: 8 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 150, tolerance: 8 } }),
+  );
+
+  const handleDragEnd = useCallback(
+    (e: DragEndEvent) => {
+      const { active, over } = e;
+      if (!over || active.id === over.id) return;
+
+      // Drag is constrained to within a single repo group (each group
+      // has its own SortableContext), so finding the active group and
+      // reordering inside it is sufficient.
+      const groupIndex = groups.findIndex((g) =>
+        g.workspaces.some((w) => w.id === active.id),
+      );
+      const group = groups[groupIndex];
+      if (groupIndex < 0 || !group) return;
+      const oldIndex = group.workspaces.findIndex((w) => w.id === active.id);
+      const newIndex = group.workspaces.findIndex((w) => w.id === over.id);
+      if (oldIndex < 0 || newIndex < 0) return;
+
+      // Build the new full visual order by replacing the affected
+      // group's local order, then concat in the existing group order.
+      // We persist the full flat list so cross-device clients can render
+      // the same layout without re-deriving per-group ordering.
+      const reordered = arrayMove(group.workspaces, oldIndex, newIndex);
+      const flat: string[] = [];
+      groups.forEach((g, i) => {
+        const ws = i === groupIndex ? reordered : g.workspaces;
+        ws.forEach((w) => flat.push(w.id));
+      });
+      onReorderWorkspaces(flat);
+    },
+    [groups, onReorderWorkspaces],
+  );
 
   const q = filterQuery.trim().toLowerCase();
 
@@ -831,39 +1014,52 @@ export function WorkspaceSidebar({
         )}
 
         <div className="flex-1 overflow-y-auto overflow-x-hidden">
-          {filteredGroups.map((group) => {
-            const showExpanded = q ? true : !group.collapsed;
-            const hasActiveChild = group.workspaces.some(
-              (ws) => ws.id === activeId,
-            );
-            return (
-              <div key={group.id}>
-                <RepoGroupHeader
-                  group={{ ...group, collapsed: !showExpanded }}
-                  hasActiveChild={!showExpanded && hasActiveChild}
-                  onClick={() => !q && onToggleRepo(group.id)}
-                  onNewSession={() =>
-                    group.id === MULTI_REPO_GROUP_ID
-                      ? onNew()
-                      : onCreateSession(group.repoPath)
-                  }
-                  offline={offline}
-                />
-                {showExpanded &&
-                  group.workspaces.map((ws) => (
-                    <SessionRow
-                      key={ws.id}
-                      workspace={ws}
-                      isActive={ws.id === activeId}
-                      onClick={() => onSelect(ws.id)}
-                      onDelete={onDeleteSession}
-                      readOnly={readOnly}
-                      indented
-                    />
-                  ))}
-              </div>
-            );
-          })}
+          <DragSuppressContext.Provider value={dragSuppressRef}>
+          <DndContext
+            sensors={sensors}
+            collisionDetection={closestCenter}
+            onDragEnd={readOnly ? undefined : handleDragEnd}
+          >
+            {filteredGroups.map((group) => {
+              const showExpanded = q ? true : !group.collapsed;
+              const hasActiveChild = group.workspaces.some(
+                (ws) => ws.id === activeId,
+              );
+              return (
+                <div key={group.id}>
+                  <RepoGroupHeader
+                    group={{ ...group, collapsed: !showExpanded }}
+                    hasActiveChild={!showExpanded && hasActiveChild}
+                    onClick={() => !q && onToggleRepo(group.id)}
+                    onNewSession={() =>
+                      group.id === MULTI_REPO_GROUP_ID
+                        ? onNew()
+                        : onCreateSession(group.repoPath)
+                    }
+                    offline={offline}
+                  />
+                  {showExpanded && (
+                    <SortableContext
+                      items={group.workspaces.map((ws) => ws.id)}
+                      strategy={verticalListSortingStrategy}
+                    >
+                      {group.workspaces.map((ws) => (
+                        <SortableSessionRow
+                          key={ws.id}
+                          workspace={ws}
+                          isActive={ws.id === activeId}
+                          onClick={() => onSelect(ws.id)}
+                          onDelete={onDeleteSession}
+                          readOnly={readOnly}
+                        />
+                      ))}
+                    </SortableContext>
+                  )}
+                </div>
+              );
+            })}
+          </DndContext>
+          </DragSuppressContext.Provider>
 
           {!hasResults && filterQuery && (
             <div className="px-4 py-8 text-center">

@@ -216,6 +216,10 @@ aoe serve --daemon
 # Stop with: aoe serve --stop
 ```
 
+### Shutdown behavior
+
+`Ctrl-C` on a foreground `aoe serve`, and `aoe serve --stop` against a daemon, both exit within ~5 seconds even with open dashboard tabs. Live cockpit and terminal WebSocket clients receive a close frame with code `1001` ("going away") so the browser logs a clean reason and skips its transient-error reconnect backoff for one cycle. The reconnect resumes normally once a fresh `aoe serve` is running. A 5-second hard cap acts as a safety net: if any handler fails to honor the shutdown signal, the process still exits and emits `WARN shutdown: graceful shutdown exceeded grace window, forcing exit`.
+
 ## Features
 
 - **Session list** with live status updates (Running, Waiting, Idle, Error)

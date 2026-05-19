@@ -19,7 +19,16 @@ import {
   ThreadPrimitive,
   useMessage,
 } from "@assistant-ui/react";
-import { Check, ChevronDown, Clock, ListChecks, X } from "lucide-react";
+import {
+  AlertTriangle,
+  Check,
+  ChevronDown,
+  Clock,
+  Info,
+  ListChecks,
+  RotateCcw,
+  X,
+} from "lucide-react";
 
 import { ApprovalCard } from "./ApprovalCard";
 import {
@@ -31,6 +40,10 @@ import {
 import { Composer } from "./Composer";
 import { ContextPrimerBanner } from "./ContextPrimerBanner";
 import { Markdown } from "./Markdown";
+import {
+  isQueuedPromptLong,
+  queuedStripLayout,
+} from "./queuedPromptsLayout";
 import { SubagentCard, ToolCard, ToolGroupCard } from "./ToolCards";
 import { DiffCommentsUserCard } from "../diff/comments/DiffCommentsUserCard";
 import { parseDiffCommentsSentinel } from "../diff/comments/buildPrompt";
@@ -41,12 +54,16 @@ import {
   chooseVerb,
 } from "../../lib/cockpitRattle";
 import { useCockpitPrefs } from "../../lib/cockpitPrefs";
+import { AgentProfileProvider } from "../../lib/agentProfileContext";
+import { useApprovalSound } from "../../hooks/useApprovalSound";
+import { useIsCoarsePointer } from "../../hooks/useIsCoarsePointer";
 import type {
   Approval,
   ApprovalDecision,
   CockpitState,
   Plan,
   QueuedPrompt,
+  RejectedPrompt,
   ToolCall,
 } from "../../lib/cockpitTypes";
 
@@ -56,6 +73,10 @@ interface Props {
    *  (REST-poll-driven, ~3s cadence). Drives the `WorkerResumingBanner`
    *  while the reconciler is mid-spawn/attach. See #1088. */
   cockpitWorkerState: "absent" | "resuming" | "running";
+  /** Session's `tool` registry key (claude / codex / opencode / gemini
+   *  / etc.). Resolves the active AgentProfile that drives card
+   *  dispatch and claude-specific capability gates. */
+  tool: string | null | undefined;
 }
 
 const STARTER_PROMPTS = [
@@ -64,28 +85,30 @@ const STARTER_PROMPTS = [
   "What does the build pipeline do?",
 ];
 
-export function CockpitView({ sessionId, cockpitWorkerState }: Props) {
+export function CockpitView({ sessionId, cockpitWorkerState, tool }: Props) {
   // Folds rows above the most recent `/clear` divider out of the
   // thread by default; the disclosure banner toggles this. Lives on
   // the view (not the reducer) because it's a UI preference, not
   // event-log state. See #1101.
   const [showClearedTurns, setShowClearedTurns] = useState(false);
   return (
-    <CockpitRuntime
-      sessionId={sessionId}
-      cockpitWorkerState={cockpitWorkerState}
-      showClearedTurns={showClearedTurns}
-    >
-      {(ctx) => (
-        <CockpitChrome
-          sessionId={sessionId}
-          cockpitWorkerState={cockpitWorkerState}
-          showClearedTurns={showClearedTurns}
-          onToggleClearedTurns={() => setShowClearedTurns((v) => !v)}
-          {...ctx}
-        />
-      )}
-    </CockpitRuntime>
+    <AgentProfileProvider toolKey={tool}>
+      <CockpitRuntime
+        sessionId={sessionId}
+        cockpitWorkerState={cockpitWorkerState}
+        showClearedTurns={showClearedTurns}
+      >
+        {(ctx) => (
+          <CockpitChrome
+            sessionId={sessionId}
+            cockpitWorkerState={cockpitWorkerState}
+            showClearedTurns={showClearedTurns}
+            onToggleClearedTurns={() => setShowClearedTurns((v) => !v)}
+            {...ctx}
+          />
+        )}
+      </CockpitRuntime>
+    </AgentProfileProvider>
   );
 }
 
@@ -111,6 +134,8 @@ function CockpitChrome({
   removeQueuedPrompt,
   editQueuedPrompt,
   clearQueue,
+  dismissRejectedPrompt,
+  dismissModeSwitchFailed,
 }: CockpitContext & {
   sessionId: string;
   cockpitWorkerState: "absent" | "resuming" | "running";
@@ -139,6 +164,12 @@ function CockpitChrome({
   const [primerPrefill, setPrimerPrefill] = useState<
     { id: string; text: string } | null
   >(null);
+
+  // Browser-side approval chime. Fires once on the 0 -> >=1 edge of
+  // pendingApprovals; complements the OS push (delivered via the SW
+  // when the dashboard is backgrounded) and the in-app toast (when
+  // foregrounded). See #1038.
+  useApprovalSound(state.pendingApprovals.length);
 
   // Re-pin the chat viewport to the bottom when the composer (or any
   // sibling below it: queued strip, primer banner) grows. assistant-ui's
@@ -211,7 +242,7 @@ function CockpitChrome({
         <WorkerStoppedBanner sessionId={sessionId} />
       )}
       {state.workerRestarting && !state.startupError && !state.workerStopped && (
-        <WorkerRestartingBanner />
+        <WorkerRestartingBanner agentUnresponsive={state.agentUnresponsive} />
       )}
       {cockpitWorkerState === "resuming" &&
         !state.startupError &&
@@ -288,6 +319,22 @@ function CockpitChrome({
             onRemove={removeQueuedPrompt}
             onEdit={editQueuedPrompt}
             onClear={clearQueue}
+          />
+
+          <RejectedPromptsStrip
+            rejected={state.rejectedPrompts}
+            onRetry={sendPrompt}
+            onDismiss={dismissRejectedPrompt}
+            disabled={
+              state.workerRestarting ||
+              state.workerStopped ||
+              Boolean(state.startupError)
+            }
+          />
+
+          <ModeSwitchFailedNotice
+            failure={state.modeSwitchFailed}
+            onDismiss={dismissModeSwitchFailed}
           />
 
           <ContextPrimerBanner
@@ -1085,24 +1132,30 @@ function InteractionErrorBanner({
   );
 }
 
-function WorkerRestartingBanner() {
-  // `aoe cockpit restart` deletes the registry + writes a sentinel; the
-  // daemon's reaper publishes Stopped{reason:"restart_pending"} and the
-  // reconciler clears its `attempted` set so the next 2s tick spawns a
-  // fresh worker (with the cached acp_session_id for transcript
-  // continuity). AcpSessionAssigned then clears `workerRestarting` and
-  // this banner unmounts. No reconnect button because the daemon is
-  // already handling it.
+function WorkerRestartingBanner({
+  agentUnresponsive,
+}: {
+  agentUnresponsive: boolean;
+}) {
+  // Two reasons land here:
+  //   - `aoe cockpit restart` (deletes registry, daemon's reaper
+  //     publishes Stopped{reason:"restart_pending"}, reconciler spawns
+  //     a fresh worker with the cached acp_session_id).
+  //   - Cancel-escalation watchdog fired: claude-agent-acp ignored
+  //     `session/cancel` for the grace window, the supervisor SIGTERMed
+  //     the wedged runner and is respawning via `session/load`.
+  // Both end with `AcpSessionAssigned` clearing the banner.
+  // See #1196 for the agent_unresponsive variant.
+  const message = agentUnresponsive
+    ? "Agent stopped responding to cancel. Restarting worker; your transcript will be preserved."
+    : "Restarting cockpit worker… the daemon will respawn the agent with your existing transcript shortly.";
   return (
     <div className="flex items-center gap-2 border-b border-sky-900/60 bg-sky-950/40 px-4 py-2 text-xs text-sky-200">
       <span
         className="inline-block h-2 w-2 animate-pulse rounded-full bg-sky-400"
         aria-hidden
       />
-      <span>
-        Restarting cockpit worker… the daemon will respawn the agent with
-        your existing transcript shortly.
-      </span>
+      <span>{message}</span>
     </div>
   );
 }
@@ -1416,6 +1469,54 @@ function StartupErrorBanner({
   );
 }
 
+/* ── Mode-switch-failed notice ────────────────────────────────────── */
+
+interface ModeSwitchFailedNoticeProps {
+  failure: { modeId: string; reason: string; at: string } | null;
+  onDismiss: () => void;
+}
+
+/** Non-blocking notice rendered when the ACP adapter rejected a
+ *  `session/set_mode` request. The most common path: a user enabled
+ *  yolo_mode_default but the claude-agent-acp build does not expose
+ *  `bypassPermissions` (gated on the `ALLOW_BYPASS` env var), so the
+ *  session keeps running in `default` and silently prompts on every
+ *  Write/Edit/Bash. The notice gives them an explicit signal plus a
+ *  pointer to the mode picker. See #1233. */
+function ModeSwitchFailedNotice({
+  failure,
+  onDismiss,
+}: ModeSwitchFailedNoticeProps) {
+  if (!failure) return null;
+  const friendly =
+    failure.modeId === "bypassPermissions"
+      ? "YOLO mode (bypassPermissions) is not available on this adapter; the session is running in default permission mode. claude-agent-acp gates bypass on the ALLOW_BYPASS env var. Pick a different mode from the composer or restart the daemon with ALLOW_BYPASS=1."
+      : `Could not switch to mode "${failure.modeId}"; the session is staying on its previous mode. Pick a different mode from the composer.`;
+  return (
+    <div className="border-t border-amber-900/40 bg-amber-950/20 px-4 py-2">
+      <div className="mx-auto max-w-3xl xl:max-w-4xl 2xl:max-w-5xl">
+        <div className="flex items-start gap-2 rounded-lg border border-amber-700/30 bg-amber-950/15 px-2.5 py-1.5">
+          <Info className="mt-0.5 h-4 w-4 shrink-0 text-amber-300" />
+          <div className="min-w-0 flex-1">
+            <p className="text-xs leading-5 text-amber-100">{friendly}</p>
+            <p className="mt-0.5 font-mono text-[10px] text-amber-400/70">
+              {failure.reason}
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onDismiss}
+            className="inline-flex shrink-0 items-center justify-center rounded-md border border-amber-700/40 bg-amber-900/20 p-1 text-amber-200 hover:bg-amber-900/60"
+            aria-label="Dismiss mode-switch notice"
+          >
+            <X className="h-3 w-3" />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 /* ── Queued prompts strip ─────────────────────────────────────────── */
 
 interface QueuedPromptsStripProps {
@@ -1429,13 +1530,106 @@ interface QueuedPromptsStripProps {
  *  queued mid-turn. Each row is editable in place (click to edit, save
  *  on Enter or blur, cancel on Escape) and removable via the X button.
  *  Hidden when the queue is empty. See #1031. */
+function RejectedPromptsStrip({
+  rejected,
+  onRetry,
+  onDismiss,
+  disabled,
+}: {
+  rejected: RejectedPrompt[];
+  onRetry: (text: string) => void;
+  /** Drop a single pill without resending. Local-only; the daemon has
+   *  no record of pending rejections so this never goes over the wire. */
+  onDismiss: (id: string) => void;
+  /** True while the worker is restarting/stopped/in startup error.
+   *  Retry must be gated then: `sendPrompt` would clear
+   *  `workerRestarting` / `agentUnresponsive` and the rejected pills
+   *  before the respawn has produced a new `AcpSessionAssigned`,
+   *  leaving the UI claiming the agent is ready while the daemon
+   *  hasn't reconnected yet. Dismiss stays available so the user can
+   *  clear stale pills during the respawn. See #1196. */
+  disabled: boolean;
+}) {
+  // Pills for prompts the daemon refused while another `session/prompt`
+  // was already in flight. The user sees the rejection and can re-fire
+  // via the Retry button instead of having their message vanish. The
+  // reducer caps the list at 5 entries (oldest dropped) and clears on
+  // the next UserPromptSent. See #1196.
+  if (rejected.length === 0) return null;
+  return (
+    <div className="border-t border-amber-900/40 bg-amber-950/20 px-4 py-2">
+      <div className="mx-auto max-w-3xl xl:max-w-4xl 2xl:max-w-5xl">
+        <div className="pb-1.5 text-[11px] uppercase tracking-wider text-amber-300">
+          <span className="inline-flex items-center gap-1">
+            <AlertTriangle className="h-3 w-3" />
+            Rejected ({rejected.length})
+          </span>
+        </div>
+        <ul className="flex flex-col gap-1.5">
+          {rejected.map((r) => (
+            <li
+              key={r.id}
+              className="group flex items-start gap-2 rounded-lg border border-amber-700/30 bg-amber-950/15 px-2.5 py-1.5"
+            >
+              <span className="mt-0.5 inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-amber-500/20 text-[10px] font-semibold text-amber-300">
+                !
+              </span>
+              <div className="min-w-0 flex-1">
+                <p className="truncate whitespace-pre-wrap break-words text-xs text-amber-100">
+                  {r.text}
+                </p>
+                <p className="mt-0.5 text-[10px] text-amber-400/80">
+                  Agent was busy; prompt was not sent.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => onRetry(r.text)}
+                disabled={disabled}
+                className="inline-flex shrink-0 items-center gap-1 rounded-md border border-amber-700/60 bg-amber-900/30 px-2 py-1 text-[10px] font-mono uppercase tracking-wide text-amber-100 hover:bg-amber-900/60 disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-amber-900/30"
+                aria-label="Retry rejected prompt"
+              >
+                <RotateCcw className="h-3 w-3" />
+                Retry
+              </button>
+              <button
+                type="button"
+                onClick={() => onDismiss(r.id)}
+                className="inline-flex shrink-0 items-center justify-center rounded-md border border-amber-700/40 bg-amber-900/20 p-1 text-amber-200 hover:bg-amber-900/60"
+                aria-label="Dismiss rejected prompt"
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
 function QueuedPromptsStrip({
   queued,
   onRemove,
   onEdit,
   onClear,
 }: QueuedPromptsStripProps) {
+  // Strip-level collapse: when the queue exceeds `visibleDefault` rows,
+  // only the first N render until the user expands. State resets when
+  // the queue length drops back below the threshold (toggle disappears;
+  // `expanded` stays harmlessly true and re-arms on the next overflow).
+  // Mobile gets N=1 because a single multi-line prompt already eats
+  // half the small-viewport composer area; desktop tolerates N=2.
+  // See #1232.
+  const isMobile = useIsCoarsePointer();
+  const [expanded, setExpanded] = useState(false);
   if (queued.length === 0) return null;
+  const layout = queuedStripLayout({
+    queuedCount: queued.length,
+    isMobile,
+    expanded,
+  });
+  const visible = queued.slice(0, layout.visibleCount);
   return (
     <div className="border-t border-surface-800 bg-surface-900/60 px-4 py-2">
       <div className="mx-auto max-w-3xl xl:max-w-4xl 2xl:max-w-5xl">
@@ -1455,7 +1649,7 @@ function QueuedPromptsStrip({
           )}
         </div>
         <ul className="flex flex-col gap-1.5">
-          {queued.map((q) => (
+          {visible.map((q) => (
             <QueuedPromptRow
               key={q.id}
               prompt={q}
@@ -1464,6 +1658,15 @@ function QueuedPromptsStrip({
             />
           ))}
         </ul>
+        {layout.toggleLabel && (
+          <button
+            type="button"
+            onClick={() => setExpanded((v) => !v)}
+            className="mt-1.5 w-full rounded-md border border-sky-700/20 bg-sky-950/10 px-2 py-1 text-[11px] font-medium uppercase tracking-wider text-sky-300 hover:bg-sky-950/30"
+          >
+            {layout.toggleLabel}
+          </button>
+        )}
       </div>
     </div>
   );
@@ -1483,6 +1686,13 @@ function QueuedPromptRow({
   // current prompt.text. This avoids a setState-in-effect to keep the
   // draft synced with external edits (lint: react-hooks/set-state-in-effect).
   const [editing, setEditing] = useState(false);
+  // Per-row clamp: long / multi-line prompts only render their first
+  // few lines in display mode. The `…` affordance lifts the clamp
+  // without entering edit mode. The clamp is undone automatically when
+  // the editor mounts, since the textarea has its own sizing logic.
+  // See #1232.
+  const [rowExpanded, setRowExpanded] = useState(false);
+  const isLong = isQueuedPromptLong(prompt.text);
 
   return (
     <li className="group flex items-start gap-2 rounded-lg border border-sky-700/30 bg-sky-950/15 px-2.5 py-1.5">
@@ -1501,14 +1711,36 @@ function QueuedPromptRow({
           }}
         />
       ) : (
-        <button
-          type="button"
-          onClick={() => setEditing(true)}
-          title="Click to edit"
-          className="min-w-0 flex-1 text-left text-xs leading-5 text-text-secondary whitespace-pre-wrap break-words hover:text-text-primary"
-        >
-          {prompt.text}
-        </button>
+        <div className="min-w-0 flex-1">
+          <button
+            type="button"
+            onClick={() => setEditing(true)}
+            title="Click to edit"
+            className={[
+              "block w-full text-left text-xs leading-5 text-text-secondary whitespace-pre-wrap break-words hover:text-text-primary",
+              isLong && !rowExpanded ? "line-clamp-3" : "",
+            ]
+              .filter(Boolean)
+              .join(" ")}
+          >
+            {prompt.text}
+          </button>
+          {isLong && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                setRowExpanded((v) => !v);
+              }}
+              className="mt-0.5 text-[11px] font-medium text-sky-300 hover:text-sky-200"
+              aria-label={
+                rowExpanded ? "Collapse queued prompt" : "Show full queued prompt"
+              }
+            >
+              {rowExpanded ? "Show less" : "…"}
+            </button>
+          )}
+        </div>
       )}
       <button
         type="button"

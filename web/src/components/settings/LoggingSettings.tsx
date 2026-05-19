@@ -1,4 +1,4 @@
-import { NumberField, SelectField, TextField } from "./FormFields";
+import { NumberField, SelectField, TextField, ToggleField } from "./FormFields";
 
 // Mirrors `KNOWN_SUB_TARGETS` in src/logging.rs. Keeping this list
 // hardcoded (rather than fetched) is intentional: it's the curated
@@ -71,6 +71,7 @@ export function LoggingSettings({ settings, onSaveField, onUpdate }: Props) {
   const rotation = (logging.rotation as string) ?? "size";
   const maxSizeMib = (logging.max_size_mib as number) ?? 50;
   const keepCount = (logging.keep_count as number) ?? 5;
+  const showSpans = (logging.show_spans as boolean) ?? false;
 
   const saveDefaultLevel = (level: string) => {
     onUpdate({ logging: { ...logging, default_level: level } });
@@ -193,6 +194,12 @@ export function LoggingSettings({ settings, onSaveField, onUpdate }: Props) {
             max={20}
           />
         </div>
+        <ToggleField
+          label="Show span context"
+          description="When on, every log line is prefixed with the names and fields of the spans wrapping it, e.g. http_request{request_id=... method=GET path=...} from the per-request middleware. Useful for grep-correlation across async boundaries when triaging an issue, noisy on idle polling endpoints. Off by default keeps the log readable. Requires restart."
+          checked={showSpans}
+          onChange={(v) => saveSinkField("show_spans", v)}
+        />
       </div>
     </div>
   );

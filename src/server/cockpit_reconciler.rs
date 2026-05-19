@@ -60,6 +60,7 @@ struct ResumeTarget {
     stored_acp_session_id: Option<String>,
     source_profile: String,
     in_flight_turn: bool,
+    yolo_mode: bool,
 }
 
 /// Tuple shape used by the instance-list snapshot. Aliased to dodge
@@ -73,6 +74,7 @@ type RawTargetTuple = (
     String,
     Option<String>,
     String,
+    bool,
 );
 
 pub async fn reconcile_cockpit_workers(state: &Arc<AppState>, attempted: &mut HashSet<String>) {
@@ -118,6 +120,7 @@ pub async fn reconcile_cockpit_workers(state: &Arc<AppState>, attempted: &mut Ha
                     i.project_path.clone(),
                     i.cockpit_acp_session_id.clone(),
                     i.source_profile.clone(),
+                    i.yolo_mode,
                 )
             })
             .collect()
@@ -141,8 +144,16 @@ pub async fn reconcile_cockpit_workers(state: &Arc<AppState>, attempted: &mut Ha
     // already-attached). For the rest, decide attach vs fresh-spawn at
     // task time so concurrent tasks see consistent registry state.
     let mut tasks: Vec<ResumeTarget> = Vec::new();
-    for (id, tool, agent_override, model, project_path, stored_acp_session_id, source_profile) in
-        raw_targets
+    for (
+        id,
+        tool,
+        agent_override,
+        model,
+        project_path,
+        stored_acp_session_id,
+        source_profile,
+        yolo_mode,
+    ) in raw_targets
     {
         if attempted.contains(&id) {
             continue;
@@ -168,6 +179,7 @@ pub async fn reconcile_cockpit_workers(state: &Arc<AppState>, attempted: &mut Ha
             stored_acp_session_id,
             source_profile,
             in_flight_turn,
+            yolo_mode,
         });
     }
 
@@ -234,6 +246,7 @@ async fn resume_one(state: Arc<AppState>, target: ResumeTarget) -> ResumeOutcome
         stored_acp_session_id,
         source_profile,
         in_flight_turn,
+        yolo_mode,
     } = target;
 
     // Reattach path: if a previous daemon detached a runner for this
@@ -368,6 +381,7 @@ async fn resume_one(state: Arc<AppState>, target: ResumeTarget) -> ResumeOutcome
             stored_acp_session_id,
             sandbox_info,
             source_profile: source_profile_for_spawn,
+            yolo_mode,
         })
         .await;
     if let Err(e) = spawn_result {

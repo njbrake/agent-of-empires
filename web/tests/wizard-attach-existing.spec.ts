@@ -1,4 +1,5 @@
-import { test, expect, Page } from "@playwright/test";
+import { test, expect } from "./helpers/mockedTest";
+import { Page } from "@playwright/test";
 
 // Wizard "Attach to existing branch" toggle (#969). Mirrors the TUI's
 // `Attach to existing branch:` checkbox: when on, the request body
@@ -40,26 +41,29 @@ async function mockApis(page: Page) {
   await page.route("**/api/sessions", (r) => {
     if (r.request().method() === "GET") {
       return r.fulfill({
-        json: [
-          {
-            id: "seed-session",
-            title: "seed",
-            project_path: "/tmp/example",
-            group_path: "/tmp",
-            tool: "claude",
-            status: "Idle",
-            yolo_mode: false,
-            created_at: new Date().toISOString(),
-            last_accessed_at: null,
-            last_error: null,
-            branch: null,
-            main_repo_path: null,
-            is_sandboxed: false,
-            has_terminal: true,
-            profile: "default",
-            workspace_repos: [],
-          },
-        ],
+        json: {
+          sessions: [
+            {
+              id: "seed-session",
+              title: "seed",
+              project_path: "/tmp/example",
+              group_path: "/tmp",
+              tool: "claude",
+              status: "Idle",
+              yolo_mode: false,
+              created_at: new Date().toISOString(),
+              last_accessed_at: null,
+              last_error: null,
+              branch: null,
+              main_repo_path: null,
+              is_sandboxed: false,
+              has_terminal: true,
+              profile: "default",
+              workspace_repos: [],
+            },
+          ],
+          workspace_ordering: [],
+        },
       });
     }
     return r.fulfill({ json: { session: { id: "new-session" } } });
@@ -118,26 +122,29 @@ test.describe("Wizard attach-existing toggle (#969)", () => {
         return r.fulfill({ json: { session: { id: "new-session" } } });
       }
       return r.fulfill({
-        json: [
-          {
-            id: "seed-session",
-            title: "seed",
-            project_path: "/tmp/example",
-            group_path: "/tmp",
-            tool: "claude",
-            status: "Idle",
-            yolo_mode: false,
-            created_at: new Date().toISOString(),
-            last_accessed_at: null,
-            last_error: null,
-            branch: null,
-            main_repo_path: null,
-            is_sandboxed: false,
-            has_terminal: true,
-            profile: "default",
-            workspace_repos: [],
-          },
-        ],
+        json: {
+          sessions: [
+            {
+              id: "seed-session",
+              title: "seed",
+              project_path: "/tmp/example",
+              group_path: "/tmp",
+              tool: "claude",
+              status: "Idle",
+              yolo_mode: false,
+              created_at: new Date().toISOString(),
+              last_accessed_at: null,
+              last_error: null,
+              branch: null,
+              main_repo_path: null,
+              is_sandboxed: false,
+              has_terminal: true,
+              profile: "default",
+              workspace_repos: [],
+            },
+          ],
+          workspace_ordering: [],
+        },
       });
     });
     await page.setViewportSize({ width: 1280, height: 900 });
@@ -163,26 +170,29 @@ test.describe("Wizard attach-existing toggle (#969)", () => {
         return r.fulfill({ json: { session: { id: "new-session" } } });
       }
       return r.fulfill({
-        json: [
-          {
-            id: "seed-session",
-            title: "seed",
-            project_path: "/tmp/example",
-            group_path: "/tmp",
-            tool: "claude",
-            status: "Idle",
-            yolo_mode: false,
-            created_at: new Date().toISOString(),
-            last_accessed_at: null,
-            last_error: null,
-            branch: null,
-            main_repo_path: null,
-            is_sandboxed: false,
-            has_terminal: true,
-            profile: "default",
-            workspace_repos: [],
-          },
-        ],
+        json: {
+          sessions: [
+            {
+              id: "seed-session",
+              title: "seed",
+              project_path: "/tmp/example",
+              group_path: "/tmp",
+              tool: "claude",
+              status: "Idle",
+              yolo_mode: false,
+              created_at: new Date().toISOString(),
+              last_accessed_at: null,
+              last_error: null,
+              branch: null,
+              main_repo_path: null,
+              is_sandboxed: false,
+              has_terminal: true,
+              profile: "default",
+              workspace_repos: [],
+            },
+          ],
+          workspace_ordering: [],
+        },
       });
     });
     await page.setViewportSize({ width: 1280, height: 900 });

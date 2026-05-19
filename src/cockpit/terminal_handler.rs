@@ -20,11 +20,21 @@ use tokio::process::Command;
 use tokio::sync::Mutex;
 use tracing::info;
 
+use crate::containers::container_interface::{docker_env_args, EnvEntry};
+
 /// Routing target for a terminal command. Built once per session in
 /// `SessionResources::sandbox` and consulted on every `terminal/create`.
 #[derive(Debug, Clone)]
 pub struct TerminalSandbox {
     pub container_name: String,
+    /// Resolved env entries to forward into the container for this command.
+    ///
+    /// Without this, ACP `terminal/create` would silently rely on whatever
+    /// env was baked into the container at `docker run` time (which is set
+    /// once and never updated when host vars change or rotate). The tmux
+    /// session path already re-resolves per exec; this brings the agent's
+    /// shell-command path to parity.
+    pub env_entries: Vec<EnvEntry>,
 }
 
 #[derive(Debug, Error)]
@@ -56,6 +66,30 @@ pub struct TerminalManager {
 #[derive(Debug, Default)]
 struct TerminalManagerInner {
     outputs: std::collections::HashMap<TerminalId, TerminalOutput>,
+}
+
+/// Build the `docker exec` argv and inherit-env pairs for a sandboxed
+/// `terminal/create` request. Pulled out of `create_and_run` so the wiring
+/// can be unit tested without spawning docker. The runtime binary is
+/// intentionally not in the result, because the caller picks it based on
+/// the active runtime.
+pub(crate) fn build_sandbox_exec_args(
+    sandbox: &TerminalSandbox,
+    cwd: &std::path::Path,
+    command: &str,
+    args: &[String],
+) -> (Vec<String>, Vec<(String, String)>) {
+    let (env_argv, inherit_pairs) = docker_env_args(&sandbox.env_entries);
+    let mut full_args: Vec<String> = vec![
+        "exec".into(),
+        "-w".into(),
+        cwd.to_string_lossy().into_owned(),
+    ];
+    full_args.extend(env_argv);
+    full_args.push(sandbox.container_name.clone());
+    full_args.push(command.to_string());
+    full_args.extend(args.iter().cloned());
+    (full_args, inherit_pairs)
 }
 
 impl TerminalManager {
@@ -97,20 +131,16 @@ impl TerminalManager {
             Some(s) => {
                 let runtime = crate::containers::get_container_runtime();
                 let binary = runtime.base.binary;
-                let mut full_args: Vec<String> = vec![
-                    "exec".into(),
-                    "-w".into(),
-                    cwd.to_string_lossy().into_owned(),
-                    s.container_name.clone(),
-                    command.to_string(),
-                ];
-                full_args.extend(args);
-                Command::new(binary)
-                    .args(&full_args)
+                let (full_args, inherit_pairs) = build_sandbox_exec_args(s, &cwd, command, &args);
+                let mut cmd = Command::new(binary);
+                cmd.args(&full_args)
                     .stdin(Stdio::null())
                     .stdout(Stdio::piped())
-                    .stderr(Stdio::piped())
-                    .spawn()?
+                    .stderr(Stdio::piped());
+                for (k, v) in inherit_pairs {
+                    cmd.env(k, v);
+                }
+                cmd.spawn()?
             }
             None => Command::new(command)
                 .args(&args)
@@ -190,5 +220,91 @@ mod tests {
         mgr.release(&id).await.unwrap();
         let result = mgr.output(&id).await;
         assert!(matches!(result, Err(TerminalError::UnknownTerminal(_))));
+    }
+
+    #[test]
+    fn sandbox_exec_args_emit_e_flags_for_each_entry() {
+        let sandbox = TerminalSandbox {
+            container_name: "aoe-sandbox-test".into(),
+            env_entries: vec![
+                EnvEntry::Inherit {
+                    key: "GH_TOKEN".into(),
+                    value: "ghp_secret".into(),
+                },
+                EnvEntry::Literal {
+                    key: "TERM".into(),
+                    value: "xterm".into(),
+                },
+            ],
+        };
+        let (argv, inherit) = build_sandbox_exec_args(
+            &sandbox,
+            std::path::Path::new("/workspace"),
+            "gh",
+            &["pr".into(), "list".into()],
+        );
+
+        // exec -w /workspace [-e flags...] container cmd [args...]
+        assert_eq!(argv[0], "exec");
+        assert_eq!(argv[1], "-w");
+        assert_eq!(argv[2], "/workspace");
+        // Both -e flags must appear before the container name.
+        let container_idx = argv
+            .iter()
+            .position(|a| a == "aoe-sandbox-test")
+            .expect("container name in argv");
+        let e_positions: Vec<usize> = argv
+            .iter()
+            .enumerate()
+            .filter_map(|(i, a)| (a == "-e").then_some(i))
+            .collect();
+        assert_eq!(e_positions.len(), 2, "one -e flag per env entry");
+        for pos in &e_positions {
+            assert!(
+                *pos < container_idx,
+                "-e flags must precede the container name"
+            );
+        }
+        // Inherit value must NOT leak into argv.
+        assert!(
+            !argv.iter().any(|a| a.contains("ghp_secret")),
+            "secret leaked into argv: {:?}",
+            argv
+        );
+        // Inherit pairs carry the actual value for cmd.env(k, v).
+        assert_eq!(
+            inherit,
+            vec![("GH_TOKEN".to_string(), "ghp_secret".to_string())]
+        );
+        // Command + args appear after the container name.
+        assert_eq!(argv[container_idx + 1], "gh");
+        assert_eq!(argv[container_idx + 2], "pr");
+        assert_eq!(argv[container_idx + 3], "list");
+    }
+
+    #[test]
+    fn sandbox_exec_args_no_env_entries() {
+        let sandbox = TerminalSandbox {
+            container_name: "aoe-sandbox-test".into(),
+            env_entries: vec![],
+        };
+        let (argv, inherit) = build_sandbox_exec_args(
+            &sandbox,
+            std::path::Path::new("/workspace"),
+            "echo",
+            &["hi".into()],
+        );
+        assert_eq!(
+            argv,
+            vec![
+                "exec".to_string(),
+                "-w".to_string(),
+                "/workspace".to_string(),
+                "aoe-sandbox-test".to_string(),
+                "echo".to_string(),
+                "hi".to_string(),
+            ]
+        );
+        assert!(inherit.is_empty());
     }
 }

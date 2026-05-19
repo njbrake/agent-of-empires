@@ -5,12 +5,15 @@ mod session;
 pub mod status_bar;
 pub(crate) mod status_detection;
 mod terminal_session;
+mod tool_session;
 pub(crate) mod utils;
 
 pub use session::Session;
 pub use status_bar::{get_session_info_for_current, get_status_for_current_session};
 pub use status_detection::detect_status_from_content;
+pub(crate) use status_detection::reconcile_codex_hook_status;
 pub use terminal_session::{ContainerTerminalSession, TerminalSession};
+pub use tool_session::{kill_all_tool_sessions_for_id, ToolSession};
 pub use utils::tmux_prefix_display;
 
 #[cfg(any(test, feature = "test-support"))]
@@ -45,6 +48,11 @@ pub const CONTAINER_TERMINAL_PREFIX: &str = if cfg!(debug_assertions) {
 } else {
     "aoe_cterm_"
 };
+pub const TOOL_PREFIX: &str = if cfg!(debug_assertions) {
+    "aoe_dev_tool_"
+} else {
+    "aoe_tool_"
+};
 
 /// Pre-fetched pane metadata from a single `tmux list-panes -a` call.
 #[derive(Debug, Clone)]
@@ -72,6 +80,7 @@ struct SessionCache {
 const FIELD_SEP: char = '|';
 
 pub fn refresh_session_cache() {
+    let start = Instant::now();
     let output = Command::new("tmux")
         .args(["list-sessions", "-F", "#{session_name}|#{session_activity}"])
         .output();
@@ -88,8 +97,30 @@ pub fn refresh_session_cache() {
             }
             Some(map)
         }
-        _ => None,
+        Ok(out) => {
+            tracing::warn!(
+                target: "tmux.cache",
+                status = ?out.status,
+                stderr_bytes = out.stderr.len(),
+                "list-sessions returned non-zero; cache cleared",
+            );
+            None
+        }
+        Err(e) => {
+            tracing::warn!(target: "tmux.cache", error = %e, "list-sessions spawn failed; cache cleared");
+            None
+        }
     };
+
+    // Trace, not debug: the TUI status poller calls this every ~2s, so
+    // at debug it dominates the idle log. Errors above still log at warn.
+    let sessions = new_data.as_ref().map(|m| m.len()).unwrap_or(0);
+    tracing::trace!(
+        target: "tmux.cache",
+        sessions,
+        duration_ms = start.elapsed().as_millis() as u64,
+        "session cache refreshed",
+    );
 
     if let Ok(mut cache) = SESSION_CACHE.write() {
         cache.data = new_data;
@@ -100,6 +131,7 @@ pub fn refresh_session_cache() {
 /// Batch-fetch pane metadata for all aoe sessions in a single tmux subprocess call.
 /// Returns a map from session name to metadata for the first window's first pane.
 pub fn batch_pane_metadata() -> HashMap<String, PaneMetadata> {
+    let start = Instant::now();
     let output = Command::new("tmux")
         .args([
             "list-panes",
@@ -109,13 +141,36 @@ pub fn batch_pane_metadata() -> HashMap<String, PaneMetadata> {
         ])
         .output();
 
-    match output {
+    let result = match output {
         Ok(out) if out.status.success() => {
             let stdout = String::from_utf8_lossy(&out.stdout);
             parse_pane_metadata(&stdout)
         }
-        _ => HashMap::new(),
-    }
+        Ok(out) => {
+            tracing::warn!(
+                target: "tmux.pane",
+                status = ?out.status,
+                stderr_bytes = out.stderr.len(),
+                "list-panes returned non-zero",
+            );
+            HashMap::new()
+        }
+        Err(e) => {
+            tracing::warn!(target: "tmux.pane", error = %e, "list-panes spawn failed");
+            HashMap::new()
+        }
+    };
+
+    // Trace, not debug: paired with refresh_session_cache in the TUI
+    // status poll loop (~every 2s). Debug-level here would dominate the
+    // idle log.
+    tracing::trace!(
+        target: "tmux.pane",
+        sessions = result.len(),
+        duration_ms = start.elapsed().as_millis() as u64,
+        "batch pane metadata fetched",
+    );
+    result
 }
 
 /// Parse the output of `tmux list-panes -a` into a map of session name to pane metadata.

@@ -39,6 +39,7 @@ Thumbs.db
 
 # AI coding tools
 .opencode/
+.omo/
 .sisyphus/
 
 # Per-repo config (created by `aoe init`, should be committed per-repo by users)
@@ -69,3 +70,8 @@ website/src/pages/docs/development/*.md
 # Demo recording intermediate files
 *.cast
 /test-results
+
+# Coverage output (Vitest + Playwright + merged)
+web/coverage/
+web/playwright-report/
+web/playwright-live-report/

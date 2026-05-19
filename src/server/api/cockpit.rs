@@ -122,6 +122,7 @@ pub async fn spawn_cockpit(
         .collect();
     let model = req.model.or_else(|| instance.cockpit_model.clone());
     let stored_acp_session_id = instance.cockpit_acp_session_id.clone();
+    let yolo_mode = instance.yolo_mode;
 
     let inst_lock = state.instance_lock(&id).await;
     let sandbox_info = match crate::cockpit::sandbox::ensure_container_for_session(
@@ -157,6 +158,7 @@ pub async fn spawn_cockpit(
             stored_acp_session_id,
             sandbox_info,
             source_profile,
+            yolo_mode,
         })
         .await
     {
@@ -217,7 +219,8 @@ pub async fn cockpit_prompt(
     // as authoritative and dedupes against its own optimistic row.
     state
         .cockpit_supervisor
-        .publish_user_prompt(&id, req.text.clone());
+        .publish_user_prompt(&id, req.text.clone())
+        .await;
     match state.cockpit_supervisor.send_prompt(&id, &req.text).await {
         Ok(()) => StatusCode::ACCEPTED.into_response(),
         Err(SupervisorError::UnknownSession(_)) => {
@@ -456,6 +459,7 @@ pub async fn cockpit_enable(
     let session_id = id.clone();
     let model = instance.cockpit_model.clone();
     let stored_acp_session_id = instance.cockpit_acp_session_id.clone();
+    let yolo_mode = instance.yolo_mode;
     let profile_for_spawn = profile.clone();
     let state_for_spawn = state.clone();
     tokio::spawn(async move {
@@ -488,6 +492,7 @@ pub async fn cockpit_enable(
                 stored_acp_session_id,
                 sandbox_info,
                 source_profile,
+                yolo_mode,
             })
             .await
         {

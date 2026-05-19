@@ -23,6 +23,7 @@ export const docsNav: NavSection[] = [
       { title: "Docker Sandbox", href: "/guides/sandbox/" },
       { title: "Web Dashboard", href: "/guides/web-dashboard/" },
       { title: "Cockpit (Native Agent Rendering)", href: "/docs/cockpit/" },
+      { title: "Cockpit Multi-Agent Support", href: "/docs/cockpit/multi-agent/" },
       { title: "Remote Phone Access", href: "/guides/remote-phone-access/" },
       { title: "Repo Config & Hooks", href: "/guides/repo-config/" },
       { title: "Git Worktrees", href: "/guides/worktrees/" },
@@ -30,6 +31,7 @@ export const docsNav: NavSection[] = [
       { title: "Diff View", href: "/guides/diff-view/" },
       { title: "tmux Status Bar", href: "/guides/tmux-status-bar/" },
       { title: "Agent Command Overrides", href: "/guides/agent-override/" },
+      { title: "Tool Sessions", href: "/guides/tool-sessions/" },
       { title: "Session Resume (Claude)", href: "/guides/session-resume/" },
       { title: "Sound Effects", href: "/docs/sounds/" },
     ],
@@ -48,6 +50,7 @@ export const docsNav: NavSection[] = [
       { title: "Development", href: "/docs/development/" },
       { title: "Adding a New Agent", href: "/docs/development/adding-agents/" },
       { title: "Logging", href: "/docs/development/logging/" },
+      { title: "Playwright + Vitest testing", href: "/docs/development/playwright/" },
     ],
   },
 ];

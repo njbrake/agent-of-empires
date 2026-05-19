@@ -24,11 +24,11 @@ pub use config::{
     TmuxMouseMode, TmuxStatusBarMode, UpdatesConfig, WorktreeConfig,
 };
 pub(crate) use environment::user_shell;
-pub use environment::validate_env_entry;
+pub use environment::{validate_env_entries, validate_env_entry};
 pub use groups::{flatten_tree, flatten_tree_all_profiles, Group, GroupTree, Item};
 pub use instance::{
-    EnsureReadyError, EnsureReadyOutcome, Instance, SandboxInfo, Status, TerminalInfo,
-    WorkspaceInfo, WorkspaceRepo, WorktreeInfo,
+    EnsureReadyError, EnsureReadyOutcome, Instance, SandboxInfo, StartOutcome, Status,
+    TerminalInfo, WorkspaceInfo, WorkspaceRepo, WorktreeInfo,
 };
 pub use profile_config::{
     load_profile_config, merge_configs, resolve_config, resolve_config_or_warn,
@@ -44,7 +44,8 @@ pub use repo_config::{
     resolve_config_with_repo_or_warn, save_repo_config, trust_repo, HookTrustStatus, HooksConfig,
     RepoConfig,
 };
-pub use storage::Storage;
+pub(crate) use storage::atomic_write;
+pub use storage::{load_workspace_ordering, save_workspace_ordering, Storage, WorkspaceOrdering};
 
 use anyhow::Result;
 use std::fs;

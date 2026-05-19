@@ -164,6 +164,41 @@ const QWEN_HOOK_EVENTS: &[HookEvent] = &[
     },
 ];
 
+/// Codex hook events. Codex loads these from the `[hooks]` table in
+/// `~/.codex/config.toml`.
+const CODEX_HOOK_EVENTS: &[HookEvent] = &[
+    HookEvent {
+        name: "SessionStart",
+        matcher: None,
+        status: Some("idle"),
+    },
+    HookEvent {
+        name: "UserPromptSubmit",
+        matcher: None,
+        status: Some("running"),
+    },
+    HookEvent {
+        name: "PreToolUse",
+        matcher: None,
+        status: Some("running"),
+    },
+    HookEvent {
+        name: "PermissionRequest",
+        matcher: None,
+        status: Some("waiting"),
+    },
+    HookEvent {
+        name: "PostToolUse",
+        matcher: None,
+        status: Some("running"),
+    },
+    HookEvent {
+        name: "Stop",
+        matcher: None,
+        status: Some("idle"),
+    },
+];
+
 pub const AGENTS: &[AgentDef] = &[
     AgentDef {
         name: "claude",
@@ -231,7 +266,10 @@ pub const AGENTS: &[AgentDef] = &[
         set_default_command: true,
         detect_status: status_detection::detect_codex_status,
         container_env: &[],
-        hook_config: None,
+        hook_config: Some(AgentHookConfig {
+            settings_rel_path: ".codex/config.toml",
+            events: CODEX_HOOK_EVENTS,
+        }),
         resume_strategy: ResumeStrategy::Subcommand("resume"),
         host_only: false,
         // Codex has paste-burst detection with a 120ms Enter-suppression window;
@@ -330,7 +368,7 @@ pub const AGENTS: &[AgentDef] = &[
         resume_strategy: ResumeStrategy::Flag("--session"),
         host_only: false,
         send_keys_enter_delay_ms: 0,
-        install_hint: "npm install -g @mariozechner/pi-coding-agent",
+        install_hint: "npm install -g @earendil-works/pi-coding-agent",
     },
     AgentDef {
         name: "droid",
@@ -651,7 +689,7 @@ mod tests {
         // Pi is distributed via npm, not pip (issue #818).
         assert_eq!(
             install_hint("pi"),
-            Some("npm install -g @mariozechner/pi-coding-agent")
+            Some("npm install -g @earendil-works/pi-coding-agent")
         );
         // Mistral Vibe's PyPI package is `mistral-vibe`, not `vibe-tool`.
         assert_eq!(install_hint("vibe"), Some("pip install mistral-vibe"));

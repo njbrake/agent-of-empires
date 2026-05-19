@@ -133,6 +133,13 @@ const PAGES = [
       "Logging targets, env-var matrix, runtime control endpoint, and browser-side error relay for Agent of Empires.",
   },
   {
+    source: "docs/development/playwright.md",
+    dest: "docs/development/playwright.md",
+    title: "Playwright + Vitest testing",
+    description:
+      "Long-form reference for the web dashboard test pipeline: mocked vs live Playwright, Vitest contract tests, fake ACP agent, coverage matrix, coverage reports.",
+  },
+  {
     source: "docs/sounds.md",
     dest: "docs/sounds.md",
     title: "Sound Effects",
@@ -161,6 +168,20 @@ const PAGES = [
       "Mobile-first native rendering of AI agent state via the Agent Client Protocol (ACP). Plan panels, tool-call cards, swipe-to-approve, multi-provider support.",
   },
   {
+    source: "docs/cockpit/multi-agent.md",
+    dest: "docs/cockpit/multi-agent.md",
+    title: "Cockpit Multi-Agent Support",
+    description:
+      "Per-agent cockpit feature matrix: claude, codex, opencode, gemini. Covers profile data, supported tools, and known limitations.",
+  },
+  {
+    source: "docs/guides/tool-sessions.md",
+    dest: "guides/tool-sessions.md",
+    title: "Tool Sessions",
+    description:
+      "Configure persistent dev-tool sessions (lazygit, yazi, tig, etc.) tied to each agent session's working directory, with hotkey, picker, and command-palette access.",
+  },
+  {
     source: "docs/api.md",
     dest: "docs/api.md",
     title: "HTTP API Reference",
@@ -179,9 +200,11 @@ const URL_MAP = {
   "docs/development.md": "/docs/development/",
   "docs/development/adding-agents.md": "/docs/development/adding-agents/",
   "docs/development/logging.md": "/docs/development/logging/",
+  "docs/development/playwright.md": "/docs/development/playwright/",
   "docs/guides/configuration.md": "/docs/guides/configuration/",
   "docs/cli/reference.md": "/docs/cli/reference/",
   "docs/cockpit.md": "/docs/cockpit/",
+  "docs/cockpit/multi-agent.md": "/docs/cockpit/multi-agent/",
   "docs/api.md": "/docs/api/",
   // Guides
   "docs/guides/diff-view.md": "/guides/diff-view/",
@@ -194,6 +217,7 @@ const URL_MAP = {
   "docs/guides/agent-override.md": "/guides/agent-override/",
   "docs/guides/session-resume.md": "/guides/session-resume/",
   "docs/guides/multi-repo-workspaces.md": "/guides/multi-repo-workspaces/",
+  "docs/guides/tool-sessions.md": "/guides/tool-sessions/",
 };
 
 const GITHUB_BASE =
