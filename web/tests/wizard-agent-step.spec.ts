@@ -145,12 +145,14 @@ test.describe("Wizard agent step (#1219)", () => {
         { name: "yolo-sandbox", is_default: false },
       ],
     });
-    // First /api/settings call (no query) for boot-time seeding.
-    let settingsCalls = 0;
+    // Track /api/settings calls keyed by the ?profile query param so we can
+    // prove the picker (not just boot-time seeding) hit the endpoint with
+    // the selected profile.
+    const settingsCalls: string[] = [];
     await page.route("**/api/settings**", (r) => {
-      settingsCalls += 1;
       const url = new URL(r.request().url());
       const profile = url.searchParams.get("profile");
+      settingsCalls.push(profile ?? "");
       if (profile === "yolo-sandbox") {
         return r.fulfill({
           json: {
@@ -172,7 +174,7 @@ test.describe("Wizard agent step (#1219)", () => {
     const yoloToggle = page.locator("label", { hasText: "Auto-approve actions" }).locator("role=switch");
     await expect(sandboxToggle).toHaveAttribute("aria-checked", "true");
     await expect(yoloToggle).toHaveAttribute("aria-checked", "true");
-    expect(settingsCalls).toBeGreaterThan(0);
+    expect(settingsCalls).toContain("yolo-sandbox");
   });
 
   test("sandbox toggle is disabled when Docker is not running", async ({ page }) => {
