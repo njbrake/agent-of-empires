@@ -27,6 +27,7 @@ export function DeleteSessionDialog({
   const [deleteSandbox, setDeleteSandbox] = useState(isSandboxed && cleanupDefaults.delete_sandbox);
   const [deleting, setDeleting] = useState(false);
   const confirmButtonRef = useRef<HTMLButtonElement | null>(null);
+  const previousFocusRef = useRef<HTMLElement | null>(null);
 
   const hasOptions = hasManagedWorktree || isSandboxed;
 
@@ -44,8 +45,15 @@ export function DeleteSessionDialog({
     }
   }, [onConfirm, deleteWorktree, deleteBranch, deleteSandbox, forceDelete]);
 
+  // Capture the previously focused element on mount and restore focus on
+  // unmount so keyboard users return to the trigger (the sidebar row /
+  // context-menu item) instead of losing focus to document.body.
   useEffect(() => {
+    previousFocusRef.current = document.activeElement as HTMLElement | null;
     confirmButtonRef.current?.focus();
+    return () => {
+      previousFocusRef.current?.focus?.();
+    };
   }, []);
 
   useEffect(() => {
@@ -80,6 +88,7 @@ export function DeleteSessionDialog({
     <div
       role="dialog"
       aria-modal="true"
+      aria-labelledby="delete-session-dialog-title"
       className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 animate-fade-in"
       onClick={onCancel}
     >
@@ -89,7 +98,10 @@ export function DeleteSessionDialog({
       >
         {/* Header */}
         <div className="px-5 py-4 border-b border-surface-700">
-          <h2 className="text-sm font-semibold text-status-error">
+          <h2
+            id="delete-session-dialog-title"
+            className="text-sm font-semibold text-status-error"
+          >
             Delete Session
           </h2>
         </div>

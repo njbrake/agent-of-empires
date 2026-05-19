@@ -126,4 +126,33 @@ describe("DeleteSessionDialog keyboard affordances", () => {
     expect(onConfirm).not.toHaveBeenCalled();
     expect(onCancel).toHaveBeenCalledTimes(1);
   });
+
+  it("dialog has role=dialog, aria-modal, and aria-labelledby pointing at the title", () => {
+    const { container } = setup();
+    const dialog = container.querySelector('[role="dialog"]');
+    expect(dialog).toBeTruthy();
+    expect(dialog?.getAttribute("aria-modal")).toBe("true");
+    const labelId = dialog?.getAttribute("aria-labelledby");
+    expect(labelId).toBeTruthy();
+    const titleEl = container.querySelector(`#${labelId}`);
+    expect(titleEl?.textContent).toMatch(/Delete Session/);
+  });
+
+  it("restores focus to the previously focused element when the dialog unmounts", () => {
+    // Create a trigger button outside the dialog and focus it before mount,
+    // mirroring how the sidebar context-menu item is focused when the user
+    // chooses Delete. After the dialog unmounts, focus should return there.
+    const trigger = document.createElement("button");
+    trigger.textContent = "trigger";
+    document.body.appendChild(trigger);
+    trigger.focus();
+    expect(document.activeElement).toBe(trigger);
+
+    const { unmount } = setup();
+    // Dialog mount steals focus to the Delete button.
+    expect(document.activeElement).not.toBe(trigger);
+    unmount();
+    expect(document.activeElement).toBe(trigger);
+    trigger.remove();
+  });
 });
