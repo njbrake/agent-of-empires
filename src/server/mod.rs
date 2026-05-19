@@ -1767,7 +1767,7 @@ async fn daemon_startup_recovery_cascade(
                         *slot = updated;
                     }
                 }
-                Ok((updated, Err(e))) => {
+                Ok((mut updated, Err(e))) => {
                     tracing::warn!(
                         target: "session.startup_recovery",
                         instance_id = %id,
@@ -1775,10 +1775,28 @@ async fn daemon_startup_recovery_cascade(
                         error = %e,
                         "recovery cascade failed",
                     );
+                    // The cascade leaves status=Starting (set inside
+                    // start_with_size_opts) and last_error=None on Err.
+                    // Without explicitly transitioning to Error here, the
+                    // next status_poll_loop tick observes Starting and
+                    // either suppresses (if recently_restarted is still
+                    // marked) or falls through to update_status_with_metadata
+                    // which generates a generic "tmux session is gone"
+                    // message, hiding the cascade-specific error.
+                    updated.status = crate::session::Status::Error;
+                    updated.last_error = Some(format!("recovery cascade: {}", e));
                     let mut instances = inst_state.instances.write().await;
                     if let Some(slot) = instances.iter_mut().find(|i| i.id == id) {
                         *slot = updated;
                     }
+                    drop(instances);
+                    // Release the suppression so the next poll respects the
+                    // Error state instead of forcing Status::Starting for
+                    // the rest of the TTL window.
+                    crate::session::recovery::unmark_recently_restarted(
+                        &inst_state.recently_restarted,
+                        &id,
+                    );
                 }
                 Err(join_err) => {
                     tracing::error!(
@@ -1788,16 +1806,19 @@ async fn daemon_startup_recovery_cascade(
                         error = %join_err,
                         "recovery worker panicked",
                     );
-                    // Surface the panic to the in-memory snapshot so the
-                    // user sees Status::Error with a useful last_error
-                    // instead of waiting 8s for the recently_restarted TTL
-                    // to expire and the next poll to flip to Error with a
-                    // generic "tmux session is gone" message.
                     let mut instances = inst_state.instances.write().await;
                     if let Some(slot) = instances.iter_mut().find(|i| i.id == id) {
                         slot.status = crate::session::Status::Error;
                         slot.last_error = Some(format!("recovery worker panicked: {}", join_err));
                     }
+                    drop(instances);
+                    // Same suppression release as above: without unmarking,
+                    // the next poll forces Status::Starting and wipes the
+                    // panic-specific last_error written above.
+                    crate::session::recovery::unmark_recently_restarted(
+                        &inst_state.recently_restarted,
+                        &id,
+                    );
                 }
             }
         });
