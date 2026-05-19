@@ -2934,37 +2934,26 @@ fn wants_paste_burst_only_for_paste_aware_dialogs() {
 
 #[test]
 #[serial]
-fn recovery_in_flight_filters_request_status_refresh() {
+fn pollable_instances_excludes_recovery_in_flight() {
     let mut env = create_test_env_with_sessions(3);
     let id_skipped = env.view.instances[1].id.clone();
     env.view.recovery_in_flight.insert(id_skipped.clone());
 
-    let filtered: Vec<String> = env
-        .view
-        .instances
-        .iter()
-        .filter(|i| !env.view.recovery_in_flight.contains(&i.id))
-        .map(|i| i.id.clone())
-        .collect();
+    let pollable = env.view.pollable_instances();
 
-    assert_eq!(filtered.len(), 2);
-    assert!(!filtered.contains(&id_skipped));
+    assert_eq!(pollable.len(), 2);
+    assert!(pollable.iter().all(|i| i.id != id_skipped));
 }
 
 #[test]
 #[serial]
-fn recovery_in_flight_remove_unblocks_polling() {
+fn pollable_instances_recovers_after_inflight_clear() {
     let mut env = create_test_env_with_sessions(1);
     let id = env.view.instances[0].id.clone();
     env.view.recovery_in_flight.insert(id.clone());
-    env.view.recovery_in_flight.remove(&id);
-    assert!(env.view.recovery_in_flight.is_empty());
+    assert!(env.view.pollable_instances().is_empty());
 
-    let filtered_count = env
-        .view
-        .instances
-        .iter()
-        .filter(|i| !env.view.recovery_in_flight.contains(&i.id))
-        .count();
-    assert_eq!(filtered_count, 1);
+    env.view.recovery_in_flight.remove(&id);
+
+    assert_eq!(env.view.pollable_instances().len(), 1);
 }

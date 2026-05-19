@@ -691,17 +691,25 @@ impl HomeView {
         Ok(())
     }
 
+    /// Snapshot of `self.instances` eligible for status polling.
+    /// In-flight recovery candidates are excluded; their post-cascade
+    /// `Instance` arrives via `apply_recovery_updates` and skipping the
+    /// parallel poll prevents racing transitions during the suppression
+    /// window.
+    pub(super) fn pollable_instances(&self) -> Vec<Instance> {
+        self.instances
+            .iter()
+            .filter(|i| !self.recovery_in_flight.contains(&i.id))
+            .cloned()
+            .collect()
+    }
+
     /// Request a status refresh in the background (non-blocking).
     /// Call `apply_status_updates` to check for and apply results.
     pub fn request_status_refresh(&mut self) {
         if !self.pending_status_refresh {
-            let instances: Vec<Instance> = self
-                .instances
-                .iter()
-                .filter(|i| !self.recovery_in_flight.contains(&i.id))
-                .cloned()
-                .collect();
-            self.status_poller.request_refresh(instances);
+            self.status_poller
+                .request_refresh(self.pollable_instances());
             self.pending_status_refresh = true;
         }
     }
