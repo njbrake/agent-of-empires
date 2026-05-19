@@ -1525,6 +1525,62 @@ mod tests {
     }
 
     #[test]
+    fn compose_list_title_supports_terminal_prefix() {
+        // Terminal view mode uses the "Terminals" prefix; verify it flows
+        // through the helper just like the Agent and Tool prefixes do.
+        let title = compose_list_title(
+            "Terminals",
+            Some("work"),
+            GroupByMode::Project,
+            SortOrder::Newest,
+        );
+        assert_eq!(title, " Terminals [work] (by project) ");
+    }
+
+    #[test]
+    fn compose_list_title_default_sort_with_project_and_profile() {
+        // Matrix cell: default sort + project group + active profile.
+        let title = compose_list_title(
+            "aoe",
+            Some("alpha"),
+            GroupByMode::Project,
+            SortOrder::Newest,
+        );
+        assert_eq!(title, " aoe [alpha] (by project) ");
+    }
+
+    #[test]
+    fn compose_list_title_non_default_sort_with_profile_only() {
+        // Matrix cell: non-default sort + manual group + active profile.
+        let title = compose_list_title(
+            "aoe",
+            Some("alpha"),
+            GroupByMode::Manual,
+            SortOrder::LastActivity,
+        );
+        assert_eq!(title, " aoe [alpha] (sort: Recent) ");
+    }
+
+    #[test]
+    fn compose_list_title_non_default_sort_with_project_no_profile() {
+        // Matrix cell: non-default sort + project group + no profile.
+        let title = compose_list_title("aoe", None, GroupByMode::Project, SortOrder::LastActivity);
+        assert_eq!(title, " aoe (by project, sort: Recent) ");
+    }
+
+    #[test]
+    fn compose_list_title_renders_oldest_sort_label() {
+        let title = compose_list_title("aoe", None, GroupByMode::Manual, SortOrder::Oldest);
+        assert_eq!(title, " aoe (sort: Oldest) ");
+    }
+
+    #[test]
+    fn compose_list_title_renders_za_sort_label() {
+        let title = compose_list_title("aoe", None, GroupByMode::Manual, SortOrder::ZA);
+        assert_eq!(title, " aoe (sort: Z-A) ");
+    }
+
+    #[test]
     fn format_relative_age_none_returns_empty() {
         assert_eq!(format_relative_age(None), "");
     }
