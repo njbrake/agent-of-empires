@@ -269,6 +269,28 @@ pub struct CockpitConfig {
     /// `session/cancel` the agent. Default 30s.
     #[serde(default = "default_force_end_turn_threshold_secs")]
     pub force_end_turn_threshold_secs: u32,
+    /// Silent-orphan watchdog: vendor-agnostic correctness grace. When
+    /// a prompt is in flight, `tool_calls_in_flight` is empty, at least
+    /// one progress notification has arrived, and no further progress
+    /// arrives for this many seconds, the daemon sends best-effort
+    /// `session/cancel` and arms the existing cancel-escalation grace.
+    /// Closes the gap where claude-agent-acp finishes streaming but
+    /// never sends `PromptResponse` (upstream
+    /// agentclientprotocol/claude-agent-acp#688). Default 60s. `0`
+    /// disables the watchdog. Long-running tools are not affected; the
+    /// watchdog only fires when no in-flight tool call is open.
+    /// See #1240.
+    #[serde(default = "default_silent_orphan_grace_secs")]
+    pub silent_orphan_grace_secs: u32,
+    /// Silent-orphan watchdog: accelerated grace used when the current
+    /// prompt has already received a cost-populated `UsageUpdate`
+    /// notification (claude-agent-acp's "wrap up accounting" marker
+    /// emitted just before `PromptResponse`). Lowers MTTR on the known
+    /// adapter wedge without weakening the vendor-agnostic baseline.
+    /// Default 20s. If `silent_orphan_grace_secs` is 0 (disabled), this
+    /// has no effect. See #1240.
+    #[serde(default = "default_silent_orphan_fast_grace_secs")]
+    pub silent_orphan_fast_grace_secs: u32,
 }
 
 fn default_max_concurrent_resumes() -> u32 {
@@ -277,6 +299,14 @@ fn default_max_concurrent_resumes() -> u32 {
 
 fn default_force_end_turn_threshold_secs() -> u32 {
     30
+}
+
+fn default_silent_orphan_grace_secs() -> u32 {
+    60
+}
+
+fn default_silent_orphan_fast_grace_secs() -> u32 {
+    20
 }
 
 /// Drain strategy for the cockpit composer's client-side prompt queue.
@@ -326,6 +356,8 @@ impl Default for CockpitConfig {
             queue_drain_mode: QueueDrainMode::default(),
             max_concurrent_resumes: default_max_concurrent_resumes(),
             force_end_turn_threshold_secs: default_force_end_turn_threshold_secs(),
+            silent_orphan_grace_secs: default_silent_orphan_grace_secs(),
+            silent_orphan_fast_grace_secs: default_silent_orphan_fast_grace_secs(),
         }
     }
 }
