@@ -150,6 +150,32 @@ pub(crate) fn agent_row_icon(inst: &crate::session::Instance) -> &'static str {
     }
 }
 
+/// Compact display code for a profile name, used by the per-row profile tag
+/// in all-profiles view where the full name is too wide.
+///
+/// Hyphen/underscore-delimited names collapse to their segment initials
+/// (`forit-backup` becomes `fb`); single-segment names take their first three
+/// chars (`default` becomes `def`). Always lowercased, capped at four chars.
+/// The mapping is per-name and deterministic, so two profiles that collapse to
+/// the same code render identically; the full name still shows in a filtered
+/// view's list title and in the New/Restart dialogs.
+pub(crate) fn profile_short_code(profile: &str) -> String {
+    let segments: Vec<&str> = profile
+        .split(['-', '_'])
+        .filter(|s| !s.is_empty())
+        .collect();
+    let code: String = match segments.as_slice() {
+        [] => String::new(),
+        [single] => single.chars().take(3).collect(),
+        many => many
+            .iter()
+            .filter_map(|s| s.chars().next())
+            .take(4)
+            .collect(),
+    };
+    code.to_lowercase()
+}
+
 /// Format a timestamp as a compact relative age (e.g. `3m`, `2h`, `4d`, `2mo`).
 /// Returns an empty string for `None` so callers can unconditionally substitute
 /// the result without guarding for absence.
@@ -892,13 +918,15 @@ impl HomeView {
                 // In all-profiles view the list block title only shows
                 // `[all]`, so each row carries its own profile tag; without
                 // it, sessions from different profiles are indistinguishable.
-                // A filtered view already names the profile in the title, so
-                // the per-row tag would be redundant there and is omitted.
-                // Counted into `used_width` below so the activity column
-                // still right-aligns past the tag.
+                // The tag is a short code (`profile_short_code`), not the full
+                // name, so it stays narrow and does not crowd the title or
+                // shove the activity column. A filtered view already names the
+                // profile in the title, so the per-row tag would be redundant
+                // there and is omitted. Counted into `used_width` below so the
+                // activity column still right-aligns past the tag.
                 if self.active_profile.is_none() {
                     line_spans.push(Span::styled(
-                        format!("  [{}]", inst.source_profile),
+                        format!("  [{}]", profile_short_code(&inst.source_profile)),
                         Style::default().fg(theme.dimmed),
                     ));
                 }
@@ -1807,6 +1835,31 @@ mod tests {
     fn compose_list_title_renders_za_sort_label() {
         let title = compose_list_title("aoe", None, GroupByMode::Manual, SortOrder::ZA);
         assert_eq!(title, " aoe · Z-A ");
+    }
+
+    #[test]
+    fn profile_short_code_multi_segment_takes_initials() {
+        assert_eq!(profile_short_code("forit-backup"), "fb");
+        assert_eq!(profile_short_code("pivot-main"), "pm");
+        assert_eq!(profile_short_code("wma-work"), "ww");
+    }
+
+    #[test]
+    fn profile_short_code_single_segment_takes_first_three() {
+        assert_eq!(profile_short_code("default"), "def");
+        assert_eq!(profile_short_code("ForIT"), "for");
+    }
+
+    #[test]
+    fn profile_short_code_caps_at_four_chars() {
+        assert_eq!(profile_short_code("a-b-c-d-e-f"), "abcd");
+    }
+
+    #[test]
+    fn profile_short_code_lowercases_and_ignores_empty_segments() {
+        assert_eq!(profile_short_code("Forit_Backup"), "fb");
+        assert_eq!(profile_short_code("--foo--"), "foo");
+        assert_eq!(profile_short_code(""), "");
     }
 
     #[test]

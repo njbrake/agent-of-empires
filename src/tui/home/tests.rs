@@ -2086,10 +2086,14 @@ fn test_all_profiles_view_renders_per_row_profile_tag() {
     setup_test_home(&temp);
 
     let storage_a = Storage::new("alpha").unwrap();
-    storage_a.save(&[Instance::new("A1", "/tmp/a")]).unwrap();
+    let instances_a = vec![Instance::new("A1", "/tmp/a")];
+    let group_tree_a = GroupTree::new_with_groups(&instances_a, &[]);
+    storage_a.commit(&instances_a, &group_tree_a).unwrap();
 
     let storage_b = Storage::new("beta").unwrap();
-    storage_b.save(&[Instance::new("B1", "/tmp/b")]).unwrap();
+    let instances_b = vec![Instance::new("B1", "/tmp/b")];
+    let group_tree_b = GroupTree::new_with_groups(&instances_b, &[]);
+    storage_b.commit(&instances_b, &group_tree_b).unwrap();
 
     let tools = AvailableTools::with_tools(&["claude"]);
     let mut view = HomeView::new(None, tools).unwrap();
@@ -2098,15 +2102,17 @@ fn test_all_profiles_view_renders_per_row_profile_tag() {
     view.update_selected();
 
     // Every session row in all-profiles view carries its own profile tag,
-    // since the list title only shows `[all]`.
+    // since the list title only shows `[all]`. The tag is the short code,
+    // not the full profile name.
     let mut seen = 0;
     for item in &view.flat_items {
         if let Item::Session { id, .. } = item {
             let profile = view.get_instance(id).unwrap().source_profile.clone();
+            let code = super::render::profile_short_code(&profile);
             let text = rendered_row_text(&view, item);
             assert!(
-                text.contains(&format!("[{}]", profile)),
-                "all-view row for profile {profile} missing tag: {text:?}"
+                text.contains(&format!("[{code}]")),
+                "all-view row for profile {profile} missing tag [{code}]: {text:?}"
             );
             seen += 1;
         }
@@ -2121,7 +2127,9 @@ fn test_filtered_view_omits_per_row_profile_tag() {
     setup_test_home(&temp);
 
     let storage_a = Storage::new("alpha").unwrap();
-    storage_a.save(&[Instance::new("A1", "/tmp/a")]).unwrap();
+    let instances_a = vec![Instance::new("A1", "/tmp/a")];
+    let group_tree_a = GroupTree::new_with_groups(&instances_a, &[]);
+    storage_a.commit(&instances_a, &group_tree_a).unwrap();
 
     let tools = AvailableTools::with_tools(&["claude"]);
     let mut view = HomeView::new(Some("alpha".to_string()), tools).unwrap();
@@ -2131,11 +2139,12 @@ fn test_filtered_view_omits_per_row_profile_tag() {
 
     // A filtered view names the profile in the list title, so the per-row
     // tag is redundant and must not be rendered.
+    let code = super::render::profile_short_code("alpha");
     for item in &view.flat_items {
         if let Item::Session { .. } = item {
             let text = rendered_row_text(&view, item);
             assert!(
-                !text.contains("[alpha]"),
+                !text.contains(&format!("[{code}]")),
                 "filtered view should not render a per-row profile tag: {text:?}"
             );
         }
