@@ -100,6 +100,14 @@ pub struct CockpitRunnerArgs {
     /// in the registry for the daemon's restart path.
     #[arg(long)]
     pub stored_acp_session_id: Option<String>,
+    /// Profile the session was created under. Persisted on the
+    /// `WorkerRecord` so reattached `terminal/create` requests re-resolve
+    /// sandbox env against the same profile the session originally used.
+    /// Defaulted to empty so legacy daemons whose runner predates this
+    /// field still load; an absent value resolves to the global default
+    /// profile, matching pre-persistence behavior.
+    #[arg(long, default_value = "")]
+    pub source_profile: String,
     /// Agent program + args after `--`.
     #[arg(last = true, required = true)]
     pub agent_argv: Vec<String>,
@@ -164,6 +172,11 @@ pub async fn run(args: CockpitRunnerArgs) -> Result<()> {
         args.additional_dirs.clone(),
         args.provider_env_keys.clone(),
         args.stored_acp_session_id.clone(),
+        if args.source_profile.is_empty() {
+            None
+        } else {
+            Some(args.source_profile.clone())
+        },
     );
     worker_registry::save(&record).context("writing registry record")?;
 

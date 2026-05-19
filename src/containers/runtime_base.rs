@@ -1,4 +1,4 @@
-use super::container_interface::{ContainerConfig, EnvEntry};
+use super::container_interface::{docker_env_args, ContainerConfig};
 use super::error::{DockerError, Result};
 use std::process::Command;
 
@@ -191,18 +191,8 @@ impl RuntimeBase {
             args.push(path.clone());
         }
 
-        for entry in &config.environment {
-            args.push("-e".to_string());
-            match entry {
-                EnvEntry::Inherit { key, .. } => {
-                    // Only the key in argv; value stays in process env
-                    args.push(key.clone());
-                }
-                EnvEntry::Literal { key, value } => {
-                    args.push(format!("{}={}", key, value));
-                }
-            }
-        }
+        let (env_argv, _inherit) = docker_env_args(&config.environment);
+        args.extend(env_argv);
 
         for port in &config.port_mappings {
             args.push("-p".to_string());
@@ -235,10 +225,9 @@ impl RuntimeBase {
         cmd.args(&args);
         // Set inherited env vars on the child process so docker can read them
         // via `-e KEY` without the values appearing in argv
-        for entry in &config.environment {
-            if let EnvEntry::Inherit { key, value } = entry {
-                cmd.env(key, value);
-            }
+        let (_, inherit) = docker_env_args(&config.environment);
+        for (key, value) in inherit {
+            cmd.env(key, value);
         }
         let output = cmd.output()?;
 
