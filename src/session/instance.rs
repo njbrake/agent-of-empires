@@ -96,7 +96,7 @@ const RESUME_PROBE_POST_SHELL_GRACE: std::time::Duration = std::time::Duration::
 /// Pure decision: should the resume-fallback cascade probe and potentially
 /// retry without resume after the initial start? Extracted for unit-testability:
 /// the cascade itself needs a real tmux session to test end-to-end.
-fn should_attempt_resume(agent_session_id: Option<&str>, tool: &str) -> bool {
+pub(crate) fn should_attempt_resume(agent_session_id: Option<&str>, tool: &str) -> bool {
     let valid = agent_session_id.map(is_valid_session_id).unwrap_or(false);
     if !valid {
         return false;

@@ -209,6 +209,15 @@ pub struct AppState {
     /// first use and live for the lifetime of the process — there are only
     /// as many as the user has sessions.
     pub instance_locks: RwLock<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    /// Suppression set for the startup-recovery cascade. While an entry is
+    /// present and younger than `recovery::RECENTLY_RESTARTED_TTL`, the
+    /// `status_poll_loop` skips `update_status_with_metadata` for that
+    /// instance and surfaces `Status::Starting` instead. Without this,
+    /// `last_start_time` (which is `#[serde(skip)]`) is lost on the loop's
+    /// `load_all_instances` reload, and a freshly-recovered session
+    /// transitions to `Status::Error` for up to 8 seconds while the agent
+    /// is still settling. Periodically GC'd by a background task.
+    pub recently_restarted: crate::session::recovery::RecentlyRestarted,
     /// Cached per-profile cleanup defaults for the delete dialog, with a
     /// timestamp so we re-resolve after config changes (see
     /// `CLEANUP_DEFAULTS_TTL`).
@@ -518,6 +527,7 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
         devices: RwLock::new(Vec::new()),
         behind_tunnel: remote || behind_proxy,
         instance_locks: RwLock::new(std::collections::HashMap::new()),
+        recently_restarted: crate::session::recovery::new_recently_restarted(),
         cleanup_defaults_cache: RwLock::new(CleanupDefaultsCache {
             // Seed with an already-stale timestamp so the first request
             // forces a fresh resolve instead of handing out an empty map.
@@ -736,6 +746,37 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
     // previous daemon died otherwise renders Idle until the next
     // lifecycle event arrives. See #1103.
     seed_cockpit_statuses(state.clone()).await;
+
+    // Spawn the startup-recovery worker pool. Tries to acquire the
+    // cross-process recovery lock; if another process (TUI or another
+    // daemon) holds it, this is a no-op. The lock is held for the entire
+    // recovery pass so a late-starting peer cannot duplicate cascades.
+    {
+        let recovery_state = state.clone();
+        tokio::spawn(async move {
+            daemon_startup_recovery(recovery_state).await;
+        });
+    }
+
+    // GC the recently_restarted suppression map periodically; the TTL
+    // check on read filters but does not remove entries. Without this,
+    // a long-running daemon's map grows unbounded.
+    {
+        let gc_map = state.recently_restarted.clone();
+        let shutdown = state.shutdown.clone();
+        tokio::spawn(async move {
+            let mut interval =
+                tokio::time::interval(crate::session::recovery::RECENTLY_RESTARTED_GC_INTERVAL);
+            loop {
+                tokio::select! {
+                    _ = interval.tick() => {
+                        crate::session::recovery::gc_recently_restarted(&gc_map);
+                    }
+                    _ = shutdown.cancelled() => break,
+                }
+            }
+        });
+    }
 
     // Spawn background tasks
     let poll_state = state.clone();
@@ -1452,6 +1493,7 @@ async fn status_poll_loop(state: Arc<AppState>) {
         };
 
         // Run blocking tmux subprocess calls in a dedicated thread
+        let recently_restarted = state.recently_restarted.clone();
         let updated = tokio::task::spawn_blocking(move || {
             let mut instances = load_all_instances().unwrap_or_default();
 
@@ -1459,6 +1501,17 @@ async fn status_poll_loop(state: Arc<AppState>) {
             let pane_metadata = crate::tmux::batch_pane_metadata();
 
             for inst in &mut instances {
+                if crate::session::recovery::is_recently_restarted(&recently_restarted, &inst.id) {
+                    // Suppress the status update: a recovery cascade just
+                    // ran for this id, and `last_start_time` was lost on
+                    // the disk reload above. Surfacing `Status::Error`
+                    // ("tmux session is gone") here would broadcast a
+                    // phantom transition before the agent has finished
+                    // settling. The TTL window is sized to cover the
+                    // worst-case cascade + cold-start latency.
+                    inst.status = Status::Starting;
+                    continue;
+                }
                 let session_name = crate::tmux::Session::generate_name(&inst.id, &inst.title);
                 let metadata = pane_metadata.get(&session_name);
                 inst.update_status_with_metadata(metadata);
@@ -1539,12 +1592,161 @@ async fn status_poll_loop(state: Arc<AppState>) {
     }
 }
 
-/// Single subscriber for the cockpit broadcast channel. Pattern-matches
-/// each event once and dispatches to the in-process consumers:
+/// Startup auto-recovery for AI agent sessions whose tmux pane is missing
+/// after a daemon restart or system reboot.
 ///
-/// - status mirroring (sidebar dot, push notifications)
-/// - ACP-session-id persistence (so `session/load` works across restart)
+/// Acquires the cross-process recovery lock; if another process holds it
+/// (TUI in standalone mode, or a peer daemon), this returns without doing
+/// anything. The lock is held for the entire pass so a late-starting peer
+/// cannot duplicate cascades.
 ///
+/// For each candidate:
+/// 1. Acquire the per-instance `instance_lock` (serialises against any
+///    `ensure_session` REST call that arrives concurrently).
+/// 2. Mark `recently_restarted` BEFORE the cascade so the
+///    `status_poll_loop` suppression window covers the entire ~7s
+///    worst-case latency.
+/// 3. Run `restart_with_size_opts(None, false)` via `spawn_blocking`.
+/// 4. Update `state.instances` in place with the post-cascade `Instance`.
+///
+/// Concurrency is capped at 3 to bound cold-start latency without
+/// thundering-herd-ing tmux at server warm-up.
+async fn daemon_startup_recovery(state: Arc<AppState>) {
+    let lock = match crate::session::recovery::try_acquire_recovery_lock() {
+        Ok(Some(l)) => l,
+        Ok(None) => {
+            tracing::info!(
+                target: "session.startup_recovery",
+                "another process holds the recovery lock; skipping daemon startup recovery",
+            );
+            return;
+        }
+        Err(e) => {
+            tracing::warn!(
+                target: "session.startup_recovery",
+                error = %e,
+                "failed to acquire recovery lock; skipping daemon startup recovery",
+            );
+            return;
+        }
+    };
+
+    crate::session::recovery::warm_tmux_server();
+
+    let candidates: Vec<crate::session::Instance> = {
+        let instances = state.instances.read().await;
+        instances
+            .iter()
+            .filter(|i| {
+                let has_live_tmux = i
+                    .tmux_session()
+                    .map(|s| s.exists() && !s.is_pane_dead())
+                    .unwrap_or(false);
+                !has_live_tmux && crate::session::recovery::is_recovery_candidate(i)
+            })
+            .cloned()
+            .collect()
+    };
+
+    if candidates.is_empty() {
+        drop(lock);
+        return;
+    }
+
+    tracing::info!(
+        target: "session.startup_recovery",
+        count = candidates.len(),
+        "starting daemon recovery for missing tmux sessions",
+    );
+
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(3));
+    let mut tasks: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
+
+    for inst in candidates {
+        let permit_sem = semaphore.clone();
+        let inst_state = state.clone();
+        let id = inst.id.clone();
+        let lock_handle = inst_state.instance_lock(&id).await;
+        tasks.spawn(async move {
+            let _permit = permit_sem
+                .acquire_owned()
+                .await
+                .expect("recovery semaphore not closed");
+            let _guard = lock_handle.lock().await;
+
+            // Re-check `is_recovery_candidate` after acquiring the lock:
+            // a REST handler toggling `cockpit_mode` between snapshot and
+            // cascade could otherwise race here.
+            let still_candidate = {
+                let instances = inst_state.instances.read().await;
+                instances
+                    .iter()
+                    .find(|i| i.id == id)
+                    .map(crate::session::recovery::is_recovery_candidate)
+                    .unwrap_or(false)
+            };
+            if !still_candidate {
+                return;
+            }
+
+            // Mark BEFORE the cascade so the suppression window covers
+            // the cascade's full latency, not just the post-success
+            // interval. Otherwise a 2s tick fired mid-cascade observes
+            // the still-missing tmux state and broadcasts Status::Error.
+            crate::session::recovery::mark_recently_restarted(&inst_state.recently_restarted, &id);
+
+            let mut working = inst;
+            let title = working.title.clone();
+            let result = tokio::task::spawn_blocking(move || {
+                let res = crate::session::recovery::run_recovery_for_instance(&mut working);
+                (working, res)
+            })
+            .await;
+
+            match result {
+                Ok((updated, Ok(outcome))) => {
+                    tracing::info!(
+                        target: "session.startup_recovery",
+                        instance_id = %id,
+                        title = %title,
+                        ?outcome,
+                        "recovery completed",
+                    );
+                    let mut instances = inst_state.instances.write().await;
+                    if let Some(slot) = instances.iter_mut().find(|i| i.id == id) {
+                        *slot = updated;
+                    }
+                }
+                Ok((updated, Err(e))) => {
+                    tracing::warn!(
+                        target: "session.startup_recovery",
+                        instance_id = %id,
+                        title = %title,
+                        error = %e,
+                        "recovery cascade failed",
+                    );
+                    let mut instances = inst_state.instances.write().await;
+                    if let Some(slot) = instances.iter_mut().find(|i| i.id == id) {
+                        *slot = updated;
+                    }
+                }
+                Err(join_err) => {
+                    tracing::error!(
+                        target: "session.startup_recovery",
+                        instance_id = %id,
+                        title = %title,
+                        error = %join_err,
+                        "recovery worker panicked",
+                    );
+                }
+            }
+        });
+    }
+
+    while tasks.join_next().await.is_some() {}
+    drop(lock);
+}
+
 /// One task instead of two halves the broadcast clone count and locks
 /// `state.instances` once per event instead of twice for the events
 /// (e.g. `AcpSessionAssigned`) that both consumers care about.

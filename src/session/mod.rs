@@ -12,6 +12,7 @@ mod instance;
 pub mod poller;
 pub mod profile_config;
 pub mod projects;
+pub(crate) mod recovery;
 pub mod repo_config;
 pub(crate) mod serde_helpers;
 mod storage;
