@@ -143,7 +143,7 @@ async fn create_group(profile: &str, args: GroupCreateArgs) -> Result<()> {
     }
 
     group_tree.create_group(&group_path);
-    storage.save_with_groups(&instances, &group_tree)?;
+    storage.commit(&instances, &group_tree)?;
 
     println!("✓ Created group: {}", group_path);
 
@@ -185,7 +185,7 @@ async fn delete_group(profile: &str, args: GroupDeleteArgs) -> Result<()> {
     }
 
     group_tree.delete_group(name);
-    storage.save_with_groups(&instances, &group_tree)?;
+    storage.commit(&instances, &group_tree)?;
 
     println!("✓ Deleted group: {}", name);
     if args.force && session_count > 0 {
@@ -214,7 +214,7 @@ async fn move_session(profile: &str, args: GroupMoveArgs) -> Result<()> {
         group_tree.create_group(group);
     }
 
-    storage.save_with_groups(&instances, &group_tree)?;
+    storage.commit(&instances, &group_tree)?;
 
     if old_group.is_empty() {
         println!("✓ Moved session to group: {}", group);

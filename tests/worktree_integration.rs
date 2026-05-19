@@ -3,7 +3,7 @@
 
 use agent_of_empires::git::error::GitError;
 use agent_of_empires::git::GitWorktree;
-use agent_of_empires::session::{Instance, Storage, WorktreeInfo};
+use agent_of_empires::session::{GroupTree, Instance, Storage, WorktreeInfo};
 use chrono::Utc;
 use tempfile::TempDir;
 
@@ -99,7 +99,10 @@ fn test_worktree_info_persists_across_save_load() {
         base_branch: None,
     });
 
-    storage.save(&[instance.clone()]).unwrap();
+    let seeded = vec![instance.clone()];
+    storage
+        .commit(&seeded, &GroupTree::new_with_groups(&seeded, &[]))
+        .unwrap();
 
     let loaded = storage.load().unwrap();
     assert_eq!(loaded.len(), 1);

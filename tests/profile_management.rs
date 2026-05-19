@@ -2,7 +2,7 @@
 
 use agent_of_empires::session::{
     create_profile, delete_profile, list_profiles, rename_profile, set_default_profile, Config,
-    Instance, Storage,
+    GroupTree, Instance, Storage,
 };
 use anyhow::Result;
 use serial_test::serial;
@@ -92,7 +92,8 @@ fn test_profile_session_isolation() -> Result<()> {
     // Save a session in profile alpha
     let storage_a = Storage::new("alpha")?;
     let instance = Instance::new("Alpha Session", "/path/alpha");
-    storage_a.save(&[instance])?;
+    let seeded = vec![instance];
+    storage_a.commit(&seeded, &GroupTree::new_with_groups(&seeded, &[]))?;
 
     // Load from profile beta - should be empty
     let storage_b = Storage::new("beta")?;
@@ -116,7 +117,8 @@ fn test_rename_profile() -> Result<()> {
     // Add a session so we can verify data moves with the rename
     let storage = Storage::new("old_name")?;
     let instance = Instance::new("Test Session", "/path/test");
-    storage.save(&[instance])?;
+    let seeded = vec![instance];
+    storage.commit(&seeded, &GroupTree::new_with_groups(&seeded, &[]))?;
 
     rename_profile("old_name", "new_name")?;
 

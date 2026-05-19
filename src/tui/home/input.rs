@@ -202,14 +202,19 @@ impl HomeView {
 
         // Handle diff view (full-screen takeover)
         if let Some(ref mut diff_view) = self.diff_view {
-            match diff_view.handle_key(key) {
+            let action = diff_view.handle_key(key);
+            if let Some((session_id, new_override)) = diff_view.take_pending_override() {
+                self.mutate_instance(&session_id, |inst| {
+                    inst.base_branch_override = new_override;
+                });
+            }
+            match action {
                 DiffAction::Continue => return None,
                 DiffAction::Close => {
                     self.diff_view = None;
                     return None;
                 }
                 DiffAction::EditFile(path) => {
-                    // Launch external editor (vim or nano)
                     return Some(Action::EditFile(path));
                 }
             }

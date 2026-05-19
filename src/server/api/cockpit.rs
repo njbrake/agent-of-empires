@@ -432,20 +432,39 @@ pub async fn cockpit_enable(
 
     // Persist before spawning so a crash mid-swap leaves us in the
     // declared end state, not a half-broken intermediate.
+    //
+    // The on-disk and in-memory updates mutate ONLY the cockpit-specific
+    // field (`cockpit_mode = true`). Wholesale replacement with a
+    // pre-lock snapshot would clobber concurrent writes to other
+    // fields (status, last_accessed, agent_session_id) made by the
+    // status poll loop or other handlers between the snapshot and the
+    // lock acquisition.
     {
         let mut instances = state.instances.write().await;
         if let Some(slot) = instances.iter_mut().find(|i| i.id == id) {
-            *slot = instance.clone();
+            slot.cockpit_mode = true;
         }
-        if let Ok(storage) = crate::session::Storage::new(&profile) {
-            let scoped: Vec<_> = instances
-                .iter()
-                .filter(|i| i.source_profile == profile)
-                .cloned()
-                .collect();
-            if let Err(e) = storage.save(&scoped) {
-                tracing::error!(target: "cockpit.switch", "save after enable: {e}");
+    }
+    let id_for_save = id.clone();
+    let profile_for_save = profile.clone();
+    let save_result = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        let storage = crate::session::Storage::new(&profile_for_save)?;
+        storage.update(|all, _groups| {
+            if let Some(slot) = all.iter_mut().find(|i| i.id == id_for_save) {
+                slot.cockpit_mode = true;
             }
+            Ok(())
+        })?;
+        Ok(())
+    })
+    .await;
+    match save_result {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            tracing::error!(target: "cockpit.switch", "save after enable: {e}");
+        }
+        Err(join_err) => {
+            tracing::error!(target: "cockpit.switch", "save task panicked after enable: {join_err}");
         }
     }
 
@@ -575,20 +594,40 @@ pub async fn cockpit_disable(
     // Persist + start tmux. start() now no longer short-circuits for
     // cockpit_mode, so it will create a fresh tmux session and run
     // the agent CLI in the pane.
+    //
+    // The on-disk and in-memory updates mutate ONLY the cockpit-specific
+    // fields (`cockpit_mode = false`, `cockpit_acp_session_id = None`).
+    // Wholesale replacement with a pre-lock snapshot would clobber
+    // concurrent writes to other fields made by the status poll loop or
+    // other handlers between the snapshot and the lock acquisition.
     {
         let mut instances = state.instances.write().await;
         if let Some(slot) = instances.iter_mut().find(|i| i.id == id) {
-            *slot = instance.clone();
+            slot.cockpit_mode = false;
+            slot.cockpit_acp_session_id = None;
         }
-        if let Ok(storage) = crate::session::Storage::new(&profile) {
-            let scoped: Vec<_> = instances
-                .iter()
-                .filter(|i| i.source_profile == profile)
-                .cloned()
-                .collect();
-            if let Err(e) = storage.save(&scoped) {
-                tracing::error!(target: "cockpit.switch", "save after disable: {e}");
+    }
+    let id_for_save = id.clone();
+    let profile_for_save = profile.clone();
+    let save_result = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
+        let storage = crate::session::Storage::new(&profile_for_save)?;
+        storage.update(|all, _groups| {
+            if let Some(slot) = all.iter_mut().find(|i| i.id == id_for_save) {
+                slot.cockpit_mode = false;
+                slot.cockpit_acp_session_id = None;
             }
+            Ok(())
+        })?;
+        Ok(())
+    })
+    .await;
+    match save_result {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => {
+            tracing::error!(target: "cockpit.switch", "save after disable: {e}");
+        }
+        Err(join_err) => {
+            tracing::error!(target: "cockpit.switch", "save task panicked after disable: {join_err}");
         }
     }
 

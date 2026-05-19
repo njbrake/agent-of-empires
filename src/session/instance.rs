@@ -471,19 +471,13 @@ fn append_resume_flags(
 
 /// Persist an agent session ID to storage and tmux env for a given instance.
 ///
-/// Used only during synchronous pre-launch (e.g. `persist_session_id` for
-/// Claude) when no poller is active yet. Post-launch persistence goes
-/// exclusively through the poller channel -> `apply_session_id_updates()`
-/// in the TUI thread to avoid concurrent writes to `sessions.json`.
+/// Used during synchronous pre-launch (e.g. `persist_session_id` for Claude)
+/// when no poller is active yet. Post-launch persistence goes exclusively
+/// through the poller channel -> `apply_session_id_updates()` in the TUI
+/// thread. Concurrent calls within the same process are serialised via
+/// `Storage::update`'s per-profile lock; cross-process races between TUI
+/// and `aoe serve` remain a known limitation (see #1175).
 fn persist_session_to_storage(profile: &str, instance_id: &str, session_id: &str) {
-    debug_assert!(
-        std::thread::current()
-            .name()
-            .is_none_or(|n| n == "main" || !n.starts_with("aoe-")),
-        "persist_session_to_storage must not be called from background threads (was: {:?})",
-        std::thread::current().name()
-    );
-
     if !is_valid_session_id(session_id) {
         tracing::warn!(target: "session.store",
             "Refusing to persist invalid session ID {:?} for {}",
@@ -500,24 +494,24 @@ fn persist_session_to_storage(profile: &str, instance_id: &str, session_id: &str
             return;
         }
     };
-    let mut instances = match storage.load() {
-        Ok(i) => i,
-        Err(e) => {
-            tracing::warn!(target: "session.store", "Failed to load instances for session ID persistence: {}", e);
-            return;
+
+    let outcome = storage.update(|instances, _groups| {
+        if let Some(inst) = instances.iter_mut().find(|i| i.id == instance_id) {
+            inst.agent_session_id = Some(session_id.to_string());
+            Ok(true)
+        } else {
+            Ok(false)
         }
-    };
+    });
 
-    let Some(inst) = instances.iter_mut().find(|i| i.id == instance_id) else {
-        return;
-    };
-
-    inst.agent_session_id = Some(session_id.to_string());
-
-    if let Err(e) = storage.save(&instances) {
-        tracing::warn!(target: "session.store", "Failed to save instances for session ID persistence: {}", e);
-    } else {
-        tracing::debug!(target: "session.store", "Session ID persisted for {}", instance_id);
+    match outcome {
+        Ok(true) => {
+            tracing::debug!(target: "session.store", "Session ID persisted for {}", instance_id);
+        }
+        Ok(false) => {}
+        Err(e) => {
+            tracing::warn!(target: "session.store", "Failed to persist session ID for {}: {}", instance_id, e);
+        }
     }
 }
 
@@ -529,55 +523,11 @@ fn persist_session_to_storage(profile: &str, instance_id: &str, session_id: &str
 /// in-memory clear is not enough. If the daemon dies between Tier 1 and
 /// Tier 2's `finalize_launch`, the next launch would otherwise re-load the
 /// bad sid from disk and pass `--resume <bad>` again, looping.
+///
+/// Concurrent in-process callers (TUI tick, server `spawn_blocking` workers,
+/// CLI `restart --all` JoinSet workers) are serialised via `Storage::update`'s
+/// per-profile lock; cross-process races remain out of scope (see #1175).
 fn clear_session_id_on_disk(profile: &str, instance_id: &str) {
-    // Invariant: this function must not run concurrently with any other
-    // writer to sessions.json for this profile. The live writers are:
-    //   1. TUI tick: `apply_session_id_updates` -> `HomeView::save()`,
-    //      which drains the poller's result channel and persists any new
-    //      session ID it finds.
-    //   2. `persist_session_to_storage` (called from `finalize_launch`).
-    //   3. Server `ensure_session` / `send_message` -> `storage.save`,
-    //      both inside `tokio::task::spawn_blocking`.
-    //   4. CLI `aoe session restart --all` (`src/cli/session.rs::restart_all_sessions`):
-    //      up to `--parallel` workers spawned via `tokio::task::JoinSet` +
-    //      `tokio::sync::Semaphore`, each running the cascade inside
-    //      `spawn_blocking` on its own cloned Instance.
-    //
-    // In the TUI path, `start_with_resume_fallback` runs on the main
-    // thread between ticks, so (1) cannot interleave. (2) is sequential
-    // within the same thread (cascade calls clear, then start_with_size_opts
-    // -> finalize_launch -> persist). In the server path the per-instance
-    // `instance_lock` mutex serializes (3) for the same session; it does
-    // NOT cover (4), which runs out-of-process from the daemon.
-    //
-    // Path (4) has NO equivalent serializer. Two workers Tier-1-crashing
-    // concurrently can interleave their load-modify-save cycles here:
-    // worker B loads before A saves, then B's save resurrects the bad sid
-    // A just cleared. Steady-state disk converges because the parent
-    // reconciles via `storage.save_with_groups` after the JoinSet drains
-    // (`src/cli/session.rs::restart_all_sessions`, post-loop save). The
-    // residual hazard is daemon death between any worker's clear and that
-    // post-join reconcile: the next launch may then re-`--resume` a sid
-    // one worker thought it had cleared, in which case the cascade fires
-    // again on next start (not corruption, just an extra cascade pass).
-    //
-    // Stopping `session_id_poller` (done at the cascade call site) is NOT
-    // what prevents the race: the poller's `on_change` callback only
-    // writes to tmux env (`publish_session_to_tmux_env`), never to
-    // sessions.json. The stop is needed because the cascade also clears
-    // `agent_session_id` in memory and the TUI's reload merge would
-    // otherwise resurrect a stale poller-captured value.
-    //
-    // `Storage::save` writes are made visible via atomic rename
-    // (tempfile::persist + fsync, see `src/session/storage.rs::atomic_write`),
-    // so concurrent readers always observe either the old or new file
-    // contents, never a partial write. This guarantee covers file-level
-    // visibility only; concurrent writers can still cause lost-updates
-    // (a load-modify-save interleave), which is independent of save
-    // atomicity. Closing that durably requires a cross-worker mutex on
-    // the per-profile file. The post-loop reconcile in
-    // `restart_all_sessions` is the current mitigation.
-
     let storage = match super::storage::Storage::new(profile) {
         Ok(s) => s,
         Err(e) => {
@@ -585,24 +535,25 @@ fn clear_session_id_on_disk(profile: &str, instance_id: &str) {
             return;
         }
     };
-    let mut instances = match storage.load() {
-        Ok(i) => i,
-        Err(e) => {
-            tracing::warn!(target: "session.store", "Failed to load instances to clear session ID: {}", e);
-            return;
+
+    let outcome = storage.update(|instances, _groups| {
+        if let Some(inst) = instances.iter_mut().find(|i| i.id == instance_id) {
+            if inst.agent_session_id.is_some() {
+                inst.agent_session_id = None;
+                return Ok(true);
+            }
         }
-    };
-    let Some(inst) = instances.iter_mut().find(|i| i.id == instance_id) else {
-        return;
-    };
-    if inst.agent_session_id.is_none() {
-        return;
-    }
-    inst.agent_session_id = None;
-    if let Err(e) = storage.save(&instances) {
-        tracing::warn!(target: "session.store", "Failed to save instances after clearing session ID: {}", e);
-    } else {
-        tracing::debug!(target: "session.store", "Session ID cleared on disk for {}", instance_id);
+        Ok(false)
+    });
+
+    match outcome {
+        Ok(true) => {
+            tracing::debug!(target: "session.store", "Session ID cleared on disk for {}", instance_id);
+        }
+        Ok(false) => {}
+        Err(e) => {
+            tracing::warn!(target: "session.store", "Failed to clear session ID for {}: {}", instance_id, e);
+        }
     }
 }
 
@@ -3910,7 +3861,10 @@ mod tests {
             let inst = Instance::new("title", "/tmp/x");
             let id = inst.id.clone();
             assert!(inst.agent_session_id.is_none());
-            storage.save(&[inst]).unwrap();
+            let xs = vec![inst];
+            storage
+                .commit(&xs, &crate::session::GroupTree::new_with_groups(&xs, &[]))
+                .unwrap();
 
             clear_session_id_on_disk("test-profile-already-none", &id);
 
@@ -3932,7 +3886,10 @@ mod tests {
             let mut inst = Instance::new("title", "/tmp/x");
             inst.agent_session_id = Some("stale-uuid-1234".to_string());
             let id = inst.id.clone();
-            storage.save(&[inst]).unwrap();
+            let xs = vec![inst];
+            storage
+                .commit(&xs, &crate::session::GroupTree::new_with_groups(&xs, &[]))
+                .unwrap();
 
             clear_session_id_on_disk("clear-test", &id);
 
@@ -3991,7 +3948,10 @@ mod tests {
                 .args(["kill-session", "-t", &tmux_name])
                 .output();
 
-            storage.save(&[inst.clone()]).unwrap();
+            let xs = vec![inst.clone()];
+            storage
+                .commit(&xs, &crate::session::GroupTree::new_with_groups(&xs, &[]))
+                .unwrap();
 
             let outcome = inst.start_with_resume_fallback(None, true);
 

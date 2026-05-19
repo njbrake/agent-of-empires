@@ -122,7 +122,7 @@ pub async fn run(profile: &str, args: RemoveArgs) -> Result<()> {
 
     // Rebuild group tree and save
     let group_tree = GroupTree::new_with_groups(&new_instances, &groups);
-    storage.save_with_groups(&new_instances, &group_tree)?;
+    storage.commit(&new_instances, &group_tree)?;
 
     println!(
         "  Removed session: {} (from profile '{}')",

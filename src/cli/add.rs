@@ -632,7 +632,7 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
         group_tree.create_group(&instance.group_path);
     }
 
-    storage.save_with_groups(&instances, &group_tree)?;
+    storage.commit(&instances, &group_tree)?;
 
     println!("✓ Added session: {}", final_title);
     println!("  Profile: {}", storage.profile());
@@ -687,7 +687,7 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
             .position(|i| i.id == instance.id)
             .expect("just added instance");
         instances[idx].start_with_size(crate::terminal::get_size())?;
-        storage.save_with_groups(&instances, &group_tree)?;
+        storage.commit(&instances, &group_tree)?;
 
         let tmux_session = crate::tmux::Session::new(&instance.id, &instance.title)?;
         tmux_session.attach()?;

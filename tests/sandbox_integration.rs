@@ -6,7 +6,7 @@
 //! - Docker availability validation
 
 use agent_of_empires::containers::{self, ContainerRuntimeInterface, DockerContainer};
-use agent_of_empires::session::{Instance, SandboxInfo, Storage};
+use agent_of_empires::session::{GroupTree, Instance, SandboxInfo, Storage};
 
 fn docker_available() -> bool {
     let rt = containers::get_container_runtime();
@@ -77,7 +77,10 @@ fn test_sandbox_info_persists_across_save_load() {
         custom_instruction: None,
     });
 
-    storage.save(&[inst.clone()]).unwrap();
+    let seeded = vec![inst.clone()];
+    storage
+        .commit(&seeded, &GroupTree::new_with_groups(&seeded, &[]))
+        .unwrap();
 
     let loaded = storage.load().unwrap();
     assert_eq!(loaded.len(), 1);

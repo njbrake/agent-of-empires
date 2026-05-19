@@ -6,7 +6,7 @@ use tempfile::TempDir;
 use tui_input::Input;
 
 use super::{HomeView, ViewMode};
-use crate::session::{Instance, Item, Storage};
+use crate::session::{GroupTree, Instance, Item, Storage};
 use crate::tmux::AvailableTools;
 use crate::tui::app::Action;
 use crate::tui::dialogs::{InfoDialog, NewSessionDialog};
@@ -51,7 +51,9 @@ fn create_test_env_with_sessions(count: usize) -> TestEnv {
             &format!("/tmp/{}", i),
         ));
     }
-    storage.save(&instances).unwrap();
+    storage
+        .commit(&instances, &GroupTree::new_with_groups(&instances, &[]))
+        .unwrap();
 
     let tools = AvailableTools::with_tools(&["claude"]);
     let mut view = HomeView::new(Some("test".to_string()), tools).unwrap();
@@ -79,7 +81,9 @@ fn create_test_env_with_groups() -> TestEnv {
     inst3.group_path = "personal".to_string();
     instances.push(inst3);
 
-    storage.save(&instances).unwrap();
+    storage
+        .commit(&instances, &GroupTree::new_with_groups(&instances, &[]))
+        .unwrap();
 
     let tools = AvailableTools::with_tools(&["claude"]);
     let mut view = HomeView::new(Some("test".to_string()), tools).unwrap();
@@ -113,7 +117,7 @@ fn create_test_env_with_mixed_sessions() -> TestEnv {
     instances.push(inst3);
 
     let group_tree = GroupTree::new_with_groups(&instances, &[]);
-    storage.save_with_groups(&instances, &group_tree).unwrap();
+    storage.commit(&instances, &group_tree).unwrap();
 
     let tools = AvailableTools::with_tools(&["claude"]);
     let mut view = HomeView::new(Some("test".to_string()), tools).unwrap();
@@ -369,7 +373,9 @@ fn test_enter_on_cockpit_session_opens_cockpit_view() {
         Instance::new("plain2", "/tmp/2"),
     ];
     instances[1].cockpit_mode = true;
-    storage.save(&instances).unwrap();
+    storage
+        .commit(&instances, &GroupTree::new_with_groups(&instances, &[]))
+        .unwrap();
 
     let tools = AvailableTools::with_tools(&["claude"]);
     let mut view = HomeView::new(Some("test".to_string()), tools).unwrap();
@@ -1005,7 +1011,7 @@ fn create_test_env_with_group_sessions() -> TestEnv {
 
     // Build group tree from instances and save with groups
     let group_tree = GroupTree::new_with_groups(&instances, &[]);
-    storage.save_with_groups(&instances, &group_tree).unwrap();
+    storage.commit(&instances, &group_tree).unwrap();
 
     let tools = AvailableTools::with_tools(&["claude"]);
     let mut view = HomeView::new(Some("test".to_string()), tools).unwrap();
@@ -1038,7 +1044,12 @@ fn test_group_has_managed_worktrees() {
     let mut inst2 = Instance::new("other-session", "/tmp/other");
     inst2.group_path = "other".to_string();
 
-    storage.save(&[inst1, inst2]).unwrap();
+    {
+        let xs: Vec<Instance> = vec![inst1, inst2];
+        storage
+            .commit(&xs, &GroupTree::new_with_groups(&xs, &[]))
+            .unwrap();
+    }
 
     let tools = AvailableTools::with_tools(&["claude"]);
     let mut view = HomeView::new(Some("test".to_string()), tools).unwrap();
@@ -1073,7 +1084,12 @@ fn test_group_has_containers() {
     let mut inst2 = Instance::new("other-session", "/tmp/other");
     inst2.group_path = "other".to_string();
 
-    storage.save(&[inst1, inst2]).unwrap();
+    {
+        let xs: Vec<Instance> = vec![inst1, inst2];
+        storage
+            .commit(&xs, &GroupTree::new_with_groups(&xs, &[]))
+            .unwrap();
+    }
 
     let tools = AvailableTools::with_tools(&["claude"]);
     let mut view = HomeView::new(Some("test".to_string()), tools).unwrap();
@@ -1214,7 +1230,12 @@ fn test_delete_group_with_sessions_respects_worktree_option() {
         base_branch: None,
     });
 
-    storage.save(&[inst1]).unwrap();
+    {
+        let xs: Vec<Instance> = vec![inst1];
+        storage
+            .commit(&xs, &GroupTree::new_with_groups(&xs, &[]))
+            .unwrap();
+    }
 
     let tools = AvailableTools::with_tools(&["claude"]);
     let mut view = HomeView::new(Some("test".to_string()), tools).unwrap();
@@ -1263,7 +1284,12 @@ fn test_delete_group_with_sessions_respects_container_option() {
         custom_instruction: None,
     });
 
-    storage.save(&[inst1]).unwrap();
+    {
+        let xs: Vec<Instance> = vec![inst1];
+        storage
+            .commit(&xs, &GroupTree::new_with_groups(&xs, &[]))
+            .unwrap();
+    }
 
     let tools = AvailableTools::with_tools(&["claude"]);
     let mut view = HomeView::new(Some("test".to_string()), tools).unwrap();
@@ -1759,14 +1785,20 @@ fn test_all_profiles_view_loads_from_multiple_profiles() {
     setup_test_home(&temp);
 
     let storage_a = Storage::new("alpha").unwrap();
-    storage_a
-        .save(&[Instance::new("Alpha Session", "/tmp/a")])
-        .unwrap();
+    {
+        let xs = vec![Instance::new("Alpha Session", "/tmp/a")];
+        storage_a
+            .commit(&xs, &GroupTree::new_with_groups(&xs, &[]))
+            .unwrap();
+    }
 
     let storage_b = Storage::new("beta").unwrap();
-    storage_b
-        .save(&[Instance::new("Beta Session", "/tmp/b")])
-        .unwrap();
+    {
+        let xs = vec![Instance::new("Beta Session", "/tmp/b")];
+        storage_b
+            .commit(&xs, &GroupTree::new_with_groups(&xs, &[]))
+            .unwrap();
+    }
 
     let tools = AvailableTools::with_tools(&["claude"]);
     let mut view = HomeView::new(None, tools).unwrap();
@@ -1791,14 +1823,20 @@ fn test_filtered_view_loads_single_profile() {
     setup_test_home(&temp);
 
     let storage_a = Storage::new("alpha").unwrap();
-    storage_a
-        .save(&[Instance::new("Alpha Session", "/tmp/a")])
-        .unwrap();
+    {
+        let xs = vec![Instance::new("Alpha Session", "/tmp/a")];
+        storage_a
+            .commit(&xs, &GroupTree::new_with_groups(&xs, &[]))
+            .unwrap();
+    }
 
     let storage_b = Storage::new("beta").unwrap();
-    storage_b
-        .save(&[Instance::new("Beta Session", "/tmp/b")])
-        .unwrap();
+    {
+        let xs = vec![Instance::new("Beta Session", "/tmp/b")];
+        storage_b
+            .commit(&xs, &GroupTree::new_with_groups(&xs, &[]))
+            .unwrap();
+    }
 
     let tools = AvailableTools::with_tools(&["claude"]);
     let mut view = HomeView::new(Some("alpha".to_string()), tools).unwrap();
@@ -1818,10 +1856,20 @@ fn test_all_profiles_view_has_no_profile_headers() {
     setup_test_home(&temp);
 
     let storage_a = Storage::new("alpha").unwrap();
-    storage_a.save(&[Instance::new("A1", "/tmp/a")]).unwrap();
+    {
+        let xs = vec![Instance::new("A1", "/tmp/a")];
+        storage_a
+            .commit(&xs, &GroupTree::new_with_groups(&xs, &[]))
+            .unwrap();
+    }
 
     let storage_b = Storage::new("beta").unwrap();
-    storage_b.save(&[Instance::new("B1", "/tmp/b")]).unwrap();
+    {
+        let xs = vec![Instance::new("B1", "/tmp/b")];
+        storage_b
+            .commit(&xs, &GroupTree::new_with_groups(&xs, &[]))
+            .unwrap();
+    }
 
     let tools = AvailableTools::with_tools(&["claude"]);
     let mut view = HomeView::new(None, tools).unwrap();
@@ -1846,10 +1894,20 @@ fn test_all_profiles_view_shows_all_sessions_flat() {
     setup_test_home(&temp);
 
     let storage_a = Storage::new("alpha").unwrap();
-    storage_a.save(&[Instance::new("A1", "/tmp/a")]).unwrap();
+    {
+        let xs = vec![Instance::new("A1", "/tmp/a")];
+        storage_a
+            .commit(&xs, &GroupTree::new_with_groups(&xs, &[]))
+            .unwrap();
+    }
 
     let storage_b = Storage::new("beta").unwrap();
-    storage_b.save(&[Instance::new("B1", "/tmp/b")]).unwrap();
+    {
+        let xs = vec![Instance::new("B1", "/tmp/b")];
+        storage_b
+            .commit(&xs, &GroupTree::new_with_groups(&xs, &[]))
+            .unwrap();
+    }
 
     let tools = AvailableTools::with_tools(&["claude"]);
     let mut view = HomeView::new(None, tools).unwrap();
@@ -1875,9 +1933,12 @@ fn test_create_session_in_all_mode_is_findable() {
 
     // Create a profile so "all" mode has something
     let storage = Storage::new("alpha").unwrap();
-    storage
-        .save(&[Instance::new("Existing", "/tmp/a")])
-        .unwrap();
+    {
+        let xs = vec![Instance::new("Existing", "/tmp/a")];
+        storage
+            .commit(&xs, &GroupTree::new_with_groups(&xs, &[]))
+            .unwrap();
+    }
 
     let project_dir = temp.path().join("project");
     std::fs::create_dir_all(&project_dir).unwrap();
@@ -1934,14 +1995,14 @@ fn test_save_preserves_per_profile_collapsed_state() {
     inst_a.group_path = "work".to_string();
     let mut tree_a = GroupTree::new_with_groups(&[inst_a.clone()], &[]);
     tree_a.toggle_collapsed("work");
-    storage_a.save_with_groups(&[inst_a], &tree_a).unwrap();
+    storage_a.commit(&[inst_a], &tree_a).unwrap();
 
     // Create beta with group "work" (expanded, the default)
     let storage_b = Storage::new("beta").unwrap();
     let mut inst_b = Instance::new("B1", "/tmp/b");
     inst_b.group_path = "work".to_string();
     let tree_b = GroupTree::new_with_groups(&[inst_b.clone()], &[]);
-    storage_b.save_with_groups(&[inst_b], &tree_b).unwrap();
+    storage_b.commit(&[inst_b], &tree_b).unwrap();
 
     // Load unified view
     let tools = AvailableTools::with_tools(&["claude"]);
@@ -2030,14 +2091,14 @@ fn test_delete_group_scoped_to_owning_profile() {
     let mut inst_a = Instance::new("A1", "/tmp/a");
     inst_a.group_path = "work".to_string();
     let tree_a = GroupTree::new_with_groups(&[inst_a.clone()], &[]);
-    storage_a.save_with_groups(&[inst_a], &tree_a).unwrap();
+    storage_a.commit(&[inst_a], &tree_a).unwrap();
 
     // Create beta with the same group name "work"
     let storage_b = Storage::new("beta").unwrap();
     let mut inst_b = Instance::new("B1", "/tmp/b");
     inst_b.group_path = "work".to_string();
     let tree_b = GroupTree::new_with_groups(&[inst_b.clone()], &[]);
-    storage_b.save_with_groups(&[inst_b], &tree_b).unwrap();
+    storage_b.commit(&[inst_b], &tree_b).unwrap();
 
     let tools = AvailableTools::with_tools(&["claude"]);
     let mut view = HomeView::new(None, tools).unwrap();
@@ -2177,7 +2238,12 @@ fn test_shift_n_prefills_main_repo_path_for_worktree_session() {
         created_at: chrono::Utc::now(),
         base_branch: None,
     });
-    storage.save(&[inst]).unwrap();
+    {
+        let xs: Vec<Instance> = vec![inst];
+        storage
+            .commit(&xs, &GroupTree::new_with_groups(&xs, &[]))
+            .unwrap();
+    }
 
     let tools = AvailableTools::with_tools(&["claude"]);
     let mut view = HomeView::new(Some("test".to_string()), tools).unwrap();
@@ -2291,7 +2357,7 @@ fn test_rename_selected_group_with_children() {
     inst2.group_path = "work/frontend".to_string();
     let instances = vec![inst1, inst2];
     let group_tree = GroupTree::new_with_groups(&instances, &[]);
-    storage.save_with_groups(&instances, &group_tree).unwrap();
+    storage.commit(&instances, &group_tree).unwrap();
 
     let tools = AvailableTools::with_tools(&["claude"]);
     let mut view = HomeView::new(Some("test".to_string()), tools).unwrap();
@@ -2358,7 +2424,7 @@ fn test_rename_group_removes_old_path() {
     inst.group_path = "work".to_string();
     let instances = vec![inst];
     let group_tree = GroupTree::new_with_groups(&instances, &[]);
-    storage.save_with_groups(&instances, &group_tree).unwrap();
+    storage.commit(&instances, &group_tree).unwrap();
 
     let tools = AvailableTools::with_tools(&["claude"]);
     let mut view = HomeView::new(Some("test".to_string()), tools).unwrap();
@@ -2390,7 +2456,7 @@ fn test_rename_group_empty_group() {
     let instances: Vec<Instance> = vec![];
     let mut group_tree = GroupTree::new_with_groups(&instances, &[]);
     group_tree.create_group("empty-group");
-    storage.save_with_groups(&instances, &group_tree).unwrap();
+    storage.commit(&instances, &group_tree).unwrap();
 
     let tools = AvailableTools::with_tools(&["claude"]);
     let mut view = HomeView::new(Some("test".to_string()), tools).unwrap();
@@ -2432,7 +2498,7 @@ fn test_rename_group_duplicate_returns_error() {
     inst2.group_path = "personal".to_string();
     let instances = vec![inst1, inst2];
     let group_tree = GroupTree::new_with_groups(&instances, &[]);
-    storage.save_with_groups(&instances, &group_tree).unwrap();
+    storage.commit(&instances, &group_tree).unwrap();
 
     let tools = AvailableTools::with_tools(&["claude"]);
     let mut view = HomeView::new(Some("test".to_string()), tools).unwrap();
@@ -2470,7 +2536,7 @@ fn test_rename_group_resort_az() {
     inst2.group_path = "mmm".to_string();
     let instances = vec![inst1, inst2];
     let group_tree = GroupTree::new_with_groups(&instances, &[]);
-    storage.save_with_groups(&instances, &group_tree).unwrap();
+    storage.commit(&instances, &group_tree).unwrap();
 
     let tools = AvailableTools::with_tools(&["claude"]);
     let mut view = HomeView::new(Some("test".to_string()), tools).unwrap();
