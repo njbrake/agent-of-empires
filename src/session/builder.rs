@@ -508,6 +508,12 @@ pub fn build_instance(
             instance.command = resolved;
         }
     }
+    if instance.command.trim().is_empty() && crate::agents::get_agent(&params.tool).is_none() {
+        bail!(
+            "No launch command resolved for custom agent '{}'. Config may have changed since validation.",
+            params.tool
+        );
+    }
     if !params.extra_args.is_empty() {
         instance.extra_args = params.extra_args;
     } else if let Some(extra) = config.session.agent_extra_args.get(&params.tool) {
@@ -1055,5 +1061,164 @@ mod tests {
             "single-failure path should not use multi-error wording: {msg}"
         );
         assert!(msg.contains("repo-solo-fail"), "repo name missing: {msg}");
+    }
+
+    fn isolated_app_dir(temp_home: &std::path::Path) -> std::path::PathBuf {
+        #[cfg(target_os = "linux")]
+        {
+            let config_home = temp_home.join(".config");
+            std::env::set_var("XDG_CONFIG_HOME", &config_home);
+            config_home.join(crate::session::APP_DIR_NAME_LINUX)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            temp_home.join(crate::session::APP_DIR_NAME_OTHER)
+        }
+    }
+
+    fn custom_agent_params(project_path: &std::path::Path, tool: &str) -> InstanceParams {
+        InstanceParams {
+            title: "custom session".to_string(),
+            path: project_path.to_string_lossy().to_string(),
+            group: String::new(),
+            tool: tool.to_string(),
+            worktree_enabled: false,
+            worktree_branch: None,
+            create_new_branch: false,
+            base_branch: None,
+            sandbox: false,
+            sandbox_image: "ubuntu:latest".to_string(),
+            yolo_mode: false,
+            extra_env: Vec::new(),
+            extra_args: String::new(),
+            command_override: String::new(),
+            extra_repo_paths: Vec::new(),
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn build_instance_preserves_custom_agent_detect_as_mapping() {
+        let temp_home = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", temp_home.path());
+        let app_dir = isolated_app_dir(temp_home.path());
+        std::fs::create_dir_all(&app_dir).unwrap();
+        std::fs::write(
+            app_dir.join("config.toml"),
+            r#"
+                [session.custom_agents]
+                remote-claude = "ssh -t host claude"
+
+                [session.agent_detect_as]
+                remote-claude = "claude"
+            "#,
+        )
+        .unwrap();
+        let project = tempfile::tempdir().unwrap();
+
+        let result = build_instance(
+            custom_agent_params(project.path(), "remote-claude"),
+            &[],
+            &[],
+            "default",
+        )
+        .unwrap();
+
+        assert_eq!(result.instance.tool, "remote-claude");
+        assert_eq!(result.instance.command, "ssh -t host claude");
+        assert_eq!(result.instance.detect_as, "claude");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn build_instance_keeps_empty_detect_as_without_mapping() {
+        let temp_home = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", temp_home.path());
+        let app_dir = isolated_app_dir(temp_home.path());
+        std::fs::create_dir_all(&app_dir).unwrap();
+        std::fs::write(
+            app_dir.join("config.toml"),
+            r#"
+                [session.custom_agents]
+                remote-opencode = "ssh -t host opencode"
+            "#,
+        )
+        .unwrap();
+        let project = tempfile::tempdir().unwrap();
+
+        let result = build_instance(
+            custom_agent_params(project.path(), "remote-opencode"),
+            &[],
+            &[],
+            "default",
+        )
+        .unwrap();
+
+        assert_eq!(result.instance.tool, "remote-opencode");
+        assert_eq!(result.instance.command, "ssh -t host opencode");
+        assert_eq!(result.instance.detect_as, "");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn build_instance_rejects_custom_agent_without_resolved_command() {
+        let temp_home = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", temp_home.path());
+        let app_dir = isolated_app_dir(temp_home.path());
+        std::fs::create_dir_all(&app_dir).unwrap();
+        std::fs::write(app_dir.join("config.toml"), "").unwrap();
+        let project = tempfile::tempdir().unwrap();
+
+        let result = build_instance(
+            custom_agent_params(project.path(), "remote-missing"),
+            &[],
+            &[],
+            "default",
+        );
+        let err = match result {
+            Ok(_) => panic!("custom agent without a command should fail"),
+            Err(err) => err,
+        };
+
+        assert!(
+            err.to_string()
+                .contains("No launch command resolved for custom agent 'remote-missing'"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn build_instance_rejects_custom_agent_with_whitespace_only_command() {
+        let temp_home = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", temp_home.path());
+        let app_dir = isolated_app_dir(temp_home.path());
+        std::fs::create_dir_all(&app_dir).unwrap();
+        std::fs::write(
+            app_dir.join("config.toml"),
+            r#"
+                [session.custom_agents]
+                whitespace-agent = "   "
+            "#,
+        )
+        .unwrap();
+        let project = tempfile::tempdir().unwrap();
+
+        let result = build_instance(
+            custom_agent_params(project.path(), "whitespace-agent"),
+            &[],
+            &[],
+            "default",
+        );
+        let err = match result {
+            Ok(_) => panic!("custom agent with whitespace-only command should fail"),
+            Err(err) => err,
+        };
+
+        assert!(
+            err.to_string()
+                .contains("No launch command resolved for custom agent 'whitespace-agent'"),
+            "unexpected error: {err}"
+        );
     }
 }

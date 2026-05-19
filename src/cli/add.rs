@@ -27,6 +27,10 @@ pub struct AddArgs {
     #[arg(short = 'c', long = "cmd")]
     command: Option<String>,
 
+    /// Named built-in or configured custom agent to run
+    #[arg(long = "tool", conflicts_with = "command")]
+    tool: Option<String>,
+
     /// Parent session (creates sub-session, inherits group)
     #[arg(short = 'P', long)]
     parent: Option<String>,
@@ -83,7 +87,7 @@ pub struct AddArgs {
     trust_hooks: bool,
 
     /// Extra arguments to append after the agent binary
-    #[arg(long)]
+    #[arg(long, allow_hyphen_values = true)]
     extra_args: Option<String>,
 
     /// Override the agent binary command
@@ -332,7 +336,13 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
         instance.parent_session_id = Some(parent);
     }
 
-    if let Some(cmd) = &args.command {
+    if let Some(tool) = &args.tool {
+        let selection = resolve_named_tool(tool, &config)?;
+        if selection.is_custom() && args.cmd_override.is_some() {
+            bail!("--cmd-override cannot be used with configured custom agent --tool selections");
+        }
+        instance.tool = selection.name().to_string();
+    } else if let Some(cmd) = &args.command {
         let tool_name = detect_tool(cmd)?;
         // Verify the agent binary is actually on PATH before creating the session
         if let Some(agent_def) = crate::agents::get_agent(&tool_name) {
@@ -736,4 +746,84 @@ fn detect_tool(cmd: &str) -> Result<String> {
                 crate::agents::agent_names().join(", ")
             )
         })
+}
+
+enum NamedToolSelection {
+    Custom(String),
+    BuiltIn(String),
+}
+
+impl NamedToolSelection {
+    fn name(&self) -> &str {
+        match self {
+            Self::Custom(name) | Self::BuiltIn(name) => name,
+        }
+    }
+
+    fn is_custom(&self) -> bool {
+        matches!(self, Self::Custom(_))
+    }
+}
+
+fn resolve_named_tool(tool: &str, config: &crate::session::Config) -> Result<NamedToolSelection> {
+    let name = tool.trim();
+    if name.is_empty() {
+        bail!("--tool requires a non-empty agent name");
+    }
+
+    if let Some(command) = config.session.custom_agents.get(name) {
+        if command.trim().is_empty() {
+            bail!("custom agent '{name}' has an empty configured command");
+        }
+        if let Some(detect_as) = config
+            .session
+            .agent_detect_as
+            .get(name)
+            .map(|target| target.trim())
+            .filter(|target| !target.is_empty())
+        {
+            if crate::agents::get_agent(detect_as).is_none() {
+                bail!(
+                    "custom agent '{name}' maps agent_detect_as to unknown agent '{detect_as}'. Known agents: {}",
+                    crate::agents::agent_names().join(", ")
+                );
+            }
+        }
+        return Ok(NamedToolSelection::Custom(name.to_string()));
+    }
+
+    if let Some(tool_name) = crate::agents::resolve_tool_name(name) {
+        if let Some(agent_def) = crate::agents::get_agent(tool_name) {
+            if !crate::tmux::is_agent_available(agent_def) {
+                bail!(
+                    "'{}' is not installed or not on $PATH.\n\
+                     Install with: {}\n\
+                     See all supported agents: aoe agents",
+                    agent_def.binary,
+                    agent_def.install_hint
+                );
+            }
+        }
+        return Ok(NamedToolSelection::BuiltIn(tool_name.to_string()));
+    }
+
+    let mut safe_names: Vec<String> = crate::agents::agent_names()
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+    safe_names.extend(
+        config
+            .session
+            .custom_agents
+            .keys()
+            .filter(|name| !name.is_empty())
+            .cloned(),
+    );
+    safe_names.sort();
+    safe_names.dedup();
+
+    bail!(
+        "Unknown tool: {name}\nSupported built-in and configured custom agents: {}",
+        safe_names.join(", ")
+    )
 }

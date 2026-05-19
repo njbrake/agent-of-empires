@@ -238,7 +238,7 @@ export function SessionWizard({ onClose, onCreated, prefill, cockpitMasterEnable
           />
         );
       case "review":
-        return <ReviewStep data={state.data} onChange={handleChange} isSubmitting={state.isSubmitting} error={state.error} onSubmit={handleSubmit} onJumpTo={jumpTo} steps={steps} />;
+        return <ReviewStep data={state.data} onChange={handleChange} agents={state.agents} isSubmitting={state.isSubmitting} error={state.error} onSubmit={handleSubmit} onJumpTo={jumpTo} steps={steps} />;
       default:
         return null;
     }

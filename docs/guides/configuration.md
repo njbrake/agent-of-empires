@@ -96,20 +96,7 @@ agent_status_hooks = true
 
 ### Custom Agents
 
-You can register additional agents (SSH wrappers to remote machines, custom workflows, etc.) that appear in the TUI agent picker alongside built-in agents like `claude`, `opencode`, and `codex`.
-
-```toml
-[session]
-custom_agents = { "lenovo-claude" = "ssh -t lenovo claude" }
-agent_detect_as = { "lenovo-claude" = "claude" }
-```
-
-- **`custom_agents`**: Maps a display name to the command to run. The name appears in the agent picker when creating a new session, and the command is auto-filled as the session's command override.
-- **`agent_detect_as`** (optional): Maps a custom agent to a built-in agent's status detection. Without this, custom agents default to `Idle` status. Setting `"lenovo-claude" = "claude"` reuses Claude's Running/Waiting/Idle detection heuristics for the remote session.
-
-Custom agents are always shown as available in the picker (no binary detection), since the command may target a remote host or a wrapper script.
-
-You can also set `default_tool` to a custom agent name:
+Custom agents let you name commands for agents that AoE cannot detect as built-in binaries, such as SSH wrappers, local scripts, or remote Claude sessions. Configure them once in `custom_agents`, then select the configured name from the TUI picker, `aoe add --tool <name>`, or the Web session wizard.
 
 ```toml
 [session]
@@ -117,6 +104,14 @@ default_tool = "lenovo-claude"
 custom_agents = { "lenovo-claude" = "ssh -t lenovo claude" }
 agent_detect_as = { "lenovo-claude" = "claude" }
 ```
+
+- **`custom_agents`**: Maps a display name to the command AoE runs when that agent is selected. Custom-agent names are configured in config files or the TUI settings screen, and they appear alongside built-in agents like `claude`, `opencode`, and `codex`.
+- **`agent_detect_as`** (optional): Maps a custom agent to a built-in agent's status detection. Without this, custom agents default to `Idle` status. Setting `"lenovo-claude" = "claude"` reuses Claude's Running/Waiting/Idle detection heuristics for the remote session.
+- **`default_tool`** (optional): Can point at a custom-agent name so new sessions default to that configured agent.
+
+Custom agents are always shown as available in the TUI picker because their command may target a remote host or wrapper script instead of a local binary. From the CLI, use `aoe add --tool <name>` to create a session with a configured custom agent by name. The selected custom agent still uses the command from `custom_agents`; browser or CLI input is not treated as a raw command.
+
+The Web session wizard can select configured custom agents and submit the selected name to the server. For security, the Web UI does not expose custom-agent command strings, does not expose `agent_detect_as` values, and does not edit `custom_agents` or `agent_detect_as`. Edit those fields through config files or the TUI settings screen instead.
 
 Both fields are editable from the TUI settings screen and support profile/repo-level overrides.
 

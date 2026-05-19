@@ -225,6 +225,7 @@ export interface Workspace {
 /** Agent info returned by /api/agents */
 export interface AgentInfo {
   name: string;
+  kind: "builtin" | "custom";
   binary: string;
   host_only: boolean;
   installed: boolean;

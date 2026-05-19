@@ -1,6 +1,7 @@
 //! Misc system endpoints: agents, settings, themes, profiles, filesystem,
 //! groups, docker status, devices, about.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
@@ -13,6 +14,7 @@ use super::{validate_profile_name, ALLOWED_SETTINGS_SECTIONS, SESSION_BLOCKED_FI
 
 #[derive(Serialize)]
 pub struct AgentInfo {
+    pub kind: String,
     pub name: String,
     pub binary: String,
     pub host_only: bool,
@@ -20,23 +22,53 @@ pub struct AgentInfo {
     pub install_hint: String,
 }
 
-pub async fn list_agents() -> Json<Vec<AgentInfo>> {
-    let result = tokio::task::spawn_blocking(|| {
+fn build_custom_agent_infos(custom_agents: &HashMap<String, String>) -> Vec<AgentInfo> {
+    let mut entries: Vec<_> = custom_agents
+        .iter()
+        .filter(|(name, command)| {
+            !name.trim().is_empty()
+                && !command.trim().is_empty()
+                && crate::agents::get_agent(name).is_none()
+        })
+        .map(|(name, _command)| AgentInfo {
+            kind: "custom".to_string(),
+            name: name.clone(),
+            binary: name.clone(),
+            host_only: false,
+            installed: true,
+            install_hint: "Configured custom agent".to_string(),
+        })
+        .collect();
+    entries.sort_by(|left, right| left.name.cmp(&right.name));
+    entries
+}
+
+pub async fn list_agents(State(state): State<Arc<AppState>>) -> Json<Vec<AgentInfo>> {
+    let profile = state.profile.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let config = crate::session::profile_config::resolve_config_or_warn(&profile);
+        let custom_agents = config.session.custom_agents;
         let tools = crate::tmux::AvailableTools::detect();
         let available = tools.available_list();
-        crate::agents::AGENTS
+        let mut agents = crate::agents::AGENTS
             .iter()
             .map(|a| AgentInfo {
+                kind: "builtin".to_string(),
                 name: a.name.to_string(),
                 binary: a.binary.to_string(),
                 host_only: a.host_only,
                 installed: available.iter().any(|s| s == a.name),
                 install_hint: a.install_hint.to_string(),
             })
-            .collect::<Vec<_>>()
+            .collect::<Vec<_>>();
+        agents.extend(build_custom_agent_infos(&custom_agents));
+        agents
     })
     .await
-    .unwrap_or_default();
+    .unwrap_or_else(|e| {
+        tracing::error!("list_agents task failed: {e}");
+        Vec::new()
+    });
     Json(result)
 }
 
@@ -1027,6 +1059,94 @@ pub async fn serve_sound_file(
 mod tests {
     use super::*;
     use axum::body::to_bytes;
+    use std::collections::HashMap;
+
+    fn custom_agents(entries: &[(&str, &str)]) -> HashMap<String, String> {
+        entries
+            .iter()
+            .map(|(name, command)| ((*name).to_string(), (*command).to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn custom_agent_entries_use_safe_placeholders() {
+        let entries = build_custom_agent_infos(&custom_agents(&[(
+            "remote-claude",
+            "ssh -t prod.example claude",
+        )]));
+
+        assert_eq!(entries.len(), 1);
+        let agent = &entries[0];
+        assert_eq!(agent.kind, "custom");
+        assert_eq!(agent.name, "remote-claude");
+        assert_eq!(agent.binary, "remote-claude");
+        assert!(!agent.host_only);
+        assert!(agent.installed);
+        assert_eq!(agent.install_hint, "Configured custom agent");
+    }
+
+    #[test]
+    fn custom_agent_entries_never_serialize_command_values() {
+        let entries = build_custom_agent_infos(&custom_agents(&[(
+            "remote-agent",
+            "ssh -t prod.example claude",
+        )]));
+
+        let json = serde_json::to_string(&entries).unwrap();
+        assert!(json.contains("remote-agent"));
+        assert!(!json.contains("ssh"));
+        assert!(!json.contains("prod.example"));
+        assert!(!json.contains("claude"));
+    }
+
+    #[test]
+    fn serialized_custom_agent_response_contains_no_command_or_detect_as_data() {
+        let entries = build_custom_agent_infos(&custom_agents(&[(
+            "remote-agent",
+            "ssh -t prod.example claude",
+        )]));
+        let value = serde_json::to_value(&entries).unwrap();
+
+        assert_eq!(value[0]["kind"], "custom");
+        assert_eq!(value[0]["name"], "remote-agent");
+        assert_eq!(value[0]["binary"], "remote-agent");
+        assert_eq!(value[0]["installed"], true);
+        assert_eq!(value[0]["host_only"], false);
+        assert_eq!(value[0]["install_hint"], "Configured custom agent");
+
+        let serialized = value.to_string();
+        assert!(!serialized.contains("ssh -t prod.example claude"));
+        assert!(!serialized.contains("prod.example"));
+        assert!(!serialized.contains("agent_detect_as"));
+    }
+
+    #[test]
+    fn custom_agent_entries_filter_empty_values_and_builtin_collisions() {
+        let entries = build_custom_agent_infos(&custom_agents(&[
+            ("", "codex"),
+            ("empty-command", ""),
+            ("   ", "codex"),
+            ("whitespace-command", "   "),
+            ("claude", "ssh -t prod.example claude"),
+            ("remote-codex", "ssh -t prod.example codex"),
+        ]));
+
+        let names: Vec<_> = entries.iter().map(|entry| entry.name.as_str()).collect();
+        assert_eq!(names, vec!["remote-codex"]);
+        assert!(entries.iter().all(|entry| entry.kind == "custom"));
+    }
+
+    #[test]
+    fn custom_agent_entries_are_sorted_by_name() {
+        let entries = build_custom_agent_infos(&custom_agents(&[
+            ("zeta", "zeta-cmd"),
+            ("alpha", "alpha-cmd"),
+            ("middle", "middle-cmd"),
+        ]));
+
+        let names: Vec<_> = entries.iter().map(|entry| entry.name.as_str()).collect();
+        assert_eq!(names, vec!["alpha", "middle", "zeta"]);
+    }
 
     #[tokio::test]
     async fn serve_sound_file_rejects_unknown_name() {

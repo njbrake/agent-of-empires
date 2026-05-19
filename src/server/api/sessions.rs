@@ -974,6 +974,31 @@ pub struct CreateSessionBody {
     pub cockpit_model: Option<String>,
 }
 
+fn validate_session_tool_identity(
+    tool: &str,
+    profile: &str,
+    project_path: &std::path::Path,
+) -> bool {
+    if crate::agents::get_agent(tool).is_some() {
+        return true;
+    }
+
+    match crate::session::repo_config::resolve_config_with_repo(profile, project_path) {
+        Ok(config) => config
+            .session
+            .custom_agents
+            .get(tool)
+            .is_some_and(|command| !command.trim().is_empty()),
+        Err(e) => {
+            tracing::warn!(
+                "Failed to resolve config while validating session tool '{}': {e}",
+                tool
+            );
+            false
+        }
+    }
+}
+
 pub async fn create_session(
     State(state): State<Arc<AppState>>,
     Json(body): Json<CreateSessionBody>,
@@ -1043,6 +1068,22 @@ pub async fn create_session(
                     .into_response();
             }
         }
+    }
+
+    let validation_profile = body.profile.as_deref().unwrap_or(&state.profile);
+    if !validate_session_tool_identity(
+        &body.tool,
+        validation_profile,
+        std::path::Path::new(&body.path),
+    ) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "validation_failed",
+                "message": format!("Unknown agent '{}'", body.tool),
+            })),
+        )
+            .into_response();
     }
 
     let profile = body.profile.unwrap_or_else(|| state.profile.clone());
@@ -2483,6 +2524,199 @@ mod tests {
         apply_post_restart_sync(&mut live, &started);
 
         assert_eq!(live.agent_session_id.as_deref(), Some("fresh-id"));
+    }
+
+    fn isolated_app_dir(temp_home: &std::path::Path) -> std::path::PathBuf {
+        #[cfg(target_os = "linux")]
+        {
+            let config_home = temp_home.join(".config");
+            std::env::set_var("XDG_CONFIG_HOME", &config_home);
+            config_home.join(crate::session::APP_DIR_NAME_LINUX)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            temp_home.join(crate::session::APP_DIR_NAME_OTHER)
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn session_tool_identity_accepts_builtin_agent() {
+        let temp_home = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", temp_home.path());
+        let project = tempfile::tempdir().unwrap();
+
+        assert!(validate_session_tool_identity(
+            "claude",
+            "default",
+            project.path()
+        ));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn session_tool_identity_accepts_non_empty_configured_custom_agent() {
+        let temp_home = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", temp_home.path());
+        let app_dir = isolated_app_dir(temp_home.path());
+        std::fs::create_dir_all(&app_dir).unwrap();
+        std::fs::write(
+            app_dir.join("config.toml"),
+            r#"
+                [session.custom_agents]
+                remote-claude = "ssh -t host claude"
+            "#,
+        )
+        .unwrap();
+        let project = tempfile::tempdir().unwrap();
+
+        assert!(validate_session_tool_identity(
+            "remote-claude",
+            "default",
+            project.path()
+        ));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn session_tool_identity_rejects_unknown_agent() {
+        let temp_home = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", temp_home.path());
+        let project = tempfile::tempdir().unwrap();
+
+        assert!(!validate_session_tool_identity(
+            "surprise-agent",
+            "default",
+            project.path()
+        ));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn session_tool_identity_rejects_empty_custom_agent_command() {
+        let temp_home = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", temp_home.path());
+        let app_dir = isolated_app_dir(temp_home.path());
+        std::fs::create_dir_all(&app_dir).unwrap();
+        std::fs::write(
+            app_dir.join("config.toml"),
+            r#"
+                [session.custom_agents]
+                remote-claude = ""
+            "#,
+        )
+        .unwrap();
+        let project = tempfile::tempdir().unwrap();
+
+        assert!(!validate_session_tool_identity(
+            "remote-claude",
+            "default",
+            project.path()
+        ));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn session_tool_identity_rejects_whitespace_only_custom_agent_command() {
+        let temp_home = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", temp_home.path());
+        let app_dir = isolated_app_dir(temp_home.path());
+        std::fs::create_dir_all(&app_dir).unwrap();
+        std::fs::write(
+            app_dir.join("config.toml"),
+            r#"
+                [session.custom_agents]
+                remote-claude = "   "
+            "#,
+        )
+        .unwrap();
+        let project = tempfile::tempdir().unwrap();
+
+        assert!(!validate_session_tool_identity(
+            "remote-claude",
+            "default",
+            project.path()
+        ));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn session_tool_identity_uses_requested_profile() {
+        let temp_home = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", temp_home.path());
+        let app_dir = isolated_app_dir(temp_home.path());
+        let work_profile = app_dir.join("profiles").join("work");
+        std::fs::create_dir_all(&work_profile).unwrap();
+        std::fs::write(
+            work_profile.join("config.toml"),
+            r#"
+                [session.custom_agents]
+                work-agent = "ssh -t work claude"
+            "#,
+        )
+        .unwrap();
+        let project = tempfile::tempdir().unwrap();
+
+        assert!(!validate_session_tool_identity(
+            "work-agent",
+            "default",
+            project.path()
+        ));
+        assert!(validate_session_tool_identity(
+            "work-agent",
+            "work",
+            project.path()
+        ));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn session_tool_identity_uses_repo_aware_config_for_request_path() {
+        let temp_home = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", temp_home.path());
+        let _app_dir = isolated_app_dir(temp_home.path());
+        let project = tempfile::tempdir().unwrap();
+        let repo_config_dir = project.path().join(".agent-of-empires");
+        std::fs::create_dir_all(&repo_config_dir).unwrap();
+        std::fs::write(
+            repo_config_dir.join("config.toml"),
+            r#"
+                [session.custom_agents]
+                repo-agent = "ssh -t repo claude"
+            "#,
+        )
+        .unwrap();
+
+        assert!(validate_session_tool_identity(
+            "repo-agent",
+            "default",
+            project.path()
+        ));
+    }
+
+    #[test]
+    fn create_session_validates_tool_before_builder_or_persistence() {
+        let source = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/server/api/sessions.rs"),
+        )
+        .unwrap();
+        let create_start = source.find("pub async fn create_session").unwrap();
+        let create_source = &source[create_start..];
+        let validation = create_source
+            .find("validate_session_tool_identity")
+            .unwrap();
+        let unwrap_or_else = create_source.find("body.profile.unwrap_or_else").unwrap();
+        let spawn_blocking = create_source.find("tokio::task::spawn_blocking").unwrap();
+        let builder = create_source.find("builder::build_instance").unwrap();
+        let storage = create_source.find("Storage::new").unwrap();
+
+        assert!(validation < unwrap_or_else);
+        assert!(validation < spawn_blocking);
+        assert!(validation < builder);
+        assert!(validation < storage);
+        assert!(create_source.contains("body.profile.as_deref().unwrap_or(&state.profile)"));
+        assert!(create_source.contains("std::path::Path::new(&body.path)"));
+        assert!(!create_source[validation..spawn_blocking].contains("command_override"));
     }
     // ── validate_diff_path: security regression tests ──────────────────────────
     //

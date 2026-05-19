@@ -142,7 +142,8 @@
         "tests/wizard-session-step.spec.ts",
         "tests/wizard-agent-step.spec.ts",
         "tests/wizard-review-step.spec.ts",
-        "tests/wizard-extra-repos.spec.ts"
+        "tests/wizard-extra-repos.spec.ts",
+        "tests/wizard-custom-agent.spec.ts"
       ],
       "components": [
         "web/src/components/session-wizard/SessionWizard.tsx",

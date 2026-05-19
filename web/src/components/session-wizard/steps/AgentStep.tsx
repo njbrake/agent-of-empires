@@ -38,10 +38,12 @@ interface Props {
 function SubstrateNotice({
   tool,
   acpCapable,
+  customAgent,
   sandboxEnabled,
 }: {
   tool: string;
   acpCapable: boolean;
+  customAgent: boolean;
   sandboxEnabled: boolean;
 }) {
   const sandboxedCockpit = acpCapable && sandboxEnabled;
@@ -64,6 +66,8 @@ function SubstrateNotice({
       <p className="mt-1 text-xs text-text-dim leading-snug">
         {sandboxedCockpit
           ? "Cockpit + container: the agent runs inside the sandbox container, so its file and terminal access stay inside the container's mounts."
+          : customAgent
+          ? "Custom agents run in the terminal. Cockpit is available for built-in agents with ACP support."
           : acpCapable
           ? "Cockpit is enabled, so this session will run in the structured cockpit UI. Switch to terminal substrate from the session view if needed."
           : `${tool} has no ACP adapter yet, so this session falls back to the tmux terminal. Pick a tool with cockpit support (e.g. claude, opencode, gemini) to use the structured UI.`}
@@ -94,8 +98,11 @@ function Toggle({ checked, onChange, disabled }: { checked: boolean; onChange: (
 }
 
 export function AgentStep({ data, onChange, agents, profiles, dockerAvailable, onApplyProfileDefaults, cockpitMasterEnabled }: Props) {
-  const installedAgents = agents.filter((a) => a.installed);
+  const selectableAgents = agents.filter(
+    (agent) => agent.kind === "custom" || agent.installed,
+  );
   const selectedAgent = agents.find((a) => a.name === data.tool);
+  const selectedCustomAgent = selectedAgent?.kind === "custom";
   const isHostOnly = selectedAgent?.host_only ?? false;
   const [showAdvanced, setShowAdvanced] = useState(data.advancedEnabled);
   const showProfilePicker = profiles.length > 1;
@@ -141,7 +148,7 @@ export function AgentStep({ data, onChange, agents, profiles, dockerAvailable, o
       <p className="text-sm text-text-muted mb-5">Pick the coding assistant and configure your session.</p>
 
       {/* No agents installed */}
-      {installedAgents.length === 0 && agents.length > 0 && (
+      {selectableAgents.length === 0 && agents.length > 0 && (
         <div className="mb-5 p-4 rounded-lg border border-status-warning/30 bg-status-warning/5">
           <p className="text-sm font-semibold text-status-warning mb-2">No agents installed</p>
           <p className="text-sm text-text-muted mb-3">
@@ -160,17 +167,25 @@ export function AgentStep({ data, onChange, agents, profiles, dockerAvailable, o
 
       {/* Agent picker */}
       <div className="grid grid-cols-2 gap-2 mb-5">
-        {installedAgents.map((agent) => (
+        {selectableAgents.map((agent) => (
           <button
+            type="button"
             key={agent.name}
             onClick={() => onChange("tool", agent.name)}
-            className={`text-left p-3 rounded-lg border transition-colors cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 ${
+            className={`min-h-[44px] text-left p-3 rounded-lg border transition-colors cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 ${
               data.tool === agent.name
                 ? "border-brand-600 bg-surface-900"
                 : "border-surface-700 bg-surface-950 hover:border-surface-600"
             }`}
           >
-            <div className="text-sm font-semibold text-text-primary">{agent.name}</div>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-sm font-semibold text-text-primary">{agent.name}</span>
+              {agent.kind === "custom" && (
+                <span className="rounded px-1.5 py-px text-[10px] font-mono uppercase tracking-wide bg-surface-700 text-text-dim">
+                  Custom
+                </span>
+              )}
+            </div>
           </button>
         ))}
       </div>
@@ -186,6 +201,7 @@ export function AgentStep({ data, onChange, agents, profiles, dockerAvailable, o
         <SubstrateNotice
           tool={data.tool}
           acpCapable={ACP_CAPABLE_TOOLS.has(data.tool)}
+          customAgent={selectedCustomAgent}
           sandboxEnabled={data.sandboxEnabled}
         />
       )}
