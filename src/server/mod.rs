@@ -1430,6 +1430,21 @@ fn load_all_instances() -> anyhow::Result<Vec<Instance>> {
     Ok(all)
 }
 
+/// Carry over the in-memory-only fields from the prior `state.instances`
+/// entry into the freshly-loaded one. These fields are `#[serde(skip)]`
+/// on `Instance` and would otherwise be reset to default every 2 s when
+/// `status_poll_loop` reloads from disk. Adding a new `#[serde(skip)]`
+/// field on `Instance` requires extending this function or the field is
+/// silently wiped on every poll tick.
+fn merge_runtime_fields(prior: Instance, mut fresh: Instance) -> Instance {
+    fresh.last_error_check = prior.last_error_check;
+    fresh.last_start_time = prior.last_start_time;
+    fresh.last_error = prior.last_error;
+    fresh.session_id_poller = prior.session_id_poller;
+    fresh.retroactive_capture_excludes = prior.retroactive_capture_excludes;
+    fresh
+}
+
 /// Background task that periodically refreshes session statuses. On each
 /// tick, diffs pre- and post-refresh statuses and emits a `StatusChange`
 /// on `state.status_tx` for every transition. Keeping the diff here,
@@ -1511,15 +1526,10 @@ async fn status_poll_loop(state: Arc<AppState>) {
                 }
             }
 
-            // Emit transitions before swapping in the new snapshot so
-            // consumers see events in the same order regardless of when
-            // they read state.instances themselves.
             let now = chrono::Utc::now();
             for inst in &instances {
                 if let Some(old) = prev.get(&inst.id) {
                     if *old != inst.status {
-                        // send() errors only when there are no receivers;
-                        // that's fine, we emit best-effort.
                         let _ = state.status_tx.send(StatusChange {
                             instance_id: inst.id.clone(),
                             instance_title: inst.title.clone(),
@@ -1530,7 +1540,30 @@ async fn status_poll_loop(state: Arc<AppState>) {
                     }
                 }
             }
-            *state.instances.write().await = instances;
+            // Merge by id rather than blind-replace: preserves the
+            // in-memory-only `#[serde(skip)]` runtime state on Instance
+            // (last_error, last_start_time, last_error_check,
+            // session_id_poller, retroactive_capture_excludes) that the
+            // disk reload otherwise resets to default every 2 s.
+            // Additions on disk surface here; ids absent from disk are
+            // dropped, matching the prior wholesale-replace semantics
+            // for create/delete propagation.
+            {
+                let mut current = state.instances.write().await;
+                let mut by_id: std::collections::HashMap<String, Instance> = current
+                    .drain(..)
+                    .map(|inst| (inst.id.clone(), inst))
+                    .collect();
+                let mut merged = Vec::with_capacity(instances.len());
+                for fresh in instances {
+                    if let Some(prior) = by_id.remove(&fresh.id) {
+                        merged.push(merge_runtime_fields(prior, fresh));
+                    } else {
+                        merged.push(fresh);
+                    }
+                }
+                *current = merged;
+            }
 
             #[cfg(feature = "serve")]
             cockpit_reconciler::reconcile_cockpit_workers(&state, &mut attempted_cockpit_spawns)
@@ -1678,19 +1711,22 @@ async fn cockpit_event_listener(state: Arc<AppState>) {
         // Sync FS (file copy + JSON write) goes through spawn_blocking
         // so the runtime stays responsive under large session lists.
         if let Some(profile) = profile_to_save {
-            let scoped: Vec<_> = state
-                .instances
-                .read()
-                .await
-                .iter()
-                .filter(|i| i.source_profile == profile)
-                .cloned()
-                .collect();
             let session_id_for_log = frame.session_id.clone();
+            let session_id_for_save = frame.session_id.clone();
             let profile_for_save = profile.clone();
+            let acp_change_for_save = acp_change.clone();
             let save_result = tokio::task::spawn_blocking(move || -> anyhow::Result<()> {
                 let storage = crate::session::Storage::new(&profile_for_save)?;
-                storage.save(&scoped)?;
+                storage.update(|all, _groups| {
+                    if let Some(inst) = all.iter_mut().find(|i| i.id == session_id_for_save) {
+                        apply_acp_session_change(
+                            inst,
+                            &session_id_for_save,
+                            acp_change_for_save.as_ref(),
+                        );
+                    }
+                    Ok(())
+                })?;
                 Ok(())
             })
             .await;
@@ -1845,7 +1881,7 @@ fn apply_acp_session_change(
 /// the event is irrelevant. Extracted so the JSON-shape parsing has a
 /// pure-function test surface.
 #[cfg(feature = "serve")]
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 enum AcpSessionChange {
     Assigned(String),
     Reset(String),

@@ -1508,7 +1508,7 @@ impl HomeView {
                 .get(profile_name)
                 .cloned()
                 .unwrap_or_else(|| GroupTree::new_with_groups(&profile_instances, &[]));
-            storage.save_with_groups(&profile_instances, &tree)?;
+            storage.commit(&profile_instances, &tree)?;
         }
         Ok(())
     }

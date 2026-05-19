@@ -461,8 +461,9 @@ fn merge_workspace_ordering(
     let merged = new_ids;
 
     if !read_only {
-        crate::session::save_workspace_ordering(&crate::session::WorkspaceOrdering {
-            order: merged.clone(),
+        crate::session::update_workspace_ordering(|ord| {
+            ord.order = merged.clone();
+            Ok(())
         })?;
     }
     Ok(merged)
@@ -523,8 +524,12 @@ pub async fn update_workspace_ordering(
         );
     }
 
-    let ordering = crate::session::WorkspaceOrdering { order: body.order };
-    if let Err(e) = crate::session::save_workspace_ordering(&ordering) {
+    let new_order = body.order;
+    let result = crate::session::update_workspace_ordering(|ord| {
+        ord.order = new_order.clone();
+        Ok(())
+    });
+    if let Err(e) = result {
         tracing::error!(target: "http.api.sessions", "Failed to persist workspace ordering: {e}");
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -533,7 +538,7 @@ pub async fn update_workspace_ordering(
     }
     (
         StatusCode::OK,
-        Json(serde_json::json!({ "order": ordering.order })),
+        Json(serde_json::json!({ "order": new_order })),
     )
 }
 
@@ -590,12 +595,14 @@ pub async fn rename_session(
     let profile = inst.source_profile.clone();
 
     if let Ok(storage) = Storage::new(&profile) {
-        let profile_instances: Vec<_> = instances
-            .iter()
-            .filter(|i| i.source_profile == profile)
-            .cloned()
-            .collect();
-        if let Err(e) = storage.save(&profile_instances) {
+        let title_clone = title.clone();
+        let id_clone = id.clone();
+        if let Err(e) = storage.update(|instances, _groups| {
+            if let Some(inst) = instances.iter_mut().find(|i| i.id == id_clone) {
+                apply_session_title_rename(inst, title_clone);
+            }
+            Ok(())
+        }) {
             tracing::error!(target: "http.api.sessions", "Failed to save after rename: {e}");
         }
     }
@@ -625,7 +632,7 @@ pub struct UpdateNotificationsBody {
 /// - Unset: leave the current session value untouched.
 /// - Clear: set to None (inherit the server default).
 /// - Set(v): explicit user override.
-#[derive(Default)]
+#[derive(Default, Copy, Clone)]
 pub enum Tristate {
     #[default]
     Unset,
@@ -686,12 +693,18 @@ pub async fn update_session_notifications(
     let profile = inst.source_profile.clone();
 
     if let Ok(storage) = Storage::new(&profile) {
-        let profile_instances: Vec<_> = instances
-            .iter()
-            .filter(|i| i.source_profile == profile)
-            .cloned()
-            .collect();
-        if let Err(e) = storage.save(&profile_instances) {
+        let id_clone = id.clone();
+        let waiting = body.notify_on_waiting;
+        let idle = body.notify_on_idle;
+        let error = body.notify_on_error;
+        if let Err(e) = storage.update(|instances, _groups| {
+            if let Some(inst) = instances.iter_mut().find(|i| i.id == id_clone) {
+                apply(&mut inst.notify_on_waiting, waiting);
+                apply(&mut inst.notify_on_idle, idle);
+                apply(&mut inst.notify_on_error, error);
+            }
+            Ok(())
+        }) {
             tracing::error!(target: "http.api.sessions", "Failed to save after notification update: {e}");
         }
     }
@@ -751,12 +764,19 @@ pub async fn update_session_diff_base(
     let profile = inst.source_profile.clone();
 
     if let Ok(storage) = Storage::new(&profile) {
-        let profile_instances: Vec<_> = instances
-            .iter()
-            .filter(|i| i.source_profile == profile)
-            .cloned()
-            .collect();
-        if let Err(e) = storage.save(&profile_instances) {
+        let id_clone = id.clone();
+        let new_override = body
+            .base_branch
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_string);
+        if let Err(e) = storage.update(|instances, _groups| {
+            if let Some(inst) = instances.iter_mut().find(|i| i.id == id_clone) {
+                inst.base_branch_override = new_override;
+            }
+            Ok(())
+        }) {
             tracing::error!(target: "http.api.sessions", "Failed to save after diff-base update: {e}");
         }
     }
@@ -871,12 +891,11 @@ pub async fn delete_session(
             instances.retain(|i| i.id != id);
 
             if let Ok(storage) = Storage::new(&profile) {
-                let profile_instances: Vec<_> = instances
-                    .iter()
-                    .filter(|i| i.source_profile == profile)
-                    .cloned()
-                    .collect();
-                if let Err(e) = storage.save(&profile_instances) {
+                let id_clone = id.clone();
+                if let Err(e) = storage.update(|instances, _groups| {
+                    instances.retain(|i| i.id != id_clone);
+                    Ok(())
+                }) {
                     tracing::error!(target: "http.api.sessions", "Failed to save after deletion: {e}");
                 }
             }
@@ -1147,11 +1166,12 @@ pub async fn create_session(
             instance.cockpit_model = body.cockpit_model;
         }
 
-        // Save to disk
         let storage = Storage::new(&profile)?;
-        let mut all = storage.load().unwrap_or_default();
-        all.push(instance.clone());
-        storage.save(&all)?;
+        let to_persist = instance.clone();
+        storage.update(|all, _groups| {
+            all.push(to_persist);
+            Ok(())
+        })?;
 
         // Cockpit-mode sessions are not backed by tmux; the cockpit
         // supervisor spawns the ACP agent on demand. Skip the tmux
@@ -2870,18 +2890,21 @@ pub async fn send_message(
                 // left to persist.
                 return (StatusCode::OK, Json(serde_json::json!({"sent": true}))).into_response();
             };
-            // Persist only the target session's profile, mirroring the pattern
-            // used by rename/delete. Saving `state.instances` wholesale would
-            // write every profile's sessions into one profile's storage file.
-            let profile_instances: Vec<Instance> = instances
-                .iter()
-                .filter(|i| i.source_profile == profile)
-                .cloned()
-                .collect();
             drop(instances);
+            let id_for_save = id.clone();
+            let started_for_save = started.clone();
+            let outcome_already_alive = matches!(outcome, EnsureReadyOutcome::AlreadyAlive);
             tokio::task::spawn_blocking(move || {
                 if let Ok(storage) = Storage::new(&profile) {
-                    if let Err(e) = storage.save(&profile_instances) {
+                    if let Err(e) = storage.update(|all, _groups| {
+                        if let Some(disk_inst) = all.iter_mut().find(|i| i.id == id_for_save) {
+                            if !outcome_already_alive {
+                                apply_post_restart_sync(disk_inst, &started_for_save);
+                            }
+                            disk_inst.touch_last_accessed();
+                        }
+                        Ok(())
+                    }) {
                         tracing::warn!(target: "http.api.sessions", "send_message: persist failed: {e}");
                     }
                 }
@@ -3183,8 +3206,9 @@ mod workspace_ordering_tests {
         // Persisted ordering already contains `b`. Sessions come in
         // creation order (oldest first) `[b, a, c]`; `a` and `c` are
         // unseen and should land at the top in newest-first order: `[c, a, b]`.
-        crate::session::save_workspace_ordering(&crate::session::WorkspaceOrdering {
-            order: vec!["/tmp/repo::b".to_string()],
+        crate::session::update_workspace_ordering(|ord| {
+            ord.order = vec!["/tmp/repo::b".to_string()];
+            Ok(())
         })?;
 
         let sessions = vec![
@@ -3234,8 +3258,9 @@ mod workspace_ordering_tests {
         let temp = tempdir()?;
         setup_test_home(temp.path());
 
-        crate::session::save_workspace_ordering(&crate::session::WorkspaceOrdering {
-            order: vec!["/tmp/repo::a".to_string(), "/tmp/repo::b".to_string()],
+        crate::session::update_workspace_ordering(|ord| {
+            ord.order = vec!["/tmp/repo::a".to_string(), "/tmp/repo::b".to_string()];
+            Ok(())
         })?;
 
         let sessions = vec![

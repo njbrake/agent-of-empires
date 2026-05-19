@@ -438,12 +438,14 @@ pub async fn cockpit_enable(
             *slot = instance.clone();
         }
         if let Ok(storage) = crate::session::Storage::new(&profile) {
-            let scoped: Vec<_> = instances
-                .iter()
-                .filter(|i| i.source_profile == profile)
-                .cloned()
-                .collect();
-            if let Err(e) = storage.save(&scoped) {
+            let id_clone = id.clone();
+            let snapshot = instance.clone();
+            if let Err(e) = storage.update(|all, _groups| {
+                if let Some(slot) = all.iter_mut().find(|i| i.id == id_clone) {
+                    *slot = snapshot;
+                }
+                Ok(())
+            }) {
                 tracing::error!(target: "cockpit.switch", "save after enable: {e}");
             }
         }
@@ -581,12 +583,14 @@ pub async fn cockpit_disable(
             *slot = instance.clone();
         }
         if let Ok(storage) = crate::session::Storage::new(&profile) {
-            let scoped: Vec<_> = instances
-                .iter()
-                .filter(|i| i.source_profile == profile)
-                .cloned()
-                .collect();
-            if let Err(e) = storage.save(&scoped) {
+            let id_clone = id.clone();
+            let snapshot = instance.clone();
+            if let Err(e) = storage.update(|all, _groups| {
+                if let Some(slot) = all.iter_mut().find(|i| i.id == id_clone) {
+                    *slot = snapshot;
+                }
+                Ok(())
+            }) {
                 tracing::error!(target: "cockpit.switch", "save after disable: {e}");
             }
         }

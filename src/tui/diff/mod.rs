@@ -78,6 +78,14 @@ pub struct DiffView {
 
     /// Warning dialog shown when merge-base can't be computed
     pub(crate) warning_dialog: Option<InfoDialog>,
+
+    /// Override that has been persisted to disk but not yet propagated
+    /// back to HomeView's in-memory `Instance.base_branch_override`.
+    /// HomeView consumes this after each key event via
+    /// `take_pending_override` and applies it to its cache; without
+    /// this hand-off, HomeView's next `commit` would overwrite the
+    /// disk value with its stale memory copy. See #1175.
+    pub(crate) pending_override: Option<(String, Option<String>)>,
 }
 
 impl DiffView {
@@ -133,6 +141,7 @@ impl DiffView {
             show_help: false,
             file_list_width: config.app_state.diff_file_list_width.unwrap_or(35),
             warning_dialog,
+            pending_override: None,
         };
 
         view.refresh_files()?;
@@ -214,19 +223,30 @@ impl DiffView {
         }
     }
 
-    fn persist_base_override(&self) -> anyhow::Result<()> {
-        let Some(session_id) = self.session_id.as_deref() else {
+    fn persist_base_override(&mut self) -> anyhow::Result<()> {
+        let Some(session_id) = self.session_id.clone() else {
             return Ok(());
         };
         let storage = crate::session::Storage::new(&self.profile)?;
-        let (mut instances, groups) = storage.load_with_groups()?;
-        let Some(inst) = instances.iter_mut().find(|i| i.id == session_id) else {
-            return Ok(());
-        };
-        inst.base_branch_override = Some(self.base_branch.clone());
-        let group_tree = crate::session::GroupTree::new_with_groups(&instances, &groups);
-        storage.save_with_groups(&instances, &group_tree)?;
+        let new_override = Some(self.base_branch.clone());
+        let id_for_closure = session_id.clone();
+        let new_override_for_closure = new_override.clone();
+        storage.update(|instances, _groups| {
+            if let Some(inst) = instances.iter_mut().find(|i| i.id == id_for_closure) {
+                inst.base_branch_override = new_override_for_closure;
+            }
+            Ok(())
+        })?;
+        self.pending_override = Some((session_id, new_override));
         Ok(())
+    }
+
+    /// Drain a pending base-branch override that was just persisted to
+    /// disk. HomeView calls this after each key event so its in-memory
+    /// `Instance.base_branch_override` stays consistent with disk;
+    /// otherwise its next `commit` would overwrite the persisted value.
+    pub fn take_pending_override(&mut self) -> Option<(String, Option<String>)> {
+        self.pending_override.take()
     }
 
     /// Navigate to next file
@@ -317,6 +337,7 @@ impl DiffView {
             show_help: false,
             file_list_width: 35,
             warning_dialog: None,
+            pending_override: None,
         }
     }
 }

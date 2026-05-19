@@ -1,9 +1,31 @@
-//! Session storage - JSON file persistence
+//! Session storage - JSON file persistence with in-process per-profile locking.
+//!
+//! `Storage` serialises read-modify-write cycles inside the same process via a
+//! per-profile mutex (one `Arc<Mutex<()>>` per profile name, registered process-
+//! wide). Mutators use `update` (load -> mutate -> save under the lock) or
+//! `commit` (locked wholesale write, for callers that already own the
+//! authoritative in-memory state, e.g. the TUI's `HomeView`). The `save` /
+//! `save_groups` / `save_workspace_ordering` entry points are `pub(crate)` and
+//! only consumed by `update` / `commit` internally; this keeps it
+//! structurally impossible to bypass the lock.
+//!
+//! Lock-ordering rule across the process: `AppState.instances` (tokio RwLock,
+//! server side) is acquired BEFORE `Storage`'s per-profile mutex, never the
+//! reverse. The closure passed to `update` is `FnOnce(...) -> Result<R>` and
+//! cannot await, so `std::sync::Mutex` is safe across the body even on the
+//! tokio runtime: server callers wrap `update` in `tokio::task::spawn_blocking`,
+//! which is the existing pattern.
+//!
+//! Cross-process races (the TUI and `aoe serve` mutating the same profile
+//! concurrently) are explicitly out of scope here; a future advisory `flock`
+//! would close them. See `docs/development/storage.md`.
 
 use anyhow::{anyhow, Result};
+use std::collections::HashMap;
 use std::fs;
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use super::{get_app_dir, get_profile_dir, Group, GroupTree, Instance, DEFAULT_PROFILE};
 
@@ -31,9 +53,33 @@ pub(crate) fn atomic_write(path: &Path, content: &[u8]) -> Result<()> {
     Ok(())
 }
 
+/// Process-wide registry of per-profile save mutexes. Every `Storage::new` for
+/// a given profile name resolves to the same `Arc<Mutex<()>>`, so independent
+/// `Storage` handles in different parts of the process serialise correctly.
+fn save_lock_for(profile: &str) -> Arc<Mutex<()>> {
+    static REGISTRY: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
+    let registry = REGISTRY.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = registry
+        .lock()
+        .expect("storage save-lock registry poisoned");
+    guard
+        .entry(profile.to_string())
+        .or_insert_with(|| Arc::new(Mutex::new(())))
+        .clone()
+}
+
+/// Dedicated lock for the global `workspace-ordering.json` file. Separate from
+/// the per-profile registry because the file lives at the app-data root and is
+/// shared across profiles.
+fn workspace_ordering_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
 pub struct Storage {
     profile: String,
     sessions_path: PathBuf,
+    save_lock: Arc<Mutex<()>>,
 }
 
 // Cross-device-syncable sidebar ordering. Workspaces are a client
@@ -59,10 +105,12 @@ impl Storage {
 
         let profile_dir = get_profile_dir(&profile_name)?;
         let sessions_path = profile_dir.join("sessions.json");
+        let save_lock = save_lock_for(&profile_name);
 
         Ok(Self {
             profile: profile_name,
             sessions_path,
+            save_lock,
         })
     }
 
@@ -87,7 +135,6 @@ impl Storage {
     pub fn load_with_groups(&self) -> Result<(Vec<Instance>, Vec<Group>)> {
         let instances = self.load()?;
 
-        // Load groups from separate file
         let groups_path = self.sessions_path.with_file_name("groups.json");
         let groups = if groups_path.exists() {
             let content = fs::read_to_string(&groups_path)?;
@@ -103,20 +150,52 @@ impl Storage {
         Ok((instances, groups))
     }
 
-    pub fn save(&self, instances: &[Instance]) -> Result<()> {
+    /// Locked load -> mutate -> save. The closure receives mutable references
+    /// to the current persisted state of both `sessions.json` and `groups.json`;
+    /// on `Ok` from the closure, both files are rewritten atomically under the
+    /// per-profile lock. On `Err`, neither file is touched.
+    ///
+    /// This is the only way to mutate persisted session state from any caller
+    /// that does not already own the authoritative in-memory copy. Use `commit`
+    /// when the caller (e.g. TUI `HomeView`) IS that authoritative copy.
+    pub fn update<F, R>(&self, f: F) -> Result<R>
+    where
+        F: FnOnce(&mut Vec<Instance>, &mut Vec<Group>) -> Result<R>,
+    {
+        let _guard = self
+            .save_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let (mut instances, mut groups) = self.load_with_groups()?;
+        let result = f(&mut instances, &mut groups)?;
+        self.save(&instances)?;
+        self.save_groups(&groups)?;
+        Ok(result)
+    }
+
+    /// Locked wholesale write of `sessions.json` + `groups.json`. Last-writer-
+    /// wins by design: any concurrent `update` whose load happened before this
+    /// `commit` is overwritten. This is correct for HomeView (the TUI's
+    /// authoritative in-memory copy); other callers should use `update`.
+    pub fn commit(&self, instances: &[Instance], group_tree: &GroupTree) -> Result<()> {
+        let _guard = self
+            .save_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.save(instances)?;
+        self.save_groups(&group_tree.get_all_groups())
+    }
+
+    pub(crate) fn save(&self, instances: &[Instance]) -> Result<()> {
         let content = serde_json::to_string_pretty(instances)?;
         atomic_write(&self.sessions_path, content.as_bytes())?;
         Ok(())
     }
 
-    pub fn save_with_groups(&self, instances: &[Instance], group_tree: &GroupTree) -> Result<()> {
-        self.save(instances)?;
-
+    pub(crate) fn save_groups(&self, groups: &[Group]) -> Result<()> {
         let groups_path = self.sessions_path.with_file_name("groups.json");
-        let groups = group_tree.get_all_groups();
-        let content = serde_json::to_string_pretty(&groups)?;
+        let content = serde_json::to_string_pretty(groups)?;
         atomic_write(&groups_path, content.as_bytes())?;
-
         Ok(())
     }
 }
@@ -142,7 +221,23 @@ pub fn load_workspace_ordering() -> Result<WorkspaceOrdering> {
     Ok(serde_json::from_str(&content)?)
 }
 
-pub fn save_workspace_ordering(ordering: &WorkspaceOrdering) -> Result<()> {
+/// Locked load -> mutate -> save for the global workspace ordering file.
+/// On `Ok` from the closure, the file is rewritten atomically under the
+/// dedicated workspace-ordering lock. On `Err`, the file is not touched.
+pub fn update_workspace_ordering<F, R>(f: F) -> Result<R>
+where
+    F: FnOnce(&mut WorkspaceOrdering) -> Result<R>,
+{
+    let _guard = workspace_ordering_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let mut ordering = load_workspace_ordering()?;
+    let result = f(&mut ordering)?;
+    save_workspace_ordering(&ordering)?;
+    Ok(result)
+}
+
+pub(crate) fn save_workspace_ordering(ordering: &WorkspaceOrdering) -> Result<()> {
     let path = workspace_ordering_path()?;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
@@ -323,7 +418,7 @@ mod tests {
         let groups = vec![Group::new("projects", "work/projects")];
         let group_tree = GroupTree::new_with_groups(&instances, &groups);
 
-        storage.save_with_groups(&instances, &group_tree)?;
+        storage.commit(&instances, &group_tree)?;
 
         let (loaded_instances, loaded_groups) = storage.load_with_groups()?;
         assert_eq!(loaded_instances.len(), 1);
@@ -469,6 +564,266 @@ mod tests {
 
         let loaded = load_workspace_ordering()?;
         assert!(loaded.order.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    #[serial]
+    fn test_update_atomic_load_modify_save() -> Result<()> {
+        let temp = tempdir()?;
+        setup_test_home(temp.path());
+
+        let storage = Storage::new("test-update-roundtrip")?;
+        storage.commit(
+            &[Instance::new("seed", "/tmp/seed")],
+            &GroupTree::new_with_groups(&[], &[]),
+        )?;
+
+        storage.update(|instances, _groups| {
+            instances.push(Instance::new("added", "/tmp/added"));
+            Ok(())
+        })?;
+
+        let loaded = storage.load()?;
+        assert_eq!(loaded.len(), 2);
+        assert_eq!(loaded[0].title, "seed");
+        assert_eq!(loaded[1].title, "added");
+        Ok(())
+    }
+
+    #[test]
+    #[serial]
+    fn test_update_propagates_closure_error() -> Result<()> {
+        let temp = tempdir()?;
+        setup_test_home(temp.path());
+
+        let storage = Storage::new("test-update-err")?;
+        let initial = vec![Instance::new("keep", "/tmp/keep")];
+        storage.commit(&initial, &GroupTree::new_with_groups(&initial, &[]))?;
+
+        let result: Result<()> = storage.update(|instances, _| {
+            instances.push(Instance::new("doomed", "/tmp/doomed"));
+            Err(anyhow!("forced abort"))
+        });
+        assert!(result.is_err());
+
+        let loaded = storage.load()?;
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].title, "keep");
+        Ok(())
+    }
+
+    #[test]
+    #[serial]
+    fn test_update_serializes_concurrent_writers_same_profile() -> Result<()> {
+        let temp = tempdir()?;
+        setup_test_home(temp.path());
+
+        let storage = Storage::new("test-update-concurrent")?;
+        storage.commit(&[], &GroupTree::new_with_groups(&[], &[]))?;
+
+        let n_threads = 32usize;
+        std::thread::scope(|scope| {
+            for tid in 0..n_threads {
+                scope.spawn(move || {
+                    let storage = Storage::new("test-update-concurrent").unwrap();
+                    storage
+                        .update(|instances, _| {
+                            instances.push(Instance::new(
+                                &format!("inst-{tid}"),
+                                &format!("/tmp/inst-{tid}"),
+                            ));
+                            Ok(())
+                        })
+                        .unwrap();
+                });
+            }
+        });
+
+        let loaded = storage.load()?;
+        assert_eq!(
+            loaded.len(),
+            n_threads,
+            "lost updates: expected {n_threads}, got {}",
+            loaded.len()
+        );
+        let mut titles: Vec<_> = loaded.iter().map(|i| i.title.clone()).collect();
+        titles.sort();
+        for tid in 0..n_threads {
+            assert!(
+                titles.contains(&format!("inst-{tid}")),
+                "missing inst-{tid}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[serial]
+    fn test_update_does_not_serialize_across_profiles() -> Result<()> {
+        let temp = tempdir()?;
+        setup_test_home(temp.path());
+
+        let storage_a = Storage::new("test-update-profile-a")?;
+        let storage_b = Storage::new("test-update-profile-b")?;
+
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                storage_a
+                    .update(|instances, _| {
+                        instances.push(Instance::new("a1", "/tmp/a1"));
+                        Ok(())
+                    })
+                    .unwrap();
+            });
+            scope.spawn(|| {
+                storage_b
+                    .update(|instances, _| {
+                        instances.push(Instance::new("b1", "/tmp/b1"));
+                        Ok(())
+                    })
+                    .unwrap();
+            });
+        });
+
+        assert_eq!(storage_a.load()?.len(), 1);
+        assert_eq!(storage_b.load()?.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    #[serial]
+    fn test_commit_takes_same_lock_as_update() -> Result<()> {
+        use std::sync::Barrier;
+        use std::time::{Duration, Instant};
+
+        let temp = tempdir()?;
+        setup_test_home(temp.path());
+
+        let storage = Storage::new("test-commit-lock")?;
+        storage.commit(&[], &GroupTree::new_with_groups(&[], &[]))?;
+
+        let entered = Arc::new(Barrier::new(2));
+        let release = Arc::new(Barrier::new(2));
+        let entered_clone = Arc::clone(&entered);
+        let release_clone = Arc::clone(&release);
+
+        let updater = std::thread::spawn(move || {
+            let storage = Storage::new("test-commit-lock").unwrap();
+            storage
+                .update(|instances, _| {
+                    instances.push(Instance::new("from-update", "/tmp/u"));
+                    entered_clone.wait();
+                    release_clone.wait();
+                    Ok(())
+                })
+                .unwrap();
+        });
+
+        entered.wait();
+        let start = Instant::now();
+        let committer = std::thread::spawn(|| {
+            let storage = Storage::new("test-commit-lock").unwrap();
+            storage
+                .commit(
+                    &[Instance::new("from-commit", "/tmp/c")],
+                    &GroupTree::new_with_groups(&[], &[]),
+                )
+                .unwrap();
+        });
+
+        std::thread::sleep(Duration::from_millis(80));
+        assert!(
+            !committer.is_finished(),
+            "commit should be blocked by update's lock"
+        );
+        release.wait();
+        updater.join().unwrap();
+        committer.join().unwrap();
+
+        assert!(
+            start.elapsed() >= Duration::from_millis(50),
+            "commit returned suspiciously fast"
+        );
+
+        let loaded = storage.load()?;
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].title, "from-commit");
+        Ok(())
+    }
+
+    #[test]
+    #[serial]
+    fn test_workspace_ordering_update_serializes() -> Result<()> {
+        let temp = tempdir()?;
+        setup_test_home(temp.path());
+
+        update_workspace_ordering(|ord| {
+            ord.order.clear();
+            Ok(())
+        })?;
+
+        let n_threads = 16usize;
+        std::thread::scope(|scope| {
+            for tid in 0..n_threads {
+                scope.spawn(move || {
+                    update_workspace_ordering(|ord| {
+                        ord.order.push(format!("ws-{tid}"));
+                        Ok(())
+                    })
+                    .unwrap();
+                });
+            }
+        });
+
+        let loaded = load_workspace_ordering()?;
+        assert_eq!(loaded.order.len(), n_threads);
+        for tid in 0..n_threads {
+            assert!(
+                loaded.order.contains(&format!("ws-{tid}")),
+                "missing ws-{tid}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    #[serial]
+    fn test_profile_lock_registry_returns_same_arc_for_same_profile() -> Result<()> {
+        let temp = tempdir()?;
+        setup_test_home(temp.path());
+
+        let s1 = Storage::new("test-registry-shared")?;
+        let s2 = Storage::new("test-registry-shared")?;
+        assert!(Arc::ptr_eq(&s1.save_lock, &s2.save_lock));
+
+        let s3 = Storage::new("test-registry-distinct")?;
+        assert!(!Arc::ptr_eq(&s1.save_lock, &s3.save_lock));
+        Ok(())
+    }
+
+    #[test]
+    #[serial]
+    fn test_update_writes_both_sessions_and_groups_files() -> Result<()> {
+        let temp = tempdir()?;
+        setup_test_home(temp.path());
+
+        let storage = Storage::new("test-update-both-files")?;
+        storage.commit(&[], &GroupTree::new_with_groups(&[], &[]))?;
+
+        storage.update(|instances, groups| {
+            instances.push(Instance::new("inst", "/tmp/inst"));
+            groups.push(Group::new("projects", "work/projects"));
+            Ok(())
+        })?;
+
+        let groups_path = storage.sessions_path.with_file_name("groups.json");
+        assert!(groups_path.exists(), "groups.json should exist");
+
+        let (loaded_instances, loaded_groups) = storage.load_with_groups()?;
+        assert_eq!(loaded_instances.len(), 1);
+        assert_eq!(loaded_groups.len(), 1);
+        assert_eq!(loaded_groups[0].name, "projects");
         Ok(())
     }
 }

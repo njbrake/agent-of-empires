@@ -263,7 +263,7 @@ async fn cleanup_orphaned(profile: &str, force: bool) -> Result<()> {
         new_instances.retain(|inst| !orphaned_sessions.iter().any(|orphan| orphan.id == inst.id));
 
         let group_tree = crate::session::GroupTree::new_with_groups(&new_instances, &groups);
-        storage.save_with_groups(&new_instances, &group_tree)?;
+        storage.commit(&new_instances, &group_tree)?;
 
         removed_count += orphaned_sessions.len();
         println!("✓ Removed {} orphaned sessions", orphaned_sessions.len());

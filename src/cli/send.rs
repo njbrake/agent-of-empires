@@ -86,11 +86,13 @@ pub async fn run(profile: &str, args: SendArgs) -> Result<()> {
     let delay = crate::agents::send_keys_enter_delay(&tool);
     tmux_session.send_keys_with_delay(&args.message, delay)?;
 
-    // Stamp last_accessed_at so the "last activity" column reflects user interaction
-    if let Some(inst) = instances.iter_mut().find(|i| i.id == session_id) {
-        inst.touch_last_accessed();
-    }
-    storage.save(&instances)?;
+    let id_for_save = session_id.clone();
+    storage.update(|instances, _groups| {
+        if let Some(inst) = instances.iter_mut().find(|i| i.id == id_for_save) {
+            inst.touch_last_accessed();
+        }
+        Ok(())
+    })?;
 
     println!("Sent message to '{}'", session_title);
     Ok(())
