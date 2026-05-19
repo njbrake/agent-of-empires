@@ -81,7 +81,7 @@ pub async fn get_settings(
 
 pub async fn update_settings(
     State(state): State<Arc<AppState>>,
-    Json(body): Json<serde_json::Value>,
+    body: Result<Json<serde_json::Value>, axum::extract::rejection::JsonRejection>,
 ) -> impl IntoResponse {
     if state.read_only {
         return (
@@ -92,6 +92,10 @@ pub async fn update_settings(
         )
             .into_response();
     }
+    let Json(body) = match body {
+        Ok(b) => b,
+        Err(rej) => return rej.into_response(),
+    };
     // Validate that only allowed sections are being updated
     if let Some(obj) = body.as_object() {
         for key in obj.keys() {
@@ -620,7 +624,7 @@ pub struct CreateProfileBody {
 
 pub async fn create_profile(
     State(state): State<Arc<AppState>>,
-    Json(body): Json<CreateProfileBody>,
+    body: Result<Json<CreateProfileBody>, axum::extract::rejection::JsonRejection>,
 ) -> impl IntoResponse {
     if state.read_only {
         return (
@@ -631,6 +635,10 @@ pub async fn create_profile(
         )
             .into_response();
     }
+    let Json(body) = match body {
+        Ok(b) => b,
+        Err(rej) => return rej.into_response(),
+    };
     if let Err(e) = validate_profile_name(&body.name) {
         return (
             StatusCode::BAD_REQUEST,
@@ -703,7 +711,7 @@ pub struct RenameProfileBody {
 pub async fn rename_profile(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(name): axum::extract::Path<String>,
-    Json(body): Json<RenameProfileBody>,
+    body: Result<Json<RenameProfileBody>, axum::extract::rejection::JsonRejection>,
 ) -> impl IntoResponse {
     if state.read_only {
         return (
@@ -714,6 +722,10 @@ pub async fn rename_profile(
         )
             .into_response();
     }
+    let Json(body) = match body {
+        Ok(b) => b,
+        Err(rej) => return rej.into_response(),
+    };
     if let Err(e) = validate_profile_name(&name) {
         return (
             StatusCode::BAD_REQUEST,
@@ -752,7 +764,7 @@ pub struct DefaultProfileBody {
 
 pub async fn default_profile(
     State(state): State<Arc<AppState>>,
-    Json(body): Json<DefaultProfileBody>,
+    body: Result<Json<DefaultProfileBody>, axum::extract::rejection::JsonRejection>,
 ) -> impl IntoResponse {
     if state.read_only {
         return (
@@ -763,6 +775,10 @@ pub async fn default_profile(
         )
             .into_response();
     }
+    let Json(body) = match body {
+        Ok(b) => b,
+        Err(rej) => return rej.into_response(),
+    };
     if let Err(e) = validate_profile_name(&body.name) {
         return (
             StatusCode::BAD_REQUEST,
@@ -832,7 +848,7 @@ pub async fn get_profile_settings(
 pub async fn update_profile_settings(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(name): axum::extract::Path<String>,
-    Json(body): Json<serde_json::Value>,
+    body: Result<Json<serde_json::Value>, axum::extract::rejection::JsonRejection>,
 ) -> impl IntoResponse {
     if state.read_only {
         return (
@@ -843,6 +859,10 @@ pub async fn update_profile_settings(
         )
             .into_response();
     }
+    let Json(body) = match body {
+        Ok(b) => b,
+        Err(rej) => return rej.into_response(),
+    };
     if let Err(e) = validate_profile_name(&name) {
         return (
             StatusCode::BAD_REQUEST,
