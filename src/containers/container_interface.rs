@@ -50,10 +50,21 @@ impl EnvEntry {
 /// Both the create path (`docker run`) and every exec path (`docker exec` from
 /// tmux sessions, ACP agent spawn, and ACP `terminal/create`) share this
 /// translation. Keeping it in one place ensures they cannot drift.
+///
+/// Dedupes by key (first wins). `collect_environment` already dedupes its
+/// output, but the helper repeats the check so any caller that builds its
+/// own entry list cannot accidentally emit two `-e KEY` flags for the same
+/// key (which docker accepts but with last-write-wins semantics that aren't
+/// always intended).
 pub fn docker_env_args(entries: &[EnvEntry]) -> (Vec<String>, Vec<(String, String)>) {
     let mut argv = Vec::with_capacity(entries.len() * 2);
     let mut inherit = Vec::new();
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
     for entry in entries {
+        let key = entry.key();
+        if !seen.insert(key) {
+            continue;
+        }
         argv.push("-e".to_string());
         match entry {
             EnvEntry::Inherit { key, value } => {
@@ -203,5 +214,48 @@ mod tests {
         let (argv, inherit) = docker_env_args(&[]);
         assert!(argv.is_empty());
         assert!(inherit.is_empty());
+    }
+
+    #[test]
+    fn docker_env_args_dedupes_duplicate_keys_first_wins() {
+        // Guards against a caller that hand-builds entries and accidentally
+        // passes the same key twice. Docker accepts duplicate `-e` flags
+        // with last-write-wins, which is rarely what the caller meant.
+        let entries = vec![
+            EnvEntry::Inherit {
+                key: "GH_TOKEN".to_string(),
+                value: "ghp_first".to_string(),
+            },
+            EnvEntry::Literal {
+                key: "GH_TOKEN".to_string(),
+                value: "literal_should_be_skipped".to_string(),
+            },
+            EnvEntry::Inherit {
+                key: "OTHER".to_string(),
+                value: "kept".to_string(),
+            },
+        ];
+        let (argv, inherit) = docker_env_args(&entries);
+        // First GH_TOKEN entry wins; the literal duplicate is dropped.
+        assert_eq!(
+            argv,
+            vec![
+                "-e".to_string(),
+                "GH_TOKEN".to_string(),
+                "-e".to_string(),
+                "OTHER".to_string(),
+            ]
+        );
+        assert_eq!(
+            inherit,
+            vec![
+                ("GH_TOKEN".to_string(), "ghp_first".to_string()),
+                ("OTHER".to_string(), "kept".to_string()),
+            ]
+        );
+        assert!(
+            !argv.iter().any(|a| a.contains("literal_should_be_skipped")),
+            "duplicate key's value leaked into argv"
+        );
     }
 }

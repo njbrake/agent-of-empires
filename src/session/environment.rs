@@ -309,7 +309,7 @@ pub fn validate_env_entry(entry: &str) -> Option<String> {
                 Some("Warning: bare '$' in value has no variable name".to_string())
             } else if resolve_env_value(value).is_none() {
                 Some(format!(
-                    "Warning: ${} is not set on the host -- it will be empty in the container",
+                    "Warning: ${} is not set on the host, so the value will be empty in the container",
                     var_name
                 ))
             } else {
@@ -323,7 +323,7 @@ pub fn validate_env_entry(entry: &str) -> Option<String> {
         // Bare key -- pass through from host
         if std::env::var(entry).is_err() {
             Some(format!(
-                "Warning: {} is not set on the host -- it will be empty in the container",
+                "Warning: {} is not set on the host, so the value will be empty in the container",
                 entry
             ))
         } else {
