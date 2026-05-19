@@ -223,7 +223,7 @@ impl RestartDialog {
         frame.render_widget(Paragraph::new(current_profile_line), chunks[1]);
 
         let current_tool_line = Line::from(vec![
-            Span::styled("Current AI:      ", Style::default().fg(theme.dimmed)),
+            Span::styled("Current tool:    ", Style::default().fg(theme.dimmed)),
             Span::styled(&self.current_tool, Style::default().fg(theme.text)),
         ]);
         frame.render_widget(Paragraph::new(current_tool_line), chunks[2]);
@@ -233,56 +233,73 @@ impl RestartDialog {
         self.render_hints(frame, chunks[7], theme);
     }
 
+    /// Profile picker, rendered to match `NewSessionDialog::render_profile_field`
+    /// so the New / Restart modals look identical: underlined label when
+    /// focused, `< name >` cycler when more than one profile exists.
     fn render_profile_selector(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let focused = self.is_profile_field();
         let label_style = if focused {
-            Style::default().fg(theme.accent)
-        } else {
-            Style::default().fg(theme.dimmed)
-        };
-        let value_style = if focused {
-            Style::default().fg(theme.accent)
+            Style::default().fg(theme.accent).underlined()
         } else {
             Style::default().fg(theme.text)
+        };
+        let value_style = if focused {
+            Style::default().fg(theme.accent).bold()
+        } else {
+            Style::default().fg(theme.accent)
         };
         let value = self
             .available_profiles
             .get(self.profile_index)
             .map(String::as_str)
             .unwrap_or("(none)");
-        let line = Line::from(vec![
-            Span::styled("Profile: ", label_style),
-            Span::styled("< ", Style::default().fg(theme.dimmed)),
-            Span::styled(value.to_string(), value_style),
-            Span::styled(" >", Style::default().fg(theme.dimmed)),
-        ]);
-        frame.render_widget(Paragraph::new(line), area);
+        let mut spans = vec![Span::styled("Profile:", label_style), Span::raw(" ")];
+        if self.available_profiles.len() > 1 {
+            spans.push(Span::styled("< ", Style::default().fg(theme.dimmed)));
+            spans.push(Span::styled(value.to_string(), value_style));
+            spans.push(Span::styled(" >", Style::default().fg(theme.dimmed)));
+        } else {
+            spans.push(Span::styled(value.to_string(), value_style));
+        }
+        frame.render_widget(Paragraph::new(Line::from(spans)), area);
     }
 
+    /// AI-engine picker, rendered to match the `Tool:` field in
+    /// `NewSessionDialog`: the label reads "Tool:" (not "AI:"), and the
+    /// cycler uses the same `← ● name  [n/m] →` styling as the New dialog.
     fn render_tool_selector(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let focused = self.is_tool_field();
         let label_style = if focused {
-            Style::default().fg(theme.accent)
-        } else {
-            Style::default().fg(theme.dimmed)
-        };
-        let value_style = if focused {
-            Style::default().fg(theme.accent)
+            Style::default().fg(theme.accent).underlined()
         } else {
             Style::default().fg(theme.text)
         };
+        let dimmed = Style::default().fg(theme.dimmed);
+        let accent = Style::default().fg(theme.accent).bold();
         let value = self
             .available_tools
             .get(self.tool_index)
             .map(String::as_str)
             .unwrap_or("(none)");
-        let line = Line::from(vec![
-            Span::styled("AI:      ", label_style),
-            Span::styled("< ", Style::default().fg(theme.dimmed)),
-            Span::styled(value.to_string(), value_style),
-            Span::styled(" >", Style::default().fg(theme.dimmed)),
-        ]);
-        frame.render_widget(Paragraph::new(line), area);
+        let total = self.available_tools.len();
+        let mut spans = vec![Span::styled("Tool:", label_style), Span::raw(" ")];
+        if total > 1 {
+            if focused {
+                spans.push(Span::styled("← ", dimmed));
+            }
+            spans.push(Span::styled("● ", accent));
+            spans.push(Span::styled(value.to_string(), accent));
+            spans.push(Span::styled(
+                format!("  [{}/{}]", self.tool_index + 1, total),
+                dimmed,
+            ));
+            if focused {
+                spans.push(Span::styled("  →", dimmed));
+            }
+        } else {
+            spans.push(Span::styled(value.to_string(), accent));
+        }
+        frame.render_widget(Paragraph::new(Line::from(spans)), area);
     }
 
     fn render_hints(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
