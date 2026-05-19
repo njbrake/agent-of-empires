@@ -58,7 +58,7 @@ const RETRY_CAP_MS = 30000;
  *  `src/server/ws.rs`. Picked from the application-reserved 4000-4999
  *  range. See #1107. */
 const CLOSE_CODE_PTY_DEAD = 4001;
-const retryDelayMs = (attempt: number) =>
+export const retryDelayMs = (attempt: number) =>
   Math.min(RETRY_CAP_MS, RETRY_BASE_MS * 2 ** (attempt - 1));
 const MIN_FONT_SIZE = 6;
 const MAX_FONT_SIZE = 28;
