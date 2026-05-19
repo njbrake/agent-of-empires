@@ -325,11 +325,10 @@ export interface ServerAbout {
    *  so the rendered transcript matches the user's chosen ceiling
    *  instead of clipping at a hard-coded frontend constant. See #1111. */
   cockpit_replay_events: number;
-  // `"debug"` when the backend was built with `debug_assertions`, `"release"`
-  // otherwise. Drives the topbar DEV badge so the concurrent debug (8081) and
-  // release (8080) instances stay distinguishable, including in PWA installs
-  // where the port is not visible in the window chrome. See #1055.
-  /* istanbul ignore next -- type-only field, no runtime statement */
+  /** `"debug"` when built with `debug_assertions`, else `"release"`. Drives
+   *  the topbar DEV badge so concurrent debug (8081) / release (8080)
+   *  instances stay visually distinct, including in PWAs where the port is
+   *  not in the window chrome. See #1055. */
   build_flavor: "debug" | "release";
 }
 
@@ -353,12 +352,17 @@ export function fetchAbout(): Promise<ServerAbout | null> {
   return fetchJson<ServerAbout>("/api/about");
 }
 
-// Runtime helper around `ServerAbout.build_flavor`. The topbar uses this
-// instead of inlining the discriminator so the check shows up as a real
-// statement in `api.ts` (the interface field itself is erased at runtime,
-// which leaves the declaration line uncovered in LCOV). See #1055.
-export function isDebugBuild(about: ServerAbout | null | undefined): boolean {
-  return about?.build_flavor === "debug";
+/** Runtime helper around `ServerAbout.build_flavor`. The topbar drives
+ *  `isDevBuild` off this instead of inlining the discriminator so the
+ *  check shows up as real statements in `api.ts` (the interface field
+ *  is erased at runtime, so its line never hits in LCOV). See #1055. */
+export function isDebugBuild(
+  about: ServerAbout | null | undefined,
+): boolean {
+  if (!about) {
+    return false;
+  }
+  return about.build_flavor === "debug";
 }
 
 export interface UpdateStatus {
