@@ -1524,7 +1524,7 @@ async fn status_poll_loop(state: Arc<AppState>) {
             let mut instances = load_all_instances().unwrap_or_default();
 
             crate::tmux::refresh_session_cache();
-            let pane_metadata = crate::tmux::batch_pane_metadata();
+            let pane_metadata = crate::tmux::batch_pane_metadata().unwrap_or_default();
 
             for inst in &mut instances {
                 if suppressed_ids.contains(&inst.id) {
@@ -1694,7 +1694,7 @@ async fn daemon_startup_recovery_mark(
 
     crate::session::recovery::warm_tmux_server();
     crate::tmux::refresh_session_cache();
-    let pane_meta = crate::tmux::batch_pane_metadata();
+    let pane_meta = crate::tmux::batch_pane_metadata().unwrap_or_default();
 
     let candidates: Vec<crate::session::Instance> = {
         let instances = state.instances.read().await;
