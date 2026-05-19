@@ -44,6 +44,17 @@ function findSelectByLabel(container: HTMLElement, label: string): HTMLSelectEle
   throw new Error(`select with label ${label} not found`);
 }
 
+function findNumberInputByLabel(container: HTMLElement, label: string): HTMLInputElement {
+  const labels = container.querySelectorAll("label");
+  for (const l of labels) {
+    if (l.textContent === label) {
+      const input = l.parentElement?.querySelector('input[type="number"]');
+      if (input) return input as HTMLInputElement;
+    }
+  }
+  throw new Error(`number input with label ${label} not found`);
+}
+
 describe("LoggingSettings contract", () => {
   it("default level select emits logging.default_level", () => {
     const { onSaveField, onUpdate, container } = mount({
@@ -139,20 +150,15 @@ describe("LoggingSettings contract", () => {
 
   it("max_size_mib commits a numeric value", () => {
     const { onSaveField, container } = mount({ max_size_mib: 50 });
-    const inputs = container.querySelectorAll(
-      "input[type=number]",
-    ) as NodeListOf<HTMLInputElement>;
-    // Two number inputs: max_size_mib first, keep_count second.
-    commitNumber(inputs[0], "256");
+    const input = findNumberInputByLabel(container, "Max size (MiB)");
+    commitNumber(input, "256");
     expect(onSaveField).toHaveBeenCalledWith("logging", "max_size_mib", 256);
   });
 
   it("keep_count commits a numeric value", () => {
     const { onSaveField, container } = mount({ keep_count: 5 });
-    const inputs = container.querySelectorAll(
-      "input[type=number]",
-    ) as NodeListOf<HTMLInputElement>;
-    commitNumber(inputs[1], "10");
+    const input = findNumberInputByLabel(container, "Keep count");
+    commitNumber(input, "10");
     expect(onSaveField).toHaveBeenCalledWith("logging", "keep_count", 10);
   });
 
