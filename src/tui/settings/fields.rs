@@ -140,6 +140,8 @@ pub enum FieldKey {
     CockpitQueueDrainMode,
     CockpitMaxConcurrentResumes,
     CockpitForceEndTurnThresholdSecs,
+    CockpitSilentOrphanGraceSecs,
+    CockpitSilentOrphanFastGraceSecs,
     // Logging
     LoggingDefaultLevel,
     /// Per-target override; carries an index into `crate::logging::KNOWN_SUB_TARGETS`
@@ -520,6 +522,16 @@ fn build_cockpit_fields(
         global.cockpit.force_end_turn_threshold_secs,
         p.and_then(|c| c.force_end_turn_threshold_secs),
     );
+    let (silent_orphan_grace_secs, sog_override) = resolve_value(
+        scope,
+        global.cockpit.silent_orphan_grace_secs,
+        p.and_then(|c| c.silent_orphan_grace_secs),
+    );
+    let (silent_orphan_fast_grace_secs, sofg_override) = resolve_value(
+        scope,
+        global.cockpit.silent_orphan_fast_grace_secs,
+        p.and_then(|c| c.silent_orphan_fast_grace_secs),
+    );
 
     vec![
         SettingField {
@@ -625,6 +637,24 @@ fn build_cockpit_fields(
             value: FieldValue::Number(u64::from(force_end_turn_threshold_secs)),
             category: SettingsCategory::Cockpit,
             has_override: fet_override,
+            inherited_display: None,
+        },
+        SettingField {
+            key: FieldKey::CockpitSilentOrphanGraceSecs,
+            label: "Silent-orphan grace (s)",
+            description: "Daemon-side watchdog that detects when the agent finishes streaming but the adapter never resolves the session/prompt request. Fires after this many seconds of no progress notifications, when no in-flight tool call is open and the prompt has produced at least one progress event. On fire, sends best-effort session/cancel and reuses the existing cancel-escalation path to SIGTERM + session/load respawn. Default 60s. Set 0 to disable. Long-running tools are not affected (watchdog suppresses while any tool call is active). See #1240.",
+            value: FieldValue::Number(u64::from(silent_orphan_grace_secs)),
+            category: SettingsCategory::Cockpit,
+            has_override: sog_override,
+            inherited_display: None,
+        },
+        SettingField {
+            key: FieldKey::CockpitSilentOrphanFastGraceSecs,
+            label: "Silent-orphan fast grace (s)",
+            description: "Accelerated silent-orphan grace, used in place of the default once a cost-populated UsageUpdate has arrived for the current prompt (the claude-agent-acp wrap-up accounting marker emitted just before PromptResponse). Lowers MTTR on the known adapter wedge without weakening the vendor-agnostic baseline. Default 20s. Only consulted when silent-orphan grace is enabled (non-zero). See #1240.",
+            value: FieldValue::Number(u64::from(silent_orphan_fast_grace_secs)),
+            category: SettingsCategory::Cockpit,
+            has_override: sofg_override,
             inherited_display: None,
         },
     ]
@@ -2289,6 +2319,16 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
         (FieldKey::CockpitForceEndTurnThresholdSecs, FieldValue::Number(v)) => {
             config.cockpit.force_end_turn_threshold_secs = (*v).max(1).min(u32::MAX as u64) as u32
         }
+        (FieldKey::CockpitSilentOrphanGraceSecs, FieldValue::Number(v)) => {
+            // 0 = disabled; anything 1..=9 clamps to 10 so a typo can't
+            // produce an absurdly tight grace that false-positives on
+            // healthy turns.
+            let raw = (*v).min(u32::MAX as u64) as u32;
+            config.cockpit.silent_orphan_grace_secs = if raw == 0 { 0 } else { raw.max(10) };
+        }
+        (FieldKey::CockpitSilentOrphanFastGraceSecs, FieldValue::Number(v)) => {
+            config.cockpit.silent_orphan_fast_grace_secs = (*v).max(5).min(u32::MAX as u64) as u32;
+        }
         // Logging
         (FieldKey::LoggingDefaultLevel, FieldValue::Select { selected, options }) => {
             if let Some(level) = options.get(*selected) {
@@ -2742,6 +2782,19 @@ fn apply_field_to_profile(field: &SettingField, _global: &Config, config: &mut P
             let clamped = (*v).max(1).min(u32::MAX as u64) as u32;
             set_profile_override(clamped, &mut config.cockpit, |s, val| {
                 s.force_end_turn_threshold_secs = val
+            });
+        }
+        (FieldKey::CockpitSilentOrphanGraceSecs, FieldValue::Number(v)) => {
+            let raw = (*v).min(u32::MAX as u64) as u32;
+            let clamped = if raw == 0 { 0 } else { raw.max(10) };
+            set_profile_override(clamped, &mut config.cockpit, |s, val| {
+                s.silent_orphan_grace_secs = val
+            });
+        }
+        (FieldKey::CockpitSilentOrphanFastGraceSecs, FieldValue::Number(v)) => {
+            let clamped = (*v).max(5).min(u32::MAX as u64) as u32;
+            set_profile_override(clamped, &mut config.cockpit, |s, val| {
+                s.silent_orphan_fast_grace_secs = val
             });
         }
         (FieldKey::HostEnvironment, FieldValue::List(v)) => {
