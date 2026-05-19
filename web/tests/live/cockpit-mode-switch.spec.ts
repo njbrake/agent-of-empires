@@ -24,12 +24,13 @@ base("session/mode round-trips through the fake ACP agent", async ({}, testInfo)
     const sessions = await listSessions(serve.baseUrl);
     const sessionId: string = sessions[0]!.id;
 
-    // Same call pattern as cockpit-spawn-prompt and cockpit-approval:
-    // `cockpit/enable` flips the persisted flag and warms the supervisor
-    // via its tokio::spawn, then `cockpit/spawn` awaits the supervisor
-    // synchronously. Calling spawn alone (no enable) returns 500
-    // because spawn_cockpit's container ensure step picks up sandbox
-    // defaults that enable's path bypasses.
+    // `cockpit/enable` flips the persisted flag and kicks off the
+    // supervisor spawn inside a tokio::spawn. The explicit
+    // `cockpit/spawn` below races that async task: if enable's spawn
+    // wins, the explicit one returns 409 AlreadyRunning; if explicit
+    // wins, it returns 2xx. Either way the supervisor has registered
+    // the session by the time the response lands, which is what
+    // set-mode needs.
     const enableRes = await fetch(
       `${serve.baseUrl}/api/sessions/${sessionId}/cockpit/enable`,
       { method: "POST" },
@@ -43,8 +44,7 @@ base("session/mode round-trips through the fake ACP agent", async ({}, testInfo)
         body: JSON.stringify({ agent: "claude" }),
       },
     );
-    expect(spawnRes.status).toBeGreaterThanOrEqual(200);
-    expect(spawnRes.status).toBeLessThan(300);
+    expect([200, 202, 409]).toContain(spawnRes.status);
 
     const modeRes = await fetch(
       `${serve.baseUrl}/api/sessions/${sessionId}/cockpit/mode`,
