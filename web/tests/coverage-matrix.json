@@ -173,6 +173,13 @@
       ]
     },
     {
+      "id": "session.delete-dialog-keyboard",
+      "kind": "vitest",
+      "risk": "low",
+      "specs": ["src/components/__tests__/DeleteSessionDialog.test.tsx"],
+      "components": ["web/src/components/DeleteSessionDialog.tsx"]
+    },
+    {
       "id": "right-panel.diff",
       "kind": "deferred",
       "issue": "https://github.com/njbrake/agent-of-empires/issues/1221",

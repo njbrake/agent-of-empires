@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { DeleteSessionOptions } from "../lib/api";
 import type { CleanupDefaults } from "../lib/types";
 
@@ -26,16 +26,9 @@ export function DeleteSessionDialog({
   const [deleteBranch, setDeleteBranch] = useState(hasManagedWorktree && cleanupDefaults.delete_branch);
   const [deleteSandbox, setDeleteSandbox] = useState(isSandboxed && cleanupDefaults.delete_sandbox);
   const [deleting, setDeleting] = useState(false);
+  const confirmButtonRef = useRef<HTMLButtonElement | null>(null);
 
   const hasOptions = hasManagedWorktree || isSandboxed;
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onCancel();
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [onCancel]);
 
   const handleConfirm = useCallback(async () => {
     setDeleting(true);
@@ -50,6 +43,39 @@ export function DeleteSessionDialog({
       setDeleting(false);
     }
   }, [onConfirm, deleteWorktree, deleteBranch, deleteSandbox, forceDelete]);
+
+  useEffect(() => {
+    confirmButtonRef.current?.focus();
+  }, []);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        onCancel();
+        return;
+      }
+      if (e.key === "Enter") {
+        // Skip when focus is on an element that has its own Enter semantics
+        // (Cancel button, native input/textarea), so the user can still
+        // tab to Cancel and press Enter to dismiss without confirming.
+        const target = e.target as HTMLElement | null;
+        if (target) {
+          const tag = target.tagName;
+          if (tag === "INPUT" || tag === "TEXTAREA") return;
+          if (
+            tag === "BUTTON" &&
+            target !== confirmButtonRef.current
+          )
+            return;
+        }
+        if (deleting) return;
+        e.preventDefault();
+        void handleConfirm();
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onCancel, handleConfirm, deleting]);
 
   return (
     <div
@@ -126,6 +152,7 @@ export function DeleteSessionDialog({
             Cancel
           </button>
           <button
+            ref={confirmButtonRef}
             onClick={handleConfirm}
             disabled={deleting}
             className="px-3 py-1.5 text-sm text-white bg-status-error/90 hover:bg-status-error rounded-md cursor-pointer transition-colors disabled:opacity-50 flex items-center gap-2"
