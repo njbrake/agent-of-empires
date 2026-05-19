@@ -325,8 +325,7 @@ export interface ServerAbout {
    *  so the rendered transcript matches the user's chosen ceiling
    *  instead of clipping at a hard-coded frontend constant. See #1111. */
   cockpit_replay_events: number;
-  /** `"debug"` when built with `debug_assertions`, else `"release"`. Drives the topbar DEV badge. See #1055. */
-  build_flavor: "debug" | "release";
+  build_flavor: "debug" | "release"; // `"debug"` => debug_assertions; drives topbar DEV badge. See #1055.
 }
 
 export async function setCockpitMaster(
@@ -354,7 +353,6 @@ export function isDebugBuild(about: ServerAbout | null | undefined): boolean {
   if (!about) return false;
   return about.build_flavor === "debug";
 }
-
 export interface UpdateStatus {
   check_enabled: boolean;
   current_version: string;
