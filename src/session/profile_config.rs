@@ -17,6 +17,12 @@ use super::get_profile_dir;
 /// Profile-specific settings. All fields are Option<T> - None means "inherit from global"
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProfileConfig {
+    /// Short, human-readable description of what this profile does.
+    /// Surfaced as helper text in the new-session profile picker (TUI + web).
+    /// Profile-only: there is no global counterpart to inherit from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub theme: Option<ThemeConfigOverride>,
 
@@ -287,7 +293,8 @@ pub fn get_profile_config_path(profile: &str) -> Result<std::path::PathBuf> {
 
 /// Check if a profile has any overrides set
 pub fn profile_has_overrides(config: &ProfileConfig) -> bool {
-    config.theme.is_some()
+    config.description.is_some()
+        || config.theme.is_some()
         || config.updates.is_some()
         || config.worktree.is_some()
         || config.sandbox.is_some()
@@ -1007,6 +1014,37 @@ mod tests {
         let merged = merge_configs(global, &profile);
         // Profile env replaces (matches sandbox.environment semantics).
         assert_eq!(merged.environment, vec!["FROM_PROFILE=2".to_string()]);
+    }
+
+    #[test]
+    fn test_description_round_trips() {
+        let toml_in = r#"description = "Read-only review profile""#;
+        let config: ProfileConfig = toml::from_str(toml_in).unwrap();
+        assert_eq!(
+            config.description.as_deref(),
+            Some("Read-only review profile"),
+        );
+
+        let serialized = toml::to_string_pretty(&config).unwrap();
+        assert!(serialized.contains("Read-only review profile"));
+    }
+
+    #[test]
+    fn test_description_default_is_none() {
+        let config = ProfileConfig::default();
+        assert!(config.description.is_none());
+        // Default empty config must still serialize empty so untouched profiles
+        // don't grow a description line on first save.
+        let serialized = toml::to_string(&config).unwrap();
+        assert!(serialized.trim().is_empty());
+    }
+
+    #[test]
+    fn test_description_promotes_profile_has_overrides() {
+        let mut profile = ProfileConfig::default();
+        assert!(!profile_has_overrides(&profile));
+        profile.description = Some("My profile".to_string());
+        assert!(profile_has_overrides(&profile));
     }
 
     #[test]

@@ -163,6 +163,13 @@
       ]
     },
     {
+      "id": "wizard.profile-description",
+      "kind": "mocked-playwright",
+      "risk": "medium",
+      "specs": ["tests/wizard-agent-step.spec.ts"],
+      "components": ["web/src/components/session-wizard/steps/AgentStep.tsx"]
+    },
+    {
       "id": "directory-browser",
       "kind": "live-playwright",
       "risk": "medium",

@@ -108,6 +108,11 @@ pub struct NewSessionData {
 pub struct NewSessionDialog {
     pub(super) profile: String,
     pub(super) available_profiles: Vec<String>,
+    /// Per-profile short descriptions, indexed in lockstep with
+    /// `available_profiles`. `None` when a profile has no description
+    /// configured. Surfaced as helper text under the profile name in the
+    /// picker when one is set.
+    pub(super) profile_descriptions: Vec<Option<String>>,
     pub(super) profile_index: usize,
     pub(super) title: Input,
     pub(super) path: Input,
@@ -379,9 +384,22 @@ impl NewSessionDialog {
             .position(|p| p == profile)
             .unwrap_or(0);
 
+        // Resolve each profile's description from its on-disk config. Failures
+        // fall through to None so a corrupted profile config does not break
+        // the new-session picker.
+        let profile_descriptions = available_profiles
+            .iter()
+            .map(|name| {
+                crate::session::load_profile_config(name)
+                    .ok()
+                    .and_then(|c| c.description)
+            })
+            .collect();
+
         Self {
             profile: profile.to_string(),
             available_profiles,
+            profile_descriptions,
             profile_index,
             title: Input::default(),
             path: Input::new(current_dir),
@@ -520,6 +538,16 @@ impl NewSessionDialog {
         &self.available_profiles[self.profile_index]
     }
 
+    /// Description for the currently selected profile, if one was configured.
+    /// Indexed in lockstep with `available_profiles`; an out-of-bounds index
+    /// (shouldn't happen in practice) yields `None` so the picker degrades
+    /// gracefully instead of panicking.
+    pub(super) fn selected_profile_description(&self) -> Option<&str> {
+        self.profile_descriptions
+            .get(self.profile_index)
+            .and_then(|d| d.as_deref())
+    }
+
     pub(super) fn has_profile_selection(&self) -> bool {
         self.available_profiles.len() > 1
     }
@@ -637,6 +665,7 @@ impl NewSessionDialog {
         Self {
             profile: "default".to_string(),
             available_profiles: vec!["default".to_string()],
+            profile_descriptions: vec![None],
             profile_index: 0,
             title: Input::default(),
             path: Input::new(path),
@@ -700,6 +729,7 @@ impl NewSessionDialog {
         Self {
             profile: "default".to_string(),
             available_profiles: vec!["default".to_string()],
+            profile_descriptions: vec![None],
             profile_index: 0,
             title: Input::default(),
             path: Input::new(path),

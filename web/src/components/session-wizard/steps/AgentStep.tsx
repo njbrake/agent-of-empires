@@ -206,25 +206,60 @@ export function AgentStep({ data, onChange, agents, profiles, dockerAvailable, o
         />
       )}
 
-      {/* Profile selector */}
+      {/* Profile selector. We render a card list (rather than a native
+          <select>) so each profile can carry a short description beneath
+          its name. The card list also makes the active selection more
+          obvious on touch devices. See #949. */}
       {showProfilePicker && (
         <div className="mb-5">
           <label className="block text-sm text-text-dim mb-1.5">Workflow preset</label>
           <p className="text-xs text-text-dim mb-2">
             Profiles preload tool, sandbox, auto-approve, and env defaults for common workflows.
           </p>
-          <select
-            value={data.profile}
-            onChange={(e) => handleProfileChange(e.target.value)}
-            className="w-full bg-surface-900 border border-surface-700 rounded-lg px-3 py-2.5 text-sm text-text-primary focus:border-brand-600 focus:outline-none cursor-pointer"
-          >
-            <option value="">Server default</option>
+          <div role="radiogroup" aria-label="Workflow preset" className="space-y-1.5">
+            <button
+              type="button"
+              role="radio"
+              aria-checked={data.profile === ""}
+              onClick={() => handleProfileChange("")}
+              className={`w-full min-h-[44px] text-left p-3 rounded-lg border transition-colors cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 ${
+                data.profile === ""
+                  ? "border-brand-600 bg-surface-900"
+                  : "border-surface-700 bg-surface-950 hover:border-surface-600"
+              }`}
+            >
+              <div className="text-sm font-semibold text-text-primary">Server default</div>
+              <div className="mt-0.5 text-xs text-text-dim leading-snug">
+                Use the active profile on the server with no client-side preset.
+              </div>
+            </button>
             {profiles.map((p) => (
-              <option key={p.name} value={p.name}>
-                {p.name}{p.is_default ? " (active)" : ""}
-              </option>
+              <button
+                type="button"
+                role="radio"
+                aria-checked={data.profile === p.name}
+                key={p.name}
+                onClick={() => handleProfileChange(p.name)}
+                className={`w-full min-h-[44px] text-left p-3 rounded-lg border transition-colors cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 ${
+                  data.profile === p.name
+                    ? "border-brand-600 bg-surface-900"
+                    : "border-surface-700 bg-surface-950 hover:border-surface-600"
+                }`}
+              >
+                <div className="flex flex-wrap items-baseline gap-2">
+                  <span className="text-sm font-semibold text-text-primary">{p.name}</span>
+                  {p.is_default && (
+                    <span className="rounded px-1.5 py-px text-[10px] font-mono uppercase tracking-wide bg-surface-700 text-text-dim">
+                      Active
+                    </span>
+                  )}
+                </div>
+                {p.description && (
+                  <div className="mt-0.5 text-xs text-text-dim leading-snug">{p.description}</div>
+                )}
+              </button>
             ))}
-          </select>
+          </div>
           {data.profile && data.profileDirty && (
             <p className="text-xs text-brand-500 mt-1">(Custom) Settings differ from preset defaults</p>
           )}

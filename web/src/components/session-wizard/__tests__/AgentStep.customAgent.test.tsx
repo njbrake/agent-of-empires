@@ -132,6 +132,53 @@ describe("AgentStep custom-agent selection (#1252)", () => {
   });
 });
 
+describe("AgentStep profile description (#949)", () => {
+  function renderWithProfiles(profiles: ProfileInfo[]) {
+    const onChange = vi.fn();
+    const utils = render(
+      <AgentStep
+        data={{ ...initialData, tool: "claude" }}
+        onChange={onChange}
+        agents={[builtin]}
+        profiles={profiles}
+        dockerAvailable={false}
+        onApplyProfileDefaults={() => {}}
+        cockpitMasterEnabled={false}
+      />,
+    );
+    return { onChange, ...utils };
+  }
+
+  it("renders each profile's description as helper text under its name", () => {
+    const { getByText } = renderWithProfiles([
+      { name: "default", is_default: true, description: "Stock setup, no overrides" },
+      { name: "yolo-sandbox", is_default: false, description: "Auto-approve in a container" },
+    ]);
+    expect(getByText("Stock setup, no overrides")).toBeTruthy();
+    expect(getByText("Auto-approve in a container")).toBeTruthy();
+  });
+
+  it("omits the helper text line when a profile has no description", () => {
+    const { queryByText, getByRole } = renderWithProfiles([
+      { name: "default", is_default: true },
+      { name: "other", is_default: false },
+    ]);
+    // The card itself is still rendered ...
+    expect(getByRole("radio", { name: /other/ })).toBeTruthy();
+    // ... but no description text leaks through with a stray "undefined".
+    expect(queryByText(/undefined/)).toBeNull();
+  });
+
+  it("clicking a profile card calls onChange with the profile name", () => {
+    const { onChange, getByRole } = renderWithProfiles([
+      { name: "default", is_default: true },
+      { name: "work", is_default: false, description: "Work setup" },
+    ]);
+    fireEvent.click(getByRole("radio", { name: /work/ }));
+    expect(onChange).toHaveBeenCalledWith("profile", "work");
+  });
+});
+
 describe("ReviewStep agent row (#1252)", () => {
   function renderReviewStep(overrides: {
     tool: string;

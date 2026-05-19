@@ -296,6 +296,11 @@ pub async fn get_current_theme(
 pub struct ProfileInfo {
     pub name: String,
     pub is_default: bool,
+    /// Optional short description, surfaced as helper text in the wizard
+    /// profile picker. `None` (and therefore omitted from JSON) when the
+    /// profile has no description configured. See #949.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 pub async fn list_profiles(State(state): State<Arc<AppState>>) -> Json<Vec<ProfileInfo>> {
@@ -310,7 +315,14 @@ pub async fn list_profiles(State(state): State<Arc<AppState>>) -> Json<Vec<Profi
         .into_iter()
         .map(|name| {
             let is_default = name == active;
-            ProfileInfo { name, is_default }
+            let description = crate::session::load_profile_config(&name)
+                .ok()
+                .and_then(|c| c.description);
+            ProfileInfo {
+                name,
+                is_default,
+                description,
+            }
         })
         .collect();
     // Ensure the active profile appears even if list_profiles missed it
@@ -320,6 +332,9 @@ pub async fn list_profiles(State(state): State<Arc<AppState>>) -> Json<Vec<Profi
             ProfileInfo {
                 name: active.to_string(),
                 is_default: true,
+                description: crate::session::load_profile_config(active)
+                    .ok()
+                    .and_then(|c| c.description),
             },
         );
     }

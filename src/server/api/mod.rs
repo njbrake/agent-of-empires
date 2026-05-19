@@ -62,7 +62,13 @@ pub(super) fn validate_no_shell_injection(value: &str, field_name: &str) -> Resu
 }
 
 pub(super) const ALLOWED_SETTINGS_SECTIONS: &[&str] = &[
-    "theme", "session", "tmux", "updates", "sound", "sandbox", "worktree",
+    "theme",
+    "session",
+    "tmux",
+    "updates",
+    "sound",
+    "sandbox",
+    "worktree",
     // web: audited 2026-04-24, contains only boolean notification toggles
     // (notifications_enabled, notify_on_waiting, notify_on_idle, notify_on_error).
     // No shell commands, no binary paths, no RCE surface.
@@ -71,6 +77,10 @@ pub(super) const ALLOWED_SETTINGS_SECTIONS: &[&str] = &[
     // No shell commands, no binary paths. Values are validated against the
     // EnvFilter parser before being written back to disk.
     "logging",
+    // description: top-level profile field (Option<String>) surfaced as
+    // helper text in the wizard profile picker (#949). Plain text only,
+    // no shell metacharacters or binary paths.
+    "description",
 ];
 
 pub(super) const SESSION_BLOCKED_FIELDS: &[&str] = &[
@@ -309,7 +319,13 @@ mod tests {
         // section in particular must NOT be API-writable because global
         // hooks bypass the trust prompt that gates repo hooks.
         let expected: &[&str] = &[
-            "theme", "session", "tmux", "updates", "sound", "sandbox", "worktree",
+            "theme",
+            "session",
+            "tmux",
+            "updates",
+            "sound",
+            "sandbox",
+            "worktree",
             // web: audited 2026-04-24. WebConfig has 4 boolean fields
             // (notifications_enabled, notify_on_waiting, notify_on_idle,
             // notify_on_error). No shell commands, no binary paths.
@@ -317,6 +333,9 @@ mod tests {
             // logging: persistent tracing filter. EnvFilter parser
             // validates every value before save_config writes it back.
             "logging",
+            // description: optional string surfaced in the wizard profile
+            // picker (#949). Plain text, no shell metacharacters.
+            "description",
         ];
         assert_eq!(
             ALLOWED_SETTINGS_SECTIONS.len(),
