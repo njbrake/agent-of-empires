@@ -22,7 +22,10 @@ jobs:
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           cache-bin: "false"
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          # Save on PRs too. Swatinem keys the cache on Cargo.lock +
+          # toolchain hash, so successive pushes to the same PR reuse
+          # the slot rather than thrashing the 10GB repo cache budget.
+          save-if: true
       - name: Install tmux
         run: |
           if [ "$RUNNER_OS" = "Linux" ]; then
@@ -143,13 +146,22 @@ jobs:
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
         with:
           cache-bin: "false"
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          # Save on PRs too. Swatinem keys the cache on Cargo.lock +
+          # toolchain hash, so successive pushes to the same PR reuse
+          # the slot rather than thrashing the 10GB repo cache budget.
+          save-if: true
       - name: Install tmux
         run: sudo apt-get update && sudo apt-get install -y tmux
+      # Debug build instead of --release: --release with LTO and
+      # codegen-units=1 cost ~6 min on the GitHub runner; debug builds
+      # the same binary in ~2 min with no relevant runtime difference
+      # for e2e tests. The harness derives the tmux prefix from the
+      # binary path (aoe_dev_ for debug, aoe_ for release) so specs
+      # don't hard-code either.
       - name: Build aoe with instrumented web bundle
         env:
           AOE_COVERAGE: '1'
-        run: cargo build --features serve --release
+        run: cargo build --features serve
       - name: Install web deps
         working-directory: web
         run: npm ci
@@ -160,7 +172,7 @@ jobs:
         working-directory: web
         env:
           AOE_COVERAGE: '1'
-          AOE_E2E_BINARY: ${{ github.workspace }}/target/release/aoe
+          AOE_E2E_BINARY: ${{ github.workspace }}/target/debug/aoe
         run: npx playwright test --config=playwright.live.config.ts
       - name: Build LCOV from collected Playwright coverage
         working-directory: web

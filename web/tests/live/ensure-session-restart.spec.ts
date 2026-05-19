@@ -41,7 +41,7 @@ base.describe("ensure_session restart flow", () => {
       const sessions = await listSessions(serve.baseUrl);
       expect(sessions.length).toBeGreaterThan(0);
       const sessionId: string = sessions[0]!.id;
-      const tmuxName = `aoe_${title}_${sessionId.slice(0, 8)}`;
+      const tmuxName = `${serve.tmuxPrefix}${title}_${sessionId.slice(0, 8)}`;
 
       expect(sessions[0]!.status).toBe("Error");
       expect(tmuxHasSession(serve.home, tmuxName)).toBe(false);
@@ -107,7 +107,7 @@ base.describe("ensure_session restart flow", () => {
     try {
       const sessions = await listSessions(serve.baseUrl);
       const sessionId: string = sessions[0]!.id;
-      const tmuxName = `aoe_${title}_${sessionId.slice(0, 8)}`;
+      const tmuxName = `${serve.tmuxPrefix}${title}_${sessionId.slice(0, 8)}`;
 
       spawnSync("tmux", ["kill-session", "-t", tmuxName], {
         env: {

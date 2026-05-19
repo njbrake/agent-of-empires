@@ -87,6 +87,14 @@ export interface ServeHandle {
    * same value into `localStorage` under `aoe-device-binding-secret`.
    */
   deviceBindingSecret?: string;
+  /**
+   * The tmux session prefix the running binary uses. Debug-mode builds
+   * (`debug_assertions=true`, set by both `cargo build` and `cargo build
+   * --profile dev-release`) use `aoe_dev_`; release builds use `aoe_`.
+   * Specs that need to assert on tmux session names should compose this
+   * with the session title rather than hard-coding `aoe_`.
+   */
+  tmuxPrefix: "aoe_" | "aoe_dev_";
   stop(): Promise<void>;
 }
 
@@ -161,8 +169,23 @@ export function resolveAoeBinary(): string {
   const fromEnv = process.env.AOE_E2E_BINARY;
   if (fromEnv && existsSync(fromEnv)) return fromEnv;
   const repoRoot = resolve(__dirname, "..", "..", "..");
+  // Prefer release if both exist (CI builds release by default), fall
+  // back to debug for local `cargo build` flows.
   const release = join(repoRoot, "target", "release", "aoe");
-  return release;
+  if (existsSync(release)) return release;
+  return join(repoRoot, "target", "debug", "aoe");
+}
+
+/**
+ * Map a resolved aoe binary path to the tmux session prefix the binary
+ * will use. The Rust side sets the prefix at compile time based on
+ * `cfg!(debug_assertions)`; we can't query it from JS, so we derive it
+ * from the build directory in the path. CI passes the binary via
+ * `AOE_E2E_BINARY` so this works in CI; locally it falls through to the
+ * release/debug heuristic in `resolveAoeBinary`.
+ */
+export function tmuxPrefixFor(binaryPath: string): "aoe_" | "aoe_dev_" {
+  return binaryPath.includes("/target/debug/") ? "aoe_dev_" : "aoe_";
 }
 
 function portFor(workerIndex: number, parallelIndex: number, attempt: number): number {
@@ -382,6 +405,7 @@ export async function spawnAoeServe(opts: SpawnOptions): Promise<ServeHandle> {
     proc,
     authMode,
     passphrase,
+    tmuxPrefix: tmuxPrefixFor(aoeBinary),
     async stop() {
       try {
         if (proc && proc.exitCode === null && proc.signalCode === null) {

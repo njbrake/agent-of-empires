@@ -24,7 +24,10 @@ export default defineConfig({
   // do not collide. See `tests/helpers/aoeServe.ts`.
   fullyParallel: true,
   workers: 2,
-  retries: process.env.CI ? 1 : 0,
+  // No retries: a flaky live spec doubles CI wall time on every flake.
+  // Better to surface the flake and fix it (or quarantine via test.skip
+  // until fixed) than to mask it with a retry budget.
+  retries: 0,
   use: {
     headless: true,
     screenshot: "only-on-failure",
