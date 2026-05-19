@@ -132,6 +132,13 @@
       "components": []
     },
     {
+      "id": "profiles.selection-resolve",
+      "kind": "vitest",
+      "risk": "medium",
+      "specs": ["src/components/__tests__/SettingsView.test.tsx"],
+      "components": []
+    },
+    {
       "id": "wizard",
       "kind": "mocked-playwright",
       "risk": "high",

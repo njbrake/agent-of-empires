@@ -95,6 +95,21 @@ function isTabId(value: unknown): value is TabId {
   return typeof value === "string" && ALL_TAB_IDS.has(value as TabId);
 }
 
+/// Resolves the value `selectedProfile` should take when the mount-time
+/// `fetchProfiles()` returns. Preserve a user-set selection if it's still a
+/// valid profile (closes the race where the user picks one in the gap before
+/// the mount fetch resolves); otherwise fall back to the server's
+/// default-flagged profile, then to the literal "default" string. Exported
+/// for unit testing because the live race is hard to drive deterministically
+/// without mounting all of SettingsView.
+export function resolveSelectedProfile(
+  current: string,
+  profiles: ProfileInfo[],
+): string {
+  if (profiles.some((p) => p.name === current)) return current;
+  return profiles.find((p) => p.is_default)?.name ?? "default";
+}
+
 export function SettingsView({
   onClose,
   tab,
@@ -119,19 +134,7 @@ export function SettingsView({
   useEffect(() => {
     fetchProfiles().then((p) => {
       setProfiles(p);
-      // Preserve a user-set selection if it's still a valid profile.
-      // The hardcoded initial state ("default") races against this
-      // mount fetch: if the user selects another profile in the gap
-      // before the fetch resolves (or before a child component like
-      // ProfileSelector populates its own option list), an
-      // unconditional `setSelectedProfile(active.name)` here silently
-      // reverts that choice. Only auto-select when the current value
-      // is no longer in the server's profile list (e.g. profile
-      // deleted out from under us).
-      setSelectedProfile((current) => {
-        if (p.some((pr) => pr.name === current)) return current;
-        return p.find((pr) => pr.is_default)?.name ?? "default";
-      });
+      setSelectedProfile((current) => resolveSelectedProfile(current, p));
     });
   }, []);
 
