@@ -52,32 +52,98 @@
       "components": ["web/src/components/settings/SoundSettings.tsx"]
     },
     {
-      "id": "settings.other-panels",
-      "kind": "deferred",
-      "issue": "https://github.com/njbrake/agent-of-empires/issues/1217",
+      "id": "settings.update-payload",
+      "kind": "vitest",
       "risk": "medium",
+      "specs": ["src/components/settings/__tests__/UpdateSettings.test.tsx"],
+      "components": ["web/src/components/settings/UpdateSettings.tsx"]
+    },
+    {
+      "id": "settings.tmux-payload",
+      "kind": "vitest",
+      "risk": "low",
+      "specs": ["src/components/settings/__tests__/TmuxSettings.test.tsx"],
+      "components": ["web/src/components/settings/TmuxSettings.tsx"]
+    },
+    {
+      "id": "settings.tmux-persistence",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": ["tests/live/settings-persistence-tmux.spec.ts"],
+      "components": []
+    },
+    {
+      "id": "settings.theme-payload",
+      "kind": "vitest",
+      "risk": "low",
+      "specs": ["src/components/settings/__tests__/ThemeSettings.test.tsx"],
+      "components": []
+    },
+    {
+      "id": "settings.logging-payload",
+      "kind": "vitest",
+      "risk": "medium",
+      "specs": ["src/components/settings/__tests__/LoggingSettings.test.tsx"],
       "components": [
-        "web/src/components/NotificationSettings.tsx",
-        "web/src/components/SecuritySettings.tsx",
-        "web/src/components/TerminalSettings.tsx",
         "web/src/components/settings/LoggingSettings.tsx",
-        "web/src/components/settings/TmuxSettings.tsx",
-        "web/src/components/settings/UpdateSettings.tsx",
         "web/src/components/settings/FormFields.tsx"
       ]
     },
     {
-      "id": "profiles",
-      "kind": "deferred",
-      "issue": "https://github.com/njbrake/agent-of-empires/issues/1218",
+      "id": "settings.notifications",
+      "kind": "vitest",
+      "risk": "medium",
+      "specs": ["src/components/__tests__/NotificationSettings.test.tsx"],
+      "components": ["web/src/components/NotificationSettings.tsx"]
+    },
+    {
+      "id": "settings.security-readonly",
+      "kind": "vitest",
+      "risk": "low",
+      "specs": ["src/components/__tests__/SecuritySettings.test.tsx"],
+      "components": ["web/src/components/SecuritySettings.tsx"]
+    },
+    {
+      "id": "settings.terminal-localstorage",
+      "kind": "vitest",
+      "risk": "medium",
+      "specs": ["src/components/__tests__/TerminalSettings.test.tsx"],
+      "components": ["web/src/components/TerminalSettings.tsx"]
+    },
+    {
+      "id": "profiles.lifecycle",
+      "kind": "live-playwright",
       "risk": "high",
+      "specs": ["tests/live/profile-lifecycle.spec.ts"],
       "components": ["web/src/components/settings/ProfileSelector.tsx"]
     },
     {
-      "id": "wizard",
-      "kind": "deferred",
-      "issue": "https://github.com/njbrake/agent-of-empires/issues/1219",
+      "id": "profiles.override",
+      "kind": "live-playwright",
       "risk": "high",
+      "specs": ["tests/live/profile-override.spec.ts"],
+      "components": []
+    },
+    {
+      "id": "profiles.name-validation",
+      "kind": "vitest",
+      "risk": "medium",
+      "specs": ["src/components/settings/__tests__/ProfileSelector.test.tsx"],
+      "components": []
+    },
+    {
+      "id": "wizard",
+      "kind": "mocked-playwright",
+      "risk": "high",
+      "specs": [
+        "tests/wizard-attach-existing.spec.ts",
+        "tests/wizard-base-branch.spec.ts",
+        "tests/wizard-project-step.spec.ts",
+        "tests/wizard-session-step.spec.ts",
+        "tests/wizard-agent-step.spec.ts",
+        "tests/wizard-review-step.spec.ts",
+        "tests/wizard-extra-repos.spec.ts"
+      ],
       "components": [
         "web/src/components/session-wizard/SessionWizard.tsx",
         "web/src/components/session-wizard/StepIndicator.tsx",
@@ -90,9 +156,9 @@
     },
     {
       "id": "directory-browser",
-      "kind": "deferred",
-      "issue": "https://github.com/njbrake/agent-of-empires/issues/1219",
+      "kind": "live-playwright",
       "risk": "medium",
+      "specs": ["tests/live/directory-browser.spec.ts"],
       "components": ["web/src/components/DirectoryBrowser.tsx"]
     },
     {
