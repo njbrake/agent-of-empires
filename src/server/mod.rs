@@ -1694,7 +1694,21 @@ async fn daemon_startup_recovery_mark(
 
     crate::session::recovery::warm_tmux_server();
     crate::tmux::refresh_session_cache();
-    let pane_meta = crate::tmux::batch_pane_metadata().unwrap_or_default();
+    // On probe failure we cannot distinguish "all panes dead" from "tmux
+    // unreachable", and treating the latter as the former would trigger
+    // spurious recovery cascades that kill possibly-alive panes. Skip
+    // the entire pass on Err; the next daemon launch will retry.
+    let pane_meta = match crate::tmux::batch_pane_metadata() {
+        Ok(map) => map,
+        Err(e) => {
+            tracing::warn!(
+                target: "session.startup_recovery",
+                error = %e,
+                "tmux probe failed at daemon startup; skipping recovery this launch",
+            );
+            return None;
+        }
+    };
 
     let candidates: Vec<crate::session::Instance> = {
         let instances = state.instances.read().await;
@@ -1759,14 +1773,39 @@ async fn daemon_startup_recovery_cascade(
             // tmux re-check, recovery would `kill_clean` a freshly-started
             // pane the user just attached to. The lock + this re-check
             // serialise against any other AoE writer.
+            //
+            // Use the fallible `batch_pane_metadata()` here so a transient
+            // tmux probe failure does NOT collapse to "pane dead" and
+            // wrongly proceed with the cascade: skip + unmark instead.
+            // Mirrors Phase A's pattern at the mark site.
+            let pane_meta = match crate::tmux::batch_pane_metadata() {
+                Ok(map) => map,
+                Err(e) => {
+                    tracing::warn!(
+                        target: "session.startup_recovery",
+                        instance_id = %id,
+                        error = %e,
+                        "tmux probe failed during recovery re-check; skipping cascade",
+                    );
+                    crate::session::recovery::unmark_recently_restarted(
+                        &inst_state.recently_restarted,
+                        &id,
+                    );
+                    return;
+                }
+            };
             let still_candidate = {
                 let instances = inst_state.instances.read().await;
                 instances
                     .iter()
                     .find(|i| i.id == id)
                     .map(|i| {
-                        !i.has_live_tmux_pane()
-                            && crate::session::recovery::is_recovery_candidate(i)
+                        let session_name = crate::tmux::Session::generate_name(&i.id, &i.title);
+                        let has_live_tmux = pane_meta
+                            .get(&session_name)
+                            .map(|m| !m.pane_dead)
+                            .unwrap_or(false);
+                        !has_live_tmux && crate::session::recovery::is_recovery_candidate(i)
                     })
                     .unwrap_or(false)
             };
