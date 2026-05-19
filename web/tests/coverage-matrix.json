@@ -67,11 +67,25 @@
       ]
     },
     {
-      "id": "profiles",
-      "kind": "deferred",
-      "issue": "https://github.com/njbrake/agent-of-empires/issues/1218",
+      "id": "profiles.lifecycle",
+      "kind": "live-playwright",
       "risk": "high",
+      "specs": ["tests/live/profile-lifecycle.spec.ts"],
       "components": ["web/src/components/settings/ProfileSelector.tsx"]
+    },
+    {
+      "id": "profiles.override",
+      "kind": "live-playwright",
+      "risk": "high",
+      "specs": ["tests/live/profile-override.spec.ts"],
+      "components": []
+    },
+    {
+      "id": "profiles.name-validation",
+      "kind": "vitest",
+      "risk": "medium",
+      "specs": ["src/components/settings/__tests__/ProfileSelector.test.tsx"],
+      "components": []
     },
     {
       "id": "wizard",
