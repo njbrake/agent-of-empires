@@ -354,6 +354,16 @@ export function fetchAbout(): Promise<ServerAbout | null> {
   return fetchJson<ServerAbout>("/api/about");
 }
 
+/** Runtime helper around `ServerAbout.build_flavor`. Wraps the topbar's
+ *  `serverAbout?.build_flavor === "debug"` check so the discriminator is
+ *  exercised as an actual statement in `api.ts` instead of only living
+ *  inside an interface declaration (which istanbul/v8 instrument but
+ *  TypeScript erases at runtime, leaving the field line uncovered in
+ *  LCOV). See #1055. */
+export function isDebugBuild(about: ServerAbout | null | undefined): boolean {
+  return about?.build_flavor === "debug";
+}
+
 export interface UpdateStatus {
   check_enabled: boolean;
   current_version: string;

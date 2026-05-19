@@ -16,7 +16,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { fetchAbout, type ServerAbout } from "./api";
+import { fetchAbout, isDebugBuild, type ServerAbout } from "./api";
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -92,5 +92,23 @@ describe("fetchAbout", () => {
     fetchSpy.mockResolvedValueOnce(jsonResponse(makeAbout()));
     await fetchAbout();
     expect(fetchSpy).toHaveBeenCalledWith("/api/about", undefined);
+  });
+});
+
+describe("isDebugBuild", () => {
+  it("returns true for a debug-flavored payload", () => {
+    expect(isDebugBuild(makeAbout({ build_flavor: "debug" }))).toBe(true);
+  });
+
+  it("returns false for a release-flavored payload", () => {
+    expect(isDebugBuild(makeAbout({ build_flavor: "release" }))).toBe(false);
+  });
+
+  it("returns false when the about payload is null", () => {
+    expect(isDebugBuild(null)).toBe(false);
+  });
+
+  it("returns false when the about payload is undefined", () => {
+    expect(isDebugBuild(undefined)).toBe(false);
   });
 });
