@@ -568,13 +568,15 @@ fn clear_session_id_on_disk(profile: &str, instance_id: &str) {
     // `agent_session_id` in memory and the TUI's reload merge would
     // otherwise resurrect a stale poller-captured value.
     //
-    // `Storage::save` is atomic per write (tempfile::persist + fsync,
-    // see `src/session/storage.rs::atomic_write`), so concurrent saves
-    // cannot corrupt the file. The residual hazard is a load-modify-save
-    // interleave (lost-update): independent of save atomicity, this
-    // requires a cross-worker mutex on the per-profile file to close
-    // durably. The post-loop reconcile in `restart_all_sessions` is the
-    // current mitigation.
+    // `Storage::save` writes are made visible via atomic rename
+    // (tempfile::persist + fsync, see `src/session/storage.rs::atomic_write`),
+    // so concurrent readers always observe either the old or new file
+    // contents, never a partial write. This guarantee covers file-level
+    // visibility only; concurrent writers can still cause lost-updates
+    // (a load-modify-save interleave), which is independent of save
+    // atomicity. Closing that durably requires a cross-worker mutex on
+    // the per-profile file. The post-loop reconcile in
+    // `restart_all_sessions` is the current mitigation.
 
     let storage = match super::storage::Storage::new(profile) {
         Ok(s) => s,
@@ -1875,18 +1877,31 @@ impl Instance {
         // that was never passed). The debug_assert surfaces the protocol
         // violation in dev/test if a future caller forgets to tear down;
         // the tracing::warn! mirrors it in release so the race is visible
-        // in `aoe logs` for diagnosis (otherwise the cascade is silently
-        // skipped and the user sees a frozen pane with no log trail).
+        // in `aoe logs` for diagnosis. The branch on `attempting_resume`
+        // separates the dangerous case (sid was passed but no probe ran,
+        // pane could be left frozen) from the benign one (no resume was
+        // attempted, the race is just kill_clean cache staleness).
         let pane_was_preexisting = self.tmux_session().is_ok_and(|s| s.exists());
         if pane_was_preexisting {
-            tracing::warn!(
-                target: "session.store",
-                instance_id = %self.id,
-                attempting_resume,
-                "start_with_resume_fallback: tmux session still exists on entry; \
-                 cascade skipped (kill_clean race or caller protocol violation). \
-                 Returning Fresh; if pane was started with --resume <sid>, no probe runs.",
-            );
+            if attempting_resume {
+                tracing::warn!(
+                    target: "session.store",
+                    instance_id = %self.id,
+                    "start_with_resume_fallback: tmux session still exists on \
+                     entry with attempting_resume=true; cascade skipped, \
+                     returning Fresh. --resume <sid> was passed to \
+                     start_with_size_opts but no probe ran; if the agent \
+                     crashes inside the pane, it will be left frozen.",
+                );
+            } else {
+                tracing::warn!(
+                    target: "session.store",
+                    instance_id = %self.id,
+                    "start_with_resume_fallback: tmux session still exists on \
+                     entry (no resume attempted); cascade skipped, returning \
+                     Fresh. Likely a kill_clean race or caller protocol violation.",
+                );
+            }
         }
         debug_assert!(
             !pane_was_preexisting,

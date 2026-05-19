@@ -564,8 +564,8 @@ impl HomeView {
                         .clone()
                         .or(inst.agent_session_id.take());
                     // Carry the resume-fallback exclusion set across
-                    // reloads. Without this, a stale sid the cascade just
-                    // cleared would be re-imported on the next 5s reload
+                    // reloads. Without this, a stale sid that the cascade
+                    // just cleared would be re-imported on the next 5s reload
                     // (the on-disk session artifact persists for ~5-10
                     // min after the agent's crash). The set is
                     // `#[serde(skip)]` runtime-only so disk reloads
