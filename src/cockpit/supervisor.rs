@@ -875,12 +875,15 @@ impl<S: BroadcastSink> Supervisor<S> {
                 loop {
                     // Tracks whether the connection task ended because the
                     // cancel-escalation watchdog declared the agent
-                    // unresponsive (see acp_client.rs's CANCEL_ESCALATION_GRACE).
-                    // When true, the runner subprocess is alive but wedged
-                    // around a tool call the agent never cancelled, so the
-                    // supervisor must SIGTERM it before respawning;
-                    // otherwise the next `session/load` would attach to the
-                    // same wedged process. See #1196.
+                    // unresponsive (see acp_client.rs's CANCEL_ESCALATION_GRACE)
+                    // OR because the silent-orphan watchdog detected the
+                    // adapter dropped PromptResponse (see #1240). Both
+                    // failure modes need the same recovery: SIGTERM the
+                    // wedged runner before respawning so the next
+                    // `session/load` doesn't attach to the same wedged
+                    // process. The Stopped reason in the published event
+                    // preserves the distinction; this flag only gates the
+                    // local kill behavior.
                     let mut agent_unresponsive = false;
                     // Set when the connection task signals a non-crash exit
                     // due to a provider quota / rate-limit hit. The acp_client
@@ -897,7 +900,7 @@ impl<S: BroadcastSink> Supervisor<S> {
                     let mut rate_limited = false;
                     while let Some(event) = inbound.recv().await {
                         if let Event::Stopped { reason } = &event {
-                            if reason == "agent_unresponsive" {
+                            if reason == "agent_unresponsive" || reason == "prompt_orphaned" {
                                 agent_unresponsive = true;
                             } else if reason == "rate_limited" {
                                 rate_limited = true;
