@@ -33,7 +33,7 @@ const __dirname = dirname(__filename);
 
 const DEFAULT_PASSPHRASE = "aoe-e2e-fixed-passphrase";
 
-export type AuthMode = "none" | "passphrase";
+export type AuthMode = "none" | "passphrase" | "token";
 
 export interface SpawnOptions {
   authMode?: AuthMode;
@@ -45,6 +45,19 @@ export interface SpawnOptions {
   extraArgs?: string[];
   /** Override the spawn timeout (default 10s). */
   spawnTimeoutMs?: number;
+  /**
+   * Token mode only. Sets `AOE_TEST_TOKEN_LIFETIME_SECS` on the server
+   * subprocess; in debug builds the daemon enables the rotation task
+   * even outside `--remote` and uses this lifetime. Ignored when
+   * authMode !== "token".
+   */
+  tokenLifetimeSecs?: number;
+  /**
+   * Token mode only. Sets `AOE_TEST_TOKEN_GRACE_SECS`. Defaults to the
+   * production 300s; specs that assert "old rejected past grace" pass a
+   * small value (e.g. 2) so the assertion lands inside a Playwright run.
+   */
+  tokenGraceSecs?: number;
   /**
    * When true, install `fakeAcpAgent.mjs` as the `claude` / `aoe-agent`
    * shim instead of the tail-f-dev-null stub, and flip the cockpit
@@ -83,6 +96,18 @@ export interface ServeHandle {
   proc: ChildProcess;
   authMode: AuthMode;
   passphrase?: string;
+  /**
+   * Token-mode only: the 64-char hex token the daemon wrote to
+   * `serve.token` after boot. Specs append it as `?token=<value>` on
+   * navigation or attach it as a Bearer header for direct fetches.
+   */
+  authToken?: string;
+  /**
+   * Token-mode only: filesystem path to `serve.token` under the
+   * isolated HOME. Specs that need to read the rotated token re-read
+   * this file; the daemon rewrites it on every rotation.
+   */
+  tokenFile?: string;
   /**
    * Set when `authMode === "passphrase"` and the harness has minted a
    * session via POST /api/login. Callers (typically the Playwright fixture)
@@ -196,6 +221,46 @@ export function tmuxPrefixFor(binaryPath: string): "aoe_" | "aoe_dev_" {
   return binaryPath.includes("/target/debug/") ? "aoe_dev_" : "aoe_";
 }
 
+/**
+ * Resolve where the daemon will write `serve.token` (and other serve.*
+ * state files) under the test's isolated filesystem tree. Mirrors the
+ * Rust `get_app_dir_path` logic at `src/session/mod.rs:83`: Linux uses
+ * `$XDG_CONFIG_HOME/agent-of-empires[-dev]`, macOS/Windows uses
+ * `$HOME/.agent-of-empires[-dev]`. Debug builds carry the `-dev`
+ * suffix, derived from the binary path the same way as `tmuxPrefixFor`.
+ */
+export function appDirFor(home: string, xdg: string, binaryPath: string): string {
+  const suffix = binaryPath.includes("/target/debug/") ? "-dev" : "";
+  if (process.platform === "linux") {
+    return join(xdg, `agent-of-empires${suffix}`);
+  }
+  return join(home, `.agent-of-empires${suffix}`);
+}
+
+/**
+ * Wait for `serve.token` to appear in the daemon's app dir, then read
+ * it. The daemon writes the token early in startup, so by the time
+ * `waitForServer` resolves it is on disk; the loop is a small safety
+ * net for systems where fs writes lag the listen socket by a few ms.
+ */
+async function readTokenFile(tokenPath: string, deadlineMs: number): Promise<string> {
+  const { readFile } = await import("node:fs/promises");
+  const deadline = Date.now() + deadlineMs;
+  let lastErr: unknown = "no attempts made";
+  while (Date.now() < deadline) {
+    try {
+      const raw = await readFile(tokenPath, "utf8");
+      const token = raw.trim();
+      if (token.length > 0) return token;
+      lastErr = "empty";
+    } catch (err) {
+      lastErr = err;
+    }
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  throw new Error(`token file ${tokenPath} not readable: ${lastErr}`);
+}
+
 function portFor(workerIndex: number, parallelIndex: number, attempt: number): number {
   // 5200 + worker*100 + parallel + attempt*7 covers ~14 retries per
   // (worker, parallel) slot before colliding with the next slot.
@@ -224,7 +289,10 @@ async function waitForServer(
       // the harness latch onto stale token-auth servers that other test
       // runs left running on the same port. Be precise per authMode.
       if (authMode === "none" && res.status === 200) return;
-      if (authMode === "passphrase" && (res.status === 200 || res.status === 401))
+      if (
+        (authMode === "passphrase" || authMode === "token") &&
+        (res.status === 200 || res.status === 401)
+      )
         return;
       lastErr = `status ${res.status}`;
     } catch (err) {
@@ -338,7 +406,9 @@ export async function spawnAoeServe(opts: SpawnOptions): Promise<ServeHandle> {
     writeFakeClaudeShim(shimBin);
   }
 
-  const seedEnv = {
+  const authMode: AuthMode = opts.authMode ?? "none";
+
+  const seedEnv: NodeJS.ProcessEnv = {
     ...process.env,
     HOME: home,
     XDG_CONFIG_HOME: xdg,
@@ -347,11 +417,19 @@ export async function spawnAoeServe(opts: SpawnOptions): Promise<ServeHandle> {
     PATH: `${shimBin}:${process.env.PATH ?? ""}`,
   };
 
+  if (authMode === "token") {
+    if (typeof opts.tokenLifetimeSecs === "number") {
+      seedEnv.AOE_TEST_TOKEN_LIFETIME_SECS = String(opts.tokenLifetimeSecs);
+    }
+    if (typeof opts.tokenGraceSecs === "number") {
+      seedEnv.AOE_TEST_TOKEN_GRACE_SECS = String(opts.tokenGraceSecs);
+    }
+  }
+
   if (opts.seedFn) {
     await opts.seedFn({ home, shimBin, xdg, tmp, tmuxTmp, env: seedEnv });
   }
 
-  const authMode: AuthMode = opts.authMode ?? "none";
   const passphrase = authMode === "passphrase" ? opts.passphrase ?? DEFAULT_PASSPHRASE : undefined;
 
   const spawnTimeoutMs = opts.spawnTimeoutMs ?? 10_000;
@@ -364,6 +442,7 @@ export async function spawnAoeServe(opts: SpawnOptions): Promise<ServeHandle> {
     baseUrl = `http://127.0.0.1:${port}`;
     const args = ["serve", "--host", "127.0.0.1", "--port", String(port)];
     if (authMode === "none") args.push("--no-auth");
+    if (authMode === "token") args.push("--auth", "token");
     if (passphrase) args.push("--passphrase", passphrase);
     if (opts.readOnly) args.push("--read-only");
     if (opts.extraArgs) args.push(...opts.extraArgs);
@@ -413,6 +492,13 @@ export async function spawnAoeServe(opts: SpawnOptions): Promise<ServeHandle> {
     throw new Error("aoe serve failed to bind on every attempted port");
   }
 
+  let authToken: string | undefined;
+  let tokenFile: string | undefined;
+  if (authMode === "token") {
+    tokenFile = join(appDirFor(home, xdg, aoeBinary), "serve.token");
+    authToken = await readTokenFile(tokenFile, spawnTimeoutMs);
+  }
+
   const handle: ServeHandle = {
     baseUrl,
     port,
@@ -421,6 +507,8 @@ export async function spawnAoeServe(opts: SpawnOptions): Promise<ServeHandle> {
     proc,
     authMode,
     passphrase,
+    authToken,
+    tokenFile,
     tmuxPrefix: tmuxPrefixFor(aoeBinary),
     async stop() {
       try {
