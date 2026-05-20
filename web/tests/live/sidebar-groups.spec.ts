@@ -77,8 +77,11 @@ base.describe("sidebar repo groups (#1220)", () => {
 
       await page.goto(`${serve.baseUrl}/`);
 
+      // 4-worker cold start can lag past Playwright's 5s assertion
+      // default; bump the first paint waits here and in the other two
+      // tests in this file.
       const groupHeaders = page.locator("[data-testid='sidebar-group-header']");
-      await expect(groupHeaders).toHaveCount(2);
+      await expect(groupHeaders).toHaveCount(2, { timeout: 10_000 });
       await expect(page.getByText("repo-alpha")).toBeVisible();
       await expect(page.getByText("repo-beta")).toBeVisible();
 
@@ -105,7 +108,9 @@ base.describe("sidebar repo groups (#1220)", () => {
     try {
       await page.goto(`${serve.baseUrl}/`);
 
-      await expect(page.locator("[data-testid='sidebar-group-header']")).toHaveCount(2);
+      await expect(
+        page.locator("[data-testid='sidebar-group-header']"),
+      ).toHaveCount(2, { timeout: 10_000 });
 
       await page.getByLabel("Filter sessions").click();
       const filter = page.locator("[data-testid='sidebar-filter-input']");
@@ -151,7 +156,9 @@ base.describe("sidebar repo groups (#1220)", () => {
         { has: page.getByText("repo-alpha") },
       );
       const expandBtn = alphaHeader.locator("button[aria-expanded]");
-      await expect(expandBtn).toHaveAttribute("aria-expanded", "true");
+      await expect(expandBtn).toHaveAttribute("aria-expanded", "true", {
+        timeout: 10_000,
+      });
 
       await expandBtn.click();
       await expect(expandBtn).toHaveAttribute("aria-expanded", "false");

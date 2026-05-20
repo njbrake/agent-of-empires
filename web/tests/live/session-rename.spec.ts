@@ -35,8 +35,10 @@ base.describe("session rename via sidebar context menu (#1220)", () => {
       await page.goto(`${serve.baseUrl}/`);
 
       const row = page.locator("[data-testid='sidebar-session-row']");
-      await expect(row).toHaveCount(1);
-      await expect(row).toContainText(original);
+      // Live specs run with `workers: 4`, so the first row paint can
+      // lag cold. Bump the wait above the 5s assertion default.
+      await expect(row).toHaveCount(1, { timeout: 10_000 });
+      await expect(row).toContainText(original, { timeout: 10_000 });
 
       await row.click({ button: "right" });
       const menu = page.locator("[data-testid='sidebar-context-menu']");
@@ -92,6 +94,7 @@ base.describe("session rename via sidebar context menu (#1220)", () => {
       });
 
       const row = page.locator("[data-testid='sidebar-session-row']");
+      await expect(row).toContainText(title, { timeout: 10_000 });
       await row.click({ button: "right" });
       await page
         .locator("[data-testid='sidebar-context-menu-rename']")
@@ -134,6 +137,7 @@ base.describe("session rename via sidebar context menu (#1220)", () => {
       });
 
       const row = page.locator("[data-testid='sidebar-session-row']");
+      await expect(row).toContainText(title, { timeout: 10_000 });
       await row.click({ button: "right" });
       await page
         .locator("[data-testid='sidebar-context-menu-rename']")

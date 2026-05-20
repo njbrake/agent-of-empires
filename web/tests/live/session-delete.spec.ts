@@ -39,7 +39,12 @@ base.describe("session delete via sidebar context menu (#1220)", () => {
       await page.goto(`${serve.baseUrl}/`);
 
       const row = page.locator("[data-testid='sidebar-session-row']");
-      await expect(row).toContainText(title);
+      // Live specs run with `workers: 4`, so the first paint can lag while
+      // four `aoe serve` instances cold-start in parallel. The default 5s
+      // assertion timeout is enough on a warm cache but flakes cold, so
+      // bump the wait for the initial row paint here (and elsewhere in
+      // this file). Subsequent assertions keep the default.
+      await expect(row).toContainText(title, { timeout: 10_000 });
       await row.click({ button: "right" });
       await page
         .locator("[data-testid='sidebar-context-menu-delete']")
@@ -99,9 +104,9 @@ base.describe("session delete via sidebar context menu (#1220)", () => {
         return route.continue();
       });
 
-      await page
-        .locator("[data-testid='sidebar-session-row']")
-        .click({ button: "right" });
+      const row = page.locator("[data-testid='sidebar-session-row']");
+      await expect(row).toContainText(title, { timeout: 10_000 });
+      await row.click({ button: "right" });
       await page
         .locator("[data-testid='sidebar-context-menu-delete']")
         .click();
@@ -144,9 +149,9 @@ base.describe("session delete via sidebar context menu (#1220)", () => {
         return route.continue();
       });
 
-      await page
-        .locator("[data-testid='sidebar-session-row']")
-        .click({ button: "right" });
+      const row = page.locator("[data-testid='sidebar-session-row']");
+      await expect(row).toContainText(title, { timeout: 10_000 });
+      await row.click({ button: "right" });
       await page
         .locator("[data-testid='sidebar-context-menu-delete']")
         .click();
