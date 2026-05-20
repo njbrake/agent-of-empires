@@ -92,32 +92,31 @@ base(
       await toFlat.first().click();
       await expect(toTree.first()).toBeVisible();
 
-      // Keyboard nav: focus a row (mouse-enter sets focusedIndex via
-      // the row's onMouseEnter, then ArrowDown moves it), press Enter,
-      // and assert the DiffFileViewer mounts for the modified file.
+      // Keyboard nav: focus row 0 via hover (`onMouseEnter` sets
+      // focusedIndex), click to open it, then ArrowDown + Enter to
+      // advance to row 1 and open that file.
+      //
+      // The backend sorts diff files by path
+      // (`src/git/diff.rs::compute_changed_files`, byte-lexicographic),
+      // so for our seed the order is:
+      //   row 0 -> README.md   (contains "# Old" / "# New")
+      //   row 1 -> lib/d.ts    (contains "export const d = 4")
+      // We assert per-file diff content (only rendered in the viewer,
+      // never in the file-list rows) so the post-keypress assertion
+      // proves a real state change rather than re-checking the
+      // already-visible "Modified" status label.
       const firstRow = page.locator('button[data-index="0"]').first();
       await firstRow.hover();
       await firstRow.click();
-      // After click, the file is selected. The DiffFileViewer header
-      // shows the status label "Modified" for a committed-then-edited
-      // file. The label is rendered in the left content pane, not the
-      // right-panel header, so scope by role to disambiguate.
-      await expect(page.getByText("Modified").first()).toBeVisible({
+      await expect(page.getByText("# Old").first()).toBeVisible({
         timeout: 10_000,
       });
 
-      // ArrowDown then Enter should move selection to row #2 and open
-      // it. Page-level keydown bubbles through React's handler on the
-      // scrollable list container.
       await page.keyboard.press("ArrowDown");
       await page.keyboard.press("Enter");
-      // Any of the five paths will render in the viewer header once a
-      // row is opened; the exact one depends on sort order but Enter
-      // on focusedIndex 1 lands deterministically on the second sorted
-      // file. Sort order is `path` alphabetical (see compute_changed_files).
-      // Just assert the viewer header is still showing a Modified file
-      // and at least one diff line is on screen.
-      await expect(page.getByText("Modified").first()).toBeVisible();
+      await expect(page.getByText(/export const d = 4/).first()).toBeVisible({
+        timeout: 10_000,
+      });
     } finally {
       await serve.stop();
     }
