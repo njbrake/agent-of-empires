@@ -35,12 +35,14 @@ export async function classifyAuthError(
 }
 
 /** Login attempt endpoints surface their own errors via LoginPage /
- *  ElevationPrompt local state. A 401 from these paths means the
- *  passphrase the user just typed was wrong, not that the bearer
- *  token went stale. Firing the global `TOKEN_EXPIRED_EVENT` here
- *  would replace LoginPage with TokenEntryPage, leaving the user
- *  stuck on a token-entry screen in `--auth=passphrase` mode where
- *  no token URL exists. */
+ *  ElevationPrompt local state. A 401 `unauthorized` from these paths
+ *  means the passphrase the user just typed was wrong, not that the
+ *  bearer token went stale. Firing the global `TOKEN_EXPIRED_EVENT`
+ *  here would replace LoginPage with TokenEntryPage, leaving the user
+ *  stuck on a token-entry screen in `--auth=passphrase` mode where no
+ *  token URL exists. `login_required` from /api/login/elevate (session
+ *  missing or expired during elevation) is *not* exempt: it still
+ *  needs to surface as the global LoginPage swap. */
 export function isLoginAttemptPath(path: string): boolean {
   return path === "/api/login" || path === "/api/login/elevate";
 }
@@ -109,11 +111,16 @@ export function installFetchErrorToasts(): void {
         const rotated = res.headers.get("x-aoe-token");
         if (rotated) saveToken(rotated);
       }
-      if (res.status === 401 && isApi && !isLoginAttemptPath(path)) {
+      if (res.status === 401 && isApi) {
         const authError = await classifyAuthError(res);
         if (authError === "login_required") {
+          // Session missing or expired (including mid-elevation):
+          // always pop LoginPage. The token is still valid.
           handleLoginRequired();
-        } else {
+        } else if (authError === "unauthorized" && !isLoginAttemptPath(path)) {
+          // Generic 401 on a non-login path means the token is dead.
+          // Login attempt paths surface their own wrong-passphrase error
+          // through LoginPage / ElevationPrompt local state.
           handleTokenAuthFailure();
         }
       }

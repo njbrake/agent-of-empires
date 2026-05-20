@@ -45,9 +45,14 @@ test("correct passphrase logs in and reveals the dashboard", async ({
   await page.locator("button[type=submit]").click();
 
   // Once login resolves, the LoginPage unmounts and the dashboard's
-  // top bar takes over. Wait for any indicator that we left LoginPage:
-  // the passphrase field is gone.
+  // top bar takes over. Wait for an actual dashboard chrome element
+  // (the top bar's dashboard-home button) so an SPA that gets stuck
+  // on a blank page after login fails loudly instead of passing on
+  // "passphrase field absent".
   await expect(page.locator("input#passphrase")).toBeHidden({
     timeout: 10_000,
   });
+  await expect(
+    page.getByRole("button", { name: "Go to dashboard" }),
+  ).toBeVisible({ timeout: 5_000 });
 });

@@ -563,7 +563,7 @@ pub async fn elevate_handler(
         return (
             StatusCode::UNAUTHORIZED,
             Json(serde_json::json!({
-                "error": "unauthorized",
+                "error": "login_required",
                 "message": "No active login session"
             })),
         )
@@ -654,7 +654,7 @@ pub async fn elevate_handler(
         return (
             StatusCode::UNAUTHORIZED,
             Json(serde_json::json!({
-                "error": "unauthorized",
+                "error": "login_required",
                 "message": "Login session expired"
             })),
         )
