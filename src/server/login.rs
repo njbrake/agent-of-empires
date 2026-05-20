@@ -30,6 +30,7 @@ use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use tokio::sync::RwLock;
+use tokio_util::sync::CancellationToken;
 
 use super::auth::resolve_client_ip;
 use super::AppState;
@@ -336,10 +337,11 @@ impl LoginManager {
     /// Spawn periodic cleanup (piggybacks on the rate limiter's interval).
     /// Exits cleanly on shutdown so `aoe serve --stop` drains within one
     /// tick instead of waiting for the 5 s force exit safety net.
-    pub fn spawn_cleanup_task(self: &Arc<Self>, shutdown: tokio_util::sync::CancellationToken) {
+    pub fn spawn_cleanup_task(self: &Arc<Self>, shutdown: CancellationToken) {
         let manager = Arc::clone(self);
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(60));
+            interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
             loop {
                 tokio::select! {
                     _ = interval.tick() => manager.cleanup_expired().await,

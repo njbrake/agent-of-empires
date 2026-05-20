@@ -822,6 +822,7 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
             async move {
                 let mut interval =
                     tokio::time::interval(crate::session::recovery::RECENTLY_RESTARTED_GC_INTERVAL);
+                interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
                 loop {
                     tokio::select! {
                         _ = interval.tick() => {
