@@ -228,16 +228,16 @@
     },
     {
       "id": "devices",
-      "kind": "deferred",
-      "issue": "https://github.com/njbrake/agent-of-empires/issues/1222",
+      "kind": "live-playwright",
       "risk": "low",
+      "specs": ["tests/live/devices.spec.ts"],
       "components": ["web/src/components/ConnectedDevices.tsx"]
     },
     {
       "id": "connectivity.disconnect-banner",
-      "kind": "deferred",
-      "issue": "https://github.com/njbrake/agent-of-empires/issues/1222",
+      "kind": "live-playwright",
       "risk": "medium",
+      "specs": ["tests/live/disconnect-banner.spec.ts"],
       "components": ["web/src/components/DisconnectBanner.tsx"]
     },
     {
