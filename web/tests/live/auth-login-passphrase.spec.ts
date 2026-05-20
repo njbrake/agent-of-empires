@@ -21,9 +21,12 @@ test("wrong passphrase shows an error and stays on LoginPage", async ({
   await page.locator("button[type=submit]").click();
 
   // The login lib surfaces server errors via the LoginPage's error
-  // state; the field stays focused for retry.
+  // state; the field stays focused for retry. Server returns 401 with
+  // `message: "Incorrect passphrase"` (src/server/login.rs), which the
+  // login() client (web/src/lib/api.ts) maps to LoginPage's local
+  // error string.
   await expect(page.locator("input#passphrase")).toBeVisible();
-  await expect(page.getByText(/(invalid|wrong|fail)/i)).toBeVisible({
+  await expect(page.getByText(/incorrect passphrase/i)).toBeVisible({
     timeout: 5_000,
   });
 });
