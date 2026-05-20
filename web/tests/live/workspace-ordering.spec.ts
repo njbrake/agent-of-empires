@@ -66,8 +66,14 @@ async function readVisibleSessionTitles(page: import("@playwright/test").Page): 
         "[data-testid='sidebar-session-row']",
       ),
     );
+    // Scope to the label span specifically (see WorkspaceSidebar.tsx:587).
+    // A bare `[title]` selector can pick up a Wakeup or Plan chip if either
+    // ever renders on the row.
     return rows
-      .map((r) => r.querySelector("[title]")?.getAttribute("title") ?? "")
+      .map(
+        (r) =>
+          r.querySelector("span.truncate[title]")?.getAttribute("title") ?? "",
+      )
       .filter(Boolean);
   });
 }

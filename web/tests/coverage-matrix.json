@@ -202,7 +202,7 @@
       "kind": "live-playwright",
       "risk": "medium",
       "specs": ["tests/live/workspace-ordering.spec.ts"],
-      "components": []
+      "components": ["web/src/components/WorkspaceSidebar.tsx"]
     },
     {
       "id": "session.lifecycle",
