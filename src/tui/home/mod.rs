@@ -767,7 +767,7 @@ impl HomeView {
 
     pub(super) fn apply_status_updates_without_hooks(&mut self, updates: Vec<StatusUpdate>) {
         for update in updates {
-            self.apply_status_update(update, true, false);
+            self.apply_status_update(update, false, false);
         }
     }
 

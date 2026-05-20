@@ -454,6 +454,17 @@ pub fn reset_debounce_state() {
 mod tests {
     use super::*;
     use serial_test::serial;
+    use std::time::Instant;
+
+    fn wait_for_recorded_launch_count(expected: usize) {
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while Instant::now() < deadline {
+            if recorded_launches().lock().unwrap().len() == expected {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
 
     #[test]
     fn default_config_is_disabled() {
@@ -569,7 +580,7 @@ mod tests {
         let observed_after = Utc::now();
         assert!(take_recorded_launches().is_empty());
 
-        std::thread::sleep(Duration::from_millis(30));
+        wait_for_recorded_launch_count(1);
         let launches = take_recorded_launches();
         assert_eq!(launches.len(), 1);
         assert_eq!(launches[0].command, "notify-waiting");
@@ -620,7 +631,7 @@ mod tests {
         run_for_transition(&instance, Status::Running, Status::Waiting, &config);
         run_for_transition(&instance, Status::Waiting, Status::Idle, &config);
 
-        std::thread::sleep(Duration::from_millis(30));
+        wait_for_recorded_launch_count(1);
         let launches = take_recorded_launches();
         assert_eq!(launches.len(), 1);
         assert_eq!(launches[0].command, "notify-idle");
