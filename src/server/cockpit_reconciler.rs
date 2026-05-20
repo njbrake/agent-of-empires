@@ -165,6 +165,26 @@ pub async fn reconcile_cockpit_workers(state: &Arc<AppState>, attempted: &mut Ha
             attempted.insert(id);
             continue;
         }
+        // Rate-limit park: if the most recent lifecycle event for this
+        // session is `Stopped { reason: "rate_limited" }`, the previous
+        // worker exited because the adapter hit a quota. Auto-resuming
+        // would `session/load` and immediately fail the next prompt the
+        // same way; on daemon restart that would undo the entire #1281
+        // fix. Hold the session parked until the user explicitly retries
+        // via `/cockpit/spawn` or hands off via `/cockpit/switch-agent`.
+        if let Some(crate::cockpit::Event::Stopped { reason }) =
+            state.cockpit_event_store.latest_status_event(&id)
+        {
+            if reason == "rate_limited" {
+                tracing::debug!(
+                    target: "cockpit.supervisor",
+                    session = %id,
+                    "skipping auto-resume: latest lifecycle event is Stopped{{rate_limited}}"
+                );
+                attempted.insert(id);
+                continue;
+            }
+        }
         let in_flight_turn = state.cockpit_event_store.has_in_flight_turn(&id);
         // Mark before spawning so the next 2s tick doesn't double-poke
         // while the parallel resume task is still in flight. A task

@@ -69,6 +69,21 @@ class ShimAgent {
     const slow = userText.includes("SLOW");
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+    // Optional rate-limit path: tests for #1281 include "RATE_LIMIT"
+    // in the prompt so the shim returns the same JSON-RPC error shape
+    // claude-agent-acp emits when the Anthropic API rejects a request
+    // for quota reasons. The Rust ACP client must classify this as
+    // RateLimit + Stopped{rate_limited} instead of treating it as a
+    // worker crash.
+    if (userText.includes("RATE_LIMIT")) {
+      const err = new Error(
+        "Internal error: You've hit your limit · resets 12:10pm (Europe/Paris)",
+      );
+      err.code = -32603;
+      err.data = { errorKind: "rate_limit" };
+      throw err;
+    }
+
     await this.connection.sessionUpdate({
       sessionId: params.sessionId,
       update: {

@@ -40,7 +40,7 @@ use super::fs_handler::{self, FsPolicy, SandboxPathMap};
 use super::permissions::build_approval;
 use super::state::{
     AvailableCommand, CockpitSessionId, DiffPreview, Event, ModeInfo, Plan, PlanStep,
-    PlanStepStatus, SessionMode, SessionUsage, ToolCall, UsageCost,
+    PlanStepStatus, RateLimitInfo, SessionMode, SessionUsage, ToolCall, UsageCost,
 };
 use super::terminal_handler::TerminalManager;
 use crate::session::SandboxInfo;
@@ -95,6 +95,61 @@ impl AcpError {
         }
         AcpError::Spawn(format!("{err} (command `{spawn_command}`)"))
     }
+}
+
+/// Inspect an ACP-level error response from a `session/prompt` request
+/// and return a `RateLimitInfo` if the adapter reported a quota/usage
+/// limit hit. claude-agent-acp signals this via `data.errorKind ==
+/// "rate_limit"` on the JSON-RPC error object. Other adapters may
+/// surface the same signal differently; the catch-all message regex in
+/// `classify_rate_limit_from_message` is the defensive fallback.
+///
+/// Reset time is recovered from `data.resets_at` (RFC3339) when
+/// present. Some claude-agent-acp versions only embed the time in the
+/// message text ("resets 12:10pm (Europe/Paris)"); robustly parsing
+/// arbitrary locale strings would require chrono-tz, so the fallback
+/// is `now + 1h` and the message is preserved verbatim in
+/// `RateLimitInfo.status` so the UI can surface the exact text.
+pub(crate) fn classify_rate_limit_error(
+    err: &agent_client_protocol::Error,
+) -> Option<RateLimitInfo> {
+    let data = err.data.as_ref()?;
+    let kind = data.get("errorKind").and_then(|v| v.as_str())?;
+    if kind != "rate_limit" {
+        return None;
+    }
+    let resets_at = data
+        .get("resets_at")
+        .or_else(|| data.get("resetsAt"))
+        .and_then(|v| v.as_str())
+        .and_then(|s| chrono::DateTime::parse_from_rfc3339(s).ok())
+        .map(|dt| dt.with_timezone(&chrono::Utc))
+        .unwrap_or_else(|| chrono::Utc::now() + chrono::Duration::hours(1));
+    Some(RateLimitInfo {
+        status: err.message.clone(),
+        resets_at,
+        kind: kind.to_string(),
+    })
+}
+
+/// Defensive fallback for the connection-task end path. The outer
+/// error type carries no structured `data`, only a Display string, so
+/// match on the fingerprint claude-agent-acp embeds in its error
+/// payload. Hit rate is intentionally narrow: a substring match on
+/// `errorKind":"rate_limit"` only matches the JSON the adapter pastes
+/// into its error message; unrelated logs that mention "rate_limit"
+/// won't trigger.
+pub(crate) fn classify_rate_limit_from_message(message: &str) -> Option<RateLimitInfo> {
+    if !message.contains("\"errorKind\":\"rate_limit\"")
+        && !message.contains("\"errorKind\": \"rate_limit\"")
+    {
+        return None;
+    }
+    Some(RateLimitInfo {
+        status: message.to_string(),
+        resets_at: chrono::Utc::now() + chrono::Duration::hours(1),
+        kind: "rate_limit".to_string(),
+    })
 }
 
 /// Configuration for spawning an ACP agent.
@@ -2551,6 +2606,7 @@ async fn run_connection_task<W, R>(
                         // daemon's `prompt_fut` pinned forever and every
                         // follow-up prompt is silently dropped. See #1196.
                         let mut agent_unresponsive = false;
+                        let mut rate_limited = false;
                         let mut cancelling = false;
                         let cancel_grace = tokio::time::sleep(CANCEL_ESCALATION_GRACE);
                         tokio::pin!(cancel_grace);
@@ -2558,7 +2614,38 @@ async fn run_connection_task<W, R>(
                         loop {
                             tokio::select! {
                                 res = &mut prompt_fut => {
-                                    let _ = res?;
+                                    match res {
+                                        Ok(_) => {}
+                                        Err(e) => {
+                                            // Rate-limit on session/prompt is not
+                                            // a worker crash. Emit a typed
+                                            // RateLimit event so the UI banner
+                                            // surfaces reset time, then mark the
+                                            // turn rate_limited and exit the
+                                            // connection task cleanly. The drain
+                                            // task watches for Stopped{rate_limited}
+                                            // and short-circuits restart_decision
+                                            // so the supervisor doesn't burn
+                                            // restart budget respawning a worker
+                                            // that will hit the same limit
+                                            // immediately on retry. See #1281.
+                                            if let Some(info) = classify_rate_limit_error(&e) {
+                                                info!(
+                                                    target: "cockpit.acp",
+                                                    session = %session_label,
+                                                    resets_at = %info.resets_at,
+                                                    "session/prompt returned rate_limit; parking session"
+                                                );
+                                                let _ = event_tx_for_block
+                                                    .send(Event::RateLimit { info })
+                                                    .await;
+                                                rate_limited = true;
+                                                shutdown = true;
+                                                break;
+                                            }
+                                            return Err(e);
+                                        }
+                                    }
                                     break;
                                 }
                                 _ = &mut cancel_grace, if cancelling => {
@@ -2708,7 +2795,9 @@ async fn run_connection_task<W, R>(
                         // Consumers (reducer, persisted status) need a single
                         // turn-end event per turn or they sit on a stale
                         // "in flight" state forever.
-                        let reason = if agent_unresponsive {
+                        let reason = if rate_limited {
+                            "rate_limited"
+                        } else if agent_unresponsive {
                             "agent_unresponsive"
                         } else if shutdown {
                             "shutdown"
@@ -2781,6 +2870,24 @@ async fn run_connection_task<W, R>(
             // hint instead of a silent dead session.
             if let Some(tx) = ready_tx.lock().await.take() {
                 let _ = tx.send(Err(AcpError::Spawn(message.clone())));
+            } else if let Some(info) = classify_rate_limit_from_message(&message) {
+                // Defensive: rate-limit can also surface from paths the
+                // prompt arm doesn't cover (handshake-time, mid-handshake
+                // request). Treat it as a parked terminal state instead
+                // of a generic startup error so the supervisor drain
+                // task observes the same Stopped{rate_limited} signal
+                // and skips the restart loop.
+                info!(
+                    target: "cockpit.acp",
+                    session = %session_label_for_log,
+                    "connection task ended with rate_limit; emitting RateLimit + Stopped"
+                );
+                let _ = event_tx.send(Event::RateLimit { info }).await;
+                let _ = event_tx
+                    .send(Event::Stopped {
+                        reason: "rate_limited".into(),
+                    })
+                    .await;
             } else {
                 let _ = event_tx.send(Event::AgentStartupError { message }).await;
             }
@@ -3315,6 +3422,52 @@ mod tests {
         tx.send(Event::ThinkingStarted).await.unwrap();
         let event = client.next_event().await.expect("event delivered");
         assert!(matches!(event, Event::ThinkingStarted));
+    }
+
+    #[test]
+    fn classify_rate_limit_recognises_data_errorkind() {
+        let mut err = agent_client_protocol::Error::internal_error();
+        err.message = "You've hit your limit · resets 12:10pm (Europe/Paris)".into();
+        err.data = Some(serde_json::json!({ "errorKind": "rate_limit" }));
+        let info = classify_rate_limit_error(&err).expect("classified");
+        assert_eq!(info.kind, "rate_limit");
+        assert!(info.status.contains("hit your limit"));
+        assert!(info.resets_at > chrono::Utc::now());
+    }
+
+    #[test]
+    fn classify_rate_limit_prefers_rfc3339_resets_at() {
+        let mut err = agent_client_protocol::Error::internal_error();
+        err.message = "rate limited".into();
+        err.data = Some(serde_json::json!({
+            "errorKind": "rate_limit",
+            "resets_at": "2099-01-01T00:00:00Z",
+        }));
+        let info = classify_rate_limit_error(&err).expect("classified");
+        assert_eq!(info.resets_at.to_rfc3339(), "2099-01-01T00:00:00+00:00");
+    }
+
+    #[test]
+    fn classify_rate_limit_ignores_unrelated_errors() {
+        let mut err = agent_client_protocol::Error::internal_error();
+        err.message = "transport closed".into();
+        err.data = Some(serde_json::json!({ "errorKind": "internal" }));
+        assert!(classify_rate_limit_error(&err).is_none());
+
+        let err = agent_client_protocol::Error::invalid_params();
+        assert!(classify_rate_limit_error(&err).is_none());
+    }
+
+    #[test]
+    fn classify_rate_limit_from_message_matches_acp_fingerprint() {
+        let msg = "ACP connection failed: Internal error: You've hit your limit · resets 12:10pm (Europe/Paris): {\n  \"errorKind\":\"rate_limit\"\n}";
+        let info = classify_rate_limit_from_message(msg).expect("classified");
+        assert_eq!(info.kind, "rate_limit");
+        // Spaced variant the adapter sometimes emits.
+        let info_spaced = classify_rate_limit_from_message("{\n  \"errorKind\": \"rate_limit\"\n}")
+            .expect("classified");
+        assert_eq!(info_spaced.kind, "rate_limit");
+        assert!(classify_rate_limit_from_message("connection refused").is_none());
     }
 
     /// Sandboxed cockpit spawn must wrap the agent command in
