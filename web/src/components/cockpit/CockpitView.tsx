@@ -39,6 +39,7 @@ import {
 } from "./CockpitRuntime";
 import { Composer } from "./Composer";
 import { ContextPrimerBanner } from "./ContextPrimerBanner";
+import { RateLimitRecoveryModal } from "./RateLimitRecoveryModal";
 import { Markdown } from "./Markdown";
 import {
   isQueuedPromptLong,
@@ -164,6 +165,10 @@ function CockpitChrome({
   const [primerPrefill, setPrimerPrefill] = useState<
     { id: string; text: string } | null
   >(null);
+  // Rate-limit recovery modal toggle. Opened from the rate-limit row
+  // in `SystemNotices`; the modal owns the agent picker and the
+  // switch / primer-fetch round-trip. See #1282.
+  const [recoveryOpen, setRecoveryOpen] = useState(false);
 
   // Browser-side approval chime. Fires once on the 0 -> >=1 edge of
   // pendingApprovals; complements the OS push (delivered via the SW
@@ -232,8 +237,21 @@ function CockpitChrome({
           retryCountdown={retryCountdown}
           maxRetries={maxRetries}
           manualReconnect={manualReconnect}
+          onSwitchAgent={() => setRecoveryOpen(true)}
         />
       )}
+      <RateLimitRecoveryModal
+        open={recoveryOpen}
+        sessionId={sessionId}
+        currentAgent={state.agent}
+        onClose={() => setRecoveryOpen(false)}
+        onPrefill={(text) =>
+          setPrimerPrefill({
+            id: `rate-limit-recovery-${Date.now()}`,
+            text,
+          })
+        }
+      />
 
       {state.startupError && (
         <StartupErrorBanner sessionId={sessionId} message={state.startupError} />
@@ -1020,6 +1038,7 @@ function SystemNotices({
   retryCountdown,
   maxRetries,
   manualReconnect,
+  onSwitchAgent,
 }: {
   status: CockpitContext["status"];
   lagged: boolean;
@@ -1030,6 +1049,7 @@ function SystemNotices({
   retryCountdown: number;
   maxRetries: number;
   manualReconnect: () => void;
+  onSwitchAgent?: () => void;
 }) {
   const messages: { kind: string; text: string }[] = [];
   // Retry envelope exhausted: the auto-reconnect chain stopped after
@@ -1092,6 +1112,17 @@ function SystemNotices({
           {m.text}
         </div>
       ))}
+      {rateLimit && onSwitchAgent && (
+        <div className="flex items-center justify-end pt-1">
+          <button
+            type="button"
+            onClick={onSwitchAgent}
+            className="shrink-0 rounded-md border border-brand-700 bg-brand-900/40 px-2 py-1 text-[10px] font-mono uppercase tracking-wide text-brand-100 hover:bg-brand-900/60"
+          >
+            Continue in another agent
+          </button>
+        </div>
+      )}
       {retriesExhausted && (
         <div className="flex items-center justify-between gap-3 text-xs text-brand-400">
           <span>Connection lost. Auto-retry stopped.</span>

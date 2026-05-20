@@ -258,6 +258,13 @@
       "components": []
     },
     {
+      "id": "cockpit.rate-limit-recovery",
+      "kind": "vitest",
+      "risk": "high",
+      "specs": ["src/lib/cockpitTypes.test.ts"],
+      "components": ["web/src/components/cockpit/RateLimitRecoveryModal.tsx"]
+    },
+    {
       "id": "read-only.mode",
       "kind": "live-playwright",
       "risk": "high",

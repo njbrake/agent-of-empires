@@ -624,6 +624,23 @@ If the agent ignores `session/cancel` mid-tool-call (most commonly a `block: tru
 
 Follow-up prompts the daemon refused while the original turn was still in flight no longer vanish silently. The composer shows them as amber "Rejected" pills with a Retry button; clicking Retry re-dispatches the prompt through the normal send path against the freshly-respawned worker.
 
+### Rate-limit recovery
+
+When the active ACP backend reports `errorKind: "rate_limit"` on `session/prompt` (Claude's adapter does this when the Anthropic account is over its limit), aoe treats this as a non-crash terminal state rather than as a worker crash:
+
+- The connection task emits a typed `RateLimit` event (which the dashboard banner reads to show the reset time) and a `Stopped { reason: "rate_limited" }` lifecycle event, then exits cleanly.
+- The supervisor drops the worker handle and does NOT respawn. Earlier behaviour respawned the runner inside the restart budget, then immediately hit the same limit on the next `session/prompt` and burned the budget. The session now sits parked until the user explicitly retries or hands off.
+- `aoe serve` restart while a session is parked respects the `Stopped { reason: "rate_limited" }` signal in the on-disk event log and does NOT auto-resume the worker; otherwise daemon restart at minute 30 of a 90-minute window would undo the fix.
+
+The rate-limit banner offers a primary "Continue in another agent" CTA. Clicking it opens a modal that lists the cockpit ACP registry (claude / codex / opencode / gemini / vibe / pi / aoe-agent by default, plus anything you've added via the settings TUI) and preselects `codex` when installed. Picking a target calls `POST /api/sessions/{id}/cockpit/switch-agent`, which:
+
+1. Stops the current worker and waits for the runner subprocess to release its socket.
+2. Spawns the target agent. On failure, the instance is left untouched.
+3. Persists `cockpit_agent = <target>` and clears `cockpit_acp_session_id` (the old session id belongs to a different vendor and would be rejected by the new adapter).
+4. Emits an `AgentSwitched { from, to, reason }` event so reducers drop transient state tied to the prior backend (rate-limit banner, in-flight tool, usage, mode pills, available commands) and the transcript shows a divider.
+
+After the switch, the modal fetches the context primer and pre-fills the composer with a framed recap of the prior conversation. If the user's last prompt is what triggered the rate-limit (it was published to the event log before the adapter rejected it), the primer endpoint surfaces it separately as `unprocessed_prompt`; the modal drops it into the composer as the user's pending request so they don't have to retype it. The composer is NOT auto-sent; review and submit manually.
+
 ### Cockpit feels "stuck" with no events
 
 - Check `aoe cockpit logs --follow` (when the worker supervisor lands)

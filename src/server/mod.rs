@@ -1140,7 +1140,8 @@ fn build_router(state: Arc<AppState>) -> Router {
             "/api/sessions/{id}/cockpit/approvals/{nonce}",
             post(api::resolve_approval),
         )
-        .route("/api/cockpit/master", patch(api::set_cockpit_master));
+        .route("/api/cockpit/master", patch(api::set_cockpit_master))
+        .route("/api/cockpit/agents", get(api::list_cockpit_agents));
 
     app
         // Static assets (Vite build output: assets/, manifest.json, sw.js, icons)

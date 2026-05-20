@@ -205,6 +205,36 @@ pub async fn shutdown_cockpit(
     }
 }
 
+/// One entry in the cockpit ACP registry. Names match the `target`
+/// field accepted by `/cockpit/switch-agent`. Used by the rate-limit
+/// recovery modal to list available backends. See #1282.
+#[derive(Debug, Serialize)]
+pub struct CockpitAgentInfo {
+    pub name: String,
+    pub description: String,
+    pub command: String,
+}
+
+/// `GET /api/cockpit/agents`: list the ACP registry entries the
+/// supervisor knows about. Distinct from `/api/agents` (which lists
+/// session-tool agents like claude/codex/cursor for the wizard);
+/// this returns the *cockpit* ACP backend registry so the recovery
+/// modal can show what the user can hand off to. See #1282.
+pub async fn list_cockpit_agents(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let registry = state.cockpit_supervisor.registry_snapshot().await;
+    let mut entries: Vec<CockpitAgentInfo> = registry
+        .list()
+        .into_iter()
+        .map(|(name, spec)| CockpitAgentInfo {
+            name: name.clone(),
+            description: spec.description.clone(),
+            command: spec.command.clone(),
+        })
+        .collect();
+    entries.sort_by(|a, b| a.name.cmp(&b.name));
+    Json(entries).into_response()
+}
+
 /// Atomically move a cockpit session from one ACP backend to another.
 /// Used by the rate-limit recovery flow (#1282) so the user can
 /// continue a Claude-rate-limited session in `codex` (or another
