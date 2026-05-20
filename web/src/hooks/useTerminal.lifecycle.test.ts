@@ -852,6 +852,136 @@ describe("useTerminal lifecycle", () => {
     }
   });
 
+  it("single-finger touch swipe emits SGR wheel sequences to the WS", async () => {
+    // The touch handler attaches to term.element with capture + passive
+    // false. We dispatch synthetic TouchEvents through the captured
+    // element to exercise the gesture-detection, scroll-accumulation,
+    // and sendWheel paths.
+    const div = document.createElement("div");
+    document.body.appendChild(div);
+    try {
+      renderHook(() => {
+        const term = useTerminal("s-touch", "ws", false, false);
+        if (term.containerRef && !term.containerRef.current) {
+          (
+            term.containerRef as unknown as { current: HTMLDivElement | null }
+          ).current = div;
+        }
+        return term;
+      });
+      await flushAsync();
+      const ws = sockets[0]!;
+      act(() => {
+        ws.readyState = FakeWebSocket.OPEN;
+        ws.onopen?.(new Event("open"));
+      });
+      await flushAsync();
+
+      // Grab the .xterm element our FakeTerminal created.
+      const xtermEl = div.querySelector(".xterm") as HTMLDivElement;
+      expect(xtermEl).toBeTruthy();
+
+      const before = ws.sent.length;
+      const fireTouch = (
+        type: "touchstart" | "touchmove" | "touchend",
+        y: number,
+      ) => {
+        // jsdom has no Touch constructor; build the event ourselves
+        // and attach plain Touch-like objects through Object.defineProperty
+        // so the hook's TouchEvent.touches reads see what we want.
+        const ev = new Event(type, { bubbles: true, cancelable: true });
+        const touches =
+          type === "touchend"
+            ? []
+            : [{ clientX: 100, clientY: y, identifier: 1 }];
+        Object.defineProperty(ev, "touches", { value: touches });
+        Object.defineProperty(ev, "targetTouches", { value: touches });
+        Object.defineProperty(ev, "changedTouches", {
+          value: [{ clientX: 100, clientY: y, identifier: 1 }],
+        });
+        xtermEl.dispatchEvent(ev);
+      };
+
+      // Vertical swipe up: start, move up far enough to clear the
+      // 12px gesture-lock, then accumulate enough delta to trigger
+      // multiple wheel events.
+      act(() => {
+        fireTouch("touchstart", 500);
+        // First move beyond GESTURE_LOCK_PX (12)
+        fireTouch("touchmove", 480);
+        // Subsequent moves drive sendWheel
+        fireTouch("touchmove", 420);
+        fireTouch("touchmove", 360);
+        fireTouch("touchmove", 300);
+        fireTouch("touchend", 300);
+      });
+      await flushAsync();
+
+      const newSends = ws.sent.slice(before);
+      // Look for any SGR wheel emission. up=`\x1b[<64...` down=`\x1b[<65...`
+      const sgrWheel = newSends.some((m) => {
+        if (typeof m === "string") return false;
+        const ascii = Array.from(m)
+          .map((b) => String.fromCharCode(b))
+          .join("");
+        return ascii.startsWith("\x1b[<64") || ascii.startsWith("\x1b[<65");
+      });
+      expect(sgrWheel).toBe(true);
+    } finally {
+      div.remove();
+    }
+  });
+
+  it("two-finger touch pinch updates the font size", async () => {
+    const div = document.createElement("div");
+    document.body.appendChild(div);
+    try {
+      renderHook(() => {
+        const term = useTerminal("s-pinch", "ws", false, false);
+        if (term.containerRef && !term.containerRef.current) {
+          (
+            term.containerRef as unknown as { current: HTMLDivElement | null }
+          ).current = div;
+        }
+        return term;
+      });
+      await flushAsync();
+      const xtermEl = div.querySelector(".xterm") as HTMLDivElement;
+      const startSize = captured.options.fontSize;
+
+      const twoFinger = (
+        type: "touchstart" | "touchmove" | "touchend",
+        dist: number,
+      ) => {
+        const t1 = { identifier: 1, clientX: 100 - dist / 2, clientY: 500 };
+        const t2 = { identifier: 2, clientX: 100 + dist / 2, clientY: 500 };
+        const ev = new Event(type, { bubbles: true, cancelable: true });
+        const list = type === "touchend" ? [] : [t1, t2];
+        Object.defineProperty(ev, "touches", { value: list });
+        Object.defineProperty(ev, "targetTouches", { value: list });
+        Object.defineProperty(ev, "changedTouches", { value: [t1, t2] });
+        xtermEl.dispatchEvent(ev);
+      };
+
+      // Spread the fingers apart from 50px to 300px to zoom in.
+      act(() => {
+        twoFinger("touchstart", 50);
+        twoFinger("touchmove", 80);
+        twoFinger("touchmove", 150);
+        twoFinger("touchmove", 250);
+        twoFinger("touchmove", 300);
+        twoFinger("touchend", 300);
+      });
+      // Flush the rAF for the font-size coalesce path.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(50);
+      });
+      expect(captured.options.fontSize).not.toBe(startSize);
+    } finally {
+      div.remove();
+    }
+  });
+
   it("the virtual Ctrl bridge transforms onData printable -> control byte", async () => {
     const div = document.createElement("div");
     document.body.appendChild(div);
