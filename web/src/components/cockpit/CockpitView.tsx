@@ -1031,7 +1031,7 @@ function PendingApproval({
 
 /* ── System notices ──────────────────────────────────────────────── */
 
-function SystemNotices({
+export function SystemNotices({
   status,
   lagged,
   rateLimit,
