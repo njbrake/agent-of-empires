@@ -217,6 +217,13 @@ pub struct Supervisor<S: BroadcastSink> {
     /// the lock, see the agent is now warmed up, and proceed without
     /// re-acquiring it. See #1088.
     agent_warmup_locks: Arc<std::sync::Mutex<HashMap<String, Arc<Mutex<()>>>>>,
+    /// Wakes `wait_for_worker` whenever the (workers, pending_resumes)
+    /// snapshot changes. Notified after every workers.insert and after
+    /// every ResumeReservation drop. Replaces the previous 50 ms poll
+    /// loop with edge triggered wakeups, so a request that arrives
+    /// just after the spawn handshake finishes resumes within a
+    /// scheduler tick instead of waiting up to 50 ms.
+    worker_notify: Arc<tokio::sync::Notify>,
     /// Cap on concurrently-running workers, snapshotted from
     /// `[cockpit] max_concurrent_workers` at startup. Enforced in
     /// `spawn`; new workers past the cap return `CapacityFull`.
@@ -233,6 +240,10 @@ pub struct Supervisor<S: BroadcastSink> {
 struct ResumeReservation {
     pending: Arc<std::sync::Mutex<HashMap<String, ResumeKind>>>,
     session_id: String,
+    /// Wakes any `wait_for_worker` parked on the supervisor's
+    /// `worker_notify`. Cloned from the supervisor at construction
+    /// so Drop never has to reach back into `&Supervisor`.
+    notify: Arc<tokio::sync::Notify>,
 }
 
 impl Drop for ResumeReservation {
@@ -246,6 +257,10 @@ impl Drop for ResumeReservation {
         // reservation is still cleared instead of leaking.
         let session_id = std::mem::take(&mut self.session_id);
         lock_recover(&self.pending).remove(&session_id);
+        // Wake any wait_for_worker parked on the notify. Notify with
+        // no waiters is a no-op so the cost on the hot path is just
+        // the atomic store inside Notify.
+        self.notify.notify_waiters();
     }
 }
 
@@ -308,6 +323,7 @@ impl<S: BroadcastSink> Supervisor<S> {
             cancelled_spawns: Arc::new(std::sync::Mutex::new(HashSet::new())),
             warmed_up_agents: Arc::new(std::sync::Mutex::new(HashSet::new())),
             agent_warmup_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            worker_notify: Arc::new(tokio::sync::Notify::new()),
             max_concurrent_workers,
         }
     }
@@ -577,6 +593,7 @@ impl<S: BroadcastSink> Supervisor<S> {
             ResumeReservation {
                 pending: Arc::clone(&self.pending_resumes),
                 session_id: session_id.clone(),
+                notify: Arc::clone(&self.worker_notify),
             }
         };
 
@@ -715,6 +732,11 @@ impl<S: BroadcastSink> Supervisor<S> {
             },
         );
         drop(workers);
+        // Wake any wait_for_worker parked on this session. The drop
+        // above made the WorkerHandle observable to a fresh lock; the
+        // notify ensures a parked waiter recheck happens within a
+        // scheduler tick instead of on the next 50 ms poll.
+        self.worker_notify.notify_waiters();
 
         // Honor the wizard's "Auto-approve" / profile `yolo_mode_default`
         // by switching the ACP session to bypassPermissions mode. The
@@ -1081,23 +1103,43 @@ impl<S: BroadcastSink> Supervisor<S> {
     /// requests would 404 because the WorkerHandle isn't in `workers`
     /// yet, even though it's about to be. Polling at 50ms keeps the
     /// happy-path latency negligible while bounding the wait.
+    /// Block until either the worker for `session_id` lands in
+    /// `workers` or the pending reservation falls off (giving up
+    /// fast on a dead path) or `deadline` lapses.
+    ///
+    /// Uses `tokio::sync::Notify` for edge triggered wakeups instead
+    /// of polling. The previous shape woke every 50 ms, which added
+    /// up to 50 ms of avoidable latency on the request path that
+    /// triggers `send_prompt` immediately after a session spawn. The
+    /// double-check pattern (subscribe to `notified()` BEFORE peeking
+    /// the maps) prevents lost wakeups: if the spawn finishes between
+    /// the peek and the await, the notify is buffered and the await
+    /// returns immediately.
     async fn wait_for_worker(&self, session_id: &str, deadline: std::time::Duration) -> bool {
-        let start = std::time::Instant::now();
+        let started = std::time::Instant::now();
         loop {
+            let notified = self.worker_notify.notified();
+            tokio::pin!(notified);
+
             if self.workers.lock().await.contains_key(session_id) {
                 return true;
             }
             // No worker yet. If a resume (spawn or attach) is in
-            // flight, wait for it; otherwise the worker isn't coming
-            // and we should fail fast rather than burn the full
-            // deadline.
+            // flight, wait for it; otherwise the worker is not coming
+            // and we should fail fast rather than burn the deadline.
             if !lock_recover(&self.pending_resumes).contains_key(session_id) {
                 return false;
             }
-            if start.elapsed() >= deadline {
+            let remaining = deadline.saturating_sub(started.elapsed());
+            if remaining.is_zero() {
                 return false;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            if tokio::time::timeout(remaining, &mut notified)
+                .await
+                .is_err()
+            {
+                return false;
+            }
         }
     }
 
@@ -1394,6 +1436,7 @@ impl<S: BroadcastSink> Supervisor<S> {
             ResumeReservation {
                 pending: Arc::clone(&self.pending_resumes),
                 session_id: session_id.clone(),
+                notify: Arc::clone(&self.worker_notify),
             }
         };
 
@@ -1468,6 +1511,7 @@ impl<S: BroadcastSink> Supervisor<S> {
             "reattached to existing cockpit worker"
         );
         drop(workers);
+        self.worker_notify.notify_waiters();
 
         self.cancel_orphaned_approvals(&session_id);
         Ok(())
@@ -2673,6 +2717,7 @@ mod tests {
         let reservation = ResumeReservation {
             pending: Arc::clone(&pending),
             session_id: "s-sync-drop".into(),
+            notify: Arc::new(tokio::sync::Notify::new()),
         };
         drop(reservation);
 
@@ -2706,6 +2751,7 @@ mod tests {
         let reservation = ResumeReservation {
             pending: Arc::clone(&pending),
             session_id: "s-poison".into(),
+            notify: Arc::new(tokio::sync::Notify::new()),
         };
         drop(reservation);
 
@@ -2713,6 +2759,52 @@ mod tests {
         assert!(
             !map.contains_key("s-poison"),
             "Drop must recover the poisoned lock and remove the reservation"
+        );
+    }
+
+    /// Regression: `wait_for_worker` must wake on `notify_waiters`
+    /// rather than at the next 50 ms poll. The previous shape woke
+    /// at the next 50 ms poll, which delayed every caller (send_prompt
+    /// etc.) that happened to race the spawn or attach finishing.
+    #[tokio::test]
+    async fn wait_for_worker_wakes_on_reservation_drop() {
+        let sink = VecSink::new();
+        let sup = Arc::new(Supervisor::new(sink));
+
+        sup.pending_resumes
+            .lock()
+            .unwrap()
+            .insert("s-notify".into(), ResumeKind::Spawn);
+        let reservation = ResumeReservation {
+            pending: Arc::clone(&sup.pending_resumes),
+            session_id: "s-notify".into(),
+            notify: Arc::clone(&sup.worker_notify),
+        };
+
+        let sup_clone = Arc::clone(&sup);
+        let waiter = tokio::spawn(async move {
+            sup_clone
+                .wait_for_worker("s-notify", std::time::Duration::from_secs(60))
+                .await
+        });
+
+        tokio::task::yield_now().await;
+        let dropped_at = std::time::Instant::now();
+        drop(reservation);
+
+        let result = tokio::time::timeout(std::time::Duration::from_millis(20), waiter)
+            .await
+            .expect("waiter must wake on notify, not at the 50 ms poll")
+            .expect("waiter task must not panic");
+        let elapsed = dropped_at.elapsed();
+
+        assert!(
+            !result,
+            "wait_for_worker must return false when the reservation drops without a worker landing"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_millis(50),
+            "wait_for_worker must wake within 50 ms (= old poll interval), got {elapsed:?}"
         );
     }
 
