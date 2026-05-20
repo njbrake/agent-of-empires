@@ -559,18 +559,30 @@ export async function spawnAoeServe(opts: SpawnOptions): Promise<ServeHandle> {
     if (child.exitCode !== null || child.signalCode !== null) return;
     child.kill("SIGTERM");
     await new Promise<void>((resolveExit) => {
-      const t = setTimeout(() => {
+      let resolved = false;
+      const done = () => {
+        if (resolved) return;
+        resolved = true;
+        clearTimeout(escalate);
+        clearTimeout(backstop);
+        resolveExit();
+      };
+      // 2s after SIGTERM, escalate to SIGKILL. Do NOT resolve here:
+      // restart() reuses the same port and a too-early resolve races
+      // the kernel's TCP cleanup, so spawnOnce can land on EADDRINUSE.
+      // Wait for the real exit event (or the backstop below).
+      const escalate = setTimeout(() => {
         try {
           child.kill("SIGKILL");
         } catch {
           // ignore
         }
-        resolveExit();
       }, 2000);
-      child.once("exit", () => {
-        clearTimeout(t);
-        resolveExit();
-      });
+      // Hard backstop so a pathologically uncooperative child can't
+      // hang the test forever. SIGKILL is uninterruptible on POSIX
+      // outside zombie/D-state, so this should not fire in practice.
+      const backstop = setTimeout(done, 4000);
+      child.once("exit", done);
     });
   }
 
@@ -597,24 +609,7 @@ export async function spawnAoeServe(opts: SpawnOptions): Promise<ServeHandle> {
     },
     async stop() {
       try {
-        if (proc && proc.exitCode === null && proc.signalCode === null) {
-          proc.kill("SIGTERM");
-          // Give the server 2s to drain, then SIGKILL.
-          await new Promise<void>((resolveExit) => {
-            const t = setTimeout(() => {
-              try {
-                proc!.kill("SIGKILL");
-              } catch {
-                // ignore
-              }
-              resolveExit();
-            }, 2000);
-            proc!.once("exit", () => {
-              clearTimeout(t);
-              resolveExit();
-            });
-          });
-        }
+        if (proc) await killProc(proc);
       } finally {
         // Best-effort: kill any tmux server bound to the isolated socket
         // before deleting the dir. Cockpit specs leave tmux child

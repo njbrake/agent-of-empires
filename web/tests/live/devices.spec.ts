@@ -149,9 +149,10 @@ test("settings -> devices renders ConnectedDevices with captured browser", async
     page.getByRole("heading", { name: /connected devices/i }),
   ).toBeVisible({ timeout: 10_000 });
 
-  // The list renders one row per (ip, user_agent). 127.0.0.1 is the
-  // loopback IP every harness device authenticates from.
-  await expect(page.getByText("127.0.0.1").first()).toBeVisible({
+  // The list renders one row per (ip, user_agent). The loopback IP
+  // varies by host stack: 127.0.0.1 on most Linux/macOS setups, ::1
+  // where IPv6 wins the bind. Match either so the spec stays portable.
+  await expect(page.getByText(/(127\.0\.0\.1|::1)/).first()).toBeVisible({
     timeout: 10_000,
   });
 });
