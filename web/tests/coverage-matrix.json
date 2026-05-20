@@ -111,6 +111,13 @@
       "components": ["web/src/components/TerminalSettings.tsx"]
     },
     {
+      "id": "app-shell.topbar-dev-badge",
+      "kind": "vitest",
+      "risk": "low",
+      "specs": ["src/components/__tests__/TopBar.test.tsx"],
+      "components": ["web/src/components/TopBar.tsx"]
+    },
+    {
       "id": "profiles.lifecycle",
       "kind": "live-playwright",
       "risk": "high",
@@ -163,6 +170,13 @@
       ]
     },
     {
+      "id": "wizard.profile-description",
+      "kind": "mocked-playwright",
+      "risk": "medium",
+      "specs": ["tests/wizard-agent-step.spec.ts"],
+      "components": ["web/src/components/session-wizard/steps/AgentStep.tsx"]
+    },
+    {
       "id": "directory-browser",
       "kind": "live-playwright",
       "risk": "medium",
@@ -178,6 +192,13 @@
         "web/src/components/DeleteSessionDialog.tsx",
         "web/src/components/WorkspaceSidebar.tsx"
       ]
+    },
+    {
+      "id": "session.delete-dialog-keyboard",
+      "kind": "vitest",
+      "risk": "low",
+      "specs": ["src/components/__tests__/DeleteSessionDialog.test.tsx"],
+      "components": ["web/src/components/DeleteSessionDialog.tsx"]
     },
     {
       "id": "right-panel.diff",
@@ -245,6 +266,20 @@
       "kind": "vitest",
       "risk": "medium",
       "specs": ["src/components/cockpit/__tests__/WorkingSpinner.test.tsx"],
+      "components": []
+    },
+    {
+      "id": "cockpit.escape-no-cancel",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": ["tests/live/cockpit-escape-no-cancel.spec.ts"],
+      "components": []
+    },
+    {
+      "id": "cockpit.escape-no-cancel-contract",
+      "kind": "vitest",
+      "risk": "medium",
+      "specs": ["src/components/cockpit/Composer.escape.test.tsx"],
       "components": []
     },
     {

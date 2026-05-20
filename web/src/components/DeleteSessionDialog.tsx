@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { DeleteSessionOptions } from "../lib/api";
 import type { CleanupDefaults } from "../lib/types";
 
@@ -26,16 +26,10 @@ export function DeleteSessionDialog({
   const [deleteBranch, setDeleteBranch] = useState(hasManagedWorktree && cleanupDefaults.delete_branch);
   const [deleteSandbox, setDeleteSandbox] = useState(isSandboxed && cleanupDefaults.delete_sandbox);
   const [deleting, setDeleting] = useState(false);
+  const confirmButtonRef = useRef<HTMLButtonElement | null>(null);
+  const previousFocusRef = useRef<HTMLElement | null>(null);
 
   const hasOptions = hasManagedWorktree || isSandboxed;
-
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onCancel();
-    };
-    document.addEventListener("keydown", onKey);
-    return () => document.removeEventListener("keydown", onKey);
-  }, [onCancel]);
 
   const handleConfirm = useCallback(async () => {
     setDeleting(true);
@@ -51,10 +45,50 @@ export function DeleteSessionDialog({
     }
   }, [onConfirm, deleteWorktree, deleteBranch, deleteSandbox, forceDelete]);
 
+  // Capture the previously focused element on mount and restore focus on
+  // unmount so keyboard users return to the trigger (the sidebar row /
+  // context-menu item) instead of losing focus to document.body.
+  useEffect(() => {
+    previousFocusRef.current = document.activeElement as HTMLElement | null;
+    confirmButtonRef.current?.focus();
+    return () => {
+      previousFocusRef.current?.focus?.();
+    };
+  }, []);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        onCancel();
+        return;
+      }
+      if (e.key === "Enter") {
+        // Skip when focus is on an element that has its own Enter
+        // semantics so we don't double-fire or override defaults:
+        //   - native input/textarea: leave their own behavior alone
+        //   - any button (including the Delete button itself): the
+        //     browser already activates the focused button on Enter,
+        //     so handling it here would call handleConfirm twice.
+        const target = e.target as HTMLElement | null;
+        if (target) {
+          const tag = target.tagName;
+          if (tag === "INPUT" || tag === "TEXTAREA" || tag === "BUTTON")
+            return;
+        }
+        if (deleting) return;
+        e.preventDefault();
+        void handleConfirm();
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onCancel, handleConfirm, deleting]);
+
   return (
     <div
       role="dialog"
       aria-modal="true"
+      aria-labelledby="delete-session-dialog-title"
       className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 animate-fade-in"
       onClick={onCancel}
     >
@@ -64,7 +98,10 @@ export function DeleteSessionDialog({
       >
         {/* Header */}
         <div className="px-5 py-4 border-b border-surface-700">
-          <h2 className="text-sm font-semibold text-status-error">
+          <h2
+            id="delete-session-dialog-title"
+            className="text-sm font-semibold text-status-error"
+          >
             Delete Session
           </h2>
         </div>
@@ -126,6 +163,7 @@ export function DeleteSessionDialog({
             Cancel
           </button>
           <button
+            ref={confirmButtonRef}
             onClick={handleConfirm}
             disabled={deleting}
             className="px-3 py-1.5 text-sm text-white bg-status-error/90 hover:bg-status-error rounded-md cursor-pointer transition-colors disabled:opacity-50 flex items-center gap-2"

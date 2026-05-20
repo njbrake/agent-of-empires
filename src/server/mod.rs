@@ -1209,11 +1209,12 @@ async fn http_request_span(
 /// Content-Security-Policy for the dashboard.
 ///
 /// - `default-src 'self'`: deny everything we don't explicitly allow.
-/// - `script-src 'self' 'wasm-unsafe-eval'`: wterm compiles WebAssembly;
-///   the `wasm-unsafe-eval` source is the CSP3 opt-in for WASM compilation.
+/// - `script-src 'self'`: scripts are bundled by Vite from the same
+///   origin; no inline scripts, no `eval`, no WASM.
 /// - `style-src 'self' 'unsafe-inline'`: React writes to element.style at
-///   runtime (terminal theme vars, font-size updates) and Tailwind v4 emits
-///   inline `<style>` blocks in dev. Blocking inline styles breaks wterm.
+///   runtime (terminal font-size updates) and Tailwind v4 emits inline
+///   `<style>` blocks in dev. Blocking inline styles breaks xterm.js's
+///   rendered viewport.
 /// - `img-src 'self' data: https://github.com https://avatars.githubusercontent.com`:
 ///   repo-owner avatars are loaded from `github.com/{user}.png` which 302s
 ///   to `avatars.githubusercontent.com`; CSP checks both URLs across the
@@ -1224,7 +1225,7 @@ async fn http_request_span(
 /// - `base-uri 'self'`, `form-action 'self'`, `object-src 'none'`: tighten
 ///   the usual attack surfaces on injection bugs.
 const CSP: &str = "default-src 'self'; \
-    script-src 'self' 'wasm-unsafe-eval'; \
+    script-src 'self'; \
     style-src 'self' 'unsafe-inline'; \
     img-src 'self' data: https://github.com https://avatars.githubusercontent.com; \
     font-src 'self'; \
@@ -2465,7 +2466,7 @@ mod tests {
         // accidentally drops one fails loudly.
         for needle in [
             "default-src 'self'",
-            "'wasm-unsafe-eval'",
+            "script-src 'self'",
             "img-src 'self' data: https://github.com https://avatars.githubusercontent.com",
             "connect-src 'self' ws: wss:",
             "frame-ancestors 'none'",

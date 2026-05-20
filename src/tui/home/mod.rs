@@ -1721,8 +1721,11 @@ impl HomeView {
         flatten_tree(&tree, &grouped, self.sort_order)
     }
 
-    pub fn active_profile_display(&self) -> &str {
-        self.active_profile.as_deref().unwrap_or("all")
+    /// The active profile filter name, or `None` when no filter is applied.
+    /// Returning `None` lets callers (e.g. the list-pane title) omit the
+    /// `[<profile>]` segment entirely instead of rendering a noisy `[all]`.
+    pub fn active_profile_display(&self) -> Option<&str> {
+        self.active_profile.as_deref()
     }
 
     /// Switch the active profile filter in-place without destroying the view.

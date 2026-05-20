@@ -44,11 +44,20 @@ impl NewSessionDialog {
         let has_sandbox = self.docker_available && !is_host_only;
         let has_yolo = !self.selected_tool_always_yolo();
         let dialog_width = 80;
+        // When the selected profile has a description, the profile row needs
+        // an extra line to render it beneath the name. We compute this once
+        // here so the layout constraint and the renderer agree on height.
+        let profile_field_height: u16 =
+            if has_profile_selection && self.selected_profile_description().is_some() {
+                3
+            } else {
+                2
+            };
 
         // Build constraints dynamically based on visible fields only
         let mut constraints = Vec::new();
         if has_profile_selection {
-            constraints.push(Constraint::Length(2)); // Profile
+            constraints.push(Constraint::Length(profile_field_height)); // Profile
         }
         constraints.extend([
             Constraint::Length(2), // Title
@@ -514,7 +523,18 @@ impl NewSessionDialog {
             spans.push(Span::styled(selected, profile_style));
         }
 
-        frame.render_widget(Paragraph::new(Line::from(spans)), area);
+        let mut lines = vec![Line::from(spans)];
+        // Show the selected profile's description on the line below when one
+        // is set, so users can tell what each profile is for without leaving
+        // the dialog. (#949)
+        if let Some(desc) = self.selected_profile_description() {
+            lines.push(Line::from(Span::styled(
+                format!("  {}", desc),
+                Style::default().fg(theme.dimmed),
+            )));
+        }
+
+        frame.render_widget(Paragraph::new(lines), area);
     }
 
     fn render_path_field(

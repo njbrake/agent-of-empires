@@ -61,7 +61,13 @@ pub(super) fn validate_no_shell_injection(value: &str, field_name: &str) -> Resu
     Ok(())
 }
 
-pub(super) const ALLOWED_SETTINGS_SECTIONS: &[&str] = &[
+/// Sections that PATCH /api/settings (global config) may write.
+///
+/// Keep this list narrower than the profile-write list: anything here lands
+/// in the process-global Config and is shared by every profile, so the bar
+/// for inclusion is higher. `description` is intentionally absent because
+/// it is a per-profile field (#949).
+pub(super) const ALLOWED_GLOBAL_SETTINGS_SECTIONS: &[&str] = &[
     "theme", "session", "tmux", "updates", "sound", "sandbox", "worktree",
     // web: audited 2026-04-24, contains only boolean notification toggles
     // (notifications_enabled, notify_on_waiting, notify_on_idle, notify_on_error).
@@ -71,6 +77,25 @@ pub(super) const ALLOWED_SETTINGS_SECTIONS: &[&str] = &[
     // No shell commands, no binary paths. Values are validated against the
     // EnvFilter parser before being written back to disk.
     "logging",
+];
+
+/// Sections that PATCH /api/settings/profile/:name may write.
+///
+/// Superset of the global list; adds `description`, which is a top-level
+/// per-profile string field (Option<String>) surfaced as helper text in
+/// the wizard profile picker (#949). Plain text only, no shell
+/// metacharacters or binary paths.
+pub(super) const ALLOWED_PROFILE_SETTINGS_SECTIONS: &[&str] = &[
+    "theme",
+    "session",
+    "tmux",
+    "updates",
+    "sound",
+    "sandbox",
+    "worktree",
+    "web",
+    "logging",
+    "description",
 ];
 
 pub(super) const SESSION_BLOCKED_FIELDS: &[&str] = &[
@@ -302,12 +327,16 @@ mod tests {
     }
 
     #[test]
-    fn allowed_settings_sections_are_pinned() {
+    fn allowed_global_settings_sections_are_pinned() {
         // If you're adding a new top-level settings section, add it here AND
         // confirm the schema deserializes user input safely (no shell
         // commands that run on launch, no binary overrides). The `hooks`
         // section in particular must NOT be API-writable because global
         // hooks bypass the trust prompt that gates repo hooks.
+        //
+        // Global allowlist is intentionally narrower than the profile
+        // allowlist: profile-only fields (e.g., `description`) must not be
+        // accepted by PATCH /api/settings, only by the per-profile endpoint.
         let expected: &[&str] = &[
             "theme", "session", "tmux", "updates", "sound", "sandbox", "worktree",
             // web: audited 2026-04-24. WebConfig has 4 boolean fields
@@ -319,26 +348,79 @@ mod tests {
             "logging",
         ];
         assert_eq!(
-            ALLOWED_SETTINGS_SECTIONS.len(),
+            ALLOWED_GLOBAL_SETTINGS_SECTIONS.len(),
             expected.len(),
-            "ALLOWED_SETTINGS_SECTIONS size changed — adding a section widens \
+            "ALLOWED_GLOBAL_SETTINGS_SECTIONS size changed — adding a section widens \
              the API write surface and must be reviewed as a security change. \
              In particular, do NOT add 'hooks' without auditing the RCE surface."
         );
         for section in expected {
             assert!(
-                ALLOWED_SETTINGS_SECTIONS.contains(section),
-                "ALLOWED_SETTINGS_SECTIONS lost section {:?}",
+                ALLOWED_GLOBAL_SETTINGS_SECTIONS.contains(section),
+                "ALLOWED_GLOBAL_SETTINGS_SECTIONS lost section {:?}",
                 section
             );
         }
         // Explicitly guard against accidental hooks re-addition.
         assert!(
-            !ALLOWED_SETTINGS_SECTIONS.contains(&"hooks"),
+            !ALLOWED_GLOBAL_SETTINGS_SECTIONS.contains(&"hooks"),
             "hooks must not be API-writable: global/profile hooks bypass the \
              repo-hook trust prompt and run arbitrary shell commands on session \
              start (local RCE)"
         );
+        // `description` is a per-profile field and must not appear on the
+        // global endpoint, even though it is plain text and safe in itself.
+        assert!(
+            !ALLOWED_GLOBAL_SETTINGS_SECTIONS.contains(&"description"),
+            "description is a per-profile field and must only be writable via \
+             PATCH /api/settings/profile/:name, not the global endpoint"
+        );
+    }
+
+    #[test]
+    fn allowed_profile_settings_sections_are_pinned() {
+        // Profile allowlist is the global list plus `description`. Anything
+        // global can also be set per-profile (overrides); profile-only fields
+        // (`description` today) are the additions.
+        let expected: &[&str] = &[
+            "theme",
+            "session",
+            "tmux",
+            "updates",
+            "sound",
+            "sandbox",
+            "worktree",
+            "web",
+            "logging",
+            // description: optional string surfaced in the wizard profile
+            // picker (#949). Plain text, no shell metacharacters.
+            "description",
+        ];
+        assert_eq!(
+            ALLOWED_PROFILE_SETTINGS_SECTIONS.len(),
+            expected.len(),
+            "ALLOWED_PROFILE_SETTINGS_SECTIONS size changed — adding a section \
+             widens the API write surface and must be reviewed as a security change."
+        );
+        for section in expected {
+            assert!(
+                ALLOWED_PROFILE_SETTINGS_SECTIONS.contains(section),
+                "ALLOWED_PROFILE_SETTINGS_SECTIONS lost section {:?}",
+                section
+            );
+        }
+        assert!(
+            !ALLOWED_PROFILE_SETTINGS_SECTIONS.contains(&"hooks"),
+            "hooks must not be API-writable on any endpoint"
+        );
+        // Every global section must also be writable per-profile (overrides).
+        for section in ALLOWED_GLOBAL_SETTINGS_SECTIONS {
+            assert!(
+                ALLOWED_PROFILE_SETTINGS_SECTIONS.contains(section),
+                "global section {:?} must also be accepted by the per-profile endpoint",
+                section
+            );
+        }
     }
 
     #[test]
