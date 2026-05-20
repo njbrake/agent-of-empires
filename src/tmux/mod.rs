@@ -5,6 +5,8 @@ mod session;
 pub mod status_bar;
 pub(crate) mod status_detection;
 mod terminal_session;
+#[cfg(test)]
+mod test_helpers;
 mod tool_session;
 pub(crate) mod utils;
 
@@ -349,6 +351,7 @@ impl AvailableTools {
 
 #[cfg(test)]
 mod tests {
+    use super::test_helpers::TmuxTestSession;
     use super::*;
 
     // Session names embed `SESSION_PREFIX`, which differs between release
@@ -472,7 +475,8 @@ mod tests {
 
         // Ensure the tmux server is already running so the test session's
         // command string doesn't end up in the server process's argv.
-        let dummy = format!("aoe_test_compound_dummy_{}", std::process::id());
+        let dummy_guard = TmuxTestSession::new("aoe_test_compound_dummy");
+        let dummy = dummy_guard.name().to_string();
         let _ = Command::new("tmux")
             .args([
                 "new-session",
@@ -488,7 +492,8 @@ mod tests {
             .output();
         std::thread::sleep(std::time::Duration::from_millis(200));
 
-        let session_name = format!("aoe_test_compound_{}", std::process::id());
+        let session_guard = TmuxTestSession::new("aoe_test_compound");
+        let session_name = session_guard.name().to_string();
         let marker = format!("AOE_COMPOUND_TEST_{}", std::process::id());
         let secret_value = "s3cret_val!@#";
 
@@ -567,14 +572,6 @@ mod tests {
             is_dead,
             "Pane should be dead after exec'd command exits (lifecycle preserved)"
         );
-
-        // Clean up
-        let _ = Command::new("tmux")
-            .args(["kill-session", "-t", &session_name])
-            .output();
-        let _ = Command::new("tmux")
-            .args(["kill-session", "-t", &dummy])
-            .output();
     }
 
     /// Verify that after `exec` replaces the outer shell, the secret
@@ -595,7 +592,8 @@ mod tests {
 
         // Ensure the tmux server is already running so our test session's
         // command string doesn't end up in the server process's argv.
-        let dummy = format!("aoe_test_ps_dummy_{}", std::process::id());
+        let dummy_guard = TmuxTestSession::new("aoe_test_ps_dummy");
+        let dummy = dummy_guard.name().to_string();
         let _ = Command::new("tmux")
             .args([
                 "new-session",
@@ -611,7 +609,8 @@ mod tests {
             .output();
         std::thread::sleep(std::time::Duration::from_millis(200));
 
-        let session_name = format!("aoe_test_ps_{}", std::process::id());
+        let session_guard = TmuxTestSession::new("aoe_test_ps");
+        let session_name = session_guard.name().to_string();
         let secret_value = format!("UNIQUE_SECRET_{}_xyzzy", std::process::id());
 
         // Simulate: export SECRET='val'; exec sleep 30
@@ -655,13 +654,5 @@ mod tests {
                 .collect::<Vec<_>>()
                 .join("\n")
         );
-
-        // Clean up
-        let _ = Command::new("tmux")
-            .args(["kill-session", "-t", &session_name])
-            .output();
-        let _ = Command::new("tmux")
-            .args(["kill-session", "-t", &dummy])
-            .output();
     }
 }

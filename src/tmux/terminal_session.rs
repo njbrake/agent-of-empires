@@ -342,6 +342,7 @@ fn build_terminal_create_args(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tmux::test_helpers::TmuxTestSession;
     use crate::tmux::{Session, SESSION_PREFIX};
 
     #[test]
@@ -457,7 +458,8 @@ mod tests {
             return;
         }
 
-        let session_name = format!("aoe_test_terminal_dead_{}", std::process::id());
+        let guard = TmuxTestSession::new("aoe_test_terminal_dead");
+        let session_name = guard.name().to_string();
         let session = TerminalSession {
             inner: PairedTerminal {
                 name: session_name.clone(),
@@ -494,10 +496,6 @@ mod tests {
             session.is_pane_dead(),
             "Terminal session pane should be dead after command exits"
         );
-
-        let _ = Command::new("tmux")
-            .args(["kill-session", "-t", &session_name])
-            .output();
     }
 
     #[test]
@@ -508,7 +506,8 @@ mod tests {
             return;
         }
 
-        let session_name = format!("aoe_test_terminal_alive_{}", std::process::id());
+        let guard = TmuxTestSession::new("aoe_test_terminal_alive");
+        let session_name = guard.name().to_string();
         let session = TerminalSession {
             inner: PairedTerminal {
                 name: session_name.clone(),
@@ -545,9 +544,5 @@ mod tests {
             !session.is_pane_dead(),
             "Terminal session pane should be alive while command running"
         );
-
-        let _ = Command::new("tmux")
-            .args(["kill-session", "-t", &session_name])
-            .output();
     }
 }
