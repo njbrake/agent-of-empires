@@ -603,4 +603,51 @@ impl HomeView {
         self.flat_items = self.build_flat_items();
         Ok(Some(format!("Favorited: {}", title)))
     }
+
+    /// Handle the archive keybind on the cursor's session. Symmetric toggle:
+    /// archive an active row, unarchive an archived one. Killing the tmux
+    /// pane on archive matches the CLI semantics (archived means "stop
+    /// spending CPU on this") so a stale spinner can't keep advertising the
+    /// session as alive. Unarchive does NOT respawn the pane; the user
+    /// restarts explicitly if they want it back.
+    ///
+    /// Mirrors `toggle_snooze_at_cursor` but with no picker: archive is
+    /// indefinite, so there's nothing to ask the user before sinking the
+    /// row. The session reappears at its real tier on unarchive or when
+    /// the user sends a message (auto unarchive in `Instance::message_sent`).
+    pub(super) fn toggle_archive_at_cursor(&mut self) -> anyhow::Result<Option<String>> {
+        let Some(id) = self.selected_session.clone() else {
+            return Ok(None);
+        };
+        let (is_archived, title) = {
+            let inst = self.instances.iter().find(|i| i.id == id);
+            match inst {
+                Some(i) => (i.is_archived(), i.title.clone()),
+                None => return Ok(None),
+            }
+        };
+        if is_archived {
+            self.mutate_instance(&id, |inst| inst.unarchive());
+            self.save()?;
+            self.flat_items = self.build_flat_items();
+            return Ok(Some(format!("Unarchived: {}", title)));
+        }
+
+        // Kill the pane before flipping the archived bit. If the kill fails
+        // (tmux gone, pane already dead) we still archive: the row should
+        // sink regardless, since the user explicitly asked for it.
+        if let Some(inst) = self.instances.iter().find(|i| i.id == id) {
+            if let Err(e) = inst.kill() {
+                tracing::warn!("toggle_archive_at_cursor: kill failed (continuing): {}", e);
+            }
+        }
+
+        self.mutate_instance(&id, |inst| inst.archive());
+        self.save()?;
+        self.flat_items = self.build_flat_items();
+        if self.sort_order == crate::session::config::SortOrder::Attention {
+            self.select_top_attention(None);
+        }
+        Ok(Some(format!("Archived: {}", title)))
+    }
 }

@@ -818,6 +818,24 @@ impl HomeView {
                 Ok(None) => {}
                 Err(e) => tracing::error!("toggle_favorite_at_cursor failed: {}", e),
             },
+            // `z` / `Z`: toggle archive on the cursor's session. Archive is
+            // the "park this, I'm done with it" sink. The row drops to tier
+            // 99 in the Attention sort, the spinner stops, and the agent
+            // pane is killed so a stale process can't keep claiming attention.
+            // Pressing it again on an archived row unarchives (no kill, the
+            // pane stays gone). Mnemonic: Zzz / archive box. Distinct from
+            // `h`/`H` snooze (temporary, auto wakes) and separate from `d`/`D`
+            // (destructive delete, unchanged).
+            KeyCode::Char('z') if !self.strict_hotkeys => {
+                if let Err(e) = self.toggle_archive_at_cursor() {
+                    tracing::error!("toggle_archive_at_cursor failed: {}", e);
+                }
+            }
+            KeyCode::Char('Z') if self.strict_hotkeys => {
+                if let Err(e) = self.toggle_archive_at_cursor() {
+                    tracing::error!("toggle_archive_at_cursor failed: {}", e);
+                }
+            }
             KeyCode::Char('?') => {
                 self.show_help = true;
             }
