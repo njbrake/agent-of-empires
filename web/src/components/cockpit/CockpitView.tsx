@@ -1202,7 +1202,7 @@ function InteractionErrorBanner({
   );
 }
 
-function WorkerRestartingBanner({
+export function WorkerRestartingBanner({
   agentUnresponsive,
   agentOrphaned,
 }: {

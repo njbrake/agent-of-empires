@@ -1376,4 +1376,24 @@ describe("CockpitState reducer / silent-orphan watchdog (#1240)", () => {
     expect(state.agentOrphaned).toBe(false);
     expect(state.workerRestarting).toBe(true);
   });
+
+  it("clears agentOrphaned when agent_unresponsive arrives next", () => {
+    // The cancel-escalation watchdog (agent_unresponsive) is the
+    // proximate path that downstream supervisor logic uses to drive
+    // SIGTERM + respawn even when the silent-orphan watchdog (#1240)
+    // armed first. If both reasons fire in sequence, the banner must
+    // flip away from agentOrphaned so the user sees the cancel-
+    // escalation copy that matches the active recovery phase.
+    let state: CockpitState = {
+      ...emptyCockpitState(),
+      pendingUserPromptSeq: 2,
+      lastStoppedSeq: 0,
+    };
+    state = applyEvent(state, stoppedFrame("prompt_orphaned", 1));
+    expect(state.agentOrphaned).toBe(true);
+    state = applyEvent(state, stoppedFrame("agent_unresponsive", 2));
+    expect(state.agentOrphaned).toBe(false);
+    expect(state.agentUnresponsive).toBe(true);
+    expect(state.workerRestarting).toBe(true);
+  });
 });

@@ -332,7 +332,10 @@
       "id": "cockpit.silent-orphan-watchdog",
       "kind": "vitest",
       "risk": "medium",
-      "specs": ["src/lib/cockpitTypes.test.ts"],
+      "specs": [
+        "src/lib/cockpitTypes.test.ts",
+        "src/components/cockpit/__tests__/WorkerRestartingBanner.test.tsx"
+      ],
       "components": []
     },
     {
