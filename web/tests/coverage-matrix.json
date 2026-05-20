@@ -209,9 +209,13 @@
     },
     {
       "id": "right-panel.diff",
-      "kind": "deferred",
-      "issue": "https://github.com/njbrake/agent-of-empires/issues/1221",
+      "kind": "live-playwright",
       "risk": "medium",
+      "specs": [
+        "tests/live/right-panel-diff-files.spec.ts",
+        "tests/live/right-panel-large-diff.spec.ts",
+        "tests/live/right-panel-notifications.spec.ts"
+      ],
       "components": [
         "web/src/components/RightPanel.tsx",
         "web/src/components/diff/DiffFileList.tsx",
