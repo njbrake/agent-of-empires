@@ -297,6 +297,61 @@ describe("useTerminal lifecycle", () => {
     }
   });
 
+  it("suppresses tiny resize messages from hidden containers", async () => {
+    // Hidden container = no offsetParent + a tiny proposed grid. The
+    // hook should never let that bogus measurement reach the server.
+    // Simulate by stubbing the FakeFitAddon's fit() to emit (10, 4)
+    // before any RO fires, and force offsetParent to null so the
+    // hidden-container guard engages even though jsdom's default
+    // would normally let any size through.
+    const FakeFitAddonClass = (await import("@xterm/addon-fit")).FitAddon as unknown as {
+      prototype: { fit: () => void };
+    };
+    const origFit = FakeFitAddonClass.prototype.fit;
+    FakeFitAddonClass.prototype.fit = function () {
+      captured.onResize?.({ cols: 10, rows: 4 });
+    };
+    const div = document.createElement("div");
+    document.body.appendChild(div);
+    try {
+      const { result } = renderHook(() => {
+        const term = useTerminal("s-hidden", "ws", false, false);
+        if (term.containerRef && !term.containerRef.current) {
+          (
+            term.containerRef as unknown as { current: HTMLDivElement | null }
+          ).current = div;
+        }
+        return term;
+      });
+      await flushAsync();
+      const ws = sockets[0]!;
+      act(() => {
+        ws.readyState = FakeWebSocket.OPEN;
+        ws.onopen?.(new Event("open"));
+      });
+      await flushAsync();
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(400);
+      });
+      await flushAsync();
+
+      // Activate is fine (it does not carry a measurement), but no
+      // resize message should have shipped at the tiny grid.
+      const tinyResize = ws.sent.find(
+        (m) =>
+          typeof m === "string" &&
+          m.includes('"resize"') &&
+          m.includes('"cols":10') &&
+          m.includes('"rows":4'),
+      );
+      expect(tinyResize).toBeUndefined();
+      expect(result.current.state.connected).toBe(true);
+    } finally {
+      FakeFitAddonClass.prototype.fit = origFit;
+      div.remove();
+    }
+  });
+
   it("clears retryCount once the first ws.onmessage arrives", async () => {
     const div = document.createElement("div");
     document.body.appendChild(div);
