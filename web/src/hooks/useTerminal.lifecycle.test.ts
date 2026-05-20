@@ -982,6 +982,219 @@ describe("useTerminal lifecycle", () => {
     }
   });
 
+  it("ws.onclose writes the disconnect+retry banner to the terminal", async () => {
+    const div = document.createElement("div");
+    document.body.appendChild(div);
+    try {
+      renderHook(() => {
+        const term = useTerminal("s-retry", "ws", false, false);
+        if (term.containerRef && !term.containerRef.current) {
+          (
+            term.containerRef as unknown as { current: HTMLDivElement | null }
+          ).current = div;
+        }
+        return term;
+      });
+      await flushAsync();
+      const ws = sockets[0]!;
+      const beforeWrites = captured.writes.length;
+      act(() => {
+        ws.readyState = FakeWebSocket.CLOSED;
+        ws.onclose?.({
+          code: 1006,
+          reason: "boom",
+          wasClean: false,
+        } as CloseEvent);
+      });
+      // term.write should have printed the disconnect+reconnect banner
+      const newWrites = captured.writes.slice(beforeWrites);
+      const banner = newWrites.find(
+        (w) =>
+          typeof w === "string" &&
+          w.includes("Disconnected") &&
+          w.includes("reconnecting"),
+      );
+      expect(banner).toBeDefined();
+    } finally {
+      div.remove();
+    }
+  });
+
+  it("ws.onerror logs through console without blowing up", async () => {
+    const div = document.createElement("div");
+    document.body.appendChild(div);
+    try {
+      renderHook(() => {
+        const term = useTerminal("s-err", "ws", false, false);
+        if (term.containerRef && !term.containerRef.current) {
+          (
+            term.containerRef as unknown as { current: HTMLDivElement | null }
+          ).current = div;
+        }
+        return term;
+      });
+      await flushAsync();
+      const ws = sockets[0]!;
+      // Just confirm ws.onerror fires without throwing.
+      expect(() => {
+        ws.onerror?.(new Event("error"));
+      }).not.toThrow();
+    } finally {
+      div.remove();
+    }
+  });
+
+  it("ws.onclose at retries-exhausted prints the Connection-lost banner", async () => {
+    const div = document.createElement("div");
+    document.body.appendChild(div);
+    try {
+      const { result } = renderHook(() => {
+        const term = useTerminal("s-exhaust", "ws", false, false);
+        if (term.containerRef && !term.containerRef.current) {
+          (
+            term.containerRef as unknown as { current: HTMLDivElement | null }
+          ).current = div;
+        }
+        return term;
+      });
+      await flushAsync();
+      const ws = sockets[0]!;
+      // Walk through all retries by closing each new socket in turn
+      // until the retry counter reaches max. The final close path then
+      // takes the retries-exhausted branch which prints the
+      // Connection-lost banner.
+      const maxRetries = result.current.maxRetries;
+      let currentWs = ws;
+      // maxRetries close cycles -> the (max+1)-th close should bypass
+      // the retry path and land on the exhausted branch.
+      for (let i = 0; i < maxRetries + 1; i++) {
+        act(() => {
+          currentWs.readyState = FakeWebSocket.CLOSED;
+          currentWs.onclose?.({
+            code: 1006,
+            reason: "",
+            wasClean: false,
+          } as CloseEvent);
+        });
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(60_000);
+        });
+        await flushAsync();
+        if (sockets.length > i + 1) {
+          currentWs = sockets[sockets.length - 1]!;
+        }
+      }
+      // Final close should land on retries-exhausted.
+      const banner = captured.writes.find(
+        (w) => typeof w === "string" && w.includes("Connection lost"),
+      );
+      expect(banner).toBeDefined();
+    } finally {
+      div.remove();
+    }
+  });
+
+  it("wheel-up over a quiet pane sets isInScrollback and sends pause_output", async () => {
+    const div = document.createElement("div");
+    document.body.appendChild(div);
+    try {
+      const { result } = renderHook(() => {
+        const term = useTerminal("s-pause", "ws", false, false);
+        if (term.containerRef && !term.containerRef.current) {
+          (
+            term.containerRef as unknown as { current: HTMLDivElement | null }
+          ).current = div;
+        }
+        return term;
+      });
+      await flushAsync();
+      const ws = sockets[0]!;
+      act(() => {
+        ws.readyState = FakeWebSocket.OPEN;
+        ws.onopen?.(new Event("open"));
+      });
+      await flushAsync();
+      const before = ws.sent.length;
+      // Drive several wheel-up events so sendWheel runs the entry-into-
+      // scrollback branch (sets isInScrollback + sends pause_output).
+      // act() so the setState reducer side-effect (the ws.send for
+      // pause_output) flushes inside the reducer's batched update.
+      await act(async () => {
+        for (let i = 0; i < 8; i++) {
+          const e = new WheelEvent("wheel", {
+            deltaY: -200,
+            bubbles: true,
+            cancelable: true,
+          });
+          captured.customWheel!(e);
+        }
+      });
+      await flushAsync();
+      const pause = ws.sent
+        .slice(before)
+        .find((m) => typeof m === "string" && m.includes('"pause_output"'));
+      expect(pause).toBeDefined();
+      expect(result.current.state.isInScrollback).toBe(true);
+    } finally {
+      div.remove();
+    }
+  });
+
+  it("exitScrollback() sends resume_output + Escape and clears the flag", async () => {
+    const div = document.createElement("div");
+    document.body.appendChild(div);
+    try {
+      const { result } = renderHook(() => {
+        const term = useTerminal("s-exit", "ws", false, false);
+        if (term.containerRef && !term.containerRef.current) {
+          (
+            term.containerRef as unknown as { current: HTMLDivElement | null }
+          ).current = div;
+        }
+        return term;
+      });
+      await flushAsync();
+      const ws = sockets[0]!;
+      act(() => {
+        ws.readyState = FakeWebSocket.OPEN;
+        ws.onopen?.(new Event("open"));
+      });
+      await flushAsync();
+      // Get into scrollback first
+      await act(async () => {
+        for (let i = 0; i < 8; i++) {
+          const e = new WheelEvent("wheel", {
+            deltaY: -200,
+            bubbles: true,
+            cancelable: true,
+          });
+          captured.customWheel!(e);
+        }
+      });
+      await flushAsync();
+      expect(result.current.state.isInScrollback).toBe(true);
+
+      const before = ws.sent.length;
+      act(() => {
+        result.current.exitScrollback();
+      });
+      const newSends = ws.sent.slice(before);
+      const resume = newSends.find(
+        (m) => typeof m === "string" && m.includes('"resume_output"'),
+      );
+      expect(resume).toBeDefined();
+      // \x1b (ESC) should also have been sent
+      const escByte = newSends.find((m) => {
+        if (typeof m === "string") return false;
+        return m.length === 1 && m[0] === 0x1b;
+      });
+      expect(escByte).toBeDefined();
+      expect(result.current.state.isInScrollback).toBe(false);
+    } finally {
+      div.remove();
+    }
+  });
+
   it("the virtual Ctrl bridge transforms onData printable -> control byte", async () => {
     const div = document.createElement("div");
     document.body.appendChild(div);
