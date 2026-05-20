@@ -67,13 +67,13 @@ Fixtures:
 - `serve` : `aoe serve --no-auth`. Default for backend round-trip flows.
 - `servePassphrase` : `aoe serve --passphrase aoe-e2e-fixed-passphrase`. The harness mints a session cookie via `POST /api/login` and exposes it as `handle.sessionCookie`. Specs that drive auth from the browser side use `seedAuth(page, handle)` to inject cookie + binding secret before the first navigation.
 - `serveReadOnly` : `aoe serve --no-auth --read-only`.
-- `serveCockpit` : like `serve` but the fake-ACP agent (see below) is on `$PATH` as both `claude` and `aoe-agent`, and `PATCH /api/cockpit/master` is called after startup.
+- `serveCockpit` : like `serve` but the fake-ACP agent (see below) is on `$PATH` as `claude`, `claude-agent-acp`, and `aoe-agent`, and `PATCH /api/cockpit/master` is called after startup. The `claude-agent-acp` name matters because the cockpit supervisor resolves the `claude` tool key through `AgentRegistry` to command `claude-agent-acp`, not `claude`; without that shim the supervisor would fall through to the system-installed adapter and fail with "Authentication required" on the first prompt.
 
 Isolation per test:
 
 - Fresh `mkdtemp` for `HOME`, with `XDG_CONFIG_HOME`, `TMPDIR`, `TMUX_TMPDIR`, and `bin/` as subdirs (all `0700`).
 - Port: `5200 + workerIndex*100 + parallelIndex + attempt*7`. Five retries on bind failure.
-- Fake `claude` shim in `home/bin/claude` (`exec tail -f /dev/null`). Cockpit fixture overrides with the fake-ACP shim.
+- Fake `claude` shim in `home/bin/claude` (`exec tail -f /dev/null`). Cockpit fixture overrides with the fake-ACP shim, installed under `claude`, `claude-agent-acp`, and `aoe-agent`.
 - `stop()` does `SIGTERM` with a 2s wait, `SIGKILL` fallback, then `rm -rf home`. Never calls `tmux kill-server` (would kill the developer's tmux).
 
 Binary resolution: `AOE_E2E_BINARY` env wins; otherwise `<repo>/target/release/aoe`. `liveGlobalSetup.ts` runs once before any worker and calls `cargo build --features serve --release` if the binary is missing.
