@@ -651,7 +651,7 @@ fn build_cockpit_fields(
         SettingField {
             key: FieldKey::CockpitSilentOrphanFastGraceSecs,
             label: "Silent-orphan fast grace (s)",
-            description: "Accelerated silent-orphan grace, used in place of the default once a cost-populated UsageUpdate has arrived for the current prompt (the claude-agent-acp wrap-up accounting marker emitted just before PromptResponse). Lowers MTTR on the known adapter wedge without weakening the vendor-agnostic baseline. Default 20s. Only consulted when silent-orphan grace is enabled (non-zero). See #1240.",
+            description: "Accelerated silent-orphan grace, used in place of the default once a cost-populated UsageUpdate has arrived for the current prompt (the claude-agent-acp wrap-up accounting marker emitted just before PromptResponse). Lowers MTTR on the known adapter wedge without weakening the vendor-agnostic baseline. Default 20s. Set 0 to disable the accelerator (cost UsageUpdate no longer reduces the effective grace). Only consulted when silent-orphan grace is enabled (non-zero). See #1240.",
             value: FieldValue::Number(u64::from(silent_orphan_fast_grace_secs)),
             category: SettingsCategory::Cockpit,
             has_override: sofg_override,
@@ -2327,7 +2327,12 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
             config.cockpit.silent_orphan_grace_secs = if raw == 0 { 0 } else { raw.max(10) };
         }
         (FieldKey::CockpitSilentOrphanFastGraceSecs, FieldValue::Number(v)) => {
-            config.cockpit.silent_orphan_fast_grace_secs = (*v).max(5).min(u32::MAX as u64) as u32;
+            // 0 = disable the accelerator: cost-populated UsageUpdate
+            // no longer reduces the watchdog's effective grace. Anything
+            // 1..=4 clamps up to 5 so a typo can't produce an absurdly
+            // tight fast grace.
+            let raw = (*v).min(u32::MAX as u64) as u32;
+            config.cockpit.silent_orphan_fast_grace_secs = if raw == 0 { 0 } else { raw.max(5) };
         }
         // Logging
         (FieldKey::LoggingDefaultLevel, FieldValue::Select { selected, options }) => {
@@ -2792,7 +2797,8 @@ fn apply_field_to_profile(field: &SettingField, _global: &Config, config: &mut P
             });
         }
         (FieldKey::CockpitSilentOrphanFastGraceSecs, FieldValue::Number(v)) => {
-            let clamped = (*v).max(5).min(u32::MAX as u64) as u32;
+            let raw = (*v).min(u32::MAX as u64) as u32;
+            let clamped = if raw == 0 { 0 } else { raw.max(5) };
             set_profile_override(clamped, &mut config.cockpit, |s, val| {
                 s.silent_orphan_fast_grace_secs = val
             });

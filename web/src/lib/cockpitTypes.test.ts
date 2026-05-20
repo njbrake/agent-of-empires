@@ -1359,4 +1359,21 @@ describe("CockpitState reducer / silent-orphan watchdog (#1240)", () => {
     const normalised = normaliseTurnCounters(stale);
     expect(normalised.agentOrphaned).toBe(false);
   });
+
+  it("clears agentOrphaned on restart_pending", () => {
+    // Supervisor's reap_user_stopped sweep publishes restart_pending
+    // when a worker disappears out-of-band; that supersedes a prior
+    // orphan escalation, so the banner must downgrade to the generic
+    // "Restarting…" copy. See CodeRabbit review on #1248.
+    let state: CockpitState = {
+      ...emptyCockpitState(),
+      pendingUserPromptSeq: 1,
+      lastStoppedSeq: 0,
+    };
+    state = applyEvent(state, stoppedFrame("prompt_orphaned", 1));
+    expect(state.agentOrphaned).toBe(true);
+    state = applyEvent(state, stoppedFrame("restart_pending", 2));
+    expect(state.agentOrphaned).toBe(false);
+    expect(state.workerRestarting).toBe(true);
+  });
 });

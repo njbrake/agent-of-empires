@@ -754,7 +754,7 @@ finishes streaming a turn but never sends the JSON-RPC
 symptom is identical to the bug above (spinner stuck), but the cause
 is a protocol violation on the adapter side: the response was lost,
 not just delayed. Tracked upstream at
-`agentclientprotocol/claude-agent-acp#688`.
+[agentclientprotocol/claude-agent-acp#688](https://github.com/agentclientprotocol/claude-agent-acp/issues/688).
 
 When the daemon detects this, it sends `session/cancel`, waits the
 existing cancel-escalation grace (10s) for the adapter to respond,

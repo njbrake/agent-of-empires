@@ -1596,6 +1596,7 @@ impl<S: BroadcastSink> Supervisor<S> {
             cockpit_session_id,
             sandbox_resources,
             attach_agent_key,
+            record.source_profile.clone(),
         )
         .await?;
         super::worker_registry::mark_attached(&session_id);

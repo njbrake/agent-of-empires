@@ -356,16 +356,31 @@ fn resume_idle_grace() -> std::time::Duration {
     RESUME_IDLE_GRACE_DEFAULT
 }
 
-/// Read the silent-orphan watchdog grace. In debug builds, honors
-/// `AOE_SILENT_ORPHAN_GRACE_MS` so the integration test can drive a
-/// sub-second cadence without making real failures racy. Otherwise
-/// reads `cockpit.silent_orphan_grace_secs` from the user's config,
-/// falling back to `SILENT_ORPHAN_GRACE_DEFAULT`. A value of `0`
-/// means "disabled" and the caller skips the watchdog entirely; for
-/// non-zero values smaller than 10s, clamps up so a typo can't
-/// produce an absurdly tight grace that false-positives on healthy
-/// turns.
-fn silent_orphan_grace() -> std::time::Duration {
+/// Resolve the session's effective `CockpitConfig` so per-profile
+/// `silent_orphan_*` overrides set in the settings TUI actually apply
+/// at runtime. Returns `None` if no config exists yet (fresh install,
+/// pre-migration); the helpers fall back to constants in that case.
+fn resolved_cockpit_config(profile: Option<&str>) -> Option<crate::session::config::CockpitConfig> {
+    match profile {
+        Some(p) => Some(crate::session::profile_config::resolve_config_or_warn(p).cockpit),
+        None => crate::session::load_config()
+            .ok()
+            .flatten()
+            .map(|c| c.cockpit),
+    }
+}
+
+/// Read the silent-orphan watchdog grace for the given source profile.
+/// In debug builds, honors `AOE_SILENT_ORPHAN_GRACE_MS` so the
+/// integration test can drive a sub-second cadence without making
+/// real failures racy. Otherwise reads
+/// `cockpit.silent_orphan_grace_secs` from the profile-resolved
+/// config so per-profile overrides set in the settings TUI take
+/// effect. A value of `0` means "disabled" and the caller skips the
+/// watchdog entirely; non-zero values smaller than 10s clamp up so a
+/// typo can't produce an absurdly tight grace that false-positives
+/// on healthy turns.
+fn silent_orphan_grace(profile: Option<&str>) -> std::time::Duration {
     #[cfg(debug_assertions)]
     if let Ok(raw) = std::env::var("AOE_SILENT_ORPHAN_GRACE_MS") {
         if let Ok(ms) = raw.parse::<u64>() {
@@ -375,38 +390,60 @@ fn silent_orphan_grace() -> std::time::Duration {
             return std::time::Duration::from_millis(ms);
         }
     }
-    match crate::session::load_config() {
-        Ok(Some(cfg)) => {
-            let secs = cfg.cockpit.silent_orphan_grace_secs;
+    match resolved_cockpit_config(profile) {
+        Some(cockpit) => {
+            let secs = cockpit.silent_orphan_grace_secs;
             if secs == 0 {
                 std::time::Duration::ZERO
             } else {
                 std::time::Duration::from_secs(u64::from(secs).max(10))
             }
         }
-        _ => SILENT_ORPHAN_GRACE_DEFAULT,
+        None => SILENT_ORPHAN_GRACE_DEFAULT,
     }
 }
 
-/// Read the accelerated silent-orphan grace. Same env-var override
-/// pattern as `silent_orphan_grace`; reads
-/// `cockpit.silent_orphan_fast_grace_secs` from config with a 5s
-/// minimum clamp on non-zero values. Only consulted by the prompt
-/// loop when `silent_orphan_grace()` is non-zero.
-fn silent_orphan_fast_grace() -> std::time::Duration {
+/// Read the accelerated silent-orphan grace for the given source
+/// profile. Same env-var override pattern as `silent_orphan_grace`;
+/// reads `cockpit.silent_orphan_fast_grace_secs` from the profile-
+/// resolved config. A value of `0` disables the accelerator: the
+/// watchdog keeps using the default grace even after a cost-populated
+/// `UsageUpdate` arrives. Non-zero values smaller than 5s clamp up.
+fn silent_orphan_fast_grace(profile: Option<&str>) -> std::time::Duration {
     #[cfg(debug_assertions)]
     if let Ok(raw) = std::env::var("AOE_SILENT_ORPHAN_FAST_GRACE_MS") {
         if let Ok(ms) = raw.parse::<u64>() {
+            if ms == 0 {
+                return std::time::Duration::ZERO;
+            }
             return std::time::Duration::from_millis(ms.max(100));
         }
     }
-    match crate::session::load_config() {
-        Ok(Some(cfg)) => {
-            let secs = cfg.cockpit.silent_orphan_fast_grace_secs;
-            std::time::Duration::from_secs(u64::from(secs).max(5))
+    match resolved_cockpit_config(profile) {
+        Some(cockpit) => {
+            let secs = cockpit.silent_orphan_fast_grace_secs;
+            if secs == 0 {
+                std::time::Duration::ZERO
+            } else {
+                std::time::Duration::from_secs(u64::from(secs).max(5))
+            }
         }
-        _ => SILENT_ORPHAN_FAST_GRACE_DEFAULT,
+        None => SILENT_ORPHAN_FAST_GRACE_DEFAULT,
     }
+}
+
+/// Read the silent-orphan polling cadence. Constant in production;
+/// tunable in debug builds via `AOE_SILENT_ORPHAN_CHECK_INTERVAL_MS`
+/// so the disabled-path integration test can verify the watchdog
+/// stays silent without waiting a full polling tick.
+fn silent_orphan_check_interval() -> std::time::Duration {
+    #[cfg(debug_assertions)]
+    if let Ok(raw) = std::env::var("AOE_SILENT_ORPHAN_CHECK_INTERVAL_MS") {
+        if let Ok(ms) = raw.parse::<u64>() {
+            return std::time::Duration::from_millis(ms.max(10));
+        }
+    }
+    SILENT_ORPHAN_CHECK_INTERVAL
 }
 
 /// Resolution channel + the option set the agent offered. Stored in the
@@ -589,6 +626,7 @@ impl AcpClient {
         let runner_sandbox = sandbox_pair.as_ref().map(|(handle, _)| handle);
         let profile = agent_profiles::resolve(&config.agent_key);
         let install_binary = config.spec.command.clone();
+        let source_profile_for_task = config.source_profile.clone();
         if let Some(socket_path) = config.socket_path.clone() {
             spawn_runner_detached(&config, &socket_path, session_id.0.clone(), runner_sandbox)?;
             return Self::connect_via_socket(
@@ -605,6 +643,7 @@ impl AcpClient {
                 sandbox_pair,
                 profile,
                 install_binary,
+                source_profile_for_task,
             )
             .await;
         }
@@ -625,6 +664,7 @@ impl AcpClient {
             sandbox_pair,
             profile,
             install_binary,
+            source_profile_for_task,
         )
         .await
     }
@@ -644,6 +684,7 @@ impl AcpClient {
         sandbox: Option<(SessionSandbox, SandboxPathMap)>,
         profile: &'static agent_profiles::AgentProfile,
         install_binary: String,
+        source_profile: Option<String>,
     ) -> Result<Self, AcpError> {
         let (stdin, stdout) = {
             let mut guard = child.lock().await;
@@ -696,6 +737,7 @@ impl AcpClient {
             mode,
             Some(ready_tx),
             profile,
+            source_profile,
         ));
 
         wait_for_handshake(&session_label, ready_rx, Some(&child), &install_binary).await?;
@@ -730,6 +772,7 @@ impl AcpClient {
         sandbox: Option<(SessionSandbox, SandboxPathMap)>,
         profile: &'static agent_profiles::AgentProfile,
         install_binary: String,
+        source_profile: Option<String>,
     ) -> Result<Self, AcpError> {
         // Poll for the runner to finish binding the socket. The runner
         // binds before it spawns the agent so this is usually fast (a
@@ -774,6 +817,7 @@ impl AcpClient {
             mode,
             Some(ready_tx),
             profile,
+            source_profile,
         ));
 
         wait_for_handshake(&session_label, ready_rx, None, &install_binary).await?;
@@ -818,6 +862,7 @@ impl AcpClient {
         session_id: CockpitSessionId,
         sandbox: Option<(SessionSandbox, SandboxPathMap)>,
         agent_key: String,
+        source_profile: Option<String>,
     ) -> Result<Self, AcpError> {
         let (cmd_tx, cmd_rx) = mpsc::channel::<ClientCmd>(16);
         let (event_tx, event_rx) = mpsc::channel::<Event>(64);
@@ -845,6 +890,7 @@ impl AcpClient {
             sandbox,
             profile,
             String::new(),
+            source_profile,
         )
         .await
     }
@@ -2266,6 +2312,7 @@ async fn run_connection_task<W, R>(
     mode: ConnectMode,
     ready_tx: Option<oneshot::Sender<Result<(), AcpError>>>,
     profile: &'static agent_profiles::AgentProfile,
+    source_profile: Option<String>,
 ) where
     W: futures_util::AsyncWrite + Send + 'static,
     R: futures_util::AsyncRead + Send + 'static,
@@ -2784,12 +2831,15 @@ async fn run_connection_task<W, R>(
                         let mut orphan_cancel_sent = false;
                         let mut prompt_orphaned = false;
 
-                        let silent_orphan_grace_default = silent_orphan_grace();
-                        let silent_orphan_grace_fast = silent_orphan_fast_grace();
+                        let silent_orphan_grace_default =
+                            silent_orphan_grace(source_profile.as_deref());
+                        let silent_orphan_grace_fast =
+                            silent_orphan_fast_grace(source_profile.as_deref());
                         let silent_orphan_enabled =
                             silent_orphan_grace_default > std::time::Duration::ZERO;
+                        let silent_orphan_check_period = silent_orphan_check_interval();
                         let silent_orphan_check =
-                            tokio::time::sleep(SILENT_ORPHAN_CHECK_INTERVAL);
+                            tokio::time::sleep(silent_orphan_check_period);
                         tokio::pin!(silent_orphan_check);
 
                         let prompt_fut = connection
@@ -2935,7 +2985,15 @@ async fn run_connection_task<W, R>(
                                     if silent_orphan_enabled && !orphan_cancel_sent =>
                                 {
                                     let now = tokio::time::Instant::now();
-                                    let effective_grace = if cost_seen {
+                                    // When `silent_orphan_fast_grace_secs = 0`
+                                    // the accelerator is disabled even after
+                                    // a cost-populated UsageUpdate; fall back
+                                    // to the default grace instead of an
+                                    // unbounded ZERO duration. See #1240
+                                    // CodeRabbit feedback.
+                                    let effective_grace = if cost_seen
+                                        && silent_orphan_grace_fast > std::time::Duration::ZERO
+                                    {
                                         silent_orphan_grace_fast
                                     } else {
                                         silent_orphan_grace_default
@@ -2989,7 +3047,7 @@ async fn run_connection_task<W, R>(
                                     }
                                     silent_orphan_check.as_mut().reset(
                                         tokio::time::Instant::now()
-                                            + SILENT_ORPHAN_CHECK_INTERVAL,
+                                            + silent_orphan_check_period,
                                     );
                                 }
                                 _ = &mut cancel_grace, if cancelling => {

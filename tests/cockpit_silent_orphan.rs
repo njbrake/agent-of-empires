@@ -107,9 +107,12 @@ async fn silent_orphan_fires_on_cost_then_silence() {
 
     // Tight grace so the test completes inside a couple of seconds.
     // The fast path is the one that should fire because the shim emits
-    // a cost-populated usage_update before parking.
+    // a cost-populated usage_update before parking. Polling cadence
+    // dropped to 50ms so the watchdog evaluation tracks the configured
+    // grace closely instead of waiting up to the default 5s tick.
     std::env::set_var("AOE_SILENT_ORPHAN_GRACE_MS", "5000");
     std::env::set_var("AOE_SILENT_ORPHAN_FAST_GRACE_MS", "300");
+    std::env::set_var("AOE_SILENT_ORPHAN_CHECK_INTERVAL_MS", "50");
 
     let preseed = "silent-orphan-positive";
     let (socket_path, _tmp) = spawn_shim_socket_bridge_with_preseed(preseed).await;
@@ -123,6 +126,7 @@ async fn silent_orphan_fires_on_cost_then_silence() {
         CockpitSessionId("silent-orphan-positive".into()),
         None,
         "claude".into(),
+        None,
     )
     .await
     .expect("attach for silent-orphan positive test");
@@ -155,8 +159,11 @@ async fn silent_orphan_suppressed_during_normal_turn() {
     // Generous enough grace that the shim's healthy tool round-trip
     // completes long before the watchdog could fire; we then assert
     // the only Stopped we see is prompt_complete, not prompt_orphaned.
+    // Tight polling cadence so a regressed grace would fire within the
+    // assertion window instead of waiting for the default 5s tick.
     std::env::set_var("AOE_SILENT_ORPHAN_GRACE_MS", "10000");
     std::env::set_var("AOE_SILENT_ORPHAN_FAST_GRACE_MS", "10000");
+    std::env::set_var("AOE_SILENT_ORPHAN_CHECK_INTERVAL_MS", "50");
 
     let preseed = "silent-orphan-negative";
     let (socket_path, _tmp) = spawn_shim_socket_bridge_with_preseed(preseed).await;
@@ -170,6 +177,7 @@ async fn silent_orphan_suppressed_during_normal_turn() {
         CockpitSessionId("silent-orphan-negative".into()),
         None,
         "claude".into(),
+        None,
     )
     .await
     .expect("attach for silent-orphan negative test");
@@ -207,8 +215,15 @@ async fn silent_orphan_disabled_by_zero_grace() {
     // SILENT_ORPHAN we'd otherwise see prompt_orphaned within a few
     // hundred milliseconds; instead we should see no Stopped frame at
     // all within the deadline, because nothing else fires.
+    //
+    // Override the polling cadence too: the default 5s tick would let
+    // a regressed "disabled" knob slip past a 2s deadline simply
+    // because the watchdog hadn't ticked yet. Forcing a 50ms cadence
+    // means a wrongly-armed watchdog WOULD fire within the deadline,
+    // turning a silent assertion into a real one.
     std::env::set_var("AOE_SILENT_ORPHAN_GRACE_MS", "0");
     std::env::set_var("AOE_SILENT_ORPHAN_FAST_GRACE_MS", "200");
+    std::env::set_var("AOE_SILENT_ORPHAN_CHECK_INTERVAL_MS", "50");
 
     let preseed = "silent-orphan-disabled";
     let (socket_path, _tmp) = spawn_shim_socket_bridge_with_preseed(preseed).await;
@@ -222,6 +237,7 @@ async fn silent_orphan_disabled_by_zero_grace() {
         CockpitSessionId("silent-orphan-disabled".into()),
         None,
         "claude".into(),
+        None,
     )
     .await
     .expect("attach for silent-orphan disabled test");
