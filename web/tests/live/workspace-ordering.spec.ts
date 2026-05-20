@@ -102,6 +102,11 @@ base.describe("workspace ordering live round-trip (#1220)", () => {
       await page.setViewportSize({ width: 1280, height: 720 });
       await page.goto(`${serve.baseUrl}/`);
 
+      // The sidebar paints after a `GET /api/sessions` round-trip, so
+      // poll rather than reading once. Three rows is the steady state.
+      await expect
+        .poll(() => readVisibleSessionTitles(page), { timeout: 8_000 })
+        .toEqual(expect.arrayContaining(["alpha", "beta", "gamma"]));
       const initial = await readVisibleSessionTitles(page);
       expect(initial).toHaveLength(3);
       expect(new Set(initial)).toEqual(new Set(["alpha", "beta", "gamma"]));
