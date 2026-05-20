@@ -1291,25 +1291,31 @@ impl<S: BroadcastSink> Supervisor<S> {
             .flatten()
             .is_some()
         {
-            drop(workers);
             // If a resume is mid-handshake against this same runner,
             // the SIGTERM below races the handshake; mark the session
             // so attach's (or spawn's) pre-insert check bails instead
-            // of installing a worker pointing at a dying agent.
+            // of installing a worker pointing at a dying agent. Set
+            // the breadcrumb under the workers lock so the racing
+            // resume that re-acquires workers cannot observe an empty
+            // cancelled_resumes between our drop and its read.
             if pending_has_it {
                 lock_recover(&self.cancelled_resumes).insert(session_id.to_string());
             }
+            drop(workers);
             terminate_runner_for_session(session_id);
             return Ok(());
         }
         if pending_has_it {
             // Resume is mid-handshake. Mark it cancelled so the
             // resume's pre-insert check (in `spawn` or `attach`)
-            // bails instead of installing an orphaned worker. The
-            // reservation cleanup (ResumeReservation::Drop) clears
-            // `pending_resumes` on exit, so we don't have to.
-            drop(workers);
+            // bails instead of installing an orphaned worker. Insert
+            // under the workers lock so a resume that re-acquires
+            // workers cannot observe an empty cancelled_resumes
+            // between our drop and its read. The reservation cleanup
+            // (ResumeReservation::Drop) clears `pending_resumes` on
+            // exit, so we don't have to.
             lock_recover(&self.cancelled_resumes).insert(session_id.to_string());
+            drop(workers);
             debug!(
                 target: "cockpit.supervisor",
                 session = %session_id,
