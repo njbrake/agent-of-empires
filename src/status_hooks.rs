@@ -210,16 +210,17 @@ pub fn run_for_transition(
         return;
     }
 
+    let changed_at = Utc::now();
     let commands = commands_for_transition(old, new, config);
     if config.debounce_ms > 0 {
-        run_debounced_transition(instance, old, new, commands, config.debounce_ms);
+        run_debounced_transition(instance, old, new, changed_at, commands, config.debounce_ms);
         return;
     }
 
     if commands.is_empty() {
         return;
     }
-    spawn_transition_commands(instance, old, new, commands);
+    spawn_transition_commands(instance, old, new, changed_at, commands);
 }
 
 fn non_empty_command(value: Option<&str>) -> Option<&str> {
@@ -234,8 +235,14 @@ fn is_default_debounce_ms(value: &u64) -> bool {
     *value == DEFAULT_DEBOUNCE_MS
 }
 
-fn spawn_transition_commands(instance: &Instance, old: Status, new: Status, commands: Vec<String>) {
-    let context = StatusHookContext::from_instance(instance, old, new, Utc::now());
+fn spawn_transition_commands(
+    instance: &Instance,
+    old: Status,
+    new: Status,
+    changed_at: DateTime<Utc>,
+    commands: Vec<String>,
+) {
+    let context = StatusHookContext::from_instance(instance, old, new, changed_at);
     // Keep one transition's commands in one worker so `on_change` cannot race
     // ahead of the status-specific hook.
     spawn_hook_commands(commands, context);
@@ -257,6 +264,7 @@ fn run_debounced_transition(
     instance: &Instance,
     old: Status,
     new: Status,
+    changed_at: DateTime<Utc>,
     commands: Vec<String>,
     debounce_ms: u64,
 ) {
@@ -300,7 +308,7 @@ fn run_debounced_transition(
         drop(state);
 
         if should_run {
-            spawn_transition_commands(&instance, stable_status, new, commands);
+            spawn_transition_commands(&instance, stable_status, new, changed_at, commands);
         }
     });
 }
@@ -526,7 +534,9 @@ mod tests {
             ..Default::default()
         };
 
+        let observed_before = Utc::now();
         run_for_transition(&instance, Status::Running, Status::Waiting, &config);
+        let observed_after = Utc::now();
         assert!(take_recorded_launches().is_empty());
 
         std::thread::sleep(Duration::from_millis(30));
@@ -535,6 +545,8 @@ mod tests {
         assert_eq!(launches[0].command, "notify-waiting");
         assert_eq!(launches[0].context.old_status, Status::Running);
         assert_eq!(launches[0].context.new_status, Status::Waiting);
+        assert!(launches[0].context.changed_at >= observed_before);
+        assert!(launches[0].context.changed_at <= observed_after);
     }
 
     #[test]

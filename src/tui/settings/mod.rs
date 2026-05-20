@@ -188,6 +188,7 @@ impl SettingsView {
             SettingsCategory::Tmux,
             SettingsCategory::Sound,
             SettingsCategory::Web,
+            SettingsCategory::Cockpit,
             SettingsCategory::Logging,
         ]);
         categories

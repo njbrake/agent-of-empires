@@ -234,7 +234,9 @@ pub(crate) fn install_codex_hooks_with_preserved_state(
 
         if let Some(state) = preserved_state {
             let hooks = ensure_codex_hooks_table(&mut config)?;
-            hooks.insert("state", state);
+            if !hooks.contains_key("state") {
+                hooks.insert("state", state);
+            }
         }
         remove_codex_aoe_hooks(&mut config)?;
         merge_codex_hooks(&mut config, events)?;
@@ -247,11 +249,13 @@ pub(crate) fn install_codex_hooks_with_preserved_state(
 }
 
 fn with_codex_config_lock<T>(config_path: &Path, f: impl FnOnce() -> Result<T>) -> Result<T> {
-    if let Some(parent) = config_path.parent() {
+    let lock_base_path = codex_config_write_path(config_path)?;
+
+    if let Some(parent) = lock_base_path.parent() {
         std::fs::create_dir_all(parent)?;
     }
 
-    let lock_path = config_path.with_extension("toml.lock");
+    let lock_path = lock_base_path.with_extension("toml.lock");
     let lock_file = std::fs::OpenOptions::new()
         .read(true)
         .write(true)
@@ -1420,6 +1424,8 @@ mod tests {
         let config: toml::Value = toml::from_str(&config_text).unwrap();
         assert!(config["hooks"]["SessionStart"].is_array());
         assert!(config["hooks"]["UserPromptSubmit"].is_array());
+        assert!(target_path.with_extension("toml.lock").exists());
+        assert!(!config_path.with_extension("toml.lock").exists());
     }
 
     #[test]
@@ -1548,6 +1554,44 @@ command = {:?}
             Some("hook-trust")
         );
         assert_eq!(config_text.matches("sh -c").count(), codex_events().len());
+    }
+
+    #[test]
+    fn test_install_codex_hooks_does_not_overwrite_newer_hooks_state() {
+        let tmp = TempDir::new().unwrap();
+        let codex_dir = tmp.path().join(".codex");
+        std::fs::create_dir_all(&codex_dir).unwrap();
+        let config_path = codex_dir.join("config.toml");
+        std::fs::write(
+            &config_path,
+            r#"[hooks.state.current]
+enabled = true
+trusted_hash = "new"
+"#,
+        )
+        .unwrap();
+
+        let mut stale_state = toml_edit::Table::new();
+        stale_state.insert("enabled", toml_edit::value(true));
+        stale_state.insert("trusted_hash", toml_edit::value("old"));
+        let mut preserved_state = toml_edit::Table::new();
+        preserved_state.insert("stale", toml_edit::Item::Table(stale_state));
+        let preserved_state = toml_edit::Item::Table(preserved_state);
+
+        install_codex_hooks_with_preserved_state(
+            &config_path,
+            codex_events(),
+            Some(preserved_state),
+        )
+        .unwrap();
+
+        let config_text = std::fs::read_to_string(config_path).unwrap();
+        let config: toml::Value = toml::from_str(&config_text).unwrap();
+        assert_eq!(
+            config["hooks"]["state"]["current"]["trusted_hash"].as_str(),
+            Some("new")
+        );
+        assert!(config["hooks"]["state"].get("stale").is_none());
     }
 
     #[test]

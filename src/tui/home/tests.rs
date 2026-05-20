@@ -2909,6 +2909,33 @@ fn apply_status_update_runs_status_hook_on_transition() {
 
 #[test]
 #[serial]
+fn all_profiles_status_hook_lookup_uses_cache() {
+    use crate::status_hooks::StatusHookConfig;
+
+    let mut env = create_test_env_with_sessions(1);
+    env.view.active_profile = None;
+    env.view.status_hook_config = StatusHookConfig::default();
+    env.view.status_hook_configs.clear();
+    env.view.status_hook_configs.insert(
+        "cached".to_string(),
+        StatusHookConfig {
+            enabled: true,
+            debounce_ms: 0,
+            on_waiting: Some("notify-cached".to_string()),
+            ..Default::default()
+        },
+    );
+
+    let mut instance = Instance::new("Cached profile", "/tmp/cached");
+    instance.source_profile = "cached".to_string();
+
+    let config = env.view.status_hook_config_for(&instance);
+    assert!(config.enabled);
+    assert_eq!(config.on_waiting.as_deref(), Some("notify-cached"));
+}
+
+#[test]
+#[serial]
 fn apply_status_update_does_not_run_status_hook_for_same_status() {
     use crate::session::Status;
     use crate::status_hooks::{take_recorded_launches, StatusHookConfig};

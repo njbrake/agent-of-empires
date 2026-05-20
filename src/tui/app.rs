@@ -322,8 +322,8 @@ impl App {
 
         if let Some(watcher) = watcher {
             attached_status_updates = watcher.stop();
-            self.home.reset_status_refresh();
         }
+        self.home.reset_status_refresh();
 
         result.map(|result| (result, attached_status_updates))
     }

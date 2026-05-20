@@ -231,6 +231,23 @@ fn test_attach_applies_attached_status_snapshot_after_reload() {
     }
 }
 
+#[test]
+fn test_attach_resets_status_refresh_without_watcher() {
+    let source = std::fs::read_to_string("src/tui/app.rs").expect("Failed to read app.rs");
+    let attached_status_body = app_method_body(&source, "with_attached_status_hooks");
+
+    assert_contains_in_order(
+        attached_status_body,
+        &[
+            "if let Some(watcher) = watcher",
+            "attached_status_updates = watcher.stop()",
+            "}",
+            "self.home.reset_status_refresh()",
+            "result.map",
+        ],
+    );
+}
+
 /// Test that a failed restart inside attach surfaces a transient toast.
 ///
 /// Before the fix, when `restart_instance_with_size_opts` returned Err the

@@ -253,6 +253,7 @@ pub struct HomeView {
     // Sound config for state transition sounds
     pub(super) sound_config: crate::sound::SoundConfig,
     pub(super) status_hook_config: crate::status_hooks::StatusHookConfig,
+    pub(super) status_hook_configs: HashMap<String, crate::status_hooks::StatusHookConfig>,
 
     /// Resolved decay window from `Config.theme.idle_decay_minutes`. Read
     /// at startup and re-resolved on settings reload. Used by render to
@@ -349,7 +350,14 @@ impl HomeView {
             DefaultTerminalMode::Container => TerminalMode::Container,
         };
         let sound_config = resolved.sound.clone();
-        let status_hook_config = resolved.status_hooks.clone();
+        let status_hook_configs = Self::load_status_hook_configs(Self::status_hook_profile_names(
+            active_profile.as_deref(),
+            &storages,
+        ));
+        let status_hook_config = status_hook_configs
+            .get(config_profile)
+            .cloned()
+            .unwrap_or_else(|| resolved.status_hooks.clone());
         let strict_hotkeys = resolved.session.strict_hotkeys;
         let idle_decay_window =
             crate::tui::styles::idle_decay_window(resolved.theme.idle_decay_minutes);
@@ -441,6 +449,7 @@ impl HomeView {
             default_terminal_mode,
             sound_config,
             status_hook_config,
+            status_hook_configs,
             strict_hotkeys,
             idle_decay_window,
             settings_view: None,
@@ -583,6 +592,7 @@ impl HomeView {
             }
             self.storages.retain(|k, _| current_profiles.contains(k));
         }
+        self.refresh_status_hook_config_cache();
 
         for (profile_name, storage) in &self.storages {
             let (mut instances, groups) = storage.load_with_groups()?;
@@ -822,7 +832,11 @@ impl HomeView {
         if self.active_profile.is_some() {
             return self.status_hook_config.clone();
         }
-        crate::session::resolve_config_or_warn(&inst.effective_profile()).status_hooks
+        let profile = inst.effective_profile();
+        self.status_hook_configs
+            .get(&profile)
+            .cloned()
+            .unwrap_or_else(|| self.status_hook_config.clone())
     }
 
     pub fn apply_deletion_results(&mut self) -> bool {
@@ -2152,6 +2166,7 @@ impl HomeView {
         };
         self.sound_config = config.sound.clone();
         self.status_hook_config = config.status_hooks.clone();
+        self.refresh_status_hook_config_cache();
         self.strict_hotkeys = config.session.strict_hotkeys;
         self.idle_decay_window =
             crate::tui::styles::idle_decay_window(config.theme.idle_decay_minutes);
@@ -2163,6 +2178,44 @@ impl HomeView {
                 "Tool hotkey config errors",
                 &hotkey_warnings.join("\n"),
             ));
+        }
+    }
+
+    fn status_hook_profile_names(
+        active_profile: Option<&str>,
+        storages: &HashMap<String, Storage>,
+    ) -> Vec<String> {
+        let mut profile_names = match active_profile {
+            Some(profile) => vec![profile.to_string()],
+            None => storages.keys().cloned().collect(),
+        };
+        if !profile_names.iter().any(|profile| profile == "default") {
+            profile_names.push("default".to_string());
+        }
+        profile_names.sort();
+        profile_names.dedup();
+        profile_names
+    }
+
+    fn load_status_hook_configs(
+        profile_names: Vec<String>,
+    ) -> HashMap<String, crate::status_hooks::StatusHookConfig> {
+        profile_names
+            .into_iter()
+            .map(|profile| {
+                let status_hooks = resolve_config_or_warn(&profile).status_hooks;
+                (profile, status_hooks)
+            })
+            .collect()
+    }
+
+    fn refresh_status_hook_config_cache(&mut self) {
+        let profile_names =
+            Self::status_hook_profile_names(self.active_profile.as_deref(), &self.storages);
+        self.status_hook_configs = Self::load_status_hook_configs(profile_names);
+        let profile = self.active_profile.as_deref().unwrap_or("default");
+        if let Some(status_hooks) = self.status_hook_configs.get(profile) {
+            self.status_hook_config = status_hooks.clone();
         }
     }
 

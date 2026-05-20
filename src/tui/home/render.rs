@@ -766,7 +766,9 @@ impl HomeView {
                     line_spans.push(Span::styled(badge, Style::default().fg(theme.sandbox)));
                 }
                 if column_fits {
-                    line_spans.push(Span::raw(" ".to_string()));
+                    let trailing_margin: String =
+                        std::iter::repeat_n(' ', LAST_ACTIVITY_RIGHT_MARGIN).collect();
+                    line_spans.push(Span::raw(trailing_margin));
                 }
             }
         }
