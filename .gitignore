@@ -2,6 +2,9 @@
 .claude/
 # Rust build artifacts
 /target/
+# JS / Python tooling artifacts (per-subproject installs in web/, website/, etc.)
+node_modules/
+.venv/
 # Documentation build output
 /book/
 
