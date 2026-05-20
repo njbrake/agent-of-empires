@@ -8,7 +8,12 @@
 //   session/new         -> return a deterministic sessionId
 //   session/load        -> same shape; lets cockpit's Resume mode work
 //   session/prompt      -> emit scripted session/update notifications,
-//                          then return a stop response
+//                          then return a stop response. Script entries
+//                          with `sessionUpdate: "permission_request"`
+//                          are translated into a real outbound
+//                          `session/request_permission` JSON-RPC
+//                          REQUEST; the fake awaits the client's
+//                          response before continuing the turn.
 //   session/setMode     -> emit current_mode_changed
 //   session/cancel      -> emit stopped { stopReason: "cancelled" }
 //
@@ -89,8 +94,69 @@ function sendNotification(method, params) {
   send({ jsonrpc: "2.0", method, params });
 }
 
+// Track outbound requests we send to the client so we can resolve them
+// when the client's response arrives. Keyed on the request id.
+let nextOutboundId = 1;
+const pendingOutbound = new Map();
+
+function sendRequest(method, params) {
+  const id = `fake-acp-req-${nextOutboundId++}`;
+  send({ jsonrpc: "2.0", id, method, params });
+  return new Promise((resolve, reject) => {
+    pendingOutbound.set(id, { resolve, reject });
+  });
+}
+
+function resolveOutbound(msg) {
+  const entry = pendingOutbound.get(msg.id);
+  if (!entry) {
+    process.stderr.write(
+      `[fakeAcpAgent] response for unknown id ${msg.id}\n`,
+    );
+    return;
+  }
+  pendingOutbound.delete(msg.id);
+  if (msg.error) {
+    entry.reject(msg.error);
+  } else {
+    entry.resolve(msg.result);
+  }
+}
+
+// Default permission options when a `permission_request` script entry
+// omits its own. Covers every PermissionOptionKind aoe's
+// `pick_option_id` (src/cockpit/acp_client.rs) consults so an
+// `allow` / `allow_always` / `deny` decision always maps cleanly.
+const DEFAULT_PERMISSION_OPTIONS = [
+  { optionId: "allow-once", name: "Allow once", kind: "allow_once" },
+  { optionId: "allow-always", name: "Allow always", kind: "allow_always" },
+  { optionId: "reject-once", name: "Reject once", kind: "reject_once" },
+  { optionId: "reject-always", name: "Reject always", kind: "reject_always" },
+];
+
 async function emitSessionUpdates(sessionId, updates) {
   for (const u of updates) {
+    if (u && u.sessionUpdate === "permission_request") {
+      // ACP carries permissions on a separate JSON-RPC request, not on
+      // session/update. Translate the scripted entry into a real
+      // `session/request_permission` request and wait for the client's
+      // decision before continuing the turn so the assertions in the
+      // approval spec can observe ApprovalRequested + resolve it.
+      await sendRequest("session/request_permission", {
+        sessionId,
+        toolCall: u.toolCall ?? {
+          toolCallId: `fake-tool-call-${Date.now()}`,
+          title: "fake tool call",
+          kind: "edit",
+        },
+        options: u.options ?? DEFAULT_PERMISSION_OPTIONS,
+      }).catch((err) => {
+        process.stderr.write(
+          `[fakeAcpAgent] permission_request rejected: ${JSON.stringify(err)}\n`,
+        );
+      });
+      continue;
+    }
     sendNotification("session/update", { sessionId, update: u });
     // Tiny tick between updates so the cockpit reducer can apply each
     // event in order rather than batching them.
@@ -203,6 +269,10 @@ async function main() {
         process.stderr.write(`[fakeAcpAgent] handler error: ${err}\n`);
         sendError(msg.id, -32603, `internal: ${err}`);
       }
+    } else if (msg.id !== undefined && (msg.result !== undefined || msg.error !== undefined)) {
+      // Response to one of our outbound requests (e.g.
+      // session/request_permission). Resolve the awaiting Promise.
+      resolveOutbound(msg);
     } else if (msg.method) {
       // Notification from client (e.g. fs/* response). We don't model
       // delegated FS/terminal call results; tests that need them script
@@ -211,7 +281,6 @@ async function main() {
         `[fakeAcpAgent] received notification: ${msg.method}\n`,
       );
     }
-    // Responses to our outbound requests (we don't make any) are ignored.
   });
 
   rl.on("close", () => {

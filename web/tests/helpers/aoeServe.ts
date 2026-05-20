@@ -246,15 +246,19 @@ function writeFakeClaudeShim(binDir: string): void {
 }
 
 function writeFakeAcpShim(binDir: string, fakeAcpScript: string | undefined): void {
-  // The cockpit supervisor calls `claude` (or `aoe-agent`) and handshakes
-  // ACP over its stdio. The shim is a tiny bash wrapper that execs the
-  // fake ACP agent under node with the optional script env baked in.
+  // The cockpit supervisor resolves the agent through `AgentRegistry`
+  // (src/cockpit/agent_registry.rs): the `claude` tool key maps to
+  // command `claude-agent-acp`, not `claude`. `resolve_agent_command`
+  // walks $PATH and node-version dirs, so without a `claude-agent-acp`
+  // entry in the shim dir the supervisor falls through to the real
+  // installed adapter, which then surfaces "Authentication required"
+  // on the first prompt. Shim every name a cockpit test can land on.
   const fakeAgentJs = resolve(__dirname, "fakeAcpAgent.mjs");
   const scriptLine = fakeAcpScript
     ? `export FAKE_ACP_SCRIPT=${JSON.stringify(fakeAcpScript)}\n`
     : "";
   const script = `#!/bin/bash\n${scriptLine}exec node ${JSON.stringify(fakeAgentJs)} "$@"\n`;
-  for (const name of ["claude", "aoe-agent"]) {
+  for (const name of ["claude", "claude-agent-acp", "aoe-agent"]) {
     const path = join(binDir, name);
     writeFileSync(path, script);
     chmodSync(path, 0o755);
