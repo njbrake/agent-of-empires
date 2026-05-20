@@ -921,6 +921,33 @@ describe("applyEvent / AgentSwitched", () => {
     });
     expect(second).toBe(first);
   });
+
+  // The supervisor emits Stopped { user_stopped } from the prior
+  // backend's shutdown immediately before AgentSwitched. That flips
+  // workerStopped (and possibly agentUnresponsive) on. Without an
+  // explicit clear in this reducer the user sees a "worker stopped /
+  // reconnecting" banner stacked on top of the freshly switched
+  // session during the new agent's session/new handshake, which can
+  // take several seconds before AcpSessionAssigned clears it.
+  it("clears stale worker-stopped flags from the prior backend shutdown", () => {
+    const seeded: CockpitState = {
+      ...emptyCockpitState(),
+      agent: "claude",
+      workerStopped: true,
+      workerRestarting: true,
+      agentUnresponsive: true,
+    };
+    const next = applyEvent(seeded, {
+      session_id: "s-1",
+      seq: 13,
+      event: {
+        AgentSwitched: { from: "claude", to: "codex", reason: "rate_limited" },
+      },
+    });
+    expect(next.workerStopped).toBe(false);
+    expect(next.workerRestarting).toBe(false);
+    expect(next.agentUnresponsive).toBe(false);
+  });
 });
 
 describe("turnActive derivation from prompt/stop counters (#1170)", () => {

@@ -953,6 +953,16 @@ export function applyEvent(
     next.mode = "Default";
     next.startupError = null;
     next.lastAgentSwitch = { from, to, reason, at: now };
+    // The switch path emits Stopped { user_stopped } from the
+    // shutdown of the prior backend just before AgentSwitched, which
+    // flips workerStopped/agentUnresponsive on. Without an explicit
+    // clear here the user sees a "worker stopped / reconnecting"
+    // banner on top of a freshly switched session during the new
+    // agent's session/new handshake (until AcpSessionAssigned clears
+    // it). Clear them eagerly so the banner stays hidden.
+    next.workerStopped = false;
+    next.workerRestarting = false;
+    next.agentUnresponsive = false;
     next.activity = [
       ...next.activity,
       {

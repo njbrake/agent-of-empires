@@ -471,6 +471,22 @@ impl<S: BroadcastSink> Supervisor<S> {
                 }
             }
         }
+        // Cockpit currently runs over Unix sockets only; reaching this
+        // function on a non-Unix host means somebody added a non-Unix
+        // backend without porting the PID-wait + socket-cleanup above.
+        // Warn loudly so the gap is visible in the log rather than
+        // silently returning Ok and leaking a stale socket. Mirrors the
+        // precedent at the agent_unresponsive escalation site below.
+        #[cfg(not(unix))]
+        {
+            let _ = pid_before;
+            tracing::warn!(
+                target: "cockpit.supervisor",
+                session = %session_id,
+                "shutdown_and_wait called on non-Unix host; PID-wait and \
+                 socket cleanup are unimplemented for this platform"
+            );
+        }
         Ok(())
     }
 

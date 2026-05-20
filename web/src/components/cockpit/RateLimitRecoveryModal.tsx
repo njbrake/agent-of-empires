@@ -47,6 +47,8 @@ export function RateLimitRecoveryModal({
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const confirmRef = useRef<HTMLButtonElement>(null);
+  const previousFocusRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -79,6 +81,29 @@ export function RateLimitRecoveryModal({
       abortRef.current = null;
     };
   }, [open, currentAgent]);
+
+  // Escape closes; while submitting we don't dismiss so a half-completed
+  // switch can finish without leaving the UI in an unknown state.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !submitting) onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [open, submitting, onClose]);
+
+  // Focus the confirm button on open, return focus to whatever was
+  // focused before (typically the banner button that triggered us).
+  useEffect(() => {
+    if (!open) return;
+    previousFocusRef.current = document.activeElement as HTMLElement | null;
+    requestAnimationFrame(() => confirmRef.current?.focus());
+    return () => {
+      previousFocusRef.current?.focus?.();
+      previousFocusRef.current = null;
+    };
+  }, [open]);
 
   if (!open) return null;
 
@@ -187,12 +212,12 @@ export function RateLimitRecoveryModal({
           <button
             type="button"
             onClick={onClose}
-            disabled={submitting}
-            className="rounded border border-surface-700 px-3 py-1 text-xs font-medium hover:bg-surface-800 disabled:opacity-50"
+            className="rounded border border-surface-700 px-3 py-1 text-xs font-medium hover:bg-surface-800"
           >
             Cancel
           </button>
           <button
+            ref={confirmRef}
             type="button"
             onClick={handleConfirm}
             disabled={!selected || submitting || agents.length === 0}

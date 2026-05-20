@@ -261,7 +261,10 @@
       "id": "cockpit.rate-limit-recovery",
       "kind": "vitest",
       "risk": "high",
-      "specs": ["src/lib/cockpitTypes.test.ts"],
+      "specs": [
+        "src/lib/cockpitTypes.test.ts",
+        "src/components/cockpit/RateLimitRecoveryModal.test.tsx"
+      ],
       "components": ["web/src/components/cockpit/RateLimitRecoveryModal.tsx"]
     },
     {
