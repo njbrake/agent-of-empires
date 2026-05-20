@@ -4,7 +4,7 @@
 // harness) emits a `permission_request` mid-turn. Seeds the session via
 // `aoe add` BEFORE serve boots so the server picks it up in-memory.
 
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test as base, expect } from "@playwright/test";
@@ -126,5 +126,6 @@ base("permission_request flows through to the server", async ({}, testInfo) => {
     expect(resolveRes.status).toBeLessThan(300);
   } finally {
     await serve.stop();
+    rmSync(scriptDir, { recursive: true, force: true });
   }
 });

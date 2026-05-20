@@ -99,11 +99,34 @@ function sendNotification(method, params) {
 let nextOutboundId = 1;
 const pendingOutbound = new Map();
 
+// 15s ceiling so a wedged supervisor surfaces as an explicit timeout
+// instead of a hung promise that stalls the script's remaining updates
+// and leaves Playwright to time out generically.
+const OUTBOUND_REQUEST_TIMEOUT_MS = 15_000;
+
 function sendRequest(method, params) {
   const id = `fake-acp-req-${nextOutboundId++}`;
   send({ jsonrpc: "2.0", id, method, params });
   return new Promise((resolve, reject) => {
-    pendingOutbound.set(id, { resolve, reject });
+    const timer = setTimeout(() => {
+      if (pendingOutbound.delete(id)) {
+        reject(
+          new Error(
+            `fakeAcpAgent: outbound ${method} id=${id} timed out after ${OUTBOUND_REQUEST_TIMEOUT_MS}ms`,
+          ),
+        );
+      }
+    }, OUTBOUND_REQUEST_TIMEOUT_MS);
+    pendingOutbound.set(id, {
+      resolve: (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      reject: (err) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    });
   });
 }
 
