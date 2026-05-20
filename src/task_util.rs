@@ -29,9 +29,10 @@ pub enum PanicPolicy {
 }
 
 /// Spawn a future on the tokio runtime with panic logging. The
-/// returned `JoinHandle` matches `tokio::spawn`'s shape; callers
-/// that drop it still get the diagnostic via `tracing::error!` on
-/// panic, which is the whole point.
+/// returned `JoinHandle<()>` is equivalent to `tokio::spawn` for
+/// futures with `Output = ()`; callers that drop it still get the
+/// diagnostic via `tracing::error!` on panic, which is the whole
+/// point.
 ///
 /// Pair with `tracing::Instrument` at the call site to propagate
 /// a span across the spawn boundary:
