@@ -252,10 +252,22 @@
     },
     {
       "id": "cockpit.completion",
-      "kind": "deferred",
-      "issue": "https://github.com/njbrake/agent-of-empires/issues/1224",
+      "kind": "live-playwright",
       "risk": "high",
-      "components": []
+      "specs": [
+        "tests/live/cockpit-files.spec.ts",
+        "tests/live/cockpit-context-primer.spec.ts",
+        "tests/live/cockpit-substrate-switch.spec.ts",
+        "tests/live/cockpit-disable.spec.ts",
+        "tests/live/cockpit-force-end-turn.spec.ts",
+        "tests/live/cockpit-replay-catchup.spec.ts",
+        "tests/live/cockpit-cancel.spec.ts",
+        "tests/live/cockpit-lagged-ws.spec.ts"
+      ],
+      "components": [
+        "web/src/components/cockpit/ContextPrimerBanner.tsx",
+        "web/src/components/cockpit/useFilesIndex.ts"
+      ]
     },
     {
       "id": "read-only.mode",
