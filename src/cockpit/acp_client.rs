@@ -2899,6 +2899,33 @@ fn enter_timestamp_ns() -> u64 {
     epoch.elapsed().as_nanos() as u64
 }
 
+/// Run a synchronous `fs_handler` operation on the blocking pool and
+/// flatten the join + handler result into a single `FsError`. Centralizes
+/// the panic / cancellation observability so future fs offload sites
+/// stay consistent (the offload series spans seven PRs).
+async fn spawn_blocking_fs<F, T>(handler: &'static str, f: F) -> Result<T, fs_handler::FsError>
+where
+    F: FnOnce() -> Result<T, fs_handler::FsError> + Send + 'static,
+    T: Send + 'static,
+{
+    match tokio::task::spawn_blocking(f).await {
+        Ok(inner) => inner,
+        Err(e) => {
+            warn!(
+                target: "cockpit.acp",
+                handler,
+                panic = e.is_panic(),
+                cancelled = e.is_cancelled(),
+                error = %e,
+                "fs blocking task join failed"
+            );
+            Err(fs_handler::FsError::Io(std::io::Error::other(format!(
+                "fs {handler} join: {e}"
+            ))))
+        }
+    }
+}
+
 async fn handle_read_text_file(
     request: ReadTextFileRequest,
     responder: Responder<ReadTextFileResponse>,
@@ -2923,24 +2950,20 @@ async fn handle_read_text_file(
     // same worker. FsPolicy is Arc + Clone so the clone is cheap.
     let policy = Arc::clone(&res.fs_policy);
     let label = res.label.clone();
-    let path_clone = request.path.clone();
-    let read_outcome =
-        tokio::task::spawn_blocking(move || fs_handler::handle_read(&policy, &label, &path_clone))
-            .await
-            .map_err(|e| {
-                fs_handler::FsError::Io(std::io::Error::other(format!("fs read join: {e}")))
-            })
-            .and_then(|r| r);
+    let ReadTextFileRequest {
+        path, line, limit, ..
+    } = request;
+    let read_outcome = spawn_blocking_fs("read", move || {
+        fs_handler::handle_read(&policy, &label, &path)
+    })
+    .await;
     let result = match read_outcome {
         Ok(content) => {
             // Honor optional line/limit slicing for ACP semantics: 1-based.
-            let sliced = if request.line.is_some() || request.limit.is_some() {
+            let sliced = if line.is_some() || limit.is_some() {
                 let lines: Vec<&str> = content.lines().collect();
-                let start = request
-                    .line
-                    .map(|l| l.saturating_sub(1) as usize)
-                    .unwrap_or(0);
-                let limit = request.limit.map(|n| n as usize).unwrap_or(usize::MAX);
+                let start = line.map(|l| l.saturating_sub(1) as usize).unwrap_or(0);
+                let limit = limit.map(|n| n as usize).unwrap_or(usize::MAX);
                 let end = start.saturating_add(limit).min(lines.len());
                 if start >= lines.len() {
                     String::new()
@@ -2985,14 +3008,11 @@ async fn handle_write_text_file(
     // the duration of the write.
     let policy = Arc::clone(&res.fs_policy);
     let label = res.label.clone();
-    let path_clone = request.path.clone();
-    let content_clone = request.content.clone();
-    let write_outcome = tokio::task::spawn_blocking(move || {
-        fs_handler::handle_write(&policy, &label, &path_clone, &content_clone)
+    let WriteTextFileRequest { path, content, .. } = request;
+    let write_outcome = spawn_blocking_fs("write", move || {
+        fs_handler::handle_write(&policy, &label, &path, &content)
     })
-    .await
-    .map_err(|e| fs_handler::FsError::Io(std::io::Error::other(format!("fs write join: {e}"))))
-    .and_then(|r| r);
+    .await;
     let result = match write_outcome {
         Ok(()) => responder.respond(WriteTextFileResponse::new()),
         Err(e) => {
