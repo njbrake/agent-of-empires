@@ -11,7 +11,7 @@ use super::{
     get_indent, HomeView, TerminalMode, ViewMode, ICON_COLLAPSED, ICON_DELETING, ICON_ERROR,
     ICON_EXPANDED, ICON_IDLE, ICON_STOPPED, ICON_UNKNOWN,
 };
-use crate::session::config::GroupByMode;
+use crate::session::config::{GroupByMode, SortOrder};
 use crate::session::{Item, Status};
 use crate::tui::components::{set_prefixed_input_cursor_position, HelpOverlay, Preview};
 use crate::tui::responsive;
@@ -22,6 +22,39 @@ use crate::update::UpdateInfo;
 /// sessions started at different times show visually distinct spinner positions.
 fn session_offset(created_at: &DateTime<Utc>) -> usize {
     created_at.timestamp_millis() as usize
+}
+
+/// Build the list-pane title.
+///
+/// `prefix` is the leading label ("aoe", "Terminals", "Tool: <name>").
+/// `profile` is `Some(name)` only when a real filter is active; when `None`,
+/// the `[<profile>]` segment is omitted so the default all-profiles state
+/// stays uncluttered.
+/// The `(by project)` and `sort: <label>` suffixes are merged into a single
+/// parenthesized hint, and each piece is dropped when it matches the default.
+fn compose_list_title(
+    prefix: &str,
+    profile: Option<&str>,
+    group_by: GroupByMode,
+    sort_order: SortOrder,
+) -> String {
+    let mut parts: Vec<String> = Vec::with_capacity(2);
+    if group_by == GroupByMode::Project {
+        parts.push("by project".to_string());
+    }
+    if sort_order != SortOrder::default() {
+        parts.push(format!("sort: {}", sort_order.label()));
+    }
+    let suffix = if parts.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", parts.join(", "))
+    };
+    let profile_tag = match profile {
+        Some(name) => format!(" [{}]", name),
+        None => String::new(),
+    };
+    format!(" {}{}{} ", prefix, profile_tag, suffix)
 }
 
 /// Extra rows captured beyond the visible window so moderate scrolls don't
@@ -337,23 +370,17 @@ impl HomeView {
     }
 
     fn render_list(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
-        let group_suffix = if self.group_by == GroupByMode::Project {
-            " (by project)"
-        } else {
-            ""
-        };
+        let profile = self.active_profile_display();
         let title = match &self.view_mode {
-            ViewMode::Agent => format!(" aoe [{}]{} ", self.active_profile_display(), group_suffix),
-            ViewMode::Terminal => format!(
-                " Terminals [{}]{} ",
-                self.active_profile_display(),
-                group_suffix
-            ),
-            ViewMode::Tool(name) => format!(
-                " Tool: {} [{}]{} ",
-                name,
-                self.active_profile_display(),
-                group_suffix
+            ViewMode::Agent => compose_list_title("aoe", profile, self.group_by, self.sort_order),
+            ViewMode::Terminal => {
+                compose_list_title("Terminals", profile, self.group_by, self.sort_order)
+            }
+            ViewMode::Tool(name) => compose_list_title(
+                &format!("Tool: {}", name),
+                profile,
+                self.group_by,
+                self.sort_order,
             ),
         };
         let (border_color, title_color) = match self.view_mode {
@@ -1440,6 +1467,118 @@ impl HomeView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compose_list_title_omits_profile_and_suffix_at_defaults() {
+        // Default group/sort and no profile filter: title is just the prefix,
+        // no `[all]` tag, no parenthesized suffix.
+        let title = compose_list_title("aoe", None, GroupByMode::Manual, SortOrder::Newest);
+        assert_eq!(title, " aoe ");
+    }
+
+    #[test]
+    fn compose_list_title_includes_profile_when_filter_active() {
+        let title = compose_list_title(
+            "aoe",
+            Some("my-profile"),
+            GroupByMode::Manual,
+            SortOrder::Newest,
+        );
+        assert_eq!(title, " aoe [my-profile] ");
+    }
+
+    #[test]
+    fn compose_list_title_shows_by_project_only() {
+        let title = compose_list_title("aoe", None, GroupByMode::Project, SortOrder::Newest);
+        assert_eq!(title, " aoe (by project) ");
+    }
+
+    #[test]
+    fn compose_list_title_shows_sort_only_when_non_default() {
+        let title = compose_list_title("aoe", None, GroupByMode::Manual, SortOrder::LastActivity);
+        assert_eq!(title, " aoe (sort: Recent) ");
+    }
+
+    #[test]
+    fn compose_list_title_merges_group_and_sort_suffixes() {
+        let title = compose_list_title(
+            "aoe",
+            Some("alpha"),
+            GroupByMode::Project,
+            SortOrder::LastActivity,
+        );
+        assert_eq!(title, " aoe [alpha] (by project, sort: Recent) ");
+    }
+
+    #[test]
+    fn compose_list_title_default_sort_drops_suffix_segment() {
+        // Newest is the default; it must not appear in the title even when
+        // group mode contributes its own suffix piece.
+        let title = compose_list_title("aoe", None, GroupByMode::Project, SortOrder::Newest);
+        assert_eq!(title, " aoe (by project) ");
+    }
+
+    #[test]
+    fn compose_list_title_supports_tool_prefix() {
+        let title = compose_list_title("Tool: foo", None, GroupByMode::Manual, SortOrder::AZ);
+        assert_eq!(title, " Tool: foo (sort: A-Z) ");
+    }
+
+    #[test]
+    fn compose_list_title_supports_terminal_prefix() {
+        // Terminal view mode uses the "Terminals" prefix; verify it flows
+        // through the helper just like the Agent and Tool prefixes do.
+        let title = compose_list_title(
+            "Terminals",
+            Some("work"),
+            GroupByMode::Project,
+            SortOrder::Newest,
+        );
+        assert_eq!(title, " Terminals [work] (by project) ");
+    }
+
+    #[test]
+    fn compose_list_title_default_sort_with_project_and_profile() {
+        // Matrix cell: default sort + project group + active profile.
+        let title = compose_list_title(
+            "aoe",
+            Some("alpha"),
+            GroupByMode::Project,
+            SortOrder::Newest,
+        );
+        assert_eq!(title, " aoe [alpha] (by project) ");
+    }
+
+    #[test]
+    fn compose_list_title_non_default_sort_with_profile_only() {
+        // Matrix cell: non-default sort + manual group + active profile.
+        let title = compose_list_title(
+            "aoe",
+            Some("alpha"),
+            GroupByMode::Manual,
+            SortOrder::LastActivity,
+        );
+        assert_eq!(title, " aoe [alpha] (sort: Recent) ");
+    }
+
+    #[test]
+    fn compose_list_title_non_default_sort_with_project_no_profile() {
+        // Matrix cell: non-default sort + project group + no profile.
+        let title = compose_list_title("aoe", None, GroupByMode::Project, SortOrder::LastActivity);
+        assert_eq!(title, " aoe (by project, sort: Recent) ");
+    }
+
+    #[test]
+    fn compose_list_title_renders_oldest_sort_label() {
+        let title = compose_list_title("aoe", None, GroupByMode::Manual, SortOrder::Oldest);
+        assert_eq!(title, " aoe (sort: Oldest) ");
+    }
+
+    #[test]
+    fn compose_list_title_renders_za_sort_label() {
+        let title = compose_list_title("aoe", None, GroupByMode::Manual, SortOrder::ZA);
+        assert_eq!(title, " aoe (sort: Z-A) ");
+    }
 
     #[test]
     fn format_relative_age_none_returns_empty() {

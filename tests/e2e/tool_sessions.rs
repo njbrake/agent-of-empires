@@ -68,7 +68,7 @@ command = "yazi"
     );
     h.spawn_tui();
 
-    h.wait_for("[all]");
+    h.wait_for(" aoe ");
     h.send_keys("\\;");
     h.wait_for("Tool Sessions");
     h.assert_screen_contains("lazygit");
@@ -90,7 +90,7 @@ fn test_tool_picker_does_not_open_with_no_tools_configured() {
     let mut h = TuiTestHarness::new("tool_picker_empty");
     h.spawn_tui();
 
-    h.wait_for("[all]");
+    h.wait_for(" aoe ");
     h.send_keys("\\;");
     // With zero [tools.*] entries the picker is suppressed; the screen
     // should still be on the home view.
@@ -114,7 +114,7 @@ hotkey = "Alt+g"
     );
     h.spawn_tui();
 
-    h.wait_for("[all]");
+    h.wait_for(" aoe ");
     h.send_keys("C-k");
     h.wait_for("Commands");
     h.type_text("lazyg");

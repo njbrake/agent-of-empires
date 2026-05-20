@@ -1,18 +1,23 @@
 //! Misc system endpoints: agents, settings, themes, profiles, filesystem,
 //! groups, docker status, devices, about.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use serde::{Deserialize, Serialize};
 
 use super::AppState;
-use super::{validate_profile_name, ALLOWED_SETTINGS_SECTIONS, SESSION_BLOCKED_FIELDS};
+use super::{
+    validate_profile_name, ALLOWED_GLOBAL_SETTINGS_SECTIONS, ALLOWED_PROFILE_SETTINGS_SECTIONS,
+    SESSION_BLOCKED_FIELDS,
+};
 
 // --- Agents ---
 
 #[derive(Serialize)]
 pub struct AgentInfo {
+    pub kind: String,
     pub name: String,
     pub binary: String,
     pub host_only: bool,
@@ -20,23 +25,53 @@ pub struct AgentInfo {
     pub install_hint: String,
 }
 
-pub async fn list_agents() -> Json<Vec<AgentInfo>> {
-    let result = tokio::task::spawn_blocking(|| {
+fn build_custom_agent_infos(custom_agents: &HashMap<String, String>) -> Vec<AgentInfo> {
+    let mut entries: Vec<_> = custom_agents
+        .iter()
+        .filter(|(name, command)| {
+            !name.trim().is_empty()
+                && !command.trim().is_empty()
+                && crate::agents::get_agent(name).is_none()
+        })
+        .map(|(name, _command)| AgentInfo {
+            kind: "custom".to_string(),
+            name: name.clone(),
+            binary: name.clone(),
+            host_only: false,
+            installed: true,
+            install_hint: "Configured custom agent".to_string(),
+        })
+        .collect();
+    entries.sort_by(|left, right| left.name.cmp(&right.name));
+    entries
+}
+
+pub async fn list_agents(State(state): State<Arc<AppState>>) -> Json<Vec<AgentInfo>> {
+    let profile = state.profile.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let config = crate::session::profile_config::resolve_config_or_warn(&profile);
+        let custom_agents = config.session.custom_agents;
         let tools = crate::tmux::AvailableTools::detect();
         let available = tools.available_list();
-        crate::agents::AGENTS
+        let mut agents = crate::agents::AGENTS
             .iter()
             .map(|a| AgentInfo {
+                kind: "builtin".to_string(),
                 name: a.name.to_string(),
                 binary: a.binary.to_string(),
                 host_only: a.host_only,
                 installed: available.iter().any(|s| s == a.name),
                 install_hint: a.install_hint.to_string(),
             })
-            .collect::<Vec<_>>()
+            .collect::<Vec<_>>();
+        agents.extend(build_custom_agent_infos(&custom_agents));
+        agents
     })
     .await
-    .unwrap_or_default();
+    .unwrap_or_else(|e| {
+        tracing::error!("list_agents task failed: {e}");
+        Vec::new()
+    });
     Json(result)
 }
 
@@ -96,10 +131,11 @@ pub async fn update_settings(
         Ok(b) => b,
         Err(rej) => return rej.into_response(),
     };
-    // Validate that only allowed sections are being updated
+    // Validate that only allowed sections are being updated. Use the
+    // narrower global allowlist here (no `description`, which is profile-only).
     if let Some(obj) = body.as_object() {
         for key in obj.keys() {
-            if !ALLOWED_SETTINGS_SECTIONS.contains(&key.as_str()) {
+            if !ALLOWED_GLOBAL_SETTINGS_SECTIONS.contains(&key.as_str()) {
                 return (
                     StatusCode::BAD_REQUEST,
                     Json(serde_json::json!({
@@ -268,33 +304,58 @@ pub async fn get_current_theme(
 pub struct ProfileInfo {
     pub name: String,
     pub is_default: bool,
+    /// Optional short description, surfaced as helper text in the wizard
+    /// profile picker. `None` (and therefore omitted from JSON) when the
+    /// profile has no description configured. See #949.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 pub async fn list_profiles(State(state): State<Arc<AppState>>) -> Json<Vec<ProfileInfo>> {
-    let profiles = crate::session::list_profiles().unwrap_or_default();
-    // Treat empty profile (server launched without --profile) as "default"
-    let active = if state.profile.is_empty() {
-        "default"
-    } else {
-        &state.profile
-    };
-    let mut result: Vec<ProfileInfo> = profiles
-        .into_iter()
-        .map(|name| {
-            let is_default = name == active;
-            ProfileInfo { name, is_default }
-        })
-        .collect();
-    // Ensure the active profile appears even if list_profiles missed it
-    if !active.is_empty() && !result.iter().any(|p| p.name == active) {
-        result.insert(
-            0,
-            ProfileInfo {
-                name: active.to_string(),
-                is_default: true,
-            },
-        );
-    }
+    // Profile enumeration plus per-profile description lookups all hit disk;
+    // do that off the async runtime so a slow filesystem (network home, fuse,
+    // etc.) cannot stall Tokio workers for every API client. See CodeRabbit
+    // feedback on #1274.
+    let active_profile = state.profile.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let profiles = crate::session::list_profiles().unwrap_or_default();
+        // Treat empty profile (server launched without --profile) as "default"
+        let active: &str = if active_profile.is_empty() {
+            "default"
+        } else {
+            &active_profile
+        };
+        let mut result: Vec<ProfileInfo> = profiles
+            .into_iter()
+            .map(|name| {
+                let is_default = name == active;
+                let description = crate::session::load_profile_config(&name)
+                    .ok()
+                    .and_then(|c| c.description);
+                ProfileInfo {
+                    name,
+                    is_default,
+                    description,
+                }
+            })
+            .collect();
+        // Ensure the active profile appears even if list_profiles missed it
+        if !active.is_empty() && !result.iter().any(|p| p.name == active) {
+            result.insert(
+                0,
+                ProfileInfo {
+                    name: active.to_string(),
+                    is_default: true,
+                    description: crate::session::load_profile_config(active)
+                        .ok()
+                        .and_then(|c| c.description),
+                },
+            );
+        }
+        result
+    })
+    .await
+    .unwrap_or_default();
     Json(result)
 }
 
@@ -505,6 +566,13 @@ pub struct ServerAbout {
     /// honours the user's chosen ceiling instead of clipping at a
     /// hard-coded constant. See #1111.
     pub cockpit_replay_events: u32,
+    /// `"debug"` when built with `debug_assertions`, `"release"`
+    /// otherwise. The web UI renders a "DEV" badge in the topbar
+    /// when this is `"debug"` so users can tell concurrently-running
+    /// debug (port 8081) and release (port 8080) instances apart at
+    /// a glance, including PWA installs where the port disappears
+    /// from the window chrome. See #1055.
+    pub build_flavor: &'static str,
 }
 
 pub async fn get_about(State(state): State<Arc<AppState>>) -> Json<ServerAbout> {
@@ -541,6 +609,11 @@ pub async fn get_about(State(state): State<Arc<AppState>>) -> Json<ServerAbout> 
         cockpit_max_concurrent_resumes,
         cockpit_force_end_turn_threshold_secs,
         cockpit_replay_events,
+        build_flavor: if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        },
     })
 }
 
@@ -870,10 +943,11 @@ pub async fn update_profile_settings(
         )
             .into_response();
     }
-    // Validate allowed sections
+    // Validate allowed sections. Use the per-profile allowlist here, which
+    // is the global list plus `description` (a profile-only field).
     if let Some(obj) = body.as_object() {
         for key in obj.keys() {
-            if !ALLOWED_SETTINGS_SECTIONS.contains(&key.as_str()) {
+            if !ALLOWED_PROFILE_SETTINGS_SECTIONS.contains(&key.as_str()) {
                 return (
                     StatusCode::BAD_REQUEST,
                     Json(serde_json::json!({
@@ -1047,6 +1121,94 @@ pub async fn serve_sound_file(
 mod tests {
     use super::*;
     use axum::body::to_bytes;
+    use std::collections::HashMap;
+
+    fn custom_agents(entries: &[(&str, &str)]) -> HashMap<String, String> {
+        entries
+            .iter()
+            .map(|(name, command)| ((*name).to_string(), (*command).to_string()))
+            .collect()
+    }
+
+    #[test]
+    fn custom_agent_entries_use_safe_placeholders() {
+        let entries = build_custom_agent_infos(&custom_agents(&[(
+            "remote-claude",
+            "ssh -t prod.example claude",
+        )]));
+
+        assert_eq!(entries.len(), 1);
+        let agent = &entries[0];
+        assert_eq!(agent.kind, "custom");
+        assert_eq!(agent.name, "remote-claude");
+        assert_eq!(agent.binary, "remote-claude");
+        assert!(!agent.host_only);
+        assert!(agent.installed);
+        assert_eq!(agent.install_hint, "Configured custom agent");
+    }
+
+    #[test]
+    fn custom_agent_entries_never_serialize_command_values() {
+        let entries = build_custom_agent_infos(&custom_agents(&[(
+            "remote-agent",
+            "ssh -t prod.example claude",
+        )]));
+
+        let json = serde_json::to_string(&entries).unwrap();
+        assert!(json.contains("remote-agent"));
+        assert!(!json.contains("ssh"));
+        assert!(!json.contains("prod.example"));
+        assert!(!json.contains("claude"));
+    }
+
+    #[test]
+    fn serialized_custom_agent_response_contains_no_command_or_detect_as_data() {
+        let entries = build_custom_agent_infos(&custom_agents(&[(
+            "remote-agent",
+            "ssh -t prod.example claude",
+        )]));
+        let value = serde_json::to_value(&entries).unwrap();
+
+        assert_eq!(value[0]["kind"], "custom");
+        assert_eq!(value[0]["name"], "remote-agent");
+        assert_eq!(value[0]["binary"], "remote-agent");
+        assert_eq!(value[0]["installed"], true);
+        assert_eq!(value[0]["host_only"], false);
+        assert_eq!(value[0]["install_hint"], "Configured custom agent");
+
+        let serialized = value.to_string();
+        assert!(!serialized.contains("ssh -t prod.example claude"));
+        assert!(!serialized.contains("prod.example"));
+        assert!(!serialized.contains("agent_detect_as"));
+    }
+
+    #[test]
+    fn custom_agent_entries_filter_empty_values_and_builtin_collisions() {
+        let entries = build_custom_agent_infos(&custom_agents(&[
+            ("", "codex"),
+            ("empty-command", ""),
+            ("   ", "codex"),
+            ("whitespace-command", "   "),
+            ("claude", "ssh -t prod.example claude"),
+            ("remote-codex", "ssh -t prod.example codex"),
+        ]));
+
+        let names: Vec<_> = entries.iter().map(|entry| entry.name.as_str()).collect();
+        assert_eq!(names, vec!["remote-codex"]);
+        assert!(entries.iter().all(|entry| entry.kind == "custom"));
+    }
+
+    #[test]
+    fn custom_agent_entries_are_sorted_by_name() {
+        let entries = build_custom_agent_infos(&custom_agents(&[
+            ("zeta", "zeta-cmd"),
+            ("alpha", "alpha-cmd"),
+            ("middle", "middle-cmd"),
+        ]));
+
+        let names: Vec<_> = entries.iter().map(|entry| entry.name.as_str()).collect();
+        assert_eq!(names, vec!["alpha", "middle", "zeta"]);
+    }
 
     #[tokio::test]
     async fn serve_sound_file_rejects_unknown_name() {

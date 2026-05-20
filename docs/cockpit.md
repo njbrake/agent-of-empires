@@ -564,6 +564,13 @@ boundary, so there is no bind-mount of the daemon's socket into the
 container. That path is reserved for a future agent that natively
 speaks the socket transport.
 
+The published `aoe-sandbox` image bundles the ACP adapters cockpit
+sessions need (`claude-agent-acp`, `codex-acp`, `pi-acp`) alongside the
+underlying CLIs whose binaries already provide ACP themselves (`opencode
+acp`, `gemini --acp`, `vibe-acp`). Custom sandbox images must include
+the same adapters or the `docker exec` invocation will fail with exit
+status 127 and the ACP handshake will time out after 30s.
+
 Known limitations:
 
 - `fs/*` path translation only covers the workspace mount(s) the

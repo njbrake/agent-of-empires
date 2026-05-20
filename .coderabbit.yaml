@@ -36,7 +36,10 @@ reviews:
   auto_title_instructions: "Generate a short, action-oriented PR title. Start with a verb in the imperative form. Focus only on what changed, not why. Keep it concise and specific"
 
   review_status: true
-  commit_status: true
+  # Off to stop CodeRabbit from posting a separate per-commit status check.
+  # The walkthrough comment on the PR is enough signal; CI already gates
+  # merges via clippy, eslint, tests, and codecov.
+  commit_status: false
   # Fails the GitHub commit check when CodeRabbit cannot complete a review
   # (errors, timeouts, service unavailable). It does NOT fail based on review
   # findings; those are surfaced as comments.
@@ -78,7 +81,11 @@ reviews:
 
   auto_review:
     enabled: true
-    auto_incremental_review: true
+    # Off to stop CodeRabbit from re-reviewing on every push, which edited
+    # its walkthrough comment and pinged subscribers each time. CodeRabbit
+    # still reviews once when a PR opens; ask for a re-review explicitly
+    # with `@coderabbitai review` after a meaningful change.
+    auto_incremental_review: false
     ignore_title_keywords:
       - "Dependencies"
       - "update dependency"

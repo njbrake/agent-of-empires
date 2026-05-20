@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use super::config::SortOrder;
 use super::Instance;
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Group {
     pub name: String,
     pub path: String,

@@ -1,6 +1,5 @@
-# Claude artifacts (allow .claude/skills/ for cross-agent skills)
-.claude/*
-!.claude/skills/
+# Claude artifacts
+.claude/
 # Rust build artifacts
 /target/
 # Documentation build output

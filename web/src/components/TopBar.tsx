@@ -15,6 +15,13 @@ interface Props {
   onLogout: () => void;
   loginRequired: boolean;
   isOffline: boolean;
+  /** When true, render a "DEV" badge (in the `status-waiting` amber)
+   *  in the right-hand status zone so debug builds (port 8081 /
+   *  `aoe_dev_` tmux / `~/.agent-of-empires-dev/`) are visually distinct
+   *  from release builds at a glance, including in PWA installs where
+   *  the port is not visible in the window chrome. Driven by
+   *  `ServerAbout.build_flavor === "debug"`. See #1055. */
+  isDevBuild: boolean;
   onGoDashboard: () => void;
 }
 
@@ -30,6 +37,7 @@ export function TopBar({
   onLogout,
   loginRequired,
   isOffline,
+  isDevBuild,
   onGoDashboard,
 }: Props) {
   const repoName =
@@ -105,6 +113,15 @@ export function TopBar({
 
       {/* RIGHT ZONE */}
       <div className="flex items-center gap-1.5 shrink-0">
+        {isDevBuild && (
+          <span
+            className="font-mono text-[11px] px-1.5 py-0.5 rounded-full bg-status-waiting/15 text-status-waiting ring-1 ring-status-waiting/30"
+            title="Debug build (cfg!(debug_assertions)); distinguishes the dev instance from a concurrent release build. See issue #1055."
+            aria-label="Debug build"
+          >
+            DEV
+          </span>
+        )}
         {isOffline && (
           <span
             className="font-mono text-[11px] px-1.5 py-0.5 rounded-full bg-status-error/10 text-status-error flex items-center gap-1.5"

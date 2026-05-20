@@ -406,6 +406,311 @@ fn test_cli_add_default_tool_no_config() {
     );
 }
 
+#[test]
+#[serial]
+fn cli_add_custom_agent_persists_configured_command_extra_args_and_detect_as() {
+    let h = TuiTestHarness::new("cli_add_custom_agent_success");
+    let project = h.project_path();
+
+    let config_dir = crate::harness::app_dir_in(h.home_path());
+    let config_content = format!(
+        r#"[updates]
+check_enabled = false
+
+[app_state]
+has_seen_welcome = true
+last_seen_version = "{}"
+
+[session]
+custom_agents = {{ custom = "bash -lc true" }}
+agent_detect_as = {{ custom = "claude" }}
+"#,
+        env!("CARGO_PKG_VERSION")
+    );
+    std::fs::write(config_dir.join("config.toml"), config_content).expect("write config.toml");
+
+    let add_output = h.run_cli(&[
+        "add",
+        project.to_str().unwrap(),
+        "--tool",
+        "custom",
+        "-t",
+        "CustomTool",
+        "--extra-args",
+        "--flag value",
+    ]);
+    assert!(
+        add_output.status.success(),
+        "aoe add --tool custom failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&add_output.stdout),
+        String::from_utf8_lossy(&add_output.stderr)
+    );
+
+    let sessions = read_sessions_json(&h);
+    let session = &sessions[0];
+    assert_eq!(session["tool"].as_str().unwrap_or(""), "custom");
+    assert_eq!(session["command"].as_str().unwrap_or(""), "bash -lc true");
+    assert_eq!(session["extra_args"].as_str().unwrap_or(""), "--flag value");
+    assert_eq!(session["detect_as"].as_str().unwrap_or(""), "claude");
+}
+
+#[test]
+#[serial]
+fn cli_add_custom_agent_allows_missing_detect_as_mapping() {
+    let h = TuiTestHarness::new("cli_add_custom_agent_no_detect_as");
+    let project = h.project_path();
+
+    let config_dir = crate::harness::app_dir_in(h.home_path());
+    let config_content = format!(
+        r#"[updates]
+check_enabled = false
+
+[app_state]
+has_seen_welcome = true
+last_seen_version = "{}"
+
+[session]
+custom_agents = {{ custom = "bash -lc true" }}
+"#,
+        env!("CARGO_PKG_VERSION")
+    );
+    std::fs::write(config_dir.join("config.toml"), config_content).expect("write config.toml");
+
+    let add_output = h.run_cli(&["add", project.to_str().unwrap(), "--tool", "custom"]);
+    assert!(
+        add_output.status.success(),
+        "aoe add --tool custom should not require agent_detect_as:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&add_output.stdout),
+        String::from_utf8_lossy(&add_output.stderr)
+    );
+
+    let sessions = read_sessions_json(&h);
+    let session = &sessions[0];
+    assert_eq!(session["tool"].as_str().unwrap_or(""), "custom");
+    assert_eq!(session["command"].as_str().unwrap_or(""), "bash -lc true");
+    assert_eq!(session["detect_as"].as_str().unwrap_or(""), "");
+}
+
+#[test]
+#[serial]
+fn cli_add_custom_agent_unknown_tool_fails_safely_without_persistence() {
+    let h = TuiTestHarness::new("cli_add_custom_agent_unknown");
+    let project = h.project_path();
+
+    let config_dir = crate::harness::app_dir_in(h.home_path());
+    let config_content = format!(
+        r#"[updates]
+check_enabled = false
+
+[app_state]
+has_seen_welcome = true
+last_seen_version = "{}"
+
+[session]
+custom_agents = {{ custom = "secret-custom-command-for-leak-check" }}
+"#,
+        env!("CARGO_PKG_VERSION")
+    );
+    std::fs::write(config_dir.join("config.toml"), config_content).expect("write config.toml");
+
+    let output = h.run_cli(&["add", project.to_str().unwrap(), "--tool", "missing"]);
+    assert!(!output.status.success(), "unknown tool should fail");
+
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("custom") || combined.contains("claude"),
+        "error should list safe built-in or custom names. Output:\n{}",
+        combined
+    );
+    assert!(
+        !combined.contains("secret-custom-command-for-leak-check"),
+        "error must not leak configured command string. Output:\n{}",
+        combined
+    );
+
+    let sessions_path = config_dir.join("profiles/default/sessions.json");
+    assert!(
+        !sessions_path.exists(),
+        "unknown tool must fail before writing sessions.json"
+    );
+}
+
+#[test]
+#[serial]
+fn cli_add_custom_agent_rejects_custom_cmd_override() {
+    let h = TuiTestHarness::new("cli_add_custom_agent_cmd_override");
+    let project = h.project_path();
+
+    let config_dir = crate::harness::app_dir_in(h.home_path());
+    let config_content = format!(
+        r#"[updates]
+check_enabled = false
+
+[app_state]
+has_seen_welcome = true
+last_seen_version = "{}"
+
+[session]
+custom_agents = {{ custom = "bash -lc true" }}
+"#,
+        env!("CARGO_PKG_VERSION")
+    );
+    std::fs::write(config_dir.join("config.toml"), config_content).expect("write config.toml");
+
+    let output = h.run_cli(&[
+        "add",
+        project.to_str().unwrap(),
+        "--tool",
+        "custom",
+        "--cmd-override",
+        "other",
+    ]);
+    assert!(
+        !output.status.success(),
+        "custom --tool should reject --cmd-override"
+    );
+}
+
+#[test]
+#[serial]
+fn cli_add_custom_agent_rejects_empty_configured_command() {
+    let h = TuiTestHarness::new("cli_add_custom_agent_empty_command");
+    let project = h.project_path();
+
+    let config_dir = crate::harness::app_dir_in(h.home_path());
+    let config_content = format!(
+        r#"[updates]
+check_enabled = false
+
+[app_state]
+has_seen_welcome = true
+last_seen_version = "{}"
+
+[session]
+custom_agents = {{ custom = "" }}
+"#,
+        env!("CARGO_PKG_VERSION")
+    );
+    std::fs::write(config_dir.join("config.toml"), config_content).expect("write config.toml");
+
+    let output = h.run_cli(&["add", project.to_str().unwrap(), "--tool", "custom"]);
+    assert!(
+        !output.status.success(),
+        "empty custom-agent command should fail"
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("empty") && combined.contains("custom"),
+        "error should explain empty custom-agent command. Output:\n{}",
+        combined
+    );
+}
+
+#[test]
+#[serial]
+fn cli_add_custom_agent_rejects_invalid_detect_as_target() {
+    let h = TuiTestHarness::new("cli_add_custom_agent_bad_detect_as");
+    let project = h.project_path();
+
+    let config_dir = crate::harness::app_dir_in(h.home_path());
+    let config_content = format!(
+        r#"[updates]
+check_enabled = false
+
+[app_state]
+has_seen_welcome = true
+last_seen_version = "{}"
+
+[session]
+custom_agents = {{ custom = "bash -lc true" }}
+agent_detect_as = {{ custom = "not-a-built-in" }}
+"#,
+        env!("CARGO_PKG_VERSION")
+    );
+    std::fs::write(config_dir.join("config.toml"), config_content).expect("write config.toml");
+
+    let output = h.run_cli(&["add", project.to_str().unwrap(), "--tool", "custom"]);
+    assert!(
+        !output.status.success(),
+        "invalid detect_as target should fail"
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("agent_detect_as") && combined.contains("not-a-built-in"),
+        "error should explain invalid detect_as mapping. Output:\n{}",
+        combined
+    );
+}
+
+#[test]
+#[serial]
+fn cli_add_custom_agent_allows_builtin_cmd_override() {
+    let h = TuiTestHarness::new("cli_add_builtin_tool_cmd_override");
+    let project = h.project_path();
+
+    let output = h.run_cli(&[
+        "add",
+        project.to_str().unwrap(),
+        "--tool",
+        "claude",
+        "--cmd-override",
+        "custom-claude",
+        "-t",
+        "BuiltInOverride",
+    ]);
+    assert!(
+        output.status.success(),
+        "built-in --tool should allow --cmd-override:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let sessions = read_sessions_json(&h);
+    let session = &sessions[0];
+    assert_eq!(session["tool"].as_str().unwrap_or(""), "claude");
+    assert_eq!(session["command"].as_str().unwrap_or(""), "custom-claude");
+}
+
+#[test]
+#[serial]
+fn cli_add_custom_agent_tool_conflicts_with_cmd() {
+    let h = TuiTestHarness::new("cli_add_tool_cmd_conflict");
+    let project = h.project_path();
+
+    let output = h.run_cli(&[
+        "add",
+        project.to_str().unwrap(),
+        "--tool",
+        "custom",
+        "--cmd",
+        "claude",
+    ]);
+    assert!(!output.status.success(), "--tool and --cmd should conflict");
+
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("--tool") || combined.contains("--cmd"),
+        "conflict error should mention the conflicting flags. Output:\n{}",
+        combined
+    );
+}
+
 /// `aoe session capture` should return pane content or empty output for a stopped session.
 #[test]
 #[serial]

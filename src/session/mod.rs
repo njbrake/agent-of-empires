@@ -12,6 +12,7 @@ mod instance;
 pub mod poller;
 pub mod profile_config;
 pub mod projects;
+pub(crate) mod recovery;
 pub mod repo_config;
 pub(crate) mod serde_helpers;
 mod storage;
@@ -24,7 +25,7 @@ pub use config::{
     TmuxMouseMode, TmuxStatusBarMode, UpdatesConfig, WorktreeConfig,
 };
 pub(crate) use environment::user_shell;
-pub use environment::validate_env_entry;
+pub use environment::{validate_env_entries, validate_env_entry};
 pub use groups::{flatten_tree, flatten_tree_all_profiles, Group, GroupTree, Item};
 pub use instance::{
     EnsureReadyError, EnsureReadyOutcome, Instance, SandboxInfo, StartOutcome, Status,
@@ -45,7 +46,7 @@ pub use repo_config::{
     RepoConfig,
 };
 pub(crate) use storage::atomic_write;
-pub use storage::{load_workspace_ordering, save_workspace_ordering, Storage, WorkspaceOrdering};
+pub use storage::{load_workspace_ordering, update_workspace_ordering, Storage, WorkspaceOrdering};
 
 use anyhow::Result;
 use std::fs;

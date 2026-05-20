@@ -679,6 +679,10 @@ impl App {
                 refresh_needed = true;
             }
 
+            if self.home.apply_recovery_updates() {
+                refresh_needed = true;
+            }
+
             if let Some(session_id) = self.home.apply_creation_results() {
                 self.attach_session(&session_id, terminal)?;
                 refresh_needed = true;

@@ -1,14 +1,16 @@
 import { useEffect, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import type { StepDef, StepId } from "../StepIndicator";
 import { getReviewSummary } from "../sessionNames";
 import { useServerDown, OFFLINE_TITLE } from "../../../lib/connectionState";
+import type { AgentInfo } from "../../../lib/types";
 
 interface WizardData { path: string; title: string; worktreeBranch: string; useWorktree: boolean; attachExisting: boolean; baseBranch: string; group: string; tool: string; profile: string; profileDirty: boolean; yoloMode: boolean; sandboxEnabled: boolean; sandboxImage: string; extraArgs: string; customInstruction: string; commandOverride: string; [key: string]: unknown; }
-interface Props { data: WizardData; onChange: (field: string, value: unknown) => void; isSubmitting: boolean; error: string | null; onSubmit: () => void; onJumpTo: (stepId: StepId) => void; steps: StepDef[]; }
+interface Props { data: WizardData; onChange: (field: string, value: unknown) => void; agents: AgentInfo[]; isSubmitting: boolean; error: string | null; onSubmit: () => void; onJumpTo: (stepId: StepId) => void; steps: StepDef[]; }
 
 const isMac = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.userAgent);
 
-function Row({ label, value, stepId, onJumpTo, accent }: { label: string; value: string; stepId?: StepId; onJumpTo?: (id: StepId) => void; accent?: boolean }) {
+function Row({ label, value, stepId, onJumpTo, accent }: { label: string; value: ReactNode; stepId?: StepId; onJumpTo?: (id: StepId) => void; accent?: boolean }) {
   const interactive = stepId && onJumpTo;
   return (
     <button
@@ -22,6 +24,18 @@ function Row({ label, value, stepId, onJumpTo, accent }: { label: string; value:
       <span className="text-sm text-text-dim">{label}</span>
       <span className={`text-sm font-mono truncate ml-4 ${accent ? "text-accent-600" : "text-text-primary"}`}>{value}</span>
     </button>
+  );
+}
+
+function AgentReviewValue({ name, custom }: { name: string; custom: boolean }) {
+  if (!custom) return <>{name}</>;
+  return (
+    <span className="inline-flex items-center gap-2">
+      <span>{name}</span>
+      <span className="rounded px-1.5 py-px text-[10px] font-mono uppercase tracking-wide bg-surface-700 text-text-dim">
+        Custom
+      </span>
+    </span>
   );
 }
 
@@ -94,11 +108,13 @@ function EditableRow({ label, value, displayValue, placeholder, onChange, accent
   );
 }
 
-export function ReviewStep({ data, onChange, isSubmitting, error, onSubmit, onJumpTo, steps }: Props) {
+export function ReviewStep({ data, onChange, agents, isSubmitting, error, onSubmit, onJumpTo, steps }: Props) {
   const hasStep = (id: StepId) => steps.some((s) => s.id === id);
   const offline = useServerDown();
   const canSubmit = !isSubmitting && !offline && !!data.path && !!data.tool;
   const summary = getReviewSummary(data.title, data.worktreeBranch);
+  const selectedAgent = agents.find((agent) => agent.name === data.tool);
+  const selectedCustomAgent = selectedAgent?.kind === "custom";
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -145,7 +161,12 @@ export function ReviewStep({ data, onChange, isSubmitting, error, onSubmit, onJu
         ) : (
           <Row label="Worktree" value="None, runs in repo folder" />
         )}
-        <Row label="Agent" value={data.tool || "(not set)"} stepId="agent" onJumpTo={onJumpTo} />
+        <Row
+          label="Agent"
+          value={<AgentReviewValue name={data.tool || "(not set)"} custom={selectedCustomAgent} />}
+          stepId="agent"
+          onJumpTo={onJumpTo}
+        />
         {data.profile && (
           <Row label="Profile" value={data.profileDirty ? `${data.profile} (Custom)` : data.profile} stepId="agent" onJumpTo={onJumpTo} accent />
         )}

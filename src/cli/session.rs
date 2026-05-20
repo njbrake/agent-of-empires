@@ -212,7 +212,7 @@ async fn start_session(profile: &str, args: SessionIdArgs) -> Result<()> {
     let title = instances[idx].title.clone();
 
     let group_tree = GroupTree::new_with_groups(&instances, &groups);
-    storage.save_with_groups(&instances, &group_tree)?;
+    storage.commit(&instances, &group_tree)?;
 
     println!("✓ Started session: {}", title);
     Ok(())
@@ -273,7 +273,7 @@ async fn stop_session(profile: &str, args: SessionIdArgs) -> Result<()> {
         stored.status = crate::session::Status::Stopped;
     }
     let group_tree = crate::session::GroupTree::new_with_groups(&instances, &groups);
-    storage.save_with_groups(&instances, &group_tree)?;
+    storage.commit(&instances, &group_tree)?;
 
     if had_container {
         println!("✓ Stopped session and container: {}", title);
@@ -372,7 +372,7 @@ async fn restart_all_sessions(profile: &str, parallel: usize) -> Result<()> {
     }
 
     let group_tree = GroupTree::new_with_groups(&instances, &groups);
-    storage.save_with_groups(&instances, &group_tree)?;
+    storage.commit(&instances, &group_tree)?;
 
     let stale_count = succeeded.iter().filter(|(_, s)| s.is_some()).count();
     if stale_count == 0 {
@@ -450,7 +450,7 @@ async fn restart_session(profile: &str, args: SessionIdArgs) -> Result<()> {
     let title = instances[idx].title.clone();
 
     let group_tree = GroupTree::new_with_groups(&instances, &groups);
-    storage.save_with_groups(&instances, &group_tree)?;
+    storage.commit(&instances, &group_tree)?;
 
     match outcome {
         StartOutcome::Restarted { stale_sid } => {
@@ -696,7 +696,7 @@ async fn rename_session(profile: &str, args: RenameArgs) -> Result<()> {
     if !instances[idx].group_path.is_empty() {
         group_tree.create_group(&instances[idx].group_path);
     }
-    storage.save_with_groups(&instances, &group_tree)?;
+    storage.commit(&instances, &group_tree)?;
 
     if old_title != effective_title {
         println!("✓ Renamed session: {} → {}", old_title, effective_title);
@@ -784,7 +784,7 @@ async fn set_session_id(profile: &str, args: SetSessionIdArgs) -> Result<()> {
     let title = instances[idx].title.clone();
 
     let group_tree = GroupTree::new_with_groups(&instances, &groups);
-    storage.save_with_groups(&instances, &group_tree)?;
+    storage.commit(&instances, &group_tree)?;
 
     match new_id {
         Some(ref id) => {
@@ -809,7 +809,7 @@ async fn set_base(profile: &str, args: SetBaseArgs) -> Result<()> {
         bail!("Provide a branch ref or pass --clear to remove the override.");
     }
     let storage = Storage::new(profile)?;
-    let mut instances = storage.load()?;
+    let instances = storage.load()?;
 
     let idx = instances
         .iter()
@@ -850,10 +850,17 @@ async fn set_base(profile: &str, args: SetBaseArgs) -> Result<()> {
         Some(trimmed)
     };
 
-    instances[idx].base_branch_override = new_value.clone();
     let title = instances[idx].title.clone();
+    let id_for_save = instances[idx].id.clone();
 
-    storage.save(&instances)?;
+    storage.update(|instances, _groups| {
+        let inst = instances
+            .iter_mut()
+            .find(|i| i.id == id_for_save)
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {}", args.identifier))?;
+        inst.base_branch_override = new_value.clone();
+        Ok(())
+    })?;
 
     match new_value {
         Some(ref v) => println!("✓ Set diff base for '{}': {}", title, v),

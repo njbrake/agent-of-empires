@@ -13,7 +13,7 @@ async function shot(page: Page, name: string) {
 async function openSession(page: Page) {
   await clickSidebarSession(page, "pinch-test");
   await expect(page.locator('[data-term="agent"]')).toHaveCount(1);
-  await expect(page.locator('[data-term="agent"] .wterm')).toBeVisible();
+  await expect(page.locator('[data-term="agent"] .xterm')).toBeVisible();
 }
 
 async function focusedKind(page: Page): Promise<"agent" | "paired" | null> {
@@ -159,11 +159,11 @@ test.describe("Cmd/Ctrl+` desktop", () => {
     // Wait for paired to be ready (its ensureTerminal isn't delayed); use
     // it as the focus source so target=agent.
     const paired = page.locator('[data-term="paired"]:visible').first();
-    await expect(paired.locator(".wterm")).toBeVisible();
+    await expect(paired.locator(".xterm")).toBeVisible();
     await paired.locator("textarea").focus();
     await expect.poll(() => focusedKind(page)).toBe("paired");
 
-    // Agent terminal still mounted as "Starting session..." so its wterm
+    // Agent terminal still mounted as "Starting session..." so its xterm
     // textarea doesn't exist yet. Press Cmd+` → target=agent → listener
     // sets the pending latch.
     await page.keyboard.press("Control+`");

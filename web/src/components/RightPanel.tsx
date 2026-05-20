@@ -14,7 +14,7 @@ import {
   setPendingTerminalFocus,
   type FocusTerminalDetail,
 } from "../lib/terminalFocus";
-import "@wterm/dom/css";
+import "@xterm/xterm/css/xterm.css";
 
 const VSPLIT_STORAGE_KEY = "aoe-right-vsplit";
 const DEFAULT_TOP_RATIO = 0.5;
@@ -109,65 +109,19 @@ function PairedTerminal({
     };
   }, [sessionId, mode]);
 
-  // Scroll-to-bottom on keyboard height changes (same fix as TerminalView).
-  const resizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const scrollRafRef = useRef(0);
+  // Dispatch a window resize after keyboard transitions so anything else
+  // watching layout is nudged; the hook's ResizeObserver already refits
+  // the terminal grid automatically.
   useLayoutEffect(() => {
-    if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
-    cancelAnimationFrame(scrollRafRef.current);
-    scrollRafRef.current = requestAnimationFrame(() => {
-      scrollRafRef.current = requestAnimationFrame(() => {
-        const el = termRef.current?.element;
-        if (el) el.scrollTop = el.scrollHeight;
-      });
-    });
-    resizeTimerRef.current = setTimeout(() => {
-      resizeTimerRef.current = null;
+    const t = setTimeout(() => {
       window.dispatchEvent(new Event("resize"));
-      const el = termRef.current?.element;
-      if (el) el.scrollTop = el.scrollHeight;
     }, 150);
-    return () => {
-      if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
-      cancelAnimationFrame(scrollRafRef.current);
-    };
-  }, [keyboardHeight, keyboardOpen, termRef]);
-
-  // Pin scrollTop on wterm scrollTop=0 mid-session resets (same fix
-  // as TerminalView). See that file for the rationale; this mirror
-  // covers the side terminal pane in the diff viewer.
-  const isInScrollbackRef = useRef(state.isInScrollback);
-  useEffect(() => {
-    isInScrollbackRef.current = state.isInScrollback;
-  }, [state.isInScrollback]);
-  useEffect(() => {
-    let raf = 0;
-    const onScroll = (e: Event) => {
-      const el = termRef.current?.element;
-      if (!el) return;
-      const target = e.target as Node | null;
-      if (target !== el && !(target && el.contains(target))) return;
-      cancelAnimationFrame(raf);
-      raf = requestAnimationFrame(() => {
-        if (isInScrollbackRef.current) return;
-        const elNow = termRef.current?.element;
-        if (!elNow) return;
-        const max = Math.max(0, elNow.scrollHeight - elNow.clientHeight);
-        if (elNow.scrollTop < max - 1) {
-          elNow.scrollTop = elNow.scrollHeight;
-        }
-      });
-    };
-    document.addEventListener("scroll", onScroll, { passive: true, capture: true });
-    return () => {
-      document.removeEventListener("scroll", onScroll, true);
-      cancelAnimationFrame(raf);
-    };
-  }, [termRef]);
+    return () => clearTimeout(t);
+  }, [keyboardHeight, keyboardOpen]);
 
   const toggleKeyboard = useCallback(() => {
     const term = termRef.current;
-    if (!term) return;
+    if (!term?.element) return;
     const ta = term.element.querySelector("textarea");
     if (keyboardOpen) {
       ta?.blur();
@@ -180,7 +134,7 @@ function PairedTerminal({
   // Returns true if focus was applied. Callers can fall back to the pending
   // latch when the textarea isn't in the DOM yet (PTY still booting).
   const focusSelf = useCallback(() => {
-    const ta = termRef.current?.element.querySelector("textarea");
+    const ta = termRef.current?.element?.querySelector("textarea");
     if (ta instanceof HTMLElement) {
       ta.focus();
       return true;

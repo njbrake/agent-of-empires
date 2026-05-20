@@ -1,5 +1,5 @@
 import { useCallback, useState } from "react";
-import type { WTerm } from "@wterm/dom";
+import type { Terminal } from "@xterm/xterm";
 import type { RefObject } from "react";
 import { useLongPressDrag, type DragAxis } from "../hooks/useLongPressDrag";
 import { toastBus } from "../lib/toastBus";
@@ -43,13 +43,13 @@ function extractClipboardText(cd: DataTransfer | null): string {
 
 interface Props {
   sendData: (data: string) => void;
-  termRef: RefObject<WTerm | null>;
+  termRef: RefObject<Terminal | null>;
   keyboardHeight: number;
   /**
    * Latched keyboard reservation from useMobileKeyboard. When > 0 the
    * parent (TerminalView) is permanently padding the layout for the
    * keyboard, so the strip should not add its own env() fallback (which
-   * would oscillate with live keyboardHeight and resize the wterm
+   * would oscillate with live keyboardHeight and resize the terminal
    * container by py-1.5's 6px on every show/hide). Optional: PairedTerminal
    * doesn't apply the sticky reservation, so it omits this and the strip
    * falls back to the env() behavior.
@@ -118,8 +118,9 @@ export function MobileTerminalToolbar({
   //
   // We DON'T toggle on live keyboardHeight: that would flip the strip's
   // padding by py-1.5's 6px on every soft-keyboard show/hide, which
-  // propagates into the wterm container and SIGWINCHes claude on every
-  // cycle. The reservation, by contrast, only changes once per session.
+  // propagates into the terminal container and SIGWINCHes claude on
+  // every cycle. The reservation, by contrast, only changes once per
+  // session.
   const stripStyle = {
     paddingBottom:
       reservedKeyboardHeight > 0 ? "0" : "env(keyboard-inset-height, 0px)",
@@ -224,7 +225,7 @@ export function MobileTerminalToolbar({
           // element, our listener reads clipboardData directly.
           //
           // Keyboard-closed branch: there's no editable focused, so we
-          // have to focus the wterm textarea ourselves. Flip it to
+          // have to focus the terminal textarea ourselves. Flip it to
           // readonly first so iOS doesn't pop the keyboard, then blur
           // afterward so the next FAB tap is a real focus transition.
           const activeEl = document.activeElement;
@@ -251,7 +252,7 @@ export function MobileTerminalToolbar({
               return;
             }
           } else {
-            const ta = termRef.current?.element.querySelector(
+            const ta = termRef.current?.element?.querySelector(
               "textarea",
             ) as HTMLTextAreaElement | null;
             if (ta) {

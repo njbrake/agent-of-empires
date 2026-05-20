@@ -17,7 +17,7 @@ fn test_create_session_persists() -> Result<()> {
     let instance = Instance::new("My Project", "/home/user/project");
     let group_tree = GroupTree::new_with_groups(std::slice::from_ref(&instance), &[]);
 
-    storage.save_with_groups(std::slice::from_ref(&instance), &group_tree)?;
+    storage.commit(std::slice::from_ref(&instance), &group_tree)?;
 
     let (loaded, _groups) = storage.load_with_groups()?;
     assert_eq!(loaded.len(), 1);
@@ -41,7 +41,7 @@ fn test_create_multiple_sessions() -> Result<()> {
     ];
     let group_tree = GroupTree::new_with_groups(&instances, &[]);
 
-    storage.save_with_groups(&instances, &group_tree)?;
+    storage.commit(&instances, &group_tree)?;
 
     let (loaded, _) = storage.load_with_groups()?;
     assert_eq!(loaded.len(), 3);
@@ -64,13 +64,13 @@ fn test_remove_session_by_id() -> Result<()> {
 
     let instances = vec![inst_a, inst_b];
     let group_tree = GroupTree::new_with_groups(&instances, &[]);
-    storage.save_with_groups(&instances, &group_tree)?;
+    storage.commit(&instances, &group_tree)?;
 
     // Remove by filtering
     let (mut loaded, groups) = storage.load_with_groups()?;
     loaded.retain(|i| i.id != remove_id);
     let group_tree = GroupTree::new_with_groups(&loaded, &groups);
-    storage.save_with_groups(&loaded, &group_tree)?;
+    storage.commit(&loaded, &group_tree)?;
 
     let (reloaded, _) = storage.load_with_groups()?;
     assert_eq!(reloaded.len(), 1);
@@ -91,7 +91,7 @@ fn test_create_session_with_group() -> Result<()> {
     let mut group_tree = GroupTree::new_with_groups(std::slice::from_ref(&instance), &[]);
     group_tree.create_group("work");
 
-    storage.save_with_groups(std::slice::from_ref(&instance), &group_tree)?;
+    storage.commit(std::slice::from_ref(&instance), &group_tree)?;
 
     let (loaded, loaded_groups) = storage.load_with_groups()?;
     assert_eq!(loaded.len(), 1);
@@ -112,18 +112,18 @@ fn test_save_leaves_no_debris() -> Result<()> {
 
     for i in 0..5 {
         let instances = vec![Instance::new(&format!("iter{i}"), "/tmp/test")];
-        storage.save(&instances)?;
+        storage.commit(&instances, &GroupTree::new_with_groups(&instances, &[]))?;
     }
 
-    // Atomic write should leave only sessions.json in the profile dir, no
-    // .json.bak from the old code path and no leftover tempfiles.
+    // Atomic write should leave only the persisted JSON files in the profile
+    // dir, no .json.bak from the old code path and no leftover tempfiles.
     let profile_dir = agent_of_empires::session::get_profile_dir("default")?;
     let mut entries: Vec<String> = fs::read_dir(&profile_dir)?
         .filter_map(|e| e.ok())
         .map(|e| e.file_name().to_string_lossy().to_string())
         .collect();
     entries.sort();
-    assert_eq!(entries, vec!["sessions.json"]);
+    assert_eq!(entries, vec!["groups.json", "sessions.json"]);
 
     Ok(())
 }
@@ -137,7 +137,10 @@ fn test_source_profile_not_serialized() {
     instance.source_profile = "work".to_string();
 
     let storage = Storage::new("default").unwrap();
-    storage.save(std::slice::from_ref(&instance)).unwrap();
+    let seeded = vec![instance.clone()];
+    storage
+        .commit(&seeded, &GroupTree::new_with_groups(&seeded, &[]))
+        .unwrap();
 
     // Read raw JSON -- source_profile should not appear
     let profile_dir = agent_of_empires::session::get_profile_dir("default").unwrap();
@@ -162,7 +165,7 @@ fn test_storage_defaults_to_default_profile() -> Result<()> {
 
     // Verify it can save and load
     let instances = vec![Instance::new("Test", "/path/test")];
-    storage.save(&instances)?;
+    storage.commit(&instances, &GroupTree::new_with_groups(&instances, &[]))?;
     let loaded = storage.load()?;
     assert_eq!(loaded.len(), 1);
 

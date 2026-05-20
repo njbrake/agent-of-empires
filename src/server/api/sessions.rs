@@ -429,15 +429,14 @@ fn workspace_id_for_session(s: &SessionResponse) -> String {
 // ordering without each racing to PUT their own prepend. In read-only
 // mode we still compute the merge for the response, but we skip the
 // disk write.
-fn merge_workspace_ordering(
-    sessions: &[SessionResponse],
-    read_only: bool,
-) -> anyhow::Result<Vec<String>> {
-    let mut ordering = crate::session::load_workspace_ordering()
-        .map(|w| w.order)
-        .unwrap_or_default();
-    let known: std::collections::HashSet<&str> = ordering.iter().map(String::as_str).collect();
-
+// Pure helper: merges newly observed workspace ids on top of the
+// existing ordering, deduplicating and putting unknowns first
+// (newest-first). Extracted so the merge math can run from both the
+// read-only path (no lock) and the locked closure (where it operates
+// on `ord.order` directly to avoid the read-modify-write race that
+// `merge_workspace_ordering` originally had on a pre-lock snapshot).
+fn compute_merged_ordering(sessions: &[SessionResponse], current_order: &[String]) -> Vec<String> {
+    let known: std::collections::HashSet<&str> = current_order.iter().map(String::as_str).collect();
     let mut seen_unknown: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut new_ids: Vec<String> = Vec::new();
     for s in sessions {
@@ -449,23 +448,29 @@ fn merge_workspace_ordering(
             new_ids.push(id);
         }
     }
-
     if new_ids.is_empty() {
-        return Ok(ordering);
+        return current_order.to_vec();
     }
-
-    // Newest first: `instances` is in creation order, so reverse the
-    // collected unknowns and prepend.
     new_ids.reverse();
-    new_ids.append(&mut ordering);
-    let merged = new_ids;
+    new_ids.extend_from_slice(current_order);
+    new_ids
+}
 
-    if !read_only {
-        crate::session::save_workspace_ordering(&crate::session::WorkspaceOrdering {
-            order: merged.clone(),
-        })?;
+fn merge_workspace_ordering(
+    sessions: &[SessionResponse],
+    read_only: bool,
+) -> anyhow::Result<Vec<String>> {
+    if read_only {
+        let current = crate::session::load_workspace_ordering()
+            .map(|w| w.order)
+            .unwrap_or_default();
+        return Ok(compute_merged_ordering(sessions, &current));
     }
-    Ok(merged)
+    crate::session::update_workspace_ordering(|ord| {
+        let merged = compute_merged_ordering(sessions, &ord.order);
+        ord.order = merged.clone();
+        Ok(merged)
+    })
 }
 
 // --- Workspace ordering ---
@@ -530,8 +535,12 @@ pub async fn update_workspace_ordering(
             .into_response();
     }
 
-    let ordering = crate::session::WorkspaceOrdering { order: body.order };
-    if let Err(e) = crate::session::save_workspace_ordering(&ordering) {
+    let new_order = body.order;
+    let result = crate::session::update_workspace_ordering(|ord| {
+        ord.order = new_order.clone();
+        Ok(())
+    });
+    if let Err(e) = result {
         tracing::error!(target: "http.api.sessions", "Failed to persist workspace ordering: {e}");
         return (
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -541,7 +550,7 @@ pub async fn update_workspace_ordering(
     }
     (
         StatusCode::OK,
-        Json(serde_json::json!({ "order": ordering.order })),
+        Json(serde_json::json!({ "order": new_order })),
     )
         .into_response()
 }
@@ -607,12 +616,14 @@ pub async fn rename_session(
     let profile = inst.source_profile.clone();
 
     if let Ok(storage) = Storage::new(&profile) {
-        let profile_instances: Vec<_> = instances
-            .iter()
-            .filter(|i| i.source_profile == profile)
-            .cloned()
-            .collect();
-        if let Err(e) = storage.save(&profile_instances) {
+        let title_clone = title.clone();
+        let id_clone = id.clone();
+        if let Err(e) = storage.update(|instances, _groups| {
+            if let Some(inst) = instances.iter_mut().find(|i| i.id == id_clone) {
+                apply_session_title_rename(inst, title_clone);
+            }
+            Ok(())
+        }) {
             tracing::error!(target: "http.api.sessions", "Failed to save after rename: {e}");
         }
     }
@@ -642,7 +653,7 @@ pub struct UpdateNotificationsBody {
 /// - Unset: leave the current session value untouched.
 /// - Clear: set to None (inherit the server default).
 /// - Set(v): explicit user override.
-#[derive(Default)]
+#[derive(Default, Copy, Clone)]
 pub enum Tristate {
     #[default]
     Unset,
@@ -709,12 +720,18 @@ pub async fn update_session_notifications(
     let profile = inst.source_profile.clone();
 
     if let Ok(storage) = Storage::new(&profile) {
-        let profile_instances: Vec<_> = instances
-            .iter()
-            .filter(|i| i.source_profile == profile)
-            .cloned()
-            .collect();
-        if let Err(e) = storage.save(&profile_instances) {
+        let id_clone = id.clone();
+        let waiting = body.notify_on_waiting;
+        let idle = body.notify_on_idle;
+        let error = body.notify_on_error;
+        if let Err(e) = storage.update(|instances, _groups| {
+            if let Some(inst) = instances.iter_mut().find(|i| i.id == id_clone) {
+                apply(&mut inst.notify_on_waiting, waiting);
+                apply(&mut inst.notify_on_idle, idle);
+                apply(&mut inst.notify_on_error, error);
+            }
+            Ok(())
+        }) {
             tracing::error!(target: "http.api.sessions", "Failed to save after notification update: {e}");
         }
     }
@@ -780,12 +797,19 @@ pub async fn update_session_diff_base(
     let profile = inst.source_profile.clone();
 
     if let Ok(storage) = Storage::new(&profile) {
-        let profile_instances: Vec<_> = instances
-            .iter()
-            .filter(|i| i.source_profile == profile)
-            .cloned()
-            .collect();
-        if let Err(e) = storage.save(&profile_instances) {
+        let id_clone = id.clone();
+        let new_override = body
+            .base_branch
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| !v.is_empty())
+            .map(str::to_string);
+        if let Err(e) = storage.update(|instances, _groups| {
+            if let Some(inst) = instances.iter_mut().find(|i| i.id == id_clone) {
+                inst.base_branch_override = new_override;
+            }
+            Ok(())
+        }) {
             tracing::error!(target: "http.api.sessions", "Failed to save after diff-base update: {e}");
         }
     }
@@ -895,28 +919,73 @@ pub async fn delete_session(
 
     match deletion_result {
         Ok(result) if result.success => {
-            // Remove from in-memory state and persist
-            let mut instances = state.instances.write().await;
-            instances.retain(|i| i.id != id);
-
-            if let Ok(storage) = Storage::new(&profile) {
-                let profile_instances: Vec<_> = instances
-                    .iter()
-                    .filter(|i| i.source_profile == profile)
-                    .cloned()
-                    .collect();
-                if let Err(e) = storage.save(&profile_instances) {
-                    tracing::error!(target: "http.api.sessions", "Failed to save after deletion: {e}");
+            // Disk first: if persistence fails, the in-memory state is left
+            // intact and we return 500. Otherwise the status poll loop
+            // would silently re-add the entry from disk on the next tick
+            // and the user would see "deleted" then the session
+            // reappearing seconds later.
+            let storage = match Storage::new(&profile) {
+                Ok(s) => s,
+                Err(e) => {
+                    tracing::error!(target: "http.api.sessions",
+                        "Storage::new failed after deletion: {e}");
+                    return (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({
+                            "error": "persist_failed",
+                            "message": format!(
+                                "Session was torn down but storage init failed: {e}"
+                            ),
+                        })),
+                    );
+                }
+            };
+            let id_for_save = id.clone();
+            let persist_result = tokio::task::spawn_blocking(move || {
+                storage.update(|instances, _groups| {
+                    instances.retain(|i| i.id != id_for_save);
+                    Ok(())
+                })
+            })
+            .await;
+            match persist_result {
+                Ok(Ok(())) => {
+                    {
+                        let mut instances = state.instances.write().await;
+                        instances.retain(|i| i.id != id);
+                    }
+                    state.instance_locks.write().await.remove(&id);
+                    (
+                        StatusCode::OK,
+                        Json(serde_json::json!({ "status": "deleted" })),
+                    )
+                }
+                Ok(Err(e)) => {
+                    tracing::error!(target: "http.api.sessions",
+                        "Failed to save after deletion: {e}");
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({
+                            "error": "persist_failed",
+                            "message": format!(
+                                "Session deletion completed on disk, but \
+                                 sessions.json could not be updated: {e}"
+                            ),
+                        })),
+                    )
+                }
+                Err(join_err) => {
+                    tracing::error!(target: "http.api.sessions",
+                        "Persist task panicked: {join_err}");
+                    (
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        Json(serde_json::json!({
+                            "error": "persist_failed",
+                            "message": "Persist task panicked",
+                        })),
+                    )
                 }
             }
-
-            // Clean up per-instance lock entry
-            state.instance_locks.write().await.remove(&id);
-
-            (
-                StatusCode::OK,
-                Json(serde_json::json!({ "status": "deleted" })),
-            )
         }
         Ok(result) => {
             // Deletion had errors; set status to Error
@@ -1003,6 +1072,31 @@ pub struct CreateSessionBody {
     pub cockpit_model: Option<String>,
 }
 
+fn validate_session_tool_identity(
+    tool: &str,
+    profile: &str,
+    project_path: &std::path::Path,
+) -> bool {
+    if crate::agents::get_agent(tool).is_some() {
+        return true;
+    }
+
+    match crate::session::repo_config::resolve_config_with_repo(profile, project_path) {
+        Ok(config) => config
+            .session
+            .custom_agents
+            .get(tool)
+            .is_some_and(|command| !command.trim().is_empty()),
+        Err(e) => {
+            tracing::warn!(
+                "Failed to resolve config while validating session tool '{}': {e}",
+                tool
+            );
+            false
+        }
+    }
+}
+
 pub async fn create_session(
     State(state): State<Arc<AppState>>,
     body: Result<Json<CreateSessionBody>, axum::extract::rejection::JsonRejection>,
@@ -1076,6 +1170,22 @@ pub async fn create_session(
                     .into_response();
             }
         }
+    }
+
+    let validation_profile = body.profile.as_deref().unwrap_or(&state.profile);
+    if !validate_session_tool_identity(
+        &body.tool,
+        validation_profile,
+        std::path::Path::new(&body.path),
+    ) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(serde_json::json!({
+                "error": "validation_failed",
+                "message": format!("Unknown agent '{}'", body.tool),
+            })),
+        )
+            .into_response();
     }
 
     let profile = body.profile.unwrap_or_else(|| state.profile.clone());
@@ -1180,11 +1290,12 @@ pub async fn create_session(
             instance.cockpit_model = body.cockpit_model;
         }
 
-        // Save to disk
         let storage = Storage::new(&profile)?;
-        let mut all = storage.load().unwrap_or_default();
-        all.push(instance.clone());
-        storage.save(&all)?;
+        let to_persist = instance.clone();
+        storage.update(|all, _groups| {
+            all.push(to_persist);
+            Ok(())
+        })?;
 
         // Cockpit-mode sessions are not backed by tmux; the cockpit
         // supervisor spawns the ACP agent on demand. Skip the tmux
@@ -2517,6 +2628,199 @@ mod tests {
 
         assert_eq!(live.agent_session_id.as_deref(), Some("fresh-id"));
     }
+
+    fn isolated_app_dir(temp_home: &std::path::Path) -> std::path::PathBuf {
+        #[cfg(target_os = "linux")]
+        {
+            let config_home = temp_home.join(".config");
+            std::env::set_var("XDG_CONFIG_HOME", &config_home);
+            config_home.join(crate::session::APP_DIR_NAME_LINUX)
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            temp_home.join(crate::session::APP_DIR_NAME_OTHER)
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn session_tool_identity_accepts_builtin_agent() {
+        let temp_home = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", temp_home.path());
+        let project = tempfile::tempdir().unwrap();
+
+        assert!(validate_session_tool_identity(
+            "claude",
+            "default",
+            project.path()
+        ));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn session_tool_identity_accepts_non_empty_configured_custom_agent() {
+        let temp_home = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", temp_home.path());
+        let app_dir = isolated_app_dir(temp_home.path());
+        std::fs::create_dir_all(&app_dir).unwrap();
+        std::fs::write(
+            app_dir.join("config.toml"),
+            r#"
+                [session.custom_agents]
+                remote-claude = "ssh -t host claude"
+            "#,
+        )
+        .unwrap();
+        let project = tempfile::tempdir().unwrap();
+
+        assert!(validate_session_tool_identity(
+            "remote-claude",
+            "default",
+            project.path()
+        ));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn session_tool_identity_rejects_unknown_agent() {
+        let temp_home = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", temp_home.path());
+        let project = tempfile::tempdir().unwrap();
+
+        assert!(!validate_session_tool_identity(
+            "surprise-agent",
+            "default",
+            project.path()
+        ));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn session_tool_identity_rejects_empty_custom_agent_command() {
+        let temp_home = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", temp_home.path());
+        let app_dir = isolated_app_dir(temp_home.path());
+        std::fs::create_dir_all(&app_dir).unwrap();
+        std::fs::write(
+            app_dir.join("config.toml"),
+            r#"
+                [session.custom_agents]
+                remote-claude = ""
+            "#,
+        )
+        .unwrap();
+        let project = tempfile::tempdir().unwrap();
+
+        assert!(!validate_session_tool_identity(
+            "remote-claude",
+            "default",
+            project.path()
+        ));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn session_tool_identity_rejects_whitespace_only_custom_agent_command() {
+        let temp_home = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", temp_home.path());
+        let app_dir = isolated_app_dir(temp_home.path());
+        std::fs::create_dir_all(&app_dir).unwrap();
+        std::fs::write(
+            app_dir.join("config.toml"),
+            r#"
+                [session.custom_agents]
+                remote-claude = "   "
+            "#,
+        )
+        .unwrap();
+        let project = tempfile::tempdir().unwrap();
+
+        assert!(!validate_session_tool_identity(
+            "remote-claude",
+            "default",
+            project.path()
+        ));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn session_tool_identity_uses_requested_profile() {
+        let temp_home = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", temp_home.path());
+        let app_dir = isolated_app_dir(temp_home.path());
+        let work_profile = app_dir.join("profiles").join("work");
+        std::fs::create_dir_all(&work_profile).unwrap();
+        std::fs::write(
+            work_profile.join("config.toml"),
+            r#"
+                [session.custom_agents]
+                work-agent = "ssh -t work claude"
+            "#,
+        )
+        .unwrap();
+        let project = tempfile::tempdir().unwrap();
+
+        assert!(!validate_session_tool_identity(
+            "work-agent",
+            "default",
+            project.path()
+        ));
+        assert!(validate_session_tool_identity(
+            "work-agent",
+            "work",
+            project.path()
+        ));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn session_tool_identity_uses_repo_aware_config_for_request_path() {
+        let temp_home = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", temp_home.path());
+        let _app_dir = isolated_app_dir(temp_home.path());
+        let project = tempfile::tempdir().unwrap();
+        let repo_config_dir = project.path().join(".agent-of-empires");
+        std::fs::create_dir_all(&repo_config_dir).unwrap();
+        std::fs::write(
+            repo_config_dir.join("config.toml"),
+            r#"
+                [session.custom_agents]
+                repo-agent = "ssh -t repo claude"
+            "#,
+        )
+        .unwrap();
+
+        assert!(validate_session_tool_identity(
+            "repo-agent",
+            "default",
+            project.path()
+        ));
+    }
+
+    #[test]
+    fn create_session_validates_tool_before_builder_or_persistence() {
+        let source = std::fs::read_to_string(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/server/api/sessions.rs"),
+        )
+        .unwrap();
+        let create_start = source.find("pub async fn create_session").unwrap();
+        let create_source = &source[create_start..];
+        let validation = create_source
+            .find("validate_session_tool_identity")
+            .unwrap();
+        let unwrap_or_else = create_source.find("body.profile.unwrap_or_else").unwrap();
+        let spawn_blocking = create_source.find("tokio::task::spawn_blocking").unwrap();
+        let builder = create_source.find("builder::build_instance").unwrap();
+        let storage = create_source.find("Storage::new").unwrap();
+
+        assert!(validation < unwrap_or_else);
+        assert!(validation < spawn_blocking);
+        assert!(validation < builder);
+        assert!(validation < storage);
+        assert!(create_source.contains("body.profile.as_deref().unwrap_or(&state.profile)"));
+        assert!(create_source.contains("std::path::Path::new(&body.path)"));
+        assert!(!create_source[validation..spawn_blocking].contains("command_override"));
+    }
     // ── validate_diff_path: security regression tests ──────────────────────────
     //
     // Regression for a path-traversal vulnerability in the first cut of the
@@ -2907,18 +3211,21 @@ pub async fn send_message(
                 // left to persist.
                 return (StatusCode::OK, Json(serde_json::json!({"sent": true}))).into_response();
             };
-            // Persist only the target session's profile, mirroring the pattern
-            // used by rename/delete. Saving `state.instances` wholesale would
-            // write every profile's sessions into one profile's storage file.
-            let profile_instances: Vec<Instance> = instances
-                .iter()
-                .filter(|i| i.source_profile == profile)
-                .cloned()
-                .collect();
             drop(instances);
+            let id_for_save = id.clone();
+            let started_for_save = started.clone();
+            let outcome_already_alive = matches!(outcome, EnsureReadyOutcome::AlreadyAlive);
             tokio::task::spawn_blocking(move || {
                 if let Ok(storage) = Storage::new(&profile) {
-                    if let Err(e) = storage.save(&profile_instances) {
+                    if let Err(e) = storage.update(|all, _groups| {
+                        if let Some(disk_inst) = all.iter_mut().find(|i| i.id == id_for_save) {
+                            if !outcome_already_alive {
+                                apply_post_restart_sync(disk_inst, &started_for_save);
+                            }
+                            disk_inst.touch_last_accessed();
+                        }
+                        Ok(())
+                    }) {
                         tracing::warn!(target: "http.api.sessions", "send_message: persist failed: {e}");
                     }
                 }
@@ -3220,8 +3527,9 @@ mod workspace_ordering_tests {
         // Persisted ordering already contains `b`. Sessions come in
         // creation order (oldest first) `[b, a, c]`; `a` and `c` are
         // unseen and should land at the top in newest-first order: `[c, a, b]`.
-        crate::session::save_workspace_ordering(&crate::session::WorkspaceOrdering {
-            order: vec!["/tmp/repo::b".to_string()],
+        crate::session::update_workspace_ordering(|ord| {
+            ord.order = vec!["/tmp/repo::b".to_string()];
+            Ok(())
         })?;
 
         let sessions = vec![
@@ -3271,8 +3579,9 @@ mod workspace_ordering_tests {
         let temp = tempdir()?;
         setup_test_home(temp.path());
 
-        crate::session::save_workspace_ordering(&crate::session::WorkspaceOrdering {
-            order: vec!["/tmp/repo::a".to_string(), "/tmp/repo::b".to_string()],
+        crate::session::update_workspace_ordering(|ord| {
+            ord.order = vec!["/tmp/repo::a".to_string(), "/tmp/repo::b".to_string()];
+            Ok(())
         })?;
 
         let sessions = vec![
@@ -3305,6 +3614,58 @@ mod workspace_ordering_tests {
         assert!(on_disk.order.is_empty(), "read-only path must not persist");
 
         Ok(())
+    }
+
+    #[test]
+    fn compute_merged_ordering_pure_no_known_ids() {
+        let sessions = vec![
+            mock_response("s1", "/repo/a", Some("main")),
+            mock_response("s2", "/repo/b", Some("dev")),
+        ];
+        let merged = compute_merged_ordering(&sessions, &[]);
+        assert_eq!(
+            merged,
+            vec!["/repo/b::dev".to_string(), "/repo/a::main".to_string()]
+        );
+    }
+
+    #[test]
+    fn compute_merged_ordering_pure_dedupes_unknowns() {
+        let sessions = vec![
+            mock_response("s1", "/repo/a", Some("main")),
+            mock_response("s2", "/repo/a", Some("main")),
+            mock_response("s3", "/repo/b", Some("dev")),
+        ];
+        let merged = compute_merged_ordering(&sessions, &[]);
+        assert_eq!(merged.len(), 2);
+        assert!(merged.contains(&"/repo/a::main".to_string()));
+        assert!(merged.contains(&"/repo/b::dev".to_string()));
+    }
+
+    #[test]
+    fn compute_merged_ordering_pure_preserves_existing_order() {
+        let existing = vec!["/repo/x::main".to_string(), "/repo/y::dev".to_string()];
+        let sessions = vec![mock_response("s1", "/repo/z", Some("feat"))];
+        let merged = compute_merged_ordering(&sessions, &existing);
+        assert_eq!(
+            merged,
+            vec![
+                "/repo/z::feat".to_string(),
+                "/repo/x::main".to_string(),
+                "/repo/y::dev".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn compute_merged_ordering_pure_returns_existing_when_all_known() {
+        let existing = vec!["/repo/x::main".to_string(), "/repo/y::dev".to_string()];
+        let sessions = vec![
+            mock_response("s1", "/repo/x", Some("main")),
+            mock_response("s2", "/repo/y", Some("dev")),
+        ];
+        let merged = compute_merged_ordering(&sessions, &existing);
+        assert_eq!(merged, existing);
     }
 }
 

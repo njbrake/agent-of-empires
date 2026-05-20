@@ -1,7 +1,7 @@
 import type { Page } from "@playwright/test";
 
 // Shared mocks so a running `aoe serve` + tmux aren't required. We stub the
-// REST API and route the PTY WebSocket so the wterm terminal mounts and the
+// REST API and route the PTY WebSocket so the xterm.js terminal mounts and the
 // gesture handlers in useTerminal.ts are exercised against the real frontend.
 
 export interface MockHandle {
@@ -135,7 +135,7 @@ export async function seedSettings(
   }, settings);
 }
 
-// Synthesize a multi-touch TouchEvent on the .wterm element.
+// Synthesize a multi-touch TouchEvent on the .xterm element.
 // Playwright's page.touchscreen is single-finger only; building raw Touch
 // objects is the only cross-browser way to dispatch two-finger gestures.
 export async function fireTouches(
@@ -145,8 +145,8 @@ export async function fireTouches(
 ) {
   await page.evaluate(
     ({ type, points }) => {
-      const target = document.querySelector<HTMLElement>(".wterm");
-      if (!target) throw new Error(".wterm not mounted");
+      const target = document.querySelector<HTMLElement>(".xterm");
+      if (!target) throw new Error(".xterm not mounted");
       const rect = target.getBoundingClientRect();
       const touches = points.map((p, i) => {
         const clientX = rect.left + p.x;

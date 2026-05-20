@@ -275,6 +275,36 @@ pub(crate) fn resolve_env_value(val: &str) -> Option<String> {
     }
 }
 
+/// Validate every entry in a list and return any warnings.
+///
+/// Mirrors what `collect_environment` will silently drop at container
+/// create or docker exec time, so callers can surface the same warnings
+/// to the user via toast or stderr before the failure becomes invisible.
+///
+/// `DEFAULT_TERMINAL_ENV_VARS` are pass-through-if-set toggles (FORCE_COLOR
+/// and NO_COLOR in particular are mutually exclusive and intentionally
+/// unset on most hosts), so we skip them. Without this skip, every new
+/// sandboxed session pops a warning dialog for env vars the user never
+/// set on purpose.
+pub fn validate_env_entries<I, S>(entries: I) -> Vec<String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<str>,
+{
+    entries
+        .into_iter()
+        .filter_map(|e| {
+            let s = e.as_ref();
+            let key = s.split_once('=').map(|(k, _)| k).unwrap_or(s);
+            if DEFAULT_TERMINAL_ENV_VARS.contains(&key) {
+                None
+            } else {
+                validate_env_entry(s)
+            }
+        })
+        .collect()
+}
+
 /// Validate an env entry string and return a warning message if it references
 /// a host variable that doesn't exist.
 ///
@@ -293,7 +323,7 @@ pub fn validate_env_entry(entry: &str) -> Option<String> {
                 Some("Warning: bare '$' in value has no variable name".to_string())
             } else if resolve_env_value(value).is_none() {
                 Some(format!(
-                    "Warning: ${} is not set on the host -- it will be empty in the container",
+                    "Warning: ${} is not set on the host, so the value will be empty in the container",
                     var_name
                 ))
             } else {
@@ -307,7 +337,7 @@ pub fn validate_env_entry(entry: &str) -> Option<String> {
         // Bare key -- pass through from host
         if std::env::var(entry).is_err() {
             Some(format!(
-                "Warning: {} is not set on the host -- it will be empty in the container",
+                "Warning: {} is not set on the host, so the value will be empty in the container",
                 entry
             ))
         } else {
@@ -1000,6 +1030,76 @@ environment = ["GH_TOKEN=write_token"]
     #[test]
     fn test_validate_env_entry_escaped_dollar() {
         assert_eq!(validate_env_entry("MY_KEY=$$ESCAPED"), None);
+    }
+
+    #[test]
+    fn test_validate_env_entries_returns_one_warning_per_missing_var() {
+        // Use unique names to avoid collisions with other tests' env state.
+        std::env::remove_var("AOE_TEST_BATCH_MISSING_A");
+        std::env::remove_var("AOE_TEST_BATCH_MISSING_B");
+        std::env::set_var("AOE_TEST_BATCH_PRESENT", "ok");
+
+        let entries = vec![
+            "GH_TOKEN=$AOE_TEST_BATCH_MISSING_A".to_string(),
+            "OK=$AOE_TEST_BATCH_PRESENT".to_string(),
+            "ALSO_BROKEN=$AOE_TEST_BATCH_MISSING_B".to_string(),
+            "LITERAL=fine".to_string(),
+        ];
+        let warnings = validate_env_entries(&entries);
+        assert_eq!(
+            warnings.len(),
+            2,
+            "expected 2 warnings, got: {:?}",
+            warnings
+        );
+        assert!(warnings
+            .iter()
+            .any(|w| w.contains("AOE_TEST_BATCH_MISSING_A")));
+        assert!(warnings
+            .iter()
+            .any(|w| w.contains("AOE_TEST_BATCH_MISSING_B")));
+
+        std::env::remove_var("AOE_TEST_BATCH_PRESENT");
+    }
+
+    #[test]
+    fn test_validate_env_entries_empty_list() {
+        assert!(validate_env_entries(Vec::<String>::new()).is_empty());
+    }
+
+    #[test]
+    #[serial_test::serial(shell_env)]
+    fn test_validate_env_entries_skips_default_terminal_vars_when_unset() {
+        // Stash + remove the defaults so the test catches all four keys even
+        // on CI hosts where TERM/COLORTERM are set. `serial(shell_env)` matches
+        // the pattern used by other tests in this file that mutate globally-
+        // shared env vars.
+        let originals: Vec<(&&str, Option<String>)> = DEFAULT_TERMINAL_ENV_VARS
+            .iter()
+            .map(|k| (k, std::env::var(*k).ok()))
+            .collect();
+        for key in DEFAULT_TERMINAL_ENV_VARS {
+            std::env::remove_var(key);
+        }
+
+        let entries: Vec<String> = DEFAULT_TERMINAL_ENV_VARS
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let warnings = validate_env_entries(&entries);
+
+        for (key, original) in originals {
+            match original {
+                Some(v) => std::env::set_var(*key, v),
+                None => std::env::remove_var(*key),
+            }
+        }
+
+        assert!(
+            warnings.is_empty(),
+            "expected no warnings for default terminal vars even when unset, got: {:?}",
+            warnings
+        );
     }
 
     #[test]

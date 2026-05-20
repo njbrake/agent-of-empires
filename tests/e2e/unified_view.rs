@@ -25,7 +25,11 @@ fn test_default_view_shows_all_profiles() {
     create_profile_with_session(&h, "beta", "Beta Session");
     h.spawn_tui();
 
-    h.wait_for("[all]");
+    h.wait_for(" aoe ");
+    // Default all-profiles mode has no `[profile]` tag in the title;
+    // the absence of the bracketed segment is the new "unfiltered" tell.
+    h.assert_screen_not_contains("[alpha]");
+    h.assert_screen_not_contains("[beta]");
     h.assert_screen_contains("Alpha Session");
     h.assert_screen_contains("Beta Session");
 }
@@ -40,7 +44,7 @@ fn test_profile_filter_via_picker() {
     create_profile_with_session(&h, "beta", "Beta Session");
     h.spawn_tui();
 
-    h.wait_for("[all]");
+    h.wait_for(" aoe ");
 
     // Open picker and select "alpha"
     h.send_keys("P");
@@ -64,7 +68,7 @@ fn test_return_to_all_view_via_picker() {
     create_profile_with_session(&h, "beta", "Beta Session");
     h.spawn_tui();
 
-    h.wait_for("[all]");
+    h.wait_for(" aoe ");
 
     // Filter to alpha
     h.send_keys("P");
@@ -84,7 +88,8 @@ fn test_return_to_all_view_via_picker() {
     std::thread::sleep(Duration::from_millis(50));
     h.send_keys("Enter");
 
-    h.wait_for("[all]");
+    // Returning to all-profiles mode drops the `[alpha]` tag from the title.
+    h.wait_for_absent("[alpha]", Duration::from_secs(5));
     h.assert_screen_contains("Alpha Session");
     h.assert_screen_contains("Beta Session");
 }
@@ -101,7 +106,7 @@ fn test_all_profiles_flat_view() {
     create_profile_with_session(&h, "beta", "Beta Session");
     h.spawn_tui();
 
-    h.wait_for("[all]");
+    h.wait_for(" aoe ");
 
     // Both sessions visible simultaneously with no headers to collapse
     h.assert_screen_contains("Alpha Session");

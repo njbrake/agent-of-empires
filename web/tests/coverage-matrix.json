@@ -111,6 +111,13 @@
       "components": ["web/src/components/TerminalSettings.tsx"]
     },
     {
+      "id": "app-shell.topbar-dev-badge",
+      "kind": "vitest",
+      "risk": "low",
+      "specs": ["src/components/__tests__/TopBar.test.tsx"],
+      "components": ["web/src/components/TopBar.tsx"]
+    },
+    {
       "id": "profiles.lifecycle",
       "kind": "live-playwright",
       "risk": "high",
@@ -132,6 +139,13 @@
       "components": []
     },
     {
+      "id": "profiles.selection-resolve",
+      "kind": "vitest",
+      "risk": "medium",
+      "specs": ["src/components/__tests__/SettingsView.test.tsx"],
+      "components": []
+    },
+    {
       "id": "wizard",
       "kind": "mocked-playwright",
       "risk": "high",
@@ -142,7 +156,8 @@
         "tests/wizard-session-step.spec.ts",
         "tests/wizard-agent-step.spec.ts",
         "tests/wizard-review-step.spec.ts",
-        "tests/wizard-extra-repos.spec.ts"
+        "tests/wizard-extra-repos.spec.ts",
+        "tests/wizard-custom-agent.spec.ts"
       ],
       "components": [
         "web/src/components/session-wizard/SessionWizard.tsx",
@@ -153,6 +168,13 @@
         "web/src/components/session-wizard/steps/ReviewStep.tsx",
         "web/src/components/session-wizard/steps/SessionStep.tsx"
       ]
+    },
+    {
+      "id": "wizard.profile-description",
+      "kind": "mocked-playwright",
+      "risk": "medium",
+      "specs": ["tests/wizard-agent-step.spec.ts"],
+      "components": ["web/src/components/session-wizard/steps/AgentStep.tsx"]
     },
     {
       "id": "directory-browser",
@@ -170,6 +192,13 @@
         "web/src/components/DeleteSessionDialog.tsx",
         "web/src/components/WorkspaceSidebar.tsx"
       ]
+    },
+    {
+      "id": "session.delete-dialog-keyboard",
+      "kind": "vitest",
+      "risk": "low",
+      "specs": ["src/components/__tests__/DeleteSessionDialog.test.tsx"],
+      "components": ["web/src/components/DeleteSessionDialog.tsx"]
     },
     {
       "id": "right-panel.diff",
@@ -231,6 +260,20 @@
       "risk": "high",
       "specs": ["tests/live/cockpit-approval.spec.ts"],
       "components": ["web/src/components/cockpit/ApprovalCard.tsx"]
+    },
+    {
+      "id": "cockpit.escape-no-cancel",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": ["tests/live/cockpit-escape-no-cancel.spec.ts"],
+      "components": []
+    },
+    {
+      "id": "cockpit.escape-no-cancel-contract",
+      "kind": "vitest",
+      "risk": "medium",
+      "specs": ["src/components/cockpit/Composer.escape.test.tsx"],
+      "components": []
     },
     {
       "id": "cockpit.mode-switch",

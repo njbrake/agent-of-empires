@@ -136,6 +136,17 @@ pub(super) struct CreatingHookProgress {
     pub(super) current_hook: Option<String>,
 }
 
+/// Result delivered by a startup-recovery worker back to the TUI tick.
+struct RecoveryUpdate {
+    instance_id: String,
+    title: String,
+    /// Updated `Instance` snapshot (post-cascade), so the TUI can replace
+    /// its in-memory copy without a disk reload that would lose the
+    /// freshly-set `last_start_time` (which is `#[serde(skip)]`).
+    instance: Box<crate::session::Instance>,
+    result: Result<crate::session::StartOutcome, String>,
+}
+
 pub struct HomeView {
     pub(super) storages: HashMap<String, Storage>,
     pub(super) active_profile: Option<String>,
@@ -262,6 +273,25 @@ pub struct HomeView {
 
     // Resizable list column width (percentage-like units)
     pub(super) list_width: u16,
+
+    /// Channel that startup-recovery workers send results back on. `None`
+    /// when no recovery was attempted at construction (live tmux, daemon
+    /// owns recovery, lock contended, or no candidates). Drained on every
+    /// tick by `apply_recovery_updates`.
+    recovery_rx: Option<std::sync::mpsc::Receiver<RecoveryUpdate>>,
+    /// Lock guard kept alive for the recovery pass so a peer (a daemon
+    /// that starts after the TUI) cannot duplicate cascades. Released
+    /// when the field is set to `None` after the last worker has
+    /// reported back.
+    recovery_lock: Option<crate::session::recovery::RecoveryLock>,
+
+    /// Ids whose startup-recovery cascade is still in flight. Filtered
+    /// out of `request_status_refresh` so the 500ms poller does not
+    /// observe missing tmux state and broadcast `Status::Error` while a
+    /// worker is mid-cascade. Drained per-id by `apply_recovery_updates`
+    /// (success, error, or panic). Mirrors the `on_launch_hooks_ran`
+    /// HashSet pattern: TUI-local, event-driven, no TTL needed.
+    recovery_in_flight: std::collections::HashSet<String>,
 
     // Tool sessions config (lazygit, yazi, etc.)
     pub(super) tool_configs: HashMap<String, crate::session::config::ToolSessionConfig>,
@@ -417,6 +447,9 @@ impl HomeView {
                 .as_ref()
                 .and_then(|c| c.app_state.home_list_width)
                 .unwrap_or(35),
+            recovery_rx: None,
+            recovery_lock: None,
+            recovery_in_flight: std::collections::HashSet::new(),
             tool_configs: user_config
                 .as_ref()
                 .map(|c| c.tools.clone())
@@ -502,10 +535,7 @@ impl HomeView {
 
         // Recover session IDs for pre-existing sessions via pollers.
         for inst in &mut view.instances {
-            let has_live_tmux = inst
-                .tmux_session()
-                .map(|s| s.exists() && !s.is_pane_dead())
-                .unwrap_or(false);
+            let has_live_tmux = inst.has_live_tmux_pane();
             if !has_live_tmux {
                 continue;
             }
@@ -514,6 +544,16 @@ impl HomeView {
                 inst.maybe_start_poller();
             }
         }
+
+        // Startup auto-recovery: kick off a worker pool to restart any
+        // resume-capable sessions whose tmux pane is missing. The TUI defers
+        // to the daemon when one is running (the daemon owns recovery in
+        // that case); when the TUI is standalone, it acquires the
+        // cross-process recovery lock to keep a late-starting daemon from
+        // duplicating cascades. See `crate::session::recovery` for the full
+        // exclusion rationale.
+        view.maybe_start_startup_recovery();
+
         view.instance_map = view
             .instances
             .iter()
@@ -563,6 +603,14 @@ impl HomeView {
                         .agent_session_id
                         .clone()
                         .or(inst.agent_session_id.take());
+                    // Carry the resume-fallback exclusion set across
+                    // reloads. Without this, a stale sid that the cascade
+                    // just cleared would be re-imported on the next 5s reload
+                    // (the on-disk session artifact persists for ~5-10
+                    // min after the agent's crash). The set is
+                    // `#[serde(skip)]` runtime-only so disk reloads
+                    // would otherwise reset it to empty.
+                    inst.retroactive_capture_excludes = prev.retroactive_capture_excludes.clone();
                 }
             }
             // Rebuild this profile's tree from disk, preserving any collapsed
@@ -643,12 +691,25 @@ impl HomeView {
         Ok(())
     }
 
+    /// Snapshot of `self.instances` eligible for status polling.
+    /// In-flight recovery candidates are excluded; their post-cascade
+    /// `Instance` arrives via `apply_recovery_updates` and skipping the
+    /// parallel poll prevents racing transitions during the suppression
+    /// window.
+    pub(super) fn pollable_instances(&self) -> Vec<Instance> {
+        self.instances
+            .iter()
+            .filter(|i| !self.recovery_in_flight.contains(&i.id))
+            .cloned()
+            .collect()
+    }
+
     /// Request a status refresh in the background (non-blocking).
     /// Call `apply_status_updates` to check for and apply results.
     pub fn request_status_refresh(&mut self) {
         if !self.pending_status_refresh {
-            let instances: Vec<Instance> = self.instances.clone();
-            self.status_poller.request_refresh(instances);
+            self.status_poller
+                .request_refresh(self.pollable_instances());
             self.pending_status_refresh = true;
         }
     }
@@ -797,6 +858,287 @@ impl HomeView {
             }
         }
         !updates.is_empty()
+    }
+
+    /// Drain the startup-recovery channel and apply each `RecoveryUpdate`
+    /// to the in-memory `Instance` snapshot. Released the recovery lock
+    /// (and the receiver) when all workers have completed.
+    ///
+    /// Called from the `App::run` event-loop tick alongside
+    /// `apply_session_id_updates`. Returns true if any instance was
+    /// touched, so the caller can refresh the rendered tree.
+    pub fn apply_recovery_updates(&mut self) -> bool {
+        let Some(rx) = self.recovery_rx.as_ref() else {
+            return false;
+        };
+        let mut touched = false;
+        let mut disconnected = false;
+        loop {
+            match rx.try_recv() {
+                Ok(update) => {
+                    let RecoveryUpdate {
+                        instance_id,
+                        title,
+                        instance,
+                        result,
+                    } = update;
+                    match result {
+                        Ok(crate::session::StartOutcome::Resumed) => {
+                            tracing::info!(
+                                target: "session.startup_recovery",
+                                id = %instance_id,
+                                %title,
+                                "resumed",
+                            );
+                        }
+                        Ok(crate::session::StartOutcome::Restarted { stale_sid }) => {
+                            tracing::warn!(
+                                target: "session.startup_recovery",
+                                id = %instance_id,
+                                %title,
+                                %stale_sid,
+                                "restarted fresh after resume failure",
+                            );
+                        }
+                        Ok(crate::session::StartOutcome::Fresh) => {}
+                        Err(e) => {
+                            tracing::warn!(
+                                target: "session.startup_recovery",
+                                id = %instance_id,
+                                %title,
+                                error = %e,
+                                "recovery cascade failed",
+                            );
+                        }
+                    }
+                    // Drop the in-flight marker BEFORE replacing the
+                    // snapshot so the next status poll sees the post-cascade
+                    // instance through the normal pipeline.
+                    self.recovery_in_flight.remove(&instance_id);
+                    if let Some(slot) = self.instances.iter_mut().find(|i| i.id == instance_id) {
+                        *slot = *instance;
+                        touched = true;
+                    }
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    disconnected = true;
+                    break;
+                }
+            }
+        }
+        if disconnected {
+            // All workers exited: drop the receiver and the lock so a
+            // peer (a daemon that just started) can run recovery for any
+            // session this TUI did not own. Clear the in-flight set
+            // defensively in case a future early-return path bypassed
+            // the per-id remove above.
+            self.recovery_rx = None;
+            self.recovery_lock = None;
+            self.recovery_in_flight.clear();
+        }
+        if touched {
+            self.instance_map = self
+                .instances
+                .iter()
+                .map(|i| (i.id.clone(), i.clone()))
+                .collect();
+            // Preserve the selection across the rebuild. Without this, a
+            // recovery completion that reorders rows under
+            // `SortOrder::LastActivity` (the recovered session's
+            // `last_start_time` shifted) would silently latch the
+            // selection onto a neighbour because `update_selected()`
+            // resolves through `flat_items[cursor]`. Mirrors the
+            // canonical sequence in `reload()`.
+            let prev_selected_session = self.selected_session.clone();
+            let prev_selected_group = self.selected_group.clone();
+
+            self.flat_items = self.build_flat_items();
+
+            let mut restored = false;
+            if let Some(ref sid) = prev_selected_session {
+                for (idx, item) in self.flat_items.iter().enumerate() {
+                    if let Item::Session { id, .. } = item {
+                        if id == sid {
+                            self.cursor = idx;
+                            restored = true;
+                            break;
+                        }
+                    }
+                }
+            } else if let Some(ref gpath) = prev_selected_group {
+                for (idx, item) in self.flat_items.iter().enumerate() {
+                    if let Item::Group { path, .. } = item {
+                        if path == gpath {
+                            self.cursor = idx;
+                            restored = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if !restored && self.cursor >= self.flat_items.len() && !self.flat_items.is_empty() {
+                self.cursor = self.flat_items.len() - 1;
+            }
+
+            if self.search_active && !self.search_query.value().is_empty() {
+                self.update_search();
+            } else if !self.search_matches.is_empty() {
+                self.refresh_search_matches();
+            }
+
+            self.update_selected();
+        }
+        touched
+    }
+
+    /// Identify recovery candidates and spawn a worker pool. Sets
+    /// `self.recovery_rx` to `Some(rx)` if at least one worker was spawned;
+    /// otherwise leaves it `None` (the daemon owns recovery, the lock is
+    /// contended, or there are no candidates).
+    fn maybe_start_startup_recovery(&mut self) {
+        // Requires a tokio runtime: each worker is `tokio::spawn`-ed below.
+        // `HomeView::new` is sync and called from production via
+        // `#[tokio::main]`, so the runtime is present at the real call site.
+        // Unit tests construct `HomeView` directly without a runtime; today
+        // they do not panic only because their test instances lack a valid
+        // `agent_session_id` and `is_recovery_candidate` filters them out
+        // before any spawn is attempted. This guard makes the function
+        // resilient to a future test that constructs an instance with a
+        // valid sid and no live tmux.
+        if tokio::runtime::Handle::try_current().is_err() {
+            return;
+        }
+        // Defer to the daemon if one is running. The daemon's own
+        // `daemon_startup_recovery` will handle the candidates from this
+        // TUI's profile (and every other profile). Recovery split-brain
+        // is the exact failure mode the file lock is meant to prevent;
+        // checking `daemon_pid()` first short-circuits the more expensive
+        // lock acquisition in the common case.
+        #[cfg(feature = "serve")]
+        if crate::cli::serve::daemon_pid().is_some() {
+            return;
+        }
+        let lock = match crate::session::recovery::try_acquire_recovery_lock() {
+            Ok(Some(l)) => l,
+            Ok(None) => {
+                tracing::info!(
+                    target: "session.startup_recovery",
+                    "another process holds the recovery lock; TUI skipping startup recovery",
+                );
+                return;
+            }
+            Err(e) => {
+                tracing::warn!(
+                    target: "session.startup_recovery",
+                    error = %e,
+                    "failed to acquire recovery lock; TUI skipping startup recovery",
+                );
+                return;
+            }
+        };
+
+        let mut candidates: Vec<crate::session::Instance> = Vec::new();
+        for inst in &mut self.instances {
+            let has_live_tmux = inst.has_live_tmux_pane();
+            if has_live_tmux {
+                continue;
+            }
+            if !crate::session::recovery::is_recovery_candidate(inst) {
+                continue;
+            }
+            // Set Status::Starting AND last_start_time: the existing 3s
+            // grace at `update_status_with_metadata_inner` only fires on
+            // the latter, and without it the TUI's StatusPoller (every
+            // 500ms) would observe missing tmux + no last_start_time and
+            // immediately flip the status to `Error` before the worker
+            // has finished its cascade.
+            debug_assert!(inst.status != crate::session::Status::Creating);
+            inst.status = crate::session::Status::Starting;
+            inst.last_error = None;
+            inst.last_start_time = Some(std::time::Instant::now());
+            self.recovery_in_flight.insert(inst.id.clone());
+            candidates.push(inst.clone());
+        }
+
+        if candidates.is_empty() {
+            drop(lock);
+            return;
+        }
+
+        crate::session::recovery::warm_tmux_server();
+
+        tracing::info!(
+            target: "session.startup_recovery",
+            count = candidates.len(),
+            "TUI starting recovery for missing tmux sessions",
+        );
+
+        let (tx, rx) = std::sync::mpsc::channel::<RecoveryUpdate>();
+        let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(
+            crate::session::recovery::STARTUP_RECOVERY_CONCURRENCY,
+        ));
+
+        for inst in candidates {
+            let tx = tx.clone();
+            let permit_sem = semaphore.clone();
+            tokio::spawn(async move {
+                let _permit = permit_sem
+                    .acquire_owned()
+                    .await
+                    .expect("recovery semaphore not closed");
+                let id = inst.id.clone();
+                let title = inst.title.clone();
+                let inst_pre_panic = inst.clone();
+                let mut working = inst;
+                let result = tokio::task::spawn_blocking(move || {
+                    let res = crate::session::recovery::run_recovery_for_instance(&mut working);
+                    (working, res)
+                })
+                .await;
+                let update = match result {
+                    Ok((updated, Ok(outcome))) => RecoveryUpdate {
+                        instance_id: id,
+                        title,
+                        instance: Box::new(updated),
+                        result: Ok(outcome),
+                    },
+                    Ok((updated, Err(e))) => RecoveryUpdate {
+                        instance_id: id,
+                        title,
+                        instance: Box::new(updated),
+                        result: Err(e.to_string()),
+                    },
+                    Err(join_err) => {
+                        tracing::error!(
+                            target: "session.startup_recovery",
+                            id = %id,
+                            error = %join_err,
+                            "recovery worker panicked",
+                        );
+                        // Surface the panic as a synthetic error update so
+                        // `apply_recovery_updates` clears `recovery_in_flight`
+                        // and the user sees Status::Error with a useful
+                        // last_error instead of an instance stuck in
+                        // `Status::Starting` until HomeView drops.
+                        let mut recovered = inst_pre_panic;
+                        recovered.status = crate::session::Status::Error;
+                        recovered.last_error =
+                            Some(format!("recovery worker panicked: {}", join_err));
+                        RecoveryUpdate {
+                            instance_id: id,
+                            title,
+                            instance: Box::new(recovered),
+                            result: Err(format!("worker panicked: {}", join_err)),
+                        }
+                    }
+                };
+                let _ = tx.send(update);
+            });
+        }
+
+        self.recovery_rx = Some(rx);
+        self.recovery_lock = Some(lock);
     }
 
     /// Request background session creation. Used for sandbox sessions to avoid blocking UI.
@@ -1018,13 +1360,29 @@ impl HomeView {
 
                 if !warnings.is_empty() {
                     let body = warnings.join("\n\n");
-                    self.info_dialog = Some(InfoDialog::new(
-                        "Worktree warnings",
-                        &format!(
-                            "Session was created, but the following warnings were emitted during worktree setup:\n\n{}",
-                            body
-                        ),
-                    ));
+                    let message = format!(
+                        "Session was created, but the following warnings were emitted during worktree setup:\n\n{}",
+                        body
+                    );
+                    // Size to fit content. The default 50x9 truncates everything
+                    // past the prefix sentence, so the user only sees the prefix
+                    // and a blank line. Mirrors the math in app.rs:show_startup_warning.
+                    const WIDTH: u16 = 96;
+                    let inner_width = WIDTH.saturating_sub(4) as usize;
+                    let visual_lines: usize = message
+                        .lines()
+                        .map(|l| {
+                            if l.is_empty() {
+                                1
+                            } else {
+                                l.len().div_ceil(inner_width)
+                            }
+                        })
+                        .sum();
+                    let height = ((visual_lines as u16).saturating_add(7)).clamp(9, 35);
+                    self.info_dialog = Some(
+                        InfoDialog::new("Worktree warnings", &message).with_size(WIDTH, height),
+                    );
                 }
 
                 Some(session_id)
@@ -1363,8 +1721,11 @@ impl HomeView {
         flatten_tree(&tree, &grouped, self.sort_order)
     }
 
-    pub fn active_profile_display(&self) -> &str {
-        self.active_profile.as_deref().unwrap_or("all")
+    /// The active profile filter name, or `None` when no filter is applied.
+    /// Returning `None` lets callers (e.g. the list-pane title) omit the
+    /// `[<profile>]` segment entirely instead of rendering a noisy `[all]`.
+    pub fn active_profile_display(&self) -> Option<&str> {
+        self.active_profile.as_deref()
     }
 
     /// Switch the active profile filter in-place without destroying the view.
@@ -1508,7 +1869,7 @@ impl HomeView {
                 .get(profile_name)
                 .cloned()
                 .unwrap_or_else(|| GroupTree::new_with_groups(&profile_instances, &[]));
-            storage.save_with_groups(&profile_instances, &tree)?;
+            storage.commit(&profile_instances, &tree)?;
         }
         Ok(())
     }

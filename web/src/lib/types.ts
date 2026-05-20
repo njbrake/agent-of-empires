@@ -225,6 +225,7 @@ export interface Workspace {
 /** Agent info returned by /api/agents */
 export interface AgentInfo {
   name: string;
+  kind: "builtin" | "custom";
   binary: string;
   host_only: boolean;
   installed: boolean;
@@ -235,6 +236,10 @@ export interface AgentInfo {
 export interface ProfileInfo {
   name: string;
   is_default: boolean;
+  /** Optional short description of what this profile does, surfaced as
+   *  helper text in the wizard profile picker (#949). Omitted from the
+   *  server payload when the profile has no description configured. */
+  description?: string;
 }
 
 /** Directory entry returned by /api/filesystem/browse */

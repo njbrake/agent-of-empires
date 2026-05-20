@@ -108,6 +108,27 @@ Full recipe, harness API, and fake-ACP-agent details live in `docs/development/p
 - Commit messages: use conventional commit prefixes (`feat:`, `fix:`, `docs:`, `refactor:`).
 - PRs: follow the template in `.github/pull_request_template.md`. When creating PRs via `gh pr create`, read the template first and use its structure for the `--body` argument. Include a clear “what/why”, how you tested (`cargo test`, plus any manual tmux/TUI checks), and screenshots/recordings for UI changes.
 
+### Definition of done
+
+Before requesting review, every PR must clear:
+
+1. **`cargo fmt`, `cargo clippy`, `cargo test`** all clean (`--features serve` if the change touches the web dashboard or cockpit).
+2. **Web tests when applicable.** If the change touches a user-facing dashboard flow listed in the coverage matrix mandate (auth, wizard, settings, profiles, sessions / sidebar, right panel / diff / notifications, directory browser, devices, git clone, connectivity, read-only), update `web/tests/coverage-matrix.json` and add or modify the appropriate Vitest / Playwright test. CI fails on a missing matrix entry.
+3. **Codecov checks.** See below.
+
+### Codecov requirements
+
+Coverage runs on every PR via the merge of Vitest + Playwright LCOVs (see `web/scripts/merge-coverage.mjs`). Current scope is `web/` only; a Rust backend coverage flag is queued as follow-up.
+
+**Two checks gate merges:**
+
+- **`codecov/patch`** (target: 75%). The lines your PR adds or changes must hit 75% coverage. This is the strict gate, sized so a small frontend PR with one missed line still passes.
+- **`codecov/project`** (target: auto). Overall repo coverage must not drop below `main`'s current level by more than the 1% threshold.
+
+**Per-component checks (`codecov/project/<Component>`, e.g. App Shell, Auth, Cockpit UI) target 90% and currently report FAIL on every PR by design.** The baseline sits well below 90% and is being lifted by the foundation follow-ups (#1217–#1224, threshold enforcement tracked in #1225). They surface where each user-facing surface stands today; they are not merge blockers right now. Do not chase them on unrelated PRs. When you touch one of those surfaces, add tests that improve its number.
+
+**Rust-only PRs.** Patch coverage is reported against `web/src/**` paths only, so a Rust-only diff is N/A for patch coverage and inherits the previous flag value via `carryforward: true`. The per-component checks still display FAIL for the same baseline reason described above; the aggregate `codecov/patch` and `codecov/project` checks pass.
+
 ## Git Configuration
 
 - Do not modify git configuration (e.g., `.gitconfig`, `.git/config`, `git config` commands) without explicit user approval.

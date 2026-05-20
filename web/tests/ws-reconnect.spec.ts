@@ -72,7 +72,7 @@ async function openSession(page: Page, title: string) {
   await page.setViewportSize({ width: 1280, height: 720 });
   await page.goto("/");
   await clickSidebarSession(page, title);
-  await page.locator(".wterm").first().waitFor({ state: "visible", timeout: 10_000 });
+  await page.locator(".xterm").first().waitFor({ state: "visible", timeout: 10_000 });
 }
 
 test.describe("Terminal WebSocket reconnection", () => {
