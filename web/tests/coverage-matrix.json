@@ -214,10 +214,10 @@
     },
     {
       "id": "git-clone",
-      "kind": "deferred",
-      "issue": "https://github.com/njbrake/agent-of-empires/issues/1223",
+      "kind": "live-playwright",
       "risk": "medium",
-      "components": []
+      "specs": ["tests/live/git-clone.spec.ts"],
+      "components": ["web/src/components/session-wizard/steps/ProjectStep.tsx"]
     },
     {
       "id": "cockpit.spawn-prompt",
