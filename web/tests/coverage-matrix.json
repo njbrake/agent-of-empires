@@ -241,6 +241,13 @@
       "components": ["web/src/components/cockpit/ApprovalCard.tsx"]
     },
     {
+      "id": "cockpit.force-end-turn-gate",
+      "kind": "vitest",
+      "risk": "medium",
+      "specs": ["src/components/cockpit/__tests__/WorkingSpinner.test.tsx"],
+      "components": []
+    },
+    {
       "id": "cockpit.mode-switch",
       "kind": "live-playwright",
       "risk": "medium",

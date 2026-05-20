@@ -713,6 +713,13 @@ recovery affordance for a missed-event race (#1100); during a healthy
 turn it never shows. Configure the inactivity threshold with
 `cockpit.force_end_turn_threshold_secs` (default 30s).
 
+While a tool is in flight (Write, Read, Task subagent, slow Bash,
+etc.) the spinner still flips to an elapsed-time label after the
+threshold ("Waiting on tool… 1m 23s") so the wait is visible, but the
+button stays hidden so clicking it cannot discard the in-flight
+tool's progress. The escape hatch is reserved for a silent model with
+no tool running. See #1176.
+
 ### Sharing debug logs
 
 `AOE_LOG_LEVEL=debug` (or the legacy `AGENT_OF_EMPIRES_DEBUG=1`) writes

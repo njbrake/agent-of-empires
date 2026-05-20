@@ -795,7 +795,7 @@ function formatElapsed(seconds: number): string {
 
 /* ── Working spinner (rattle) ────────────────────────────────────── */
 
-function WorkingSpinner({
+export function WorkingSpinner({
   thinking,
   tool,
   lastActivityRef,
@@ -851,18 +851,27 @@ function WorkingSpinner({
     : tool
       ? "tool"
       : "working";
-  // Swap the rattle verb for an explicit "waiting on model" badge
-  // with a live elapsed counter once the inactivity gap is clearly
-  // longer than normal TTFT. The user can then distinguish "model
-  // is taking a while" from "everything is wedged" without watching
-  // logs. Threshold reuses the force-end-turn config so users who
-  // want a more sensitive signal lower one knob and get both. See
-  // #1112.
+  // Swap the rattle verb for an explicit "waiting" badge with a live
+  // elapsed counter once the inactivity gap is clearly longer than
+  // normal TTFT. The user can then distinguish "still working" from
+  // "everything is wedged" without watching logs. Threshold reuses
+  // the force-end-turn config so users who want a more sensitive
+  // signal lower one knob and get both. See #1112.
+  //
+  // A live tool (Write, Read, Task subagent, slow Bash, etc.) can
+  // legitimately run minutes between streaming frames; the escape
+  // hatch is for a wedged model, not for normal tool runtime. When
+  // `tool` is non-null we still flip to an elapsed-time label so the
+  // user can see the wait, but we suppress the button so clicking it
+  // does not discard the in-flight tool's progress. See #1176.
   const showStalled = stalledSecs >= forceEndTurnThresholdSecs;
+  const toolInFlight = tool != null;
   const label = showStalled
-    ? `Waiting on model… ${formatElapsed(stalledSecs)}`
+    ? toolInFlight
+      ? `Waiting on tool… ${formatElapsed(stalledSecs)}`
+      : `Waiting on model… ${formatElapsed(stalledSecs)}`
     : chooseVerb(state, seed, tool);
-  const showForceEnd = showStalled;
+  const showForceEnd = showStalled && !toolInFlight;
 
   return (
     <div className="flex flex-col gap-2 text-sm italic text-text-muted">
