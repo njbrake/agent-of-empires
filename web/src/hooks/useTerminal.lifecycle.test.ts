@@ -534,4 +534,237 @@ describe("useTerminal lifecycle", () => {
       div.remove();
     }
   });
+
+  it("Ctrl+wheel zooms the font size and persists it after the debounce", async () => {
+    const div = document.createElement("div");
+    document.body.appendChild(div);
+    try {
+      renderHook(() => {
+        const term = useTerminal("s-zoom", "ws", false, false);
+        if (term.containerRef && !term.containerRef.current) {
+          (
+            term.containerRef as unknown as { current: HTMLDivElement | null }
+          ).current = div;
+        }
+        return term;
+      });
+      await flushAsync();
+      expect(captured.customWheel).toBeDefined();
+
+      const baseline = captured.options.fontSize;
+      // Drive several Ctrl+wheel-up events; each one should bump the
+      // font size and the custom handler must return false (so xterm's
+      // built-in zoom doesn't double-apply).
+      for (let i = 0; i < 30; i++) {
+        const e = new WheelEvent("wheel", {
+          deltaY: -100,
+          ctrlKey: true,
+          bubbles: true,
+          cancelable: true,
+        });
+        const result = captured.customWheel!(e);
+        expect(result).toBe(false);
+      }
+      // Advance past the WHEEL_PERSIST_DEBOUNCE_MS = 400ms gate.
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(500);
+      });
+      expect(captured.options.fontSize).toBeGreaterThan(baseline);
+    } finally {
+      div.remove();
+    }
+  });
+
+  it("plain wheel events emit SGR mouse-wheel sequences over the WS", async () => {
+    const div = document.createElement("div");
+    document.body.appendChild(div);
+    try {
+      renderHook(() => {
+        const term = useTerminal("s-scroll", "ws", false, false);
+        if (term.containerRef && !term.containerRef.current) {
+          (
+            term.containerRef as unknown as { current: HTMLDivElement | null }
+          ).current = div;
+        }
+        return term;
+      });
+      await flushAsync();
+      const ws = sockets[0]!;
+      act(() => {
+        ws.readyState = FakeWebSocket.OPEN;
+        ws.onopen?.(new Event("open"));
+      });
+      await flushAsync();
+      const before = ws.sent.length;
+      // Plain wheel-up: should emit `\x1b[<64;1;1M` SGR wheel-up
+      // sequences. The customWheel returns false so xterm doesn't
+      // double-handle.
+      for (let i = 0; i < 5; i++) {
+        const e = new WheelEvent("wheel", {
+          deltaY: -120,
+          bubbles: true,
+          cancelable: true,
+        });
+        captured.customWheel!(e);
+      }
+      // Inspect the WS sends for the SGR sequence (sent as Uint8Array).
+      const newSends = ws.sent.slice(before);
+      const wheelUpSent = newSends.some((m) => {
+        if (typeof m === "string") return false;
+        const bytes = m;
+        const ascii = Array.from(bytes)
+          .map((b) => String.fromCharCode(b))
+          .join("");
+        return ascii.includes("[<64");
+      });
+      expect(wheelUpSent).toBe(true);
+    } finally {
+      div.remove();
+    }
+  });
+
+  it("re-reads --term-* CSS vars when aoe:theme-changed fires", async () => {
+    const div = document.createElement("div");
+    document.body.appendChild(div);
+    document.documentElement.style.setProperty("--term-bg", "#abc123");
+    try {
+      renderHook(() => {
+        const term = useTerminal("s-theme", "ws", false, false);
+        if (term.containerRef && !term.containerRef.current) {
+          (
+            term.containerRef as unknown as { current: HTMLDivElement | null }
+          ).current = div;
+        }
+        return term;
+      });
+      await flushAsync();
+      // Swap the CSS var, then fire the bus event.
+      document.documentElement.style.setProperty("--term-bg", "#deadbe");
+      act(() => {
+        window.dispatchEvent(new Event("aoe:theme-changed"));
+      });
+      await flushAsync();
+      // The terminal's options.theme should now have the swapped bg.
+      const themeAny = captured.options.theme as
+        | { background?: string }
+        | undefined;
+      expect(themeAny?.background).toBe("#deadbe");
+    } finally {
+      document.documentElement.style.removeProperty("--term-bg");
+      div.remove();
+    }
+  });
+
+  it("activate() sends an activate JSON message on focus", async () => {
+    const div = document.createElement("div");
+    document.body.appendChild(div);
+    try {
+      const { result } = renderHook(() => {
+        const term = useTerminal("s-activate", "ws", false, false);
+        if (term.containerRef && !term.containerRef.current) {
+          (
+            term.containerRef as unknown as { current: HTMLDivElement | null }
+          ).current = div;
+        }
+        return term;
+      });
+      await flushAsync();
+      const ws = sockets[0]!;
+      act(() => {
+        ws.readyState = FakeWebSocket.OPEN;
+        ws.onopen?.(new Event("open"));
+      });
+      await flushAsync();
+      const before = ws.sent.length;
+      act(() => {
+        result.current.activate();
+      });
+      const newActivate = ws.sent
+        .slice(before)
+        .find((m) => typeof m === "string" && m.includes('"activate"'));
+      expect(newActivate).toBeDefined();
+    } finally {
+      div.remove();
+    }
+  });
+
+  it("sendData routes a string payload to the WS as bytes", async () => {
+    const div = document.createElement("div");
+    document.body.appendChild(div);
+    try {
+      const { result } = renderHook(() => {
+        const term = useTerminal("s-send", "ws", false, false);
+        if (term.containerRef && !term.containerRef.current) {
+          (
+            term.containerRef as unknown as { current: HTMLDivElement | null }
+          ).current = div;
+        }
+        return term;
+      });
+      await flushAsync();
+      const ws = sockets[0]!;
+      act(() => {
+        ws.readyState = FakeWebSocket.OPEN;
+        ws.onopen?.(new Event("open"));
+      });
+      await flushAsync();
+      const before = ws.sent.length;
+      act(() => {
+        result.current.sendData("hello");
+      });
+      const newBytes = ws.sent.slice(before).find((m) => {
+        if (typeof m === "string") return false;
+        const ascii = Array.from(m)
+          .map((b) => String.fromCharCode(b))
+          .join("");
+        return ascii === "hello";
+      });
+      expect(newBytes).toBeDefined();
+    } finally {
+      div.remove();
+    }
+  });
+
+  it("the virtual Ctrl bridge transforms onData printable -> control byte", async () => {
+    const div = document.createElement("div");
+    document.body.appendChild(div);
+    try {
+      const { result } = renderHook(() => {
+        const term = useTerminal("s-ctrl", "ws", false, false);
+        if (term.containerRef && !term.containerRef.current) {
+          (
+            term.containerRef as unknown as { current: HTMLDivElement | null }
+          ).current = div;
+        }
+        return term;
+      });
+      await flushAsync();
+      const ws = sockets[0]!;
+      act(() => {
+        ws.readyState = FakeWebSocket.OPEN;
+        ws.onopen?.(new Event("open"));
+      });
+      await flushAsync();
+      // Arm the Ctrl bridge from React state.
+      act(() => {
+        result.current.ctrlActiveRef.current = true;
+      });
+      // Now simulate the user typing 'a' through xterm's onData.
+      const before = ws.sent.length;
+      act(() => {
+        captured.onData?.("a");
+      });
+      // The hook should have sent 0x01 (Ctrl-A) instead of 'a'.
+      const newSends = ws.sent.slice(before);
+      const ctrlA = newSends.find((m) => {
+        if (typeof m === "string") return false;
+        return m.length === 1 && m[0] === 0x01;
+      });
+      expect(ctrlA).toBeDefined();
+      // The ref should also be cleared after consumption.
+      expect(result.current.ctrlActiveRef.current).toBe(false);
+    } finally {
+      div.remove();
+    }
+  });
 });
