@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { classifyAuthError } from "./fetchInterceptor";
+import { classifyAuthError, isLoginAttemptPath } from "./fetchInterceptor";
 
 function jsonResponse(status: number, body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -53,5 +53,28 @@ describe("classifyAuthError", () => {
     await classifyAuthError(res);
     const body = await res.json();
     expect(body).toEqual({ error: "login_required" });
+  });
+});
+
+describe("isLoginAttemptPath", () => {
+  // A 401 from these paths means the passphrase the user just typed
+  // was wrong; LoginPage / ElevationPrompt own the error UI. The
+  // interceptor must skip its global auth events for them. Without
+  // the skip, a wrong-passphrase POST 401s, the interceptor fires
+  // TOKEN_EXPIRED_EVENT, and App.tsx replaces LoginPage with
+  // TokenEntryPage, leaving the user stuck on a token-entry screen
+  // in `--auth=passphrase` mode where no token URL exists.
+  it("recognizes the login and elevate endpoints", () => {
+    expect(isLoginAttemptPath("/api/login")).toBe(true);
+    expect(isLoginAttemptPath("/api/login/elevate")).toBe(true);
+  });
+
+  it("does not match unrelated /api/login/* paths", () => {
+    // /api/login/status is a probe, not an auth attempt: its 401
+    // means token is missing/stale and the global event must fire.
+    expect(isLoginAttemptPath("/api/login/status")).toBe(false);
+    expect(isLoginAttemptPath("/api/logout")).toBe(false);
+    expect(isLoginAttemptPath("/api/sessions")).toBe(false);
+    expect(isLoginAttemptPath("/api/login/something-else")).toBe(false);
   });
 });

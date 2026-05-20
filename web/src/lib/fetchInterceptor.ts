@@ -34,6 +34,17 @@ export async function classifyAuthError(
   return "unauthorized";
 }
 
+/** Login attempt endpoints surface their own errors via LoginPage /
+ *  ElevationPrompt local state. A 401 from these paths means the
+ *  passphrase the user just typed was wrong, not that the bearer
+ *  token went stale. Firing the global `TOKEN_EXPIRED_EVENT` here
+ *  would replace LoginPage with TokenEntryPage, leaving the user
+ *  stuck on a token-entry screen in `--auth=passphrase` mode where
+ *  no token URL exists. */
+export function isLoginAttemptPath(path: string): boolean {
+  return path === "/api/login" || path === "/api/login/elevate";
+}
+
 /**
  * Install a global fetch wrapper that:
  * 1. Injects `Authorization: Bearer <token>` when we have a stored token.
@@ -98,7 +109,7 @@ export function installFetchErrorToasts(): void {
         const rotated = res.headers.get("x-aoe-token");
         if (rotated) saveToken(rotated);
       }
-      if (res.status === 401 && isApi) {
+      if (res.status === 401 && isApi && !isLoginAttemptPath(path)) {
         const authError = await classifyAuthError(res);
         if (authError === "login_required") {
           handleLoginRequired();
