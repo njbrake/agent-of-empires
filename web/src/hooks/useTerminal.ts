@@ -293,6 +293,23 @@ export function useTerminal(
         pendingResizeRef.current = { cols, rows };
         return;
       }
+      // Skip sends whose dimensions came from measuring a hidden
+      // container. ContentSplit mounts the paired terminal twice on
+      // desktop (the inline copy and the mobile slide-in overlay, the
+      // latter hidden via Tailwind `md:hidden`). xterm.js inside the
+      // hidden copy lays out at a tiny grid and tries to ship its
+      // ~10x4 measurement to the same tmux session that the visible
+      // copy is attached to. tmux honors the smallest attached
+      // client's size, so the visible terminal ends up rendering its
+      // shell into a 10x4 pane bordered by DEC line-drawing chars.
+      //
+      // We treat offsetParent==null + implausibly small dimensions as
+      // the hidden-container signal. The dual condition keeps the
+      // Vitest jsdom suite green: jsdom returns null offsetParent for
+      // everything regardless of layout, but the mock terminal there
+      // proposes a real-shaped grid that comfortably clears the
+      // threshold.
+      if (!termEl.offsetParent && (cols < 20 || rows < 5)) return;
       if (cols === lastSentCols && rows === lastSentRows) return;
       const ws = wsRef.current;
       if (ws?.readyState !== WebSocket.OPEN) return;
@@ -338,13 +355,32 @@ export function useTerminal(
     // Refit on container resize. xterm.js has no built-in autoResize so
     // we wire ResizeObserver directly. Skip zero-sized observations,
     // which fire while the element is being attached/detached.
+    //
+    // We also call `term.resize(proposed.cols, proposed.rows)` directly
+    // instead of relying on FitAddon.fit() to do it: fit() reads xterm's
+    // cached cell metrics, and on the side-panel mount path the first
+    // sync fit ran against a still-laying-out container, latched a tiny
+    // grid (e.g. 10x4), and subsequent fits at the correct container
+    // size would propose the same 10x4 because xterm's internal cell
+    // metrics had been re-derived from the wrong grid. Computing the
+    // proposed dimensions and pushing them through term.resize each
+    // observation breaks that latch and reliably propagates the final
+    // container size up to the server.
     const ro = new ResizeObserver((entries) => {
       for (const entry of entries) {
         const w = entry.contentRect.width;
         const h = entry.contentRect.height;
         if (w <= 0 || h <= 0) continue;
         try {
-          fitAddon.fit();
+          const proposed = fitAddon.proposeDimensions();
+          if (
+            proposed &&
+            proposed.cols > 0 &&
+            proposed.rows > 0 &&
+            (proposed.cols !== term.cols || proposed.rows !== term.rows)
+          ) {
+            term.resize(proposed.cols, proposed.rows);
+          }
         } catch {
           // ignore transient measurement failures
         }
