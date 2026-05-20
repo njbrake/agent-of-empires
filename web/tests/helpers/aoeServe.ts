@@ -46,6 +46,16 @@ export interface SpawnOptions {
   /** Override the spawn timeout (default 10s). */
   spawnTimeoutMs?: number;
   /**
+   * When true and `authMode === "passphrase"`, the harness POSTs
+   * `/api/login` itself after boot to mint a session cookie + record
+   * the device binding secret. Useful for fixtures that need a
+   * pre-authed browser context (e.g. a future cockpit-under-passphrase
+   * spec). Defaults to false: specs that drive LoginPage end-to-end
+   * (the `auth-login-passphrase` spec) want to start with no cookie
+   * so the LoginPage actually renders.
+   */
+  preloginViaHarness?: boolean;
+  /**
    * When true, install `fakeAcpAgent.mjs` as the `claude` / `aoe-agent`
    * shim instead of the tail-f-dev-null stub, and flip the cockpit
    * master enable flag via `PATCH /api/cockpit/master` after the server
@@ -364,6 +374,18 @@ export async function spawnAoeServe(opts: SpawnOptions): Promise<ServeHandle> {
     baseUrl = `http://127.0.0.1:${port}`;
     const args = ["serve", "--host", "127.0.0.1", "--port", String(port)];
     if (authMode === "none") args.push("--no-auth");
+    if (authMode === "passphrase") {
+      // `--passphrase X` alone leaves the auth mode at the default
+      // (Token + passphrase as 2FA). The Playwright browser has no
+      // token, so `/api/login/status` 401s on the no-token branch in
+      // `auth_middleware` before any login-exempt or loopback-bypass
+      // check, and the SPA renders TokenEntryPage instead of LoginPage.
+      // `--auth=passphrase` switches the server into the
+      // `run_passphrase_wall` path where `/api/login` and
+      // `/api/login/status` are login-exempt, so the SPA can bootstrap
+      // and LoginPage actually renders. See #1230.
+      args.push("--auth", "passphrase");
+    }
     if (passphrase) args.push("--passphrase", passphrase);
     if (opts.readOnly) args.push("--read-only");
     if (opts.extraArgs) args.push(...opts.extraArgs);
@@ -473,7 +495,7 @@ export async function spawnAoeServe(opts: SpawnOptions): Promise<ServeHandle> {
     },
   };
 
-  if (authMode === "passphrase" && passphrase) {
+  if (authMode === "passphrase" && passphrase && opts.preloginViaHarness) {
     const deviceBindingSecret = randomBytes(32).toString("base64url");
     const { cookie } = await loginWithPassphrase(baseUrl, passphrase, deviceBindingSecret);
     handle.sessionCookie = cookie;

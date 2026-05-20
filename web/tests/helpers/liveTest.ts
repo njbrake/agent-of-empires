@@ -2,8 +2,13 @@
 //
 // Three serve fixtures map onto the three harness modes:
 //   - `serve`          : no-auth, dashboard golden path.
-//   - `servePassphrase`: passphrase mode; specs call seedAuth(page, ...)
-//                        before navigating.
+//   - `servePassphrase`: passphrase mode (`--auth=passphrase`); specs
+//                        navigate without a session cookie so LoginPage
+//                        renders, then drive the form. Fixtures that
+//                        want a pre-authed cookie pass
+//                        `preloginViaHarness: true` to `spawnAoeServe`
+//                        and call `seedAuth(page, handle)` before
+//                        navigating.
 //   - `serveReadOnly`  : --read-only flag set on aoe serve.
 //
 // The `page` fixture is wrapped so that when `AOE_COVERAGE=1` is set, the
