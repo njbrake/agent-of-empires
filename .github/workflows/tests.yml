@@ -44,15 +44,25 @@ jobs:
       # so its deps must be installed before `cargo test --features serve`
       # runs. The shim itself auto-skips if node is missing, but on a
       # GitHub runner node is always present; without the install step
-      # the shim crashes before the ACP handshake completes.
+      # the shim crashes before the ACP handshake completes. macOS only
+      # runs --lib --bins (no integration crates), so the shim isn't
+      # exercised there and we can skip the install.
       - name: Install ACP shim deps
+        if: runner.os == 'Linux'
         working-directory: cockpit-worker/test-shim
         run: npm ci
-      - run: cargo test
-      # The server-side audit lives under `#[cfg(feature = "serve")]`
-      # (whole `src/server/` tree). Without this run the read-only
-      # guard audit and other serve-gated tests are silently skipped.
-      - run: cargo test --features serve
+      # `--features serve` is a strict superset of the default-feature
+      # suite (1759 -> 2269 unit tests, 67 -> 72 e2e), so a single run
+      # under serve covers both feature gates. macOS-specific code lives
+      # in src/process/macos.rs plus one cfg in container_config.rs;
+      # the integration and e2e crates exercise OS-portable code that
+      # the Linux leg already covers, so macOS only runs --lib --bins.
+      - name: Cargo test (Linux, full suite incl. integration + e2e)
+        if: runner.os == 'Linux'
+        run: cargo test --features serve
+      - name: Cargo test (macOS, lib + bins only)
+        if: runner.os == 'macOS'
+        run: cargo test --features serve --lib --bins
 
   vitest:
     name: Vitest
@@ -103,9 +113,22 @@ jobs:
       - name: Validate coverage matrix
         working-directory: web
         run: node tests/validate-coverage-matrix.mjs
+      # The Playwright browser cache (~150MB chromium) is keyed on the
+      # web/package-lock.json hash so it invalidates when @playwright/test
+      # bumps. --with-deps is omitted: the ubuntu-latest runner image
+      # already ships the apt packages Chromium needs.
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('web/package-lock.json') }}
+          restore-keys: |
+            playwright-${{ runner.os }}-
       - name: Install Playwright browsers
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
         working-directory: web
-        run: npx playwright install --with-deps chromium
+        run: npx playwright install chromium
       - name: Run Playwright (mocked) with coverage
         working-directory: web
         env:
@@ -171,9 +194,21 @@ jobs:
       - name: Install web deps
         working-directory: web
         run: npm ci
+      # Same scheme as the mocked job: cache Chromium under
+      # ~/.cache/ms-playwright, key on the lockfile, skip --with-deps
+      # because ubuntu-latest already has the apt prerequisites.
+      - name: Cache Playwright browsers
+        id: playwright-cache
+        uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('web/package-lock.json') }}
+          restore-keys: |
+            playwright-${{ runner.os }}-
       - name: Install Playwright browsers
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
         working-directory: web
-        run: npx playwright install --with-deps chromium
+        run: npx playwright install chromium
       - name: Run live Playwright with coverage
         working-directory: web
         env:

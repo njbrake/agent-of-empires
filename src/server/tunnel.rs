@@ -433,43 +433,65 @@ impl TunnelHandle {
                     _ = tokio::time::sleep(std::time::Duration::from_secs(10)) => {}
                 }
 
-                let mut child_guard = child.lock().await;
-                match child_guard.try_wait() {
-                    Ok(Some(status)) => {
-                        if has_restarted {
-                            error!(
-                                "Cloudflare tunnel exited again ({}). \
-                                 Remote access is unavailable. \
-                                 Restart with `aoe serve --remote`.",
-                                status
-                            );
-                            return;
-                        }
-
-                        warn!(
-                            "Cloudflare tunnel exited unexpectedly ({}). Attempting restart...",
-                            status
-                        );
-
-                        match restart_tunnel(&kind, port).await {
-                            Ok(new_child) => {
-                                *child_guard = new_child;
-                                has_restarted = true;
-                                info!("Cloudflare tunnel restarted successfully");
-                            }
-                            Err(e) => {
-                                error!(
-                                    "Failed to restart tunnel: {}. \
-                                     Remote access is unavailable.",
-                                    e
-                                );
-                                return;
-                            }
+                // Read try_wait under the lock, then drop the guard
+                // before any await. Holding the child mutex across
+                // restart_tunnel().await would block aoe serve --stop
+                // (which also wants the lock to terminate the child)
+                // for the multi-second cloudflared spawn time.
+                let exit_status = {
+                    let mut child_guard = child.lock().await;
+                    match child_guard.try_wait() {
+                        Ok(Some(status)) => Some(status),
+                        Ok(None) => None,
+                        Err(e) => {
+                            warn!("Error checking tunnel status: {}", e);
+                            None
                         }
                     }
-                    Ok(None) => {} // Still running
+                };
+
+                let Some(status) = exit_status else {
+                    continue;
+                };
+
+                if has_restarted {
+                    error!(
+                        "Cloudflare tunnel exited again ({}). \
+                         Remote access is unavailable. \
+                         Restart with `aoe serve --remote`.",
+                        status
+                    );
+                    return;
+                }
+
+                warn!(
+                    "Cloudflare tunnel exited unexpectedly ({}). Attempting restart...",
+                    status
+                );
+
+                let restart_result = tokio::select! {
+                    _ = cancel.cancelled() => return,
+                    r = restart_tunnel(&kind, port) => r,
+                };
+
+                match restart_result {
+                    Ok(new_child) => {
+                        // Re-acquire the lock just long enough to install
+                        // the replacement child. The previous iteration's
+                        // try_wait branch is the only other holder; it
+                        // bails on Ok(None) within the lock, so contention
+                        // is bounded.
+                        *child.lock().await = new_child;
+                        has_restarted = true;
+                        info!("Cloudflare tunnel restarted successfully");
+                    }
                     Err(e) => {
-                        warn!("Error checking tunnel status: {}", e);
+                        error!(
+                            "Failed to restart tunnel: {}. \
+                             Remote access is unavailable.",
+                            e
+                        );
+                        return;
                     }
                 }
             }

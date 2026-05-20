@@ -15,7 +15,6 @@ use std::process::Stdio;
 use std::sync::Arc;
 
 use thiserror::Error;
-use tokio::io::AsyncReadExt;
 use tokio::process::Command;
 use tokio::sync::Mutex;
 use tracing::info;
@@ -127,7 +126,7 @@ impl TerminalManager {
             "terminal/create"
         );
 
-        let mut child = match sandbox {
+        let child = match sandbox {
             Some(s) => {
                 let runtime = crate::containers::get_container_runtime();
                 let binary = runtime.base.binary;
@@ -151,19 +150,18 @@ impl TerminalManager {
                 .spawn()?,
         };
 
-        let mut stdout_buf = String::new();
-        let mut stderr_buf = String::new();
-        if let Some(mut stdout) = child.stdout.take() {
-            stdout.read_to_string(&mut stdout_buf).await?;
-        }
-        if let Some(mut stderr) = child.stderr.take() {
-            stderr.read_to_string(&mut stderr_buf).await?;
-        }
-        let status = child.wait().await?;
+        // Drain stdout, stderr, and wait() concurrently. Reading
+        // stdout to EOF before stderr deadlocks when the child fills
+        // its stderr pipe buffer first (~64 KiB Linux, ~16 KiB macOS):
+        // the child blocks on the next stderr write, stdout never
+        // closes, this task hangs forever holding the child. Reachable
+        // via the agent-exposed ACP `terminal/create`. `from_utf8_lossy`
+        // keeps non-UTF8 output from failing the whole capture.
+        let raw = child.wait_with_output().await?;
         let output = TerminalOutput {
-            stdout: stdout_buf,
-            stderr: stderr_buf,
-            exit_code: status.code(),
+            stdout: String::from_utf8_lossy(&raw.stdout).into_owned(),
+            stderr: String::from_utf8_lossy(&raw.stderr).into_owned(),
+            exit_code: raw.status.code(),
         };
 
         self.inner.lock().await.outputs.insert(id.clone(), output);
@@ -220,6 +218,56 @@ mod tests {
         mgr.release(&id).await.unwrap();
         let result = mgr.output(&id).await;
         assert!(matches!(result, Err(TerminalError::UnknownTerminal(_))));
+    }
+
+    // Regression: pipe-buffer deadlock when stderr exceeds the
+    // OS pipe buffer (~64 KiB Linux, ~16 KiB macOS) before stdout
+    // closes. 200 KiB on stderr clears both thresholds. Pre-fix
+    // this test hangs forever; the outer timeout makes a regression
+    // surface as a fast failure instead of a stalled CI job.
+    #[tokio::test]
+    async fn large_stderr_does_not_deadlock() {
+        let mgr = TerminalManager::new();
+        let cwd = std::env::temp_dir();
+        let script = "head -c 204800 /dev/zero | tr '\\0' 'x' >&2; echo done";
+        let run = mgr.create_and_run(
+            "s-large-stderr",
+            "sh",
+            vec!["-c".into(), script.into()],
+            cwd,
+            None,
+        );
+        let id = tokio::time::timeout(std::time::Duration::from_secs(5), run)
+            .await
+            .expect("create_and_run hung; pipe deadlock regressed")
+            .expect("create_and_run failed");
+        let out = mgr.output(&id).await.unwrap();
+        assert_eq!(out.stderr.len(), 204_800);
+        assert!(out.stdout.contains("done"));
+        assert_eq!(out.exit_code, Some(0));
+    }
+
+    #[tokio::test]
+    async fn large_stdout_and_stderr_drain_concurrently() {
+        let mgr = TerminalManager::new();
+        let cwd = std::env::temp_dir();
+        let script = "head -c 204800 /dev/zero | tr '\\0' 'o' \
+                      & head -c 204800 /dev/zero | tr '\\0' 'e' >&2 \
+                      & wait";
+        let run = mgr.create_and_run(
+            "s-both-pipes",
+            "sh",
+            vec!["-c".into(), script.into()],
+            cwd,
+            None,
+        );
+        let id = tokio::time::timeout(std::time::Duration::from_secs(5), run)
+            .await
+            .expect("create_and_run hung; pipe deadlock regressed")
+            .expect("create_and_run failed");
+        let out = mgr.output(&id).await.unwrap();
+        assert_eq!(out.stdout.len(), 204_800);
+        assert_eq!(out.stderr.len(), 204_800);
     }
 
     #[test]

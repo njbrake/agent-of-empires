@@ -20,6 +20,7 @@ import {
   deleteSession,
   fetchAbout,
   fetchSettings,
+  isDebugBuild,
   updateWorkspaceOrdering,
 } from "./lib/api";
 import type { DeleteSessionOptions, ServerAbout } from "./lib/api";
@@ -815,6 +816,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
         onLogout={onLogout}
         loginRequired={loginRequired}
         isOffline={!!error}
+        isDevBuild={isDebugBuild(serverAbout)}
         onGoDashboard={handleGoDashboard}
       />
 

@@ -10,6 +10,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use tokio::sync::RwLock;
+use tokio_util::sync::CancellationToken;
 
 const MAX_FAILURES: u32 = 5;
 const LOCKOUT_DURATION: std::time::Duration = std::time::Duration::from_secs(15 * 60);
@@ -146,25 +147,32 @@ impl RateLimiter {
         failures.remove(&ip);
     }
 
-    /// Spawn periodic cleanup task to evict expired entries.
-    pub fn spawn_cleanup_task(self: &Arc<Self>) {
+    /// Spawn periodic cleanup task to evict expired entries. The task
+    /// exits cleanly when `shutdown` is cancelled, so `aoe serve --stop`
+    /// drains the loop within one tick instead of waiting for the
+    /// 5 s force exit safety net.
+    pub fn spawn_cleanup_task(self: &Arc<Self>, shutdown: CancellationToken) {
         let limiter = Arc::clone(self);
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(CLEANUP_INTERVAL);
             loop {
-                interval.tick().await;
-                let mut failures = limiter.failures.write().await;
-                let now = Instant::now();
-                failures.retain(|_, record| {
-                    // Keep entries that are still locked
-                    if let Some(locked_until) = record.locked_until {
-                        if now < locked_until {
-                            return true;
-                        }
+                tokio::select! {
+                    _ = interval.tick() => {
+                        let mut failures = limiter.failures.write().await;
+                        let now = Instant::now();
+                        failures.retain(|_, record| {
+                            // Keep entries that are still locked
+                            if let Some(locked_until) = record.locked_until {
+                                if now < locked_until {
+                                    return true;
+                                }
+                            }
+                            // Keep entries with recent failures (within window)
+                            now.duration_since(record.first_failure) < WINDOW_DURATION
+                        });
                     }
-                    // Keep entries with recent failures (within window)
-                    now.duration_since(record.first_failure) < WINDOW_DURATION
-                });
+                    _ = shutdown.cancelled() => break,
+                }
             }
         });
     }

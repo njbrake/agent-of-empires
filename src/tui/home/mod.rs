@@ -1039,8 +1039,29 @@ impl HomeView {
         };
 
         let mut candidates: Vec<crate::session::Instance> = Vec::new();
+        // Single fallible tmux probe instead of per-instance
+        // `inst.has_live_tmux_pane()` calls. On Err: skip recovery this
+        // launch (a transient tmux glitch must NOT collapse to "all panes
+        // dead" and trigger phantom cascades). Bonus: one subprocess call
+        // regardless of instance count (was 1-2 per instance).
+        let pane_meta = match crate::tmux::batch_pane_metadata() {
+            Ok(map) => map,
+            Err(e) => {
+                tracing::warn!(
+                    target: "session.startup_recovery",
+                    error = %e,
+                    "tmux probe failed; TUI skipping startup recovery this launch",
+                );
+                drop(lock);
+                return;
+            }
+        };
         for inst in &mut self.instances {
-            let has_live_tmux = inst.has_live_tmux_pane();
+            let session_name = crate::tmux::Session::generate_name(&inst.id, &inst.title);
+            let has_live_tmux = pane_meta
+                .get(&session_name)
+                .map(|m| !m.pane_dead)
+                .unwrap_or(false);
             if has_live_tmux {
                 continue;
             }
@@ -1721,8 +1742,11 @@ impl HomeView {
         flatten_tree(&tree, &grouped, self.sort_order)
     }
 
-    pub fn active_profile_display(&self) -> &str {
-        self.active_profile.as_deref().unwrap_or("all")
+    /// The active profile filter name, or `None` when no filter is applied.
+    /// Returning `None` lets callers (e.g. the list-pane title) omit the
+    /// `[<profile>]` segment entirely instead of rendering a noisy `[all]`.
+    pub fn active_profile_display(&self) -> Option<&str> {
+        self.active_profile.as_deref()
     }
 
     /// Switch the active profile filter in-place without destroying the view.

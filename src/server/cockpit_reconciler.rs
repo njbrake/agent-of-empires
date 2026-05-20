@@ -172,9 +172,16 @@ pub async fn reconcile_cockpit_workers(state: &Arc<AppState>, attempted: &mut Ha
         // same way; on daemon restart that would undo the entire #1281
         // fix. Hold the session parked until the user explicitly retries
         // via `/cockpit/spawn` or hands off via `/cockpit/switch-agent`.
-        if let Some(crate::cockpit::Event::Stopped { reason }) =
-            state.cockpit_event_store.latest_status_event(&id)
-        {
+        // SQLite call wrapped in spawn_blocking to match the
+        // has_in_flight_turn pattern below; the reconciler runs on the
+        // tokio runtime and these queries can stall under load.
+        let store = Arc::clone(&state.cockpit_event_store);
+        let id_for_status = id.clone();
+        let latest_status =
+            tokio::task::spawn_blocking(move || store.latest_status_event(&id_for_status))
+                .await
+                .unwrap_or(None);
+        if let Some(crate::cockpit::Event::Stopped { reason }) = latest_status {
             if reason == "rate_limited" {
                 tracing::debug!(
                     target: "cockpit.supervisor",
@@ -185,7 +192,12 @@ pub async fn reconcile_cockpit_workers(state: &Arc<AppState>, attempted: &mut Ha
                 continue;
             }
         }
-        let in_flight_turn = state.cockpit_event_store.has_in_flight_turn(&id);
+        let store = Arc::clone(&state.cockpit_event_store);
+        let id_owned = id.clone();
+        let in_flight_turn =
+            tokio::task::spawn_blocking(move || store.has_in_flight_turn(&id_owned))
+                .await
+                .unwrap_or(false);
         // Mark before spawning so the next 2s tick doesn't double-poke
         // while the parallel resume task is still in flight. A task
         // that returns RetryAfterAttachTimeout will clear itself below.

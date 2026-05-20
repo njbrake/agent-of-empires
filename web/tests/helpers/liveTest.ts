@@ -29,11 +29,19 @@ type LiveFixtures = {
   servePassphrase: ServeHandle;
   serveReadOnly: ServeHandle;
   /**
+   * Token-mode fixture: spawns `aoe serve --auth=token` and resolves
+   * `handle.authToken` from the daemon-written `serve.token` file.
+   * Specs typically navigate to `${baseUrl}/?token=${handle.authToken}`
+   * and let `web/src/lib/token.ts` capture it into localStorage.
+   * Rotation-aware specs call `spawnAoeServe` directly with
+   * `tokenLifetimeSecs` / `tokenGraceSecs` overrides.
+   */
+  serveToken: ServeHandle;
+  /**
    * Cockpit fixture. Only supported with `authMode: "none"` today; the
    * harness calls `PATCH /api/cockpit/master` without a session cookie.
-   * Token-mode cockpit coverage is queued in #1226. If you need
-   * passphrase + cockpit, call `spawnAoeServe` directly and pass the
-   * `sessionCookie` through to the master-enable request.
+   * If you need passphrase + cockpit, call `spawnAoeServe` directly and
+   * pass the `sessionCookie` through to the master-enable request.
    */
   serveCockpit: ServeHandle;
 };
@@ -84,6 +92,15 @@ export const test = base.extend<LiveFixtures>({
   servePassphrase: async ({}, use, testInfo) => {
     const h = await spawnAoeServe({
       authMode: "passphrase",
+      workerIndex: testInfo.workerIndex,
+      parallelIndex: testInfo.parallelIndex,
+    });
+    await use(h);
+    await h.stop();
+  },
+  serveToken: async ({}, use, testInfo) => {
+    const h = await spawnAoeServe({
+      authMode: "token",
       workerIndex: testInfo.workerIndex,
       parallelIndex: testInfo.parallelIndex,
     });

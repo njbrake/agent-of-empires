@@ -105,7 +105,7 @@ impl StatusPoller {
 
             let pane_metadata = if any_pollable {
                 crate::tmux::refresh_session_cache();
-                crate::tmux::batch_pane_metadata()
+                crate::tmux::batch_pane_metadata().unwrap_or_default()
             } else {
                 HashMap::new()
             };

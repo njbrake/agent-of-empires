@@ -20,7 +20,7 @@ test.describe("Terminal pinch zoom (mobile)", () => {
       await page.waitForTimeout(300);
     }
     await clickSidebarSession(page, "pinch-test");
-    await page.locator(".wterm").waitFor({ state: "visible", timeout: 10_000 });
+    await page.locator(".xterm").waitFor({ state: "visible", timeout: 10_000 });
   }
 
   async function wsCount(page: Page) {

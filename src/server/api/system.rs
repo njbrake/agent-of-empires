@@ -8,7 +8,10 @@ use axum::{extract::State, http::StatusCode, response::IntoResponse, Json};
 use serde::{Deserialize, Serialize};
 
 use super::AppState;
-use super::{validate_profile_name, ALLOWED_SETTINGS_SECTIONS, SESSION_BLOCKED_FIELDS};
+use super::{
+    validate_profile_name, ALLOWED_GLOBAL_SETTINGS_SECTIONS, ALLOWED_PROFILE_SETTINGS_SECTIONS,
+    SESSION_BLOCKED_FIELDS,
+};
 
 // --- Agents ---
 
@@ -113,7 +116,7 @@ pub async fn get_settings(
 
 pub async fn update_settings(
     State(state): State<Arc<AppState>>,
-    Json(body): Json<serde_json::Value>,
+    body: Result<Json<serde_json::Value>, axum::extract::rejection::JsonRejection>,
 ) -> impl IntoResponse {
     if state.read_only {
         return (
@@ -124,10 +127,15 @@ pub async fn update_settings(
         )
             .into_response();
     }
-    // Validate that only allowed sections are being updated
+    let Json(body) = match body {
+        Ok(b) => b,
+        Err(rej) => return rej.into_response(),
+    };
+    // Validate that only allowed sections are being updated. Use the
+    // narrower global allowlist here (no `description`, which is profile-only).
     if let Some(obj) = body.as_object() {
         for key in obj.keys() {
-            if !ALLOWED_SETTINGS_SECTIONS.contains(&key.as_str()) {
+            if !ALLOWED_GLOBAL_SETTINGS_SECTIONS.contains(&key.as_str()) {
                 return (
                     StatusCode::BAD_REQUEST,
                     Json(serde_json::json!({
@@ -296,33 +304,58 @@ pub async fn get_current_theme(
 pub struct ProfileInfo {
     pub name: String,
     pub is_default: bool,
+    /// Optional short description, surfaced as helper text in the wizard
+    /// profile picker. `None` (and therefore omitted from JSON) when the
+    /// profile has no description configured. See #949.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
 }
 
 pub async fn list_profiles(State(state): State<Arc<AppState>>) -> Json<Vec<ProfileInfo>> {
-    let profiles = crate::session::list_profiles().unwrap_or_default();
-    // Treat empty profile (server launched without --profile) as "default"
-    let active = if state.profile.is_empty() {
-        "default"
-    } else {
-        &state.profile
-    };
-    let mut result: Vec<ProfileInfo> = profiles
-        .into_iter()
-        .map(|name| {
-            let is_default = name == active;
-            ProfileInfo { name, is_default }
-        })
-        .collect();
-    // Ensure the active profile appears even if list_profiles missed it
-    if !active.is_empty() && !result.iter().any(|p| p.name == active) {
-        result.insert(
-            0,
-            ProfileInfo {
-                name: active.to_string(),
-                is_default: true,
-            },
-        );
-    }
+    // Profile enumeration plus per-profile description lookups all hit disk;
+    // do that off the async runtime so a slow filesystem (network home, fuse,
+    // etc.) cannot stall Tokio workers for every API client. See CodeRabbit
+    // feedback on #1274.
+    let active_profile = state.profile.clone();
+    let result = tokio::task::spawn_blocking(move || {
+        let profiles = crate::session::list_profiles().unwrap_or_default();
+        // Treat empty profile (server launched without --profile) as "default"
+        let active: &str = if active_profile.is_empty() {
+            "default"
+        } else {
+            &active_profile
+        };
+        let mut result: Vec<ProfileInfo> = profiles
+            .into_iter()
+            .map(|name| {
+                let is_default = name == active;
+                let description = crate::session::load_profile_config(&name)
+                    .ok()
+                    .and_then(|c| c.description);
+                ProfileInfo {
+                    name,
+                    is_default,
+                    description,
+                }
+            })
+            .collect();
+        // Ensure the active profile appears even if list_profiles missed it
+        if !active.is_empty() && !result.iter().any(|p| p.name == active) {
+            result.insert(
+                0,
+                ProfileInfo {
+                    name: active.to_string(),
+                    is_default: true,
+                    description: crate::session::load_profile_config(active)
+                        .ok()
+                        .and_then(|c| c.description),
+                },
+            );
+        }
+        result
+    })
+    .await
+    .unwrap_or_default();
     Json(result)
 }
 
@@ -533,6 +566,13 @@ pub struct ServerAbout {
     /// honours the user's chosen ceiling instead of clipping at a
     /// hard-coded constant. See #1111.
     pub cockpit_replay_events: u32,
+    /// `"debug"` when built with `debug_assertions`, `"release"`
+    /// otherwise. The web UI renders a "DEV" badge in the topbar
+    /// when this is `"debug"` so users can tell concurrently-running
+    /// debug (port 8081) and release (port 8080) instances apart at
+    /// a glance, including PWA installs where the port disappears
+    /// from the window chrome. See #1055.
+    pub build_flavor: &'static str,
 }
 
 pub async fn get_about(State(state): State<Arc<AppState>>) -> Json<ServerAbout> {
@@ -569,6 +609,11 @@ pub async fn get_about(State(state): State<Arc<AppState>>) -> Json<ServerAbout> 
         cockpit_max_concurrent_resumes,
         cockpit_force_end_turn_threshold_secs,
         cockpit_replay_events,
+        build_flavor: if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        },
     })
 }
 
@@ -652,7 +697,7 @@ pub struct CreateProfileBody {
 
 pub async fn create_profile(
     State(state): State<Arc<AppState>>,
-    Json(body): Json<CreateProfileBody>,
+    body: Result<Json<CreateProfileBody>, axum::extract::rejection::JsonRejection>,
 ) -> impl IntoResponse {
     if state.read_only {
         return (
@@ -663,6 +708,10 @@ pub async fn create_profile(
         )
             .into_response();
     }
+    let Json(body) = match body {
+        Ok(b) => b,
+        Err(rej) => return rej.into_response(),
+    };
     if let Err(e) = validate_profile_name(&body.name) {
         return (
             StatusCode::BAD_REQUEST,
@@ -735,7 +784,7 @@ pub struct RenameProfileBody {
 pub async fn rename_profile(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(name): axum::extract::Path<String>,
-    Json(body): Json<RenameProfileBody>,
+    body: Result<Json<RenameProfileBody>, axum::extract::rejection::JsonRejection>,
 ) -> impl IntoResponse {
     if state.read_only {
         return (
@@ -746,6 +795,10 @@ pub async fn rename_profile(
         )
             .into_response();
     }
+    let Json(body) = match body {
+        Ok(b) => b,
+        Err(rej) => return rej.into_response(),
+    };
     if let Err(e) = validate_profile_name(&name) {
         return (
             StatusCode::BAD_REQUEST,
@@ -784,7 +837,7 @@ pub struct DefaultProfileBody {
 
 pub async fn default_profile(
     State(state): State<Arc<AppState>>,
-    Json(body): Json<DefaultProfileBody>,
+    body: Result<Json<DefaultProfileBody>, axum::extract::rejection::JsonRejection>,
 ) -> impl IntoResponse {
     if state.read_only {
         return (
@@ -795,6 +848,10 @@ pub async fn default_profile(
         )
             .into_response();
     }
+    let Json(body) = match body {
+        Ok(b) => b,
+        Err(rej) => return rej.into_response(),
+    };
     if let Err(e) = validate_profile_name(&body.name) {
         return (
             StatusCode::BAD_REQUEST,
@@ -864,7 +921,7 @@ pub async fn get_profile_settings(
 pub async fn update_profile_settings(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(name): axum::extract::Path<String>,
-    Json(body): Json<serde_json::Value>,
+    body: Result<Json<serde_json::Value>, axum::extract::rejection::JsonRejection>,
 ) -> impl IntoResponse {
     if state.read_only {
         return (
@@ -875,6 +932,10 @@ pub async fn update_profile_settings(
         )
             .into_response();
     }
+    let Json(body) = match body {
+        Ok(b) => b,
+        Err(rej) => return rej.into_response(),
+    };
     if let Err(e) = validate_profile_name(&name) {
         return (
             StatusCode::BAD_REQUEST,
@@ -882,10 +943,11 @@ pub async fn update_profile_settings(
         )
             .into_response();
     }
-    // Validate allowed sections
+    // Validate allowed sections. Use the per-profile allowlist here, which
+    // is the global list plus `description` (a profile-only field).
     if let Some(obj) = body.as_object() {
         for key in obj.keys() {
-            if !ALLOWED_SETTINGS_SECTIONS.contains(&key.as_str()) {
+            if !ALLOWED_PROFILE_SETTINGS_SECTIONS.contains(&key.as_str()) {
                 return (
                     StatusCode::BAD_REQUEST,
                     Json(serde_json::json!({

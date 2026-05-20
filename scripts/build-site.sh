@@ -21,7 +21,6 @@ cp "$ROOT_DIR/assets/logo.svg" "$ROOT_DIR/website/public/assets/"
 cp "$ROOT_DIR/assets/logo.png" "$ROOT_DIR/website/public/assets/"
 cp "$ROOT_DIR/assets/social-preview.png" "$ROOT_DIR/website/public/assets/" 2>/dev/null || true
 cp "$ROOT_DIR/assets/social-preview.svg" "$ROOT_DIR/website/public/assets/" 2>/dev/null || true
-cp "$ROOT_DIR/theme/favicon.png" "$ROOT_DIR/website/public/assets/" 2>/dev/null || true
 for f in "$ROOT_DIR/docs/assets/"*; do
   [ -f "$f" ] || continue
   cp "$f" "$ROOT_DIR/website/public/assets/"

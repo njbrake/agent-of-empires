@@ -48,6 +48,8 @@ impl SettingsCategory {
 /// Type-safe field identifiers (prevents typos in string matching)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FieldKey {
+    // Profile (only relevant when the Profile scope is active)
+    ProfileDescription,
     // Theme
     ThemeName,
     ThemeColorMode,
@@ -731,7 +733,25 @@ fn build_theme_fields(
         theme.and_then(|t| t.idle_decay_minutes),
     );
 
-    vec![
+    let mut fields = Vec::with_capacity(4);
+    // The profile description is a profile-only field (no global counterpart),
+    // so we surface it only when the user is editing the Profile scope. It
+    // sits at the top of the Theme category so it is the first thing they
+    // see when looking at a profile's settings.
+    if scope == SettingsScope::Profile {
+        fields.push(SettingField {
+            key: FieldKey::ProfileDescription,
+            label: "Description",
+            description:
+                "Short, human-readable description of what this profile does. Shown as helper \
+                 text under the profile name in the new-session picker (TUI + web).",
+            value: FieldValue::OptionalText(profile.description.clone()),
+            category: SettingsCategory::Theme,
+            has_override: profile.description.is_some(),
+            inherited_display: None,
+        });
+    }
+    fields.extend([
         SettingField {
             key: FieldKey::ThemeName,
             label: "Theme",
@@ -765,7 +785,8 @@ fn build_theme_fields(
                 FieldValue::Number(global.theme.idle_decay_minutes),
             ),
         },
-    ]
+    ]);
+    fields
 }
 
 fn build_updates_fields(
@@ -1876,6 +1897,9 @@ pub fn apply_field_to_config(
 
 fn apply_field_to_global(field: &SettingField, config: &mut Config) {
     match (&field.key, &field.value) {
+        // ProfileDescription is profile-only; the field never appears in
+        // Global scope, but match it so the fallthrough doesn't have to.
+        (FieldKey::ProfileDescription, _) => {}
         // Theme
         (FieldKey::ThemeName, FieldValue::Select { selected, options }) => {
             config.theme.name = options.get(*selected).cloned().unwrap_or_default();
@@ -2134,6 +2158,15 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
 /// Always stores the value as an override; use 'r' key to clear overrides.
 fn apply_field_to_profile(field: &SettingField, _global: &Config, config: &mut ProfileConfig) {
     match (&field.key, &field.value) {
+        // Profile description: empty input clears the field, otherwise we
+        // store the trimmed string so a stray space doesn't promote the
+        // profile to "has overrides".
+        (FieldKey::ProfileDescription, FieldValue::OptionalText(v)) => {
+            config.description = v
+                .as_ref()
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty());
+        }
         // Theme
         (FieldKey::ThemeName, FieldValue::Select { selected, options }) => {
             let name = options.get(*selected).cloned().unwrap_or_default();

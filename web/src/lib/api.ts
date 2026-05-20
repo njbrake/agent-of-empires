@@ -325,6 +325,7 @@ export interface ServerAbout {
    *  so the rendered transcript matches the user's chosen ceiling
    *  instead of clipping at a hard-coded frontend constant. See #1111. */
   cockpit_replay_events: number;
+  build_flavor: "debug" | "release"; // `"debug"` => debug_assertions; drives topbar DEV badge. See #1055.
 }
 
 export async function setCockpitMaster(
@@ -347,6 +348,11 @@ export function fetchAbout(): Promise<ServerAbout | null> {
   return fetchJson<ServerAbout>("/api/about");
 }
 
+/** Runtime helper around `ServerAbout.build_flavor`. See #1055. */
+export function isDebugBuild(about: ServerAbout | null | undefined): boolean {
+  if (!about) return false;
+  return about.build_flavor === "debug";
+}
 export interface UpdateStatus {
   check_enabled: boolean;
   current_version: string;

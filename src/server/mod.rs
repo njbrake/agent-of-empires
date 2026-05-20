@@ -69,6 +69,7 @@ struct TokenState {
     previous: Option<String>,
     grace_expires: Option<tokio::time::Instant>,
     lifetime: Duration,
+    grace: Duration,
 }
 
 /// Manages auth tokens with rotation and grace periods.
@@ -76,14 +77,21 @@ pub struct TokenManager {
     state: RwLock<TokenState>,
 }
 
+const DEFAULT_TOKEN_GRACE: Duration = Duration::from_secs(300);
+
 impl TokenManager {
     pub fn new(initial_token: Option<String>, lifetime: Duration) -> Self {
+        Self::with_grace(initial_token, lifetime, DEFAULT_TOKEN_GRACE)
+    }
+
+    pub fn with_grace(initial_token: Option<String>, lifetime: Duration, grace: Duration) -> Self {
         Self {
             state: RwLock::new(TokenState {
                 current: initial_token,
                 previous: None,
                 grace_expires: None,
                 lifetime,
+                grace,
             }),
         }
     }
@@ -139,10 +147,11 @@ impl TokenManager {
     pub async fn rotate(&self) {
         let mut state = self.state.write().await;
         let new_token = generate_token();
+        let grace = state.grace;
 
         state.previous = state.current.take();
         state.current = Some(new_token.clone());
-        state.grace_expires = Some(tokio::time::Instant::now() + Duration::from_secs(300));
+        state.grace_expires = Some(tokio::time::Instant::now() + grace);
 
         // Persist to disk
         if let Ok(app_dir) = crate::session::get_app_dir() {
@@ -151,22 +160,28 @@ impl TokenManager {
 
         info!(
             target: "auth.token",
-            grace_secs = 300,
+            grace_secs = grace.as_secs(),
             "auth token rotated"
         );
     }
 
-    /// Spawn a background rotation task (only in remote mode).
+    /// Spawn a background rotation task. Production paths only call this
+    /// from the `--remote` branch; debug builds also call it when the
+    /// `AOE_TEST_TOKEN_LIFETIME_SECS` env override is set, so live e2e
+    /// specs can observe the grace window without waiting hours.
     pub fn spawn_rotation_task(self: &Arc<Self>) {
         let manager = Arc::clone(self);
         tokio::spawn(async move {
             loop {
-                let lifetime = manager.state.read().await.lifetime;
+                let (lifetime, grace) = {
+                    let state = manager.state.read().await;
+                    (state.lifetime, state.grace)
+                };
                 tokio::time::sleep(lifetime).await;
                 manager.rotate().await;
 
                 // After grace period, clear previous
-                tokio::time::sleep(Duration::from_secs(300)).await;
+                tokio::time::sleep(grace).await;
                 {
                     let mut state = manager.state.write().await;
                     state.previous = None;
@@ -175,6 +190,38 @@ impl TokenManager {
             }
         });
     }
+}
+
+/// Read `AOE_TEST_TOKEN_LIFETIME_SECS`. Debug builds only; ignored in
+/// release so production cannot be forced into a short rotation cycle
+/// by a stray env var.
+#[cfg(debug_assertions)]
+fn test_token_lifetime_override() -> Option<Duration> {
+    std::env::var("AOE_TEST_TOKEN_LIFETIME_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|&n| n > 0)
+        .map(Duration::from_secs)
+}
+
+#[cfg(not(debug_assertions))]
+fn test_token_lifetime_override() -> Option<Duration> {
+    None
+}
+
+/// Read `AOE_TEST_TOKEN_GRACE_SECS`. Debug builds only.
+#[cfg(debug_assertions)]
+fn test_token_grace_override() -> Option<Duration> {
+    std::env::var("AOE_TEST_TOKEN_GRACE_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|&n| n > 0)
+        .map(Duration::from_secs)
+}
+
+#[cfg(not(debug_assertions))]
+fn test_token_grace_override() -> Option<Duration> {
+    None
 }
 
 // ── AppState ────────────────────────────────────────────────────────────────
@@ -427,13 +474,20 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
         Some(load_or_generate_token().await?)
     };
 
-    let token_lifetime = if remote {
-        Duration::from_secs(4 * 60 * 60) // 4 hours
-    } else {
-        Duration::from_secs(24 * 60 * 60) // 24 hours (existing behavior)
-    };
+    let token_lifetime = test_token_lifetime_override().unwrap_or_else(|| {
+        if remote {
+            Duration::from_secs(4 * 60 * 60) // 4 hours
+        } else {
+            Duration::from_secs(24 * 60 * 60) // 24 hours (existing behavior)
+        }
+    });
+    let token_grace = test_token_grace_override().unwrap_or(DEFAULT_TOKEN_GRACE);
 
-    let token_manager = Arc::new(TokenManager::new(auth_token.clone(), token_lifetime));
+    let token_manager = Arc::new(TokenManager::with_grace(
+        auth_token.clone(),
+        token_lifetime,
+        token_grace,
+    ));
     let login_manager = Arc::new(login::LoginManager::new(passphrase));
     let rate_limiter = Arc::new(RateLimiter::new());
 
@@ -762,32 +816,44 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
     {
         let gc_map = state.recently_restarted.clone();
         let shutdown = state.shutdown.clone();
-        tokio::spawn(async move {
-            let mut interval =
-                tokio::time::interval(crate::session::recovery::RECENTLY_RESTARTED_GC_INTERVAL);
-            loop {
-                tokio::select! {
-                    _ = interval.tick() => {
-                        crate::session::recovery::gc_recently_restarted(&gc_map);
+        crate::task_util::spawn_supervised(
+            "server.gc.recently_restarted",
+            crate::task_util::PanicPolicy::Log,
+            async move {
+                let mut interval =
+                    tokio::time::interval(crate::session::recovery::RECENTLY_RESTARTED_GC_INTERVAL);
+                loop {
+                    tokio::select! {
+                        _ = interval.tick() => {
+                            crate::session::recovery::gc_recently_restarted(&gc_map);
+                        }
+                        _ = shutdown.cancelled() => break,
                     }
-                    _ = shutdown.cancelled() => break,
                 }
-            }
-        });
+            },
+        );
     }
 
     if let Some((lock, candidates)) = recovery_inputs {
         let cascade_state = state.clone();
-        tokio::spawn(async move {
-            daemon_startup_recovery_cascade(cascade_state, lock, candidates).await;
-        });
+        crate::task_util::spawn_supervised(
+            "server.startup_recovery_cascade",
+            crate::task_util::PanicPolicy::Log,
+            async move {
+                daemon_startup_recovery_cascade(cascade_state, lock, candidates).await;
+            },
+        );
     }
 
     // Spawn background tasks
     let poll_state = state.clone();
-    tokio::spawn(async move {
-        status_poll_loop(poll_state).await;
-    });
+    crate::task_util::spawn_supervised(
+        "server.status_poll_loop",
+        crate::task_util::PanicPolicy::Log,
+        async move {
+            status_poll_loop(poll_state).await;
+        },
+    );
 
     // Cockpit broadcast listener: a single subscriber that handles
     // every in-process consumer of cockpit events. Status mirroring
@@ -798,9 +864,13 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
     // matter to both (e.g. AcpSessionAssigned).
     {
         let listener_state = state.clone();
-        tokio::spawn(async move {
-            cockpit_event_listener(listener_state).await;
-        });
+        crate::task_util::spawn_supervised(
+            "server.cockpit_event_listener",
+            crate::task_util::PanicPolicy::Log,
+            async move {
+                cockpit_event_listener(listener_state).await;
+            },
+        );
     }
 
     // Push-notification consumer: subscribes to status_tx, applies
@@ -808,8 +878,8 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
     // (feature disabled via web.notifications_enabled=false).
     push::spawn_consumer(state.clone());
 
-    rate_limiter.spawn_cleanup_task();
-    login_manager.spawn_cleanup_task();
+    rate_limiter.spawn_cleanup_task(state.shutdown.clone());
+    login_manager.spawn_cleanup_task(state.shutdown.clone());
 
     if remote {
         // Inline the rotation loop here rather than calling
@@ -818,6 +888,7 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
         // rotation. Behavior otherwise matches the original: wait one
         // lifetime, rotate, wait 300s grace, clear previous.
         let rot_state = state.clone();
+        let rot_shutdown = state.shutdown.clone();
         // The tunnel URL is stable across the daemon's lifetime (Tailscale
         // and named CF tunnels are stable; quick CF rotates only on
         // restart, which is outside this task's scope). Capture once so
@@ -826,7 +897,10 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
         tokio::spawn(async move {
             loop {
                 let lifetime = rot_state.token_manager.lifetime_secs().await;
-                tokio::time::sleep(std::time::Duration::from_secs(lifetime)).await;
+                tokio::select! {
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(lifetime)) => {}
+                    _ = rot_shutdown.cancelled() => break,
+                }
 
                 // Capture the hashes of the current and (about-to-be)
                 // previous tokens BEFORE rotating, so we know which
@@ -879,7 +953,10 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
                 // After grace period, the previous token becomes invalid.
                 // Clear it AND drop any subscriptions that were bound
                 // only to the old hash (retain_owners with only the new).
-                tokio::time::sleep(std::time::Duration::from_secs(300)).await;
+                tokio::select! {
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(300)) => {}
+                    _ = rot_shutdown.cancelled() => break,
+                }
                 // Clear previous token inside TokenManager. Reuse its
                 // internal state access via a tiny helper on the manager.
                 rot_state.token_manager.clear_previous().await;
@@ -896,6 +973,13 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
                 }
             }
         });
+    } else if test_token_lifetime_override().is_some() && auth_token.is_some() {
+        // Debug-build test path: live Playwright specs set
+        // AOE_TEST_TOKEN_LIFETIME_SECS (and optionally AOE_TEST_TOKEN_GRACE_SECS)
+        // so they can observe the rotation grace window without waiting hours.
+        // Skips the remote-only serve.url rewrite and push retain steps because
+        // neither exists in the local test setup.
+        token_manager.spawn_rotation_task();
     }
 
     // Graceful shutdown: SIGINT (Ctrl-C), SIGTERM (`aoe serve --stop`),
@@ -1214,11 +1298,12 @@ async fn http_request_span(
 /// Content-Security-Policy for the dashboard.
 ///
 /// - `default-src 'self'`: deny everything we don't explicitly allow.
-/// - `script-src 'self' 'wasm-unsafe-eval'`: wterm compiles WebAssembly;
-///   the `wasm-unsafe-eval` source is the CSP3 opt-in for WASM compilation.
+/// - `script-src 'self'`: scripts are bundled by Vite from the same
+///   origin; no inline scripts, no `eval`, no WASM.
 /// - `style-src 'self' 'unsafe-inline'`: React writes to element.style at
-///   runtime (terminal theme vars, font-size updates) and Tailwind v4 emits
-///   inline `<style>` blocks in dev. Blocking inline styles breaks wterm.
+///   runtime (terminal font-size updates) and Tailwind v4 emits inline
+///   `<style>` blocks in dev. Blocking inline styles breaks xterm.js's
+///   rendered viewport.
 /// - `img-src 'self' data: https://github.com https://avatars.githubusercontent.com`:
 ///   repo-owner avatars are loaded from `github.com/{user}.png` which 302s
 ///   to `avatars.githubusercontent.com`; CSP checks both URLs across the
@@ -1229,7 +1314,7 @@ async fn http_request_span(
 /// - `base-uri 'self'`, `form-action 'self'`, `object-src 'none'`: tighten
 ///   the usual attack surfaces on injection bugs.
 const CSP: &str = "default-src 'self'; \
-    script-src 'self' 'wasm-unsafe-eval'; \
+    script-src 'self'; \
     style-src 'self' 'unsafe-inline'; \
     img-src 'self' data: https://github.com https://avatars.githubusercontent.com; \
     font-src 'self'; \
@@ -1529,7 +1614,7 @@ async fn status_poll_loop(state: Arc<AppState>) {
             let mut instances = load_all_instances().unwrap_or_default();
 
             crate::tmux::refresh_session_cache();
-            let pane_metadata = crate::tmux::batch_pane_metadata();
+            let pane_metadata = crate::tmux::batch_pane_metadata().unwrap_or_default();
 
             for inst in &mut instances {
                 if suppressed_ids.contains(&inst.id) {
@@ -1699,7 +1784,21 @@ async fn daemon_startup_recovery_mark(
 
     crate::session::recovery::warm_tmux_server();
     crate::tmux::refresh_session_cache();
-    let pane_meta = crate::tmux::batch_pane_metadata();
+    // On probe failure we cannot distinguish "all panes dead" from "tmux
+    // unreachable", and treating the latter as the former would trigger
+    // spurious recovery cascades that kill possibly-alive panes. Skip
+    // the entire pass on Err; the next daemon launch will retry.
+    let pane_meta = match crate::tmux::batch_pane_metadata() {
+        Ok(map) => map,
+        Err(e) => {
+            tracing::warn!(
+                target: "session.startup_recovery",
+                error = %e,
+                "tmux probe failed at daemon startup; skipping recovery this launch",
+            );
+            return None;
+        }
+    };
 
     let candidates: Vec<crate::session::Instance> = {
         let instances = state.instances.read().await;
@@ -1764,14 +1863,39 @@ async fn daemon_startup_recovery_cascade(
             // tmux re-check, recovery would `kill_clean` a freshly-started
             // pane the user just attached to. The lock + this re-check
             // serialise against any other AoE writer.
+            //
+            // Use the fallible `batch_pane_metadata()` here so a transient
+            // tmux probe failure does NOT collapse to "pane dead" and
+            // wrongly proceed with the cascade: skip + unmark instead.
+            // Mirrors Phase A's pattern at the mark site.
+            let pane_meta = match crate::tmux::batch_pane_metadata() {
+                Ok(map) => map,
+                Err(e) => {
+                    tracing::warn!(
+                        target: "session.startup_recovery",
+                        instance_id = %id,
+                        error = %e,
+                        "tmux probe failed during recovery re-check; skipping cascade",
+                    );
+                    crate::session::recovery::unmark_recently_restarted(
+                        &inst_state.recently_restarted,
+                        &id,
+                    );
+                    return;
+                }
+            };
             let still_candidate = {
                 let instances = inst_state.instances.read().await;
                 instances
                     .iter()
                     .find(|i| i.id == id)
                     .map(|i| {
-                        !i.has_live_tmux_pane()
-                            && crate::session::recovery::is_recovery_candidate(i)
+                        let session_name = crate::tmux::Session::generate_name(&i.id, &i.title);
+                        let has_live_tmux = pane_meta
+                            .get(&session_name)
+                            .map(|m| !m.pane_dead)
+                            .unwrap_or(false);
+                        !has_live_tmux && crate::session::recovery::is_recovery_candidate(i)
                     })
                     .unwrap_or(false)
             };
@@ -2484,7 +2608,7 @@ mod tests {
         // accidentally drops one fails loudly.
         for needle in [
             "default-src 'self'",
-            "'wasm-unsafe-eval'",
+            "script-src 'self'",
             "img-src 'self' data: https://github.com https://avatars.githubusercontent.com",
             "connect-src 'self' ws: wss:",
             "frame-ancestors 'none'",

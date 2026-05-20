@@ -17,6 +17,19 @@ pub struct CloneRepoBody {
     pub shallow: bool,
 }
 
+/// Returns true if `url` looks like a git clone URL accepted by this
+/// endpoint. Recognised forms: https, http, git, ssh, file schemes, and
+/// scp-style (`user@host:path`). Anything else is rejected with a 400
+/// before reaching `git clone`.
+fn looks_like_git_url(url: &str) -> bool {
+    url.starts_with("https://")
+        || url.starts_with("http://")
+        || url.starts_with("git://")
+        || url.starts_with("ssh://")
+        || url.starts_with("file://")
+        || (url.contains('@') && url.contains(':') && !url.contains(' '))
+}
+
 /// Extract a repository name from a git URL.
 ///
 /// Handles HTTPS, SSH, and scp-style URLs:
@@ -45,7 +58,7 @@ fn repo_name_from_url(url: &str) -> Option<String> {
 
 pub async fn clone_repo(
     State(state): State<Arc<AppState>>,
-    Json(body): Json<CloneRepoBody>,
+    body: Result<Json<CloneRepoBody>, axum::extract::rejection::JsonRejection>,
 ) -> impl IntoResponse {
     if state.read_only {
         return (
@@ -56,6 +69,10 @@ pub async fn clone_repo(
         )
             .into_response();
     }
+    let Json(body) = match body {
+        Ok(b) => b,
+        Err(rej) => return rej.into_response(),
+    };
 
     let url = body.url.trim().to_string();
     if url.is_empty() {
@@ -68,13 +85,7 @@ pub async fn clone_repo(
             .into_response();
     }
 
-    // Basic URL scheme validation
-    let looks_like_url = url.starts_with("https://")
-        || url.starts_with("http://")
-        || url.starts_with("git://")
-        || url.starts_with("ssh://")
-        || (url.contains('@') && url.contains(':') && !url.contains(' '));
-    if !looks_like_url {
+    if !looks_like_git_url(&url) {
         return (
             StatusCode::BAD_REQUEST,
             Json(serde_json::json!({"error": "validation_failed", "message": "URL does not look like a git repository URL"})),
@@ -306,5 +317,52 @@ mod tests {
             repo_name_from_url("ssh://git@host:2222/user/my-repo.git"),
             Some("my-repo".to_string())
         );
+    }
+
+    // ── looks_like_git_url tests ──────────────────────────────────────────────
+
+    #[test]
+    fn looks_like_git_url_accepts_https() {
+        assert!(looks_like_git_url("https://github.com/u/r.git"));
+    }
+
+    #[test]
+    fn looks_like_git_url_accepts_http() {
+        assert!(looks_like_git_url("http://example.com/r.git"));
+    }
+
+    #[test]
+    fn looks_like_git_url_accepts_git_protocol() {
+        assert!(looks_like_git_url("git://example.com/u/r.git"));
+    }
+
+    #[test]
+    fn looks_like_git_url_accepts_ssh() {
+        assert!(looks_like_git_url("ssh://git@github.com/u/r.git"));
+    }
+
+    #[test]
+    fn looks_like_git_url_accepts_scp_style() {
+        assert!(looks_like_git_url("git@github.com:u/r.git"));
+    }
+
+    #[test]
+    fn looks_like_git_url_accepts_file_scheme() {
+        assert!(looks_like_git_url("file:///tmp/bare.git"));
+    }
+
+    #[test]
+    fn looks_like_git_url_rejects_bare_word() {
+        assert!(!looks_like_git_url("not-a-url"));
+    }
+
+    #[test]
+    fn looks_like_git_url_rejects_empty() {
+        assert!(!looks_like_git_url(""));
+    }
+
+    #[test]
+    fn looks_like_git_url_rejects_scp_style_with_space() {
+        assert!(!looks_like_git_url("git@host: /path"));
     }
 }

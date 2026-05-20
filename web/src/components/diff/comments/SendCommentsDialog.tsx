@@ -27,7 +27,7 @@ interface Props {
  *  preview of the assembled comments markdown, editable outro
  *  textarea. The final prompt is composed at send time so the user's
  *  intro/outro edits don't fall out of sync if comments change
- *  underneath. See history/plan-diff-comments.md. */
+ *  underneath. */
 export function SendCommentsDialog({
   sessionId,
   comments,

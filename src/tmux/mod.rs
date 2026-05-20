@@ -130,7 +130,14 @@ pub fn refresh_session_cache() {
 
 /// Batch-fetch pane metadata for all aoe sessions in a single tmux subprocess call.
 /// Returns a map from session name to metadata for the first window's first pane.
-pub fn batch_pane_metadata() -> HashMap<String, PaneMetadata> {
+///
+/// Returns `Err` when the underlying `tmux list-panes` call fails to spawn or
+/// exits non-zero. Callers MUST distinguish this from `Ok(map)` where a missing
+/// key means the session is genuinely absent: `Err` means we don't know.
+/// Startup recovery treats `Err` as "skip this pass" to avoid killing a
+/// possibly-live pane on a transient tmux glitch; status pollers treat it as
+/// `unwrap_or_default()` because their semantics are unchanged by an empty map.
+pub fn batch_pane_metadata() -> anyhow::Result<HashMap<String, PaneMetadata>> {
     let start = Instant::now();
     let output = Command::new("tmux")
         .args([
@@ -141,10 +148,10 @@ pub fn batch_pane_metadata() -> HashMap<String, PaneMetadata> {
         ])
         .output();
 
-    let result = match output {
+    let result: anyhow::Result<HashMap<String, PaneMetadata>> = match output {
         Ok(out) if out.status.success() => {
             let stdout = String::from_utf8_lossy(&out.stdout);
-            parse_pane_metadata(&stdout)
+            Ok(parse_pane_metadata(&stdout))
         }
         Ok(out) => {
             tracing::warn!(
@@ -153,11 +160,14 @@ pub fn batch_pane_metadata() -> HashMap<String, PaneMetadata> {
                 stderr_bytes = out.stderr.len(),
                 "list-panes returned non-zero",
             );
-            HashMap::new()
+            Err(anyhow::anyhow!(
+                "tmux list-panes returned non-zero status: {:?}",
+                out.status
+            ))
         }
         Err(e) => {
             tracing::warn!(target: "tmux.pane", error = %e, "list-panes spawn failed");
-            HashMap::new()
+            Err(anyhow::anyhow!("tmux list-panes spawn failed: {}", e))
         }
     };
 
@@ -166,7 +176,7 @@ pub fn batch_pane_metadata() -> HashMap<String, PaneMetadata> {
     // idle log.
     tracing::trace!(
         target: "tmux.pane",
-        sessions = result.len(),
+        sessions = result.as_ref().map(|m| m.len()).unwrap_or(0),
         duration_ms = start.elapsed().as_millis() as u64,
         "batch pane metadata fetched",
     );
