@@ -13,14 +13,7 @@ import {
   seedSessionViaAoeAdd,
 } from "../helpers/aoeServe";
 
-// Skipped pending #1237. After cockpit/enable + a fake-ACP-driven
-// prompt, the supervisor publishes AgentStartupError ("ACP connection
-// failed: Authentication required") between UserPromptSent and the
-// expected agent_message_chunk. The companion cockpit-mode-switch spec
-// drives the same harness path and passes, so the harness itself is
-// sound; the prompt-side flow needs deeper investigation in
-// fakeAcpAgent.mjs or the supervisor's auth wall.
-base.skip("cockpit spawn + prompt round-trip emits an agent_message_chunk", async ({}, testInfo) => {
+base("cockpit spawn + prompt round-trip emits an agent_message_chunk", async ({}, testInfo) => {
   const serve = await spawnAoeServe({
     authMode: "none",
     cockpit: true,
@@ -65,10 +58,15 @@ base.skip("cockpit spawn + prompt round-trip emits an agent_message_chunk", asyn
       const replay = await fetch(
         `${serve.baseUrl}/api/sessions/${sessionId}/cockpit/replay?since=0`,
       ).then((r) => r.json());
-      const events: unknown[] = Array.isArray(replay)
+      // GET /cockpit/replay returns { frames, lost, highest_seq, lowest_seq }
+      // (src/server/api/cockpit.rs::cockpit_replay). Each frame's serialized
+      // `event` is an externally-tagged enum, so the chunk is keyed
+      // `AgentMessageChunk`. Match either casing to stay robust if the
+      // wire format ever moves to snake_case.
+      const frames: unknown[] = Array.isArray(replay)
         ? replay
-        : replay.events ?? [];
-      const json = JSON.stringify(events);
+        : replay.frames ?? [];
+      const json = JSON.stringify(frames);
       if (
         json.includes("agent_message_chunk") ||
         json.includes("AgentMessageChunk")

@@ -23,10 +23,15 @@ const APPROVAL_SCRIPT = {
           content: { type: "text", text: "Considering write..." },
         },
         {
+          // The fake translates this into a real
+          // `session/request_permission` JSON-RPC request. ACP has no
+          // `permission_request` session/update variant; aoe carries
+          // permissions on a separate request that emits an
+          // ApprovalRequested event server-side with a server-generated
+          // nonce. The spec reads that nonce out of replay below.
           sessionUpdate: "permission_request",
-          nonce: "fake-nonce-1",
           toolCall: {
-            id: "fake-tool-call-1",
+            toolCallId: "fake-tool-call-1",
             title: "Write file",
             kind: "edit",
           },
@@ -37,10 +42,15 @@ const APPROVAL_SCRIPT = {
   ],
 };
 
-// Skipped pending #1237. Same underlying issue as cockpit-spawn-prompt:
-// supervisor surfaces AgentStartupError before the scripted
-// permission_request reaches the replay endpoint.
-base.skip("permission_request flows through to the server", async ({}, testInfo) => {
+interface ApprovalRequestedEvent {
+  ApprovalRequested?: {
+    approval?: {
+      nonce?: string;
+    };
+  };
+}
+
+base("permission_request flows through to the server", async ({}, testInfo) => {
   const scriptDir = mkdtempSync(join(tmpdir(), "aoe-pw-acp-script-"));
   const scriptPath = join(scriptDir, "script.json");
   writeFileSync(scriptPath, JSON.stringify(APPROVAL_SCRIPT));
@@ -73,31 +83,43 @@ base.skip("permission_request flows through to the server", async ({}, testInfo)
       body: JSON.stringify({ text: "write a file" }),
     });
 
-    let sawApproval = false;
+    // Poll the disk-backed replay endpoint for the ApprovalRequested
+    // event aoe emits when the fake agent sends `session/request_permission`.
+    // The nonce is generated server-side (src/cockpit/permissions.rs::
+    // build_approval), so the spec must read it back instead of
+    // hard-coding a value.
+    let nonce: string | undefined;
     for (let attempt = 0; attempt < 30; attempt++) {
       const replay = await fetch(
         `${serve.baseUrl}/api/sessions/${sessionId}/cockpit/replay?since=0`,
       ).then((r) => r.json());
-      const json = JSON.stringify(replay);
-      if (
-        json.includes("permission_request") ||
-        json.includes("ApprovalRequested")
-      ) {
-        sawApproval = true;
-        break;
+      const frames: Array<{ event?: ApprovalRequestedEvent }> = Array.isArray(
+        replay,
+      )
+        ? replay
+        : replay.frames ?? [];
+      for (const frame of frames) {
+        const candidate = frame.event?.ApprovalRequested?.approval?.nonce;
+        if (candidate) {
+          nonce = candidate;
+          break;
+        }
       }
+      if (nonce) break;
       await new Promise((r) => setTimeout(r, 200));
     }
-    expect(sawApproval).toBe(true);
+    expect(nonce).toBeDefined();
 
     // Resolve via the explicit endpoint (UI click path is covered by a
     // follow-up under #1224 once cockpit UI selectors are stable).
     const resolveRes = await fetch(
-      `${serve.baseUrl}/api/sessions/${sessionId}/cockpit/approvals/fake-nonce-1`,
+      `${serve.baseUrl}/api/sessions/${sessionId}/cockpit/approvals/${nonce}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ decision: "allow" }),
+        // ApprovalDecisionWire (src/cockpit/protocol.rs) is serialized
+        // as PascalCase, so "allow" deserializes as a 422 invalid body.
+        body: JSON.stringify({ decision: "Allow" }),
       },
     );
     expect(resolveRes.status).toBeGreaterThanOrEqual(200);
