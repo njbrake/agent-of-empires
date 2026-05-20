@@ -20,6 +20,17 @@ test("SIGTERM surfaces the alert; restart() clears it and flashes reconnected", 
   serve,
   page,
 }) => {
+  // Narrow role queries by text content. The dashboard has an unrelated
+  // dnd-kit live region (`<div role="status" aria-live="assertive">`)
+  // that would otherwise match `getByRole("status")` and false-trigger
+  // the reconnected assertion.
+  const alertBanner = page
+    .getByRole("alert")
+    .filter({ hasText: /server unreachable/i });
+  const reconnectedBanner = page
+    .getByRole("status")
+    .filter({ hasText: /reconnected/i });
+
   await page.goto(serve.baseUrl, { waitUntil: "domcontentloaded" });
 
   // Let the first /api/sessions poll land so `useSessions` has set
@@ -30,8 +41,8 @@ test("SIGTERM surfaces the alert; restart() clears it and flashes reconnected", 
     { timeout: 10_000 },
   );
 
-  await expect(page.getByRole("alert")).toBeHidden();
-  await expect(page.getByRole("status")).toBeHidden();
+  await expect(alertBanner).toBeHidden();
+  await expect(reconnectedBanner).toBeHidden();
 
   // SIGTERM directly so we can observe the disconnect banner BEFORE
   // the harness respawns. `restart()` would kill + respawn in one
@@ -40,8 +51,7 @@ test("SIGTERM surfaces the alert; restart() clears it and flashes reconnected", 
 
   // The poll interval is 3s; allow up to 8s for the first failed
   // tick to land + React commit to render the alert.
-  await expect(page.getByRole("alert")).toBeVisible({ timeout: 8_000 });
-  await expect(page.getByRole("alert")).toContainText(/server unreachable/i);
+  await expect(alertBanner).toBeVisible({ timeout: 8_000 });
 
   // Bring the server back on the same port. `restart()` is a no-op
   // SIGTERM on the dead proc, then a fresh spawn with the captured args.
@@ -65,11 +75,10 @@ test("SIGTERM surfaces the alert; restart() clears it and flashes reconnected", 
   // Reconnected flash renders inside its 3s window. The poll interval
   // is 3s, so worst-case we wait ~3s before the next /api/sessions
   // succeeds + setServerDown(false) fires.
-  await expect(page.getByRole("status")).toBeVisible({ timeout: 8_000 });
-  await expect(page.getByRole("status")).toContainText(/reconnected/i);
+  await expect(reconnectedBanner).toBeVisible({ timeout: 8_000 });
 
   // 3s timer in DisconnectBanner auto-clears the flash. Wait past it
   // with a small margin and confirm both banners are gone.
-  await expect(page.getByRole("status")).toBeHidden({ timeout: 6_000 });
-  await expect(page.getByRole("alert")).toBeHidden();
+  await expect(reconnectedBanner).toBeHidden({ timeout: 6_000 });
+  await expect(alertBanner).toBeHidden();
 });
