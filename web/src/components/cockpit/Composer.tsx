@@ -430,6 +430,13 @@ export function Composer({
             <ComposerPrimitive.Input
               ref={taRef}
               rows={2}
+              // assistant-ui's default Escape binding cancels the active
+              // run (see ComposerPrimitive.Input's `cancelOnEscape`
+              // default). The cockpit deliberately keeps cancel behind
+              // an explicit gesture, the Stop button, because Claude
+              // Code CLI also hijacks Escape for cancel and a stray
+              // press would lose work the user did not mean to abort.
+              cancelOnEscape={false}
               placeholder={
                 turnActive
                   ? "Queue a follow-up… (sent when current turn ends)"
@@ -990,7 +997,7 @@ function StopButton() {
     <button
       type="button"
       aria-label="Stop"
-      title="Stop the agent · Esc"
+      title="Stop the agent"
       onClick={() => runtime.cancelRun()}
       className={[
         "inline-flex items-center justify-center gap-1.5",
