@@ -50,14 +50,17 @@ base(
 
       // Paired-terminal pane lives in the lower half of RightPanel. The
       // "Shell" label sits above the Host / Container picker; assert it
-      // first to scope subsequent selectors to that pane.
-      await expect(page.getByText("Shell", { exact: true })).toBeVisible({
+      // first to scope subsequent selectors to that pane. The dashboard
+      // mounts both a desktop and a mobile right panel (one hidden via
+      // CSS), so use first() on visible-anywhere assertions.
+      await expect(page.getByText("Shell", { exact: true }).first()).toBeVisible({
         timeout: 10_000,
       });
       // Host button is rendered unconditionally; Container only when
-      // `is_sandboxed`. The seeded session is not sandboxed.
+      // `is_sandboxed`. The seeded session is not sandboxed, so no
+      // Container button should exist in either copy of the panel.
       await expect(
-        page.getByRole("button", { name: "Host", exact: true }),
+        page.getByRole("button", { name: "Host", exact: true }).first(),
       ).toBeVisible();
       await expect(
         page.getByRole("button", { name: "Container", exact: true }),
@@ -130,7 +133,9 @@ base(
       await sessionRow.click();
 
       // Wait for the file list to populate; one modified file expected.
-      await expect(page.getByText("1 file", { exact: true })).toBeVisible({
+      // first() picks the desktop right-panel copy (the dashboard also
+      // mounts a mobile copy hidden via CSS).
+      await expect(page.getByText("1 file", { exact: true }).first()).toBeVisible({
         timeout: 15_000,
       });
       await page.getByRole("button", { name: /notes\.md/ }).first().click();
@@ -154,23 +159,24 @@ base(
       // CommentsBanner now lives in the right panel showing the count
       // and the Send / Discard-all actions.
       await expect(
-        page.getByText("1 comment", { exact: true }),
+        page.getByText("1 comment", { exact: true }).first(),
       ).toBeVisible({ timeout: 10_000 });
       await expect(
-        page.getByRole("button", { name: "Send", exact: true }),
+        page.getByRole("button", { name: "Send", exact: true }).first(),
       ).toBeVisible();
       await expect(
-        page.getByRole("button", { name: "Discard all", exact: true }),
+        page.getByRole("button", { name: "Discard all", exact: true }).first(),
       ).toBeVisible();
 
       // Discard-all confirms via window.confirm (auto-accepted above)
-      // and clears the store, removing the banner.
+      // and clears the store, removing the banner from both panel copies.
       await page
         .getByRole("button", { name: "Discard all", exact: true })
+        .first()
         .click();
       await expect(
         page.getByText("1 comment", { exact: true }),
-      ).toBeHidden({ timeout: 10_000 });
+      ).toHaveCount(0, { timeout: 10_000 });
     } finally {
       await serve.stop();
     }

@@ -70,7 +70,9 @@ base(
       await sessionRow.click();
 
       // Two files surface: big.txt (modified) and image.png (added).
-      await expect(page.getByText("2 files", { exact: true })).toBeVisible({
+      // The dashboard renders both a desktop and a mobile right panel
+      // (one hidden via CSS); first() picks the desktop copy.
+      await expect(page.getByText("2 files", { exact: true }).first()).toBeVisible({
         timeout: 15_000,
       });
 
@@ -98,7 +100,7 @@ base(
         .first()
         .click();
       await expect(
-        page.getByText("Binary file changed", { exact: true }),
+        page.getByText("Binary file changed", { exact: true }).first(),
       ).toBeVisible({ timeout: 10_000 });
     } finally {
       await serve.stop();

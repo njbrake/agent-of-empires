@@ -65,9 +65,11 @@ base(
       await expect(sessionRow).toBeVisible({ timeout: 10_000 });
       await sessionRow.click();
 
-      // File count chip lives in the right-panel header; render is
-      // bounded by the diff fetch + react paint after the session route.
-      await expect(page.getByText("5 files", { exact: true })).toBeVisible({
+      // File count chip lives in the right-panel header. The dashboard
+      // mounts both a desktop and a mobile copy of the right panel
+      // (one hidden via CSS), so the chip appears twice; first() is
+      // unambiguous and matches the desktop pane on the test viewport.
+      await expect(page.getByText("5 files", { exact: true }).first()).toBeVisible({
         timeout: 15_000,
       });
 
