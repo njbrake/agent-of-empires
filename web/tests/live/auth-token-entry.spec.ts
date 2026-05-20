@@ -18,11 +18,15 @@ test("bad token in URL routes to TokenEntryPage; valid token routes to dashboard
   // Drop the bad token into localStorage via the URL capture path that
   // token.ts runs on module load. The SPA then strips ?token from the URL
   // and starts firing token-gated requests with the bad value.
-  await page.goto(`${serveToken.baseUrl}/?token=${BAD_TOKEN}`);
+  await page.goto(`${serveToken.baseUrl}/?token=${BAD_TOKEN}`, {
+    waitUntil: "domcontentloaded",
+  });
 
   // First auth-gated request 401s; fetchInterceptor dispatches
-  // TOKEN_EXPIRED_EVENT and App.tsx swaps in TokenEntryPage.
-  await expect(page.locator("#token")).toBeVisible({ timeout: 10_000 });
+  // TOKEN_EXPIRED_EVENT and App.tsx swaps in TokenEntryPage. Bump the
+  // timeout above the harness's spawn slack so a cold-cache Vite serve
+  // doesn't race the assertion.
+  await expect(page.locator("#token")).toBeVisible({ timeout: 15_000 });
   await expect(
     page.getByText(/session token has expired or is missing/i),
   ).toBeVisible();
@@ -63,8 +67,10 @@ test("URL form (?token=...) and raw-token form both unlock TokenEntryPage", asyn
   const validToken = serveToken.authToken!;
 
   // Start with a bad token to land on TokenEntryPage.
-  await page.goto(`${serveToken.baseUrl}/?token=${BAD_TOKEN}`);
-  await expect(page.locator("#token")).toBeVisible({ timeout: 10_000 });
+  await page.goto(`${serveToken.baseUrl}/?token=${BAD_TOKEN}`, {
+    waitUntil: "domcontentloaded",
+  });
+  await expect(page.locator("#token")).toBeVisible({ timeout: 15_000 });
 
   // Submit the full URL form (extractToken in TokenEntryPage.tsx parses it).
   await page.locator("#token").fill(`${serveToken.baseUrl}/?token=${validToken}`);
