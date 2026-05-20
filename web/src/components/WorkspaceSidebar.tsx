@@ -534,6 +534,7 @@ const SessionRow = memo(function SessionRow({
             if (e.key === "Enter") commitRename();
             if (e.key === "Escape") setRenaming(false);
           }}
+          data-testid="sidebar-rename-input"
           className="w-full bg-surface-900 border border-brand-600 rounded px-2 py-1 text-[13px] md:text-[14px] font-mono text-text-primary focus:outline-none"
         />
       </div>
@@ -544,6 +545,7 @@ const SessionRow = memo(function SessionRow({
     <>
       <Link
         to={sessionPath}
+        data-testid="sidebar-session-row"
         // Anchors are HTML5-draggable by default; the browser would
         // start its own drag-the-link gesture in parallel with dnd-kit
         // and finish with a synthetic click that bypassed React's event
@@ -658,11 +660,13 @@ const SessionRow = memo(function SessionRow({
       {contextMenu && createPortal(
         <div
           ref={menuRef}
+          data-testid="sidebar-context-menu"
           className="fixed z-50 bg-surface-800 border border-surface-700 rounded-lg shadow-lg py-1 min-w-[180px]"
           style={{ left: contextMenu.x, top: contextMenu.y }}
         >
           <button
             onClick={startRename}
+            data-testid="sidebar-context-menu-rename"
             className="w-full text-left px-3 py-2 md:py-2 max-md:py-3 text-sm text-text-secondary hover:bg-surface-700/50 cursor-pointer transition-colors"
           >
             Rename
@@ -699,6 +703,7 @@ const SessionRow = memo(function SessionRow({
               <div className="border-t border-surface-700/20 my-1" />
               <button
                 onClick={handleDelete}
+                data-testid="sidebar-context-menu-delete"
                 className="w-full text-left px-3 py-2 md:py-2 max-md:py-3 text-sm text-status-error hover:bg-status-error/10 cursor-pointer transition-colors"
               >
                 Delete
@@ -732,6 +737,8 @@ const RepoGroupHeader = memo(function RepoGroupHeader({
 
   return (
     <div
+      data-testid="sidebar-group-header"
+      data-group-id={group.id}
       className={`flex items-center gap-2 px-3 py-2 transition-colors duration-75 text-text-secondary hover:bg-surface-800/50 ${
         hasActiveChild ? "border-l-2 border-brand-600" : ""
       }`}
@@ -1008,6 +1015,7 @@ export function WorkspaceSidebar({
                 if (e.key === "Escape") toggleFilter();
               }}
               placeholder="Filter by name, branch, agent..."
+              data-testid="sidebar-filter-input"
               className="w-full bg-surface-800 border border-surface-700 rounded-md px-2.5 py-1.5 text-[13px] text-text-primary placeholder:text-text-dim focus:border-brand-600 focus:outline-none"
             />
           </div>
