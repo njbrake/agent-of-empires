@@ -1781,8 +1781,26 @@ impl BroadcastSink for ChannelSink {
         // gap event in its place — the frontend reducer can render a
         // "history truncated at seq N" notice and the user can
         // reload to recover via the `/cockpit/replay` endpoint.
+        //
+        // Wrap the synchronous rusqlite write in `block_in_place` so
+        // the multi-thread runtime can migrate other tasks off this
+        // worker for the duration of the fsync. Ordering is preserved
+        // because the call is still synchronous from the caller's
+        // perspective; switching to `spawn_blocking` would break the
+        // "publish in seq order" contract that the on-disk replay
+        // relies on. `block_in_place` panics on `current_thread`, so
+        // tests (which default to that flavor) fall back to a direct
+        // call. The daemon runs on `#[tokio::main]` default which is
+        // `multi_thread` and gets the runtime aware variant.
         let event_to_publish: Event;
-        let event_ref: &Event = match self.event_store.record(session_id, seq, event) {
+        let record_result = match tokio::runtime::Handle::try_current().map(|h| h.runtime_flavor())
+        {
+            Ok(tokio::runtime::RuntimeFlavor::MultiThread) => {
+                tokio::task::block_in_place(|| self.event_store.record(session_id, seq, event))
+            }
+            _ => self.event_store.record(session_id, seq, event),
+        };
+        let event_ref: &Event = match record_result {
             Ok(()) => event,
             Err(e) => {
                 tracing::warn!(

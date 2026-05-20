@@ -240,7 +240,15 @@ async fn drain_replay_into_socket(
     session_id: &str,
     since: u64,
 ) -> usize {
-    let entries = state.cockpit_event_store.replay_from(session_id, since);
+    // Offload the rusqlite read to the blocking pool. A session with
+    // a large retained history may iterate thousands of rows; running
+    // that on the runtime worker stalls every other concurrent task on
+    // the same worker for the duration of the read.
+    let store = Arc::clone(&state.cockpit_event_store);
+    let session_id_owned = session_id.to_string();
+    let entries = tokio::task::spawn_blocking(move || store.replay_from(&session_id_owned, since))
+        .await
+        .unwrap_or_default();
     let mut sent = 0usize;
     for (seq, event) in entries {
         let frame = CockpitBroadcastFrame {

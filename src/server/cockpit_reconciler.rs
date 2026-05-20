@@ -165,7 +165,12 @@ pub async fn reconcile_cockpit_workers(state: &Arc<AppState>, attempted: &mut Ha
             attempted.insert(id);
             continue;
         }
-        let in_flight_turn = state.cockpit_event_store.has_in_flight_turn(&id);
+        let store = Arc::clone(&state.cockpit_event_store);
+        let id_owned = id.clone();
+        let in_flight_turn =
+            tokio::task::spawn_blocking(move || store.has_in_flight_turn(&id_owned))
+                .await
+                .unwrap_or(false);
         // Mark before spawning so the next 2s tick doesn't double-poke
         // while the parallel resume task is still in flight. A task
         // that returns RetryAfterAttachTimeout will clear itself below.
