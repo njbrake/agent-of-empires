@@ -205,10 +205,11 @@ strip = true
 inherits = "release"
 lto = false
 codegen-units = 16
-# Same "is this a dev build?" gate as the default dev profile, so the
-# isolated app dir / tmux prefix / serve port apply here too. Anything
-# that's not a true release build shares the dev namespace.
-debug-assertions = true
+# Land on the release namespace (app dir, tmux prefix, serve port) so a
+# fast-compiled dev-release binary shares state with installed release
+# builds. Use the default `dev` profile when you want the isolated
+# `-dev` namespace.
+debug-assertions = false
 
 [[bin]]
 name = "aoe"
