@@ -30,26 +30,22 @@ fn session_offset(created_at: &DateTime<Utc>) -> usize {
 /// `profile` is `Some(name)` only when a real filter is active; when `None`,
 /// the `[<profile>]` segment is omitted so the default all-profiles state
 /// stays uncluttered.
-/// The `(by project)` and `sort: <label>` suffixes are merged into a single
-/// parenthesized hint, and each piece is dropped when it matches the default.
+/// Group and sort state hang off the prefix as `· project` / `· <sort label>`
+/// segments, each dropped when it matches the default.
 fn compose_list_title(
     prefix: &str,
     profile: Option<&str>,
     group_by: GroupByMode,
     sort_order: SortOrder,
 ) -> String {
-    let mut parts: Vec<String> = Vec::with_capacity(2);
+    let mut suffix = String::new();
     if group_by == GroupByMode::Project {
-        parts.push("by project".to_string());
+        suffix.push_str(" · project");
     }
     if sort_order != SortOrder::default() {
-        parts.push(format!("sort: {}", sort_order.label()));
+        suffix.push_str(" · ");
+        suffix.push_str(sort_order.label());
     }
-    let suffix = if parts.is_empty() {
-        String::new()
-    } else {
-        format!(" ({})", parts.join(", "))
-    };
     let profile_tag = match profile {
         Some(name) => format!(" [{}]", name),
         None => String::new(),
@@ -1296,8 +1292,8 @@ impl HomeView {
             ]
         };
         // Key-only entry for keys universal enough that a description would be
-        // noise (j/k for nav, ? for help, q for quit, / for search). Saves
-        // ~20 columns of footer width — meaningful at iPhone-Mosh sizes.
+        // noise (? for help, / for search). Saves footer width at iPhone-Mosh
+        // sizes.
         let mk_key =
             |key: &str| -> Vec<Span<'static>> { vec![Span::styled(key.to_string(), key_style)] };
 
@@ -1339,8 +1335,6 @@ impl HomeView {
                 groups.push((0, spans));
             }
         }
-
-        groups.push((0, mk_key("j/k")));
 
         if let Some(enter_action_text) = match self.flat_items.get(self.cursor) {
             Some(Item::Group {
@@ -1393,7 +1387,6 @@ impl HomeView {
         groups.push((4, mk(if strict { "^D" } else { "D" }, "Diff")));
         groups.push((1, mk("^K", "Cmds")));
         groups.push((0, mk_key("?")));
-        groups.push((0, mk_key(if strict { "Q" } else { "q" })));
 
         // Greedy pack by priority. Width of a group = sum of span char counts;
         // separator between kept groups adds 3 cols each (" · "). Reserve 1
@@ -1490,13 +1483,13 @@ mod tests {
     #[test]
     fn compose_list_title_shows_by_project_only() {
         let title = compose_list_title("aoe", None, GroupByMode::Project, SortOrder::Newest);
-        assert_eq!(title, " aoe (by project) ");
+        assert_eq!(title, " aoe · project ");
     }
 
     #[test]
     fn compose_list_title_shows_sort_only_when_non_default() {
         let title = compose_list_title("aoe", None, GroupByMode::Manual, SortOrder::LastActivity);
-        assert_eq!(title, " aoe (sort: Recent) ");
+        assert_eq!(title, " aoe · Recent ");
     }
 
     #[test]
@@ -1507,7 +1500,7 @@ mod tests {
             GroupByMode::Project,
             SortOrder::LastActivity,
         );
-        assert_eq!(title, " aoe [alpha] (by project, sort: Recent) ");
+        assert_eq!(title, " aoe [alpha] · project · Recent ");
     }
 
     #[test]
@@ -1515,13 +1508,13 @@ mod tests {
         // Newest is the default; it must not appear in the title even when
         // group mode contributes its own suffix piece.
         let title = compose_list_title("aoe", None, GroupByMode::Project, SortOrder::Newest);
-        assert_eq!(title, " aoe (by project) ");
+        assert_eq!(title, " aoe · project ");
     }
 
     #[test]
     fn compose_list_title_supports_tool_prefix() {
         let title = compose_list_title("Tool: foo", None, GroupByMode::Manual, SortOrder::AZ);
-        assert_eq!(title, " Tool: foo (sort: A-Z) ");
+        assert_eq!(title, " Tool: foo · A-Z ");
     }
 
     #[test]
@@ -1534,7 +1527,7 @@ mod tests {
             GroupByMode::Project,
             SortOrder::Newest,
         );
-        assert_eq!(title, " Terminals [work] (by project) ");
+        assert_eq!(title, " Terminals [work] · project ");
     }
 
     #[test]
@@ -1546,7 +1539,7 @@ mod tests {
             GroupByMode::Project,
             SortOrder::Newest,
         );
-        assert_eq!(title, " aoe [alpha] (by project) ");
+        assert_eq!(title, " aoe [alpha] · project ");
     }
 
     #[test]
@@ -1558,26 +1551,26 @@ mod tests {
             GroupByMode::Manual,
             SortOrder::LastActivity,
         );
-        assert_eq!(title, " aoe [alpha] (sort: Recent) ");
+        assert_eq!(title, " aoe [alpha] · Recent ");
     }
 
     #[test]
     fn compose_list_title_non_default_sort_with_project_no_profile() {
         // Matrix cell: non-default sort + project group + no profile.
         let title = compose_list_title("aoe", None, GroupByMode::Project, SortOrder::LastActivity);
-        assert_eq!(title, " aoe (by project, sort: Recent) ");
+        assert_eq!(title, " aoe · project · Recent ");
     }
 
     #[test]
     fn compose_list_title_renders_oldest_sort_label() {
         let title = compose_list_title("aoe", None, GroupByMode::Manual, SortOrder::Oldest);
-        assert_eq!(title, " aoe (sort: Oldest) ");
+        assert_eq!(title, " aoe · Oldest ");
     }
 
     #[test]
     fn compose_list_title_renders_za_sort_label() {
         let title = compose_list_title("aoe", None, GroupByMode::Manual, SortOrder::ZA);
-        assert_eq!(title, " aoe (sort: Z-A) ");
+        assert_eq!(title, " aoe · Z-A ");
     }
 
     #[test]
