@@ -94,6 +94,36 @@ agent_status_hooks = true
 | `custom_agents` | `{}` | User-defined agents: name to command mapping. Custom agent names appear in the TUI agent picker alongside built-in agents. |
 | `agent_detect_as` | `{}` | Status detection mapping: maps an agent name to a built-in agent whose status heuristics should be used. |
 
+For Codex, AoE preserves existing `[hooks.state]` trust data and writes `~/.codex/config.toml` through `config.toml.lock` plus an atomic replace. This keeps repeated or concurrent AoE launches from duplicating hook blocks or leaving partial TOML.
+
+## Status Hooks
+
+Status hooks run local shell commands when the TUI sees a session status change. They are disabled by default and are intended for personal machine behavior such as desktop notifications.
+
+```toml
+[status_hooks]
+enabled = true
+debounce_ms = 100
+on_waiting = "notify-send -a aoe 'AoE: Waiting' \"$AOE_SESSION_TITLE is waiting for input\""
+on_idle = "notify-send -a aoe 'AoE: Idle' \"$AOE_SESSION_TITLE is idle\""
+on_error = "notify-send -u critical -a aoe 'AoE: Error' \"$AOE_SESSION_TITLE errored\""
+```
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `enabled` | `false` | Run configured status hook commands from the TUI. |
+| `debounce_ms` | `100` | Wait this many milliseconds for a status to remain stable before running commands. Set to `0` to run hooks immediately. |
+| `on_starting` | unset | Command run when a session enters `Starting`. |
+| `on_running` | unset | Command run when a session enters `Running`. |
+| `on_waiting` | unset | Command run when a session enters `Waiting`. |
+| `on_idle` | unset | Command run when a session enters `Idle`. |
+| `on_error` | unset | Command run when a session enters `Error`. |
+| `on_change` | unset | Command run on every status change after the status-specific command. |
+
+Commands run in the session project directory and receive context through environment variables: `AOE_SESSION_ID`, `AOE_SESSION_TITLE`, `AOE_PROJECT_PATH`, `AOE_PROFILE`, `AOE_TOOL`, `AOE_GROUP_PATH`, `AOE_OLD_STATUS`, `AOE_NEW_STATUS`, and `AOE_STATUS_CHANGED_AT`. When both a status-specific hook and `on_change` are configured for the same transition, AoE runs them sequentially in one background worker, with the status-specific command first.
+
+Hook commands are best-effort and non-blocking. Failures are logged at `warn` under `hooks.status_hooks` and never block status updates or sound playback. While you are attached to a tmux session from the TUI, AoE keeps polling eligible sessions so status hook commands still fire during long attaches. Status hooks are configurable in global and profile settings, not repo config, because they run arbitrary local commands.
+
 ### Custom Agents
 
 Custom agents let you name commands for agents that AoE cannot detect as built-in binaries, such as SSH wrappers, local scripts, or remote Claude sessions. Configure them once in `custom_agents`, then select the configured name from the TUI picker, `aoe add --tool <name>`, or the Web session wizard.

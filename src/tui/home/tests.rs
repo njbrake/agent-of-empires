@@ -2870,6 +2870,133 @@ fn apply_status_update_skips_terminal_states() {
     assert_eq!(inst.idle_entered_at, None);
 }
 
+#[test]
+#[serial]
+fn apply_status_update_runs_status_hook_on_transition() {
+    use crate::session::Status;
+    use crate::status_hooks::{take_recorded_launches, StatusHookConfig};
+    use crate::tui::status_poller::StatusUpdate;
+
+    let mut env = create_test_env_with_sessions(1);
+    let id = match env.view.flat_items.first() {
+        Some(Item::Session { id, .. }) => id.clone(),
+        _ => panic!("expected the fixture to seed a single Session item"),
+    };
+    env.view.status_hook_config = StatusHookConfig {
+        enabled: true,
+        debounce_ms: 0,
+        on_waiting: Some("notify-waiting".to_string()),
+        on_change: Some("notify-change".to_string()),
+        ..Default::default()
+    };
+    take_recorded_launches();
+
+    env.view.apply_one_status_update(StatusUpdate {
+        id: id.clone(),
+        status: Status::Waiting,
+        last_error: None,
+        idle_entered_at: None,
+    });
+
+    let launches = take_recorded_launches();
+    assert_eq!(launches.len(), 2);
+    assert_eq!(launches[0].command, "notify-waiting");
+    assert_eq!(launches[1].command, "notify-change");
+    assert_eq!(launches[0].context.session_id, id);
+    assert_eq!(launches[0].context.old_status, Status::Idle);
+    assert_eq!(launches[0].context.new_status, Status::Waiting);
+}
+
+#[test]
+#[serial]
+fn apply_status_update_does_not_run_status_hook_for_same_status() {
+    use crate::session::Status;
+    use crate::status_hooks::{take_recorded_launches, StatusHookConfig};
+    use crate::tui::status_poller::StatusUpdate;
+
+    let mut env = create_test_env_with_sessions(1);
+    let id = match env.view.flat_items.first() {
+        Some(Item::Session { id, .. }) => id.clone(),
+        _ => panic!("expected the fixture to seed a single Session item"),
+    };
+    env.view.status_hook_config = StatusHookConfig {
+        enabled: true,
+        debounce_ms: 0,
+        on_change: Some("notify-change".to_string()),
+        ..Default::default()
+    };
+    take_recorded_launches();
+
+    env.view.apply_one_status_update(StatusUpdate {
+        id,
+        status: Status::Idle,
+        last_error: None,
+        idle_entered_at: None,
+    });
+
+    assert!(take_recorded_launches().is_empty());
+}
+
+#[test]
+#[serial]
+fn apply_status_updates_without_hooks_does_not_run_status_hook() {
+    use crate::session::Status;
+    use crate::status_hooks::{take_recorded_launches, StatusHookConfig};
+    use crate::tui::status_poller::StatusUpdate;
+
+    let mut env = create_test_env_with_sessions(1);
+    let id = match env.view.flat_items.first() {
+        Some(Item::Session { id, .. }) => id.clone(),
+        _ => panic!("expected the fixture to seed a single Session item"),
+    };
+    env.view.status_hook_config = StatusHookConfig {
+        enabled: true,
+        debounce_ms: 0,
+        on_waiting: Some("notify-waiting".to_string()),
+        ..Default::default()
+    };
+    take_recorded_launches();
+
+    env.view
+        .apply_status_updates_without_hooks(vec![StatusUpdate {
+            id: id.clone(),
+            status: Status::Waiting,
+            last_error: None,
+            idle_entered_at: None,
+        }]);
+
+    assert_eq!(env.view.get_instance(&id).unwrap().status, Status::Waiting);
+    assert!(take_recorded_launches().is_empty());
+}
+
+#[test]
+#[serial]
+fn set_instance_status_runs_status_hook_on_transition() {
+    use crate::session::Status;
+    use crate::status_hooks::{take_recorded_launches, StatusHookConfig};
+
+    let mut env = create_test_env_with_sessions(1);
+    let id = match env.view.flat_items.first() {
+        Some(Item::Session { id, .. }) => id.clone(),
+        _ => panic!("expected the fixture to seed a single Session item"),
+    };
+    env.view.status_hook_config = StatusHookConfig {
+        enabled: true,
+        debounce_ms: 0,
+        on_error: Some("notify-error".to_string()),
+        ..Default::default()
+    };
+    take_recorded_launches();
+
+    env.view.set_instance_status(&id, Status::Error);
+
+    let launches = take_recorded_launches();
+    assert_eq!(launches.len(), 1);
+    assert_eq!(launches[0].command, "notify-error");
+    assert_eq!(launches[0].context.old_status, Status::Idle);
+    assert_eq!(launches[0].context.new_status, Status::Error);
+}
+
 /// Regression: paste over a group header must stash to `pending_paste`,
 /// never open a compose dialog targeted at "the first running session".
 /// Earlier behavior fell through to the first-running fallback whenever

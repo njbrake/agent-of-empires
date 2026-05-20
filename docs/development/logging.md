@@ -26,7 +26,7 @@ Only a small set of sub-targets is enumerated in the settings dropdown (see `KNO
 | `tmux` | tmux invocations, cache refresh, status detection, pane CRUD. |
 | `http` | Axum request-scoped span with `request_id`/`method`/`path`/`status`/`latency_ms`, plus per-route semantic events. |
 | `serve` | `aoe serve` daemonize/foreground startup, PID/URL file IO, tunnel up/down, signal-driven shutdown. |
-| `hooks` | Agent hook integration (Claude/Settl/Hermes/Kiro) install/uninstall and hook status file lifecycle. |
+| `hooks` | Agent hook integration (Claude/Settl/Hermes/Kiro) install/uninstall, hook status file lifecycle, user-configured status hook command failures, and attached status hook watcher failures. |
 | `sound` | Notification sound asset download/install and per-event playback. |
 | `log.runtime` | Filter swaps (REST + runner file-watch). |
 

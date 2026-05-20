@@ -766,7 +766,7 @@ impl HomeView {
                     line_spans.push(Span::styled(badge, Style::default().fg(theme.sandbox)));
                 }
                 if column_fits {
-                    line_spans.push(Span::raw(" ".repeat(LAST_ACTIVITY_RIGHT_MARGIN)));
+                    line_spans.push(Span::raw(" ".to_string()));
                 }
             }
         }

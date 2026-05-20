@@ -10,7 +10,9 @@ use ratatui::prelude::*;
 use std::path::PathBuf;
 use std::time::Duration;
 
+use super::attached_status_hooks::AttachedStatusHookWatcher;
 use super::home::{HomeView, TerminalMode};
+use super::status_poller::StatusUpdate;
 use super::styles::Theme;
 use crate::session::{get_update_settings, load_config, save_config, Config};
 use crate::tmux::AvailableTools;
@@ -304,6 +306,26 @@ impl App {
         terminal.clear()?;
 
         Ok(result)
+    }
+
+    fn with_attached_status_hooks<F, R>(
+        &mut self,
+        terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+        f: F,
+    ) -> Result<(R, Vec<StatusUpdate>)>
+    where
+        F: FnOnce() -> R,
+    {
+        let watcher = AttachedStatusHookWatcher::start(self.home.attached_status_hook_sessions());
+        let result = self.with_raw_mode_disabled(terminal, f);
+        let mut attached_status_updates = Vec::new();
+
+        if let Some(watcher) = watcher {
+            attached_status_updates = watcher.stop();
+            self.home.reset_status_refresh();
+        }
+
+        result.map(|result| (result, attached_status_updates))
     }
 
     pub fn show_startup_warning(&mut self, message: &str) {
@@ -1209,11 +1231,14 @@ impl App {
             Some(inst) => inst.tmux_session()?,
             None => return Ok(()),
         };
-        let attach_result = self.with_raw_mode_disabled(terminal, || tmux_session.attach())?;
+        let (attach_result, attached_status_updates) =
+            self.with_attached_status_hooks(terminal, || tmux_session.attach())?;
 
         self.needs_redraw = true;
         crate::tmux::refresh_session_cache();
         self.home.reload()?;
+        self.home
+            .apply_status_updates_without_hooks(attached_status_updates);
         self.home.stamp_last_accessed(session_id);
         self.home.select_session_by_id(session_id);
 
@@ -1276,11 +1301,14 @@ impl App {
             }
         };
 
-        let attach_result = self.with_raw_mode_disabled(terminal, attach_fn)?;
+        let (attach_result, attached_status_updates) =
+            self.with_attached_status_hooks(terminal, attach_fn)?;
 
         self.needs_redraw = true;
         crate::tmux::refresh_session_cache();
         self.home.reload()?;
+        self.home
+            .apply_status_updates_without_hooks(attached_status_updates);
         self.home.select_session_by_id(session_id);
 
         if let Err(e) = attach_result {
@@ -1343,11 +1371,14 @@ impl App {
         );
 
         let attach_fn: Box<dyn FnOnce() -> Result<()>> = Box::new(move || tool_session.attach());
-        let attach_result = self.with_raw_mode_disabled(terminal, attach_fn)?;
+        let (attach_result, attached_status_updates) =
+            self.with_attached_status_hooks(terminal, attach_fn)?;
 
         self.needs_redraw = true;
         crate::tmux::refresh_session_cache();
         self.home.reload()?;
+        self.home
+            .apply_status_updates_without_hooks(attached_status_updates);
         self.home.select_session_by_id(session_id);
 
         if let Err(e) = attach_result {

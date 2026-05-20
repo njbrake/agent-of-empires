@@ -1,6 +1,7 @@
 //! Terminal User Interface module
 
 mod app;
+mod attached_status_hooks;
 #[cfg(feature = "serve")]
 pub(crate) mod cockpit_view;
 mod components;

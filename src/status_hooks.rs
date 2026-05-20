@@ -1,0 +1,619 @@
+//! Local command hooks for session status transitions.
+
+use std::collections::HashMap;
+#[cfg(not(test))]
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
+
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+
+use crate::session::{Instance, Status};
+
+const DEFAULT_DEBOUNCE_MS: u64 = 100;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StatusHookConfig {
+    #[serde(default)]
+    pub enabled: bool,
+
+    #[serde(
+        default = "default_debounce_ms",
+        skip_serializing_if = "is_default_debounce_ms"
+    )]
+    pub debounce_ms: u64,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_starting: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_running: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_waiting: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_idle: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_error: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_change: Option<String>,
+}
+
+impl Default for StatusHookConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            debounce_ms: DEFAULT_DEBOUNCE_MS,
+            on_starting: None,
+            on_running: None,
+            on_waiting: None,
+            on_idle: None,
+            on_error: None,
+            on_change: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct StatusHookConfigOverride {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub debounce_ms: Option<u64>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_starting: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_running: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_waiting: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_idle: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_error: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_change: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StatusHookContext {
+    pub session_id: String,
+    pub session_title: String,
+    pub project_path: String,
+    pub profile: String,
+    pub tool: String,
+    pub group_path: String,
+    pub old_status: Status,
+    pub new_status: Status,
+    pub changed_at: DateTime<Utc>,
+}
+
+impl StatusHookContext {
+    pub fn from_instance(
+        instance: &Instance,
+        old_status: Status,
+        new_status: Status,
+        changed_at: DateTime<Utc>,
+    ) -> Self {
+        Self {
+            session_id: instance.id.clone(),
+            session_title: instance.title.clone(),
+            project_path: instance.project_path.clone(),
+            profile: instance.effective_profile(),
+            tool: instance.tool.clone(),
+            group_path: instance.group_path.clone(),
+            old_status,
+            new_status,
+            changed_at,
+        }
+    }
+
+    pub fn env_vars(&self) -> [(&'static str, String); 9] {
+        [
+            ("AOE_SESSION_ID", self.session_id.clone()),
+            ("AOE_SESSION_TITLE", self.session_title.clone()),
+            ("AOE_PROJECT_PATH", self.project_path.clone()),
+            ("AOE_PROFILE", self.profile.clone()),
+            ("AOE_TOOL", self.tool.clone()),
+            ("AOE_GROUP_PATH", self.group_path.clone()),
+            ("AOE_OLD_STATUS", self.old_status.as_str().to_string()),
+            ("AOE_NEW_STATUS", self.new_status.as_str().to_string()),
+            ("AOE_STATUS_CHANGED_AT", self.changed_at.to_rfc3339()),
+        ]
+    }
+}
+
+pub fn apply_status_hook_overrides(
+    target: &mut StatusHookConfig,
+    source: &StatusHookConfigOverride,
+) {
+    if let Some(enabled) = source.enabled {
+        target.enabled = enabled;
+    }
+    if let Some(debounce_ms) = source.debounce_ms {
+        target.debounce_ms = debounce_ms;
+    }
+    if source.on_starting.is_some() {
+        target.on_starting = source.on_starting.clone();
+    }
+    if source.on_running.is_some() {
+        target.on_running = source.on_running.clone();
+    }
+    if source.on_waiting.is_some() {
+        target.on_waiting = source.on_waiting.clone();
+    }
+    if source.on_idle.is_some() {
+        target.on_idle = source.on_idle.clone();
+    }
+    if source.on_error.is_some() {
+        target.on_error = source.on_error.clone();
+    }
+    if source.on_change.is_some() {
+        target.on_change = source.on_change.clone();
+    }
+}
+
+pub fn commands_for_transition(old: Status, new: Status, config: &StatusHookConfig) -> Vec<String> {
+    if !config.enabled || old == new {
+        return Vec::new();
+    }
+
+    let mut commands = Vec::new();
+    let specific = match new {
+        Status::Starting => config.on_starting.as_deref(),
+        Status::Running => config.on_running.as_deref(),
+        Status::Waiting => config.on_waiting.as_deref(),
+        Status::Idle => config.on_idle.as_deref(),
+        Status::Error => config.on_error.as_deref(),
+        Status::Unknown | Status::Stopped | Status::Deleting | Status::Creating => None,
+    };
+    if let Some(cmd) = non_empty_command(specific) {
+        commands.push(cmd.to_string());
+    }
+    if let Some(cmd) = non_empty_command(config.on_change.as_deref()) {
+        commands.push(cmd.to_string());
+    }
+    commands
+}
+
+pub fn has_configured_commands(config: &StatusHookConfig) -> bool {
+    config.enabled
+        && [
+            config.on_starting.as_deref(),
+            config.on_running.as_deref(),
+            config.on_waiting.as_deref(),
+            config.on_idle.as_deref(),
+            config.on_error.as_deref(),
+            config.on_change.as_deref(),
+        ]
+        .into_iter()
+        .any(|cmd| non_empty_command(cmd).is_some())
+}
+
+pub fn run_for_transition(
+    instance: &Instance,
+    old: Status,
+    new: Status,
+    config: &StatusHookConfig,
+) {
+    if !config.enabled || old == new {
+        return;
+    }
+
+    let commands = commands_for_transition(old, new, config);
+    if config.debounce_ms > 0 {
+        run_debounced_transition(instance, old, new, commands, config.debounce_ms);
+        return;
+    }
+
+    if commands.is_empty() {
+        return;
+    }
+    spawn_transition_commands(instance, old, new, commands);
+}
+
+fn non_empty_command(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|s| !s.is_empty())
+}
+
+fn default_debounce_ms() -> u64 {
+    DEFAULT_DEBOUNCE_MS
+}
+
+fn is_default_debounce_ms(value: &u64) -> bool {
+    *value == DEFAULT_DEBOUNCE_MS
+}
+
+fn spawn_transition_commands(instance: &Instance, old: Status, new: Status, commands: Vec<String>) {
+    let context = StatusHookContext::from_instance(instance, old, new, Utc::now());
+    // Keep one transition's commands in one worker so `on_change` cannot race
+    // ahead of the status-specific hook.
+    spawn_hook_commands(commands, context);
+}
+
+#[derive(Debug, Clone)]
+struct DebounceEntry {
+    stable_status: Status,
+    generation: u64,
+    pending_status: Option<Status>,
+}
+
+fn debounce_state() -> &'static Mutex<HashMap<String, DebounceEntry>> {
+    static STATE: OnceLock<Mutex<HashMap<String, DebounceEntry>>> = OnceLock::new();
+    STATE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn run_debounced_transition(
+    instance: &Instance,
+    old: Status,
+    new: Status,
+    commands: Vec<String>,
+    debounce_ms: u64,
+) {
+    let session_id = instance.id.clone();
+    let mut state = debounce_state().lock().unwrap();
+    let entry = state.entry(session_id.clone()).or_insert(DebounceEntry {
+        stable_status: old,
+        generation: 0,
+        pending_status: None,
+    });
+    entry.generation = entry.generation.wrapping_add(1);
+    let generation = entry.generation;
+    let stable_status = entry.stable_status;
+
+    if new == stable_status {
+        entry.pending_status = None;
+        return;
+    }
+
+    if commands.is_empty() {
+        entry.stable_status = new;
+        entry.pending_status = None;
+        return;
+    }
+
+    entry.pending_status = Some(new);
+    drop(state);
+
+    let instance = instance.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(debounce_ms));
+        let mut state = debounce_state().lock().unwrap();
+        let should_run = match state.get_mut(&session_id) {
+            Some(entry) if entry.generation == generation && entry.pending_status == Some(new) => {
+                entry.stable_status = new;
+                entry.pending_status = None;
+                true
+            }
+            _ => false,
+        };
+        drop(state);
+
+        if should_run {
+            spawn_transition_commands(&instance, stable_status, new, commands);
+        }
+    });
+}
+
+#[cfg(not(test))]
+fn spawn_hook_commands(commands: Vec<String>, context: StatusHookContext) {
+    std::thread::spawn(move || {
+        let project_path = PathBuf::from(&context.project_path);
+        for command in commands {
+            let result = run_hook_command_blocking(&command, &context, &project_path);
+            if let Err(e) = result {
+                tracing::warn!(
+                    target: "hooks.status_hooks",
+                    session_id = %context.session_id,
+                    new_status = %context.new_status.as_str(),
+                    "status hook failed: {}",
+                    e
+                );
+            }
+        }
+    });
+}
+
+#[cfg(test)]
+fn spawn_hook_commands(commands: Vec<String>, context: StatusHookContext) {
+    let mut launches = recorded_launches().lock().unwrap();
+    for command in commands {
+        launches.push(RecordedLaunch {
+            command,
+            context: context.clone(),
+        });
+    }
+}
+
+#[cfg(not(test))]
+fn run_hook_command_blocking(
+    command: &str,
+    context: &StatusHookContext,
+    project_path: &Path,
+) -> std::io::Result<()> {
+    let mut child = build_command(command, context, project_path).spawn()?;
+    let status = child.wait()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(format!(
+            "command exited with status {:?}",
+            status.code()
+        )))
+    }
+}
+
+#[cfg(not(test))]
+fn build_command(
+    command: &str,
+    context: &StatusHookContext,
+    project_path: &Path,
+) -> std::process::Command {
+    let mut child = std::process::Command::new(crate::session::user_shell());
+    child
+        .arg("-c")
+        .arg(command)
+        .current_dir(project_path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_ASKPASS", "true")
+        .env("SSH_ASKPASS", "true");
+    for (key, value) in context.env_vars() {
+        child.env(key, value);
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        unsafe {
+            child.pre_exec(|| {
+                nix::unistd::setsid().map_err(std::io::Error::other)?;
+                Ok(())
+            });
+        }
+    }
+
+    child
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordedLaunch {
+    pub command: String,
+    pub context: StatusHookContext,
+}
+
+#[cfg(test)]
+fn recorded_launches() -> &'static std::sync::Mutex<Vec<RecordedLaunch>> {
+    static LAUNCHES: std::sync::OnceLock<std::sync::Mutex<Vec<RecordedLaunch>>> =
+        std::sync::OnceLock::new();
+    LAUNCHES.get_or_init(|| std::sync::Mutex::new(Vec::new()))
+}
+
+#[cfg(test)]
+pub fn take_recorded_launches() -> Vec<RecordedLaunch> {
+    std::mem::take(&mut *recorded_launches().lock().unwrap())
+}
+
+#[cfg(test)]
+pub fn reset_debounce_state() {
+    debounce_state().lock().unwrap().clear();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serial_test::serial;
+
+    #[test]
+    fn default_config_is_disabled() {
+        let config = StatusHookConfig::default();
+        assert!(!config.enabled);
+        assert_eq!(config.debounce_ms, DEFAULT_DEBOUNCE_MS);
+        assert!(commands_for_transition(Status::Running, Status::Waiting, &config).is_empty());
+    }
+
+    #[test]
+    fn deserializes_toml_config() {
+        let config: StatusHookConfig = toml::from_str(
+            r#"
+            enabled = true
+            on_waiting = "notify-send waiting"
+            on_change = "~/bin/aoe-hook"
+            "#,
+        )
+        .unwrap();
+        assert!(config.enabled);
+        assert_eq!(config.debounce_ms, DEFAULT_DEBOUNCE_MS);
+        assert_eq!(config.on_waiting.as_deref(), Some("notify-send waiting"));
+        assert_eq!(config.on_change.as_deref(), Some("~/bin/aoe-hook"));
+    }
+
+    #[test]
+    fn deserializes_debounce_ms() {
+        let config: StatusHookConfig = toml::from_str(
+            r#"
+            enabled = true
+            debounce_ms = 500
+            on_waiting = "notify-send waiting"
+            "#,
+        )
+        .unwrap();
+        assert_eq!(config.debounce_ms, 500);
+    }
+
+    #[test]
+    fn resolves_specific_command_before_catch_all() {
+        let config = StatusHookConfig {
+            enabled: true,
+            on_waiting: Some("waiting-command".to_string()),
+            on_change: Some("change-command".to_string()),
+            ..Default::default()
+        };
+        assert_eq!(
+            commands_for_transition(Status::Running, Status::Waiting, &config),
+            vec!["waiting-command".to_string(), "change-command".to_string()]
+        );
+    }
+
+    #[test]
+    fn skips_empty_commands_and_same_status() {
+        let config = StatusHookConfig {
+            enabled: true,
+            on_waiting: Some("  ".to_string()),
+            on_change: Some("change-command".to_string()),
+            ..Default::default()
+        };
+        assert!(commands_for_transition(Status::Waiting, Status::Waiting, &config).is_empty());
+        assert_eq!(
+            commands_for_transition(Status::Running, Status::Waiting, &config),
+            vec!["change-command".to_string()]
+        );
+    }
+
+    #[test]
+    fn applies_profile_overrides() {
+        let mut config = StatusHookConfig {
+            enabled: true,
+            on_waiting: Some("global".to_string()),
+            ..Default::default()
+        };
+        let override_config = StatusHookConfigOverride {
+            enabled: Some(false),
+            on_waiting: Some("profile".to_string()),
+            ..Default::default()
+        };
+        apply_status_hook_overrides(&mut config, &override_config);
+        assert!(!config.enabled);
+        assert_eq!(config.on_waiting.as_deref(), Some("profile"));
+    }
+
+    #[test]
+    fn applies_debounce_profile_override() {
+        let mut config = StatusHookConfig::default();
+        let override_config = StatusHookConfigOverride {
+            debounce_ms: Some(500),
+            ..Default::default()
+        };
+        apply_status_hook_overrides(&mut config, &override_config);
+        assert_eq!(config.debounce_ms, 500);
+    }
+
+    #[test]
+    #[serial]
+    fn debounces_stable_transition() {
+        reset_debounce_state();
+        take_recorded_launches();
+
+        let mut instance = Instance::new("Debounce Stable", "/tmp/project");
+        instance.id = "debounce-stable".to_string();
+        let config = StatusHookConfig {
+            enabled: true,
+            debounce_ms: 10,
+            on_waiting: Some("notify-waiting".to_string()),
+            ..Default::default()
+        };
+
+        run_for_transition(&instance, Status::Running, Status::Waiting, &config);
+        assert!(take_recorded_launches().is_empty());
+
+        std::thread::sleep(Duration::from_millis(30));
+        let launches = take_recorded_launches();
+        assert_eq!(launches.len(), 1);
+        assert_eq!(launches[0].command, "notify-waiting");
+        assert_eq!(launches[0].context.old_status, Status::Running);
+        assert_eq!(launches[0].context.new_status, Status::Waiting);
+    }
+
+    #[test]
+    #[serial]
+    fn debounce_cancels_flicker_back_to_stable_status() {
+        reset_debounce_state();
+        take_recorded_launches();
+
+        let mut instance = Instance::new("Debounce Flicker", "/tmp/project");
+        instance.id = "debounce-flicker".to_string();
+        let config = StatusHookConfig {
+            enabled: true,
+            debounce_ms: 10,
+            on_waiting: Some("notify-waiting".to_string()),
+            ..Default::default()
+        };
+
+        run_for_transition(&instance, Status::Running, Status::Waiting, &config);
+        run_for_transition(&instance, Status::Waiting, Status::Running, &config);
+
+        std::thread::sleep(Duration::from_millis(30));
+        assert!(take_recorded_launches().is_empty());
+    }
+
+    #[test]
+    #[serial]
+    fn debounce_coalesces_to_latest_pending_status() {
+        reset_debounce_state();
+        take_recorded_launches();
+
+        let mut instance = Instance::new("Debounce Latest", "/tmp/project");
+        instance.id = "debounce-latest".to_string();
+        let config = StatusHookConfig {
+            enabled: true,
+            debounce_ms: 10,
+            on_waiting: Some("notify-waiting".to_string()),
+            on_idle: Some("notify-idle".to_string()),
+            ..Default::default()
+        };
+
+        run_for_transition(&instance, Status::Running, Status::Waiting, &config);
+        run_for_transition(&instance, Status::Waiting, Status::Idle, &config);
+
+        std::thread::sleep(Duration::from_millis(30));
+        let launches = take_recorded_launches();
+        assert_eq!(launches.len(), 1);
+        assert_eq!(launches[0].command, "notify-idle");
+        assert_eq!(launches[0].context.old_status, Status::Running);
+        assert_eq!(launches[0].context.new_status, Status::Idle);
+    }
+
+    #[test]
+    fn builds_context_env_vars() {
+        let mut instance = Instance::new("Build API", "/tmp/project");
+        instance.id = "abc123".to_string();
+        instance.tool = "codex".to_string();
+        instance.group_path = "Backend".to_string();
+        instance.source_profile = "work".to_string();
+        let changed_at = DateTime::parse_from_rfc3339("2026-05-20T10:11:12Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        let context = StatusHookContext::from_instance(
+            &instance,
+            Status::Running,
+            Status::Waiting,
+            changed_at,
+        );
+        let env = context.env_vars();
+        assert!(env.contains(&("AOE_SESSION_ID", "abc123".to_string())));
+        assert!(env.contains(&("AOE_SESSION_TITLE", "Build API".to_string())));
+        assert!(env.contains(&("AOE_PROJECT_PATH", "/tmp/project".to_string())));
+        assert!(env.contains(&("AOE_PROFILE", "work".to_string())));
+        assert!(env.contains(&("AOE_TOOL", "codex".to_string())));
+        assert!(env.contains(&("AOE_GROUP_PATH", "Backend".to_string())));
+        assert!(env.contains(&("AOE_OLD_STATUS", "running".to_string())));
+        assert!(env.contains(&("AOE_NEW_STATUS", "waiting".to_string())));
+        assert!(env.contains(&(
+            "AOE_STATUS_CHANGED_AT",
+            "2026-05-20T10:11:12+00:00".to_string()
+        )));
+    }
+}

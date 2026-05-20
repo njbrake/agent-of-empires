@@ -306,7 +306,7 @@ type = "command"
 command = "sh -c '...'"
 ```
 
-Set `hook_config: Some(AgentHookConfig { settings_rel_path: ".codex/config.toml", ... })` in the agent def. Host installs still use `install_codex_hooks()` so `CODEX_HOME`, existing `[hooks.state]` trust data, and `[features].hooks = false` are respected. Codex status is hook-first, with targeted pane reconciliation for known hook gaps.
+Set `hook_config: Some(AgentHookConfig { settings_rel_path: ".codex/config.toml", ... })` in the agent def. Host installs still use `install_codex_hooks()` so `CODEX_HOME`, existing `[hooks.state]` trust data, `[features].hooks = false`, `config.toml.lock`, and atomic replacement are respected. Codex status is hook-first, with targeted pane reconciliation for known hook gaps.
 
 ### Hermes (custom YAML)
 
@@ -334,6 +334,7 @@ hooks:
 - **Forgetting `status_hook_env_prefix`**: Without `AOE_INSTANCE_ID`, hooks write nothing. Add your tool name to the check in `src/session/instance.rs`.
 - **Wrong hook format**: Each agent has its own schema; test that hooks actually fire by sending a message and checking `/tmp/aoe-hooks/*/status`.
 - **Sandbox hooks are separate**: Host hook installation (`install_agent_status_hooks`) doesn't cover sandbox sessions. You also need to wire hooks into `build_container_config` in `src/session/container_config.rs` so the sidecar volume is mounted and the agent config is materialized inside the container.
+- **Do not bypass the Codex writer**: Codex config mutations must go through `install_codex_hooks()` or `uninstall_codex_hooks()` so AoE preserves trust state and avoids partial writes during concurrent launches.
 - **Don't shell out in `install_*_hooks()`**: Keep hook installation as pure file IO. Any subprocess calls (like setting a default agent) should be in a separate function so `cargo test` doesn't mutate the developer's real environment.
 - **Use structured output when parsing agent CLIs**: If the agent CLI has `--format json` or similar, use it instead of substring matching on human-readable output. Human-readable formats change between versions.
 - **Waiting status needs a dedicated event**: Not all agents have an approval/permission event. If the agent doesn't expose one, document it as a limitation and consider filing upstream.

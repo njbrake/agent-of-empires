@@ -18,6 +18,7 @@ pub(crate) mod serde_helpers;
 mod storage;
 
 pub use crate::sound::{SoundConfig, SoundConfigOverride};
+pub use crate::status_hooks::{StatusHookConfig, StatusHookConfigOverride};
 pub(crate) use capture::is_valid_session_id;
 pub use config::{
     get_update_settings, load_config, save_config, Config, ContainerRuntimeName,

@@ -196,7 +196,6 @@ pub fn export_theme_toml(theme: &Theme) -> Result<String, toml::ser::Error> {
 
 #[cfg(test)]
 mod tests {
-    use super::themes::ThemeAppearance;
     use super::*;
     use ratatui::style::Color;
     use std::io::Write;

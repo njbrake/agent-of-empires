@@ -50,6 +50,22 @@ pub enum Status {
     Creating,
 }
 
+impl Status {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Status::Running => "running",
+            Status::Waiting => "waiting",
+            Status::Idle => "idle",
+            Status::Unknown => "unknown",
+            Status::Stopped => "stopped",
+            Status::Error => "error",
+            Status::Starting => "starting",
+            Status::Deleting => "deleting",
+            Status::Creating => "creating",
+        }
+    }
+}
+
 /// Outcome of a `start_with_resume_fallback` cascade.
 ///
 /// Failures (both tiers) propagate as `Err` so callers keep the existing

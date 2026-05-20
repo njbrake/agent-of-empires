@@ -140,18 +140,7 @@ impl SettingsView {
             available_profiles.sort();
         }
 
-        let categories = vec![
-            SettingsCategory::Theme,
-            SettingsCategory::Session,
-            SettingsCategory::Hooks,
-            SettingsCategory::Sandbox,
-            SettingsCategory::Worktree,
-            SettingsCategory::Updates,
-            SettingsCategory::Tmux,
-            SettingsCategory::Sound,
-            SettingsCategory::Web,
-            SettingsCategory::Logging,
-        ];
+        let categories = Self::categories_for_scope(SettingsScope::Global);
 
         let mut view = Self {
             profile: profile.to_string(),
@@ -181,6 +170,35 @@ impl SettingsView {
 
         view.rebuild_fields();
         Ok(view)
+    }
+
+    fn categories_for_scope(scope: SettingsScope) -> Vec<SettingsCategory> {
+        let mut categories = vec![
+            SettingsCategory::Theme,
+            SettingsCategory::Session,
+            SettingsCategory::Hooks,
+        ];
+        if scope != SettingsScope::Repo {
+            categories.push(SettingsCategory::StatusHooks);
+        }
+        categories.extend([
+            SettingsCategory::Sandbox,
+            SettingsCategory::Worktree,
+            SettingsCategory::Updates,
+            SettingsCategory::Tmux,
+            SettingsCategory::Sound,
+            SettingsCategory::Web,
+            SettingsCategory::Logging,
+        ]);
+        categories
+    }
+
+    pub(super) fn rebuild_categories_for_scope(&mut self) {
+        let current = self.categories.get(self.selected_category).copied();
+        self.categories = Self::categories_for_scope(self.scope);
+        self.selected_category = current
+            .and_then(|category| self.categories.iter().position(|c| *c == category))
+            .unwrap_or(0);
     }
 
     /// Rebuild the fields list based on current category and scope

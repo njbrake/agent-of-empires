@@ -21,6 +21,7 @@ pub enum SettingsCategory {
     Tmux,
     Session,
     Sound,
+    StatusHooks,
     Hooks,
     Web,
     Cockpit,
@@ -37,6 +38,7 @@ impl SettingsCategory {
             Self::Tmux => "Tmux",
             Self::Session => "Session",
             Self::Sound => "Sound",
+            Self::StatusHooks => "Status Hooks",
             Self::Hooks => "Hooks",
             Self::Web => "Web",
             Self::Cockpit => "Cockpit",
@@ -105,6 +107,15 @@ pub enum FieldKey {
     SoundOnIdle,
     SoundOnError,
     SoundOnApproval,
+    // Status hooks
+    StatusHooksEnabled,
+    StatusHookDebounceMs,
+    StatusHookOnStarting,
+    StatusHookOnRunning,
+    StatusHookOnWaiting,
+    StatusHookOnIdle,
+    StatusHookOnError,
+    StatusHookOnChange,
     // Hooks
     HookOnCreate,
     HookOnLaunch,
@@ -300,6 +311,7 @@ pub fn build_fields_for_category(
         SettingsCategory::Tmux => build_tmux_fields(scope, global, profile),
         SettingsCategory::Session => build_session_fields(scope, global, profile),
         SettingsCategory::Sound => build_sound_fields(scope, global, profile),
+        SettingsCategory::StatusHooks => build_status_hook_fields(scope, global, profile),
         SettingsCategory::Hooks => build_hooks_fields(scope, global, profile),
         SettingsCategory::Web => build_web_fields(scope, global, profile),
         SettingsCategory::Cockpit => build_cockpit_fields(scope, global, profile),
@@ -1879,6 +1891,158 @@ fn build_hooks_fields(
     ]
 }
 
+fn build_status_hook_fields(
+    scope: SettingsScope,
+    global: &Config,
+    profile: &ProfileConfig,
+) -> Vec<SettingField> {
+    let hooks = profile.status_hooks.as_ref();
+
+    let (enabled, o1) = resolve_value(
+        scope,
+        global.status_hooks.enabled,
+        hooks.and_then(|h| h.enabled),
+    );
+    let (debounce_ms, debounce_override) = resolve_value(
+        scope,
+        global.status_hooks.debounce_ms,
+        hooks.and_then(|h| h.debounce_ms),
+    );
+    let (on_starting, o2) = resolve_optional(
+        scope,
+        global.status_hooks.on_starting.clone(),
+        hooks.and_then(|h| h.on_starting.clone()),
+        hooks.map(|h| h.on_starting.is_some()).unwrap_or(false),
+    );
+    let (on_running, o3) = resolve_optional(
+        scope,
+        global.status_hooks.on_running.clone(),
+        hooks.and_then(|h| h.on_running.clone()),
+        hooks.map(|h| h.on_running.is_some()).unwrap_or(false),
+    );
+    let (on_waiting, o4) = resolve_optional(
+        scope,
+        global.status_hooks.on_waiting.clone(),
+        hooks.and_then(|h| h.on_waiting.clone()),
+        hooks.map(|h| h.on_waiting.is_some()).unwrap_or(false),
+    );
+    let (on_idle, o5) = resolve_optional(
+        scope,
+        global.status_hooks.on_idle.clone(),
+        hooks.and_then(|h| h.on_idle.clone()),
+        hooks.map(|h| h.on_idle.is_some()).unwrap_or(false),
+    );
+    let (on_error, o6) = resolve_optional(
+        scope,
+        global.status_hooks.on_error.clone(),
+        hooks.and_then(|h| h.on_error.clone()),
+        hooks.map(|h| h.on_error.is_some()).unwrap_or(false),
+    );
+    let (on_change, o7) = resolve_optional(
+        scope,
+        global.status_hooks.on_change.clone(),
+        hooks.and_then(|h| h.on_change.clone()),
+        hooks.map(|h| h.on_change.is_some()).unwrap_or(false),
+    );
+
+    vec![
+        SettingField {
+            key: FieldKey::StatusHooksEnabled,
+            label: "Enabled",
+            description: "Run local commands when TUI sessions change status",
+            value: FieldValue::Bool(enabled),
+            category: SettingsCategory::StatusHooks,
+            has_override: o1,
+            inherited_display: inherited_if(o1, FieldValue::Bool(global.status_hooks.enabled)),
+        },
+        SettingField {
+            key: FieldKey::StatusHookDebounceMs,
+            label: "Debounce (ms)",
+            description: "Milliseconds a status must remain stable before running hook commands",
+            value: FieldValue::Number(debounce_ms),
+            category: SettingsCategory::StatusHooks,
+            has_override: debounce_override,
+            inherited_display: inherited_if(
+                debounce_override,
+                FieldValue::Number(global.status_hooks.debounce_ms),
+            ),
+        },
+        SettingField {
+            key: FieldKey::StatusHookOnStarting,
+            label: "On Starting",
+            description: "Shell command run when a session enters Starting",
+            value: FieldValue::OptionalText(on_starting),
+            category: SettingsCategory::StatusHooks,
+            has_override: o2,
+            inherited_display: inherited_if(
+                o2,
+                FieldValue::OptionalText(global.status_hooks.on_starting.clone()),
+            ),
+        },
+        SettingField {
+            key: FieldKey::StatusHookOnRunning,
+            label: "On Running",
+            description: "Shell command run when a session enters Running",
+            value: FieldValue::OptionalText(on_running),
+            category: SettingsCategory::StatusHooks,
+            has_override: o3,
+            inherited_display: inherited_if(
+                o3,
+                FieldValue::OptionalText(global.status_hooks.on_running.clone()),
+            ),
+        },
+        SettingField {
+            key: FieldKey::StatusHookOnWaiting,
+            label: "On Waiting",
+            description: "Shell command run when a session enters Waiting",
+            value: FieldValue::OptionalText(on_waiting),
+            category: SettingsCategory::StatusHooks,
+            has_override: o4,
+            inherited_display: inherited_if(
+                o4,
+                FieldValue::OptionalText(global.status_hooks.on_waiting.clone()),
+            ),
+        },
+        SettingField {
+            key: FieldKey::StatusHookOnIdle,
+            label: "On Idle",
+            description: "Shell command run when a session enters Idle",
+            value: FieldValue::OptionalText(on_idle),
+            category: SettingsCategory::StatusHooks,
+            has_override: o5,
+            inherited_display: inherited_if(
+                o5,
+                FieldValue::OptionalText(global.status_hooks.on_idle.clone()),
+            ),
+        },
+        SettingField {
+            key: FieldKey::StatusHookOnError,
+            label: "On Error",
+            description: "Shell command run when a session enters Error",
+            value: FieldValue::OptionalText(on_error),
+            category: SettingsCategory::StatusHooks,
+            has_override: o6,
+            inherited_display: inherited_if(
+                o6,
+                FieldValue::OptionalText(global.status_hooks.on_error.clone()),
+            ),
+        },
+        SettingField {
+            key: FieldKey::StatusHookOnChange,
+            label: "On Any Change",
+            description:
+                "Shell command run after the status-specific command on every status change",
+            value: FieldValue::OptionalText(on_change),
+            category: SettingsCategory::StatusHooks,
+            has_override: o7,
+            inherited_display: inherited_if(
+                o7,
+                FieldValue::OptionalText(global.status_hooks.on_change.clone()),
+            ),
+        },
+    ]
+}
+
 /// Apply a field's value back to the appropriate config.
 /// For profile scope, the value is always stored as an override.
 pub fn apply_field_to_config(
@@ -2043,6 +2207,31 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
         }
         (FieldKey::SoundOnApproval, FieldValue::OptionalText(v)) => {
             config.sound.on_approval = v.clone();
+        }
+        // Status hooks
+        (FieldKey::StatusHooksEnabled, FieldValue::Bool(v)) => {
+            config.status_hooks.enabled = *v;
+        }
+        (FieldKey::StatusHookDebounceMs, FieldValue::Number(v)) => {
+            config.status_hooks.debounce_ms = *v;
+        }
+        (FieldKey::StatusHookOnStarting, FieldValue::OptionalText(v)) => {
+            config.status_hooks.on_starting = v.clone();
+        }
+        (FieldKey::StatusHookOnRunning, FieldValue::OptionalText(v)) => {
+            config.status_hooks.on_running = v.clone();
+        }
+        (FieldKey::StatusHookOnWaiting, FieldValue::OptionalText(v)) => {
+            config.status_hooks.on_waiting = v.clone();
+        }
+        (FieldKey::StatusHookOnIdle, FieldValue::OptionalText(v)) => {
+            config.status_hooks.on_idle = v.clone();
+        }
+        (FieldKey::StatusHookOnError, FieldValue::OptionalText(v)) => {
+            config.status_hooks.on_error = v.clone();
+        }
+        (FieldKey::StatusHookOnChange, FieldValue::OptionalText(v)) => {
+            config.status_hooks.on_change = v.clone();
         }
         // Hooks
         (FieldKey::HookOnCreate, FieldValue::List(v)) => config.hooks.on_create = v.clone(),
@@ -2443,6 +2632,49 @@ fn apply_field_to_profile(field: &SettingField, _global: &Config, config: &mut P
                 .get_or_insert_with(crate::sound::SoundConfigOverride::default);
             s.on_approval = v.clone();
         }
+        // Status hooks
+        (FieldKey::StatusHooksEnabled, FieldValue::Bool(v)) => {
+            set_profile_override(*v, &mut config.status_hooks, |s, val| s.enabled = val);
+        }
+        (FieldKey::StatusHookDebounceMs, FieldValue::Number(v)) => {
+            set_profile_override(*v, &mut config.status_hooks, |s, val| s.debounce_ms = val);
+        }
+        (FieldKey::StatusHookOnStarting, FieldValue::OptionalText(v)) => {
+            let s = config
+                .status_hooks
+                .get_or_insert_with(crate::status_hooks::StatusHookConfigOverride::default);
+            s.on_starting = v.clone();
+        }
+        (FieldKey::StatusHookOnRunning, FieldValue::OptionalText(v)) => {
+            let s = config
+                .status_hooks
+                .get_or_insert_with(crate::status_hooks::StatusHookConfigOverride::default);
+            s.on_running = v.clone();
+        }
+        (FieldKey::StatusHookOnWaiting, FieldValue::OptionalText(v)) => {
+            let s = config
+                .status_hooks
+                .get_or_insert_with(crate::status_hooks::StatusHookConfigOverride::default);
+            s.on_waiting = v.clone();
+        }
+        (FieldKey::StatusHookOnIdle, FieldValue::OptionalText(v)) => {
+            let s = config
+                .status_hooks
+                .get_or_insert_with(crate::status_hooks::StatusHookConfigOverride::default);
+            s.on_idle = v.clone();
+        }
+        (FieldKey::StatusHookOnError, FieldValue::OptionalText(v)) => {
+            let s = config
+                .status_hooks
+                .get_or_insert_with(crate::status_hooks::StatusHookConfigOverride::default);
+            s.on_error = v.clone();
+        }
+        (FieldKey::StatusHookOnChange, FieldValue::OptionalText(v)) => {
+            let s = config
+                .status_hooks
+                .get_or_insert_with(crate::status_hooks::StatusHookConfigOverride::default);
+            s.on_change = v.clone();
+        }
         // Hooks
         (FieldKey::HookOnCreate, FieldValue::List(v)) => {
             set_profile_override(v.clone(), &mut config.hooks, |s, val| s.on_create = val);
@@ -2778,5 +3010,76 @@ mod tests {
 
         assert!(field.has_override);
         assert!(matches!(field.value, FieldValue::Bool(true)));
+    }
+
+    #[test]
+    fn test_status_hook_debounce_field_uses_default() {
+        let global = Config::default();
+        let profile = ProfileConfig::default();
+
+        let fields = build_fields_for_category(
+            SettingsCategory::StatusHooks,
+            SettingsScope::Global,
+            &global,
+            &profile,
+        );
+        let field = fields
+            .iter()
+            .find(|f| f.key == FieldKey::StatusHookDebounceMs)
+            .expect("StatusHookDebounceMs field should exist");
+
+        assert_eq!(field.label, "Debounce (ms)");
+        assert!(matches!(field.value, FieldValue::Number(100)));
+    }
+
+    #[test]
+    fn test_status_hook_debounce_profile_override() {
+        let global = Config::default();
+        let profile = ProfileConfig {
+            status_hooks: Some(crate::status_hooks::StatusHookConfigOverride {
+                debounce_ms: Some(500),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+
+        let fields = build_fields_for_category(
+            SettingsCategory::StatusHooks,
+            SettingsScope::Profile,
+            &global,
+            &profile,
+        );
+        let field = fields
+            .iter()
+            .find(|f| f.key == FieldKey::StatusHookDebounceMs)
+            .expect("StatusHookDebounceMs field should exist");
+
+        assert!(field.has_override);
+        assert!(matches!(field.value, FieldValue::Number(500)));
+        assert_eq!(field.inherited_display.as_deref(), Some("100"));
+    }
+
+    #[test]
+    fn test_status_hook_debounce_apply_global_and_profile() {
+        let mut global = Config::default();
+        let mut profile = ProfileConfig::default();
+        let field = SettingField {
+            key: FieldKey::StatusHookDebounceMs,
+            label: "Debounce (ms)",
+            description: "",
+            value: FieldValue::Number(250),
+            category: SettingsCategory::StatusHooks,
+            has_override: false,
+            inherited_display: None,
+        };
+
+        apply_field_to_config(&field, SettingsScope::Global, &mut global, &mut profile);
+        assert_eq!(global.status_hooks.debounce_ms, 250);
+
+        apply_field_to_config(&field, SettingsScope::Profile, &mut global, &mut profile);
+        assert_eq!(
+            profile.status_hooks.as_ref().and_then(|s| s.debounce_ms),
+            Some(250)
+        );
     }
 }

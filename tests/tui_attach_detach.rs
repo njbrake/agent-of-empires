@@ -14,6 +14,45 @@ fn tmux_available() -> bool {
         .unwrap_or(false)
 }
 
+fn app_method_body<'a>(source: &'a str, name: &str) -> &'a str {
+    let signature = format!("fn {name}");
+    let start = source
+        .find(&signature)
+        .unwrap_or_else(|| panic!("{name} method not found"));
+    let section = &source[start..];
+    let open = section
+        .find('{')
+        .unwrap_or_else(|| panic!("{name} method body not found"));
+    let body_start = start + open;
+    let mut depth = 0;
+
+    for (offset, ch) in source[body_start..].char_indices() {
+        match ch {
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return &source[body_start..body_start + offset + 1];
+                }
+            }
+            _ => {}
+        }
+    }
+
+    panic!("{name} method body should have a closing brace");
+}
+
+fn assert_contains_in_order(haystack: &str, needles: &[&str]) {
+    let mut cursor = 0;
+
+    for needle in needles {
+        let relative_index = haystack[cursor..]
+            .find(needle)
+            .unwrap_or_else(|| panic!("expected to find `{needle}` after byte {cursor}"));
+        cursor += relative_index + needle.len();
+    }
+}
+
 /// Test that tmux sessions can be created and killed
 #[test]
 fn test_tmux_session_lifecycle() {
@@ -80,48 +119,41 @@ fn test_session_name_format() {
 
 /// Test terminal mode switching sequence
 ///
-/// This test documents the expected sequence for attach/detach:
-/// 1. Drop EventStream (stop background stdin reader)
-/// 2. Disable raw mode
-/// 3. Leave alternate screen
-/// 4. Show cursor
-/// 5. [user interacts with tmux]
-/// 6. Recreate EventStream (fresh stdin reader)
-/// 7. Enable raw mode
-/// 8. Enter alternate screen
-/// 9. Hide cursor
-/// 10. Clear terminal
+/// This guards the production sequence around the attach closure:
+/// leave TUI mode, release the EventStream stdin reader, run the
+/// attach closure, recreate the EventStream, and restore TUI mode.
 #[test]
 fn test_terminal_mode_sequence_documented() {
-    // This test documents the expected behavior rather than testing it directly
-    // since testing terminal modes requires actual terminal interaction.
+    let source = std::fs::read_to_string("src/tui/app.rs").expect("Failed to read app.rs");
+    let helper_body = app_method_body(&source, "with_raw_mode_disabled");
 
-    let expected_exit_sequence = [
-        "drop_event_stream",
-        "disable_raw_mode",
-        "LeaveAlternateScreen",
-        "cursor::Show",
-        "flush",
-    ];
+    assert_contains_in_order(
+        helper_body,
+        &[
+            "disable_raw_mode",
+            "LeaveAlternateScreen",
+            "DisableBracketedPaste",
+            "DisableMouseCapture",
+            "cursor::Show",
+            "Write::flush",
+            "event_stream.take",
+            "let result = f()",
+        ],
+    );
 
-    let expected_reenter_sequence = [
-        "recreate_event_stream",
-        "enable_raw_mode",
-        "EnterAlternateScreen",
-        "cursor::Hide",
-        "flush",
-        "terminal.clear",
-        "set_needs_redraw",
-    ];
-
-    // Verify sequences have all required steps
-    assert!(expected_exit_sequence.contains(&"disable_raw_mode"));
-    assert!(expected_exit_sequence.contains(&"LeaveAlternateScreen"));
-    assert!(expected_exit_sequence.contains(&"drop_event_stream"));
-    assert!(expected_reenter_sequence.contains(&"enable_raw_mode"));
-    assert!(expected_reenter_sequence.contains(&"EnterAlternateScreen"));
-    assert!(expected_reenter_sequence.contains(&"recreate_event_stream"));
-    assert!(expected_reenter_sequence.contains(&"terminal.clear"));
+    assert_contains_in_order(
+        helper_body,
+        &[
+            "self.event_stream = Some(EventStream::new())",
+            "enable_raw_mode",
+            "EnterAlternateScreen",
+            "EnableBracketedPaste",
+            "cursor::Hide",
+            "sync_mouse_capture",
+            "Write::flush",
+            "terminal.clear",
+        ],
+    );
 }
 
 /// Test that attach/detach uses terminal backend, not std::io::stdout()
@@ -130,24 +162,15 @@ fn test_terminal_mode_sequence_documented() {
 /// using std::io::stdout() instead of terminal.backend_mut() caused
 /// file descriptor desynchronization, corrupting tmux sessions.
 ///
-/// The terminal leave/restore logic lives in `with_raw_mode_disabled`,
-/// which `attach_session` delegates to.
+/// The terminal leave/restore logic lives in `with_raw_mode_disabled`.
+/// Attach paths go through `with_attached_status_hooks`, which wraps that
+/// helper while polling status hooks during a blocked tmux attach.
 #[test]
 fn test_attach_uses_terminal_backend() {
     let source = std::fs::read_to_string("src/tui/app.rs").expect("Failed to read app.rs");
 
     // The shared helper that handles terminal mode switching must use backend_mut()
-    let helper_start = source
-        .find("fn with_raw_mode_disabled")
-        .expect("with_raw_mode_disabled helper not found");
-
-    let helper_section = &source[helper_start..];
-    let fn_end = helper_section
-        .find("\n}\n")
-        .map(|i| i + 3)
-        .unwrap_or(helper_section.len());
-
-    let helper_body = &helper_section[..fn_end];
+    let helper_body = app_method_body(&source, "with_raw_mode_disabled");
 
     assert!(
         !helper_body.contains("std::io::stdout()"),
@@ -161,28 +184,51 @@ fn test_attach_uses_terminal_backend() {
         "with_raw_mode_disabled should use terminal.backend_mut() for terminal operations"
     );
 
-    // attach_session must delegate to the helper, not bypass it
-    let attach_fn_start = source
-        .find("fn attach_session(")
-        .expect("attach_session function not found");
-
-    let attach_fn_section = &source[attach_fn_start..];
-    let attach_fn_end = attach_fn_section
-        .find("\n    fn ")
-        .or_else(|| attach_fn_section.find("\n}\n"))
-        .unwrap_or(attach_fn_section.len());
-
-    let attach_fn_body = &attach_fn_section[..attach_fn_end];
+    let attached_status_body = app_method_body(&source, "with_attached_status_hooks");
 
     assert!(
-        attach_fn_body.contains("with_raw_mode_disabled"),
-        "attach_session should delegate to with_raw_mode_disabled"
+        attached_status_body.contains("with_raw_mode_disabled"),
+        "with_attached_status_hooks should delegate to with_raw_mode_disabled"
     );
 
     assert!(
-        !attach_fn_body.contains("std::io::stdout()"),
-        "attach_session should not use std::io::stdout() directly"
+        !attached_status_body.contains("std::io::stdout()"),
+        "with_attached_status_hooks should not use std::io::stdout() directly"
     );
+
+    for attach_method in ["attach_session", "attach_terminal", "attach_tool_session"] {
+        let attach_body = app_method_body(&source, attach_method);
+
+        assert!(
+            attach_body.contains("with_attached_status_hooks"),
+            "{attach_method} should leave TUI mode through with_attached_status_hooks"
+        );
+
+        assert!(
+            !attach_body.contains("std::io::stdout()"),
+            "{attach_method} should not use std::io::stdout() directly"
+        );
+    }
+}
+
+/// Attached status hooks may already have fired while tmux owned the
+/// terminal. Apply their final snapshot after reload so the next normal
+/// poll sees the same runtime status and does not fire the transition again.
+#[test]
+fn test_attach_applies_attached_status_snapshot_after_reload() {
+    let source = std::fs::read_to_string("src/tui/app.rs").expect("Failed to read app.rs");
+
+    for attach_method in ["attach_session", "attach_terminal", "attach_tool_session"] {
+        let attach_body = app_method_body(&source, attach_method);
+        assert_contains_in_order(
+            attach_body,
+            &[
+                "attached_status_updates",
+                "self.home.reload()?",
+                "apply_status_updates_without_hooks(attached_status_updates)",
+            ],
+        );
+    }
 }
 
 /// Test that a failed restart inside attach surfaces a transient toast.

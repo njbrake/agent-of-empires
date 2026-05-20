@@ -12,6 +12,7 @@ mod status_file;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
+use fs2::FileExt as _;
 use serde_json::Value;
 
 pub use status_file::{cleanup_hook_status_dir, hook_status_dir, read_hook_status};
@@ -197,6 +198,10 @@ const CODEX_HOOK_EVENT_NAMES: &[&str] = &[
 ];
 
 /// Install AoE status hooks into Codex's `config.toml`.
+///
+/// Codex also stores hook trust state in this file. Keep every AoE mutation
+/// behind the lock and atomic replace below so repeated launches cannot leave
+/// duplicated hook blocks or torn TOML.
 pub fn install_codex_hooks(config_path: &Path, events: &[crate::agents::HookEvent]) -> Result<()> {
     install_codex_hooks_with_preserved_state(config_path, events, None)
 }
@@ -206,12 +211,14 @@ pub(crate) fn snapshot_codex_hooks_state(config_path: &Path) -> Result<Option<to
         return Ok(None);
     }
 
-    let config = read_codex_config(config_path)?;
-    Ok(config
-        .get("hooks")
-        .and_then(|hooks| hooks.as_table_like())
-        .and_then(|hooks| hooks.get("state"))
-        .cloned())
+    with_codex_config_lock(config_path, || {
+        let config = read_codex_config(config_path)?;
+        Ok(config
+            .get("hooks")
+            .and_then(|hooks| hooks.as_table_like())
+            .and_then(|hooks| hooks.get("state"))
+            .cloned())
+    })
 }
 
 pub(crate) fn install_codex_hooks_with_preserved_state(
@@ -219,25 +226,97 @@ pub(crate) fn install_codex_hooks_with_preserved_state(
     events: &[crate::agents::HookEvent],
     preserved_state: Option<toml_edit::Item>,
 ) -> Result<()> {
-    if codex_hooks_feature_is_disabled(config_path)? {
-        return Ok(());
-    }
+    with_codex_config_lock(config_path, || {
+        let mut config = read_codex_config(config_path)?;
+        if codex_hooks_feature_is_disabled(&config, config_path) {
+            return Ok(());
+        }
 
-    let mut config = read_codex_config(config_path)?;
-    if let Some(state) = preserved_state {
-        let hooks = ensure_codex_hooks_table(&mut config)?;
-        hooks.insert("state", state);
-    }
-    remove_codex_aoe_hooks(&mut config)?;
-    merge_codex_hooks(&mut config, events)?;
-
-    if let Some(parent) = config_path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    std::fs::write(config_path, config.to_string())?;
+        if let Some(state) = preserved_state {
+            let hooks = ensure_codex_hooks_table(&mut config)?;
+            hooks.insert("state", state);
+        }
+        remove_codex_aoe_hooks(&mut config)?;
+        merge_codex_hooks(&mut config, events)?;
+        write_codex_config(config_path, &config)?;
+        Ok(())
+    })?;
 
     tracing::info!(target: "hooks.install", "Installed AoE hooks in {}", config_path.display());
     Ok(())
+}
+
+fn with_codex_config_lock<T>(config_path: &Path, f: impl FnOnce() -> Result<T>) -> Result<T> {
+    if let Some(parent) = config_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    let lock_path = config_path.with_extension("toml.lock");
+    let lock_file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(&lock_path)
+        .with_context(|| format!("Failed to open Codex config lock {}", lock_path.display()))?;
+
+    lock_file
+        .lock_exclusive()
+        .with_context(|| format!("Failed to lock Codex config {}", config_path.display()))?;
+
+    let result = f();
+    let unlock_result = fs2::FileExt::unlock(&lock_file);
+    match (result, unlock_result) {
+        (Ok(value), Ok(())) => Ok(value),
+        (Err(error), _) => Err(error),
+        (Ok(_), Err(error)) => Err(error)
+            .with_context(|| format!("Failed to unlock Codex config lock {}", lock_path.display())),
+    }
+}
+
+fn write_codex_config(config_path: &Path, config: &toml_edit::DocumentMut) -> Result<()> {
+    let write_path = codex_config_write_path(config_path)?;
+    crate::session::atomic_write(&write_path, config.to_string().as_bytes())
+}
+
+fn codex_config_write_path(config_path: &Path) -> Result<PathBuf> {
+    let mut write_path = config_path.to_path_buf();
+
+    for _ in 0..32 {
+        let metadata = match std::fs::symlink_metadata(&write_path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(write_path),
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("Failed to inspect Codex config {}", write_path.display())
+                });
+            }
+        };
+
+        if !metadata.file_type().is_symlink() {
+            return Ok(write_path);
+        }
+
+        let target = std::fs::read_link(&write_path).with_context(|| {
+            format!(
+                "Failed to read Codex config symlink {}",
+                write_path.display()
+            )
+        })?;
+        write_path = if target.is_absolute() {
+            target
+        } else {
+            write_path
+                .parent()
+                .unwrap_or_else(|| Path::new("."))
+                .join(target)
+        };
+    }
+
+    Err(anyhow::anyhow!(
+        "Codex config symlink chain is too deep: {}",
+        config_path.display()
+    ))
 }
 
 fn read_codex_config(config_path: &Path) -> Result<toml_edit::DocumentMut> {
@@ -442,15 +521,7 @@ fn codex_toml_table_command(table: &dyn toml_edit::TableLike) -> Option<&str> {
     table.get("command").and_then(toml_edit::Item::as_str)
 }
 
-fn codex_hooks_feature_is_disabled(config_path: &Path) -> Result<bool> {
-    if !config_path.exists() {
-        return Ok(false);
-    }
-
-    let content = std::fs::read_to_string(config_path)?;
-    let config = content
-        .parse::<toml_edit::DocumentMut>()
-        .with_context(|| format!("Failed to parse {}", config_path.display()))?;
+fn codex_hooks_feature_is_disabled(config: &toml_edit::DocumentMut, config_path: &Path) -> bool {
     let disabled = config
         .get("features")
         .and_then(|features| {
@@ -469,7 +540,7 @@ fn codex_hooks_feature_is_disabled(config_path: &Path) -> Result<bool> {
         );
     }
 
-    Ok(disabled)
+    disabled
 }
 
 /// Remove AoE status hooks from Codex's `config.toml`.
@@ -478,14 +549,19 @@ pub fn uninstall_codex_hooks(config_path: &Path) -> Result<bool> {
         return Ok(false);
     }
 
-    let mut config = read_codex_config(config_path)?;
-    if !remove_codex_aoe_hooks(&mut config)? {
-        return Ok(false);
-    }
+    let modified = with_codex_config_lock(config_path, || {
+        let mut config = read_codex_config(config_path)?;
+        if !remove_codex_aoe_hooks(&mut config)? {
+            return Ok(false);
+        }
 
-    std::fs::write(config_path, config.to_string())?;
-    tracing::info!(target: "hooks.uninstall", "Removed AoE hooks from {}", config_path.display());
-    Ok(true)
+        write_codex_config(config_path, &config)?;
+        Ok(true)
+    })?;
+    if modified {
+        tracing::info!(target: "hooks.uninstall", "Removed AoE hooks from {}", config_path.display());
+    }
+    Ok(modified)
 }
 
 /// Remove all AoE hooks from an agent's `settings.json` file.
@@ -1314,6 +1390,38 @@ mod tests {
         assert!(!codex_dir.join("hooks.json").exists());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn test_install_codex_hooks_preserves_symlinked_config() {
+        use std::os::unix::fs::symlink;
+
+        let tmp = TempDir::new().unwrap();
+        let codex_dir = tmp.path().join(".codex");
+        let dotfiles_dir = tmp.path().join("dotfiles");
+        std::fs::create_dir_all(&codex_dir).unwrap();
+        std::fs::create_dir_all(&dotfiles_dir).unwrap();
+
+        let target_path = dotfiles_dir.join("codex-config.toml");
+        std::fs::write(&target_path, "model = \"gpt-5.3-codex\"\n").unwrap();
+        let config_path = codex_dir.join("config.toml");
+        symlink("../dotfiles/codex-config.toml", &config_path).unwrap();
+
+        install_codex_hooks(&config_path, codex_events()).unwrap();
+
+        assert!(
+            std::fs::symlink_metadata(&config_path)
+                .unwrap()
+                .file_type()
+                .is_symlink(),
+            "Codex config path must remain a symlink"
+        );
+        let config_text = std::fs::read_to_string(&target_path).unwrap();
+        assert!(config_text.contains("model = \"gpt-5.3-codex\""));
+        let config: toml::Value = toml::from_str(&config_text).unwrap();
+        assert!(config["hooks"]["SessionStart"].is_array());
+        assert!(config["hooks"]["UserPromptSubmit"].is_array());
+    }
+
     #[test]
     #[serial_test::serial]
     fn test_codex_config_path_respects_codex_home() {
@@ -1438,6 +1546,133 @@ command = {:?}
         assert_eq!(
             config["hooks"]["state"]["existing"]["trusted_hash"].as_str(),
             Some("hook-trust")
+        );
+        assert_eq!(config_text.matches("sh -c").count(), codex_events().len());
+    }
+
+    #[test]
+    fn test_install_codex_hooks_collapses_duplicated_aoe_blocks() {
+        let tmp = TempDir::new().unwrap();
+        let codex_dir = tmp.path().join(".codex");
+        std::fs::create_dir_all(&codex_dir).unwrap();
+        let config_path = codex_dir.join("config.toml");
+        let installed_once = format!(
+            r#"[hooks]
+
+[[hooks.SessionStart]]
+
+[[hooks.SessionStart.hooks]]
+type = "command"
+command = {:?}
+
+[[hooks.PreToolUse]]
+
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = {:?}
+
+[[hooks.Stop]]
+
+[[hooks.Stop.hooks]]
+type = "command"
+command = {:?}
+
+[[hooks.SessionStart]]
+
+[[hooks.SessionStart.hooks]]
+type = "command"
+command = {:?}
+
+[[hooks.PreToolUse]]
+
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = {:?}
+
+[[hooks.Stop]]
+
+[[hooks.Stop.hooks]]
+type = "command"
+command = {:?}
+
+[hooks.state.trusted]
+enabled = true
+trusted_hash = "sha256:keep"
+
+[projects."/tmp/aoe-project"]
+trust_level = "trusted"
+"#,
+            hook_command("idle"),
+            hook_command("running"),
+            hook_command("idle"),
+            hook_command("idle"),
+            hook_command("running"),
+            hook_command("idle")
+        );
+        std::fs::write(&config_path, installed_once).unwrap();
+
+        install_codex_hooks(&config_path, codex_events()).unwrap();
+
+        let config_text = std::fs::read_to_string(config_path).unwrap();
+        let config: toml::Value = toml::from_str(&config_text).unwrap();
+        for event in codex_events() {
+            assert_eq!(config["hooks"][event.name].as_array().unwrap().len(), 1);
+        }
+        assert_eq!(
+            config["hooks"]["state"]["trusted"]["trusted_hash"].as_str(),
+            Some("sha256:keep")
+        );
+        assert_eq!(
+            config["projects"]["/tmp/aoe-project"]["trust_level"].as_str(),
+            Some("trusted")
+        );
+        assert_eq!(config_text.matches("sh -c").count(), codex_events().len());
+    }
+
+    #[test]
+    fn test_install_codex_hooks_concurrent_rewrites_keep_valid_toml() {
+        let tmp = TempDir::new().unwrap();
+        let codex_dir = tmp.path().join(".codex");
+        std::fs::create_dir_all(&codex_dir).unwrap();
+        let config_path = codex_dir.join("config.toml");
+        std::fs::write(
+            &config_path,
+            r#"model = "gpt-5.3-codex"
+
+[projects."/tmp/aoe-project"]
+trust_level = "trusted"
+"#,
+        )
+        .unwrap();
+
+        let workers = 8;
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(workers));
+        let mut handles = Vec::new();
+        for _ in 0..workers {
+            let barrier = barrier.clone();
+            let config_path = config_path.clone();
+            handles.push(std::thread::spawn(move || {
+                barrier.wait();
+                for _ in 0..8 {
+                    install_codex_hooks(&config_path, codex_events()).unwrap();
+                    let config_text = std::fs::read_to_string(&config_path).unwrap();
+                    config_text.parse::<toml_edit::DocumentMut>().unwrap();
+                }
+            }));
+        }
+
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        let config_text = std::fs::read_to_string(config_path).unwrap();
+        let config: toml::Value = toml::from_str(&config_text).unwrap();
+        for event in codex_events() {
+            assert_eq!(config["hooks"][event.name].as_array().unwrap().len(), 1);
+        }
+        assert_eq!(
+            config["projects"]["/tmp/aoe-project"]["trust_level"].as_str(),
+            Some("trusted")
         );
         assert_eq!(config_text.matches("sh -c").count(), codex_events().len());
     }

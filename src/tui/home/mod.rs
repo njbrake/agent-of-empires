@@ -252,6 +252,7 @@ pub struct HomeView {
 
     // Sound config for state transition sounds
     pub(super) sound_config: crate::sound::SoundConfig,
+    pub(super) status_hook_config: crate::status_hooks::StatusHookConfig,
 
     /// Resolved decay window from `Config.theme.idle_decay_minutes`. Read
     /// at startup and re-resolved on settings reload. Used by render to
@@ -348,6 +349,7 @@ impl HomeView {
             DefaultTerminalMode::Container => TerminalMode::Container,
         };
         let sound_config = resolved.sound.clone();
+        let status_hook_config = resolved.status_hooks.clone();
         let strict_hotkeys = resolved.session.strict_hotkeys;
         let idle_decay_window =
             crate::tui::styles::idle_decay_window(resolved.theme.idle_decay_minutes);
@@ -438,6 +440,7 @@ impl HomeView {
             terminal_modes: HashMap::new(),
             default_terminal_mode,
             sound_config,
+            status_hook_config,
             strict_hotkeys,
             idle_decay_window,
             settings_view: None,
@@ -704,6 +707,23 @@ impl HomeView {
             .collect()
     }
 
+    pub(super) fn attached_status_hook_sessions(
+        &self,
+    ) -> Vec<super::attached_status_hooks::AttachedStatusHookSession> {
+        self.pollable_instances()
+            .into_iter()
+            .filter_map(|instance| {
+                let hook_config = self.status_hook_config_for(&instance);
+                hook_config.enabled.then_some(
+                    super::attached_status_hooks::AttachedStatusHookSession {
+                        instance,
+                        hook_config,
+                    },
+                )
+            })
+            .collect()
+    }
+
     /// Request a status refresh in the background (non-blocking).
     /// Call `apply_status_updates` to check for and apply results.
     pub fn request_status_refresh(&mut self) {
@@ -732,6 +752,21 @@ impl HomeView {
     /// the apply path directly without having to push through the
     /// background polling thread.
     pub(super) fn apply_one_status_update(&mut self, update: StatusUpdate) {
+        self.apply_status_update(update, true, true);
+    }
+
+    pub(super) fn apply_status_updates_without_hooks(&mut self, updates: Vec<StatusUpdate>) {
+        for update in updates {
+            self.apply_status_update(update, true, false);
+        }
+    }
+
+    pub(super) fn reset_status_refresh(&mut self) {
+        self.status_poller = StatusPoller::new();
+        self.pending_status_refresh = false;
+    }
+
+    fn apply_status_update(&mut self, update: StatusUpdate, play_sound: bool, run_hooks: bool) {
         use crate::session::Status;
 
         let old_status = self.get_instance(&update.id).map(|i| i.status);
@@ -759,9 +794,35 @@ impl HomeView {
 
         if let Some(old) = old_status {
             if old != new_status {
-                crate::sound::play_for_transition(old, new_status, &self.sound_config);
+                if let Some(inst) = self.get_instance(&update.id).cloned() {
+                    self.handle_status_transition(&inst, old, new_status, play_sound, run_hooks);
+                }
             }
         }
+    }
+
+    fn handle_status_transition(
+        &self,
+        inst: &Instance,
+        old: crate::session::Status,
+        new: crate::session::Status,
+        play_sound: bool,
+        run_hooks: bool,
+    ) {
+        if play_sound {
+            crate::sound::play_for_transition(old, new, &self.sound_config);
+        }
+        if run_hooks {
+            let hook_config = self.status_hook_config_for(inst);
+            crate::status_hooks::run_for_transition(inst, old, new, &hook_config);
+        }
+    }
+
+    fn status_hook_config_for(&self, inst: &Instance) -> crate::status_hooks::StatusHookConfig {
+        if self.active_profile.is_some() {
+            return self.status_hook_config.clone();
+        }
+        crate::session::resolve_config_or_warn(&inst.effective_profile()).status_hooks
     }
 
     pub fn apply_deletion_results(&mut self) -> bool {
@@ -1817,7 +1878,15 @@ impl HomeView {
     }
 
     pub fn set_instance_status(&mut self, id: &str, status: crate::session::Status) {
+        let old_status = self.get_instance(id).map(|inst| inst.status);
         self.mutate_instance(id, |inst| inst.status = status);
+        if let Some(old) = old_status {
+            if old != status {
+                if let Some(inst) = self.get_instance(id).cloned() {
+                    self.handle_status_transition(&inst, old, status, false, true);
+                }
+            }
+        }
     }
 
     /// Stamp `last_accessed_at` on a session (user-initiated interaction).
@@ -2082,6 +2151,7 @@ impl HomeView {
             DefaultTerminalMode::Container => TerminalMode::Container,
         };
         self.sound_config = config.sound.clone();
+        self.status_hook_config = config.status_hooks.clone();
         self.strict_hotkeys = config.session.strict_hotkeys;
         self.idle_decay_window =
             crate::tui::styles::idle_decay_window(config.theme.idle_decay_minutes);
