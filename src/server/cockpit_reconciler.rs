@@ -168,9 +168,22 @@ pub async fn reconcile_cockpit_workers(state: &Arc<AppState>, attempted: &mut Ha
         let store = Arc::clone(&state.cockpit_event_store);
         let id_owned = id.clone();
         let in_flight_turn =
-            tokio::task::spawn_blocking(move || store.has_in_flight_turn(&id_owned))
-                .await
-                .unwrap_or(false);
+            match tokio::task::spawn_blocking(move || store.has_in_flight_turn(&id_owned)).await {
+                Ok(v) => v,
+                Err(e) => {
+                    // `attempted.insert` below runs unconditionally, so a swallowed
+                    // panic does not produce a retry storm; the only consequence is
+                    // the synthetic Stopped fanout is skipped this tick and the UI
+                    // may stay "thinking" until the next live event.
+                    tracing::warn!(
+                        target: "cockpit.supervisor",
+                        session_id = %id,
+                        error = %e,
+                        "in-flight turn probe blocking task failed; assuming no in-flight turn"
+                    );
+                    false
+                }
+            };
         // Mark before spawning so the next 2s tick doesn't double-poke
         // while the parallel resume task is still in flight. A task
         // that returns RetryAfterAttachTimeout will clear itself below.
