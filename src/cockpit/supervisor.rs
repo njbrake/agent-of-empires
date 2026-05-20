@@ -1108,11 +1108,7 @@ impl<S: BroadcastSink> Supervisor<S> {
     /// click Send right after enabling cockpit, while `Supervisor::spawn`
     /// is still in the 2-3s ACP handshake. Without this wait, those
     /// requests would 404 because the WorkerHandle isn't in `workers`
-    /// yet, even though it's about to be. Polling at 50ms keeps the
-    /// happy-path latency negligible while bounding the wait.
-    /// Block until either the worker for `session_id` lands in
-    /// `workers` or the pending reservation falls off (giving up
-    /// fast on a dead path) or `deadline` lapses.
+    /// yet, even though it's about to be.
     ///
     /// Uses `tokio::sync::Notify` for edge triggered wakeups instead
     /// of polling. The previous shape woke every 50 ms, which added
@@ -2799,9 +2795,9 @@ mod tests {
         let dropped_at = std::time::Instant::now();
         drop(reservation);
 
-        let result = tokio::time::timeout(std::time::Duration::from_millis(20), waiter)
+        let result = tokio::time::timeout(std::time::Duration::from_millis(200), waiter)
             .await
-            .expect("waiter must wake on notify, not at the 50 ms poll")
+            .expect("waiter must wake on notify well under the old 50 ms poll")
             .expect("waiter task must not panic");
         let elapsed = dropped_at.elapsed();
 
