@@ -729,6 +729,34 @@ function CockpitSettings({
         </button>
       </div>
 
+      <div className="border-t border-surface-800 pt-3">
+        <NumberField
+          label="Silent-orphan grace (s)"
+          description="Daemon-side watchdog grace before declaring a prompt orphaned and restarting the worker. Fires when the agent finishes streaming but the adapter never sends PromptResponse (upstream agentclientprotocol/claude-agent-acp#688). Active only when no in-flight tool call is open and the prompt has produced at least one progress event, so long-running tools are unaffected. 0 disables. Default 60. Persists to config.toml as cockpit.silent_orphan_grace_secs; cross-device. See #1240."
+          value={
+            typeof cockpit.silent_orphan_grace_secs === "number"
+              ? (cockpit.silent_orphan_grace_secs as number)
+              : 60
+          }
+          min={0}
+          onChange={(v) => onSaveField("cockpit", "silent_orphan_grace_secs", v)}
+        />
+      </div>
+
+      <div className="border-t border-surface-800 pt-3">
+        <NumberField
+          label="Silent-orphan fast grace (s)"
+          description="Accelerated silent-orphan grace, used once a cost-populated UsageUpdate has arrived for the current prompt (the claude-agent-acp wrap-up accounting marker emitted just before PromptResponse). Lowers MTTR on the known adapter wedge without weakening the vendor-agnostic baseline. 0 disables the accelerator (cost UsageUpdate stops reducing the effective grace). Default 20. Persists to config.toml as cockpit.silent_orphan_fast_grace_secs; cross-device. See #1240."
+          value={
+            typeof cockpit.silent_orphan_fast_grace_secs === "number"
+              ? (cockpit.silent_orphan_fast_grace_secs as number)
+              : 20
+          }
+          min={0}
+          onChange={(v) => onSaveField("cockpit", "silent_orphan_fast_grace_secs", v)}
+        />
+      </div>
+
       <div className="flex items-start justify-between gap-3 py-1 border-t border-surface-800 pt-3">
         <div>
           <div className="text-sm text-text-bright">Queue drain mode</div>

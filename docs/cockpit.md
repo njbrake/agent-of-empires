@@ -783,7 +783,8 @@ timer, so an adapter that emits periodic ambient state after the
 final transcript event still trips the watchdog.
 
 Set `cockpit.silent_orphan_grace_secs = 0` to disable. Both knobs are
-editable per profile in the Settings UI under the Cockpit category.
+editable per profile in the TUI Settings (`Cockpit` category) and in
+the web dashboard's Settings tab under `Cockpit`.
 
 In debug builds, set `AOE_COCKPIT_SIMULATE_ORPHAN_NEXT_PROMPT=1`
 before sending a cockpit prompt to manually reproduce the wedge: the
