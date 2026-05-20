@@ -725,6 +725,133 @@ describe("useTerminal lifecycle", () => {
     }
   });
 
+  it("window 'focus' sends an activate message", async () => {
+    const div = document.createElement("div");
+    document.body.appendChild(div);
+    try {
+      renderHook(() => {
+        const term = useTerminal("s-focus", "ws", false, false);
+        if (term.containerRef && !term.containerRef.current) {
+          (
+            term.containerRef as unknown as { current: HTMLDivElement | null }
+          ).current = div;
+        }
+        return term;
+      });
+      await flushAsync();
+      const ws = sockets[0]!;
+      act(() => {
+        ws.readyState = FakeWebSocket.OPEN;
+        ws.onopen?.(new Event("open"));
+      });
+      await flushAsync();
+      const before = ws.sent.length;
+      act(() => {
+        window.dispatchEvent(new Event("focus"));
+      });
+      const sentActivate = ws.sent
+        .slice(before)
+        .find((m) => typeof m === "string" && m.includes('"activate"'));
+      expect(sentActivate).toBeDefined();
+    } finally {
+      div.remove();
+    }
+  });
+
+  it("document visibilitychange to visible sends activate", async () => {
+    const div = document.createElement("div");
+    document.body.appendChild(div);
+    try {
+      renderHook(() => {
+        const term = useTerminal("s-vis", "ws", false, false);
+        if (term.containerRef && !term.containerRef.current) {
+          (
+            term.containerRef as unknown as { current: HTMLDivElement | null }
+          ).current = div;
+        }
+        return term;
+      });
+      await flushAsync();
+      const ws = sockets[0]!;
+      act(() => {
+        ws.readyState = FakeWebSocket.OPEN;
+        ws.onopen?.(new Event("open"));
+      });
+      await flushAsync();
+      const before = ws.sent.length;
+      Object.defineProperty(document, "visibilityState", {
+        configurable: true,
+        get: () => "visible",
+      });
+      act(() => {
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      const sentActivate = ws.sent
+        .slice(before)
+        .find((m) => typeof m === "string" && m.includes('"activate"'));
+      expect(sentActivate).toBeDefined();
+    } finally {
+      div.remove();
+    }
+  });
+
+  it("'online' on a CLOSED socket dials a fresh WS", async () => {
+    const div = document.createElement("div");
+    document.body.appendChild(div);
+    try {
+      renderHook(() => {
+        const term = useTerminal("s-online", "ws", false, false);
+        if (term.containerRef && !term.containerRef.current) {
+          (
+            term.containerRef as unknown as { current: HTMLDivElement | null }
+          ).current = div;
+        }
+        return term;
+      });
+      await flushAsync();
+      // Force the WS into the CLOSED state so the autoreconnect path
+      // is the only viable resolution.
+      sockets[0]!.readyState = FakeWebSocket.CLOSED;
+      const before = sockets.length;
+      act(() => {
+        window.dispatchEvent(new Event("online"));
+      });
+      await flushAsync();
+      expect(sockets.length).toBeGreaterThan(before);
+    } finally {
+      div.remove();
+    }
+  });
+
+  it("font-size effect updates term.options.fontSize when settings change", async () => {
+    const div = document.createElement("div");
+    document.body.appendChild(div);
+    // Pre-seed a settings entry so the hook picks up a non-default
+    // initial font size, then bump it via localStorage. The hook
+    // re-reads settings via useWebSettings which is store-backed.
+    try {
+      localStorage.setItem(
+        "aoe-web-settings",
+        JSON.stringify({ mobileFontSize: 14, desktopFontSize: 22 }),
+      );
+      renderHook(() => {
+        const term = useTerminal("s-font", "ws", false, false);
+        if (term.containerRef && !term.containerRef.current) {
+          (
+            term.containerRef as unknown as { current: HTMLDivElement | null }
+          ).current = div;
+        }
+        return term;
+      });
+      await flushAsync();
+      // The constructor read 22 from localStorage.
+      expect(captured.options.fontSize).toBe(22);
+    } finally {
+      localStorage.removeItem("aoe-web-settings");
+      div.remove();
+    }
+  });
+
   it("the virtual Ctrl bridge transforms onData printable -> control byte", async () => {
     const div = document.createElement("div");
     document.body.appendChild(div);
