@@ -157,6 +157,39 @@ describe("RateLimitRecoveryModal", () => {
     expect(onClose).not.toHaveBeenCalled();
   });
 
+  it("surfaces fetchCockpitAgents rejection in the modal error slot", async () => {
+    mockFetchAgents.mockRejectedValue(new Error("agents fetch broke"));
+    const { findByText, onPrefill } = mount();
+    const alert = await findByText(/agents fetch broke/);
+    expect(alert.textContent).toMatch(/agents fetch broke/);
+    expect(mockSwitch).not.toHaveBeenCalled();
+    expect(onPrefill).not.toHaveBeenCalled();
+  });
+
+  it("surfaces a generic message when switchCockpitAgent returns null", async () => {
+    // The api helper returns null on 4xx/5xx without throwing (fetchJson
+    // semantics). Modal must not crash and must show a clear message.
+    mockSwitch.mockResolvedValue(null);
+    const { findByText, onPrefill, onClose } = mount();
+    fireEvent.click(await findByText(/Continue in codex/));
+    const alert = await findByText(/server returned no response/i);
+    expect(alert.textContent).toMatch(/server returned no response/i);
+    expect(mockPrimer).not.toHaveBeenCalled();
+    expect(onPrefill).not.toHaveBeenCalled();
+    expect(onClose).not.toHaveBeenCalled();
+  });
+
+  it("clicking a non-preselected radio updates the confirm-button target", async () => {
+    const { container, findByText } = mount();
+    await findByText(/Continue in codex/);
+    const opencodeRadio = container.querySelector<HTMLInputElement>(
+      "input[name=cockpit-agent-target][value=opencode]",
+    );
+    expect(opencodeRadio).not.toBeNull();
+    fireEvent.click(opencodeRadio!);
+    await findByText(/Continue in opencode/);
+  });
+
   it("renders an install hint when no alternative agents are registered", async () => {
     mockFetchAgents.mockResolvedValue([
       { name: "claude", description: "claude", command: "claude-agent-acp" },
