@@ -1150,17 +1150,27 @@ impl<S: BroadcastSink> Supervisor<S> {
         }
     }
 
+    /// Resolve a `session_id` to its `AcpClient`, holding `self.workers`
+    /// only long enough to clone the `Arc<AcpClient>` so the caller can
+    /// `.await` on the agent without serializing every other supervisor
+    /// operation behind that lock. Centralizing this also routes every
+    /// caller through the same `UnknownSession` error variant.
+    async fn client_for_session(
+        &self,
+        session_id: &str,
+    ) -> Result<Arc<AcpClient>, SupervisorError> {
+        let workers = self.workers.lock().await;
+        workers
+            .get(session_id)
+            .map(|h| Arc::clone(&h.client))
+            .ok_or_else(|| SupervisorError::UnknownSession(session_id.into()))
+    }
+
     /// Send a user prompt to a running cockpit worker.
     pub async fn send_prompt(&self, session_id: &str, text: &str) -> Result<(), SupervisorError> {
         self.wait_for_worker(session_id, std::time::Duration::from_secs(10))
             .await;
-        let client = {
-            let workers = self.workers.lock().await;
-            workers
-                .get(session_id)
-                .ok_or_else(|| SupervisorError::UnknownSession(session_id.into()))
-                .map(|h| Arc::clone(&h.client))?
-        };
+        let client = self.client_for_session(session_id).await?;
         client.send_prompt(text).await?;
         Ok(())
     }
@@ -1170,13 +1180,7 @@ impl<S: BroadcastSink> Supervisor<S> {
     pub async fn cancel_prompt(&self, session_id: &str) -> Result<(), SupervisorError> {
         self.wait_for_worker(session_id, std::time::Duration::from_secs(10))
             .await;
-        let client = {
-            let workers = self.workers.lock().await;
-            workers
-                .get(session_id)
-                .ok_or_else(|| SupervisorError::UnknownSession(session_id.into()))
-                .map(|h| Arc::clone(&h.client))?
-        };
+        let client = self.client_for_session(session_id).await?;
         client.cancel_prompt().await?;
         Ok(())
     }
@@ -1199,11 +1203,7 @@ impl<S: BroadcastSink> Supervisor<S> {
         );
         // Best-effort cancel; ignore UnknownSession because the headline
         // intent is "free the UI", which the publish above already did.
-        let client = {
-            let workers = self.workers.lock().await;
-            workers.get(session_id).map(|h| Arc::clone(&h.client))
-        };
-        if let Some(client) = client {
+        if let Ok(client) = self.client_for_session(session_id).await {
             let _ = client.cancel_prompt().await;
         }
     }
@@ -1212,13 +1212,7 @@ impl<S: BroadcastSink> Supervisor<S> {
     pub async fn set_mode(&self, session_id: &str, mode_id: &str) -> Result<(), SupervisorError> {
         self.wait_for_worker(session_id, std::time::Duration::from_secs(10))
             .await;
-        let client = {
-            let workers = self.workers.lock().await;
-            workers
-                .get(session_id)
-                .ok_or_else(|| SupervisorError::UnknownSession(session_id.into()))
-                .map(|h| Arc::clone(&h.client))?
-        };
+        let client = self.client_for_session(session_id).await?;
         client.set_mode(mode_id).await?;
         Ok(())
     }
@@ -1230,13 +1224,7 @@ impl<S: BroadcastSink> Supervisor<S> {
         nonce: Nonce,
         decision: ApprovalDecision,
     ) -> Result<(), SupervisorError> {
-        let client = {
-            let workers = self.workers.lock().await;
-            workers
-                .get(session_id)
-                .ok_or_else(|| SupervisorError::UnknownSession(session_id.into()))
-                .map(|h| Arc::clone(&h.client))?
-        };
+        let client = self.client_for_session(session_id).await?;
         client.resolve_permission(nonce, decision).await?;
         Ok(())
     }
