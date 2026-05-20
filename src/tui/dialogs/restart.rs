@@ -66,8 +66,14 @@ impl RestartDialog {
         }
     }
 
-    fn selected_profile(&self) -> &str {
-        &self.available_profiles[self.profile_index]
+    /// Returns the selected profile, or `None` if no profiles are
+    /// available. The dialog refuses to submit in the `None` case; the
+    /// no-profile state is only reachable via a bad config, but the
+    /// panic-free path is cheap.
+    fn selected_profile(&self) -> Option<&str> {
+        self.available_profiles
+            .get(self.profile_index)
+            .map(String::as_str)
     }
 
     fn selected_tool(&self) -> Option<&str> {
@@ -82,7 +88,9 @@ impl RestartDialog {
     /// "picking a profile pre-populates the AI engine" matches across the
     /// New / Rename / Restart modals.
     fn reload_tool_from_profile(&mut self) {
-        let profile = self.selected_profile().to_string();
+        let Some(profile) = self.selected_profile().map(str::to_string) else {
+            return;
+        };
         let config = resolve_config_or_warn(&profile);
         if let Some(ref default_tool) = config.session.default_tool {
             if let Some(idx) = self.available_tools.iter().position(|t| t == default_tool) {
@@ -111,7 +119,11 @@ impl RestartDialog {
         match key.code {
             KeyCode::Esc => DialogResult::Cancel,
             KeyCode::Enter => {
-                let new_profile = self.selected_profile().to_string();
+                let Some(new_profile) = self.selected_profile().map(str::to_string) else {
+                    // No profiles available; refuse submit. Caller decides
+                    // whether to keep the dialog open or close it.
+                    return DialogResult::Continue;
+                };
                 let new_tool = self.selected_tool().map(str::to_string);
                 let profile = if new_profile == self.current_profile {
                     None
@@ -450,5 +462,15 @@ mod tests {
             d.handle_key(key(KeyCode::Char('x'))),
             DialogResult::Continue
         ));
+    }
+
+    #[test]
+    fn test_enter_with_empty_profiles_does_not_panic() {
+        // Pathological config (empty profiles list); Enter must not
+        // index-panic. Dialog refuses to submit so the caller decides
+        // what to do.
+        let mut d = RestartDialog::new("S", "default", "claude", vec![], tools());
+        let result = d.handle_key(key(KeyCode::Enter));
+        assert!(matches!(result, DialogResult::Continue));
     }
 }

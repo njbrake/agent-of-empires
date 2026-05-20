@@ -54,9 +54,18 @@ pub fn tool_cycler_spans(
     focused: bool,
     theme: &Theme,
 ) -> Vec<Span<'static>> {
+    let label_style = if focused {
+        Style::default().fg(theme.accent).underlined()
+    } else {
+        Style::default().fg(theme.text)
+    };
+
     if total <= 1 {
+        // Even when the cycler has nothing to cycle, the focused field
+        // still shows its underline so users can see which row Tab landed
+        // on.
         return vec![
-            Span::styled(label.to_string(), Style::default().fg(theme.text)),
+            Span::styled(label.to_string(), label_style),
             Span::raw(" "),
             Span::styled(value.to_string(), Style::default().fg(theme.accent)),
         ];
@@ -64,11 +73,6 @@ pub fn tool_cycler_spans(
 
     let dimmed = Style::default().fg(theme.dimmed);
     let accent = Style::default().fg(theme.accent).bold();
-    let label_style = if focused {
-        Style::default().fg(theme.accent).underlined()
-    } else {
-        Style::default().fg(theme.text)
-    };
 
     let mut spans = vec![Span::styled(label.to_string(), label_style), Span::raw(" ")];
     if focused {
@@ -134,5 +138,14 @@ mod tests {
         let theme = Theme::default();
         let spans = tool_cycler_spans("Tool:", "claude", 0, 1, false, &theme);
         assert_eq!(contents(&spans), ["Tool:", " ", "claude"]);
+    }
+
+    #[test]
+    fn tool_cycler_single_tool_underlines_label_when_focused() {
+        // Single-tool early return must still respect focus so users
+        // can see which row Tab landed on.
+        let theme = Theme::default();
+        let spans = tool_cycler_spans("Tool:", "claude", 0, 1, true, &theme);
+        assert!(spans[0].style.add_modifier.contains(Modifier::UNDERLINED));
     }
 }
