@@ -461,6 +461,10 @@ pub fn spawn_consumer(state: std::sync::Arc<super::AppState>) {
                 _ = tick.tick() => {
                     fire_due_pushes(state.clone(), &client, &semaphore, &mut dwell, &mut last_suppress_reason).await;
                 }
+                _ = state.shutdown.cancelled() => {
+                    tracing::info!(target: "http.middleware", "push: shutdown signaled, consumer exiting");
+                    return;
+                }
             }
         }
     });

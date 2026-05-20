@@ -334,13 +334,17 @@ impl LoginManager {
     }
 
     /// Spawn periodic cleanup (piggybacks on the rate limiter's interval).
-    pub fn spawn_cleanup_task(self: &Arc<Self>) {
+    /// Exits cleanly on shutdown so `aoe serve --stop` drains within one
+    /// tick instead of waiting for the 5 s force exit safety net.
+    pub fn spawn_cleanup_task(self: &Arc<Self>, shutdown: tokio_util::sync::CancellationToken) {
         let manager = Arc::clone(self);
         tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_secs(60));
             loop {
-                interval.tick().await;
-                manager.cleanup_expired().await;
+                tokio::select! {
+                    _ = interval.tick() => manager.cleanup_expired().await,
+                    _ = shutdown.cancelled() => break,
+                }
             }
         });
     }

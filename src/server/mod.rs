@@ -808,8 +808,8 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
     // (feature disabled via web.notifications_enabled=false).
     push::spawn_consumer(state.clone());
 
-    rate_limiter.spawn_cleanup_task();
-    login_manager.spawn_cleanup_task();
+    rate_limiter.spawn_cleanup_task(state.shutdown.clone());
+    login_manager.spawn_cleanup_task(state.shutdown.clone());
 
     if remote {
         // Inline the rotation loop here rather than calling
@@ -818,6 +818,7 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
         // rotation. Behavior otherwise matches the original: wait one
         // lifetime, rotate, wait 300s grace, clear previous.
         let rot_state = state.clone();
+        let rot_shutdown = state.shutdown.clone();
         // The tunnel URL is stable across the daemon's lifetime (Tailscale
         // and named CF tunnels are stable; quick CF rotates only on
         // restart, which is outside this task's scope). Capture once so
@@ -826,7 +827,10 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
         tokio::spawn(async move {
             loop {
                 let lifetime = rot_state.token_manager.lifetime_secs().await;
-                tokio::time::sleep(std::time::Duration::from_secs(lifetime)).await;
+                tokio::select! {
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(lifetime)) => {}
+                    _ = rot_shutdown.cancelled() => break,
+                }
 
                 // Capture the hashes of the current and (about-to-be)
                 // previous tokens BEFORE rotating, so we know which
@@ -879,7 +883,10 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
                 // After grace period, the previous token becomes invalid.
                 // Clear it AND drop any subscriptions that were bound
                 // only to the old hash (retain_owners with only the new).
-                tokio::time::sleep(std::time::Duration::from_secs(300)).await;
+                tokio::select! {
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(300)) => {}
+                    _ = rot_shutdown.cancelled() => break,
+                }
                 // Clear previous token inside TokenManager. Reuse its
                 // internal state access via a tiny helper on the manager.
                 rot_state.token_manager.clear_previous().await;
