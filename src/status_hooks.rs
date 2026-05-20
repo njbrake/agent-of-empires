@@ -343,6 +343,16 @@ fn spawn_hook_commands(commands: Vec<String>, context: StatusHookContext) {
     }
 }
 
+/// Upper bound on how long a single status hook may block its worker
+/// thread. A misconfigured hook (e.g. one that opens a foreground GUI
+/// app, hangs on stdin, or `tail -f`s a log) would otherwise leak the
+/// std::thread spawned in `spawn_hook_commands` for the life of the
+/// TUI. 30s is generous for sound players and notifier CLIs, short
+/// enough that a steady stream of long-stuck hooks doesn't accumulate
+/// indefinitely.
+#[cfg(not(test))]
+const HOOK_COMMAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
 #[cfg(not(test))]
 fn run_hook_command_blocking(
     command: &str,
@@ -350,14 +360,34 @@ fn run_hook_command_blocking(
     project_path: &Path,
 ) -> std::io::Result<()> {
     let mut child = build_command(command, context, project_path).spawn()?;
-    let status = child.wait()?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(std::io::Error::other(format!(
-            "command exited with status {:?}",
-            status.code()
-        )))
+    let deadline = std::time::Instant::now() + HOOK_COMMAND_TIMEOUT;
+    loop {
+        match child.try_wait()? {
+            Some(status) => {
+                return if status.success() {
+                    Ok(())
+                } else {
+                    Err(std::io::Error::other(format!(
+                        "command exited with status {:?}",
+                        status.code()
+                    )))
+                };
+            }
+            None => {
+                if std::time::Instant::now() >= deadline {
+                    // Best-effort kill; if the child has already exited
+                    // between the try_wait above and here, kill is a
+                    // no-op error we don't care about.
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(std::io::Error::other(format!(
+                        "command timed out after {}s",
+                        HOOK_COMMAND_TIMEOUT.as_secs()
+                    )));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+        }
     }
 }
 
