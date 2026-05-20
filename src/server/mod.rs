@@ -69,6 +69,7 @@ struct TokenState {
     previous: Option<String>,
     grace_expires: Option<tokio::time::Instant>,
     lifetime: Duration,
+    grace: Duration,
 }
 
 /// Manages auth tokens with rotation and grace periods.
@@ -76,14 +77,21 @@ pub struct TokenManager {
     state: RwLock<TokenState>,
 }
 
+const DEFAULT_TOKEN_GRACE: Duration = Duration::from_secs(300);
+
 impl TokenManager {
     pub fn new(initial_token: Option<String>, lifetime: Duration) -> Self {
+        Self::with_grace(initial_token, lifetime, DEFAULT_TOKEN_GRACE)
+    }
+
+    pub fn with_grace(initial_token: Option<String>, lifetime: Duration, grace: Duration) -> Self {
         Self {
             state: RwLock::new(TokenState {
                 current: initial_token,
                 previous: None,
                 grace_expires: None,
                 lifetime,
+                grace,
             }),
         }
     }
@@ -139,10 +147,11 @@ impl TokenManager {
     pub async fn rotate(&self) {
         let mut state = self.state.write().await;
         let new_token = generate_token();
+        let grace = state.grace;
 
         state.previous = state.current.take();
         state.current = Some(new_token.clone());
-        state.grace_expires = Some(tokio::time::Instant::now() + Duration::from_secs(300));
+        state.grace_expires = Some(tokio::time::Instant::now() + grace);
 
         // Persist to disk
         if let Ok(app_dir) = crate::session::get_app_dir() {
@@ -151,22 +160,28 @@ impl TokenManager {
 
         info!(
             target: "auth.token",
-            grace_secs = 300,
+            grace_secs = grace.as_secs(),
             "auth token rotated"
         );
     }
 
-    /// Spawn a background rotation task (only in remote mode).
+    /// Spawn a background rotation task. Production paths only call this
+    /// from the `--remote` branch; debug builds also call it when the
+    /// `AOE_TEST_TOKEN_LIFETIME_SECS` env override is set, so live e2e
+    /// specs can observe the grace window without waiting hours.
     pub fn spawn_rotation_task(self: &Arc<Self>) {
         let manager = Arc::clone(self);
         tokio::spawn(async move {
             loop {
-                let lifetime = manager.state.read().await.lifetime;
+                let (lifetime, grace) = {
+                    let state = manager.state.read().await;
+                    (state.lifetime, state.grace)
+                };
                 tokio::time::sleep(lifetime).await;
                 manager.rotate().await;
 
                 // After grace period, clear previous
-                tokio::time::sleep(Duration::from_secs(300)).await;
+                tokio::time::sleep(grace).await;
                 {
                     let mut state = manager.state.write().await;
                     state.previous = None;
@@ -175,6 +190,38 @@ impl TokenManager {
             }
         });
     }
+}
+
+/// Read `AOE_TEST_TOKEN_LIFETIME_SECS`. Debug builds only; ignored in
+/// release so production cannot be forced into a short rotation cycle
+/// by a stray env var.
+#[cfg(debug_assertions)]
+fn test_token_lifetime_override() -> Option<Duration> {
+    std::env::var("AOE_TEST_TOKEN_LIFETIME_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|&n| n > 0)
+        .map(Duration::from_secs)
+}
+
+#[cfg(not(debug_assertions))]
+fn test_token_lifetime_override() -> Option<Duration> {
+    None
+}
+
+/// Read `AOE_TEST_TOKEN_GRACE_SECS`. Debug builds only.
+#[cfg(debug_assertions)]
+fn test_token_grace_override() -> Option<Duration> {
+    std::env::var("AOE_TEST_TOKEN_GRACE_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .filter(|&n| n > 0)
+        .map(Duration::from_secs)
+}
+
+#[cfg(not(debug_assertions))]
+fn test_token_grace_override() -> Option<Duration> {
+    None
 }
 
 // ── AppState ────────────────────────────────────────────────────────────────
@@ -427,13 +474,20 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
         Some(load_or_generate_token().await?)
     };
 
-    let token_lifetime = if remote {
-        Duration::from_secs(4 * 60 * 60) // 4 hours
-    } else {
-        Duration::from_secs(24 * 60 * 60) // 24 hours (existing behavior)
-    };
+    let token_lifetime = test_token_lifetime_override().unwrap_or_else(|| {
+        if remote {
+            Duration::from_secs(4 * 60 * 60) // 4 hours
+        } else {
+            Duration::from_secs(24 * 60 * 60) // 24 hours (existing behavior)
+        }
+    });
+    let token_grace = test_token_grace_override().unwrap_or(DEFAULT_TOKEN_GRACE);
 
-    let token_manager = Arc::new(TokenManager::new(auth_token.clone(), token_lifetime));
+    let token_manager = Arc::new(TokenManager::with_grace(
+        auth_token.clone(),
+        token_lifetime,
+        token_grace,
+    ));
     let login_manager = Arc::new(login::LoginManager::new(passphrase));
     let rate_limiter = Arc::new(RateLimiter::new());
 
@@ -896,6 +950,13 @@ pub async fn start_server(config: ServerConfig<'_>) -> anyhow::Result<()> {
                 }
             }
         });
+    } else if test_token_lifetime_override().is_some() && auth_token.is_some() {
+        // Debug-build test path: live Playwright specs set
+        // AOE_TEST_TOKEN_LIFETIME_SECS (and optionally AOE_TEST_TOKEN_GRACE_SECS)
+        // so they can observe the rotation grace window without waiting hours.
+        // Skips the remote-only serve.url rewrite and push retain steps because
+        // neither exists in the local test setup.
+        token_manager.spawn_rotation_task();
     }
 
     // Graceful shutdown: SIGINT (Ctrl-C), SIGTERM (`aoe serve --stop`),
