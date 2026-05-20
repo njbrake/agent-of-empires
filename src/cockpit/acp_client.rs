@@ -2916,7 +2916,22 @@ async fn handle_read_text_file(
         enter_ns,
         "ACP request handler entered"
     );
-    let result = match fs_handler::handle_read(&res.fs_policy, &res.label, &request.path) {
+    // Offload the synchronous file read to the blocking pool. ACP
+    // `fs/read_text_file` is agent driven; a multi-MB file or a slow
+    // disk would otherwise stall the runtime worker for the duration
+    // of the read, blocking every other ACP handler scheduled on the
+    // same worker. FsPolicy is Arc + Clone so the clone is cheap.
+    let policy = Arc::clone(&res.fs_policy);
+    let label = res.label.clone();
+    let path_clone = request.path.clone();
+    let read_outcome =
+        tokio::task::spawn_blocking(move || fs_handler::handle_read(&policy, &label, &path_clone))
+            .await
+            .map_err(|e| {
+                fs_handler::FsError::Io(std::io::Error::other(format!("fs read join: {e}")))
+            })
+            .and_then(|r| r);
+    let result = match read_outcome {
         Ok(content) => {
             // Honor optional line/limit slicing for ACP semantics: 1-based.
             let sliced = if request.line.is_some() || request.limit.is_some() {
@@ -2964,13 +2979,26 @@ async fn handle_write_text_file(
         enter_ns,
         "ACP request handler entered"
     );
-    let result =
-        match fs_handler::handle_write(&res.fs_policy, &res.label, &request.path, &request.content)
-        {
-            Ok(()) => responder.respond(WriteTextFileResponse::new()),
-            Err(e) => responder
-                .respond_with_error(agent_client_protocol::util::internal_error(e.to_string())),
-        };
+    // Offload the synchronous file write to the blocking pool. ACP
+    // `fs/write_text_file` is agent driven; a large content payload
+    // or a slow disk would otherwise stall the runtime worker for
+    // the duration of the write.
+    let policy = Arc::clone(&res.fs_policy);
+    let label = res.label.clone();
+    let path_clone = request.path.clone();
+    let content_clone = request.content.clone();
+    let write_outcome = tokio::task::spawn_blocking(move || {
+        fs_handler::handle_write(&policy, &label, &path_clone, &content_clone)
+    })
+    .await
+    .map_err(|e| fs_handler::FsError::Io(std::io::Error::other(format!("fs write join: {e}"))))
+    .and_then(|r| r);
+    let result = match write_outcome {
+        Ok(()) => responder.respond(WriteTextFileResponse::new()),
+        Err(e) => {
+            responder.respond_with_error(agent_client_protocol::util::internal_error(e.to_string()))
+        }
+    };
     trace!(
         target: "cockpit.acp.tool_dispatch",
         handler = "write_text_file",
