@@ -241,6 +241,20 @@
       "components": ["web/src/components/cockpit/ApprovalCard.tsx"]
     },
     {
+      "id": "cockpit.escape-no-cancel",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": ["tests/live/cockpit-escape-no-cancel.spec.ts"],
+      "components": []
+    },
+    {
+      "id": "cockpit.escape-no-cancel-contract",
+      "kind": "vitest",
+      "risk": "medium",
+      "specs": ["src/components/cockpit/Composer.escape.test.tsx"],
+      "components": []
+    },
+    {
       "id": "cockpit.mode-switch",
       "kind": "live-playwright",
       "risk": "medium",
