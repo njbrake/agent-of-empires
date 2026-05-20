@@ -89,6 +89,14 @@ pub struct ContextPrimer {
     /// truncated within itself to fit the budget.
     pub truncated: bool,
     pub max_chars: usize,
+    /// The user's most recent `UserPromptSent` text WHEN the session
+    /// ended in a non-success terminal state (rate_limit park, or
+    /// `AgentStartupError`). The prompt never reached the agent, so it
+    /// is excluded from the rendered transcript and returned here for
+    /// the frontend to drop into the composer as the user's pending
+    /// request. None when the session ended normally or the trailing
+    /// turn had real agent activity. See #1281 / #1282.
+    pub unprocessed_prompt: Option<String>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -124,6 +132,11 @@ pub fn build_context_primer(events: &[(u64, Event)], opts: PrimerOptions) -> Con
     let mut turns: Vec<Turn> = Vec::new();
     let mut current: Option<Turn> = None;
     let mut included_event_count = 0usize;
+    // Tracks whether the session ended in a non-success terminal state
+    // (rate-limit park or AgentStartupError) so the post-loop step can
+    // recover the user's unsent prompt rather than rendering it as if
+    // the agent had processed it. See #1281 / #1282.
+    let mut ended_non_success = false;
 
     for (seq, event) in events {
         if let Some(before) = opts.before_seq {
@@ -143,6 +156,11 @@ pub fn build_context_primer(events: &[(u64, Event)], opts: PrimerOptions) -> Con
                     ..Turn::default()
                 });
                 included_event_count += 1;
+                // A new user prompt resets the terminal-error tracking:
+                // if the prior turn ended in a rate-limit but the user
+                // then sent and completed another turn, that prior
+                // unsent prompt is no longer the trailing state.
+                ended_non_success = false;
             }
             Event::AgentMessageChunk { text } => {
                 let turn = current.get_or_insert_with(Turn::default);
@@ -241,17 +259,32 @@ pub fn build_context_primer(events: &[(u64, Event)], opts: PrimerOptions) -> Con
                 turn.event_count += 1;
                 included_event_count += 1;
             }
-            Event::Stopped { .. } => {
+            Event::Stopped { reason } => {
                 if let Some(t) = current.take() {
                     turns.push(t);
                 }
                 included_event_count += 1;
+                // Track rate-limit terminal so the post-loop step can
+                // recover the user's unsent prompt as
+                // `unprocessed_prompt` instead of rendering it in the
+                // transcript as if the agent had processed it.
+                ended_non_success = reason == "rate_limited";
+            }
+            Event::AgentStartupError { .. } => {
+                // Startup errors are also non-success terminals: the
+                // user's pending prompt (if any) never reached an
+                // agent. Same recovery semantics as rate_limit.
+                if let Some(t) = current.take() {
+                    turns.push(t);
+                }
+                included_event_count += 1;
+                ended_non_success = true;
             }
             // Everything else (Thinking*, UsageUpdated, ModeChanged,
             // ModesAvailable, CurrentModeChanged, AvailableCommandsUpdated,
             // RawAgentUpdate, ApprovalRequested/Resolved, DiffEmitted,
-            // RateLimit, AgentStartupError, AcpSessionAssigned,
-            // SessionContextReset, WakeupScheduled, ToolCallContent) is
+            // RateLimit, AcpSessionAssigned, SessionContextReset,
+            // WakeupScheduled, ToolCallContent, AgentSwitched) is
             // either ambient state or already represented elsewhere; skip.
             _ => {}
         }
@@ -260,13 +293,35 @@ pub fn build_context_primer(events: &[(u64, Event)], opts: PrimerOptions) -> Con
         turns.push(t);
     }
 
+    // If the session ended in a non-success terminal (rate-limit park
+    // or AgentStartupError) and the trailing turn has only the user's
+    // prompt (no assistant text, no tool calls, no plan updates), the
+    // adapter never actually processed it. Pop the turn off the recap
+    // and surface its text as `unprocessed_prompt` so the recovery
+    // path can drop it back into the composer as the user's pending
+    // request after a switch / retry. See #1281 / #1282.
+    let mut unprocessed_prompt: Option<String> = None;
+    if ended_non_success {
+        if let Some(last) = turns.last() {
+            if last.assistant_text.is_empty()
+                && last.tool_order.is_empty()
+                && last.plan_lines.is_empty()
+                && !last.user_text.is_empty()
+            {
+                let popped = turns.pop().expect("just checked last()");
+                unprocessed_prompt = Some(popped.user_text);
+            }
+        }
+    }
+
     if turns.is_empty() {
         return ContextPrimer {
             text: String::new(),
-            included_event_count: 0,
+            included_event_count,
             included_turn_count: 0,
             truncated: false,
             max_chars: opts.max_chars,
+            unprocessed_prompt,
         };
     }
 
@@ -321,6 +376,7 @@ pub fn build_context_primer(events: &[(u64, Event)], opts: PrimerOptions) -> Con
             included_turn_count: 0,
             truncated: true,
             max_chars: opts.max_chars,
+            unprocessed_prompt,
         };
     }
 
@@ -390,6 +446,7 @@ pub fn build_context_primer(events: &[(u64, Event)], opts: PrimerOptions) -> Con
         included_turn_count,
         truncated,
         max_chars: opts.max_chars,
+        unprocessed_prompt,
     }
 }
 
@@ -1040,6 +1097,99 @@ mod tests {
         assert!(primer.text.contains("wire up endpoint"));
         assert!(primer.text.contains("[x]"));
         assert!(primer.text.contains("[~]"));
+    }
+
+    fn rate_limited_stop(seq: u64) -> (u64, Event) {
+        (
+            seq,
+            Event::Stopped {
+                reason: "rate_limited".into(),
+            },
+        )
+    }
+
+    #[test]
+    fn unprocessed_prompt_popped_when_session_ends_rate_limited() {
+        // User typed prompt -> /cockpit/prompt published UserPromptSent
+        // -> adapter hit rate-limit before processing it. The bare
+        // prompt at the end of the transcript must NOT be rendered as
+        // history (the agent never saw it), and instead surface as
+        // `unprocessed_prompt` for the recovery flow to prefill into
+        // the composer. See #1281 / #1282.
+        let events = vec![
+            user_event(1, "earlier turn"),
+            assistant_event(2, "earlier reply"),
+            stopped_event(3),
+            user_event(4, "Refactor the auth middleware."),
+            rate_limited_stop(5),
+        ];
+        let primer = build_context_primer(&events, PrimerOptions::default());
+        assert_eq!(
+            primer.unprocessed_prompt.as_deref(),
+            Some("Refactor the auth middleware.")
+        );
+        assert!(primer.text.contains("earlier turn"));
+        assert!(
+            !primer.text.contains("Refactor the auth middleware."),
+            "unsent prompt must be excluded from the rendered transcript"
+        );
+        // Only the prior successful turn remains.
+        assert_eq!(primer.included_turn_count, 1);
+    }
+
+    #[test]
+    fn unprocessed_prompt_popped_when_session_ends_in_startup_error() {
+        // Same semantic for AgentStartupError: the user's last prompt
+        // never landed because the agent failed to come online.
+        let events = vec![
+            user_event(1, "try this"),
+            (
+                2,
+                Event::AgentStartupError {
+                    message: "ACP connection failed".into(),
+                },
+            ),
+        ];
+        let primer = build_context_primer(&events, PrimerOptions::default());
+        assert_eq!(primer.unprocessed_prompt.as_deref(), Some("try this"));
+        assert!(primer.text.is_empty() || !primer.text.contains("try this"));
+        assert_eq!(primer.included_turn_count, 0);
+    }
+
+    #[test]
+    fn unprocessed_prompt_none_when_trailing_turn_had_agent_activity() {
+        // The trailing turn had assistant text before the rate-limit
+        // landed (e.g. mid-stream cutoff). Don't pop it; the agent
+        // did process some of the prompt and the user wouldn't expect
+        // their question to re-appear in the composer.
+        let events = vec![
+            user_event(1, "say hi"),
+            assistant_event(2, "hi back"),
+            rate_limited_stop(3),
+        ];
+        let primer = build_context_primer(&events, PrimerOptions::default());
+        assert!(primer.unprocessed_prompt.is_none());
+        assert!(primer.text.contains("say hi"));
+        assert!(primer.text.contains("hi back"));
+    }
+
+    #[test]
+    fn unprocessed_prompt_resets_when_followed_by_successful_turn() {
+        // The transcript shows a rate-limit recovery in the past:
+        // user's earlier prompt was unsent, but they then sent it
+        // again and the agent did reply. The earlier failed prompt
+        // shouldn't leak into unprocessed_prompt because the trailing
+        // state is a successful turn.
+        let events = vec![
+            user_event(1, "first try"),
+            rate_limited_stop(2),
+            user_event(3, "second try"),
+            assistant_event(4, "ok"),
+            stopped_event(5),
+        ];
+        let primer = build_context_primer(&events, PrimerOptions::default());
+        assert!(primer.unprocessed_prompt.is_none());
+        assert!(primer.text.contains("second try"));
     }
 
     #[test]

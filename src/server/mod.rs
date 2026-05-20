@@ -1100,6 +1100,10 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/sessions/{id}/cockpit/spawn", post(api::spawn_cockpit))
         .route("/api/sessions/{id}/cockpit", delete(api::shutdown_cockpit))
         .route(
+            "/api/sessions/{id}/cockpit/switch-agent",
+            post(api::switch_cockpit_agent),
+        )
+        .route(
             "/api/sessions/{id}/cockpit/prompt",
             post(api::cockpit_prompt),
         )

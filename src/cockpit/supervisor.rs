@@ -383,6 +383,15 @@ impl<S: BroadcastSink> Supervisor<S> {
         self.registry.lock().await.clone()
     }
 
+    /// True iff `name` is registered as an ACP agent. Used by the
+    /// `/cockpit/switch-agent` endpoint to validate the target before
+    /// tearing down the current worker; otherwise an unknown agent
+    /// would only surface at spawn time, leaving the session without a
+    /// worker.
+    pub async fn registry_has_agent(&self, name: &str) -> bool {
+        self.registry.lock().await.get(name).is_some()
+    }
+
     /// Publish a synthetic AgentStartupError event for a session whose
     /// worker never came online. Used by the auto-spawn-after-create
     /// path so the UI shows a remediation hint instead of an empty,
@@ -392,6 +401,77 @@ impl<S: BroadcastSink> Supervisor<S> {
         let seq = next_seq(&self.next_seqs, session_id);
         self.sink
             .publish(session_id, seq, &Event::AgentStartupError { message });
+    }
+
+    /// Publish a synthetic `AgentSwitched` event after a successful
+    /// `/cockpit/switch-agent` operation. Carries the prior and new
+    /// agent registry keys plus the reason (e.g. `"rate_limited"`).
+    /// The reducer uses this to drop transient state tied to the prior
+    /// backend (rate-limit banner, in-flight tool, usage). See #1282.
+    pub fn publish_agent_switched(
+        &self,
+        session_id: &str,
+        from: String,
+        to: String,
+        reason: String,
+    ) -> u64 {
+        let seq = next_seq(&self.next_seqs, session_id);
+        self.sink
+            .publish(session_id, seq, &Event::AgentSwitched { from, to, reason });
+        seq
+    }
+
+    /// Like `shutdown` but waits for the runner process to actually exit
+    /// before returning, so a subsequent `spawn` for the same session id
+    /// doesn't race the SIGTERM and collide on the worker socket file.
+    /// Bounded by `deadline`; on timeout the worker is still removed
+    /// from the in-memory map, so a subsequent spawn won't return
+    /// AlreadyRunning, but the caller should treat it as best-effort
+    /// cleanup. Used by the `/cockpit/switch-agent` path so the new
+    /// agent's spawn binds a clean socket. See #1282.
+    pub async fn shutdown_and_wait(
+        &self,
+        session_id: &str,
+        deadline: std::time::Duration,
+    ) -> Result<(), SupervisorError> {
+        // Snapshot the runner's PID BEFORE shutdown removes the registry
+        // entry, so we can poll for the process to actually die.
+        let pid_before = super::worker_registry::load(session_id)
+            .ok()
+            .flatten()
+            .map(|r| r.pid);
+        match self.shutdown(session_id).await {
+            Ok(()) => {}
+            Err(SupervisorError::UnknownSession(_)) => {
+                // Nothing to wait on; the caller can move on to spawn.
+                return Ok(());
+            }
+            Err(e) => return Err(e),
+        }
+        // Poll for the runner subprocess to exit so its socket file
+        // releases. ~deadline/100ms tick; usually claude-agent-acp dies
+        // in <500ms once SIGTERM lands.
+        #[cfg(unix)]
+        if let Some(pid) = pid_before {
+            let start = std::time::Instant::now();
+            while start.elapsed() < deadline {
+                if !super::worker_registry::is_pid_alive(pid) {
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+            }
+            // Best-effort socket file removal: the new spawn will bind
+            // <workers_dir>/<session_id>.sock, so a stale inode from
+            // the old runner would collide. terminate_runner_for_session
+            // already removed the registry entry; this cleans up the
+            // socket. Failures (already gone, no perms) are non-fatal.
+            if let Ok(socket_path) = super::worker_registry::socket_path_for(session_id) {
+                if socket_path.exists() {
+                    let _ = std::fs::remove_file(&socket_path);
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Publish a synthetic `Stopped` event for a session whose turn was

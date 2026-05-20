@@ -165,6 +165,46 @@ pub struct ContextPrimerResponse {
     /// this via a "transcript was abbreviated" hint.
     pub truncated: bool,
     pub max_chars: usize,
+    /// The user's most recent `UserPromptSent` text WHEN the session
+    /// ended in a non-success terminal state (rate-limit or startup
+    /// error). The prompt never reached the agent, so it does not
+    /// belong in the transcript recap; the frontend can drop it back
+    /// into the composer as the user's pending request. None for
+    /// normal recap cases. See #1281 / #1282.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unprocessed_prompt: Option<String>,
+}
+
+/// `POST /api/sessions/{id}/cockpit/switch-agent` body.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SwitchAgentRequest {
+    /// Registry key of the target ACP agent (e.g. `"codex"`,
+    /// `"opencode"`). Must exist in the cockpit agent registry; an
+    /// unknown name returns 400.
+    pub target: String,
+    /// Optional model override forwarded to the new agent. None falls
+    /// back to the instance's existing `cockpit_model`.
+    #[serde(default)]
+    pub model: Option<String>,
+}
+
+/// `POST /api/sessions/{id}/cockpit/switch-agent` response.
+#[derive(Debug, Serialize, Deserialize)]
+pub struct SwitchAgentResponse {
+    pub session_id: String,
+    /// Registry key the session is now running.
+    pub agent: String,
+    /// Highest seq BEFORE the AgentSwitched event was emitted. The
+    /// frontend uses this when fetching `/cockpit/context-primer` so
+    /// the primer recaps the prior backend's transcript without
+    /// including the handoff event itself.
+    pub before_seq: u64,
+    /// The seq the AgentSwitched event was assigned. The frontend
+    /// awaits the reducer reaching this seq before showing the
+    /// recovery composer prefill so the divider, state-clear, and
+    /// primer prefill all land in order.
+    pub switch_seq: u64,
+    pub status: &'static str,
 }
 
 #[cfg(test)]
