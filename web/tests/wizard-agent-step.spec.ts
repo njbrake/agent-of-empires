@@ -16,7 +16,7 @@ interface MockOptions {
     installed?: boolean;
     install_hint?: string;
   }>;
-  profiles?: Array<{ name: string; is_default: boolean }>;
+  profiles?: Array<{ name: string; is_default: boolean; description?: string }>;
   docker?: boolean;
   profileSettings?: Record<string, unknown>;
 }
@@ -167,14 +167,47 @@ test.describe("Wizard agent step (#1219)", () => {
     await page.goto("/");
     await openAgentStep(page);
     await expect(page.getByText("Workflow preset")).toBeVisible();
-    const select = page.locator("select");
-    await select.selectOption("yolo-sandbox");
+    // Profile picker is now a radiogroup of cards (#949) so each profile
+    // can show a short description; clicking the row is equivalent to the
+    // old <select>.selectOption call.
+    await page.getByRole("radio", { name: /yolo-sandbox/ }).click();
     // Both toggles flip on because APPLY_PROFILE_DEFAULTS dispatched.
     const sandboxToggle = page.locator("label", { hasText: "Run in a safe container" }).locator("role=switch");
     const yoloToggle = page.locator("label", { hasText: "Auto-approve actions" }).locator("role=switch");
     await expect(sandboxToggle).toHaveAttribute("aria-checked", "true");
     await expect(yoloToggle).toHaveAttribute("aria-checked", "true");
     expect(settingsCalls).toContain("yolo-sandbox");
+  });
+
+  test("profile picker renders description as helper text under each option (#949)", async ({
+    page,
+  }) => {
+    await mockApis(page, {
+      profiles: [
+        {
+          name: "default",
+          is_default: true,
+          description: "Stock setup with no overrides",
+        },
+        {
+          name: "yolo-sandbox",
+          is_default: false,
+          description: "Auto-approve in a container",
+        },
+        // Profiles without a description should still render (just without
+        // helper text), so a mixed list does not silently drop them.
+        { name: "no-desc", is_default: false },
+      ],
+    });
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.goto("/");
+    await openAgentStep(page);
+    await expect(page.getByText("Workflow preset")).toBeVisible();
+    // Descriptions render beneath the profile name.
+    await expect(page.getByText("Stock setup with no overrides")).toBeVisible();
+    await expect(page.getByText("Auto-approve in a container")).toBeVisible();
+    // Profiles without a description still appear in the picker.
+    await expect(page.getByRole("radio", { name: /no-desc/ })).toBeVisible();
   });
 
   test("sandbox toggle is disabled when Docker is not running", async ({ page }) => {

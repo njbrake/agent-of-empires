@@ -35,7 +35,7 @@ test.describe("Terminal mouse-wheel scroll (desktop)", () => {
   async function openSession(page: Page, handle: MockHandle) {
     await clickSidebarSession(page, "pinch-test");
     await page
-      .locator(".wterm")
+      .locator(".xterm")
       .first()
       .waitFor({ state: "visible", timeout: 10_000 });
     // Wait for the WebSocket to deliver at least one message (the app sends
@@ -52,8 +52,8 @@ test.describe("Terminal mouse-wheel scroll (desktop)", () => {
   ) {
     await page.evaluate(
       ({ deltaY, ctrlKey, times }) => {
-        const target = document.querySelector<HTMLElement>(".wterm");
-        if (!target) throw new Error(".wterm not mounted");
+        const target = document.querySelector<HTMLElement>(".xterm");
+        if (!target) throw new Error(".xterm not mounted");
         for (let i = 0; i < (times ?? 1); i++) {
           target.dispatchEvent(
             new WheelEvent("wheel", {

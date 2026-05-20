@@ -11,7 +11,7 @@ fn test_command_palette_opens_with_ctrl_k() {
     let mut h = TuiTestHarness::new("palette_open");
     h.spawn_tui();
 
-    h.wait_for("[all]");
+    h.wait_for(" aoe ");
     h.send_keys("C-k");
     h.wait_for("Commands");
     // Both assertions target entries in the top "Actions" group so they're
@@ -29,7 +29,7 @@ fn test_command_palette_esc_closes() {
     let mut h = TuiTestHarness::new("palette_close");
     h.spawn_tui();
 
-    h.wait_for("[all]");
+    h.wait_for(" aoe ");
     h.send_keys("C-k");
     h.wait_for("Commands");
 
@@ -45,7 +45,7 @@ fn test_command_palette_fuzzy_search_settings() {
     let mut h = TuiTestHarness::new("palette_fuzzy");
     h.spawn_tui();
 
-    h.wait_for("[all]");
+    h.wait_for(" aoe ");
     h.send_keys("C-k");
     h.wait_for("Commands");
 
@@ -68,7 +68,7 @@ fn test_status_bar_shows_palette_hint() {
     let mut h = TuiTestHarness::new("palette_hint");
     h.spawn_tui();
 
-    h.wait_for("[all]");
+    h.wait_for(" aoe ");
     // The footer should mention the Ctrl+K shortcut so users discover it.
     h.assert_screen_contains("^K");
 }

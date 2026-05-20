@@ -48,6 +48,23 @@ aoe add . -w feat/my-feature -b
 
 This creates a new git branch, a worktree directory, and a session pointing at it. When you delete the session, AoE offers to clean up the worktree too.
 
+## Attach to Existing Work
+
+Already have a worktree checked out, or a Claude Code conversation you want to keep going? AoE can wrap both without forcing you to start over.
+
+**Attach to an existing branch or worktree.** Omit the `-b` flag and AoE re-uses the worktree if one exists for that branch, or checks the branch out into a new worktree if not:
+
+```bash
+# CLI: attach to whatever worktree/branch already exists
+aoe add . -w feat/my-feature
+```
+
+In the TUI, press `Ctrl+P` on the Worktree field and toggle **Attach to existing branch**. The web wizard exposes the same toggle under the worktree name input. See [Worktrees Reference](guides/worktrees.md) for the full matrix.
+
+When you later remove the session, AoE only cleans up worktrees it created; attached ones are left alone.
+
+**Resume an existing Claude Code conversation.** After attaching, run `/resume` inside the Claude pane and pick the conversation you want. AoE's session-id poller watches `~/.claude/projects/<project>/` and persists the new id so the next launch reattaches to the same conversation automatically. Details in [Session Resume](guides/session-resume.md), including the `aoe session set-session-id` command for setting the Claude UUID explicitly.
+
 ## Create a Sandboxed Session
 
 To run an agent inside a Docker container:

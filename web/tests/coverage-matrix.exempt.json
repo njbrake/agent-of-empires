@@ -38,10 +38,6 @@
       "reason": "Mobile fullscreen FAB; covered indirectly by mobile-keyboard.spec.ts"
     },
     {
-      "path": "web/src/components/TopBar.tsx",
-      "reason": "Top bar layout exercised by top-bar.spec.ts (mocked)"
-    },
-    {
       "path": "web/src/components/UpdateBanner.tsx",
       "reason": "Update banner covered by update-banner.spec.ts (mocked)"
     },

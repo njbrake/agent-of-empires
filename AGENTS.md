@@ -29,7 +29,7 @@
 ## Build, Test, and Development Commands
 
 - `cargo build` / `cargo build --release`: TUI-only (release binary at `target/release/aoe`).
-- `cargo build --profile dev-release`: optimized local builds without LTO; faster compile. Use `--release` for CI.
+- `cargo build --profile dev-release`: optimized local builds without LTO; faster compile. Lands on the release namespace (app dir, tmux prefix, serve port), so it shares state with an installed release `aoe`. Use `--release` only when producing a shipping binary.
 - `cargo build --features serve`: includes the web dashboard (needs Node.js + npm).
 - `cargo test`: unit + integration tests (some skip if `tmux` unavailable).
 - `cargo fmt` + `cargo clippy`: run before pushing; fix clippy warnings unless there's a strong reason not to.

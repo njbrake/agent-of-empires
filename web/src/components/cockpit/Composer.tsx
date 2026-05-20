@@ -354,10 +354,11 @@ export function Composer({
     };
   }, [composerRuntime, sessionId]);
 
-  // wterm's async init() in the right pane focuses its hidden textarea
-  // ~200-500ms after mount and steals focus from us. Re-claim a couple
-  // of times so the agent input wins; only when focus is on body or
-  // inside .wterm so an intentional click into the host shell sticks.
+  // xterm.js's autoFocus path in the right pane focuses its hidden
+  // textarea ~200-500ms after mount and steals focus from us. Re-claim
+  // a couple of times so the agent input wins; only when focus is on
+  // body or inside .xterm so an intentional click into the host shell
+  // sticks.
   //
   // Mobile skips this entirely (#1178): auto-focusing the textarea pops
   // the soft keyboard on every session open / switch, which is the wrong
@@ -374,7 +375,7 @@ export function Composer({
         el.focus();
         return;
       }
-      if (active.closest?.(".wterm")) {
+      if (active.closest?.(".xterm")) {
         el.focus();
       }
     };
@@ -430,6 +431,13 @@ export function Composer({
             <ComposerPrimitive.Input
               ref={taRef}
               rows={2}
+              // assistant-ui's default Escape binding cancels the active
+              // run (see ComposerPrimitive.Input's `cancelOnEscape`
+              // default). The cockpit deliberately keeps cancel behind
+              // an explicit gesture, the Stop button, because Claude
+              // Code CLI also hijacks Escape for cancel and a stray
+              // press would lose work the user did not mean to abort.
+              cancelOnEscape={false}
               placeholder={
                 turnActive
                   ? "Queue a follow-up… (sent when current turn ends)"
@@ -990,7 +998,7 @@ function StopButton() {
     <button
       type="button"
       aria-label="Stop"
-      title="Stop the agent · Esc"
+      title="Stop the agent"
       onClick={() => runtime.cancelRun()}
       className={[
         "inline-flex items-center justify-center gap-1.5",

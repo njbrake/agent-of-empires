@@ -530,6 +530,11 @@ impl SettingsView {
         };
 
         match key {
+            // Profile description: clears straight to None since there is no
+            // global counterpart to inherit from.
+            FieldKey::ProfileDescription => {
+                config.description = None;
+            }
             // Theme
             FieldKey::ThemeName => {
                 if let Some(ref mut t) = config.theme {

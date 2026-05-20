@@ -15,14 +15,8 @@ test("/api/about reports read_only=true", async ({ serveReadOnly }) => {
 });
 
 test("POST /api/sessions is rejected with 403", async ({ serveReadOnly }) => {
-  // Body shape matches CreateSessionBody (path, tool, ...). The read-only
-  // guard sits AFTER axum's Json<...> extractor today, so a bad-shape
-  // body would 422 before the guard fires. The right-shape body trips
-  // the guard at the top of `create_session` and returns 403.
-  //
-  // Moving the read-only check to precede body validation is tracked as
-  // a follow-up; the test contract here is "POST with a valid shape on a
-  // read-only server returns 403", not "any POST returns 403".
+  // The right-shape body trips the read-only guard at the top of
+  // `create_session` and returns 403.
   const res = await fetch(`${serveReadOnly.baseUrl}/api/sessions`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -33,6 +27,43 @@ test("POST /api/sessions is rejected with 403", async ({ serveReadOnly }) => {
     }),
   });
   expect(res.status).toBe(403);
+});
+
+test("POST /api/sessions with malformed body still returns 403", async ({
+  serveReadOnly,
+}) => {
+  // Regression for #1229: the read-only check runs BEFORE axum's typed
+  // body extractor, so any body shape (including intentionally
+  // malformed) must be rejected with 403, not 422.
+  const cases: { label: string; init: RequestInit }[] = [
+    {
+      label: "wrong-shape JSON",
+      init: {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ junk: true }),
+      },
+    },
+    {
+      label: "non-JSON garbage",
+      init: {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "not even json",
+      },
+    },
+    {
+      label: "empty body",
+      init: {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      },
+    },
+  ];
+  for (const c of cases) {
+    const res = await fetch(`${serveReadOnly.baseUrl}/api/sessions`, c.init);
+    expect(res.status, `case: ${c.label}`).toBe(403);
+  }
 });
 
 test("dashboard suppresses mutation UI in read-only", async ({

@@ -795,7 +795,7 @@ function formatElapsed(seconds: number): string {
 
 /* ── Working spinner (rattle) ────────────────────────────────────── */
 
-function WorkingSpinner({
+export function WorkingSpinner({
   thinking,
   tool,
   lastActivityRef,
@@ -859,10 +859,13 @@ function WorkingSpinner({
   // want a more sensitive signal lower one knob and get both. See
   // #1112.
   const showStalled = stalledSecs >= forceEndTurnThresholdSecs;
+  const toolInFlight = tool != null;
   const label = showStalled
-    ? `Waiting on model… ${formatElapsed(stalledSecs)}`
+    ? toolInFlight
+      ? `Waiting on tool… ${formatElapsed(stalledSecs)}`
+      : `Waiting on model… ${formatElapsed(stalledSecs)}`
     : chooseVerb(state, seed, tool);
-  const showForceEnd = showStalled;
+  const showForceEnd = showStalled && !toolInFlight;
 
   return (
     <div className="flex flex-col gap-2 text-sm italic text-text-muted">

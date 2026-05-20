@@ -116,6 +116,10 @@ In the TUI, press `?` for help. The bottom information bar shows all available k
 - **[HTTP API Reference](https://www.agent-of-empires.com/docs/api/)**: REST endpoints for external orchestrators
 - **[Development](https://www.agent-of-empires.com/docs/development/)**: contributing and local setup
 
+## Roadmap
+
+The AoE roadmap is public: see the [project board](https://github.com/users/njbrake/projects/1) for what's planned, in progress, and recently shipped. Issues and PRs welcome.
+
 ## FAQ
 
 ### What happens when I close aoe?

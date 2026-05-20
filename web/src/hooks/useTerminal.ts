@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { WTerm } from "@wterm/dom";
+import { Terminal, type ITheme } from "@xterm/xterm";
+import { FitAddon } from "@xterm/addon-fit";
+import { WebLinksAddon } from "@xterm/addon-web-links";
+import { WebglAddon } from "@xterm/addon-webgl";
 import type {
   ActivateMessage,
   PauseOutputMessage,
@@ -55,7 +58,7 @@ const RETRY_CAP_MS = 30000;
  *  `src/server/ws.rs`. Picked from the application-reserved 4000-4999
  *  range. See #1107. */
 const CLOSE_CODE_PTY_DEAD = 4001;
-const retryDelayMs = (attempt: number) =>
+export const retryDelayMs = (attempt: number) =>
   Math.min(RETRY_CAP_MS, RETRY_BASE_MS * 2 ** (attempt - 1));
 const MIN_FONT_SIZE = 6;
 const MAX_FONT_SIZE = 28;
@@ -71,6 +74,9 @@ const RESIZE_DEBOUNCE_MS = 50;
 // a small margin. After the first resize lands the debounce drops to
 // RESIZE_DEBOUNCE_MS so live splitter drags still feel responsive.
 const INITIAL_SETTLE_MS = 250;
+
+const FONT_FAMILY =
+  "'Geist Mono', ui-monospace, 'SFMono-Regular', monospace";
 
 export interface TerminalState {
   connected: boolean;
@@ -89,13 +95,49 @@ export interface TerminalState {
 }
 
 /**
- * Manages a wterm terminal connected to a PTY-relayed WebSocket.
+ * Read the 16 ANSI + bg/fg/cursor slots out of CSS custom properties on
+ * documentElement (set by useResolvedTheme) and return an xterm.js ITheme.
+ * Called at terminal construction and again on `aoe:theme-changed` so a
+ * live palette swap doesn't require a reconnect.
+ */
+export function readThemeFromCss(): ITheme {
+  const root = document.documentElement;
+  const cs = getComputedStyle(root);
+  const v = (name: string, fallback: string) =>
+    cs.getPropertyValue(name).trim() || fallback;
+  return {
+    background: v("--term-bg", "#1c1c1f"),
+    foreground: v("--term-fg", "#e4e4e7"),
+    cursor: v("--term-cursor", "#f59e0b"),
+    cursorAccent: v("--term-bg", "#1c1c1f"),
+    selectionBackground: "rgba(161, 161, 170, 0.35)",
+    black: v("--term-color-0", "#1c1c1f"),
+    red: v("--term-color-1", "#ef4444"),
+    green: v("--term-color-2", "#22c55e"),
+    yellow: v("--term-color-3", "#fbbf24"),
+    blue: v("--term-color-4", "#0d9488"),
+    magenta: v("--term-color-5", "#f59e0b"),
+    cyan: v("--term-color-6", "#0d9488"),
+    white: v("--term-color-7", "#e4e4e7"),
+    brightBlack: v("--term-color-8", "#8b8b94"),
+    brightRed: v("--term-color-9", "#f26969"),
+    brightGreen: v("--term-color-10", "#4ed17e"),
+    brightYellow: v("--term-color-11", "#fccc50"),
+    brightBlue: v("--term-color-12", "#3da9a0"),
+    brightMagenta: v("--term-color-13", "#f7b13c"),
+    brightCyan: v("--term-color-14", "#3da9a0"),
+    brightWhite: v("--term-color-15", "#fbbf24"),
+  };
+}
+
+/**
+ * Manages an xterm.js terminal connected to a PTY-relayed WebSocket.
  * Returns a ref to attach to a container div, plus connection state.
  *
  * `claudeFullscreen` is read at connect time (the connect effect's deps
  * are intentionally only `[sessionId, wsPath]`). Toggling Claude's
- * `/tui` setting mid-session won't take effect on the live wterm; the
- * user has to reattach. That matches Claude Code itself, which also
+ * `/tui` setting mid-session won't take effect on the live terminal;
+ * the user has to reattach. That matches Claude Code itself, which also
  * needs a restart to switch renderers.
  */
 export function useTerminal(
@@ -106,14 +148,15 @@ export function useTerminal(
 ) {
   const { settings, update } = useWebSettings();
   const containerRef = useRef<HTMLDivElement>(null);
-  const termRef = useRef<WTerm | null>(null);
+  const termRef = useRef<Terminal | null>(null);
+  const fitRef = useRef<FitAddon | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
   const retryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const retryCountRef = useRef(0);
-  // Shared ref so the wterm onData callback can read the virtual Ctrl state
-  // set by MobileTerminalToolbar. This bridges React state with the native
-  // event handler without requiring focus on the proxy input.
+  // Shared ref so the onData callback can read the virtual Ctrl state
+  // set by MobileTerminalToolbar. This bridges React state with the
+  // native event handler without requiring focus on the proxy input.
   const ctrlActiveRef = useRef(false);
   // Stable callback set by the component to clear React's ctrlActive state
   // when onData consumes the Ctrl modifier.
@@ -125,21 +168,16 @@ export function useTerminal(
   // in-flight momentum decay so post-flick wheel-ups don't immediately
   // re-enter scrollback after the user taps "Back to live".
   const cancelMomentumRef = useRef<(() => void) | null>(null);
-  // Mirror of state.isInScrollback so the resize callback (which lives
-  // inside the WTerm options closure) can read the latest value without
-  // re-creating the terminal. Updated by an effect below.
+  // Mirror of state.isInScrollback so the resize callback can read the
+  // latest value without re-creating the terminal. Updated by an effect
+  // below.
   const isInScrollbackRef = useRef(false);
   // Latest pending resize that was deferred because the user was reading
   // scrollback. Drained when scrollback exits.
   const pendingResizeRef = useRef<{ cols: number; rows: number } | null>(null);
-  // Most recent size measured by wterm's ResizeObserver. Until this is
-  // populated, term.cols/term.rows hold wterm's hardcoded 80x24 default,
-  // and sending those over WS makes the server resize the PTY before
-  // wterm has measured the container. Each spurious resize fires
-  // SIGWINCH at the regular-screen TUI (opencode, Claude Code) and the
-  // previous frame ends up stacked into tmux scrollback as garbled
-  // output. Holding off until first measurement collapses the init
-  // storm to a single resize at the correct size.
+  // Most recent size measured by FitAddon. Until this is populated the
+  // ws.onopen path skips its initial resize so we don't push xterm's
+  // default 80x24 to the server before the container has been measured.
   const lastMeasuredRef = useRef<{ cols: number; rows: number } | null>(null);
   // Set inside the effect; the scrollback-watch effect calls it to flush
   // a deferred resize without poking React state.
@@ -168,7 +206,7 @@ export function useTerminal(
 
     // Clean up previous instance
     wsRef.current?.close();
-    termRef.current?.destroy();
+    termRef.current?.dispose();
     if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
     if (countdownRef.current) clearInterval(countdownRef.current);
     retryCountRef.current = 0;
@@ -185,32 +223,52 @@ export function useTerminal(
     };
     const fontSize = readFontSize();
 
-    // Create a child element for WTerm so the container div keeps its own
-    // layout (absolute inset-0 in TerminalView, flex-1 in RightPanel).
-    // WTerm adds .wterm with position:relative which would override the
-    // container's positioning if we used the container directly.
+    // Child element so the container div keeps its own layout (absolute
+    // inset-0 in TerminalView, flex-1 in RightPanel). xterm.js renders
+    // its grid inside this element and adds the `.xterm` class.
     const termEl = document.createElement("div");
     termEl.style.width = "100%";
     termEl.style.height = "100%";
     container.appendChild(termEl);
 
-    // wterm reads --term-* CSS variables for theming. Background,
-    // foreground, cursor, and the 16 ANSI slots come from the resolved
-    // theme (set on document.documentElement by useResolvedTheme) and
-    // cascade in. Only font vars are per-terminal-instance since they
-    // track the user's font-size setting; setting them on the element
-    // (not the root) lets each terminal instance scale independently
-    // under pinch-zoom.
-    termEl.style.setProperty(
-      "--term-font-family",
-      "'Geist Mono', ui-monospace, 'SFMono-Regular', monospace",
-    );
-    termEl.style.setProperty("--term-font-size", `${fontSize}px`);
+    const term = new Terminal({
+      fontFamily: FONT_FAMILY,
+      fontSize,
+      lineHeight: 1.2,
+      theme: readThemeFromCss(),
+      cursorBlink: true,
+      // tmux owns scrollback. Zero here so xterm.js doesn't keep a
+      // parallel scrollback above the live area (which would
+      // double-count with tmux and break the "wheel-up enters tmux
+      // copy-mode" model the rest of this hook relies on).
+      scrollback: 0,
+      allowProposedApi: true,
+      convertEol: false,
+    });
+    termRef.current = term;
+    const fitAddon = new FitAddon();
+    fitRef.current = fitAddon;
+    term.loadAddon(fitAddon);
+    term.loadAddon(new WebLinksAddon());
 
-    // wterm's autoResize uses ResizeObserver to fit the terminal element.
-    // Debounce resize messages to avoid SIGWINCH storms during keyboard
-    // animation (ResizeObserver fires multiple times with intermediate
-    // sizes). 50ms settles after the animation ends.
+    term.open(termEl);
+
+    // GPU renderer. Loaded after .open() per the addon's contract. Falls
+    // back to the DOM renderer silently on machines where the context is
+    // unavailable (Safari private mode, headless CI, software-render VMs)
+    // so the terminal still works there.
+    try {
+      const webgl = new WebglAddon();
+      webgl.onContextLoss(() => webgl.dispose());
+      term.loadAddon(webgl);
+    } catch (err) {
+      tdbg("webgl addon unavailable, using DOM renderer", err);
+    }
+
+    // Resize messaging. FitAddon measures the container and calls
+    // term.resize(cols, rows), which triggers term.onResize below.
+    // Debounce the WS message so a splitter drag or keyboard
+    // animation collapses into a single SIGWINCH at the resting size.
     let resizeDebounceTimer: ReturnType<typeof setTimeout> | null = null;
     // Flips true once the first measured resize has been sent. Until
     // then, onResize uses INITIAL_SETTLE_MS so the dashboard's mount-
@@ -227,8 +285,7 @@ export function useTerminal(
     // Also dedupes consecutive identical sizes. The ws.onopen path and
     // the rAF re-send both read from lastMeasuredRef, so back-to-back
     // calls with the same cols/rows are common; sending both would
-    // produce two SIGWINCHes for one effective resize and re-introduce
-    // banner stacking that the rest of this fix is trying to avoid.
+    // produce two SIGWINCHes for one effective resize.
     let lastSentCols = -1;
     let lastSentRows = -1;
     const sendResize = (cols: number, rows: number) => {
@@ -236,6 +293,23 @@ export function useTerminal(
         pendingResizeRef.current = { cols, rows };
         return;
       }
+      // Skip sends whose dimensions came from measuring a hidden
+      // container. ContentSplit mounts the paired terminal twice on
+      // desktop (the inline copy and the mobile slide-in overlay, the
+      // latter hidden via Tailwind `md:hidden`). xterm.js inside the
+      // hidden copy lays out at a tiny grid and tries to ship its
+      // ~10x4 measurement to the same tmux session that the visible
+      // copy is attached to. tmux honors the smallest attached
+      // client's size, so the visible terminal ends up rendering its
+      // shell into a 10x4 pane bordered by DEC line-drawing chars.
+      //
+      // We treat offsetParent==null + implausibly small dimensions as
+      // the hidden-container signal. The dual condition keeps the
+      // Vitest jsdom suite green: jsdom returns null offsetParent for
+      // everything regardless of layout, but the mock terminal there
+      // proposes a real-shaped grid that comfortably clears the
+      // threshold.
+      if (!termEl.offsetParent && (cols < 20 || rows < 5)) return;
       if (cols === lastSentCols && rows === lastSentRows) return;
       const ws = wsRef.current;
       if (ws?.readyState !== WebSocket.OPEN) return;
@@ -244,87 +318,80 @@ export function useTerminal(
       lastSentRows = rows;
     };
 
-    // Pre-measure cell size and seed the WTerm constructor with the
-    // computed cols/rows so the WASM bridge initializes at the right
-    // size. wterm's own ResizeObserver also runs and will correct any
-    // drift, but seeding from this measurement guarantees that the very
-    // first byte processed lives in the correct grid (not 80x24). The
-    // .wterm class is added here so font-family / line-height resolve
-    // from the CSS variables we just set; WTerm's constructor will
-    // re-add it as a no-op.
-    //
-    // The measurement uses whatever font is currently rendering. With a
-    // cold cache, Geist Mono may not have loaded yet and the probe gets
-    // fallback-font metrics. wterm's ResizeObserver only re-measures the
-    // cell on outer-size changes, so a font swap that doesn't move the
-    // outer rect can leave wterm stuck with stale metrics. We schedule a
-    // post-fonts.ready re-measure below to dispatch term.resize() if the
-    // corrected size differs.
-    termEl.classList.add("wterm");
-    const computeSeedSize = (): { cols: number; rows: number } | null => {
-      const probe = document.createElement("span");
-      probe.textContent = "W";
-      probe.style.position = "absolute";
-      probe.style.visibility = "hidden";
-      probe.style.whiteSpace = "pre";
-      termEl.appendChild(probe);
-      const cellRect = probe.getBoundingClientRect();
-      probe.remove();
-      const containerRect = termEl.getBoundingClientRect();
-      if (
-        cellRect.width <= 0 ||
-        cellRect.height <= 0 ||
-        containerRect.width <= 0 ||
-        containerRect.height <= 0
-      ) {
-        return null;
-      }
-      // wterm's ResizeObserver uses entry.contentRect (padding-excluded).
-      // Match that so the seeded size won't immediately conflict with the
-      // observer's first measurement.
-      const cs = getComputedStyle(termEl);
-      const padX =
-        (parseFloat(cs.paddingLeft) || 0) +
-        (parseFloat(cs.paddingRight) || 0);
-      const padY =
-        (parseFloat(cs.paddingTop) || 0) +
-        (parseFloat(cs.paddingBottom) || 0);
-      const contentW = Math.max(0, containerRect.width - padX);
-      const contentH = Math.max(0, containerRect.height - padY);
-      return {
-        cols: Math.max(1, Math.floor(contentW / cellRect.width)),
-        rows: Math.max(1, Math.floor(contentH / cellRect.height)),
-      };
-    };
-    const seedSize = computeSeedSize();
-
-    const term = new WTerm(termEl, {
-      cols: seedSize?.cols,
-      rows: seedSize?.rows,
-      autoResize: true,
-      cursorBlink: true,
-      onResize: (cols: number, rows: number) => {
-        lastMeasuredRef.current = { cols, rows };
-        if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
-        const delay = hasSentInitialResize
-          ? RESIZE_DEBOUNCE_MS
-          : INITIAL_SETTLE_MS;
-        resizeDebounceTimer = setTimeout(() => {
-          resizeDebounceTimer = null;
-          hasSentInitialResize = true;
-          sendResize(cols, rows);
-        }, delay);
-      },
+    term.onResize(({ cols, rows }) => {
+      lastMeasuredRef.current = { cols, rows };
+      if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
+      const delay = hasSentInitialResize
+        ? RESIZE_DEBOUNCE_MS
+        : INITIAL_SETTLE_MS;
+      resizeDebounceTimer = setTimeout(() => {
+        resizeDebounceTimer = null;
+        hasSentInitialResize = true;
+        sendResize(cols, rows);
+      }, delay);
     });
-    if (seedSize) {
-      lastMeasuredRef.current = { cols: seedSize.cols, rows: seedSize.rows };
-    }
 
-    // Once webfonts have fully loaded, re-measure and dispatch a resize
-    // if the cell metrics shifted. This catches the cold-cache case where
-    // the synchronous seed above used fallback-font metrics. term.resize
-    // routes through onResize so the same debounce + dedup applies; if
-    // the corrected size matches what was already sent, nothing goes out.
+    // Initial fit, scheduled AFTER onResize is registered so the first
+    // term.resize() call from the fit emits to our callback. xterm.js's
+    // open() triggers layout, so the container has its real size by the
+    // time we get here; fit() populates lastMeasuredRef before ws.onopen
+    // fires so the 80x24 default never reaches the server. RAF backup
+    // covers the case where the container hasn't laid out yet (panel
+    // mounts mid-transition).
+    try {
+      fitAddon.fit();
+    } catch {
+      // ignore -- the RAF + ResizeObserver below will retry
+    }
+    const initialFitRaf = requestAnimationFrame(() => {
+      try {
+        fitAddon.fit();
+      } catch {
+        // fit() throws if the container has zero rows/cols; harmless
+        // here because the ResizeObserver below will retry.
+      }
+    });
+
+    // Refit on container resize. xterm.js has no built-in autoResize so
+    // we wire ResizeObserver directly. Skip zero-sized observations,
+    // which fire while the element is being attached/detached.
+    //
+    // We also call `term.resize(proposed.cols, proposed.rows)` directly
+    // instead of relying on FitAddon.fit() to do it: fit() reads xterm's
+    // cached cell metrics, and on the side-panel mount path the first
+    // sync fit ran against a still-laying-out container, latched a tiny
+    // grid (e.g. 10x4), and subsequent fits at the correct container
+    // size would propose the same 10x4 because xterm's internal cell
+    // metrics had been re-derived from the wrong grid. Computing the
+    // proposed dimensions and pushing them through term.resize each
+    // observation breaks that latch and reliably propagates the final
+    // container size up to the server.
+    const ro = new ResizeObserver((entries) => {
+      for (const entry of entries) {
+        const w = entry.contentRect.width;
+        const h = entry.contentRect.height;
+        if (w <= 0 || h <= 0) continue;
+        try {
+          const proposed = fitAddon.proposeDimensions();
+          if (
+            proposed &&
+            proposed.cols > 0 &&
+            proposed.rows > 0 &&
+            (proposed.cols !== term.cols || proposed.rows !== term.rows)
+          ) {
+            term.resize(proposed.cols, proposed.rows);
+          }
+        } catch {
+          // ignore transient measurement failures
+        }
+      }
+    });
+    ro.observe(termEl);
+
+    // Re-fit once webfonts have fully loaded. The synchronous initial
+    // fit may have used fallback-font metrics on a cold cache; once
+    // Geist Mono loads, the cell width changes and the grid needs to
+    // be recomputed.
     const fontsApi = (
       document as Document & { fonts?: { ready: Promise<unknown> } }
     ).fonts;
@@ -332,12 +399,10 @@ export function useTerminal(
       fontsApi.ready
         .then(() => {
           if (termRef.current !== term) return;
-          const remeasured = computeSeedSize();
-          if (
-            remeasured &&
-            (remeasured.cols !== term.cols || remeasured.rows !== term.rows)
-          ) {
-            term.resize(remeasured.cols, remeasured.rows);
+          try {
+            fitAddon.fit();
+          } catch {
+            // ignore
           }
         })
         .catch(() => {
@@ -355,110 +420,6 @@ export function useTerminal(
       if (!pending) return;
       sendResize(pending.cols, pending.rows);
     };
-
-    termRef.current = term;
-
-    // Two iOS patches for wterm's textarea:
-    // 1. Move from -9999px to 0,0 so iOS shows the soft keyboard on focus.
-    // 2. Fix backspace repeat: wterm calls preventDefault() on all keydown
-    //    events, which prevents iOS from entering its key-repeat loop.
-    //    We intercept Backspace in capture phase, skip wterm's handler,
-    //    and let the native deletion happen. iOS repeat fires "input"
-    //    events with inputType "deleteContentBackward" (not keydown),
-    //    so we detect those and send \x7f for each one.
-    //    A ZWS seed keeps the textarea non-empty so iOS always has
-    //    something to delete on each repeat tick.
-    // Paste: wterm's textarea has pointerEvents:none and is 1x1px, so
-    // iOS can't show a paste popup on it. Use the toolbar Paste button.
-    const BACKSPACE_SEED = "\u200B";
-    let wtermTextarea: HTMLTextAreaElement | null = null;
-    const setupPrintableInputGuard = () => {
-      const textarea = termEl.querySelector("textarea");
-      if (!textarea) return;
-
-      textarea.addEventListener(
-        "keydown",
-        (e: KeyboardEvent) => {
-          if (
-            e.key.length !== 1 ||
-            e.altKey ||
-            e.ctrlKey ||
-            e.metaKey
-          ) {
-            return;
-          }
-
-          // Let the browser's input/composition events produce printable
-          // text. macOS IMEs can emit the first pinyin keydown before
-          // compositionstart, and wterm would otherwise send that Latin
-          // pre-edit character to the PTY.
-          e.stopImmediatePropagation();
-        },
-        true,
-      );
-    };
-    const setupMobileTextarea = () => {
-      if (!isMobileViewport()) return;
-      wtermTextarea = termEl.querySelector("textarea");
-      if (!wtermTextarea) return;
-
-      // Move wterm's textarea from -9999px into the viewport so iOS
-      // opens the soft keyboard when it receives focus.
-      wtermTextarea.style.left = "0";
-      wtermTextarea.style.top = "0";
-      // wterm sets opacity:0; override so the textarea is technically
-      // "visible" to iOS (needed for future keyboard/paste improvements).
-      wtermTextarea.style.opacity = "0.01";
-
-      const seedTextarea = () => {
-        if (wtermTextarea && !wtermTextarea.value) {
-          wtermTextarea.value = BACKSPACE_SEED;
-          wtermTextarea.setSelectionRange(1, 1);
-        }
-      };
-      wtermTextarea.addEventListener("focus", seedTextarea);
-      seedTextarea();
-
-      // Capture-phase: block wterm's preventDefault on Backspace so iOS
-      // can enter its key-repeat loop. Don't send \x7f here; the native
-      // deletion fires a deleteContentBackward input event which handles it.
-      wtermTextarea.addEventListener(
-        "keydown",
-        (e: KeyboardEvent) => {
-          if (e.key !== "Backspace") return;
-          e.stopImmediatePropagation();
-        },
-        true,
-      );
-
-      // All backspace handling (first press + iOS repeat) comes through
-      // here as deleteContentBackward input events. Send \x7f and re-seed.
-      const ta = wtermTextarea;
-      ta.addEventListener("input", (e: Event) => {
-        const ie = e as InputEvent;
-        if (ie.inputType === "deleteContentBackward") {
-          const ws = wsRef.current;
-          if (ws?.readyState === WebSocket.OPEN) {
-            ws.send(new TextEncoder().encode("\x7f"));
-          }
-        }
-        queueMicrotask(seedTextarea);
-      });
-    };
-
-    // Initialize the WASM bridge, then connect to the PTY.
-    let connectOnReady = true;
-    term
-      .init()
-      .then(() => {
-        if (!connectOnReady) return;
-        setupPrintableInputGuard();
-        setupMobileTextarea();
-        connect();
-      })
-      .catch((err: unknown) => {
-        console.error("wterm init failed:", err);
-      });
 
     connectRef.current = connect;
     function connect() {
@@ -533,22 +494,23 @@ export function useTerminal(
         // Without this, the first resize lands in "vacant" state (which
         // works) but a race with focus/visibility events could delay it.
         ws.send(JSON.stringify({ type: "activate" } as ActivateMessage));
-        // Send initial PTY dimensions only if wterm has actually measured
-        // the container. Reading term.cols/term.rows directly would yield
-        // wterm's 80x24 default before ResizeObserver fires, and pushing
-        // that ahead of the real measurement causes a stale-default ->
-        // real-size resize storm at session open. The onResize callback
-        // (already wired through sendResize) delivers the correct size
-        // after the first measurement, so on the very first connect this
-        // branch is intentionally a no-op. On reconnect lastMeasuredRef
-        // is populated and we send immediately so the new server-side
-        // handler picks up the right size.
+        // Send initial PTY dimensions only if FitAddon has actually
+        // measured the container. Reading term.cols/term.rows directly
+        // would yield xterm's 80x24 default before fit() runs, and
+        // pushing that ahead of the real measurement causes a
+        // stale-default -> real-size resize storm at session open. The
+        // onResize callback (already wired through sendResize) delivers
+        // the correct size after the first measurement, so on the very
+        // first connect this branch is intentionally a no-op. On
+        // reconnect lastMeasuredRef is populated and we send
+        // immediately so the new server-side handler picks up the
+        // right size.
         const measured = lastMeasuredRef.current;
         if (measured) {
           sendResize(measured.cols, measured.rows);
         }
-        // Re-send after layout settles. Same gate; on first connect this
-        // still no-ops because ResizeObserver fires async.
+        // Re-send after layout settles. Same gate; on first connect
+        // this still no-ops because the ResizeObserver fires async.
         requestAnimationFrame(() => {
           const m = lastMeasuredRef.current;
           if (m) {
@@ -668,12 +630,8 @@ export function useTerminal(
       // Relay keystrokes as binary. When the virtual Ctrl button is armed,
       // intercept single printable characters and transform them to their
       // Ctrl equivalents (Ctrl+A = 0x01, Ctrl+U = 0x15, etc.).
-      term.onData = (data: string) => {
+      term.onData((data: string) => {
         if (ws.readyState !== WebSocket.OPEN) return;
-        // Strip the backspace-seed ZWS so it never reaches the PTY.
-        const cleaned = data.replace(/\u200B/g, "");
-        if (!cleaned) return;
-        data = cleaned;
         if (ctrlActiveRef.current && data.length === 1) {
           const code = data.toUpperCase().charCodeAt(0);
           if (code >= 65 && code <= 90) {
@@ -684,8 +642,12 @@ export function useTerminal(
           }
         }
         ws.send(new TextEncoder().encode(data));
-      };
+      });
     }
+
+    // Kick off the connection. xterm.js's open() is synchronous so we
+    // can dial the WS immediately after construction.
+    connect();
 
     // Touch swipe emits SGR mouse-wheel escape sequences to the PTY
     // so tmux mouse-mode enters copy-mode and scrolls.
@@ -791,7 +753,6 @@ export function useTerminal(
     let pinchStartSize = DEFAULT_FONT_SIZE;
     let pinchStartMidY = 0;
     let singleStartY = 0;
-    let singleStartTs = 0;
     let singleY = 0;
     let singleAccum = 0;
     let singleLastTs = 0;
@@ -802,13 +763,11 @@ export function useTerminal(
     const MAX_WHEELS_PER_FRAME = 6;
     const clampV = (v: number) =>
       Math.max(-MAX_VELOCITY, Math.min(MAX_VELOCITY, v));
-    const cellHeight = () => {
-      const cs = getComputedStyle(term.element);
-      return (
-        parseFloat(cs.getPropertyValue("--term-font-size")) || DEFAULT_FONT_SIZE
-      );
-    };
-    const pxPerWheel = () => cellHeight() * LINES_PER_WHEEL;
+    const currentFontSize = (): number =>
+      typeof term.options.fontSize === "number"
+        ? term.options.fontSize
+        : DEFAULT_FONT_SIZE;
+    const pxPerWheel = () => currentFontSize() * 1.2 * LINES_PER_WHEEL;
     const prefersReducedMotion = () =>
       window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
 
@@ -829,21 +788,20 @@ export function useTerminal(
     const clampFont = (n: number) =>
       Math.max(MIN_FONT_SIZE, Math.min(MAX_FONT_SIZE, n));
 
-    // Font size updates via CSS custom property. Coalesce to one per frame.
+    // Font size updates. Coalesce to one per frame, refit after change
+    // so the cell grid recomputes against the new metrics.
     let pendingFontSize: number | null = null;
     let fontSizeRaf: number | null = null;
-    const currentFontSize = (): number => {
-      const cs = getComputedStyle(term.element);
-      return (
-        parseFloat(cs.getPropertyValue("--term-font-size")) || DEFAULT_FONT_SIZE
-      );
-    };
     const applyFontSize = (size: number) => {
       const next = clampFont(Math.round(size));
       const current = currentFontSize();
       if (next !== current) {
-        term.element.style.setProperty("--term-font-size", `${next}px`);
-        // wterm's ResizeObserver will detect the size change and call resize()
+        term.options.fontSize = next;
+        try {
+          fitAddon.fit();
+        } catch {
+          // ignore
+        }
       }
       return next;
     };
@@ -885,10 +843,9 @@ export function useTerminal(
       if (e.touches.length === 1) {
         const t = e.touches[0]!;
         singleStartY = t.clientY;
-        singleStartTs = performance.now();
         singleY = t.clientY;
         singleAccum = 0;
-        singleLastTs = singleStartTs;
+        singleLastTs = performance.now();
         velocity = 0;
         gestureMode = null;
         return;
@@ -1035,11 +992,11 @@ export function useTerminal(
       momentumRaf = requestAnimationFrame(decay);
     };
 
-    // Attach touch handlers to the .wterm element. `touch-action: none`
+    // Attach touch handlers to the .xterm element. `touch-action: none`
     // tells the browser we own all touch behavior here, so iOS Safari
     // won't engage native scroll/rubber-band on the dead-zone frames
     // before our handler decides whether to preventDefault.
-    const viewport = term.element;
+    const viewport = term.element!;
     viewport.style.touchAction = "none";
     const touchOpts = { passive: false, capture: true } as const;
     viewport.addEventListener("touchstart", onTouchStart, touchOpts);
@@ -1057,25 +1014,28 @@ export function useTerminal(
     };
     viewport.addEventListener("click", onClickCapture, true);
 
-    // Mouse wheel: Ctrl+wheel = zoom (trackpad pinch), plain wheel = scroll.
-    // wterm has no built-in wheel handling and tmux manages its own scrollback,
-    // so we convert wheel events to SGR mouse-wheel escape sequences (same
-    // mechanism the touch handler uses).
+    // Mouse wheel: Ctrl+wheel = zoom (trackpad pinch), plain wheel =
+    // scroll. tmux manages its own scrollback via mouse-mode escape
+    // sequences, so we always synthesize SGR wheel sequences and emit
+    // them ourselves rather than letting xterm.js auto-forward; the
+    // depth tracking + mobile clamp + pause/resume need to wrap each
+    // emission. Returning false from the custom handler tells xterm.js
+    // to skip its own wheel processing.
     let wheelAccum = 0;
     let scrollWheelAccum = 0;
     let wheelPersistTimer: ReturnType<typeof setTimeout> | null = null;
-    const onWheel = (e: WheelEvent) => {
+    term.attachCustomWheelEventHandler((e: WheelEvent) => {
       e.preventDefault();
 
       if (e.ctrlKey) {
         // Trackpad pinch fires wheel events with ctrlKey=true
         wheelAccum -= e.deltaY * WHEEL_ZOOM_SENSITIVITY;
-        if (Math.abs(wheelAccum) < 1) return;
+        if (Math.abs(wheelAccum) < 1) return false;
         const delta = Math.trunc(wheelAccum);
         wheelAccum -= delta;
         const base = currentPendingOrLiveSize();
         const next = clampFont(Math.round(base + delta));
-        if (next === base) return;
+        if (next === base) return false;
         scheduleFontSize(next);
         if (wheelPersistTimer) clearTimeout(wheelPersistTimer);
         wheelPersistTimer = setTimeout(() => {
@@ -1083,7 +1043,7 @@ export function useTerminal(
           persistFontSize(currentFontSize());
           wheelPersistTimer = null;
         }, WHEEL_PERSIST_DEBOUNCE_MS);
-        return;
+        return false;
       }
 
       // Plain scroll: convert to SGR mouse-wheel sequences for tmux
@@ -1098,8 +1058,8 @@ export function useTerminal(
         sendWheel(wheels > 0 ? "down" : "up", Math.abs(wheels));
         scrollWheelAccum -= wheels * step;
       }
-    };
-    viewport.addEventListener("wheel", onWheel, { passive: false });
+      return false;
+    });
 
     // When the user switches to this tab/window, tell the server so it
     // can claim primary and resize the PTY to match this viewport.
@@ -1158,8 +1118,9 @@ export function useTerminal(
     window.addEventListener("pageshow", onPageShow);
 
     return () => {
-      connectOnReady = false;
       cancelMomentum();
+      cancelAnimationFrame(initialFitRaf);
+      ro.disconnect();
       document.removeEventListener("visibilitychange", onVisibilityChange);
       window.removeEventListener("focus", onWindowFocus);
       window.removeEventListener("online", onOnline);
@@ -1169,31 +1130,29 @@ export function useTerminal(
       viewport.removeEventListener("touchend", onTouchEnd, touchOpts);
       viewport.removeEventListener("touchcancel", onTouchEnd, touchOpts);
       viewport.removeEventListener("click", onClickCapture, true);
-      viewport.removeEventListener("wheel", onWheel);
       if (wheelPersistTimer) clearTimeout(wheelPersistTimer);
       if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
       if (fontSizeRaf !== null) cancelAnimationFrame(fontSizeRaf);
       wsRef.current?.close();
-      term.destroy();
+      term.dispose();
       if (retryTimerRef.current) clearTimeout(retryTimerRef.current);
       if (countdownRef.current) clearInterval(countdownRef.current);
       termRef.current = null;
+      fitRef.current = null;
       wsRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sessionId, wsPath]);
 
   // Repaint the live terminal when the user picks a new theme. The
-  // resolved theme's --term-* variables live on documentElement and
-  // cascade in, but wterm only re-reads them on draw, so a quiet PTY
-  // would otherwise keep painting in the old palette until the next
-  // byte arrives. Calling term.resize with the current size forces a
-  // re-layout without changing the geometry.
+  // resolved theme's --term-* variables live on documentElement; xterm.js
+  // doesn't watch them, so we re-read the palette and reassign
+  // term.options.theme to swap it live.
   useEffect(() => {
     const onThemeChanged = () => {
       const term = termRef.current;
       if (!term) return;
-      term.resize(term.cols, term.rows);
+      term.options.theme = readThemeFromCss();
     };
     window.addEventListener("aoe:theme-changed", onThemeChanged);
     return () => {
@@ -1204,17 +1163,19 @@ export function useTerminal(
   // Apply font size changes from settings UI to the live terminal.
   useEffect(() => {
     const term = termRef.current;
+    const fit = fitRef.current;
     if (!term) return;
     const size =
       window.innerWidth < MOBILE_BREAKPOINT_PX
         ? settings.mobileFontSize
         : settings.desktopFontSize;
-    const current =
-      parseFloat(
-        getComputedStyle(term.element).getPropertyValue("--term-font-size"),
-      ) || DEFAULT_FONT_SIZE;
-    if (current !== size) {
-      term.element.style.setProperty("--term-font-size", `${size}px`);
+    if (term.options.fontSize !== size) {
+      term.options.fontSize = size;
+      try {
+        fit?.fit();
+      } catch {
+        // ignore
+      }
     }
   }, [settings.mobileFontSize, settings.desktopFontSize]);
 

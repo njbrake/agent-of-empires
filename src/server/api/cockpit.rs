@@ -91,11 +91,15 @@ pub(crate) fn cockpit_gate(state: &AppState) -> Result<(), (StatusCode, &'static
 pub async fn spawn_cockpit(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-    Json(req): Json<SpawnCockpitRequest>,
+    req: Result<Json<SpawnCockpitRequest>, axum::extract::rejection::JsonRejection>,
 ) -> impl IntoResponse {
     if let Some(resp) = read_only_block(&state) {
         return resp;
     }
+    let Json(req) = match req {
+        Ok(j) => j,
+        Err(rej) => return rej.into_response(),
+    };
     if let Err(reason) = cockpit_gate(&state) {
         return reason.into_response();
     }
@@ -208,11 +212,15 @@ pub async fn shutdown_cockpit(
 pub async fn cockpit_prompt(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-    Json(req): Json<PromptRequest>,
+    req: Result<Json<PromptRequest>, axum::extract::rejection::JsonRejection>,
 ) -> impl IntoResponse {
     if let Some(resp) = read_only_block(&state) {
         return resp;
     }
+    let Json(req) = match req {
+        Ok(j) => j,
+        Err(rej) => return rej.into_response(),
+    };
     // Publish the user's prompt into the event stream BEFORE forwarding
     // to the agent so the replay buffer / on-disk store captures it
     // even if the agent forward fails. The frontend treats UserPromptSent
@@ -659,11 +667,15 @@ pub struct SetModeRequest {
 pub async fn cockpit_set_mode(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
-    Json(req): Json<SetModeRequest>,
+    req: Result<Json<SetModeRequest>, axum::extract::rejection::JsonRejection>,
 ) -> impl IntoResponse {
     if let Some(resp) = read_only_block(&state) {
         return resp;
     }
+    let Json(req) = match req {
+        Ok(j) => j,
+        Err(rej) => return rej.into_response(),
+    };
     match state.cockpit_supervisor.set_mode(&id, &req.mode_id).await {
         Ok(()) => StatusCode::ACCEPTED.into_response(),
         Err(SupervisorError::UnknownSession(_)) => {
@@ -680,11 +692,15 @@ pub async fn cockpit_set_mode(
 pub async fn resolve_approval(
     State(state): State<Arc<AppState>>,
     Path((id, nonce_str)): Path<(String, String)>,
-    Json(req): Json<ResolveApprovalRequest>,
+    req: Result<Json<ResolveApprovalRequest>, axum::extract::rejection::JsonRejection>,
 ) -> impl IntoResponse {
     if let Some(resp) = read_only_block(&state) {
         return resp;
     }
+    let Json(req) = match req {
+        Ok(j) => j,
+        Err(rej) => return rej.into_response(),
+    };
     let nonce = Nonce(nonce_str);
     match state
         .cockpit_supervisor
@@ -798,7 +814,7 @@ pub struct MasterStateResponse {
 /// gating endpoints pick up the new value without a server restart.
 pub async fn set_cockpit_master(
     State(state): State<Arc<AppState>>,
-    Json(req): Json<SetMasterRequest>,
+    req: Result<Json<SetMasterRequest>, axum::extract::rejection::JsonRejection>,
 ) -> impl IntoResponse {
     if state.read_only {
         return (
@@ -810,6 +826,10 @@ pub async fn set_cockpit_master(
         )
             .into_response();
     }
+    let Json(req) = match req {
+        Ok(j) => j,
+        Err(rej) => return rej.into_response(),
+    };
     let new_value = req.enabled;
     // The atomic is the live source of truth — the reconciler and
     // every gating REST handler reads it. Flip it FIRST so an

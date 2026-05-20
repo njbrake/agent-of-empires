@@ -1103,6 +1103,7 @@ fn test_profile_cycling() {
         "work".to_string(),
         "personal".to_string(),
     ];
+    dialog.profile_descriptions = vec![None, None, None];
     dialog.profile_index = 0;
     dialog.focused_field = 0; // profile field
 
@@ -1126,6 +1127,7 @@ fn test_profile_cycling() {
 fn test_profile_single_profile_no_cycle() {
     let mut dialog = single_tool_dialog();
     dialog.available_profiles = vec!["default".to_string()];
+    dialog.profile_descriptions = vec![None];
     dialog.profile_index = 0;
     dialog.focused_field = 0;
 
@@ -1138,6 +1140,7 @@ fn test_profile_single_profile_no_cycle() {
 fn test_profile_included_in_submit() {
     let mut dialog = single_tool_dialog();
     dialog.available_profiles = vec!["default".to_string(), "work".to_string()];
+    dialog.profile_descriptions = vec![None, None];
     dialog.focused_field = 0;
 
     dialog.handle_key(key(KeyCode::Right)); // switch to "work"

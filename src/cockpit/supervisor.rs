@@ -118,7 +118,15 @@ enum WorkerKind {
 }
 
 struct WorkerHandle {
-    client: Arc<Mutex<AcpClient>>,
+    /// Shared with all callers that need to issue an ACP request to
+    /// this worker. Stored as `Arc<AcpClient>` (no surrounding Mutex)
+    /// because every method on `AcpClient` takes `&self` and forwards
+    /// to an `mpsc::Sender<ClientCmd>` whose consumer is the
+    /// connection task. Ordering across multiple senders is whatever
+    /// the channel scheduler picks; the agent serialises within a
+    /// turn anyway. The single writer (respawn) replaces the whole
+    /// `Arc` rather than mutating the inner client.
+    client: Arc<AcpClient>,
     /// Background task draining events from the client. Aborted on
     /// shutdown.
     drain_task: JoinHandle<()>,
@@ -183,7 +191,7 @@ pub struct Supervisor<S: BroadcastSink> {
     /// reservation, two concurrent callers both pass the empty-`workers`
     /// check and race to insert. The RAII `ResumeReservation` guard
     /// removes the entry on success, error, or panic.
-    pending_resumes: Arc<Mutex<HashMap<String, ResumeKind>>>,
+    pending_resumes: Arc<std::sync::Mutex<HashMap<String, ResumeKind>>>,
     /// Session ids whose in-flight `spawn` should bail out instead of
     /// inserting the freshly-spawned WorkerHandle. Set by `shutdown`
     /// when it observes a session that's in `pending_resumes` but not
@@ -192,7 +200,7 @@ pub struct Supervisor<S: BroadcastSink> {
     /// UnknownSession) but the in-flight spawn would still complete a
     /// few seconds later, producing an orphaned worker the user can no
     /// longer manage.
-    cancelled_spawns: Arc<Mutex<HashSet<String>>>,
+    cancelled_spawns: Arc<std::sync::Mutex<HashSet<String>>>,
     /// Per-agent install gate. claude-agent-acp lazy-installs its
     /// native binary on first ever run; two concurrent `session/new`
     /// calls against a partially-installed SDK race the install and
@@ -201,14 +209,21 @@ pub struct Supervisor<S: BroadcastSink> {
     /// process lifetime lets every subsequent spawn proceed in
     /// parallel without the gate. Reset on every `aoe serve` restart
     /// (warm-cache restarts pay one serial spawn). See #1088.
-    warmed_up_agents: Arc<Mutex<HashSet<String>>>,
+    warmed_up_agents: Arc<std::sync::Mutex<HashSet<String>>>,
     /// Per-agent warm-up locks. The first `spawn` for an agent name
     /// that is not yet in `warmed_up_agents` acquires the matching
     /// lock for the duration of its handshake, then inserts the agent
     /// into the warm-up set. Subsequent concurrent callers `await`
     /// the lock, see the agent is now warmed up, and proceed without
     /// re-acquiring it. See #1088.
-    agent_warmup_locks: Arc<Mutex<HashMap<String, Arc<Mutex<()>>>>>,
+    agent_warmup_locks: Arc<std::sync::Mutex<HashMap<String, Arc<Mutex<()>>>>>,
+    /// Wakes `wait_for_worker` whenever the (workers, pending_resumes)
+    /// snapshot changes. Notified after every workers.insert and after
+    /// every ResumeReservation drop. Replaces the previous 50 ms poll
+    /// loop with edge triggered wakeups, so a request that arrives
+    /// just after the spawn handshake finishes resumes within a
+    /// scheduler tick instead of waiting up to 50 ms.
+    worker_notify: Arc<tokio::sync::Notify>,
     /// Cap on concurrently-running workers, snapshotted from
     /// `[cockpit] max_concurrent_workers` at startup. Enforced in
     /// `spawn`; new workers past the cap return `CapacityFull`.
@@ -223,21 +238,29 @@ pub struct Supervisor<S: BroadcastSink> {
 /// leave a phantom reservation that blocks every future resume for
 /// that session AND keeps the UI stuck on "Resuming…".
 struct ResumeReservation {
-    pending: Arc<Mutex<HashMap<String, ResumeKind>>>,
+    pending: Arc<std::sync::Mutex<HashMap<String, ResumeKind>>>,
     session_id: String,
+    /// Wakes any `wait_for_worker` parked on the supervisor's
+    /// `worker_notify`. Cloned from the supervisor at construction
+    /// so Drop never has to reach back into `&Supervisor`.
+    notify: Arc<tokio::sync::Notify>,
 }
 
 impl Drop for ResumeReservation {
     fn drop(&mut self) {
-        // Sync remove via blocking_lock would deadlock inside an
-        // async runtime; spawn a detached task to release. The map
-        // operation is constant-time and the task lives only for the
-        // duration of one `lock().await` + remove.
-        let pending = Arc::clone(&self.pending);
+        // Sync remove against std::sync::Mutex; constant time, never
+        // blocks on an await. The previous shape spawned a detached
+        // task to release a tokio::sync::Mutex, which required a live
+        // runtime at drop time and orphaned the entry if the runtime
+        // was already shutting down. `lock_recover` handles the case
+        // where another holder panicked while owning the guard so the
+        // reservation is still cleared instead of leaking.
         let session_id = std::mem::take(&mut self.session_id);
-        tokio::spawn(async move {
-            pending.lock().await.remove(&session_id);
-        });
+        lock_recover(&self.pending).remove(&session_id);
+        // Wake any wait_for_worker parked on the notify. Notify with
+        // no waiters is a no-op so the cost on the hot path is just
+        // the atomic store inside Notify.
+        self.notify.notify_waiters();
     }
 }
 
@@ -296,10 +319,11 @@ impl<S: BroadcastSink> Supervisor<S> {
             registry: Arc::new(Mutex::new(AgentRegistry::with_defaults())),
             workers: Arc::new(Mutex::new(HashMap::new())),
             next_seqs: Arc::new(std::sync::Mutex::new(HashMap::new())),
-            pending_resumes: Arc::new(Mutex::new(HashMap::new())),
-            cancelled_spawns: Arc::new(Mutex::new(HashSet::new())),
-            warmed_up_agents: Arc::new(Mutex::new(HashSet::new())),
-            agent_warmup_locks: Arc::new(Mutex::new(HashMap::new())),
+            pending_resumes: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            cancelled_spawns: Arc::new(std::sync::Mutex::new(HashSet::new())),
+            warmed_up_agents: Arc::new(std::sync::Mutex::new(HashSet::new())),
+            agent_warmup_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            worker_notify: Arc::new(tokio::sync::Notify::new()),
             max_concurrent_workers,
         }
     }
@@ -314,7 +338,7 @@ impl<S: BroadcastSink> Supervisor<S> {
         for id in self.workers.lock().await.keys() {
             out.insert(id.clone(), CockpitWorkerState::Running);
         }
-        for id in self.pending_resumes.lock().await.keys() {
+        for id in lock_recover(&self.pending_resumes).keys() {
             // Running wins over Resuming if both maps happen to carry
             // the id during a hand-off; the WorkerHandle is the
             // authoritative "online" signal.
@@ -332,7 +356,7 @@ impl<S: BroadcastSink> Supervisor<S> {
         if self.workers.lock().await.contains_key(session_id) {
             return CockpitWorkerState::Running;
         }
-        if self.pending_resumes.lock().await.contains_key(session_id) {
+        if lock_recover(&self.pending_resumes).contains_key(session_id) {
             return CockpitWorkerState::Resuming;
         }
         CockpitWorkerState::Absent
@@ -550,7 +574,7 @@ impl<S: BroadcastSink> Supervisor<S> {
             // observed atomically. A second caller arriving here sees
             // either the workers entry (after insert below) or the
             // pending entry; in both cases it returns AlreadyRunning.
-            let mut pending = self.pending_resumes.lock().await;
+            let mut pending = lock_recover(&self.pending_resumes);
             if pending.contains_key(&session_id) {
                 return Err(SupervisorError::AlreadyRunning(session_id));
             }
@@ -569,6 +593,7 @@ impl<S: BroadcastSink> Supervisor<S> {
             ResumeReservation {
                 pending: Arc::clone(&self.pending_resumes),
                 session_id: session_id.clone(),
+                notify: Arc::clone(&self.worker_notify),
             }
         };
 
@@ -584,13 +609,10 @@ impl<S: BroadcastSink> Supervisor<S> {
         // warm-cache restarts pay one serial spawn before the rest
         // parallelize. See #1088.
         let warmup_guard = {
-            if self.warmed_up_agents.lock().await.contains(&agent) {
+            if lock_recover(&self.warmed_up_agents).contains(&agent) {
                 None
             } else {
-                let lock = self
-                    .agent_warmup_locks
-                    .lock()
-                    .await
+                let lock = lock_recover(&self.agent_warmup_locks)
                     .entry(agent.clone())
                     .or_insert_with(|| Arc::new(Mutex::new(())))
                     .clone();
@@ -650,7 +672,7 @@ impl<S: BroadcastSink> Supervisor<S> {
         // success: a failed warm-up should leave the next caller to
         // retry the gate. See #1088.
         if warmup_guard.is_some() {
-            self.warmed_up_agents.lock().await.insert(agent.clone());
+            lock_recover(&self.warmed_up_agents).insert(agent.clone());
         }
         drop(warmup_guard);
 
@@ -663,7 +685,7 @@ impl<S: BroadcastSink> Supervisor<S> {
         let inbound = client
             .take_inbound()
             .expect("freshly spawned AcpClient always has inbound receiver");
-        let client = Arc::new(Mutex::new(client));
+        let client = Arc::new(client);
 
         let mut workers = self.workers.lock().await;
         // Belt-and-braces: even with the pending_spawns reservation,
@@ -682,7 +704,7 @@ impl<S: BroadcastSink> Supervisor<S> {
         // and skip the workers insert so the user's "disable" actually
         // takes effect instead of being silently overwritten by the
         // 2-3s-late spawn completion.
-        if self.cancelled_spawns.lock().await.remove(&session_id) {
+        if lock_recover(&self.cancelled_spawns).remove(&session_id) {
             debug!(
                 target: "cockpit.supervisor",
                 session = %session_id,
@@ -710,6 +732,11 @@ impl<S: BroadcastSink> Supervisor<S> {
             },
         );
         drop(workers);
+        // Wake any wait_for_worker parked on this session. The drop
+        // above made the WorkerHandle observable to a fresh lock; the
+        // notify ensures a parked waiter recheck happens within a
+        // scheduler tick instead of on the next 50 ms poll.
+        self.worker_notify.notify_waiters();
 
         // Honor the wizard's "Auto-approve" / profile `yolo_mode_default`
         // by switching the ACP session to bypassPermissions mode. The
@@ -721,8 +748,7 @@ impl<S: BroadcastSink> Supervisor<S> {
         // failure, and adapters that don't advertise bypass mode stay in
         // default. See #1142.
         if let Some(client) = client_for_yolo {
-            let client_guard = client.lock().await;
-            if let Err(e) = client_guard.set_mode("bypassPermissions").await {
+            if let Err(e) = client.set_mode("bypassPermissions").await {
                 warn!(
                     target: "cockpit.supervisor",
                     session = %session_id,
@@ -745,326 +771,333 @@ impl<S: BroadcastSink> Supervisor<S> {
         let sink = Arc::clone(&self.sink);
         let workers = Arc::clone(&self.workers);
         let next_seqs = Arc::clone(&self.next_seqs);
-        tokio::spawn(async move {
-            let mut inbound = initial_inbound;
-            loop {
-                // Tracks whether the connection task ended because the
-                // cancel-escalation watchdog declared the agent
-                // unresponsive (see acp_client.rs's CANCEL_ESCALATION_GRACE).
-                // When true, the runner subprocess is alive but wedged
-                // around a tool call the agent never cancelled, so the
-                // supervisor must SIGTERM it before respawning;
-                // otherwise the next `session/load` would attach to the
-                // same wedged process. See #1196.
-                let mut agent_unresponsive = false;
-                while let Some(event) = inbound.recv().await {
-                    if let Event::Stopped { reason } = &event {
-                        if reason == "agent_unresponsive" {
-                            agent_unresponsive = true;
+        crate::task_util::spawn_supervised(
+            "supervisor.drain",
+            crate::task_util::PanicPolicy::Log,
+            async move {
+                let mut inbound = initial_inbound;
+                loop {
+                    // Tracks whether the connection task ended because the
+                    // cancel-escalation watchdog declared the agent
+                    // unresponsive (see acp_client.rs's CANCEL_ESCALATION_GRACE).
+                    // When true, the runner subprocess is alive but wedged
+                    // around a tool call the agent never cancelled, so the
+                    // supervisor must SIGTERM it before respawning;
+                    // otherwise the next `session/load` would attach to the
+                    // same wedged process. See #1196.
+                    let mut agent_unresponsive = false;
+                    while let Some(event) = inbound.recv().await {
+                        if let Event::Stopped { reason } = &event {
+                            if reason == "agent_unresponsive" {
+                                agent_unresponsive = true;
+                            }
                         }
+                        // Mirror the agent-assigned id into the cached
+                        // spawn_config so a subsequent crash respawn picks
+                        // up the latest id and calls session/load instead
+                        // of session/new. Mirror SessionContextReset the
+                        // other way so a load failure on this run doesn't
+                        // keep retrying the same dead id on the next
+                        // respawn.
+                        match &event {
+                            Event::AcpSessionAssigned { acp_session_id } => {
+                                let mut guard = workers.lock().await;
+                                if let Some(handle) = guard.get_mut(&session_id) {
+                                    if let WorkerKind::Runner { spawn_config } = &mut handle.kind {
+                                        info!(
+                                            target: "cockpit.supervisor",
+                                            session = %session_id,
+                                            acp_session_id = %acp_session_id,
+                                            "caching agent-assigned id for future respawn"
+                                        );
+                                        spawn_config.stored_acp_session_id =
+                                            Some(acp_session_id.clone());
+                                    }
+                                }
+                                // Mirror into the on-disk registry so a fresh
+                                // `aoe serve` after a daemon restart issues
+                                // `session/load` instead of `session/new`.
+                                super::worker_registry::update_stored_acp_session_id(
+                                    &session_id,
+                                    Some(acp_session_id),
+                                );
+                            }
+                            Event::SessionContextReset { reason } => {
+                                let mut guard = workers.lock().await;
+                                if let Some(handle) = guard.get_mut(&session_id) {
+                                    if let WorkerKind::Runner { spawn_config } = &mut handle.kind {
+                                        info!(
+                                            target: "cockpit.supervisor",
+                                            session = %session_id,
+                                            %reason,
+                                            "clearing cached id after session/load failure"
+                                        );
+                                        spawn_config.stored_acp_session_id = None;
+                                    }
+                                }
+                                super::worker_registry::update_stored_acp_session_id(
+                                    &session_id,
+                                    None,
+                                );
+                            }
+                            _ => {}
+                        }
+                        let seq = next_seq(&next_seqs, &session_id);
+                        sink.publish(&session_id, seq, &event);
                     }
-                    // Mirror the agent-assigned id into the cached
-                    // spawn_config so a subsequent crash respawn picks
-                    // up the latest id and calls session/load instead
-                    // of session/new. Mirror SessionContextReset the
-                    // other way so a load failure on this run doesn't
-                    // keep retrying the same dead id on the next
-                    // respawn.
-                    match &event {
-                        Event::AcpSessionAssigned { acp_session_id } => {
-                            let mut guard = workers.lock().await;
-                            if let Some(handle) = guard.get_mut(&session_id) {
-                                if let WorkerKind::Runner { spawn_config } = &mut handle.kind {
+
+                    // Channel closed: the agent's connection task ended.
+                    // Either the subprocess exited or the transport broke.
+                    // Try to respawn within the restart budget; otherwise
+                    // park the session with a synthetic error event.
+                    warn!(
+                        target: "cockpit.supervisor",
+                        session = %session_id,
+                        agent_unresponsive,
+                        "drain channel closed (agent connection task ended); evaluating respawn"
+                    );
+                    // The connection task observed the cancel-escalation
+                    // watchdog fire: the agent ignored `session/cancel` for
+                    // CANCEL_ESCALATION_GRACE while a prompt was in flight.
+                    // The runner subprocess is still alive but wedged on a
+                    // tool call the agent never cancelled, and the next
+                    // `AcpClient::spawn` reuses the same UNIX socket path
+                    // (`<workers_dir>/<session_id>.sock`), so a respawn
+                    // before the old runner exits either binds against a
+                    // collided socket or reconnects to the wedged process.
+                    //
+                    // Sequence here:
+                    //   1. SIGTERM the old PID.
+                    //   2. Poll for PID death + socket file removal (cap 3s).
+                    //   3. SIGKILL if the wedged runner is still alive past
+                    //      the SIGTERM grace.
+                    //   4. Best-effort `remove_file` on the socket so the
+                    //      respawn binds cleanly.
+                    //
+                    // Do NOT call `terminate_runner_for_session` here: that
+                    // helper deletes the worker_registry entry, which
+                    // makes `restart_decision` interpret it as a
+                    // user-initiated stop and skip the respawn. See #1196.
+                    if agent_unresponsive {
+                        #[cfg(unix)]
+                        {
+                            use nix::sys::signal::{kill, Signal};
+                            use nix::unistd::Pid;
+                            let old_pid = super::worker_registry::load(&session_id)
+                                .ok()
+                                .flatten()
+                                .map(|r| r.pid);
+                            if let Some(pid) = old_pid {
+                                if super::worker_registry::is_pid_alive(pid) {
                                     info!(
                                         target: "cockpit.supervisor",
                                         session = %session_id,
-                                        acp_session_id = %acp_session_id,
-                                        "caching agent-assigned id for future respawn"
+                                        pid,
+                                        "SIGTERM wedged runner before respawn (agent_unresponsive)"
                                     );
-                                    spawn_config.stored_acp_session_id =
-                                        Some(acp_session_id.clone());
+                                    let _ = kill(Pid::from_raw(pid as i32), Signal::SIGTERM);
+                                }
+                                // Poll for the runner to exit before
+                                // proceeding to respawn. ~3s budget, 100ms
+                                // tick. claude-agent-acp's shutdown path
+                                // is fast in practice; if it's truly
+                                // unkillable by SIGTERM we escalate to
+                                // SIGKILL below.
+                                for _ in 0..30 {
+                                    if !super::worker_registry::is_pid_alive(pid) {
+                                        break;
+                                    }
+                                    tokio::time::sleep(Duration::from_millis(100)).await;
+                                }
+                                if super::worker_registry::is_pid_alive(pid) {
+                                    warn!(
+                                        target: "cockpit.supervisor",
+                                        session = %session_id,
+                                        pid,
+                                        "wedged runner survived SIGTERM grace; escalating to SIGKILL"
+                                    );
+                                    let _ = kill(Pid::from_raw(pid as i32), Signal::SIGKILL);
+                                    // One more brief tick for the kernel
+                                    // to reap and the socket inode to
+                                    // drop. We don't loop forever; spawn
+                                    // will surface its own error if the
+                                    // process is somehow still around.
+                                    tokio::time::sleep(Duration::from_millis(200)).await;
                                 }
                             }
-                            // Mirror into the on-disk registry so a fresh
-                            // `aoe serve` after a daemon restart issues
-                            // `session/load` instead of `session/new`.
-                            super::worker_registry::update_stored_acp_session_id(
-                                &session_id,
-                                Some(acp_session_id),
+                            if let Ok(socket_path) =
+                                super::worker_registry::socket_path_for(&session_id)
+                            {
+                                if socket_path.exists() {
+                                    let _ = std::fs::remove_file(&socket_path);
+                                }
+                            }
+                        }
+                        // Cockpit's runner transport is UNIX-socket-only today
+                        // (see `worker_registry::socket_path_for`), so a
+                        // non-unix daemon cannot reach this branch in practice.
+                        // Warn if it ever does so the assumption is loud.
+                        #[cfg(not(unix))]
+                        {
+                            warn!(
+                                target: "cockpit.supervisor",
+                                session = %session_id,
+                                "agent_unresponsive escalation on non-unix: wedged runner kill not implemented; respawn may collide on the runner socket"
                             );
                         }
-                        Event::SessionContextReset { reason } => {
-                            let mut guard = workers.lock().await;
-                            if let Some(handle) = guard.get_mut(&session_id) {
-                                if let WorkerKind::Runner { spawn_config } = &mut handle.kind {
-                                    info!(
-                                        target: "cockpit.supervisor",
-                                        session = %session_id,
-                                        %reason,
-                                        "clearing cached id after session/load failure"
-                                    );
-                                    spawn_config.stored_acp_session_id = None;
-                                }
-                            }
-                            super::worker_registry::update_stored_acp_session_id(&session_id, None);
-                        }
-                        _ => {}
                     }
-                    let seq = next_seq(&next_seqs, &session_id);
-                    sink.publish(&session_id, seq, &event);
-                }
-
-                // Channel closed: the agent's connection task ended.
-                // Either the subprocess exited or the transport broke.
-                // Try to respawn within the restart budget; otherwise
-                // park the session with a synthetic error event.
-                warn!(
-                    target: "cockpit.supervisor",
-                    session = %session_id,
-                    agent_unresponsive,
-                    "drain channel closed (agent connection task ended); evaluating respawn"
-                );
-                // The connection task observed the cancel-escalation
-                // watchdog fire: the agent ignored `session/cancel` for
-                // CANCEL_ESCALATION_GRACE while a prompt was in flight.
-                // The runner subprocess is still alive but wedged on a
-                // tool call the agent never cancelled, and the next
-                // `AcpClient::spawn` reuses the same UNIX socket path
-                // (`<workers_dir>/<session_id>.sock`), so a respawn
-                // before the old runner exits either binds against a
-                // collided socket or reconnects to the wedged process.
-                //
-                // Sequence here:
-                //   1. SIGTERM the old PID.
-                //   2. Poll for PID death + socket file removal (cap 3s).
-                //   3. SIGKILL if the wedged runner is still alive past
-                //      the SIGTERM grace.
-                //   4. Best-effort `remove_file` on the socket so the
-                //      respawn binds cleanly.
-                //
-                // Do NOT call `terminate_runner_for_session` here: that
-                // helper deletes the worker_registry entry, which
-                // makes `restart_decision` interpret it as a
-                // user-initiated stop and skip the respawn. See #1196.
-                if agent_unresponsive {
-                    #[cfg(unix)]
-                    {
-                        use nix::sys::signal::{kill, Signal};
-                        use nix::unistd::Pid;
-                        let old_pid = super::worker_registry::load(&session_id)
-                            .ok()
-                            .flatten()
-                            .map(|r| r.pid);
-                        if let Some(pid) = old_pid {
-                            if super::worker_registry::is_pid_alive(pid) {
+                    let respawn_config: SpawnConfig =
+                        match restart_decision(&workers, &session_id).await {
+                            RestartDecision::Respawn(cfg) => {
                                 info!(
                                     target: "cockpit.supervisor",
                                     session = %session_id,
-                                    pid,
-                                    "SIGTERM wedged runner before respawn (agent_unresponsive)"
+                                    command = %cfg.spec.command,
+                                    stored_id = ?cfg.stored_acp_session_id,
+                                    "respawn approved; sleeping {}ms before restart",
+                                    RESPAWN_BACKOFF.as_millis()
                                 );
-                                let _ = kill(Pid::from_raw(pid as i32), Signal::SIGTERM);
+                                *cfg
                             }
-                            // Poll for the runner to exit before
-                            // proceeding to respawn. ~3s budget, 100ms
-                            // tick. claude-agent-acp's shutdown path
-                            // is fast in practice; if it's truly
-                            // unkillable by SIGTERM we escalate to
-                            // SIGKILL below.
-                            for _ in 0..30 {
-                                if !super::worker_registry::is_pid_alive(pid) {
-                                    break;
-                                }
-                                tokio::time::sleep(Duration::from_millis(100)).await;
-                            }
-                            if super::worker_registry::is_pid_alive(pid) {
+                            RestartDecision::BudgetBurned => {
                                 warn!(
                                     target: "cockpit.supervisor",
                                     session = %session_id,
-                                    pid,
-                                    "wedged runner survived SIGTERM grace; escalating to SIGKILL"
+                                    max_respawns = MAX_RESPAWNS_IN_WINDOW,
+                                    window_secs = RESTART_WINDOW.as_secs(),
+                                    "restart budget burned; parking session"
                                 );
-                                let _ = kill(Pid::from_raw(pid as i32), Signal::SIGKILL);
-                                // One more brief tick for the kernel
-                                // to reap and the socket inode to
-                                // drop. We don't loop forever; spawn
-                                // will surface its own error if the
-                                // process is somehow still around.
-                                tokio::time::sleep(Duration::from_millis(200)).await;
-                            }
-                        }
-                        if let Ok(socket_path) =
-                            super::worker_registry::socket_path_for(&session_id)
-                        {
-                            if socket_path.exists() {
-                                let _ = std::fs::remove_file(&socket_path);
-                            }
-                        }
-                    }
-                    // Cockpit's runner transport is UNIX-socket-only today
-                    // (see `worker_registry::socket_path_for`), so a
-                    // non-unix daemon cannot reach this branch in practice.
-                    // Warn if it ever does so the assumption is loud.
-                    #[cfg(not(unix))]
-                    {
-                        warn!(
-                            target: "cockpit.supervisor",
-                            session = %session_id,
-                            "agent_unresponsive escalation on non-unix: wedged runner kill not implemented; respawn may collide on the runner socket"
-                        );
-                    }
-                }
-                let respawn_config: SpawnConfig =
-                    match restart_decision(&workers, &session_id).await {
-                        RestartDecision::Respawn(cfg) => {
-                            info!(
-                                target: "cockpit.supervisor",
-                                session = %session_id,
-                                command = %cfg.spec.command,
-                                stored_id = ?cfg.stored_acp_session_id,
-                                "respawn approved; sleeping {}ms before restart",
-                                RESPAWN_BACKOFF.as_millis()
-                            );
-                            *cfg
-                        }
-                        RestartDecision::BudgetBurned => {
-                            warn!(
-                                target: "cockpit.supervisor",
-                                session = %session_id,
-                                max_respawns = MAX_RESPAWNS_IN_WINDOW,
-                                window_secs = RESTART_WINDOW.as_secs(),
-                                "restart budget burned; parking session"
-                            );
-                            let seq = next_seq(&next_seqs, &session_id);
-                            sink.publish(
-                                &session_id,
-                                seq,
-                                &Event::AgentStartupError {
-                                    message: format!(
-                                        "ACP agent crashed more than {} times in {}s; \
+                                let seq = next_seq(&next_seqs, &session_id);
+                                sink.publish(
+                                    &session_id,
+                                    seq,
+                                    &Event::AgentStartupError {
+                                        message: format!(
+                                            "ACP agent crashed more than {} times in {}s; \
                                      not respawning. Use the web dashboard to retry.",
-                                        MAX_RESPAWNS_IN_WINDOW,
-                                        RESTART_WINDOW.as_secs()
-                                    ),
-                                },
-                            );
-                            // Remove the dead WorkerHandle so a retry
-                            // (POST /api/sessions/:id/cockpit/spawn) doesn't
-                            // hit AlreadyRunning. The seq counter and replay
-                            // buffer survive so the retry's events stay
-                            // monotonic and the user keeps the conversation
-                            // log up to the crash point.
-                            let mut guard = workers.lock().await;
-                            guard.remove(&session_id);
-                            return;
-                        }
-                        RestartDecision::Gone => {
-                            // The worker entry was removed (shutdown / delete).
-                            // Exit quietly.
-                            return;
-                        }
-                        RestartDecision::UserStopped => {
-                            info!(
-                                target: "cockpit.supervisor",
-                                session = %session_id,
-                                "worker registry deleted by user (`aoe cockpit stop|kill`); \
-                                 dropping WorkerHandle without respawn"
-                            );
-                            // Emit a Stopped so the UI clears any
-                            // "thinking" indicator the user might have
-                            // been staring at when they ran `aoe cockpit
-                            // stop`. The reconciler will spawn a fresh
-                            // worker on its next tick if the session is
-                            // still cockpit_mode.
-                            let seq = next_seq(&next_seqs, &session_id);
-                            sink.publish(
-                                &session_id,
-                                seq,
-                                &Event::Stopped {
-                                    reason: "user_stopped".into(),
-                                },
-                            );
-                            let mut guard = workers.lock().await;
-                            guard.remove(&session_id);
-                            return;
-                        }
-                    };
+                                            MAX_RESPAWNS_IN_WINDOW,
+                                            RESTART_WINDOW.as_secs()
+                                        ),
+                                    },
+                                );
+                                // Remove the dead WorkerHandle so a retry
+                                // (POST /api/sessions/:id/cockpit/spawn) doesn't
+                                // hit AlreadyRunning. The seq counter and replay
+                                // buffer survive so the retry's events stay
+                                // monotonic and the user keeps the conversation
+                                // log up to the crash point.
+                                let mut guard = workers.lock().await;
+                                guard.remove(&session_id);
+                                return;
+                            }
+                            RestartDecision::Gone => {
+                                // The worker entry was removed (shutdown / delete).
+                                // Exit quietly.
+                                return;
+                            }
+                            RestartDecision::UserStopped => {
+                                info!(
+                                    target: "cockpit.supervisor",
+                                    session = %session_id,
+                                    "worker registry deleted by user (`aoe cockpit stop|kill`); \
+                                     dropping WorkerHandle without respawn"
+                                );
+                                // Emit a Stopped so the UI clears any
+                                // "thinking" indicator the user might have
+                                // been staring at when they ran `aoe cockpit
+                                // stop`. The reconciler will spawn a fresh
+                                // worker on its next tick if the session is
+                                // still cockpit_mode.
+                                let seq = next_seq(&next_seqs, &session_id);
+                                sink.publish(
+                                    &session_id,
+                                    seq,
+                                    &Event::Stopped {
+                                        reason: "user_stopped".into(),
+                                    },
+                                );
+                                let mut guard = workers.lock().await;
+                                guard.remove(&session_id);
+                                return;
+                            }
+                        };
 
-                tokio::time::sleep(RESPAWN_BACKOFF).await;
+                    tokio::time::sleep(RESPAWN_BACKOFF).await;
 
-                let cockpit_session_id = CockpitSessionId(session_id.clone());
-                let mut new_client =
-                    match AcpClient::spawn(respawn_config.clone(), cockpit_session_id).await {
-                        Ok(c) => c,
-                        Err(e) => {
+                    let cockpit_session_id = CockpitSessionId(session_id.clone());
+                    let mut new_client =
+                        match AcpClient::spawn(respawn_config.clone(), cockpit_session_id).await {
+                            Ok(c) => c,
+                            Err(e) => {
+                                warn!(
+                                    target: "cockpit.supervisor",
+                                    session = %session_id,
+                                    "respawn failed: {e}"
+                                );
+                                let seq = next_seq(&next_seqs, &session_id);
+                                sink.publish(
+                                    &session_id,
+                                    seq,
+                                    &Event::AgentStartupError {
+                                        message: format!("ACP agent respawn failed: {e}"),
+                                    },
+                                );
+                                // Drop the dead WorkerHandle so the user can
+                                // retry via POST /api/sessions/:id/cockpit/spawn
+                                // without hitting AlreadyRunning. Without this
+                                // the entry sticks around with a closed cmd_tx
+                                // and every send_prompt fails until the daemon
+                                // restarts. Mirrors the BudgetBurned and
+                                // missing-inbound branches.
+                                let mut guard = workers.lock().await;
+                                guard.remove(&session_id);
+                                return;
+                            }
+                        };
+                    let new_inbound = match new_client.take_inbound() {
+                        Some(rx) => rx,
+                        None => {
+                            // Belt-and-braces: AcpClient::spawn pairs the
+                            // inbound receiver with the client today, so
+                            // this branch never fires. Logging instead of
+                            // panicking guards the daemon if a future
+                            // refactor breaks the invariant.
                             warn!(
                                 target: "cockpit.supervisor",
                                 session = %session_id,
-                                "respawn failed: {e}"
+                                "respawned client missing inbound receiver; parking",
                             );
                             let seq = next_seq(&next_seqs, &session_id);
                             sink.publish(
                                 &session_id,
                                 seq,
                                 &Event::AgentStartupError {
-                                    message: format!("ACP agent respawn failed: {e}"),
+                                    message: "respawned ACP client had no inbound channel".into(),
                                 },
                             );
-                            // Drop the dead WorkerHandle so the user can
-                            // retry via POST /api/sessions/:id/cockpit/spawn
-                            // without hitting AlreadyRunning. Without this
-                            // the entry sticks around with a closed cmd_tx
-                            // and every send_prompt fails until the daemon
-                            // restarts. Mirrors the BudgetBurned and
-                            // missing-inbound branches.
                             let mut guard = workers.lock().await;
                             guard.remove(&session_id);
                             return;
                         }
                     };
-                let new_inbound = match new_client.take_inbound() {
-                    Some(rx) => rx,
-                    None => {
-                        // Belt-and-braces: AcpClient::spawn pairs the
-                        // inbound receiver with the client today, so
-                        // this branch never fires. Logging instead of
-                        // panicking guards the daemon if a future
-                        // refactor breaks the invariant.
-                        warn!(
-                            target: "cockpit.supervisor",
-                            session = %session_id,
-                            "respawned client missing inbound receiver; parking",
-                        );
-                        let seq = next_seq(&next_seqs, &session_id);
-                        sink.publish(
-                            &session_id,
-                            seq,
-                            &Event::AgentStartupError {
-                                message: "respawned ACP client had no inbound channel".into(),
-                            },
-                        );
+
+                    {
                         let mut guard = workers.lock().await;
-                        guard.remove(&session_id);
-                        return;
+                        let Some(handle) = guard.get_mut(&session_id) else {
+                            return;
+                        };
+                        handle.client = Arc::new(new_client);
                     }
-                };
 
-                {
-                    let mut guard = workers.lock().await;
-                    let Some(handle) = guard.get_mut(&session_id) else {
-                        return;
-                    };
-                    handle.client = Arc::new(Mutex::new(new_client));
+                    info!(
+                        target: "cockpit.supervisor",
+                        session = %session_id,
+                        "cockpit worker respawned"
+                    );
+                    inbound = new_inbound;
                 }
-
-                info!(
-                    target: "cockpit.supervisor",
-                    session = %session_id,
-                    "cockpit worker respawned"
-                );
-                inbound = new_inbound;
-            }
-        })
+            },
+        )
     }
 
     /// Wait until the worker for `session_id` is fully spawned, or the
@@ -1077,23 +1110,43 @@ impl<S: BroadcastSink> Supervisor<S> {
     /// requests would 404 because the WorkerHandle isn't in `workers`
     /// yet, even though it's about to be. Polling at 50ms keeps the
     /// happy-path latency negligible while bounding the wait.
+    /// Block until either the worker for `session_id` lands in
+    /// `workers` or the pending reservation falls off (giving up
+    /// fast on a dead path) or `deadline` lapses.
+    ///
+    /// Uses `tokio::sync::Notify` for edge triggered wakeups instead
+    /// of polling. The previous shape woke every 50 ms, which added
+    /// up to 50 ms of avoidable latency on the request path that
+    /// triggers `send_prompt` immediately after a session spawn. The
+    /// double-check pattern (subscribe to `notified()` BEFORE peeking
+    /// the maps) prevents lost wakeups: if the spawn finishes between
+    /// the peek and the await, the notify is buffered and the await
+    /// returns immediately.
     async fn wait_for_worker(&self, session_id: &str, deadline: std::time::Duration) -> bool {
-        let start = std::time::Instant::now();
+        let started = std::time::Instant::now();
         loop {
+            let notified = self.worker_notify.notified();
+            tokio::pin!(notified);
+
             if self.workers.lock().await.contains_key(session_id) {
                 return true;
             }
             // No worker yet. If a resume (spawn or attach) is in
-            // flight, wait for it; otherwise the worker isn't coming
-            // and we should fail fast rather than burn the full
-            // deadline.
-            if !self.pending_resumes.lock().await.contains_key(session_id) {
+            // flight, wait for it; otherwise the worker is not coming
+            // and we should fail fast rather than burn the deadline.
+            if !lock_recover(&self.pending_resumes).contains_key(session_id) {
                 return false;
             }
-            if start.elapsed() >= deadline {
+            let remaining = deadline.saturating_sub(started.elapsed());
+            if remaining.is_zero() {
                 return false;
             }
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            if tokio::time::timeout(remaining, &mut notified)
+                .await
+                .is_err()
+            {
+                return false;
+            }
         }
     }
 
@@ -1101,11 +1154,13 @@ impl<S: BroadcastSink> Supervisor<S> {
     pub async fn send_prompt(&self, session_id: &str, text: &str) -> Result<(), SupervisorError> {
         self.wait_for_worker(session_id, std::time::Duration::from_secs(10))
             .await;
-        let workers = self.workers.lock().await;
-        let handle = workers
-            .get(session_id)
-            .ok_or_else(|| SupervisorError::UnknownSession(session_id.into()))?;
-        let client = handle.client.lock().await;
+        let client = {
+            let workers = self.workers.lock().await;
+            workers
+                .get(session_id)
+                .ok_or_else(|| SupervisorError::UnknownSession(session_id.into()))
+                .map(|h| Arc::clone(&h.client))?
+        };
         client.send_prompt(text).await?;
         Ok(())
     }
@@ -1115,11 +1170,13 @@ impl<S: BroadcastSink> Supervisor<S> {
     pub async fn cancel_prompt(&self, session_id: &str) -> Result<(), SupervisorError> {
         self.wait_for_worker(session_id, std::time::Duration::from_secs(10))
             .await;
-        let workers = self.workers.lock().await;
-        let handle = workers
-            .get(session_id)
-            .ok_or_else(|| SupervisorError::UnknownSession(session_id.into()))?;
-        let client = handle.client.lock().await;
+        let client = {
+            let workers = self.workers.lock().await;
+            workers
+                .get(session_id)
+                .ok_or_else(|| SupervisorError::UnknownSession(session_id.into()))
+                .map(|h| Arc::clone(&h.client))?
+        };
         client.cancel_prompt().await?;
         Ok(())
     }
@@ -1142,9 +1199,11 @@ impl<S: BroadcastSink> Supervisor<S> {
         );
         // Best-effort cancel; ignore UnknownSession because the headline
         // intent is "free the UI", which the publish above already did.
-        let workers = self.workers.lock().await;
-        if let Some(handle) = workers.get(session_id) {
-            let client = handle.client.lock().await;
+        let client = {
+            let workers = self.workers.lock().await;
+            workers.get(session_id).map(|h| Arc::clone(&h.client))
+        };
+        if let Some(client) = client {
             let _ = client.cancel_prompt().await;
         }
     }
@@ -1153,11 +1212,13 @@ impl<S: BroadcastSink> Supervisor<S> {
     pub async fn set_mode(&self, session_id: &str, mode_id: &str) -> Result<(), SupervisorError> {
         self.wait_for_worker(session_id, std::time::Duration::from_secs(10))
             .await;
-        let workers = self.workers.lock().await;
-        let handle = workers
-            .get(session_id)
-            .ok_or_else(|| SupervisorError::UnknownSession(session_id.into()))?;
-        let client = handle.client.lock().await;
+        let client = {
+            let workers = self.workers.lock().await;
+            workers
+                .get(session_id)
+                .ok_or_else(|| SupervisorError::UnknownSession(session_id.into()))
+                .map(|h| Arc::clone(&h.client))?
+        };
         client.set_mode(mode_id).await?;
         Ok(())
     }
@@ -1169,11 +1230,13 @@ impl<S: BroadcastSink> Supervisor<S> {
         nonce: Nonce,
         decision: ApprovalDecision,
     ) -> Result<(), SupervisorError> {
-        let workers = self.workers.lock().await;
-        let handle = workers
-            .get(session_id)
-            .ok_or_else(|| SupervisorError::UnknownSession(session_id.into()))?;
-        let client = handle.client.lock().await;
+        let client = {
+            let workers = self.workers.lock().await;
+            workers
+                .get(session_id)
+                .ok_or_else(|| SupervisorError::UnknownSession(session_id.into()))
+                .map(|h| Arc::clone(&h.client))?
+        };
         client.resolve_permission(nonce, decision).await?;
         Ok(())
     }
@@ -1185,14 +1248,11 @@ impl<S: BroadcastSink> Supervisor<S> {
         // and insert a WorkerHandle while we're walking through this
         // function. Lock order matches `spawn`: workers, then pending.
         let mut workers = self.workers.lock().await;
-        let pending_has_it = self.pending_resumes.lock().await.contains_key(session_id);
+        let pending_has_it = lock_recover(&self.pending_resumes).contains_key(session_id);
         if let Some(handle) = workers.remove(session_id) {
             // Worker is alive — tear it down.
             drop(workers);
-            {
-                let client = handle.client.lock().await;
-                let _ = client.shutdown().await;
-            }
+            let _ = handle.client.shutdown().await;
             handle.drain_task.abort();
             // SIGTERM the runner (if there is one) so the agent
             // subprocess dies; the runner cleans up its own files but
@@ -1240,10 +1300,7 @@ impl<S: BroadcastSink> Supervisor<S> {
             // (ResumeReservation::Drop) clears `pending_resumes` on
             // exit, so we don't have to.
             drop(workers);
-            self.cancelled_spawns
-                .lock()
-                .await
-                .insert(session_id.to_string());
+            lock_recover(&self.cancelled_spawns).insert(session_id.to_string());
             debug!(
                 target: "cockpit.supervisor",
                 session = %session_id,
@@ -1267,16 +1324,15 @@ impl<S: BroadcastSink> Supervisor<S> {
             .map(|r| (r.session_id, r.pid))
             .collect();
 
-        let mut workers = self.workers.lock().await;
-        for (id, handle) in workers.drain() {
+        let drained: Vec<(String, WorkerHandle)> = {
+            let mut workers = self.workers.lock().await;
+            workers.drain().collect()
+        };
+        for (id, handle) in drained {
             debug!(target: "cockpit.supervisor", session = %id, "shutting down");
-            {
-                let client = handle.client.lock().await;
-                let _ = client.shutdown().await;
-            }
+            let _ = handle.client.shutdown().await;
             handle.drain_task.abort();
         }
-        drop(workers);
 
         // SIGTERM every runner we knew about, so detached agents that
         // outlived a previous daemon are also taken down by an explicit
@@ -1302,20 +1358,20 @@ impl<S: BroadcastSink> Supervisor<S> {
     /// registry entry. The runner observes EOF on its socket read,
     /// clears its active outbound, and goes back to accepting.
     pub async fn detach_all(&self) {
-        let mut workers = self.workers.lock().await;
-        let ids: Vec<String> = workers.keys().cloned().collect();
-        info!(
-            target: "cockpit.supervisor",
-            count = ids.len(),
-            "detaching cockpit workers; they continue running. \
-             Use `aoe cockpit stop` to terminate."
-        );
-        for (id, handle) in workers.drain() {
+        let drained: Vec<(String, WorkerHandle)> = {
+            let mut workers = self.workers.lock().await;
+            let drained: Vec<(String, WorkerHandle)> = workers.drain().collect();
+            info!(
+                target: "cockpit.supervisor",
+                count = drained.len(),
+                "detaching cockpit workers; they continue running. \
+                 Use `aoe cockpit stop` to terminate."
+            );
+            drained
+        };
+        for (id, handle) in drained {
             debug!(target: "cockpit.supervisor", session = %id, "detaching");
-            {
-                let client = handle.client.lock().await;
-                let _ = client.shutdown().await;
-            }
+            let _ = handle.client.shutdown().await;
             handle.drain_task.abort();
             super::worker_registry::mark_detached(&id);
         }
@@ -1379,7 +1435,7 @@ impl<S: BroadcastSink> Supervisor<S> {
                     limit: self.max_concurrent_workers,
                 });
             }
-            let mut pending = self.pending_resumes.lock().await;
+            let mut pending = lock_recover(&self.pending_resumes);
             if pending.contains_key(&session_id) {
                 return Err(SupervisorError::AlreadyRunning(session_id));
             }
@@ -1387,6 +1443,7 @@ impl<S: BroadcastSink> Supervisor<S> {
             ResumeReservation {
                 pending: Arc::clone(&self.pending_resumes),
                 session_id: session_id.clone(),
+                notify: Arc::clone(&self.worker_notify),
             }
         };
 
@@ -1431,7 +1488,7 @@ impl<S: BroadcastSink> Supervisor<S> {
         let inbound = client
             .take_inbound()
             .expect("freshly attached AcpClient always has inbound receiver");
-        let client = Arc::new(Mutex::new(client));
+        let client = Arc::new(client);
         let mut workers = self.workers.lock().await;
         if workers.contains_key(&session_id) {
             drop(workers);
@@ -1461,6 +1518,7 @@ impl<S: BroadcastSink> Supervisor<S> {
             "reattached to existing cockpit worker"
         );
         drop(workers);
+        self.worker_notify.notify_waiters();
 
         self.cancel_orphaned_approvals(&session_id);
         Ok(())
@@ -1526,7 +1584,7 @@ impl<S: BroadcastSink> Supervisor<S> {
         if self.workers.lock().await.contains_key(session_id) {
             return true;
         }
-        self.pending_resumes.lock().await.contains_key(session_id)
+        lock_recover(&self.pending_resumes).contains_key(session_id)
     }
 
     /// Return the number of running workers (for the doctor + stats).
@@ -1611,10 +1669,7 @@ impl<S: BroadcastSink> Supervisor<S> {
             // Send ACP Shutdown so the connection task's closure breaks
             // out of its cmd_rx loop and the underlying transport closes
             // cleanly (avoids a leaked socket fd until the daemon dies).
-            {
-                let client = handle.client.lock().await;
-                let _ = client.shutdown().await;
-            }
+            let _ = handle.client.shutdown().await;
             handle.drain_task.abort();
             if is_restart {
                 restart_pending.push(id);
@@ -1750,6 +1805,15 @@ fn next_seq(next_seqs: &SeqMap, session_id: &str) -> u64 {
     *entry
 }
 
+/// Take a `std::sync::Mutex` guard, recovering the inner data if
+/// the lock is poisoned. The supervisor maps wrapped in `std::sync::Mutex`
+/// only ever hold short, panic free critical sections (HashMap inserts
+/// or removes), so a poisoned lock from an unrelated panic on the same
+/// state is recoverable rather than fatal.
+fn lock_recover<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// A `BroadcastSink` impl backed by a tokio broadcast channel. The
 /// AppState in the server module wires this so cockpit events flow
 /// straight into the existing WebSocket fanout, and snapshots them
@@ -1781,8 +1845,26 @@ impl BroadcastSink for ChannelSink {
         // gap event in its place — the frontend reducer can render a
         // "history truncated at seq N" notice and the user can
         // reload to recover via the `/cockpit/replay` endpoint.
+        //
+        // Wrap the synchronous rusqlite write in `block_in_place` so
+        // the multi-thread runtime can migrate other tasks off this
+        // worker for the duration of the fsync. Ordering is preserved
+        // because the call is still synchronous from the caller's
+        // perspective; switching to `spawn_blocking` would break the
+        // "publish in seq order" contract that the on-disk replay
+        // relies on. `block_in_place` panics on `current_thread`, so
+        // tests (which default to that flavor) fall back to a direct
+        // call. The daemon runs on `#[tokio::main]` default which is
+        // `multi_thread` and gets the runtime aware variant.
         let event_to_publish: Event;
-        let event_ref: &Event = match self.event_store.record(session_id, seq, event) {
+        let record_result = match tokio::runtime::Handle::try_current().map(|h| h.runtime_flavor())
+        {
+            Ok(tokio::runtime::RuntimeFlavor::MultiThread) => {
+                tokio::task::block_in_place(|| self.event_store.record(session_id, seq, event))
+            }
+            _ => self.event_store.record(session_id, seq, event),
+        };
+        let event_ref: &Event = match record_result {
             Ok(()) => event,
             Err(e) => {
                 tracing::warn!(
@@ -1880,7 +1962,7 @@ mod tests {
         workers.insert(
             "s-1".into(),
             WorkerHandle {
-                client: Arc::new(Mutex::new(client)),
+                client: Arc::new(client),
                 drain_task: drain,
                 restart_history: vec![Instant::now()],
                 kind: WorkerKind::Stdio,
@@ -1976,7 +2058,7 @@ mod tests {
             workers.insert(
                 "s-1".into(),
                 WorkerHandle {
-                    client: Arc::new(Mutex::new(client)),
+                    client: Arc::new(client),
                     drain_task: drain,
                     restart_history: vec![],
                     kind: WorkerKind::Runner {
@@ -2049,7 +2131,7 @@ mod tests {
             workers.insert(
                 "s-stop".into(),
                 WorkerHandle {
-                    client: Arc::new(Mutex::new(client)),
+                    client: Arc::new(client),
                     drain_task: drain,
                     restart_history: vec![],
                     kind: WorkerKind::Runner {
@@ -2121,7 +2203,7 @@ mod tests {
             workers.insert(
                 "s-reap".into(),
                 WorkerHandle {
-                    client: Arc::new(Mutex::new(client)),
+                    client: Arc::new(client),
                     drain_task: drain,
                     restart_history: vec![],
                     kind: WorkerKind::Runner {
@@ -2193,7 +2275,7 @@ mod tests {
             workers.insert(
                 "s-restart".into(),
                 WorkerHandle {
-                    client: Arc::new(Mutex::new(client)),
+                    client: Arc::new(client),
                     drain_task: drain,
                     restart_history: vec![],
                     kind: WorkerKind::Runner {
@@ -2262,7 +2344,7 @@ mod tests {
             workers.insert(
                 "s-stdio".into(),
                 WorkerHandle {
-                    client: Arc::new(Mutex::new(client)),
+                    client: Arc::new(client),
                     drain_task: drain,
                     restart_history: vec![],
                     kind: WorkerKind::Stdio,
@@ -2319,7 +2401,7 @@ mod tests {
             workers.insert(
                 "s-stop".into(),
                 WorkerHandle {
-                    client: Arc::new(Mutex::new(client)),
+                    client: Arc::new(client),
                     drain_task: drain,
                     restart_history: vec![],
                     kind: WorkerKind::Runner {
@@ -2360,7 +2442,7 @@ mod tests {
             workers.insert(
                 "s-stdio".into(),
                 WorkerHandle {
-                    client: Arc::new(Mutex::new(client)),
+                    client: Arc::new(client),
                     drain_task: drain,
                     restart_history: vec![],
                     kind: WorkerKind::Stdio,
@@ -2625,6 +2707,114 @@ mod tests {
     /// installing an orphaned worker. This test exercises the
     /// supervisor-side state machine without a real ACP handshake by
     /// pre-seeding `pending_resumes` and asserting `shutdown`'s effect.
+    /// Regression: `ResumeReservation::drop` must not need a tokio
+    /// runtime. The previous shape detached a `tokio::spawn` to
+    /// release a `tokio::sync::Mutex`; that pattern panicked or
+    /// orphaned the entry when drop ran outside any runtime (e.g.
+    /// during runtime shutdown or in synchronous teardown).
+    #[test]
+    fn resume_reservation_drop_is_synchronous_no_runtime_needed() {
+        let pending: Arc<std::sync::Mutex<HashMap<String, ResumeKind>>> =
+            Arc::new(std::sync::Mutex::new(HashMap::new()));
+        pending
+            .lock()
+            .unwrap()
+            .insert("s-sync-drop".into(), ResumeKind::Spawn);
+
+        let reservation = ResumeReservation {
+            pending: Arc::clone(&pending),
+            session_id: "s-sync-drop".into(),
+            notify: Arc::new(tokio::sync::Notify::new()),
+        };
+        drop(reservation);
+
+        assert!(
+            !pending.lock().unwrap().contains_key("s-sync-drop"),
+            "Drop must remove the reservation synchronously"
+        );
+    }
+
+    /// Regression: `ResumeReservation::drop` must recover from a
+    /// poisoned `std::sync::Mutex` rather than panic. The maps it
+    /// touches only carry simple Clone state, so an unrelated panic
+    /// while another holder owned the guard must not cascade into a
+    /// drop-time panic that would crash the runtime worker.
+    #[test]
+    fn resume_reservation_drop_recovers_from_poisoned_mutex() {
+        let pending: Arc<std::sync::Mutex<HashMap<String, ResumeKind>>> =
+            Arc::new(std::sync::Mutex::new(HashMap::new()));
+        pending
+            .lock()
+            .unwrap()
+            .insert("s-poison".into(), ResumeKind::Spawn);
+
+        let p_clone = Arc::clone(&pending);
+        let _ = std::panic::catch_unwind(|| {
+            let _guard = p_clone.lock().unwrap();
+            panic!("intentional panic to poison the mutex");
+        });
+        assert!(pending.is_poisoned(), "test setup: lock must be poisoned");
+
+        let reservation = ResumeReservation {
+            pending: Arc::clone(&pending),
+            session_id: "s-poison".into(),
+            notify: Arc::new(tokio::sync::Notify::new()),
+        };
+        drop(reservation);
+
+        let map = pending.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(
+            !map.contains_key("s-poison"),
+            "Drop must recover the poisoned lock and remove the reservation"
+        );
+    }
+
+    /// Regression: `wait_for_worker` must wake on `notify_waiters`
+    /// rather than at the next 50 ms poll. The previous shape woke
+    /// at the next 50 ms poll, which delayed every caller (send_prompt
+    /// etc.) that happened to race the spawn or attach finishing.
+    #[tokio::test]
+    async fn wait_for_worker_wakes_on_reservation_drop() {
+        let sink = VecSink::new();
+        let sup = Arc::new(Supervisor::new(sink));
+
+        sup.pending_resumes
+            .lock()
+            .unwrap()
+            .insert("s-notify".into(), ResumeKind::Spawn);
+        let reservation = ResumeReservation {
+            pending: Arc::clone(&sup.pending_resumes),
+            session_id: "s-notify".into(),
+            notify: Arc::clone(&sup.worker_notify),
+        };
+
+        let sup_clone = Arc::clone(&sup);
+        let waiter = tokio::spawn(async move {
+            sup_clone
+                .wait_for_worker("s-notify", std::time::Duration::from_secs(60))
+                .await
+        });
+
+        tokio::task::yield_now().await;
+        let dropped_at = std::time::Instant::now();
+        drop(reservation);
+
+        let result = tokio::time::timeout(std::time::Duration::from_millis(20), waiter)
+            .await
+            .expect("waiter must wake on notify, not at the 50 ms poll")
+            .expect("waiter task must not panic");
+        let elapsed = dropped_at.elapsed();
+
+        assert!(
+            !result,
+            "wait_for_worker must return false when the reservation drops without a worker landing"
+        );
+        assert!(
+            elapsed < std::time::Duration::from_millis(50),
+            "wait_for_worker must wake within 50 ms (= old poll interval), got {elapsed:?}"
+        );
+    }
+
     #[tokio::test]
     async fn shutdown_during_pending_spawn_marks_for_cancellation() {
         let sink = VecSink::new();
@@ -2635,7 +2825,7 @@ mod tests {
         // and the late spawn completion installed an orphan.
         sup.pending_resumes
             .lock()
-            .await
+            .unwrap()
             .insert("s-cancel".into(), ResumeKind::Spawn);
         assert!(sup.is_running("s-cancel").await);
 
@@ -2646,7 +2836,7 @@ mod tests {
             .await
             .expect("shutdown of pending spawn should succeed");
         assert!(
-            sup.cancelled_spawns.lock().await.contains("s-cancel"),
+            sup.cancelled_spawns.lock().unwrap().contains("s-cancel"),
             "shutdown must mark the pending spawn for cancellation"
         );
 
@@ -2699,7 +2889,7 @@ mod tests {
         workers.insert(
             "s-1".into(),
             WorkerHandle {
-                client: Arc::new(Mutex::new(client)),
+                client: Arc::new(client),
                 drain_task: drain,
                 restart_history: vec![],
                 kind: WorkerKind::Stdio,
@@ -2950,11 +3140,11 @@ mod tests {
 
         sup.pending_resumes
             .lock()
-            .await
+            .unwrap()
             .insert("s-spawn".into(), ResumeKind::Spawn);
         sup.pending_resumes
             .lock()
-            .await
+            .unwrap()
             .insert("s-attach".into(), ResumeKind::Attach);
 
         assert_eq!(
@@ -2988,11 +3178,11 @@ mod tests {
         // check and are mid-handshake.
         sup.pending_resumes
             .lock()
-            .await
+            .unwrap()
             .insert("s-a".into(), ResumeKind::Spawn);
         sup.pending_resumes
             .lock()
-            .await
+            .unwrap()
             .insert("s-b".into(), ResumeKind::Spawn);
 
         // A third spawn must fail the capacity check rather than slip
@@ -3040,7 +3230,7 @@ mod tests {
 
         sup.pending_resumes
             .lock()
-            .await
+            .unwrap()
             .insert("s-attach".into(), ResumeKind::Attach);
 
         // With max=1 and one Attach pending, a fresh spawn for a

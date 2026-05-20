@@ -47,6 +47,11 @@ nothing migrates from your real `~/.agent-of-empires`. Wipe dev state any
 time with `rm -rf ~/.agent-of-empires-dev` (or the Linux XDG equivalent);
 release data is untouched.
 
+`cargo build --profile dev-release` is treated as a release build for
+namespace purposes, so it shares the app dir, tmux prefix, and `aoe serve`
+port with an installed release `aoe`. Use the default `dev` profile when
+you want the isolated `-dev` namespace.
+
 ## Testing
 
 ```bash

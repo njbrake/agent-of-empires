@@ -132,6 +132,136 @@ describe("AgentStep custom-agent selection (#1252)", () => {
   });
 });
 
+describe("AgentStep profile description (#949)", () => {
+  function renderWithProfiles(
+    profiles: ProfileInfo[],
+    dataOverrides: Partial<typeof initialData> = {},
+  ) {
+    const onChange = vi.fn();
+    const onApplyProfileDefaults = vi.fn();
+    const utils = render(
+      <AgentStep
+        data={{ ...initialData, tool: "claude", ...dataOverrides }}
+        onChange={onChange}
+        agents={[builtin]}
+        profiles={profiles}
+        dockerAvailable={false}
+        onApplyProfileDefaults={onApplyProfileDefaults}
+        cockpitMasterEnabled={false}
+      />,
+    );
+    return { onChange, onApplyProfileDefaults, ...utils };
+  }
+
+  it("renders each profile's description as helper text under its name", () => {
+    const { getByText } = renderWithProfiles([
+      { name: "default", is_default: true, description: "Stock setup, no overrides" },
+      { name: "yolo-sandbox", is_default: false, description: "Auto-approve in a container" },
+    ]);
+    expect(getByText("Stock setup, no overrides")).toBeTruthy();
+    expect(getByText("Auto-approve in a container")).toBeTruthy();
+  });
+
+  it("omits the helper text line when a profile has no description", () => {
+    const { queryByText, getByRole } = renderWithProfiles([
+      { name: "default", is_default: true },
+      { name: "other", is_default: false },
+    ]);
+    // The card itself is still rendered ...
+    expect(getByRole("radio", { name: /other/ })).toBeTruthy();
+    // ... but no description text leaks through with a stray "undefined".
+    expect(queryByText(/undefined/)).toBeNull();
+  });
+
+  it("clicking a profile card calls onChange with the profile name", () => {
+    const { onChange, getByRole } = renderWithProfiles([
+      { name: "default", is_default: true },
+      { name: "work", is_default: false, description: "Work setup" },
+    ]);
+    fireEvent.click(getByRole("radio", { name: /work/ }));
+    expect(onChange).toHaveBeenCalledWith("profile", "work");
+  });
+
+  it("renders the Active badge on the profile flagged is_default", () => {
+    // is_default true is rendered as an "Active" pill; checks that the
+    // conditional badge branch is exercised in coverage.
+    const { getAllByText } = renderWithProfiles([
+      { name: "default", is_default: true, description: "Stock setup" },
+      { name: "work", is_default: false, description: "Work setup" },
+    ]);
+    expect(getAllByText("Active").length).toBe(1);
+  });
+
+  it("marks the currently selected profile with aria-checked=true", () => {
+    // data.profile === p.name takes the selected styling/aria branch.
+    const { getByRole } = renderWithProfiles(
+      [
+        { name: "default", is_default: true },
+        { name: "work", is_default: false, description: "Work setup" },
+      ],
+      { profile: "work" },
+    );
+    const selected = getByRole("radio", { name: /work/ });
+    expect(selected.getAttribute("aria-checked")).toBe("true");
+    const unselected = getByRole("radio", { name: /^Server default/ });
+    expect(unselected.getAttribute("aria-checked")).toBe("false");
+  });
+
+  it("clicking Server default with a profile selected calls onChange with empty string", () => {
+    // The "Server default" card uses handleProfileChange("") and bails
+    // before fetchSettings, so it must not call onApplyProfileDefaults.
+    const { onChange, onApplyProfileDefaults, getByRole } = renderWithProfiles(
+      [
+        { name: "default", is_default: true },
+        { name: "work", is_default: false },
+      ],
+      { profile: "work" },
+    );
+    fireEvent.click(getByRole("radio", { name: /Server default/ }));
+    expect(onChange).toHaveBeenCalledWith("profile", "");
+    expect(onApplyProfileDefaults).not.toHaveBeenCalled();
+  });
+
+  it("shows the (Custom) marker when the selected profile has been edited", () => {
+    const { getByText } = renderWithProfiles(
+      [
+        { name: "default", is_default: true },
+        { name: "work", is_default: false },
+      ],
+      { profile: "work", profileDirty: true },
+    );
+    expect(getByText(/\(Custom\) Settings differ from preset defaults/)).toBeTruthy();
+  });
+
+  it("confirms before switching profiles when settings are dirty (canceled)", () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    try {
+      const { onChange, getByRole } = renderWithProfiles(
+        [
+          { name: "default", is_default: true },
+          { name: "work", is_default: false },
+        ],
+        { profile: "default", profileDirty: true },
+      );
+      fireEvent.click(getByRole("radio", { name: /work/ }));
+      expect(confirmSpy).toHaveBeenCalled();
+      // User cancelled, so no profile change should fire.
+      expect(onChange).not.toHaveBeenCalledWith("profile", "work");
+    } finally {
+      confirmSpy.mockRestore();
+    }
+  });
+
+  it("hides the profile picker when only a single profile exists", () => {
+    // Guard the showProfilePicker branch: list of length <= 1 hides the
+    // picker entirely so the Workflow preset section is not rendered.
+    const { queryByText } = renderWithProfiles([
+      { name: "default", is_default: true, description: "Stock setup" },
+    ]);
+    expect(queryByText("Workflow preset")).toBeNull();
+  });
+});
+
 describe("ReviewStep agent row (#1252)", () => {
   function renderReviewStep(overrides: {
     tool: string;

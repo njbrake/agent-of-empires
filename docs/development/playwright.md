@@ -66,6 +66,7 @@ Fixtures:
 
 - `serve` : `aoe serve --no-auth`. Default for backend round-trip flows.
 - `servePassphrase` : `aoe serve --passphrase aoe-e2e-fixed-passphrase`. The harness mints a session cookie via `POST /api/login` and exposes it as `handle.sessionCookie`. Specs that drive auth from the browser side use `seedAuth(page, handle)` to inject cookie + binding secret before the first navigation.
+- `serveToken` : `aoe serve --auth=token`. The harness reads the daemon-written `serve.token` from the isolated app dir and exposes the value as `handle.authToken` plus its on-disk path as `handle.tokenFile`. Rotation-aware specs call `spawnAoeServe` directly with `tokenLifetimeSecs` / `tokenGraceSecs` overrides; both env vars are debug-build only (`AOE_TEST_TOKEN_LIFETIME_SECS`, `AOE_TEST_TOKEN_GRACE_SECS`) and ignored in release.
 - `serveReadOnly` : `aoe serve --no-auth --read-only`.
 - `serveCockpit` : like `serve` but the fake-ACP agent (see below) is on `$PATH` as both `claude` and `aoe-agent`, and `PATCH /api/cockpit/master` is called after startup.
 
@@ -160,7 +161,7 @@ Report-only in this PR. Phase-2 threshold floor and phase-3 ratchet upward are t
 
 ## Gotchas
 
-- `--no-auth` and `--passphrase` are the only auth modes the harness supports today. Token mode coverage is queued in #1226.
+- `--no-auth`, `--passphrase`, and `--auth=token` are the supported auth modes. Token-mode specs need a debug-build `aoe` because `AOE_TEST_TOKEN_LIFETIME_SECS` and `AOE_TEST_TOKEN_GRACE_SECS` are gated behind `cfg!(debug_assertions)`; release builds keep the production 24h/4h lifetimes and 300s grace.
 - The fake-ACP agent does not delegate FS or terminal calls back to the supervisor. If a scripted turn emits `tool_call_started` for a tool that would normally call `fs/write`, the supervisor will not actually write anything (and the test should not assume it does).
 - Cockpit replay uses the in-memory broadcast channel plus the SQLite event store. If a test asserts a specific event in the replay, give the supervisor up to a few hundred ms to flush (the included tracer specs poll for up to 6 seconds).
 - Synthetic touchmove events for mobile specs fire back-to-back with Δt≈1ms. Cap velocity and per-frame emit counts in production code, or a real device will look sane while the e2e produces runaway momentum (and vice versa).
@@ -169,7 +170,7 @@ Report-only in this PR. Phase-2 threshold floor and phase-3 ratchet upward are t
 
 1. Create `web/tests/live/<surface>.spec.ts`.
 2. Import from `../helpers/liveTest`.
-3. Pick a fixture (`serve`, `servePassphrase`, `serveReadOnly`, `serveCockpit`) or call `spawnAoeServe()` directly if you need custom options.
+3. Pick a fixture (`serve`, `servePassphrase`, `serveToken`, `serveReadOnly`, `serveCockpit`) or call `spawnAoeServe()` directly if you need custom options.
 4. Add (or update) the matching surface entry in `web/tests/coverage-matrix.json`. Make sure every component the spec touches is in its `components[]` (or already in another surface or the exempt list).
 5. Run `node web/tests/validate-coverage-matrix.mjs` locally. CI runs the same script.
 6. Run `npx playwright test --config=playwright.live.config.ts <your spec>` to confirm it passes. Live specs require tmux installed and `cargo build --features serve --release` to have run at least once.
