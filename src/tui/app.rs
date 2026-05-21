@@ -657,6 +657,17 @@ impl App {
                             }
                             if let Some(action) = click_action {
                                 self.execute_action(action, terminal)?;
+                                // Mirror the handle_key path: Action::OpenCockpit
+                                // only stashes the id in `pending_cockpit_open`
+                                // because the cockpit view needs async
+                                // EventStream access that the sync
+                                // `execute_action` can't lend. Drain here so a
+                                // double-click on a cockpit session actually
+                                // opens it.
+                                #[cfg(feature = "serve")]
+                                if let Some(session_id) = self.pending_cockpit_open.take() {
+                                    self.run_cockpit_view(&session_id, terminal).await?;
+                                }
                             }
                             continue;
                         }
