@@ -111,25 +111,62 @@ impl HomeView {
         });
         self.save()?;
 
-        // Restart re-execs the agent at a blank prompt; nudge it back into its
-        // prior task. The brief sleep lets the agent finish booting before the
-        // keys land, otherwise the message is typed into a not-yet-ready pane.
+        // Restart re-execs the agent at a blank prompt; nudge it back into
+        // its prior task. The wake-up must wait for the agent to finish
+        // booting (otherwise the message lands in the pre-agent boot
+        // prompt), but we cannot block the TUI event loop -- a sync sleep
+        // here freezes input/render. Spawn the readiness probe + send-keys
+        // onto a background OS thread so the TUI returns immediately.
+        //
+        // `touch_last_accessed` is stamped eagerly on the main thread (the
+        // user did initiate the restart at this moment) so the worker does
+        // not need to hold a `&mut self`.
         let title = snapshot.title.clone();
         let session_id = snapshot.id.clone();
         let tool = snapshot.tool.clone();
-        std::thread::sleep(std::time::Duration::from_millis(2000));
-        let tmux_session = crate::tmux::Session::new(&session_id, &title)?;
-        if tmux_session.exists() {
-            let delay = crate::agents::send_keys_enter_delay(&tool);
-            let wake_msg = "wake up: pick up what you were doing";
-            if let Err(e) = tmux_session.send_keys_with_delay(wake_msg, delay) {
-                tracing::warn!("failed to send wake-up message after restart: {}", e);
-            } else {
-                self.mutate_instance(&session_id, |inst| {
-                    inst.touch_last_accessed();
-                });
-            }
-        }
+
+        self.mutate_instance(&session_id, |inst| {
+            inst.touch_last_accessed();
+        });
+
+        let worker_session_id = session_id.clone();
+        let worker_title = title.clone();
+        let _ = std::thread::Builder::new()
+            .name(format!("aoe-restart-wake/{}", session_id))
+            .stack_size(128 * 1024)
+            .spawn(move || {
+                // Poll the tmux pane until it is live and (when reliably
+                // detectable) past the boot shell, or 3s elapse. Matches
+                // the cadence used by `Instance::wait_for_pane_ready`.
+                let Ok(tmux_session) = crate::tmux::Session::new(&worker_session_id, &worker_title)
+                else {
+                    return;
+                };
+                let deadline = std::time::Instant::now() + std::time::Duration::from_millis(3000);
+                loop {
+                    if !tmux_session.exists() {
+                        return;
+                    }
+                    let pane_alive = !tmux_session.is_pane_dead();
+                    let hook_active = crate::hooks::read_hook_status(&worker_session_id).is_some();
+                    if pane_alive && (hook_active || !tmux_session.is_pane_running_shell()) {
+                        break;
+                    }
+                    if std::time::Instant::now() >= deadline {
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+
+                if !tmux_session.exists() {
+                    return;
+                }
+                let delay = crate::agents::send_keys_enter_delay(&tool);
+                let wake_msg = "wake up: pick up what you were doing";
+                if let Err(e) = tmux_session.send_keys_with_delay(wake_msg, delay) {
+                    tracing::warn!("failed to send wake-up message after restart: {}", e);
+                }
+            });
         Ok(())
     }
 
