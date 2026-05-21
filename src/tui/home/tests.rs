@@ -3564,3 +3564,133 @@ fn toggle_archive_at_cursor_returns_none_with_no_selection() {
     let msg = env.view.toggle_archive_at_cursor().unwrap();
     assert!(msg.is_none(), "expected None when nothing is selected");
 }
+
+mod scroll_pane_isolation {
+    //! Wheel events are confined to whichever pane the mouse is over.
+    //! In particular, a wheel over the preview pane never moves the list
+    //! cursor: not when the preview is at its scroll boundary, and not
+    //! when no session is selected. See issue #1361.
+
+    use super::*;
+    use ratatui::layout::Rect;
+
+    fn setup_panes(env: &mut TestEnv) {
+        env.view.list_area = Rect::new(0, 0, 30, 40);
+        env.view.preview_area = Rect::new(30, 0, 100, 40);
+    }
+
+    /// Wheel-down over preview when offset is already at the bottom (0)
+    /// must NOT advance the list cursor.
+    #[test]
+    #[serial]
+    fn wheel_down_over_preview_at_bottom_does_not_move_list() {
+        let mut env = create_test_env_with_sessions(3);
+        setup_panes(&mut env);
+        env.view.cursor = 0;
+        env.view.update_selected();
+        env.view.preview_scroll_offset = 0;
+
+        let handled = env.view.handle_scroll_down(50, 10);
+
+        assert!(
+            !handled,
+            "expected no-op when preview is at bottom boundary"
+        );
+        assert_eq!(env.view.cursor, 0, "list cursor must not move");
+        assert_eq!(env.view.preview_scroll_offset, 0);
+    }
+
+    /// Wheel-up over preview when there is nothing more to scroll into
+    /// (no captured history) must NOT retreat the list cursor.
+    #[test]
+    #[serial]
+    fn wheel_up_over_preview_at_top_does_not_move_list() {
+        let mut env = create_test_env_with_sessions(3);
+        setup_panes(&mut env);
+        env.view.cursor = 1;
+        env.view.update_selected();
+        env.view.preview_scroll_offset = 0;
+        env.view.preview_cache.dimensions = (80, 24);
+        env.view.preview_cache.captured_lines = 10;
+
+        let handled = env.view.handle_scroll_up(50, 10);
+
+        assert!(
+            !handled,
+            "expected no-op when preview has no history to reveal"
+        );
+        assert_eq!(env.view.cursor, 1, "list cursor must not move");
+        assert_eq!(env.view.preview_scroll_offset, 0);
+    }
+
+    /// Wheel over preview when no session is selected must NOT move the
+    /// list cursor; scroll events stay in the preview pane.
+    #[test]
+    #[serial]
+    fn wheel_over_preview_with_no_session_does_not_move_list() {
+        let mut env = create_test_env_with_sessions(3);
+        setup_panes(&mut env);
+        env.view.cursor = 1;
+        env.view.selected_session = None;
+
+        let down_handled = env.view.handle_scroll_down(50, 10);
+        assert!(!down_handled);
+        assert_eq!(env.view.cursor, 1);
+
+        let up_handled = env.view.handle_scroll_up(50, 10);
+        assert!(!up_handled);
+        assert_eq!(env.view.cursor, 1);
+    }
+
+    /// Wheel over preview with scrollable content moves the preview
+    /// offset, not the list cursor.
+    #[test]
+    #[serial]
+    fn wheel_over_preview_with_scrollable_content_moves_preview_only() {
+        let mut env = create_test_env_with_sessions(3);
+        setup_panes(&mut env);
+        env.view.cursor = 1;
+        env.view.update_selected();
+        env.view.preview_cache.dimensions = (80, 24);
+        env.view.preview_cache.captured_lines = 200;
+        env.view.preview_scroll_offset = 10;
+
+        let cursor_before = env.view.cursor;
+
+        let up_handled = env.view.handle_scroll_up(50, 10);
+        assert!(up_handled);
+        assert_eq!(env.view.cursor, cursor_before, "list cursor must not move");
+        assert!(
+            env.view.preview_scroll_offset > 10,
+            "preview should scroll back into history"
+        );
+
+        let offset_after_up = env.view.preview_scroll_offset;
+        let down_handled = env.view.handle_scroll_down(50, 10);
+        assert!(down_handled);
+        assert_eq!(env.view.cursor, cursor_before, "list cursor must not move");
+        assert!(
+            env.view.preview_scroll_offset < offset_after_up,
+            "preview should scroll forward"
+        );
+    }
+
+    /// Wheel over the list pane still moves the list cursor (regression
+    /// guard so the fix above doesn't accidentally kill list scrolling).
+    #[test]
+    #[serial]
+    fn wheel_over_list_still_moves_list_cursor() {
+        let mut env = create_test_env_with_sessions(3);
+        setup_panes(&mut env);
+        env.view.cursor = 0;
+        env.view.update_selected();
+
+        let handled = env.view.handle_scroll_down(5, 10);
+        assert!(handled);
+        assert_eq!(env.view.cursor, 1, "wheel over list should advance cursor");
+
+        let handled = env.view.handle_scroll_up(5, 10);
+        assert!(handled);
+        assert_eq!(env.view.cursor, 0, "wheel over list should retreat cursor");
+    }
+}

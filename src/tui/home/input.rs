@@ -2092,9 +2092,9 @@ impl HomeView {
     /// Route a mouse-wheel-up at (col, row) to the pane under the cursor:
     /// diff view (if open) → diff scroll; list pane → list cursor up;
     /// preview pane → preview scroll. Returns `true` if the UI should
-    /// redraw. Position-aware so iOS-Mosh touch-scroll moves the LIST
-    /// when the user is touching the list pane (regardless of whether
-    /// a session is currently selected).
+    /// redraw. Scrolls do not cross pane boundaries: a wheel over the
+    /// preview never moves the list cursor, even when the preview is at
+    /// its scroll boundary or has no session selected.
     pub fn handle_scroll_up(&mut self, col: u16, row: u16) -> bool {
         const STEP: u16 = 3;
         if let Some(ref mut diff) = self.diff_view {
@@ -2111,10 +2111,8 @@ impl HomeView {
         if !self.hit_preview(col, row) {
             return false;
         }
-        // Wheel over preview with no session selected: fall through to list nav.
         if self.selected_session.is_none() {
-            self.move_cursor(-1);
-            return true;
+            return false;
         }
 
         let active_cache = match self.view_mode {
@@ -2146,9 +2144,7 @@ impl HomeView {
         let new_offset = self.preview_scroll_offset.saturating_add(STEP);
         let clamped = new_offset.min(real_max);
         if clamped == self.preview_scroll_offset {
-            // Preview already at top; fall through to list nav so the wheel isn't a no-op.
-            self.move_cursor(-1);
-            return true;
+            return false;
         }
         self.preview_scroll_offset = clamped;
         true
@@ -2171,15 +2167,11 @@ impl HomeView {
         if !self.hit_preview(col, row) {
             return false;
         }
-        // Wheel over preview with no session selected: fall through to list nav.
         if self.selected_session.is_none() {
-            self.move_cursor(1);
-            return true;
+            return false;
         }
         if self.preview_scroll_offset == 0 {
-            // Preview already at bottom; fall through to list nav so the wheel isn't a no-op.
-            self.move_cursor(1);
-            return true;
+            return false;
         }
         self.preview_scroll_offset = self.preview_scroll_offset.saturating_sub(STEP);
         true
