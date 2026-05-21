@@ -409,6 +409,16 @@
       ]
     },
     {
+      "id": "cockpit.story.composer-send-enter",
+      "kind": "live-playwright",
+      "risk": "high",
+      "specs": ["tests/live/cockpit-stories/composer-send-enter.spec.ts"],
+      "components": [
+        "web/src/components/cockpit/CockpitView.tsx",
+        "web/src/components/cockpit/Composer.tsx"
+      ]
+    },
+    {
       "id": "cockpit.rate-limit-recovery",
       "kind": "vitest",
       "risk": "high",
