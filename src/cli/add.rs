@@ -284,7 +284,11 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
     }
 
     let storage = Storage::new(profile)?;
-    let (mut instances, groups) = storage.load_with_groups()?;
+    // Phase 1 (unlocked): pre-flight read of the current persisted state to
+    // resolve `--parent`, generate a non-colliding title, and make
+    // best-effort duplicate / parent decisions before any side effects.
+    // Final duplicate enforcement happens under the flock in phase 3.
+    let (instances, _groups) = storage.load_with_groups()?;
 
     // Resolve parent session if specified
     let mut group_path = args.group.clone();
@@ -625,15 +629,29 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
         return Err(e);
     }
 
-    instances.push(instance.clone());
-
-    // Rebuild group tree
-    let mut group_tree = GroupTree::new_with_groups(&instances, &groups);
-    if !instance.group_path.is_empty() {
-        group_tree.create_group(&instance.group_path);
-    }
-
-    storage.commit(&instances, &group_tree)?;
+    // Phase 3 (locked): persist the new instance under the flock, with a
+    // duplicate re-check against the latest disk state to defend against a
+    // peer process that created the same (title, path) pair between our
+    // phase-1 load and now.
+    storage.update(|all_instances, groups| {
+        if is_duplicate_session(
+            all_instances,
+            &instance.title,
+            instance.project_path.as_str(),
+        ) {
+            bail!(
+                "Session already exists with same title and path: {}",
+                instance.title
+            );
+        }
+        all_instances.push(instance.clone());
+        if !instance.group_path.is_empty() {
+            let mut group_tree = GroupTree::new_with_groups(all_instances, groups);
+            group_tree.create_group(&instance.group_path);
+            *groups = group_tree.get_all_groups();
+        }
+        Ok(())
+    })?;
 
     println!("✓ Added session: {}", final_title);
     println!("  Profile: {}", storage.profile());
@@ -683,12 +701,16 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
             );
         }
     } else if args.launch {
-        let idx = instances
-            .iter()
-            .position(|i| i.id == instance.id)
-            .expect("just added instance");
-        instances[idx].start_with_size(crate::terminal::get_size())?;
-        storage.commit(&instances, &group_tree)?;
+        // Start tmux outside the flock (slow), then merge by id under the lock.
+        instance.start_with_size(crate::terminal::get_size())?;
+        let id = instance.id.clone();
+        let started_inst = instance.clone();
+        storage.update(|all_instances, _groups| {
+            if let Some(stored) = all_instances.iter_mut().find(|i| i.id == id) {
+                *stored = started_inst.clone();
+            }
+            Ok(())
+        })?;
 
         let tmux_session = crate::tmux::Session::new(&instance.id, &instance.title)?;
         tmux_session.attach()?;

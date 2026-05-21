@@ -99,6 +99,25 @@ pub fn truncate_id(id: &str, max_len: usize) -> &str {
     }
 }
 
+/// Resolve a CLI identifier inside a `&mut Vec<Instance>` and run `f` against
+/// the matching entry. Designed to be called from inside `Storage::update`'s
+/// closure so the find + mutate happens atomically under both the in-process
+/// mutex and the cross-process flock.
+///
+/// Identifier resolution is first-match-wins (exact id, then id prefix, then
+/// title), preserving the historical CLI behaviour. Use `resolve_session` for
+/// the stricter resolver that errors on ambiguous prefixes.
+pub(crate) fn patch_instance<F, R>(instances: &mut [Instance], identifier: &str, f: F) -> Result<R>
+where
+    F: FnOnce(&mut Instance) -> Result<R>,
+{
+    let idx = instances
+        .iter()
+        .position(|i| i.id == identifier || i.id.starts_with(identifier) || i.title == identifier)
+        .ok_or_else(|| anyhow::anyhow!("Session not found: {}", identifier))?;
+    f(&mut instances[idx])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -122,7 +122,10 @@ fn test_save_leaves_no_debris() -> Result<()> {
         .map(|e| e.file_name().to_string_lossy().to_string())
         .collect();
     entries.sort();
-    assert_eq!(entries, vec!["groups.json", "sessions.json"]);
+    assert_eq!(
+        entries,
+        vec![".storage.lock", "groups.json", "sessions.json"]
+    );
 
     Ok(())
 }

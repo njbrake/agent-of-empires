@@ -127,68 +127,67 @@ async fn list_groups(profile: &str, args: GroupListArgs) -> Result<()> {
 
 async fn create_group(profile: &str, args: GroupCreateArgs) -> Result<()> {
     let storage = Storage::new(profile)?;
-    let (instances, groups) = storage.load_with_groups()?;
 
-    let name = args.name.trim();
+    let name = args.name.trim().to_string();
     let group_path = if let Some(parent) = &args.parent {
         format!("{}/{}", parent.trim(), name)
     } else {
-        name.to_string()
+        name.clone()
     };
 
-    let mut group_tree = GroupTree::new_with_groups(&instances, &groups);
-
-    if group_tree.group_exists(&group_path) {
-        bail!("Group already exists: {}", group_path);
-    }
-
-    group_tree.create_group(&group_path);
-    storage.commit(&instances, &group_tree)?;
+    storage.update(|instances, groups| {
+        let mut group_tree = GroupTree::new_with_groups(instances, groups);
+        if group_tree.group_exists(&group_path) {
+            bail!("Group already exists: {}", group_path);
+        }
+        group_tree.create_group(&group_path);
+        *groups = group_tree.get_all_groups();
+        Ok(())
+    })?;
 
     println!("✓ Created group: {}", group_path);
-
     Ok(())
 }
 
 async fn delete_group(profile: &str, args: GroupDeleteArgs) -> Result<()> {
     let storage = Storage::new(profile)?;
-    let (mut instances, groups) = storage.load_with_groups()?;
+    let name = args.name.trim().to_string();
+    let force = args.force;
 
-    let mut group_tree = GroupTree::new_with_groups(&instances, &groups);
-
-    let name = args.name.trim();
-    if !group_tree.group_exists(name) {
-        bail!("Group not found: {}", name);
-    }
-
-    // Check for sessions in this group
-    let session_count = instances
-        .iter()
-        .filter(|i| i.group_path == name || i.group_path.starts_with(&format!("{}/", name)))
-        .count();
-
-    if session_count > 0 {
-        if !args.force {
-            bail!(
-                "Group '{}' contains {} sessions. Use --force to move them to default group.",
-                name,
-                session_count
-            );
+    let session_count = storage.update(|instances, groups| {
+        let mut group_tree = GroupTree::new_with_groups(instances, groups);
+        if !group_tree.group_exists(&name) {
+            bail!("Group not found: {}", name);
         }
 
-        // Move sessions to default group
-        for inst in &mut instances {
-            if inst.group_path == name || inst.group_path.starts_with(&format!("{}/", name)) {
-                inst.group_path = String::new();
+        let session_count = instances
+            .iter()
+            .filter(|i| i.group_path == name || i.group_path.starts_with(&format!("{}/", name)))
+            .count();
+
+        if session_count > 0 {
+            if !force {
+                bail!(
+                    "Group '{}' contains {} sessions. Use --force to move them to default group.",
+                    name,
+                    session_count
+                );
+            }
+
+            for inst in instances.iter_mut() {
+                if inst.group_path == name || inst.group_path.starts_with(&format!("{}/", name)) {
+                    inst.group_path = String::new();
+                }
             }
         }
-    }
 
-    group_tree.delete_group(name);
-    storage.commit(&instances, &group_tree)?;
+        group_tree.delete_group(&name);
+        *groups = group_tree.get_all_groups();
+        Ok(session_count)
+    })?;
 
     println!("✓ Deleted group: {}", name);
-    if args.force && session_count > 0 {
+    if force && session_count > 0 {
         println!("  Moved {} sessions to default group", session_count);
     }
 
@@ -197,24 +196,24 @@ async fn delete_group(profile: &str, args: GroupDeleteArgs) -> Result<()> {
 
 async fn move_session(profile: &str, args: GroupMoveArgs) -> Result<()> {
     let storage = Storage::new(profile)?;
-    let (mut instances, groups) = storage.load_with_groups()?;
+    let identifier = args.identifier.trim().to_string();
+    let group = args.group.trim().to_string();
 
-    let identifier = args.identifier.trim();
-    let inst = instances
-        .iter_mut()
-        .find(|i| i.id == identifier || i.id.starts_with(identifier) || i.title == identifier)
-        .ok_or_else(|| anyhow::anyhow!("Session not found: {}", identifier))?;
+    let old_group = storage.update(|instances, groups| {
+        let inst = instances
+            .iter_mut()
+            .find(|i| i.id == identifier || i.id.starts_with(&identifier) || i.title == identifier)
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {}", identifier))?;
+        let old = inst.group_path.clone();
+        inst.group_path = group.clone();
 
-    let group = args.group.trim();
-    let old_group = inst.group_path.clone();
-    inst.group_path = group.to_string();
-
-    let mut group_tree = GroupTree::new_with_groups(&instances, &groups);
-    if !group.is_empty() {
-        group_tree.create_group(group);
-    }
-
-    storage.commit(&instances, &group_tree)?;
+        if !group.is_empty() {
+            let mut group_tree = GroupTree::new_with_groups(instances, groups);
+            group_tree.create_group(&group);
+            *groups = group_tree.get_all_groups();
+        }
+        Ok(old)
+    })?;
 
     if old_group.is_empty() {
         println!("✓ Moved session to group: {}", group);
