@@ -15,7 +15,7 @@
 //! configs (it was never wired to anything; see the legacy-fields test in
 //! `src/session/config.rs`).
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::fs;
 use std::path::PathBuf;
 use tracing::{debug, info};
@@ -47,13 +47,15 @@ fn migrate_config_file(path: &PathBuf) -> Result<()> {
     }
 
     let content = fs::read_to_string(path)?;
-    let mut doc: toml::Table = match content.parse() {
-        Ok(table) => table,
-        Err(e) => {
-            debug!("Failed to parse {}: {}, skipping", path.display(), e);
-            return Ok(());
-        }
-    };
+    // Unlike older migrations that swallow parse errors, this one maps a
+    // user-set opt-out (`check_enabled = false`) into the new enum. If we
+    // marked the migration done on a parse failure here, a user who fixed
+    // their TOML afterwards would silently lose the opt-out (serde drops
+    // unknown fields, so `check_enabled` would never be re-read). Bail
+    // instead and let the user see the error.
+    let mut doc: toml::Table = content
+        .parse()
+        .with_context(|| format!("Failed to parse {} during v009 migration", path.display()))?;
 
     let Some(updates) = doc.get_mut("updates").and_then(|u| u.as_table_mut()) else {
         debug!("No [updates] section in {}, skipping", path.display());

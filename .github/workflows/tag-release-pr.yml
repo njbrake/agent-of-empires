@@ -28,6 +28,7 @@ jobs:
     if: >
       github.event.pull_request.merged == true &&
       github.event.pull_request.base.ref == 'main' &&
+      startsWith(github.event.pull_request.head.ref, 'release-staging/v') &&
       contains(github.event.pull_request.labels.*.name, 'release-staging')
     runs-on: ubuntu-latest
     steps:
