@@ -54,6 +54,14 @@ pub enum SessionCommands {
 
     /// Wake a snoozed session immediately
     Unsnooze(SessionIdArgs),
+
+    /// Mark a session as a favorite. Favorited rows pin to the top of
+    /// their status tier in the Attention sort and render with a leading
+    /// `* ` glyph plus bold + underline.
+    Favorite(SessionIdArgs),
+
+    /// Clear the favorite flag on a session.
+    Unfavorite(SessionIdArgs),
 }
 
 #[derive(Args)]
@@ -206,7 +214,55 @@ pub async fn run(profile: &str, command: SessionCommands) -> Result<()> {
         SessionCommands::SetBase(args) => set_base(profile, args).await,
         SessionCommands::Snooze(args) => snooze_session(profile, args).await,
         SessionCommands::Unsnooze(args) => unsnooze_session(profile, args).await,
+        SessionCommands::Favorite(args) => favorite_session(profile, args).await,
+        SessionCommands::Unfavorite(args) => unfavorite_session(profile, args).await,
     }
+}
+
+async fn favorite_session(profile: &str, args: SessionIdArgs) -> Result<()> {
+    let storage = Storage::new(profile)?;
+    let (mut instances, groups) = storage.load_with_groups()?;
+
+    let idx = instances
+        .iter()
+        .position(|i| {
+            i.id == args.identifier
+                || i.id.starts_with(&args.identifier)
+                || i.title == args.identifier
+        })
+        .ok_or_else(|| anyhow::anyhow!("Session not found: {}", args.identifier))?;
+
+    instances[idx].favorite();
+    let title = instances[idx].title.clone();
+
+    let group_tree = GroupTree::new_with_groups(&instances, &groups);
+    storage.commit(&instances, &group_tree)?;
+
+    println!("Favorited: {}", title);
+    Ok(())
+}
+
+async fn unfavorite_session(profile: &str, args: SessionIdArgs) -> Result<()> {
+    let storage = Storage::new(profile)?;
+    let (mut instances, groups) = storage.load_with_groups()?;
+
+    let idx = instances
+        .iter()
+        .position(|i| {
+            i.id == args.identifier
+                || i.id.starts_with(&args.identifier)
+                || i.title == args.identifier
+        })
+        .ok_or_else(|| anyhow::anyhow!("Session not found: {}", args.identifier))?;
+
+    instances[idx].unfavorite();
+    let title = instances[idx].title.clone();
+
+    let group_tree = GroupTree::new_with_groups(&instances, &groups);
+    storage.commit(&instances, &group_tree)?;
+
+    println!("Unfavorited: {}", title);
+    Ok(())
 }
 
 async fn snooze_session(profile: &str, args: SnoozeArgs) -> Result<()> {

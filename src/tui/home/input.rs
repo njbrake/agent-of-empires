@@ -797,6 +797,24 @@ impl HomeView {
                     tracing::error!("toggle_snooze_at_cursor failed: {}", e);
                 }
             }
+            // `f` / `F`: toggle favorite on the cursor's session. Within
+            // the Attention sort, favorited rows pin above non-favorited
+            // peers in the same status tier; a favorited Running stays in
+            // the Running bucket but bubbles above plain Running rows.
+            // Render layer (`render.rs`) adds bold + underline and a
+            // leading `* ` glyph. Favorite survives an unsnooze (positive
+            // care-more signal) but archive clears it (mutex in
+            // `Instance::archive()`).
+            KeyCode::Char('f') if !self.strict_hotkeys => match self.toggle_favorite_at_cursor() {
+                Ok(Some(msg)) => return Some(Action::SetTransientStatus(msg)),
+                Ok(None) => {}
+                Err(e) => tracing::error!("toggle_favorite_at_cursor failed: {}", e),
+            },
+            KeyCode::Char('F') if self.strict_hotkeys => match self.toggle_favorite_at_cursor() {
+                Ok(Some(msg)) => return Some(Action::SetTransientStatus(msg)),
+                Ok(None) => {}
+                Err(e) => tracing::error!("toggle_favorite_at_cursor failed: {}", e),
+            },
             KeyCode::Char('?') => {
                 self.show_help = true;
             }

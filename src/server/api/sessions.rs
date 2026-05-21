@@ -46,6 +46,11 @@ pub struct SessionResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub base_branch_override: Option<String>,
     pub is_sandboxed: bool,
+    /// True when the session is marked as a user favorite. Mirrors
+    /// `Instance::is_favorited()`; surfaced so the web sidebar can pin
+    /// favorited rows and render the `*` marker without re-implementing
+    /// the predicate. Cross-feature parity with the TUI's `f`/`F` keybind.
+    pub favorited: bool,
     pub has_managed_worktree: bool,
     pub has_terminal: bool,
     pub profile: String,
@@ -186,6 +191,7 @@ impl SessionResponse {
                 .and_then(|w| w.base_branch.clone()),
             base_branch_override: inst.base_branch_override.clone(),
             is_sandboxed: inst.is_sandboxed(),
+            favorited: inst.is_favorited(),
             has_managed_worktree: inst
                 .worktree_info
                 .as_ref()
@@ -3502,6 +3508,7 @@ mod workspace_ordering_tests {
             plan_summary: None,
             next_wakeup_at: None,
             next_wakeup_reason: None,
+            favorited: false,
         }
     }
 

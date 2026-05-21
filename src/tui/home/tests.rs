@@ -3411,3 +3411,112 @@ fn pollable_instances_recovers_after_inflight_clear() {
 
     assert_eq!(env.view.pollable_instances().len(), 1);
 }
+
+/// Footer hides Archive/Fav/Snooze hints unless `sort_order` is Attention.
+/// The underlying keybinds still work in any mode; only the discoverability
+/// hints in `render_status_bar` adapt so the footer doesn't waste width on
+/// shortcuts that don't visibly reorder the list in Newest/Created/LastAccessed.
+#[test]
+#[serial]
+fn footer_hides_attention_workflow_hints_outside_attention_sort() {
+    use crate::session::config::SortOrder;
+    use crate::tui::styles::load_theme;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    let mut env = create_test_env_with_sessions(1);
+    let theme = load_theme("empire");
+
+    let render_footer = |env: &mut TestEnv| -> String {
+        let backend = TestBackend::new(200, 40);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                env.view.render(f, area, &theme, None, None);
+            })
+            .unwrap();
+        let buf = terminal.backend().buffer();
+        let mut out = String::new();
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                out.push_str(buf[(x, y)].symbol());
+            }
+            out.push('\n');
+        }
+        out
+    };
+
+    // Newest sort: footer should NOT advertise attention-workflow shortcuts.
+    env.view.sort_order = SortOrder::Newest;
+    let newest_out = render_footer(&mut env);
+    assert!(
+        !newest_out.contains("Snooze"),
+        "Snooze hint should be hidden in Newest sort.\n{newest_out}"
+    );
+    assert!(
+        !newest_out.contains("Fav"),
+        "Fav hint should be hidden in Newest sort.\n{newest_out}"
+    );
+    assert!(
+        !newest_out.contains("Archive"),
+        "Archive hint should be hidden in Newest sort.\n{newest_out}"
+    );
+
+    // Attention sort: footer should advertise them.
+    env.view.sort_order = SortOrder::Attention;
+    let attention_out = render_footer(&mut env);
+    assert!(
+        attention_out.contains("Snooze"),
+        "Snooze hint should appear in Attention sort.\n{attention_out}"
+    );
+    assert!(
+        attention_out.contains("Fav"),
+        "Fav hint should appear in Attention sort.\n{attention_out}"
+    );
+    assert!(
+        attention_out.contains("Archive"),
+        "Archive hint should appear in Attention sort.\n{attention_out}"
+    );
+}
+
+/// `toggle_favorite_at_cursor` flips the cursor's instance favorited state,
+/// persists the change, returns a toast message, and returns Ok(None) when
+/// nothing is selected.
+#[test]
+#[serial]
+fn toggle_favorite_at_cursor_round_trip() {
+    let mut env = create_test_env_with_sessions(1);
+    let id = env.view.instances[0].id.clone();
+    env.view.selected_session = Some(id.clone());
+
+    // Initial state: not favorited.
+    assert!(!env.view.instances[0].is_favorited());
+
+    let fav_msg = env.view.toggle_favorite_at_cursor().unwrap();
+    assert!(env.view.instances[0].is_favorited());
+    assert!(
+        fav_msg.as_deref().unwrap_or("").starts_with("Favorited: "),
+        "expected 'Favorited: ...' toast, got {fav_msg:?}",
+    );
+
+    let unfav_msg = env.view.toggle_favorite_at_cursor().unwrap();
+    assert!(!env.view.instances[0].is_favorited());
+    assert!(
+        unfav_msg
+            .as_deref()
+            .unwrap_or("")
+            .starts_with("Unfavorited: "),
+        "expected 'Unfavorited: ...' toast, got {unfav_msg:?}",
+    );
+}
+
+/// When no session is selected, the toggle is a no-op and returns Ok(None).
+#[test]
+#[serial]
+fn toggle_favorite_at_cursor_returns_none_with_no_selection() {
+    let mut env = create_test_env_empty();
+    env.view.selected_session = None;
+    let msg = env.view.toggle_favorite_at_cursor().unwrap();
+    assert!(msg.is_none(), "expected None when nothing is selected");
+}
