@@ -2298,8 +2298,22 @@ impl HomeView {
             // the second click only activates a session. Re-toggling a
             // group on the second click would undo the first toggle and
             // flicker, so groups intentionally swallow the second click.
+            //
+            // We re-sync `cursor` to `abs_idx` before activating because
+            // anything between the two clicks (an arrow keypress, a
+            // status-poll-driven re-sort) can move the cursor away from
+            // the row the user is actually double-clicking. Without this,
+            // `activate_selected_session()` reads `selected_session` —
+            // which tracks `cursor`, not the click target — and we'd open
+            // the wrong session.
             return match item {
-                Item::Session { .. } => self.activate_selected_session(),
+                Item::Session { .. } => {
+                    if self.cursor != abs_idx {
+                        self.cursor = abs_idx;
+                        self.update_selected();
+                    }
+                    self.activate_selected_session()
+                }
                 Item::Group { .. } => None,
             };
         }

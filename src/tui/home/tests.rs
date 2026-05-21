@@ -4195,6 +4195,47 @@ mod click_to_select {
 
     #[test]
     #[serial]
+    fn double_click_activates_clicked_row_even_if_cursor_moved_between_clicks() {
+        use std::time::{Duration, Instant};
+
+        let mut env = create_test_env_with_sessions(3);
+        setup_inner(&mut env);
+        env.view.cursor = 0;
+        env.view.update_selected();
+
+        // Capture the id at flat_items[2] so we know which session
+        // the row-3 click is targeting.
+        let clicked_id = match &env.view.flat_items[2] {
+            crate::session::Item::Session { id, .. } => id.clone(),
+            _ => panic!("flat_items[2] should be a session"),
+        };
+
+        let t0 = Instant::now();
+        env.view.handle_click_at(t0, 5, 3);
+        assert_eq!(env.view.cursor, 2);
+
+        // Simulate the cursor drifting away between clicks (e.g., a
+        // keyboard arrow press or an async list refresh that selected
+        // a different row).
+        env.view.cursor = 0;
+        env.view.update_selected();
+
+        let t1 = t0 + Duration::from_millis(150);
+        let action = env.view.handle_click_at(t1, 5, 3);
+        assert_eq!(
+            action,
+            Some(crate::tui::app::Action::AttachSession(clicked_id)),
+            "double-click must activate the row that was clicked, \
+             not whatever the cursor drifted to"
+        );
+        assert_eq!(
+            env.view.cursor, 2,
+            "double-click should also re-sync cursor onto the clicked row"
+        );
+    }
+
+    #[test]
+    #[serial]
     fn double_click_on_creating_session_returns_no_action() {
         use std::time::{Duration, Instant};
 
