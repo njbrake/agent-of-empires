@@ -597,6 +597,20 @@
       "components": ["web/src/components/session-wizard/SessionWizard.tsx"]
     },
     {
+      "id": "cockpit.story.queue-edit-message",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": ["tests/live/cockpit-stories/queue-edit-message.spec.ts"],
+      "components": ["web/src/components/cockpit/CockpitView.tsx"]
+    },
+    {
+      "id": "cockpit.story.queue-delete-message",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": ["tests/live/cockpit-stories/queue-delete-message.spec.ts"],
+      "components": ["web/src/components/cockpit/CockpitView.tsx"]
+    },
+    {
       "id": "cockpit.rate-limit-recovery",
       "kind": "vitest",
       "risk": "high",
