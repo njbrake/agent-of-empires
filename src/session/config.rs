@@ -276,10 +276,16 @@ pub struct CockpitConfig {
     /// `session/cancel` and arms the existing cancel-escalation grace.
     /// Closes the gap where claude-agent-acp finishes streaming but
     /// never sends `PromptResponse` (upstream
-    /// agentclientprotocol/claude-agent-acp#688). Default 60s. `0`
-    /// disables the watchdog. Long-running tools are not affected; the
-    /// watchdog only fires when no in-flight tool call is open.
-    /// See #1240.
+    /// agentclientprotocol/claude-agent-acp#688). Default 120s; raised
+    /// from 60s in #1360 so async-agent flows (Claude SDK `Agent` tool
+    /// with `isAsync: true`) get a longer wait window before the
+    /// watchdog cancels them. `0` disables the watchdog. Long-running
+    /// tools are not affected; the watchdog only fires when no
+    /// in-flight tool call is open. The async-agent extension lifts the
+    /// effective grace to at least 30 minutes when the daemon observes
+    /// an async-agent launch in the current prompt. Nonzero values
+    /// below 120 clamp up at runtime so a typo cannot disable the
+    /// watchdog accidentally. See #1240, #1360.
     #[serde(default = "default_silent_orphan_grace_secs")]
     pub silent_orphan_grace_secs: u32,
     /// Silent-orphan watchdog: accelerated grace used when the current
@@ -302,7 +308,7 @@ fn default_force_end_turn_threshold_secs() -> u32 {
 }
 
 fn default_silent_orphan_grace_secs() -> u32 {
-    60
+    120
 }
 
 fn default_silent_orphan_fast_grace_secs() -> u32 {

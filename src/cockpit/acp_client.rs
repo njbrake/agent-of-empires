@@ -252,8 +252,10 @@ const CANCEL_ESCALATION_GRACE: std::time::Duration = std::time::Duration::from_s
 
 /// Vendor-agnostic silent-orphan grace fallback used when no config
 /// value is available. Mirrors `CockpitConfig::silent_orphan_grace_secs`
-/// default. See `silent_orphan_grace()`.
-const SILENT_ORPHAN_GRACE_DEFAULT: std::time::Duration = std::time::Duration::from_secs(60);
+/// default. Bumped from 60s to 120s in #1360 so async-agent flows
+/// (Claude SDK `Agent` tool with `isAsync: true`) survive normal sub-
+/// agent wait windows. See `silent_orphan_grace()`.
+const SILENT_ORPHAN_GRACE_DEFAULT: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// Accelerated silent-orphan grace fallback used when a cost-populated
 /// `UsageUpdate` notification has arrived for the current prompt. The
@@ -377,9 +379,12 @@ fn resolved_cockpit_config(profile: Option<&str>) -> Option<crate::session::conf
 /// `cockpit.silent_orphan_grace_secs` from the profile-resolved
 /// config so per-profile overrides set in the settings TUI take
 /// effect. A value of `0` means "disabled" and the caller skips the
-/// watchdog entirely; non-zero values smaller than 10s clamp up so a
-/// typo can't produce an absurdly tight grace that false-positives
-/// on healthy turns.
+/// watchdog entirely; non-zero values smaller than 120s clamp up at
+/// runtime to the new production floor so a typo cannot produce an
+/// absurdly tight grace that false-positives on healthy turns. The
+/// floor was raised from 10s to 120s in #1360 alongside the default
+/// bump from 60 to 120; users who explicitly want a shorter grace
+/// must set `0` to disable instead.
 fn silent_orphan_grace(profile: Option<&str>) -> std::time::Duration {
     #[cfg(debug_assertions)]
     if let Ok(raw) = std::env::var("AOE_SILENT_ORPHAN_GRACE_MS") {
@@ -396,7 +401,7 @@ fn silent_orphan_grace(profile: Option<&str>) -> std::time::Duration {
             if secs == 0 {
                 std::time::Duration::ZERO
             } else {
-                std::time::Duration::from_secs(u64::from(secs).max(10))
+                std::time::Duration::from_secs(u64::from(secs).max(120))
             }
         }
         None => SILENT_ORPHAN_GRACE_DEFAULT,

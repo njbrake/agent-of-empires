@@ -647,7 +647,7 @@ fn build_cockpit_fields(
         SettingField {
             key: FieldKey::CockpitSilentOrphanGraceSecs,
             label: "Silent-orphan grace (s)",
-            description: "Daemon-side watchdog that detects when the agent finishes streaming but the adapter never resolves the session/prompt request. Fires after this many seconds of no progress notifications, when no in-flight tool call is open and the prompt has produced at least one progress event. On fire, sends best-effort session/cancel and reuses the existing cancel-escalation path to SIGTERM + session/load respawn. Default 60s. Set 0 to disable. Long-running tools are not affected (watchdog suppresses while any tool call is active). See #1240.",
+            description: "Daemon-side watchdog that detects when the agent finishes streaming but the adapter never resolves the session/prompt request. Fires after this many seconds of no progress notifications, when no in-flight tool call is open and the prompt has produced at least one progress event. On fire, sends best-effort session/cancel and reuses the existing cancel-escalation path to SIGTERM + session/load respawn. Default 120s; raised from 60s in #1360 so async-agent flows (Claude SDK Agent tool with isAsync) survive normal sub-agent waits. Nonzero values below 120 clamp up to 120 at runtime. Set 0 to disable. Long-running tools are not affected (watchdog suppresses while any tool call is active). When the daemon detects an async-agent launch in the current prompt, the effective grace lifts to at least 30 minutes. See #1240, #1360.",
             value: FieldValue::Number(u64::from(silent_orphan_grace_secs)),
             category: SettingsCategory::Cockpit,
             has_override: sog_override,
