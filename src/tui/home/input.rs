@@ -1485,7 +1485,11 @@ impl HomeView {
                         if matches!(inst.status, Status::Deleting | Status::Creating) {
                             return None;
                         }
-                        let current_profile = self.config_profile();
+                        // Rename is anchored to the selected session, so the dialog
+                        // must open against that session's profile, not the
+                        // view-level active/config profile (which can differ in
+                        // all-profiles mode).
+                        let current_profile = inst.source_profile.clone();
                         let profiles =
                             list_profiles().unwrap_or_else(|_| vec![current_profile.clone()]);
                         let existing_groups: Vec<String> =
@@ -1533,7 +1537,9 @@ impl HomeView {
                         if matches!(inst.status, Status::Deleting | Status::Creating) {
                             return None;
                         }
-                        let current_profile = self.config_profile();
+                        // See the corresponding `r` handler above: rename targets
+                        // the selected session, so anchor on its source_profile.
+                        let current_profile = inst.source_profile.clone();
                         let profiles =
                             list_profiles().unwrap_or_else(|_| vec![current_profile.clone()]);
                         let existing_groups: Vec<String> =

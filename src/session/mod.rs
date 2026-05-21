@@ -276,16 +276,43 @@ mod profile_listing_tests {
     }
 }
 
-pub fn create_profile(name: &str) -> Result<()> {
+/// Validate that `name` is a safe, single-component profile name.
+///
+/// Defense in depth: `get_profile_dir` and `delete_profile` ultimately
+/// `join` `name` onto `<app_dir>/profiles/`, so a name like `..`, `/etc`,
+/// or `a/b` would resolve outside the profiles directory. We require
+/// exactly one path component, and that component must be `Normal`. Also
+/// rejects empty strings and the reserved `all` (which the TUI uses as a
+/// sentinel for "all-profiles" mode in profile pickers).
+fn validate_profile_name(name: &str) -> Result<()> {
     if name.is_empty() {
         anyhow::bail!("Profile name cannot be empty");
-    }
-    if name.contains('/') || name.contains('\\') {
-        anyhow::bail!("Profile name cannot contain path separators");
     }
     if name.eq_ignore_ascii_case("all") {
         anyhow::bail!("Profile name 'all' is reserved");
     }
+    // Unix Path treats `\` as a regular byte, so backslashes pass the
+    // components check below. Reject them explicitly so the validator
+    // behaves the same on every host the binary might land on.
+    if name.contains('\\') {
+        anyhow::bail!("Profile name cannot contain path separators");
+    }
+    let mut components = Path::new(name).components();
+    let first = components.next();
+    if components.next().is_some() {
+        anyhow::bail!("Profile name cannot contain path separators");
+    }
+    match first {
+        Some(std::path::Component::Normal(c)) if c == std::ffi::OsStr::new(name) => Ok(()),
+        _ => anyhow::bail!(
+            "Profile name '{}' is not a valid single-component name",
+            name
+        ),
+    }
+}
+
+pub fn create_profile(name: &str) -> Result<()> {
+    validate_profile_name(name)?;
 
     let profiles = list_profiles()?;
     if profiles.contains(&name.to_string()) {
@@ -297,6 +324,8 @@ pub fn create_profile(name: &str) -> Result<()> {
 }
 
 pub fn delete_profile(name: &str) -> Result<()> {
+    validate_profile_name(name)?;
+
     let base = get_app_dir()?;
     let profile_dir = base.join("profiles").join(name);
 
@@ -633,5 +662,53 @@ mod tests {
         delete_profile("default").expect("a non-last profile named default is deletable");
         assert!(!dir.join("profiles").join("default").exists());
         assert!(dir.join("profiles").join("work").exists());
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_delete_profile_rejects_path_traversal() {
+        // Without name validation, delete_profile("../foo") would resolve
+        // to <app_dir>/profiles/../foo and remove an arbitrary sibling
+        // directory. The validator must catch this before any FS work.
+        let temp = isolate_app_dir();
+        let dir = app_dir(&temp);
+        fs::create_dir_all(dir.join("profiles").join("real")).unwrap();
+        // A directory that must NOT be touched by the call below.
+        let bystander = dir.join("bystander");
+        fs::create_dir_all(&bystander).unwrap();
+
+        for malicious in ["..", "../bystander", "/etc", "a/b", "", "all"] {
+            let err = delete_profile(malicious).expect_err(&format!(
+                "delete_profile({malicious:?}) must fail validation"
+            ));
+            let msg = err.to_string();
+            assert!(
+                msg.contains("Profile name")
+                    || msg.contains("cannot be empty")
+                    || msg.contains("reserved")
+                    || msg.contains("path separators"),
+                "unexpected error for {malicious:?}: {msg}"
+            );
+        }
+
+        assert!(bystander.exists(), "bystander directory must survive");
+        assert!(dir.join("profiles").join("real").exists());
+    }
+
+    #[test]
+    fn test_validate_profile_name_accepts_normal_names() {
+        for name in ["work", "personal", "client-a", ".hidden", "1", "main"] {
+            validate_profile_name(name)
+                .unwrap_or_else(|e| panic!("expected {name:?} to validate: {e}"));
+        }
+    }
+
+    #[test]
+    fn test_validate_profile_name_rejects_traversal_and_separators() {
+        for bad in ["", "..", ".", "/etc", "a/b", "a\\b", "all", "ALL"] {
+            validate_profile_name(bad)
+                .err()
+                .unwrap_or_else(|| panic!("expected {bad:?} to be rejected"));
+        }
     }
 }
