@@ -416,6 +416,13 @@
       "components": ["web/src/components/cockpit/ContextPrimerBanner.tsx"]
     },
     {
+      "id": "cockpit.switch-substrate-action",
+      "kind": "vitest",
+      "risk": "medium",
+      "specs": ["src/components/cockpit/SwitchSubstrateAction.test.tsx"],
+      "components": ["web/src/components/cockpit/SwitchSubstrateAction.tsx"]
+    },
+    {
       "id": "read-only.mode",
       "kind": "live-playwright",
       "risk": "high",
