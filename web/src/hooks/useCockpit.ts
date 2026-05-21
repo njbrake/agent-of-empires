@@ -20,6 +20,8 @@ import {
   type QueuedPrompt,
 } from "../lib/cockpitTypes";
 import { useCockpitPrefs } from "../lib/cockpitPrefs";
+import { isClearAlias } from "../lib/agentProfiles";
+import { useAgentProfile } from "../lib/agentProfileContext";
 import { getOrCreateDeviceBindingSecret } from "../lib/deviceBinding";
 import { getToken } from "../lib/token";
 
@@ -415,6 +417,18 @@ export function useCockpit(
   useEffect(() => {
     drainModeRef.current = queueDrainMode;
   }, [queueDrainMode]);
+  // Clear-conversation aliases for the session's active agent. The drain
+  // effect needs them to slice the queued-prompt snapshot at clear-command
+  // boundaries so `/clear` (claude) / `/new` (codex, opencode) fires as a
+  // standalone POST instead of being glued into a multi-paragraph combined
+  // prompt; the server's `is_clear_command` is head-anchored on a trimmed
+  // prompt, and an agent SDK receiving `/clear\n\n<follow-up>` does not
+  // see a clean clear boundary. See #1356.
+  const agentProfile = useAgentProfile();
+  const clearAliasesRef = useRef(agentProfile.clearAliases);
+  useEffect(() => {
+    clearAliasesRef.current = agentProfile.clearAliases;
+  }, [agentProfile.clearAliases]);
   // Mirror the server-side retention cap onto the reducer's
   // in-memory activity buffer. Without this, a frontend-only 200-row
   // cap clipped the rendered transcript regardless of what the user
@@ -972,12 +986,38 @@ export function useCockpit(
     if (state.queuedPrompts.length === 0) return;
     drainingRef.current = true;
     if (drainModeRef.current === "combined") {
-      // Snapshot the ids we're about to send. The user can enqueue MORE
-      // prompts during the await; on success we only clear the items in
-      // the snapshot so newly-typed entries survive into the next turn.
-      // On failure (POST non-OK / network blip / WS dropped mid-send)
-      // we leave the queue untouched so the next Stopped retries.
-      const snapshot = state.queuedPrompts.slice();
+      // Slice the leading sub-batch out of the queue and POST only that.
+      // The boundary is each clear-command alias (`/clear`, `/new`); when
+      // the head is a clear alias it fires alone, otherwise the run of
+      // non-clear entries up to the next alias is joined into one
+      // combined POST. The remaining entries stay queued and the next
+      // `Stopped` re-runs this effect, dispatching the next sub-batch.
+      // Single-pass POST per drain matches the existing combined-mode
+      // contract (one prompt fires per turn cycle), and the agent sees a
+      // clean clear-command boundary instead of `/clear\n\n<text>`.
+      // See #1356.
+      //
+      // The user can enqueue MORE prompts during the await; on success
+      // we only clear the items in the snapshot so newly-typed entries
+      // survive into the next turn. On failure (POST non-OK / network
+      // blip / WS dropped mid-send) we leave the queue untouched so the
+      // next Stopped retries.
+      const queue = state.queuedPrompts;
+      const aliases = clearAliasesRef.current;
+      const headIsClear =
+        aliases.length > 0 && isClearAlias(queue[0]!.text, aliases);
+      let batchEnd = 1;
+      if (!headIsClear && aliases.length > 0) {
+        while (
+          batchEnd < queue.length &&
+          !isClearAlias(queue[batchEnd]!.text, aliases)
+        ) {
+          batchEnd += 1;
+        }
+      } else if (aliases.length === 0) {
+        batchEnd = queue.length;
+      }
+      const snapshot = queue.slice(0, batchEnd);
       const combined = combineQueuedPrompts(snapshot);
       const sentIds = snapshot.map((q) => q.id);
       void dispatchPromptNow(combined)
