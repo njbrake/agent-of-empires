@@ -1253,10 +1253,13 @@ impl Instance {
     }
 
     /// Build the launch command string the way `start_with_size_opts` would,
-    /// but without creating a tmux session. Shared with the dead-pane
-    /// respawn path so we send the same command to `tmux respawn-pane` that
-    /// `tmux new-session` would have received. Returns `None` for cockpit
-    /// or other modes where there is no command to launch.
+    /// but without creating a tmux session. Returns `None` for cockpit or
+    /// other modes where there is no command to launch.
+    ///
+    /// Currently only called from `start_with_size_opts`; a future dead-pane
+    /// respawn path could route through here so `tmux respawn-pane` receives
+    /// the same command `tmux new-session` would have. For now the helper is
+    /// preparatory and has one caller.
     ///
     /// Side effects mirror the start path: agent status hooks are installed,
     /// and (for sandboxed sessions) on_launch hooks run inside the container.
@@ -2840,6 +2843,41 @@ mod tests {
 
         inst.parent_session_id = Some("parent123".to_string());
         assert!(inst.is_sub_session());
+    }
+
+    /// `touch_last_accessed` is what `aoe send` and the TUI dispatch path
+    /// call when the user interacts with a session. It must auto-wake
+    /// archived and snoozed rows so sending a message to a sunk session
+    /// brings it back, while preserving the favorite flag (favorite is a
+    /// positive "care more" signal, not a sink state).
+    #[test]
+    fn test_touch_last_accessed_clears_archived() {
+        let mut inst = Instance::new("test", "/tmp/test");
+        inst.archive();
+        assert!(inst.is_archived());
+        inst.touch_last_accessed();
+        assert!(!inst.is_archived());
+        assert!(inst.last_accessed_at.is_some());
+    }
+
+    #[test]
+    fn test_touch_last_accessed_clears_snooze() {
+        let mut inst = Instance::new("test", "/tmp/test");
+        inst.snooze(30);
+        assert!(inst.is_snoozed());
+        inst.touch_last_accessed();
+        assert!(!inst.is_snoozed());
+    }
+
+    #[test]
+    fn test_touch_last_accessed_preserves_favorite() {
+        let mut inst = Instance::new("test", "/tmp/test");
+        inst.favorite();
+        assert!(inst.is_favorited());
+        inst.touch_last_accessed();
+        // Favorite is orthogonal to sink states; user interaction must not
+        // clear it.
+        assert!(inst.is_favorited());
     }
 
     #[test]
