@@ -630,6 +630,11 @@ impl HomeView {
             self.mutate_instance(&id, |inst| inst.unarchive());
             self.save()?;
             self.flat_items = self.build_flat_items();
+            // Re-seat the cursor on the just-unarchived session. After the
+            // flat_items rebuild the row jumps from tier 99 to its real
+            // tier, so without this the cursor stays at the old index and
+            // ends up on whatever row slid into that slot.
+            self.select_session_by_id(&id);
             return Ok(Some(format!("Unarchived: {}", title)));
         }
 

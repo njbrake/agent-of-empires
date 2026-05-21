@@ -293,14 +293,13 @@ async fn archive_session(profile: &str, args: ArchiveArgs) -> Result<()> {
     let storage = Storage::new(profile)?;
     let (mut instances, groups) = storage.load_with_groups()?;
 
+    let id = super::resolve_session(&args.identifier, &instances)?
+        .id
+        .clone();
     let idx = instances
         .iter()
-        .position(|i| {
-            i.id == args.identifier
-                || i.id.starts_with(&args.identifier)
-                || i.title == args.identifier
-        })
-        .ok_or_else(|| anyhow::anyhow!("Session not found: {}", args.identifier))?;
+        .position(|i| i.id == id)
+        .expect("resolve_session returned an id that is no longer in instances");
 
     if !args.no_kill {
         if let Err(e) = instances[idx].kill() {
@@ -322,14 +321,13 @@ async fn unarchive_session(profile: &str, args: SessionIdArgs) -> Result<()> {
     let storage = Storage::new(profile)?;
     let (mut instances, groups) = storage.load_with_groups()?;
 
+    let id = super::resolve_session(&args.identifier, &instances)?
+        .id
+        .clone();
     let idx = instances
         .iter()
-        .position(|i| {
-            i.id == args.identifier
-                || i.id.starts_with(&args.identifier)
-                || i.title == args.identifier
-        })
-        .ok_or_else(|| anyhow::anyhow!("Session not found: {}", args.identifier))?;
+        .position(|i| i.id == id)
+        .expect("resolve_session returned an id that is no longer in instances");
 
     instances[idx].unarchive();
     let title = instances[idx].title.clone();
