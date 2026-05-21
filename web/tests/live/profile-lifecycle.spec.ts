@@ -152,12 +152,20 @@ test("delete profile via Delete button round-trips through DELETE /api/profiles/
   await profileSelect.selectOption("scratch");
   await expect(profileSelect).toHaveValue("scratch");
 
+  const deletePromise = page.waitForResponse(
+    (res) =>
+      res.url().endsWith("/api/profiles/scratch") &&
+      res.request().method() === "DELETE",
+    { timeout: 30_000 },
+  );
+
   await page.getByRole("button", { name: "Delete" }).click();
 
-  await expect(async () => {
-    const profiles = await fetchProfiles(serve);
-    expect(profiles.map((p) => p.name)).toEqual(["default"]);
-  }).toPass({ timeout: 5_000 });
+  const deleteRes = await deletePromise;
+  expect(deleteRes.ok()).toBe(true);
+
+  const profiles = await fetchProfiles(serve);
+  expect(profiles.map((p) => p.name)).toEqual(["default"]);
 });
 
 test("invalid profile name: client validation blocks POST /api/profiles", async ({

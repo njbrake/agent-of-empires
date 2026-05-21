@@ -37,6 +37,40 @@ pub fn read_hook_status(instance_id: &str) -> Option<Status> {
     }
 }
 
+/// Read the urgent flag from the hook-written `attention.json` for the given
+/// instance. Set by the `attention-urgent` script (cx-scripts) when the agent
+/// surfaces something genuinely time-sensitive (expiring device code, hard
+/// deadline, blocking outage). Returns false when the file is missing,
+/// malformed, missing the `urgent` flag, or when `urgent_expires_at` has
+/// already passed (auto-expiry; keeps stale flags from pinning the row
+/// forever after the deadline lapses).
+pub fn read_hook_urgent(instance_id: &str) -> bool {
+    let path = hook_status_dir(instance_id).join("attention.json");
+    let Ok(content) = std::fs::read_to_string(&path) else {
+        return false;
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(&content) else {
+        return false;
+    };
+    if !value
+        .get("urgent")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false)
+    {
+        return false;
+    }
+    if let Some(exp) = value.get("urgent_expires_at").and_then(|v| v.as_i64()) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+        if now > exp {
+            return false;
+        }
+    }
+    true
+}
+
 /// Remove the hook status directory for a given instance (cleanup on stop/delete).
 pub fn cleanup_hook_status_dir(instance_id: &str) {
     let dir = hook_status_dir(instance_id);
@@ -144,5 +178,66 @@ mod tests {
     fn test_hook_status_dir_path() {
         let dir = hook_status_dir("abc123");
         assert_eq!(dir, PathBuf::from("/tmp/aoe-hooks/abc123"));
+    }
+
+    fn write_attention_json(instance_id: &str, body: &str) -> PathBuf {
+        let dir = hook_status_dir(instance_id);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("attention.json");
+        fs::write(&path, body).unwrap();
+        dir
+    }
+
+    #[test]
+    fn test_read_hook_urgent_true() {
+        let id = "test_urgent_true";
+        let dir = write_attention_json(id, r#"{"urgent":true,"urgent_reason":"x"}"#);
+        assert!(read_hook_urgent(id));
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn test_read_hook_urgent_false_when_flag_missing() {
+        let id = "test_urgent_missing";
+        let dir = write_attention_json(id, r#"{"tier":0}"#);
+        assert!(!read_hook_urgent(id));
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn test_read_hook_urgent_false_when_file_absent() {
+        // No setup; directory doesn't exist
+        assert!(!read_hook_urgent("test_urgent_no_file"));
+    }
+
+    #[test]
+    fn test_read_hook_urgent_false_when_malformed_json() {
+        let id = "test_urgent_bad_json";
+        let dir = write_attention_json(id, "{ this is not json");
+        assert!(!read_hook_urgent(id));
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn test_read_hook_urgent_false_when_expires_passed() {
+        let id = "test_urgent_expired";
+        // urgent_expires_at = 1 (epoch=1970), well in the past
+        let dir = write_attention_json(id, r#"{"urgent":true,"urgent_expires_at":1}"#);
+        assert!(!read_hook_urgent(id));
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn test_read_hook_urgent_true_when_expires_future() {
+        let id = "test_urgent_future";
+        let future = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            + 3600;
+        let body = format!(r#"{{"urgent":true,"urgent_expires_at":{}}}"#, future);
+        let dir = write_attention_json(id, &body);
+        assert!(read_hook_urgent(id));
+        fs::remove_dir_all(dir).ok();
     }
 }

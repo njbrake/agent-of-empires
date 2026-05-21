@@ -13,6 +13,7 @@ import {
   listSessions,
   seedSessionViaAoeAdd,
 } from "../helpers/aoeServe";
+import { waitForCockpitReady } from "../helpers/cockpit";
 
 const APPROVAL_SCRIPT = {
   turns: [
@@ -72,11 +73,10 @@ base("permission_request flows through to the server", async ({}, testInfo) => {
     await fetch(`${serve.baseUrl}/api/sessions/${sessionId}/cockpit/enable`, {
       method: "POST",
     });
-    // Wait for the supervisor to come up before prompting. The spawn is
-    // a `tokio::spawn` inside enable and the ACP handshake races the
-    // prompt unless we wait long enough for `initialize` + `session/new`
-    // to complete. 2s is conservative.
-    await new Promise((r) => setTimeout(r, 2_000));
+    // Wait for the supervisor to finish its ACP handshake before prompting,
+    // by polling replay for any frame. The previous `setTimeout(2_000)` race
+    // proved tight under CI load.
+    await waitForCockpitReady(serve.baseUrl, sessionId);
     await fetch(`${serve.baseUrl}/api/sessions/${sessionId}/cockpit/prompt`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },

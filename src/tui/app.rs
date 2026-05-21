@@ -14,7 +14,7 @@ use super::attached_status_hooks::AttachedStatusHookWatcher;
 use super::home::{HomeView, TerminalMode};
 use super::status_poller::StatusUpdate;
 use super::styles::Theme;
-use crate::session::{get_update_settings, load_config, save_config, Config};
+use crate::session::{get_update_settings, save_config, Config};
 use crate::tmux::AvailableTools;
 use crate::update::{check_for_update, UpdateInfo};
 
@@ -200,7 +200,9 @@ impl App {
             update_status_rx: None,
             update_bar_dismissed: false,
             event_stream: Some(EventStream::new()),
-            mouse_captured: true,
+            // Initial state matches whatever `tui::run` did at startup;
+            // capture is on by default, off only if AOE_MOUSE_CAPTURE=0.
+            mouse_captured: crate::tui::mouse_capture_requested(),
             #[cfg(feature = "serve")]
             pending_cockpit_open: None,
         })
@@ -217,6 +219,13 @@ impl App {
         &mut self,
         terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
     ) -> Result<()> {
+        // Mouse capture is on by default; AOE_MOUSE_CAPTURE=0 opts out so
+        // iOS Mosh + Termius/Blink use the terminal app's native scrollback
+        // for touch-scroll (Mosh doesn't reliably forward mouse-tracking
+        // escapes to mobile clients).
+        if !crate::tui::mouse_capture_requested() {
+            return Ok(());
+        }
         let desired = !self.home.wants_text_selection();
         if desired == self.mouse_captured {
             return Ok(());
@@ -273,9 +282,11 @@ impl App {
             terminal.backend_mut(),
             crossterm::terminal::LeaveAlternateScreen,
             DisableBracketedPaste,
-            DisableMouseCapture,
-            crossterm::cursor::Show
         )?;
+        if crate::tui::mouse_capture_requested() {
+            crossterm::execute!(terminal.backend_mut(), DisableMouseCapture)?;
+        }
+        crossterm::execute!(terminal.backend_mut(), crossterm::cursor::Show)?;
         self.mouse_captured = false;
         std::io::Write::flush(terminal.backend_mut())?;
 
@@ -299,7 +310,8 @@ impl App {
         )?;
         // Defer mouse-capture restore to sync_mouse_capture so we don't
         // briefly enable it only to disable again when the user returned
-        // to the serve view.
+        // to the serve view. sync_mouse_capture itself respects the
+        // AOE_MOUSE_CAPTURE opt-out.
         self.sync_mouse_capture(terminal)?;
         std::io::Write::flush(terminal.backend_mut())?;
 
@@ -365,16 +377,21 @@ impl App {
     }
 
     pub fn set_theme(&mut self, name: &str) {
-        let palette_mode = load_config()
-            .ok()
-            .flatten()
-            .map(|c| {
-                matches!(
-                    c.theme.color_mode,
-                    crate::session::config::ColorMode::Palette
-                )
-            })
-            .unwrap_or(false);
+        // Honor the saved color_mode (Palette vs Truecolor). If we don't, a
+        // SetTheme dispatched from the Settings view preview/apply flow will
+        // re-load the theme with raw RGB colors, "breaking the coloration"
+        // on terminals that were working with the user's palette preference
+        // (Termius/mosh edge cases, 8-bit-only TTYs, etc.).
+        let palette_mode = crate::session::resolve_config(
+            self.home.active_profile.as_deref().unwrap_or("default"),
+        )
+        .map(|c| {
+            matches!(
+                c.theme.color_mode,
+                crate::session::config::ColorMode::Palette
+            )
+        })
+        .unwrap_or(false);
         self.theme = crate::tui::styles::load_theme_with_mode(name, palette_mode);
         self.needs_redraw = true;
     }
@@ -539,16 +556,14 @@ impl App {
                                             // ScrollUp/Down to the home view's scroll hit
                                             // targets so they don't get silently dropped.
                                             Event::Mouse(mouse) => {
-                                                let hit_scroll_target = if self.home.is_diff_open() {
-                                                    self.home.hit_diff(mouse.column, mouse.row)
-                                                } else if self.home.has_selected_session() {
-                                                    self.home.hit_preview(mouse.column, mouse.row)
-                                                } else {
-                                                    false
-                                                };
+                                                let hit_list = self.home.hit_list(mouse.column, mouse.row);
+                                                let hit_preview = self.home.hit_preview(mouse.column, mouse.row);
+                                                let hit_diff = self.home.is_diff_open()
+                                                    && self.home.hit_diff(mouse.column, mouse.row);
+                                                let hit_scroll_target = hit_diff || hit_list || hit_preview;
                                                 match mouse.kind {
-                                                    MouseEventKind::ScrollUp if hit_scroll_target => { self.home.handle_scroll_up(); }
-                                                    MouseEventKind::ScrollDown if hit_scroll_target => { self.home.handle_scroll_down(); }
+                                                    MouseEventKind::ScrollUp if hit_scroll_target => { self.home.handle_scroll_up(mouse.column, mouse.row); }
+                                                    MouseEventKind::ScrollDown if hit_scroll_target => { self.home.handle_scroll_down(mouse.column, mouse.row); }
                                                     _ => {}
                                                 }
                                             }
@@ -588,16 +603,18 @@ impl App {
                             continue;
                         }
                         Some(Ok(Event::Mouse(mouse))) => {
-                            let hit_scroll_target = if self.home.is_diff_open() {
-                                self.home.hit_diff(mouse.column, mouse.row)
-                            } else if self.home.has_selected_session() {
-                                self.home.hit_preview(mouse.column, mouse.row)
-                            } else {
-                                false
-                            };
+                            let hit_list = self.home.hit_list(mouse.column, mouse.row);
+                            let hit_preview = self.home.hit_preview(mouse.column, mouse.row);
+                            let hit_diff = self.home.is_diff_open()
+                                && self.home.hit_diff(mouse.column, mouse.row);
+                            let hit_scroll_target = hit_diff || hit_list || hit_preview;
                             let handled = match mouse.kind {
-                                MouseEventKind::ScrollUp if hit_scroll_target => self.home.handle_scroll_up(),
-                                MouseEventKind::ScrollDown if hit_scroll_target => self.home.handle_scroll_down(),
+                                MouseEventKind::ScrollUp if hit_scroll_target => {
+                                    self.home.handle_scroll_up(mouse.column, mouse.row)
+                                }
+                                MouseEventKind::ScrollDown if hit_scroll_target => {
+                                    self.home.handle_scroll_down(mouse.column, mouse.row)
+                                }
                                 _ => false,
                             };
                             if handled {
@@ -1240,7 +1257,22 @@ impl App {
         self.home
             .apply_status_updates_without_hooks(attached_status_updates);
         self.home.stamp_last_accessed(session_id);
-        self.home.select_session_by_id(session_id);
+        // Persist so the attach-return bump survives aoe restart. Same
+        // reasoning as the send-message path in home/input.rs: without a
+        // save() here the aging signal collapses back to startup timestamps
+        // on next launch.
+        if let Err(e) = self.home.save() {
+            tracing::error!("Failed to save after attach-return: {}", e);
+        }
+        // In Attention sort, jump cursor to the top-attention row instead of
+        // pinning it to the session we just came from; that session has
+        // typically been bumped down a tier (Waiting → Running) and the next
+        // item needing attention is now at row 0.
+        if self.home.sort_order() == crate::session::config::SortOrder::Attention {
+            self.home.select_top_attention(Some(session_id));
+        } else {
+            self.home.select_session_by_id(session_id);
+        }
 
         if let Err(e) = attach_result {
             tracing::warn!(target: "tui.input", "tmux attach returned error: {}", e);
@@ -1309,7 +1341,11 @@ impl App {
         self.home.reload()?;
         self.home
             .apply_status_updates_without_hooks(attached_status_updates);
-        self.home.select_session_by_id(session_id);
+        if self.home.sort_order() == crate::session::config::SortOrder::Attention {
+            self.home.select_top_attention(Some(session_id));
+        } else {
+            self.home.select_session_by_id(session_id);
+        }
 
         if let Err(e) = attach_result {
             tracing::warn!(target: "tui.input", "tmux terminal attach returned error: {}", e);

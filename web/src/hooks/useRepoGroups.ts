@@ -1,15 +1,12 @@
 import { useCallback, useMemo, useState } from "react";
 import type { Workspace, RepoGroup } from "../lib/types";
+import { safeGetItem, safeRemoveItem, safeSetItem } from "../lib/safeStorage";
 
 const COLLAPSED_KEY_PREFIX = "aoe-repo-collapsed-";
 export const MULTI_REPO_GROUP_ID = "__multi_repo__";
 
 function loadCollapsed(id: string): boolean {
-  try {
-    return localStorage.getItem(`${COLLAPSED_KEY_PREFIX}${id}`) === "1";
-  } catch {
-    return false;
-  }
+  return safeGetItem(`${COLLAPSED_KEY_PREFIX}${id}`) === "1";
 }
 
 function isMultiRepoWorkspace(ws: Workspace): boolean {
@@ -100,14 +97,10 @@ export function useRepoGroups(
     setCollapsedMap((prev) => {
       const current = prev[repoId] ?? loadCollapsed(repoId);
       const next = !current;
-      try {
-        if (next) {
-          localStorage.setItem(`${COLLAPSED_KEY_PREFIX}${repoId}`, "1");
-        } else {
-          localStorage.removeItem(`${COLLAPSED_KEY_PREFIX}${repoId}`);
-        }
-      } catch {
-        // ignore
+      if (next) {
+        safeSetItem(`${COLLAPSED_KEY_PREFIX}${repoId}`, "1");
+      } else {
+        safeRemoveItem(`${COLLAPSED_KEY_PREFIX}${repoId}`);
       }
       return { ...prev, [repoId]: next };
     });

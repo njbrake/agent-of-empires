@@ -21,6 +21,10 @@ function captureFromUrl(): void {
   if (!token) return;
 
   try {
+    // Token writes are load-bearing: on quota / SecurityError the auth
+    // header survives via the cookie + URL fallback below, so raw setItem
+    // stays here rather than routing through safeSetItem.
+    // eslint-disable-next-line no-restricted-syntax
     window.localStorage.setItem(STORAGE_KEY, token);
   } catch {
     // Private mode / storage disabled: fall back to the token staying in the
@@ -49,6 +53,9 @@ export function saveToken(token: string): void {
   const trimmed = token.trim();
   if (!trimmed) return;
   try {
+    // Rotated tokens share the same fallback path as captureFromUrl;
+    // raw setItem stays here for the documented rethrow contract.
+    // eslint-disable-next-line no-restricted-syntax
     window.localStorage.setItem(STORAGE_KEY, trimmed);
   } catch {
     // Private mode or quota exceeded: nothing to do. The request that
