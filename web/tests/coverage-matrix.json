@@ -653,6 +653,27 @@
       "components": ["web/src/components/settings/TmuxSettings.tsx", "web/src/components/settings/FormFields.tsx"]
     },
     {
+      "id": "story.sidebar-resize-persist",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": ["tests/live/cockpit-stories/sidebar-resize-persist.spec.ts"],
+      "components": ["web/src/components/WorkspaceSidebar.tsx"]
+    },
+    {
+      "id": "story.right-panel-resize-persist",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": ["tests/live/cockpit-stories/right-panel-resize-persist.spec.ts"],
+      "components": ["web/src/components/ContentSplit.tsx"]
+    },
+    {
+      "id": "story.settings-theme-select",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": ["tests/live/cockpit-stories/settings-theme-select.spec.ts"],
+      "components": ["web/src/components/settings/ThemeSettings.tsx"]
+    },
+    {
       "id": "cockpit.rate-limit-recovery",
       "kind": "vitest",
       "risk": "high",
