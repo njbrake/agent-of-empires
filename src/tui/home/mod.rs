@@ -262,12 +262,6 @@ pub struct HomeView {
     // dictation / stray keystrokes triggering destructive actions).
     pub(super) strict_hotkeys: bool,
 
-    // Snooze duration applied when the user toggles snooze on a session.
-    // Snapshotted from `config.session.snooze_duration_minutes` at load/
-    // settings-reload time (same pattern as `strict_hotkeys`) so the hot
-    // path doesn't re-resolve the full config on every keypress.
-    pub(super) snooze_duration_minutes: u32,
-
     // Settings view
     pub(super) settings_view: Option<SettingsView>,
     /// Flag to indicate we're confirming settings close (unsaved changes)
@@ -369,7 +363,6 @@ impl HomeView {
             .cloned()
             .unwrap_or_else(|| resolved.status_hooks.clone());
         let strict_hotkeys = resolved.session.strict_hotkeys;
-        let snooze_duration_minutes = resolved.session.snooze_duration_minutes;
         let idle_decay_window =
             crate::tui::styles::idle_decay_window(resolved.theme.idle_decay_minutes);
         let user_config = load_config().ok().flatten();
@@ -470,7 +463,6 @@ impl HomeView {
             status_hook_configs,
             strict_hotkeys,
             idle_decay_window,
-            snooze_duration_minutes,
             settings_view: None,
             settings_close_confirm: false,
             diff_view: None,
@@ -2262,7 +2254,6 @@ impl HomeView {
         self.status_hook_config = config.status_hooks.clone();
         self.refresh_status_hook_config_cache();
         self.strict_hotkeys = config.session.strict_hotkeys;
-        self.snooze_duration_minutes = config.session.snooze_duration_minutes;
         self.idle_decay_window =
             crate::tui::styles::idle_decay_window(config.theme.idle_decay_minutes);
         self.tool_configs = config.tools;

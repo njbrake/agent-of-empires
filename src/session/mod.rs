@@ -252,7 +252,7 @@ mod profile_listing_tests {
         assert_eq!(
             names,
             vec!["default".to_string(), "personal".to_string()],
-            "symlinked aliases must be invisible to list_profiles — \
+            "symlinked aliases must be invisible to list_profiles; \
              otherwise each alias inflates the all-profiles session list \
              with duplicates of the linked profile's data (the original \
              three-of-every-folder bug)."

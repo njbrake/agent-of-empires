@@ -453,7 +453,7 @@ fn attention_tier(inst: &Instance) -> u8 {
 
 /// Key used to sort sessions by Attention. Primary = urgent-bias (the agent
 /// has flagged the session via `attention-urgent`); secondary = priority tier
-/// ascending; tertiary = favorite within tier; rest = "longest aging first" —
+/// ascending; tertiary = favorite within tier; rest = "longest aging first":
 /// within a tier, the session that has been ignored the longest bubbles to
 /// the top. A Waiting session that has been sitting untouched for 2 days
 /// should rank above one that was just bumped a minute ago, because the
@@ -463,7 +463,7 @@ fn attention_tier(inst: &Instance) -> u8 {
 /// into the "no activity" slot AFTER the dated ones, so fresh-but-untouched
 /// rows don't falsely claim the top.
 ///
-/// Within tier 99 (archived), preserve the reverse convention — most-recently
+/// Within tier 99 (archived), preserve the reverse convention; most-recently
 /// archived first, since the archive block is a recency view, not an
 /// attention view. Urgent is suppressed for tier 99 so a sunk row can't
 /// claw back to the top.
@@ -485,18 +485,18 @@ fn attention_session_key(
     // suppresses urgent (is_urgent() already short-circuits on archived/
     // snoozed; the redundant guard here mirrors favorite's pattern).
     let urgent_bias = tier != 99 && inst.is_urgent();
-    // Favorite pins to the top of its category — tier stays primary so a
+    // Favorite pins to the top of its category; tier stays primary so a
     // fav'd Running never leaps above a plain Waiting. Within a tier,
     // favorited rows bubble first (encoded `!favorite_bias` since `false`
     // sorts before `true`). Tier 99 (archive/snooze) opts out: archive()
     // clears favorited_at via mutex, and a snoozed favorite stays sunk per
-    // design — within the sunk block, recency ordering is the intent.
+    // design; within the sunk block, recency ordering is the intent.
     let favorite_bias = tier != 99 && inst.is_favorited();
     if tier == 99 {
         // Tier 99 unifies archived, snoozed, pane_dead, and Error rows.
         // Secondary sort timestamp falls through: archived_at first, then
         // snoozed_until, then last_accessed_at (the only signal Error /
-        // pane_dead rows have — they were never explicitly archived).
+        // pane_dead rows have, since they were never explicitly archived).
         // Reverse() makes most-recent sink-time bubble to the top of the
         // sunk block, matching "recency view" intent across all four
         // sub-categories.
@@ -515,7 +515,7 @@ fn attention_session_key(
     }
     // Non-archived: "longest aging" = oldest last_accessed_at first (ASC).
     // The `Reverse` slot is forced to `Reverse(None)` (= sorts after all
-    // Some() in the Reverse ordering) so it doesn't contribute — the real
+    // Some() in the Reverse ordering) so it doesn't contribute; the real
     // tiebreak is the trailing ASC field.
     (
         !urgent_bias,
@@ -530,7 +530,7 @@ fn attention_session_key(
 /// Key used to sort groups by Attention. Uses the highest-priority (lowest
 /// tier) among the group's direct and nested sessions. Empty groups sink.
 ///
-/// Within a tier, the group's aging signal = max(member.last_accessed_at) —
+/// Within a tier, the group's aging signal = max(member.last_accessed_at),
 /// the MOST RECENT activity across any member. The group whose most-recent
 /// activity is itself oldest = the group nobody has touched in the longest
 /// time = the one most likely forgotten. So this sorts ASC (oldest-first),
@@ -542,7 +542,7 @@ fn attention_session_key(
 /// empty AND the group itself is marked archived), the group sorts at
 /// tier 99 with the latest archived_at timestamp (group's own timestamp
 /// is the fallback for empty groups). The archived block stays a recency
-/// view via `Reverse(ts)` — intentional asymmetry with the non-archived
+/// view via `Reverse(ts)`; intentional asymmetry with the non-archived
 /// aging rule, same as the session-level key.
 #[allow(clippy::type_complexity)]
 fn attention_group_key(
@@ -610,7 +610,7 @@ fn attention_group_key(
 
     // Non-archived: "longest aging" = oldest max(last_accessed_at) first.
     // The `Reverse` slot is forced to `Reverse(None)` so it doesn't
-    // contribute — the real tiebreak is the trailing ASC field. Shape
+    // contribute; the real tiebreak is the trailing ASC field. Shape
     // mirrors `attention_session_key` so the intent is uniform.
     let max_last = members.iter().filter_map(|i| i.last_accessed_at).max();
     (
@@ -1526,7 +1526,7 @@ mod tests {
         waiting.status = crate::session::Status::Waiting;
         assert_eq!(attention_tier(&waiting), 0);
 
-        // Archive a Waiting session — must short-circuit to 99
+        // Archive a Waiting session; must short-circuit to 99
         waiting.archive();
         assert_eq!(attention_tier(&waiting), 99);
 
@@ -1672,7 +1672,7 @@ mod tests {
     #[test]
     fn test_attention_group_key_one_active_pulls_group_up() {
         // Mixed group: 1 archived Waiting, 1 active Idle. Group should sort
-        // at tier 2 (Idle) — the active member pulls it out of the archive
+        // at tier 2 (Idle); the active member pulls it out of the archive
         // tier. This is the auto-unarchive contract for cascade.
         let mut archived_waiting = Instance::new("aw", "/tmp/aw");
         archived_waiting.group_path = "work".to_string();
@@ -1727,7 +1727,7 @@ mod tests {
     #[test]
     fn test_favorite_does_not_cross_tiers() {
         // Revised spec (2026-04-23): "favorites should be top of their
-        // respective category." Tier stays primary — a favorited lower-
+        // respective category." Tier stays primary; a favorited lower-
         // priority row never leaps above a non-favorited higher-priority
         // peer. Fav+Idle (tier 2) must sink below plain+Waiting (tier 0).
         let mut fav_idle = Instance::new("fav_idle", "/tmp/fi");
@@ -1747,7 +1747,7 @@ mod tests {
     fn test_favorite_pins_within_running_tier() {
         // User rule: "favorites should be top of their respective category."
         // Running sessions (tier 4, the "processing" bucket) now pin fav
-        // above non-fav peers — previously fav was a no-op for Running.
+        // above non-fav peers; previously fav was a no-op for Running.
         let mut fav_running = Instance::new("fav_r", "/tmp/fr");
         fav_running.status = crate::session::Status::Running;
         fav_running.favorite();
@@ -1764,7 +1764,7 @@ mod tests {
     #[test]
     fn test_favorite_pins_within_stopped_tier() {
         // Same rule applied to Stopped (tier 5). "Respective category"
-        // means every non-sunk tier — favorite is a universal within-tier
+        // means every non-sunk tier; favorite is a universal within-tier
         // pin, not a needs-help-only pin.
         let mut fav_stopped = Instance::new("fav_s", "/tmp/fs");
         fav_stopped.status = crate::session::Status::Stopped;
@@ -1782,7 +1782,7 @@ mod tests {
     #[test]
     fn test_archive_clears_favorite() {
         // Mutual exclusion: archive() explicitly clears favorited_at. The
-        // user's rule is "archived removes fav" — pinning a sunk row is
+        // user's rule is "archived removes fav"; pinning a sunk row is
         // incoherent, so archive hard-wins. Previous behavior (both flags
         // coexisting with archive-beats-favorite at sort time) produced
         // confusing "favorite icon on an archived row" JSON output.
@@ -1830,7 +1830,7 @@ mod tests {
         // `touch_last_accessed` is called on every user-initiated
         // interaction (send message, attach). User rule: "messaging should
         // unarchive." A user talking to a session is explicit evidence they
-        // care about it — leaving it sunk at tier 99 is incoherent.
+        // care about it; leaving it sunk at tier 99 is incoherent.
         // Favorite stays (orthogonal signal).
         let mut inst = Instance::new("t", "/tmp/t");
         inst.favorite();
@@ -1906,7 +1906,7 @@ mod tests {
     #[test]
     fn test_expired_snooze_reports_not_snoozed() {
         let mut inst = Instance::new("s", "/tmp/s");
-        // Stale past timestamp — the lazy predicate should reject it so
+        // Stale past timestamp; the lazy predicate should reject it so
         // the row rejoins the active Attention sort on next render.
         inst.snoozed_until = Some(Utc::now() - chrono::Duration::minutes(5));
         assert!(

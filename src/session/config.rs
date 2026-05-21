@@ -522,8 +522,8 @@ pub struct SessionConfig {
 
     /// How long (in minutes) to snooze a session when the user presses
     /// `w`/`W` or runs `aoe session snooze`. During the snooze window the
-    /// session is treated like archive — sinks to the bottom, renders
-    /// italic+dim with a `z ` prefix, ignored by the attention sort —
+    /// session is treated like archive: sinks to the bottom, renders
+    /// italic+dim with a `z ` prefix, ignored by the attention sort,
     /// then rejoins the active list automatically when the timer expires.
     /// Default: 30 minutes.
     #[serde(default = "default_snooze_duration_minutes")]
@@ -550,9 +550,6 @@ fn default_snooze_duration_minutes() -> u32 {
     30
 }
 
-/// Validate a snooze duration in minutes. Accepts 1..=1440 (1 minute to
-/// 24 hours). Values outside this range are rejected by the settings UI
-/// and the CLI `--minutes` flag.
 /// Upper bound on snooze duration: 30 days (43,200 minutes). Originally
 /// capped at 24 hours but the TUI snooze dialog now offers up to a 1-week
 /// preset and longer ad-hoc values via the API are reasonable for

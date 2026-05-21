@@ -295,7 +295,7 @@ pub struct Instance {
     ///
     /// Named `idle_entered_at` rather than `idle_since` to avoid collision
     /// with `DwellState::idle_since` in `src/server/push.rs`, which is an
-    /// in-process `Instant` for push-notification dwell timing — a
+    /// in-process `Instant` for push-notification dwell timing, a
     /// different concept with a different type and lifetime.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idle_entered_at: Option<DateTime<Utc>>,
@@ -303,22 +303,22 @@ pub struct Instance {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archived_at: Option<DateTime<Utc>>,
 
-    /// Favorite marker — sibling of archive. When set AND the session is in
+    /// Favorite marker; sibling of archive. When set AND the session is in
     /// a "needs help" status (Waiting, Error, Idle, Unknown), the session
     /// pre-empts all non-favorited peers in the same status tier, pinning it
     /// to the top of the Attention sort. In Running / Stopped / transient
     /// statuses the flag is visible (⭐ glyph + bold) but does NOT re-rank
-    /// — live work isn't interrupted by a decoration. Opposite of archive.
+    /// since live work isn't interrupted by a decoration. Opposite of archive.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub favorited_at: Option<DateTime<Utc>>,
 
-    /// Snooze marker — "temporary archive." When `snoozed_until` is in the
+    /// Snooze marker, a "temporary archive." When `snoozed_until` is in the
     /// future, the session sorts to tier 99 alongside archived rows and
     /// renders italic+dim with a `z ` prefix plus a remaining-time readout
     /// in the age column. When the timestamp falls into the past, the
     /// `is_snoozed()` predicate returns false and the row naturally rejoins
     /// the active attention sort (the stale timestamp stays on disk until
-    /// the next mutation rewrites it — harmless). Mutually compatible with
+    /// the next mutation rewrites it, which is harmless). Mutually compatible with
     /// `favorited_at`: a snoozed favorite keeps its star when it wakes up.
     /// Archive wins over snooze (archiving a snoozed session clears nothing
     /// but renders as archive since is_archived() is checked first).
@@ -437,7 +437,7 @@ pub struct Instance {
     /// (tier 99) without re-querying tmux on every sort. Field name avoids
     /// `pane_dead` to prevent shadowing `tmux::Session::is_pane_dead()` at
     /// call sites that take both. Refreshed by status_poller; not persisted
-    /// (clears to false on TUI restart, which is correct — a fresh poll
+    /// (clears to false on TUI restart, which is correct; a fresh poll
     /// will re-set it within one tick if the pane is genuinely dead).
     #[serde(skip)]
     pub pane_dead_observed: bool,
@@ -672,11 +672,11 @@ impl Instance {
 
     /// Stamp `last_accessed_at` to the current time AND wake the session
     /// from any sink state. Call this on user-initiated interactions
-    /// (attach, send keys, etc.) — every existing call site already does.
+    /// (attach, send keys, etc.); every existing call site already does.
     ///
     /// Auto-unarchive/unsnooze: sending a message or attaching is the user
     /// explicitly saying "I care about this now." Leaving `archived_at` or
-    /// `snoozed_until` set after such interaction is incoherent — the row
+    /// `snoozed_until` set after such interaction is incoherent; the row
     /// would render italic+dim at tier 99 even while live traffic flows.
     /// User rule (2026-04-23): "messaging should unarchive."
     ///
@@ -710,7 +710,7 @@ impl Instance {
         self.archived_at.is_some()
     }
 
-    /// Mark the session favorite. Sibling of `archive` — opposite semantics.
+    /// Mark the session favorite. Sibling of `archive`, with opposite semantics.
     /// Pinning logic lives in `attention_session_key`: favorite is a
     /// within-tier pin (top of its respective category), not a cross-tier
     /// promoter. A favorited Running stays in the Running bucket but sorts
@@ -719,7 +719,7 @@ impl Instance {
     /// Mutual exclusion with the sink states: favoriting clears `archived_at`
     /// AND `snoozed_until`. Favorite's whole purpose is "surface this row";
     /// leaving either sink-state flag set would force the row to tier 99 and
-    /// the favorite bias would be suppressed — user presses `f` and sees
+    /// the favorite bias would be suppressed; user presses `f` and sees
     /// nothing change. The user's explicit rule: "marking as favorite
     /// unarchives," extended to snooze because snooze shares tier 99 and
     /// shares the burial outcome.
@@ -749,12 +749,12 @@ impl Instance {
         crate::hooks::read_hook_urgent(&self.id)
     }
 
-    /// Temporarily defer this session for `minutes` — sets `snoozed_until`
+    /// Temporarily defer this session for `minutes`; sets `snoozed_until`
     /// to `Utc::now() + minutes`. Behaves like a timed archive: the row
     /// sinks to tier 99, renders italic+dim with a `z ` prefix, and shows
     /// remaining time in the age column. When the timestamp expires the
     /// row rejoins the active attention sort automatically (next render
-    /// tick) — no timer task needed. Resolution of `minutes` happens at
+    /// tick); no timer task needed. Resolution of `minutes` happens at
     /// snooze time, not render time, so changing the config default mid-
     /// snooze does NOT extend currently-sleeping rows.
     pub fn snooze(&mut self, minutes: u32) {
@@ -767,7 +767,7 @@ impl Instance {
 
     /// True if `snoozed_until` is set AND in the future. Expired snoozes
     /// return false so the row naturally rejoins the main sort on the next
-    /// render — the stale timestamp stays on disk until the next mutation
+    /// render; the stale timestamp stays on disk until the next mutation
     /// rewrites the session (harmless; `snoozed_until` is always compared
     /// against `Utc::now()`).
     pub fn is_snoozed(&self) -> bool {

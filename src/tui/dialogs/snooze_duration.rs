@@ -1,5 +1,5 @@
 //! Snooze duration picker. Opens when the user presses `h`/`H`/`w`/`W`
-//! on a non-snoozed session — single-key shortcuts so the choice is
+//! on a non-snoozed session; single-key shortcuts so the choice is
 //! one keystroke after the trigger.
 //!
 //! Mapping principle: the digit IS the duration where it can be.

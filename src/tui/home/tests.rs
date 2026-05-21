@@ -812,7 +812,7 @@ fn test_select_top_attention_skips_returning_session() {
     env.view.cursor = 0;
     env.view.update_selected();
 
-    // Simulate returning from `first_id` — skip it, land on the next session.
+    // Simulate returning from `first_id`: skip it, land on the next session.
     env.view.select_top_attention(Some(&first_id));
 
     assert_eq!(env.view.cursor, 1);
@@ -836,7 +836,7 @@ fn test_select_top_attention_falls_back_to_returning_when_only_session() {
     env.view.cursor = 0;
     env.view.update_selected();
 
-    // Only one session — skip would leave nothing; must fall back to it.
+    // Only one session; skip would leave nothing; must fall back to it.
     env.view.select_top_attention(Some(&only_id));
 
     assert_eq!(env.view.cursor, 0);
@@ -1718,7 +1718,7 @@ fn test_shift_o_cycles_sort_in_strict_mode() {
 #[serial]
 fn test_bare_lowercase_o_does_not_cycle_sort_in_strict_mode() {
     // Regression guard (2026-04-22): in strict_hotkeys mode, plain lowercase 'o'
-    // MUST NOT cycle sort — it must fall through to the typing-guard catch-all
+    // MUST NOT cycle sort; it must fall through to the typing-guard catch-all
     // (message dialog) per the "no destructive lowercase" rule. Only Shift+O
     // (Char('O')) and Ctrl+O should change sort order in strict mode.
     //
@@ -1738,7 +1738,7 @@ fn test_bare_lowercase_o_does_not_cycle_sort_in_strict_mode() {
 
     assert_eq!(
         env.view.sort_order, initial,
-        "bare 'o' in strict mode must NOT cycle sort — expected it to stay at Newest"
+        "bare 'o' in strict mode must NOT cycle sort; expected it to stay at Newest"
     );
 }
 
@@ -3069,7 +3069,7 @@ fn archived_running_session_renders_stopped_icon_not_spinner() {
     );
 
     // Sanity: a plain Running row (no archive, no snooze) must NOT collapse
-    // to ICON_STOPPED — otherwise the test would pass trivially because the
+    // to ICON_STOPPED; otherwise the test would pass trivially because the
     // helper always returned the stopped glyph.
     env.view.mutate_instance(&id, |inst| {
         inst.status = Status::Running;

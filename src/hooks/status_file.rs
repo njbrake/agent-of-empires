@@ -41,7 +41,7 @@ pub fn read_hook_status(instance_id: &str) -> Option<Status> {
 /// surfaces something genuinely time-sensitive (expiring device code, hard
 /// deadline, blocking outage). Returns false when the file is missing,
 /// malformed, missing the `urgent` flag, or when `urgent_expires_at` has
-/// already passed (auto-expiry — keeps stale flags from pinning the row
+/// already passed (auto-expiry; keeps stale flags from pinning the row
 /// forever after the deadline lapses).
 pub fn read_hook_urgent(instance_id: &str) -> bool {
     let path = hook_status_dir(instance_id).join("attention.json");
@@ -197,7 +197,7 @@ mod tests {
 
     #[test]
     fn test_read_hook_urgent_false_when_file_absent() {
-        // No setup — directory doesn't exist
+        // No setup; directory doesn't exist
         assert!(!read_hook_urgent("test_urgent_no_file"));
     }
 

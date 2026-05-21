@@ -50,7 +50,7 @@ pub struct StatusUpdate {
     pub idle_entered_at: Option<DateTime<Utc>>,
     /// Pulled from tmux `#{session_activity}` via
     /// `update_status_with_metadata`. Carried back so the main thread can
-    /// persist it to the real Instance — the poller mutates a clone, so any
+    /// persist it to the real Instance; the poller mutates a clone, so any
     /// fields not plumbed through here are dropped on the floor.
     pub last_accessed_at: Option<DateTime<Utc>>,
     /// Cached pane-dead reading from `tmux::PaneMetadata.pane_dead`. The
