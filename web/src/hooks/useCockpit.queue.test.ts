@@ -11,9 +11,11 @@
 // fire.
 
 import { act, renderHook } from "@testing-library/react";
+import { createElement, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { emptyCockpitState, type QueuedPrompt } from "../lib/cockpitTypes";
+import { AgentProfileProvider } from "../lib/agentProfileContext";
 import { cockpitHookReducer, combineQueuedPrompts, useCockpit } from "./useCockpit";
 
 describe("cockpitHookReducer / queue actions", () => {
@@ -492,5 +494,227 @@ describe("useCockpit drain race (#1144)", () => {
     expect(result.current.state.queuedPrompts[0]?.text).toBe(
       "queued during await",
     );
+  });
+});
+
+// Combined-mode drain splits the queue at clear-command boundaries
+// (#1356). Without the split, queueing `/clear` between follow-ups got
+// glued into one multi-paragraph POST and the server's head-anchored
+// `is_clear_command` either misfired or missed the boundary entirely.
+// Tests pump WS frames against a claude-profile session so the cockpit
+// resolves `clearAliases = ["/clear"]`; each drain pass should now POST
+// the leading sub-batch (either a standalone clear alias or the run of
+// non-clear entries up to the next alias).
+
+describe("useCockpit drain split at clear-command boundary (#1356)", () => {
+  let promptPostCount: number;
+  let promptPostBodies: string[];
+
+  const claudeWrapper = ({ children }: { children: ReactNode }) =>
+    createElement(AgentProfileProvider, { toolKey: "claude" }, children);
+
+  beforeEach(() => {
+    sockets.length = 0;
+    promptPostCount = 0;
+    promptPostBodies = [];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = typeof input === "string" ? input : input.toString();
+        if (url.includes("/cockpit/replay")) {
+          return new Response(
+            JSON.stringify({ frames: [], lost: false, highest_seq: 0 }),
+            { status: 200 },
+          );
+        }
+        if (url.includes("/cockpit/prompt")) {
+          promptPostCount += 1;
+          if (typeof init?.body === "string") {
+            promptPostBodies.push(init.body);
+          }
+          return new Response("{}", { status: 200 });
+        }
+        return new Response("{}", { status: 200 });
+      }),
+    );
+    originalWebSocket = global.WebSocket;
+    global.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
+  });
+
+  afterEach(() => {
+    global.WebSocket = originalWebSocket;
+    vi.unstubAllGlobals();
+  });
+
+  function bodyTexts(): string[] {
+    return promptPostBodies.map((b) => {
+      try {
+        const parsed = JSON.parse(b) as { text?: string };
+        return parsed.text ?? "";
+      } catch {
+        return b;
+      }
+    });
+  }
+
+  async function bootSession(sessionId: string) {
+    const { result } = renderHook(() => useCockpit(sessionId), {
+      wrapper: claudeWrapper,
+    });
+    await flushAsync();
+    const ws = sockets[sockets.length - 1]!;
+    act(() => {
+      ws.readyState = FakeWebSocket.OPEN;
+      ws.onopen?.({} as Event);
+    });
+    await flushAsync();
+    let seq = 0;
+    const nextSeq = () => {
+      seq += 1;
+      return seq;
+    };
+    // Kick a turn so subsequent sendPrompt calls enqueue.
+    act(() => {
+      ws.onmessage?.({
+        data: JSON.stringify({
+          session_id: sessionId,
+          seq: nextSeq(),
+          event: { UserPromptSent: { text: "kicker" } },
+        }),
+      } as MessageEvent);
+    });
+    await flushAsync();
+    async function pumpStopped() {
+      act(() => {
+        ws.onmessage?.({
+          data: JSON.stringify({
+            session_id: sessionId,
+            seq: nextSeq(),
+            event: { Stopped: { reason: "prompt_complete" } },
+          }),
+        } as MessageEvent);
+      });
+      await flushAsync();
+    }
+    return { result, ws, pumpStopped };
+  }
+
+  it("queue [a, /clear, b] fires three sub-batch POSTs in order", async () => {
+    const { result, pumpStopped } = await bootSession("sess-split-1");
+    act(() => {
+      void result.current.sendPrompt("a");
+    });
+    act(() => {
+      void result.current.sendPrompt("/clear");
+    });
+    act(() => {
+      void result.current.sendPrompt("b");
+    });
+    await flushAsync();
+    expect(result.current.state.queuedPrompts).toHaveLength(3);
+
+    await pumpStopped();
+    expect(promptPostCount).toBe(1);
+    expect(bodyTexts()).toEqual(["a"]);
+    expect(result.current.state.queuedPrompts.map((q) => q.text)).toEqual([
+      "/clear",
+      "b",
+    ]);
+
+    await pumpStopped();
+    expect(promptPostCount).toBe(2);
+    expect(bodyTexts()).toEqual(["a", "/clear"]);
+    expect(result.current.state.queuedPrompts.map((q) => q.text)).toEqual([
+      "b",
+    ]);
+
+    await pumpStopped();
+    expect(promptPostCount).toBe(3);
+    expect(bodyTexts()).toEqual(["a", "/clear", "b"]);
+    expect(result.current.state.queuedPrompts).toEqual([]);
+  });
+
+  it("solo /clear in the queue fires standalone", async () => {
+    const { result, pumpStopped } = await bootSession("sess-split-2");
+    act(() => {
+      void result.current.sendPrompt("/clear");
+    });
+    await flushAsync();
+    expect(result.current.state.queuedPrompts).toHaveLength(1);
+
+    await pumpStopped();
+    expect(promptPostCount).toBe(1);
+    expect(bodyTexts()).toEqual(["/clear"]);
+    expect(result.current.state.queuedPrompts).toEqual([]);
+  });
+
+  it("queue [a, b, /clear] combines the leading non-clear prefix then fires /clear alone", async () => {
+    const { result, pumpStopped } = await bootSession("sess-split-3");
+    act(() => {
+      void result.current.sendPrompt("a");
+    });
+    act(() => {
+      void result.current.sendPrompt("b");
+    });
+    act(() => {
+      void result.current.sendPrompt("/clear");
+    });
+    await flushAsync();
+    expect(result.current.state.queuedPrompts).toHaveLength(3);
+
+    await pumpStopped();
+    expect(promptPostCount).toBe(1);
+    expect(bodyTexts()).toEqual(["a\n\nb"]);
+    expect(result.current.state.queuedPrompts.map((q) => q.text)).toEqual([
+      "/clear",
+    ]);
+
+    await pumpStopped();
+    expect(promptPostCount).toBe(2);
+    expect(bodyTexts()).toEqual(["a\n\nb", "/clear"]);
+    expect(result.current.state.queuedPrompts).toEqual([]);
+  });
+
+  it("queue [/clear, /clear, a] fires each /clear standalone before the trailing prompt", async () => {
+    const { result, pumpStopped } = await bootSession("sess-split-4");
+    act(() => {
+      void result.current.sendPrompt("/clear");
+    });
+    act(() => {
+      void result.current.sendPrompt("/clear");
+    });
+    act(() => {
+      void result.current.sendPrompt("a");
+    });
+    await flushAsync();
+    expect(result.current.state.queuedPrompts).toHaveLength(3);
+
+    await pumpStopped();
+    await pumpStopped();
+    await pumpStopped();
+
+    expect(promptPostCount).toBe(3);
+    expect(bodyTexts()).toEqual(["/clear", "/clear", "a"]);
+    expect(result.current.state.queuedPrompts).toEqual([]);
+  });
+
+  it("`/clear --hard` invocation is treated as a clear-command boundary", async () => {
+    const { result, pumpStopped } = await bootSession("sess-split-5");
+    act(() => {
+      void result.current.sendPrompt("a");
+    });
+    act(() => {
+      void result.current.sendPrompt("/clear --hard");
+    });
+    act(() => {
+      void result.current.sendPrompt("b");
+    });
+    await flushAsync();
+
+    await pumpStopped();
+    await pumpStopped();
+    await pumpStopped();
+
+    expect(bodyTexts()).toEqual(["a", "/clear --hard", "b"]);
   });
 });
