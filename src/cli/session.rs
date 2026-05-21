@@ -62,6 +62,16 @@ pub enum SessionCommands {
 
     /// Clear the favorite flag on a session.
     Unfavorite(SessionIdArgs),
+
+    /// Archive a session (sinks it to the bottom of the Attention sort).
+    /// Kills the tmux pane unless `--no-kill` is passed. The worktree,
+    /// branch, and container are preserved; use `aoe remove` (optionally
+    /// with `--delete-worktree` / `--delete-branch`) to fully destroy a
+    /// session.
+    Archive(ArchiveArgs),
+
+    /// Unarchive a session (restores it to its tier in the Attention sort)
+    Unarchive(SessionIdArgs),
 }
 
 #[derive(Args)]
@@ -73,6 +83,18 @@ pub struct SnoozeArgs {
     /// from the active config (default 30)
     #[arg(long)]
     pub minutes: Option<u32>,
+}
+
+#[derive(Args)]
+pub struct ArchiveArgs {
+    /// Session ID or title
+    pub identifier: String,
+
+    /// Skip killing the tmux pane. By default archiving stops the running
+    /// agent so the row renders as truly parked; pass this to keep the
+    /// pane alive while still marking the session archived.
+    #[arg(long = "no-kill")]
+    pub no_kill: bool,
 }
 
 #[derive(Args)]
@@ -216,6 +238,8 @@ pub async fn run(profile: &str, command: SessionCommands) -> Result<()> {
         SessionCommands::Unsnooze(args) => unsnooze_session(profile, args).await,
         SessionCommands::Favorite(args) => favorite_session(profile, args).await,
         SessionCommands::Unfavorite(args) => unfavorite_session(profile, args).await,
+        SessionCommands::Archive(args) => archive_session(profile, args).await,
+        SessionCommands::Unarchive(args) => unarchive_session(profile, args).await,
     }
 }
 
@@ -262,6 +286,56 @@ async fn unfavorite_session(profile: &str, args: SessionIdArgs) -> Result<()> {
     storage.commit(&instances, &group_tree)?;
 
     println!("Unfavorited: {}", title);
+    Ok(())
+}
+
+async fn archive_session(profile: &str, args: ArchiveArgs) -> Result<()> {
+    let storage = Storage::new(profile)?;
+    let (mut instances, groups) = storage.load_with_groups()?;
+
+    let id = super::resolve_session(&args.identifier, &instances)?
+        .id
+        .clone();
+    let idx = instances
+        .iter()
+        .position(|i| i.id == id)
+        .expect("resolve_session returned an id that is no longer in instances");
+
+    if !args.no_kill {
+        if let Err(e) = instances[idx].kill() {
+            eprintln!("Warning: failed to kill tmux session: {}", e);
+        }
+    }
+
+    instances[idx].archive();
+    let title = instances[idx].title.clone();
+
+    let group_tree = GroupTree::new_with_groups(&instances, &groups);
+    storage.commit(&instances, &group_tree)?;
+
+    println!("Archived: {}", title);
+    Ok(())
+}
+
+async fn unarchive_session(profile: &str, args: SessionIdArgs) -> Result<()> {
+    let storage = Storage::new(profile)?;
+    let (mut instances, groups) = storage.load_with_groups()?;
+
+    let id = super::resolve_session(&args.identifier, &instances)?
+        .id
+        .clone();
+    let idx = instances
+        .iter()
+        .position(|i| i.id == id)
+        .expect("resolve_session returned an id that is no longer in instances");
+
+    instances[idx].unarchive();
+    let title = instances[idx].title.clone();
+
+    let group_tree = GroupTree::new_with_groups(&instances, &groups);
+    storage.commit(&instances, &group_tree)?;
+
+    println!("Unarchived: {}", title);
     Ok(())
 }
 
