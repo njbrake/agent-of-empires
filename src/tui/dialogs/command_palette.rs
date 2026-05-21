@@ -179,6 +179,14 @@ pub fn builtin_commands(serve_enabled: bool, strict_hotkeys: bool) -> Vec<Palett
             payload: PaletteAction::Key(key('h')),
         },
         PaletteCommand {
+            id: "restart",
+            title: "Restart session".to_string(),
+            group: PaletteGroup::Actions,
+            keywords: vec!["reload", "respawn", "reset"],
+            hotkey: hotkey_label("e", "E", strict_hotkeys),
+            payload: PaletteAction::Key(key('e')),
+        },
+        PaletteCommand {
             id: "diff",
             title: "Open diff view".to_string(),
             group: PaletteGroup::Views,
@@ -551,6 +559,7 @@ fn sort_indices_by_group(entries: &[PaletteCommand]) -> Vec<usize> {
 mod tests {
     use super::*;
     use crossterm::event::KeyModifiers;
+    use std::collections::{HashMap, HashSet};
 
     fn ke(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
@@ -726,7 +735,6 @@ mod tests {
         ('j', "vim-style move down"),
         ('k', "vim-style move up"),
         ('l', "vim-style move right / expand"),
-        ('g', "g/G top/bottom jump; cycle-group-by uses 'g' too, covered by palette entry"),
         ('q', "quit; Esc and the global quit path cover this"),
         ('u', "update-banner dismiss; meta key, not an action"),
         (';', "Tool view escape; only meaningful while in Tool view"),
@@ -743,7 +751,7 @@ mod tests {
     /// The test module at the bottom of input.rs constructs synthetic
     /// KeyEvents in assertions, which would inflate the set with chars that
     /// aren't real bindings, so we truncate at the first `#[cfg(test)]`.
-    fn home_input_bound_chars() -> std::collections::HashSet<char> {
+    fn home_input_bound_chars() -> HashSet<char> {
         let src = include_str!("../home/input.rs");
         let scan_region = match src.find("#[cfg(test)]") {
             Some(idx) => &src[..idx],
@@ -752,7 +760,7 @@ mod tests {
 
         let pat = b"KeyCode::Char('";
         let bytes = scan_region.as_bytes();
-        let mut bound = std::collections::HashSet::new();
+        let mut bound = HashSet::new();
         let mut i = 0;
         while i + pat.len() + 2 <= bytes.len() {
             if &bytes[i..i + pat.len()] == pat {
@@ -776,8 +784,6 @@ mod tests {
     /// time.
     #[test]
     fn home_view_hotkeys_appear_in_palette_or_exempt() {
-        use std::collections::{HashMap, HashSet};
-
         let bound = home_input_bound_chars();
 
         // Build palette char set with serve toggled on so serve-only commands
