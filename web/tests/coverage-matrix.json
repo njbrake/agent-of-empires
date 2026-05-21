@@ -471,6 +471,13 @@
       "components": ["web/src/components/cockpit/Composer.tsx", "web/src/lib/cockpitDrafts.ts"]
     },
     {
+      "id": "cockpit.story.composer-draft-session-switch",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": ["tests/live/cockpit-stories/composer-draft-session-switch.spec.ts"],
+      "components": ["web/src/components/cockpit/Composer.tsx", "web/src/lib/cockpitDrafts.ts"]
+    },
+    {
       "id": "cockpit.rate-limit-recovery",
       "kind": "vitest",
       "risk": "high",
