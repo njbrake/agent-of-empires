@@ -5,8 +5,7 @@ use anyhow::Result;
 use serial_test::serial;
 use std::fs;
 
-mod common;
-use common::setup_temp_home;
+use crate::common::setup_temp_home;
 
 #[test]
 #[serial]

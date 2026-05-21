@@ -248,6 +248,9 @@ pub struct SessionConfigOverride {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snooze_duration_minutes: Option<u32>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restart_wake_message: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -471,6 +474,9 @@ pub fn apply_session_overrides(
     }
     if let Some(snooze_duration_minutes) = source.snooze_duration_minutes {
         target.snooze_duration_minutes = snooze_duration_minutes;
+    }
+    if let Some(ref restart_wake_message) = source.restart_wake_message {
+        target.restart_wake_message = restart_wake_message.clone();
     }
 }
 

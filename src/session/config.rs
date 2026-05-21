@@ -542,6 +542,15 @@ pub struct SessionConfig {
     /// Default: 30 minutes.
     #[serde(default = "default_snooze_duration_minutes")]
     pub snooze_duration_minutes: u32,
+
+    /// Text sent to the agent after a successful `aoe session restart` /
+    /// `e`-keybind restart, once the post-restart readiness probe says the
+    /// pane is alive. Restart re-execs the agent at a blank prompt; this
+    /// nudge tells the agent to pick up where it left off. Set to an
+    /// empty string to disable the wake-up message entirely (the restart
+    /// itself still runs).
+    #[serde(default = "default_restart_wake_message")]
+    pub restart_wake_message: String,
 }
 
 impl Default for SessionConfig {
@@ -556,12 +565,17 @@ impl Default for SessionConfig {
             agent_detect_as: HashMap::new(),
             strict_hotkeys: false,
             snooze_duration_minutes: 30,
+            restart_wake_message: default_restart_wake_message(),
         }
     }
 }
 
 fn default_snooze_duration_minutes() -> u32 {
     30
+}
+
+fn default_restart_wake_message() -> String {
+    "wake up: pick up what you were doing".to_string()
 }
 
 /// Upper bound on snooze duration: 30 days (43,200 minutes). Originally
