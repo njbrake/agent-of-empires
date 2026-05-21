@@ -367,6 +367,20 @@
       "components": ["web/src/lib/cockpitDrafts.ts"]
     },
     {
+      "id": "cockpit.queue-drain-clear-split",
+      "kind": "vitest",
+      "risk": "high",
+      "specs": [
+        "src/hooks/useCockpit.queue.test.ts",
+        "src/lib/agentProfiles.test.ts"
+      ],
+      "components": [
+        "web/src/hooks/useCockpit.ts",
+        "web/src/lib/agentProfiles.ts",
+        "web/src/components/cockpit/CockpitView.tsx"
+      ]
+    },
+    {
       "id": "cockpit.files-index",
       "kind": "vitest",
       "risk": "medium",
