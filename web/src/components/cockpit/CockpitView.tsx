@@ -347,12 +347,7 @@ function CockpitChrome({
             onRemove={removeQueuedPrompt}
             onEdit={editQueuedPrompt}
             onClear={clearQueue}
-            pendingResume={
-              status !== "open" ||
-              cockpitWorkerState !== "running" ||
-              state.workerStopped ||
-              state.workerRestarting
-            }
+            pendingResume={status !== "open" || cockpitWorkerState !== "running" || state.workerStopped || state.workerRestarting}
           />
 
           <RejectedPromptsStrip
@@ -1732,9 +1727,7 @@ export function QueuedPromptsStrip({
         <div className="flex items-center justify-between pb-1.5 text-[11px] uppercase tracking-wider text-text-dim">
           <span className="inline-flex items-center gap-1">
             <Clock className="h-3 w-3" />
-            {pendingResume
-              ? `Pending until session resumes (${queued.length})`
-              : `Queued (${queued.length})`}
+            {pendingResume ? `Pending until session resumes (${queued.length})` : `Queued (${queued.length})`}
           </span>
           {queued.length > 1 && (
             <button

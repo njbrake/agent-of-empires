@@ -987,13 +987,10 @@ export function useCockpit(
   const sendPrompt = useCallback(
     async (text: string) => {
       if (!sessionId) return;
-      if (
-        statusRef.current !== "open" ||
-        workerStateRef.current !== "running" ||
-        state.turnActive ||
-        state.workerStopped ||
-        state.workerRestarting
-      ) {
+      const wsClosed = statusRef.current !== "open";
+      const workerNotRunning = workerStateRef.current !== "running";
+      const shouldEnqueue = wsClosed || workerNotRunning || state.turnActive || state.workerStopped || state.workerRestarting;
+      if (shouldEnqueue) {
         dispatch({ kind: "enqueue_prompt", text });
         return;
       }
