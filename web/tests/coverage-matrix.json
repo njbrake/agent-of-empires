@@ -284,6 +284,21 @@
       ]
     },
     {
+      "id": "right-panel.diff-line-visibility",
+      "kind": "vitest",
+      "risk": "high",
+      "specs": [
+        "src/components/diff/__tests__/DiffLine.test.tsx",
+        "src/components/diff/__tests__/StringDiff.test.tsx",
+        "src/hooks/__tests__/useHighlightedLines.test.tsx"
+      ],
+      "components": [
+        "web/src/components/diff/DiffLine.tsx",
+        "web/src/components/diff/StringDiff.tsx",
+        "web/src/hooks/useHighlightedLines.ts"
+      ]
+    },
+    {
       "id": "devices",
       "kind": "live-playwright",
       "risk": "low",
@@ -394,6 +409,13 @@
         "src/components/cockpit/__tests__/WorkerRestartingBanner.test.tsx"
       ],
       "components": []
+    },
+    {
+      "id": "cockpit.usage-baseline",
+      "kind": "vitest",
+      "risk": "medium",
+      "specs": ["src/lib/cockpitTypes.test.ts"],
+      "components": ["web/src/lib/cockpitTypes.ts"]
     },
     {
       "id": "cockpit.drafts",

@@ -96,11 +96,23 @@ fn recovery_lock_path() -> Result<PathBuf> {
 
 /// Pure predicate: should this instance go through the startup recovery
 /// cascade? Excludes cockpit-mode sessions (handled by `cockpit_reconciler`),
-/// sessions whose agent has `ResumeStrategy::Unsupported`, and sessions
-/// without a valid `agent_session_id`. Live tmux panes are filtered separately
-/// by the caller using `Instance::has_live_tmux_pane()`.
+/// sessions whose agent has `ResumeStrategy::Unsupported`, sessions without
+/// a valid `agent_session_id`, and sunk rows (archived or currently snoozed).
+/// Live tmux panes are filtered separately by the caller using
+/// `Instance::has_live_tmux_pane()`.
+///
+/// Archive and snooze are explicit "leave this session alone" signals; the
+/// archive path actively kills the tmux pane, so without this guard the next
+/// TUI launch (or daemon startup) would observe a dead pane on a resumable
+/// agent and respawn the row the user just dismissed. Snooze shares the
+/// guard because `is_snoozed()` returns false once the timer expires, so the
+/// row naturally re-enters recovery eligibility on its own schedule rather
+/// than the moment a pane goes missing.
 pub fn is_recovery_candidate(inst: &Instance) -> bool {
-    !inst.is_cockpit_mode() && should_attempt_resume(inst.agent_session_id.as_deref(), &inst.tool)
+    !inst.is_cockpit_mode()
+        && !inst.is_archived()
+        && !inst.is_snoozed()
+        && should_attempt_resume(inst.agent_session_id.as_deref(), &inst.tool)
 }
 
 /// Warm up the tmux server so that the first concurrent `new-session` from
@@ -286,6 +298,51 @@ mod tests {
         let g = map.read().unwrap();
         assert!(!g.contains_key("stale"));
         assert!(g.contains_key("fresh"));
+    }
+
+    /// Regression: archiving a session kills its tmux pane, so the next
+    /// startup observes a dead pane on a resume-capable agent. Without an
+    /// archive guard on `is_recovery_candidate`, the cascade respawns the
+    /// row the user just dismissed (reported: "archive a session, leave
+    /// and re-enter the TUI, it restarts").
+    #[test]
+    fn archived_instance_is_not_recovery_candidate() {
+        let mut inst = Instance::new("archived", "/tmp/test");
+        inst.agent_session_id = Some("11111111-1111-4111-8111-111111111111".into());
+        assert!(
+            is_recovery_candidate(&inst),
+            "baseline: claude + valid sid is a recovery candidate"
+        );
+        inst.archive();
+        assert!(
+            !is_recovery_candidate(&inst),
+            "archived sessions must be excluded from startup recovery"
+        );
+        inst.unarchive();
+        assert!(
+            is_recovery_candidate(&inst),
+            "unarchive must restore recovery eligibility"
+        );
+    }
+
+    /// Snooze is the temporary sibling of archive. While the timer is in
+    /// the future, the row sits in tier 99 and must not be revived by a
+    /// pane-dead probe; once the timer expires, `is_snoozed()` flips to
+    /// false and the row naturally rejoins the recovery set.
+    #[test]
+    fn snoozed_instance_is_not_recovery_candidate_until_expiry() {
+        let mut inst = Instance::new("snoozed", "/tmp/test");
+        inst.agent_session_id = Some("22222222-2222-4222-8222-222222222222".into());
+        inst.snooze(30);
+        assert!(
+            !is_recovery_candidate(&inst),
+            "snoozed sessions must be excluded while the timer is live"
+        );
+        inst.snoozed_until = Some(chrono::Utc::now() - chrono::Duration::minutes(1));
+        assert!(
+            is_recovery_candidate(&inst),
+            "expired snooze must restore recovery eligibility"
+        );
     }
 
     /// Cross-process exclusion is a POSIX `flock(2)` guarantee, not

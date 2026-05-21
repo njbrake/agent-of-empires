@@ -6,11 +6,37 @@ use std::sync::mpsc::RecvTimeoutError;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-/// Global count of active poller threads for budget enforcement
+/// Global count of active session-id poller threads for budget enforcement
 static ACTIVE_POLLER_COUNT: AtomicU32 = AtomicU32::new(0);
 
-/// Maximum number of concurrent poller threads allowed
-const MAX_POLLER_THREADS: u32 = 20;
+/// Default ceiling on concurrent session-id poller threads.
+///
+/// Each session that loses its poller stops refreshing the agent session id
+/// shown in its TUI row, so this cap doubles as a "how many concurrent
+/// sessions can keep their identity live" budget.
+pub const DEFAULT_SESSION_ID_POLLER_MAX_THREADS: u32 = 50;
+
+/// Resolved cap, settable at runtime from the TUI Settings panel.
+///
+/// Read with `Ordering::Relaxed` inside the CAS loop in `try_acquire` so each
+/// retry observes the latest cap. The counter's own CAS uses `SeqCst` and is
+/// the authoritative gate against imbalance. There is no ordering dependency
+/// between this cap and any other memory location, so `Release`/`Acquire`
+/// would add a fence with zero semantic benefit.
+static SESSION_ID_POLLER_MAX_THREADS: AtomicU32 =
+    AtomicU32::new(DEFAULT_SESSION_ID_POLLER_MAX_THREADS);
+
+/// Push a new cap into the atomic. Clamped to ≥1 because zero would
+/// silently disable polling for every future session.
+pub fn set_session_id_poller_max_threads(n: u32) {
+    SESSION_ID_POLLER_MAX_THREADS.store(n.max(1), Ordering::Relaxed);
+}
+
+/// Read the currently effective cap. Used by the budget-exhausted warn
+/// message and by tests.
+pub fn session_id_poller_max_threads() -> u32 {
+    SESSION_ID_POLLER_MAX_THREADS.load(Ordering::Relaxed)
+}
 
 /// RAII guard that decrements `ACTIVE_POLLER_COUNT` on drop.
 ///
@@ -23,7 +49,8 @@ impl PollerCountGuard {
     fn try_acquire() -> Option<Self> {
         let mut current = ACTIVE_POLLER_COUNT.load(Ordering::SeqCst);
         loop {
-            if current >= MAX_POLLER_THREADS {
+            let cap = SESSION_ID_POLLER_MAX_THREADS.load(Ordering::Relaxed);
+            if current >= cap {
                 return None;
             }
             match ACTIVE_POLLER_COUNT.compare_exchange_weak(
@@ -178,10 +205,12 @@ impl SessionPoller {
             Some(g) => g,
             None => {
                 tracing::warn!(target: "session.create",
-                    "Poller thread budget exhausted ({}/{}), skipping poller for {}",
+                    "Session-id poller budget exhausted ({}/{}), skipping poller for {}; \
+                     raise the cap from the TUI Settings panel \
+                     (Session > Max Session-ID Poller Threads) before creating new sessions",
                     ACTIVE_POLLER_COUNT.load(Ordering::SeqCst),
-                    MAX_POLLER_THREADS,
-                    instance_id
+                    SESSION_ID_POLLER_MAX_THREADS.load(Ordering::Relaxed),
+                    instance_id,
                 );
                 self.cmd_rx = Some(cmd_rx);
                 return false;
@@ -297,6 +326,24 @@ mod tests {
     use super::*;
     use serial_test::serial;
     use std::sync::{Arc, Mutex};
+
+    /// Restores `SESSION_ID_POLLER_MAX_THREADS` to its original value on drop,
+    /// even if the test panics. Mirrors the `VibeHomeGuard` / `TmuxCleanup`
+    /// pattern used elsewhere in the test suite.
+    struct CapRestorer(u32);
+    impl Drop for CapRestorer {
+        fn drop(&mut self) {
+            set_session_id_poller_max_threads(self.0);
+        }
+    }
+
+    /// Restores `ACTIVE_POLLER_COUNT` to its original value on drop.
+    struct CountRestorer(u32);
+    impl Drop for CountRestorer {
+        fn drop(&mut self) {
+            ACTIVE_POLLER_COUNT.store(self.0, Ordering::SeqCst);
+        }
+    }
 
     #[test]
     fn test_adaptive_interval_initial() {
@@ -470,9 +517,30 @@ mod tests {
 
     #[test]
     #[serial]
+    fn test_set_session_id_poller_max_threads_clamps_zero() {
+        let _restore = CapRestorer(session_id_poller_max_threads());
+        set_session_id_poller_max_threads(0);
+        assert_eq!(
+            session_id_poller_max_threads(),
+            1,
+            "zero must be clamped to 1 to avoid silently disabling polling"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_set_session_id_poller_max_threads_roundtrip() {
+        let _restore = CapRestorer(session_id_poller_max_threads());
+        set_session_id_poller_max_threads(42);
+        assert_eq!(session_id_poller_max_threads(), 42);
+    }
+
+    #[test]
+    #[serial]
     fn test_thread_budget_cap() {
-        let original = ACTIVE_POLLER_COUNT.load(Ordering::SeqCst);
-        ACTIVE_POLLER_COUNT.store(MAX_POLLER_THREADS, Ordering::SeqCst);
+        let _restore_count = CountRestorer(ACTIVE_POLLER_COUNT.load(Ordering::SeqCst));
+        let _restore_cap = CapRestorer(session_id_poller_max_threads());
+        ACTIVE_POLLER_COUNT.store(session_id_poller_max_threads(), Ordering::SeqCst);
 
         let mut poller = SessionPoller::new("test-session".to_string());
         poller.start(
@@ -490,8 +558,6 @@ mod tests {
             poller.cmd_rx.is_some(),
             "cmd_rx should be returned when budget exhausted"
         );
-
-        ACTIVE_POLLER_COUNT.store(original, Ordering::SeqCst);
     }
 
     #[test]

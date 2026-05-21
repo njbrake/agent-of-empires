@@ -100,6 +100,7 @@ pub enum FieldKey {
     CustomAgents,
     AgentDetectAs,
     HostEnvironment,
+    SessionIdPollerMaxThreads,
     // Sound
     SoundEnabled,
     SoundMode,
@@ -676,7 +677,7 @@ fn build_cockpit_fields(
         SettingField {
             key: FieldKey::CockpitSilentOrphanGraceSecs,
             label: "Silent-orphan grace (s)",
-            description: "Daemon-side watchdog that detects when the agent finishes streaming but the adapter never resolves the session/prompt request. Fires after this many seconds of no progress notifications, when no in-flight tool call is open and the prompt has produced at least one progress event. On fire, sends best-effort session/cancel and reuses the existing cancel-escalation path to SIGTERM + session/load respawn. Default 60s. Set 0 to disable. Long-running tools are not affected (watchdog suppresses while any tool call is active). See #1240.",
+            description: "Daemon-side watchdog that detects when the agent finishes streaming but the adapter never resolves the session/prompt request. Fires after this many seconds of no progress notifications, when no in-flight tool call is open and the prompt has produced at least one progress event. On fire, sends best-effort session/cancel and reuses the existing cancel-escalation path to SIGTERM + session/load respawn. Default 120s; raised from 60s in #1360 so async-agent flows (Claude SDK Agent tool with isAsync) survive normal sub-agent waits. Nonzero values below 120 clamp up to 120 at runtime. Set 0 to disable. Long-running tools are not affected (watchdog suppresses while any tool call is active). When the daemon detects an async-agent launch in the current prompt, the effective grace lifts to at least 30 minutes. See #1240, #1360.",
             value: FieldValue::Number(u64::from(silent_orphan_grace_secs)),
             category: SettingsCategory::Cockpit,
             has_override: sog_override,
@@ -1603,7 +1604,7 @@ fn build_session_fields(
         items
     };
 
-    vec![
+    let mut fields = vec![
         SettingField {
             key: FieldKey::DefaultTool,
             label: "Default Tool",
@@ -1765,7 +1766,24 @@ fn build_session_fields(
                 FieldValue::List(global.environment.clone()),
             ),
         },
-    ]
+    ];
+
+    if scope == SettingsScope::Global {
+        fields.push(SettingField {
+            key: FieldKey::SessionIdPollerMaxThreads,
+            label: "Max Session-ID Poller Threads",
+            description:
+                "Process-wide cap on threads polling the tmux session ID for live sessions \
+                 (one thread per session). When the cap is reached, new sessions are not \
+                 polled and their session ID will not refresh.",
+            value: FieldValue::Number(u64::from(global.session.session_id_poller_max_threads)),
+            category: SettingsCategory::Session,
+            has_override: false,
+            inherited_display: None,
+        });
+    }
+
+    fields
 }
 
 fn build_sound_fields(
@@ -2491,6 +2509,9 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
             config.logging.show_spans = *v;
         }
         (FieldKey::HostEnvironment, FieldValue::List(v)) => config.environment = v.clone(),
+        (FieldKey::SessionIdPollerMaxThreads, FieldValue::Number(v)) => {
+            config.session.session_id_poller_max_threads = (*v).clamp(1, u32::MAX as u64) as u32;
+        }
         _ => {}
     }
 }

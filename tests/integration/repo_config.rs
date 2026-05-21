@@ -113,7 +113,7 @@ fn test_hook_execution_simple_echo() {
     let marker = tmp.path().join("hook_ran");
 
     let cmd = format!("touch {}", marker.display());
-    agent_of_empires::session::repo_config::execute_hooks(&[cmd], tmp.path()).unwrap();
+    agent_of_empires::session::repo_config::execute_hooks(&[cmd], tmp.path(), &[]).unwrap();
 
     assert!(marker.exists());
 }
@@ -121,8 +121,11 @@ fn test_hook_execution_simple_echo() {
 #[test]
 fn test_hook_execution_failure() {
     let tmp = TempDir::new().unwrap();
-    let result =
-        agent_of_empires::session::repo_config::execute_hooks(&["exit 1".to_string()], tmp.path());
+    let result = agent_of_empires::session::repo_config::execute_hooks(
+        &["exit 1".to_string()],
+        tmp.path(),
+        &[],
+    );
     assert!(result.is_err());
 }
 

@@ -4038,3 +4038,354 @@ mod scroll_pane_isolation {
         assert_eq!(env.view.cursor, 0, "wheel over list should retreat cursor");
     }
 }
+
+mod click_to_select {
+    //! Left-click on a session row in the list selects it (same effect as
+    //! arrow-key navigation). Clicks outside the inner list rect, clicks on
+    //! a row past the last item, and clicks while a dialog is open are
+    //! no-ops.
+
+    use super::*;
+    use ratatui::layout::Rect;
+
+    /// Inner rect chosen with comfortable headroom so all sessions fit
+    /// without "[N more above/below]" indicators consuming a row.
+    fn setup_inner(env: &mut TestEnv) {
+        env.view.list_inner_area = Rect::new(1, 1, 28, 10);
+    }
+
+    #[test]
+    #[serial]
+    fn click_selects_session_at_clicked_row() {
+        let mut env = create_test_env_with_sessions(3);
+        setup_inner(&mut env);
+        env.view.cursor = 0;
+        env.view.update_selected();
+
+        // Click the third visible row (inner.y + 2 == 3) -> flat_items[2].
+        let action = env.view.handle_click(5, 3);
+        assert!(action.is_none(), "single click should not activate");
+        assert_eq!(env.view.cursor, 2);
+    }
+
+    #[test]
+    #[serial]
+    fn click_on_already_selected_row_does_not_move_cursor() {
+        let mut env = create_test_env_with_sessions(3);
+        setup_inner(&mut env);
+        env.view.cursor = 1;
+        env.view.update_selected();
+
+        let action = env.view.handle_click(5, 2);
+        assert!(action.is_none());
+        assert_eq!(env.view.cursor, 1);
+    }
+
+    #[test]
+    #[serial]
+    fn click_below_last_item_is_noop() {
+        let mut env = create_test_env_with_sessions(3);
+        setup_inner(&mut env);
+        env.view.cursor = 0;
+        env.view.update_selected();
+
+        // inner.y=1, three items occupy rows 1..=3. Row 5 is inside the
+        // inner rect but past the last item.
+        let action = env.view.handle_click(5, 5);
+        assert!(action.is_none());
+        assert_eq!(env.view.cursor, 0);
+    }
+
+    #[test]
+    #[serial]
+    fn click_outside_inner_rect_is_noop() {
+        let mut env = create_test_env_with_sessions(3);
+        setup_inner(&mut env);
+        env.view.cursor = 0;
+        env.view.update_selected();
+
+        // Row 0 is above inner.y; column 50 is past inner.x + inner.width.
+        assert!(env.view.handle_click(5, 0).is_none());
+        assert!(env.view.handle_click(50, 2).is_none());
+        assert_eq!(env.view.cursor, 0);
+    }
+
+    #[test]
+    #[serial]
+    fn click_with_dialog_open_is_noop() {
+        let mut env = create_test_env_with_sessions(3);
+        setup_inner(&mut env);
+        env.view.cursor = 0;
+        env.view.update_selected();
+        env.view.show_help = true;
+
+        let action = env.view.handle_click(5, 3);
+        assert!(action.is_none(), "dialog should swallow the click");
+        assert_eq!(env.view.cursor, 0);
+    }
+
+    #[test]
+    #[serial]
+    fn double_click_on_session_returns_attach_action() {
+        use std::time::{Duration, Instant};
+
+        let mut env = create_test_env_with_sessions(3);
+        setup_inner(&mut env);
+        env.view.cursor = 0;
+        env.view.update_selected();
+        let expected_id = match &env.view.flat_items[2] {
+            crate::session::Item::Session { id, .. } => id.clone(),
+            _ => panic!("flat_items[2] should be a session"),
+        };
+
+        let t0 = Instant::now();
+        let first = env.view.handle_click_at(t0, 5, 3);
+        assert!(first.is_none(), "first click only selects");
+        assert_eq!(env.view.cursor, 2);
+
+        let t1 = t0 + Duration::from_millis(150);
+        let second = env.view.handle_click_at(t1, 5, 3);
+        assert_eq!(
+            second,
+            Some(crate::tui::app::Action::AttachSession(expected_id)),
+            "second click within threshold should activate the session"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn two_clicks_on_different_rows_do_not_activate() {
+        use std::time::{Duration, Instant};
+
+        let mut env = create_test_env_with_sessions(3);
+        setup_inner(&mut env);
+        env.view.cursor = 0;
+        env.view.update_selected();
+
+        let t0 = Instant::now();
+        env.view.handle_click_at(t0, 5, 2);
+        let t1 = t0 + Duration::from_millis(100);
+        let action = env.view.handle_click_at(t1, 5, 3);
+        assert!(
+            action.is_none(),
+            "different-row second click is a fresh single click, not a double-click"
+        );
+        assert_eq!(env.view.cursor, 2);
+    }
+
+    #[test]
+    #[serial]
+    fn click_after_threshold_does_not_activate() {
+        use std::time::{Duration, Instant};
+
+        let mut env = create_test_env_with_sessions(3);
+        setup_inner(&mut env);
+        env.view.cursor = 0;
+        env.view.update_selected();
+
+        let t0 = Instant::now();
+        env.view.handle_click_at(t0, 5, 3);
+        let t1 = t0 + Duration::from_millis(1500);
+        let action = env.view.handle_click_at(t1, 5, 3);
+        assert!(
+            action.is_none(),
+            "second click past threshold should not activate"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn double_click_activates_clicked_row_even_if_cursor_moved_between_clicks() {
+        use std::time::{Duration, Instant};
+
+        let mut env = create_test_env_with_sessions(3);
+        setup_inner(&mut env);
+        env.view.cursor = 0;
+        env.view.update_selected();
+
+        // Capture the id at flat_items[2] so we know which session
+        // the row-3 click is targeting.
+        let clicked_id = match &env.view.flat_items[2] {
+            crate::session::Item::Session { id, .. } => id.clone(),
+            _ => panic!("flat_items[2] should be a session"),
+        };
+
+        let t0 = Instant::now();
+        env.view.handle_click_at(t0, 5, 3);
+        assert_eq!(env.view.cursor, 2);
+
+        // Simulate the cursor drifting away between clicks (e.g., a
+        // keyboard arrow press or an async list refresh that selected
+        // a different row).
+        env.view.cursor = 0;
+        env.view.update_selected();
+
+        let t1 = t0 + Duration::from_millis(150);
+        let action = env.view.handle_click_at(t1, 5, 3);
+        assert_eq!(
+            action,
+            Some(crate::tui::app::Action::AttachSession(clicked_id)),
+            "double-click must activate the row that was clicked, \
+             not whatever the cursor drifted to"
+        );
+        assert_eq!(
+            env.view.cursor, 2,
+            "double-click should also re-sync cursor onto the clicked row"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn double_click_on_creating_session_returns_no_action() {
+        use std::time::{Duration, Instant};
+
+        let mut env = create_test_env_with_sessions(3);
+        setup_inner(&mut env);
+
+        // Force the target session into Creating; activation must bail.
+        let target_id = match &env.view.flat_items[2] {
+            crate::session::Item::Session { id, .. } => id.clone(),
+            _ => panic!("flat_items[2] should be a session"),
+        };
+        env.view.mutate_instance(&target_id, |inst| {
+            inst.status = crate::session::Status::Creating;
+        });
+
+        let t0 = Instant::now();
+        env.view.handle_click_at(t0, 5, 3);
+        let t1 = t0 + Duration::from_millis(150);
+        let action = env.view.handle_click_at(t1, 5, 3);
+        assert!(
+            action.is_none(),
+            "Creating sessions are not attachable; double-click should noop"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn hover_sets_resolved_index_for_row_under_mouse() {
+        let mut env = create_test_env_with_sessions(3);
+        setup_inner(&mut env);
+
+        let changed = env.view.handle_hover(5, 3);
+        assert!(
+            changed,
+            "first hover over a fresh row should request redraw"
+        );
+        assert_eq!(env.view.hovered_index(), Some(2));
+    }
+
+    #[test]
+    #[serial]
+    fn hover_moving_to_a_new_row_requests_redraw() {
+        let mut env = create_test_env_with_sessions(3);
+        setup_inner(&mut env);
+
+        env.view.handle_hover(5, 1);
+        let changed = env.view.handle_hover(5, 2);
+        assert!(changed);
+        assert_eq!(env.view.hovered_index(), Some(1));
+    }
+
+    #[test]
+    #[serial]
+    fn hover_pixel_twitch_on_same_row_is_noop() {
+        let mut env = create_test_env_with_sessions(3);
+        setup_inner(&mut env);
+
+        env.view.handle_hover(5, 2);
+        let changed = env.view.handle_hover(6, 2);
+        assert!(
+            !changed,
+            "same-row movement should not trigger a redraw request"
+        );
+        assert_eq!(env.view.hovered_index(), Some(1));
+    }
+
+    #[test]
+    #[serial]
+    fn hover_leaving_list_clears_resolved_index() {
+        let mut env = create_test_env_with_sessions(3);
+        setup_inner(&mut env);
+
+        env.view.handle_hover(5, 2);
+        assert_eq!(env.view.hovered_index(), Some(1));
+
+        // Row 0 is above the inner rect (inner.y = 1).
+        let changed = env.view.handle_hover(5, 0);
+        assert!(changed, "leaving the list should request a redraw");
+        assert_eq!(env.view.hovered_index(), None);
+    }
+
+    #[test]
+    #[serial]
+    fn hover_resolves_to_none_when_dialog_open() {
+        let mut env = create_test_env_with_sessions(3);
+        setup_inner(&mut env);
+
+        env.view.show_help = true;
+        env.view.handle_hover(5, 2);
+        assert_eq!(env.view.hovered_index(), None);
+    }
+
+    #[test]
+    #[serial]
+    fn hover_below_last_item_resolves_to_none() {
+        let mut env = create_test_env_with_sessions(3);
+        setup_inner(&mut env);
+
+        env.view.handle_hover(5, 5);
+        assert_eq!(env.view.hovered_index(), None);
+    }
+
+    #[test]
+    #[serial]
+    fn click_on_group_row_toggles_collapsed() {
+        let mut env = create_test_env_with_mixed_sessions();
+        setup_inner(&mut env);
+
+        // Find the first group row in flat_items; record initial collapsed.
+        let (group_idx, group_path) = env
+            .view
+            .flat_items
+            .iter()
+            .enumerate()
+            .find_map(|(i, item)| match item {
+                crate::session::Item::Group { path, .. } => Some((i, path.clone())),
+                _ => None,
+            })
+            .expect("mixed env should produce at least one group row");
+
+        let click_row = env.view.list_inner_area.y + group_idx as u16;
+        let was_collapsed = env
+            .view
+            .flat_items
+            .iter()
+            .find_map(|item| match item {
+                crate::session::Item::Group {
+                    path, collapsed, ..
+                } if path == &group_path => Some(*collapsed),
+                _ => None,
+            })
+            .unwrap();
+
+        let action = env.view.handle_click(5, click_row);
+        assert!(
+            action.is_none(),
+            "single click on a group should not activate"
+        );
+
+        let now_collapsed = env
+            .view
+            .flat_items
+            .iter()
+            .find_map(|item| match item {
+                crate::session::Item::Group {
+                    path, collapsed, ..
+                } if path == &group_path => Some(*collapsed),
+                _ => None,
+            })
+            .expect("group row should still be present after toggle");
+        assert_ne!(was_collapsed, now_collapsed, "group collapsed state flips");
+    }
+}

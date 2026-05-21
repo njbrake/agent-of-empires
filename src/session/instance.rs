@@ -1277,12 +1277,14 @@ impl Instance {
         let cmd = if self.is_sandboxed() {
             let container = self.get_container_for_instance()?;
             if let Some(ref hook_cmds) = on_launch_hooks {
+                let hook_env = super::repo_config::lifecycle_env_vars(self);
                 if let Some(ref sandbox) = self.sandbox_info {
                     let workdir = self.container_workdir();
                     if let Err(e) = super::repo_config::execute_hooks_in_container(
                         hook_cmds,
                         &sandbox.container_name,
                         &workdir,
+                        &hook_env,
                     ) {
                         tracing::warn!(target: "session.store", "on_launch hook failed in container: {}", e);
                     }
@@ -1323,6 +1325,7 @@ impl Instance {
             }
 
             self.apply_session_flags(&mut tool_cmd, "sandboxed");
+            apply_agent_launch_env(&mut tool_cmd, agent);
 
             let sandbox = self
                 .sandbox_info
@@ -1468,9 +1471,12 @@ impl Instance {
     ) -> Option<String> {
         // Run on_launch hooks on host for non-sandboxed sessions
         if let Some(ref hook_cmds) = on_launch_hooks {
-            if let Err(e) =
-                super::repo_config::execute_hooks(hook_cmds, Path::new(&self.project_path))
-            {
+            let hook_env = super::repo_config::lifecycle_env_vars(self);
+            if let Err(e) = super::repo_config::execute_hooks(
+                hook_cmds,
+                Path::new(&self.project_path),
+                &hook_env,
+            ) {
                 tracing::warn!(target: "session.store", "on_launch hook failed: {}", e);
             }
         }
@@ -1504,6 +1510,7 @@ impl Instance {
                     }
                 }
                 self.apply_session_flags(&mut cmd, "host agent");
+                apply_agent_launch_env(&mut cmd, agent);
                 wrap_command_ignore_suspend(&format!("{}{}", env_prefix, cmd))
             })
         } else {
@@ -1517,6 +1524,7 @@ impl Instance {
                 }
             }
             self.apply_session_flags(&mut cmd, "host custom");
+            apply_agent_launch_env(&mut cmd, agent);
             Some(wrap_command_ignore_suspend(&format!(
                 "{}{}",
                 env_prefix, cmd
@@ -2594,6 +2602,21 @@ fn truncate_error_line(line: &str) -> String {
 fn format_env_var_prefix(key: &str, value: &str, cmd: &str) -> String {
     let escaped = shell_escape(value);
     format!("{}={} {}", key, escaped, cmd)
+}
+
+/// Prepend agent-specific environment overrides to a launch command.
+///
+/// Antigravity inherits the parent tmux env, which can carry `NO_COLOR=1` and
+/// silently disable its terminal palette even though the web renderer handles
+/// ANSI fine. Unsetting `NO_COLOR` and forcing `FORCE_COLOR=1` /
+/// `COLORTERM=truecolor` at launch keeps color on without leaking the override
+/// to other agents.
+fn apply_agent_launch_env(cmd: &mut String, agent: Option<&'static crate::agents::AgentDef>) {
+    if !matches!(agent.map(|a| a.name), Some("antigravity")) {
+        return;
+    }
+
+    *cmd = format!("env -u NO_COLOR FORCE_COLOR=1 COLORTERM=truecolor {}", cmd);
 }
 
 /// Wrap a command to disable Ctrl-Z (SIGTSTP) suspension.
@@ -3823,6 +3846,45 @@ mod tests {
         let cmd_str = cmd.unwrap();
         assert!(cmd_str.contains("ses_abc123def456"));
         assert!(cmd_str.contains("--session-id") || cmd_str.contains("--resume"));
+    }
+
+    #[test]
+    fn test_build_host_command_antigravity_forces_color() {
+        let mut inst = Instance::new("test", "/tmp/test");
+        inst.tool = "antigravity".to_string();
+        let cmd = inst.build_host_command(crate::agents::get_agent("antigravity"), &None);
+        let cmd_str = cmd.unwrap();
+
+        assert!(cmd_str.contains("env -u NO_COLOR"));
+        assert!(cmd_str.contains("FORCE_COLOR=1"));
+        assert!(cmd_str.contains("COLORTERM=truecolor"));
+        assert!(cmd_str.contains("agy"));
+    }
+
+    #[test]
+    fn test_build_host_custom_command_antigravity_forces_color() {
+        let mut inst = Instance::new("test", "/tmp/test");
+        inst.tool = "antigravity".to_string();
+        inst.command = "agy --some-flag".to_string();
+        let cmd = inst.build_host_command(crate::agents::get_agent("antigravity"), &None);
+        let cmd_str = cmd.unwrap();
+
+        assert!(cmd_str.contains("env -u NO_COLOR"));
+        assert!(cmd_str.contains("FORCE_COLOR=1"));
+        assert!(cmd_str.contains("COLORTERM=truecolor"));
+        assert!(cmd_str.contains("agy --some-flag"));
+    }
+
+    #[test]
+    fn test_build_host_command_color_env_is_antigravity_only() {
+        let mut inst = Instance::new("test", "/tmp/test");
+        inst.tool = "codex".to_string();
+        let cmd = inst.build_host_command(crate::agents::get_agent("codex"), &None);
+        let cmd_str = cmd.unwrap();
+
+        assert!(!cmd_str.contains("env -u NO_COLOR"));
+        assert!(!cmd_str.contains("FORCE_COLOR=1"));
+        assert!(!cmd_str.contains("COLORTERM=truecolor"));
     }
 
     #[test]

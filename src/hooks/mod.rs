@@ -73,39 +73,21 @@ pub(crate) fn codex_config_path_display_for_host_environment(entries: &[String])
         .unwrap_or_else(codex_config_path_display)
 }
 
-/// Sweep `/tmp/aoe-hooks/*/` removing per-instance dirs that no longer
-/// correspond to a live AoE session. Called on TUI startup to clean up
-/// dirs left behind by sessions destroyed while the TUI was not running.
-/// Skips the special `_global` dir (holds session-aggregate state).
-pub fn sweep_orphaned_hook_dirs(live_session_ids: &std::collections::HashSet<String>) {
-    let base = std::path::Path::new(HOOK_STATUS_BASE);
-    let Ok(entries) = std::fs::read_dir(base) else {
-        return;
-    };
-    for entry in entries.flatten() {
-        let Ok(name) = entry.file_name().into_string() else {
-            continue;
-        };
-        if name == "_global" {
-            continue;
-        }
-        if live_session_ids.contains(&name) {
-            continue;
-        }
-        let path = entry.path();
-        if let Err(e) = std::fs::remove_dir_all(&path) {
-            tracing::warn!("hooks: failed to remove orphan dir {:?}: {}", path, e);
-        } else {
-            tracing::info!("hooks: removed orphan dir {:?}", path);
-        }
-    }
+/// Build the shell command for a hook that writes a status value.
+///
+/// The command must never exit non-zero, otherwise the agent treats the hook
+/// as a blocking failure and refuses to run further tool calls. `/tmp/aoe-hooks/<id>`
+/// can disappear mid-session (OS /tmp cleanup, transient FS hiccup, external
+/// tooling), so both mkdir and printf must tolerate a missing parent dir. We
+/// swallow stderr and force a final `exit 0`: at worst the status file is one
+/// tick stale and the next hook call recreates the dir.
+fn hook_command(status: &str) -> String {
+    hook_command_with_base(status, HOOK_STATUS_BASE)
 }
 
-/// Build the shell command for a hook that writes a status value.
-fn hook_command(status: &str) -> String {
+fn hook_command_with_base(status: &str, base: &str) -> String {
     format!(
-        "sh -c '[ -n \"$AOE_INSTANCE_ID\" ] || exit 0; mkdir -p /tmp/aoe-hooks/$AOE_INSTANCE_ID && printf {} > /tmp/aoe-hooks/$AOE_INSTANCE_ID/status'",
-        status
+        "sh -c '[ -n \"$AOE_INSTANCE_ID\" ] || exit 0; mkdir -p {base}/$AOE_INSTANCE_ID 2>/dev/null; printf {status} > {base}/$AOE_INSTANCE_ID/status 2>/dev/null; exit 0'"
     )
 }
 
@@ -1836,6 +1818,54 @@ command = "echo user-hook"
         let cmd = hook_command("idle");
         assert!(cmd.contains("AOE_INSTANCE_ID"));
         assert!(cmd.contains("printf idle"));
+    }
+
+    #[test]
+    fn test_hook_command_tolerates_unwritable_base_dir() {
+        // Regression for #1390: if /tmp/aoe-hooks/<id> disappears mid-session
+        // (OS /tmp cleanup, transient FS hiccup, external tooling), the hook
+        // must still exit 0 so the agent doesn't treat it as blocking and
+        // freeze further tool calls.
+        use std::process::Command;
+
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path().join("aoe-hooks-blocked");
+        // Pre-create base as a regular file so mkdir -p can never succeed.
+        std::fs::write(&base, "i am a file, not a dir").unwrap();
+
+        let cmd = hook_command_with_base("running", base.to_str().unwrap());
+
+        let output = Command::new("sh")
+            .args(["-c", &cmd])
+            .env("AOE_INSTANCE_ID", "regression_1390")
+            .output()
+            .expect("spawn sh");
+
+        assert!(
+            output.status.success(),
+            "hook must exit 0 even when its dir cannot be created: {:?}",
+            output
+        );
+    }
+
+    #[test]
+    fn test_hook_command_writes_status_on_happy_path() {
+        use std::process::Command;
+
+        let tmp = TempDir::new().unwrap();
+        let base = tmp.path().join("aoe-hooks");
+
+        let cmd = hook_command_with_base("waiting", base.to_str().unwrap());
+
+        let output = Command::new("sh")
+            .args(["-c", &cmd])
+            .env("AOE_INSTANCE_ID", "happy_path")
+            .output()
+            .expect("spawn sh");
+
+        assert!(output.status.success(), "happy-path hook should exit 0");
+        let status_path = base.join("happy_path").join("status");
+        assert_eq!(std::fs::read_to_string(&status_path).unwrap(), "waiting");
     }
 
     #[test]

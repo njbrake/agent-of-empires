@@ -7,7 +7,7 @@ use crate::session::config::SortOrder;
 use crate::tui::styles::Theme;
 
 const DIALOG_WIDTH: u16 = 50;
-const DIALOG_HEIGHT: u16 = 49;
+const DIALOG_HEIGHT: u16 = 50;
 #[cfg(test)]
 const BORDER_HEIGHT: u16 = 2;
 #[cfg(test)]
@@ -44,6 +44,7 @@ fn shortcuts(strict: bool) -> Vec<(&'static str, Vec<(&'static str, &'static str
                     ("R", "Rename session/group"),
                     ("M", "Send message to agent"),
                     ("F", "Toggle favorite"),
+                    ("H", "Snooze (toggle)"),
                     ("E", "Restart session"),
                     ("F5", "Restart session"),
                 ],
@@ -54,7 +55,7 @@ fn shortcuts(strict: bool) -> Vec<(&'static str, Vec<(&'static str, &'static str
                     ("T", "Toggle Agent/Terminal view"),
                     ("C", "Toggle container/host (sandbox)"),
                     ("Ctrl+D", "Diff view (git changes)"),
-                    ("H/L", "Resize list panel"),
+                    ("< >", "Resize list panel"),
                     ("O", "Cycle sort forward"),
                     ("Ctrl+O", "Cycle sort backward"),
                     ("Ctrl+G", "Toggle group by project"),
@@ -84,7 +85,7 @@ fn shortcuts(strict: bool) -> Vec<(&'static str, Vec<(&'static str, &'static str
                 vec![
                     ("j/↓", "Move down"),
                     ("k/↑", "Move up"),
-                    ("h/←", "Collapse group"),
+                    ("←", "Collapse group"),
                     ("l/→", "Expand group"),
                     ("Home/End/G", "Go to top / bottom"),
                     ("PgUp/Dn", "Move 10 (also Shift+↑/↓, { })"),
@@ -105,6 +106,7 @@ fn shortcuts(strict: bool) -> Vec<(&'static str, Vec<(&'static str, &'static str
                     ("r", "Rename session/group"),
                     ("m", "Send message to agent"),
                     ("f", "Toggle favorite"),
+                    ("h", "Snooze (toggle)"),
                     ("e", "Restart session"),
                     ("F5", "Restart session"),
                 ],
@@ -115,7 +117,7 @@ fn shortcuts(strict: bool) -> Vec<(&'static str, Vec<(&'static str, &'static str
                     ("t", "Toggle Agent/Terminal view"),
                     ("c", "Toggle container/host (sandbox)"),
                     ("D", "Diff view (git changes)"),
-                    ("H/L", "Resize list panel"),
+                    ("< >", "Resize list panel"),
                     ("o", "Cycle sort forward"),
                     ("Ctrl+o", "Cycle sort backward"),
                     ("g", "Toggle group by project"),
@@ -247,8 +249,28 @@ mod tests {
             assert!(views_section.is_some(), "Views section should exist");
             let (_, keys) = views_section.unwrap();
             assert!(
-                keys.iter().any(|(k, _)| *k == "H/L"),
-                "Views section should contain H/L resize shortcut"
+                keys.iter().any(|(k, _)| *k == "< >"),
+                "Views section should contain < > resize shortcut"
+            );
+        }
+    }
+
+    #[test]
+    fn help_lists_snooze() {
+        // PR #1084 introduced the snooze primitive (H in strict mode, h in
+        // non-strict) but did not advertise it in the help overlay. Lock the
+        // listing in so a future binding rename keeps the docs honest.
+        for (strict, expected_key) in [(false, "h"), (true, "H")] {
+            let all = shortcuts(strict);
+            let actions = all
+                .iter()
+                .find(|(name, _)| name.starts_with("Actions"))
+                .expect("Actions section should exist");
+            let (_, keys) = actions;
+            assert!(
+                keys.iter()
+                    .any(|(k, desc)| *k == expected_key && desc.contains("Snooze")),
+                "Actions section should contain {expected_key} Snooze entry (strict={strict})"
             );
         }
     }

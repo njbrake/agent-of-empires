@@ -3,7 +3,7 @@
 use anyhow::Result;
 use crossterm::event::{
     DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture, Event,
-    EventStream, KeyCode, KeyEvent, KeyModifiers, MouseEventKind,
+    EventStream, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEventKind,
 };
 use futures_util::StreamExt;
 use ratatui::prelude::*;
@@ -564,6 +564,14 @@ impl App {
                                                 match mouse.kind {
                                                     MouseEventKind::ScrollUp if hit_scroll_target => { self.home.handle_scroll_up(mouse.column, mouse.row); }
                                                     MouseEventKind::ScrollDown if hit_scroll_target => { self.home.handle_scroll_down(mouse.column, mouse.row); }
+                                                    // Burst-deferred clicks update selection but can't
+                                                    // execute an activation action mid-burst (it'd tear
+                                                    // down and reattach the terminal while we're still
+                                                    // draining keystrokes). A user double-clicking
+                                                    // during dictation can click again after the burst
+                                                    // ends.
+                                                    MouseEventKind::Down(MouseButton::Left) if hit_list => { let _ = self.home.handle_click(mouse.column, mouse.row); }
+                                                    MouseEventKind::Moved => { self.home.handle_hover(mouse.column, mouse.row); }
                                                     _ => {}
                                                 }
                                             }
@@ -608,6 +616,25 @@ impl App {
                             let hit_diff = self.home.is_diff_open()
                                 && self.home.hit_diff(mouse.column, mouse.row);
                             let hit_scroll_target = hit_diff || hit_list || hit_preview;
+                            // Left-click is handled outside the unified
+                            // match because it returns an `Option<Action>`
+                            // (a double-click activates the session and
+                            // needs to flow through `execute_action`), not
+                            // a bool. The single-click selection always
+                            // mutates `cursor` so we redraw unconditionally
+                            // before dispatching the action.
+                            let click_action = if matches!(
+                                mouse.kind,
+                                MouseEventKind::Down(MouseButton::Left)
+                            ) && hit_list
+                            {
+                                let action =
+                                    self.home.handle_click(mouse.column, mouse.row);
+                                self.draw(terminal)?;
+                                action
+                            } else {
+                                None
+                            };
                             let handled = match mouse.kind {
                                 MouseEventKind::ScrollUp if hit_scroll_target => {
                                     self.home.handle_scroll_up(mouse.column, mouse.row)
@@ -615,10 +642,32 @@ impl App {
                                 MouseEventKind::ScrollDown if hit_scroll_target => {
                                     self.home.handle_scroll_down(mouse.column, mouse.row)
                                 }
+                                // Moved events are dispatched unconditionally
+                                // (no `hit_list` guard) so the handler can
+                                // clear the hover state the moment the
+                                // cursor leaves the list, even when the new
+                                // position lands on the preview or border.
+                                MouseEventKind::Moved => {
+                                    self.home.handle_hover(mouse.column, mouse.row)
+                                }
                                 _ => false,
                             };
                             if handled {
                                 self.draw(terminal)?;
+                            }
+                            if let Some(action) = click_action {
+                                self.execute_action(action, terminal)?;
+                                // Mirror the handle_key path: Action::OpenCockpit
+                                // only stashes the id in `pending_cockpit_open`
+                                // because the cockpit view needs async
+                                // EventStream access that the sync
+                                // `execute_action` can't lend. Drain here so a
+                                // double-click on a cockpit session actually
+                                // opens it.
+                                #[cfg(feature = "serve")]
+                                if let Some(session_id) = self.pending_cockpit_open.take() {
+                                    self.run_cockpit_view(&session_id, terminal).await?;
+                                }
                             }
                             continue;
                         }
