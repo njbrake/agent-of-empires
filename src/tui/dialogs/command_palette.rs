@@ -155,6 +155,30 @@ pub fn builtin_commands(serve_enabled: bool, strict_hotkeys: bool) -> Vec<Palett
             payload: PaletteAction::Key(key('r')),
         },
         PaletteCommand {
+            id: "favorite",
+            title: "Toggle favorite".to_string(),
+            group: PaletteGroup::Actions,
+            keywords: vec!["star", "pin", "fav"],
+            hotkey: hotkey_label("f", "F", strict_hotkeys),
+            payload: PaletteAction::Key(key('f')),
+        },
+        PaletteCommand {
+            id: "archive",
+            title: "Toggle archive".to_string(),
+            group: PaletteGroup::Actions,
+            keywords: vec!["park", "stash", "done", "zzz"],
+            hotkey: hotkey_label("z", "Z", strict_hotkeys),
+            payload: PaletteAction::Key(key('z')),
+        },
+        PaletteCommand {
+            id: "snooze",
+            title: "Toggle snooze".to_string(),
+            group: PaletteGroup::Actions,
+            keywords: vec!["later", "defer", "wait"],
+            hotkey: hotkey_label("h", "H", strict_hotkeys),
+            payload: PaletteAction::Key(key('h')),
+        },
+        PaletteCommand {
             id: "diff",
             title: "Open diff view".to_string(),
             group: PaletteGroup::Views,
@@ -687,6 +711,140 @@ mod tests {
             DialogResult::Submit(PaletteAction::JumpToCursor(idx)) => assert_eq!(idx, 7),
             _ => panic!("expected JumpToCursor"),
         }
+    }
+
+    /// Char-class single-key bindings in `home/input.rs` that intentionally
+    /// don't get a palette entry. Pure navigation, dismissal, and meta keys.
+    /// Compared case-insensitively against the chars scanned out of input.rs,
+    /// so listing the lowercase form covers both `j`/`J`, `q`/`Q`, etc.
+    ///
+    /// If you add a new home-view hotkey that shouldn't appear in the palette
+    /// (vim-style nav, search-state-only, modal dismiss), add the lowercase
+    /// char here with a one-line note. Otherwise add a PaletteCommand to
+    /// `builtin_commands` above and the drift test will pass automatically.
+    const PALETTE_EXEMPT: &[(char, &str)] = &[
+        ('j', "vim-style move down"),
+        ('k', "vim-style move up; Ctrl+K opens this palette"),
+        ('l', "vim-style move right / expand"),
+        ('g', "g/G top/bottom jump; cycle-group-by uses 'g' too, covered by palette entry"),
+        ('q', "quit; Esc and the global quit path cover this"),
+        ('u', "update-banner dismiss; meta key, not an action"),
+        (';', "Tool view escape; only meaningful while in Tool view"),
+        ('/', "search activation; modal trigger, not an action"),
+        ('c', "host/container terminal mode toggle; only valid on a sandboxed session in Terminal view"),
+        ('{', "vim-style page-up (10 rows); pure navigation"),
+        ('}', "vim-style page-down (10 rows); pure navigation"),
+        ('<', "shrink list pane width; layout tweak, not an action"),
+        ('>', "grow list pane width; layout tweak, not an action"),
+    ];
+
+    /// Guard against the palette drifting from the input dispatcher. Scans
+    /// `home/input.rs` for `KeyCode::Char('X')` patterns, case-folds each char,
+    /// and asserts every one is either covered by a palette entry or in
+    /// `PALETTE_EXEMPT`. Catches the "added a hotkey and forgot the palette"
+    /// failure mode at test time instead of at user-bug-report time.
+    #[test]
+    fn home_view_hotkeys_appear_in_palette_or_exempt() {
+        use std::collections::{HashMap, HashSet};
+
+        let src = include_str!("../home/input.rs");
+        // The test module at the bottom of input.rs constructs synthetic
+        // KeyEvents in assertions, which would inflate the scanned set with
+        // chars that aren't real bindings. Truncate at the first `#[cfg(test)]`.
+        let scan_region = match src.find("#[cfg(test)]") {
+            Some(idx) => &src[..idx],
+            None => src,
+        };
+
+        let pat = b"KeyCode::Char('";
+        let bytes = scan_region.as_bytes();
+        let mut bound: HashSet<char> = HashSet::new();
+        let mut i = 0;
+        while i + pat.len() + 2 <= bytes.len() {
+            if &bytes[i..i + pat.len()] == pat {
+                let c = bytes[i + pat.len()];
+                let close = bytes[i + pat.len() + 1];
+                if close == b'\'' && c.is_ascii_graphic() {
+                    bound.insert((c as char).to_ascii_lowercase());
+                }
+                i += pat.len();
+            } else {
+                i += 1;
+            }
+        }
+
+        // Build palette char set from both possible builds (strict and serve
+        // toggled on) so a serve-only command still counts as covered.
+        let mut palette_chars: HashSet<char> = HashSet::new();
+        for cmd in builtin_commands(true, false) {
+            if let PaletteAction::Key(ke) = cmd.payload {
+                if let KeyCode::Char(c) = ke.code {
+                    palette_chars.insert(c.to_ascii_lowercase());
+                }
+            }
+        }
+
+        let exempt: HashMap<char, &str> = PALETTE_EXEMPT.iter().copied().collect();
+
+        let missing: Vec<char> = bound
+            .iter()
+            .filter(|c| !palette_chars.contains(c) && !exempt.contains_key(c))
+            .copied()
+            .collect();
+
+        assert!(
+            missing.is_empty(),
+            "Hotkeys bound in src/tui/home/input.rs but missing from the command palette \
+             (and not in PALETTE_EXEMPT):\n  {:?}\n\n\
+             Either add a PaletteCommand to builtin_commands() in command_palette.rs, \
+             or add the key to PALETTE_EXEMPT in this test with a note explaining \
+             why it shouldn't appear in the palette.",
+            missing
+        );
+    }
+
+    /// Catch the reverse drift: a PALETTE_EXEMPT entry that's no longer bound
+    /// anywhere in input.rs. Without this, stale exemptions silently mask new
+    /// real bindings that happen to reuse the same key.
+    #[test]
+    fn palette_exempt_entries_are_still_bound() {
+        use std::collections::HashSet;
+
+        let src = include_str!("../home/input.rs");
+        let scan_region = match src.find("#[cfg(test)]") {
+            Some(idx) => &src[..idx],
+            None => src,
+        };
+
+        let pat = b"KeyCode::Char('";
+        let bytes = scan_region.as_bytes();
+        let mut bound: HashSet<char> = HashSet::new();
+        let mut i = 0;
+        while i + pat.len() + 2 <= bytes.len() {
+            if &bytes[i..i + pat.len()] == pat {
+                let c = bytes[i + pat.len()];
+                let close = bytes[i + pat.len() + 1];
+                if close == b'\'' && c.is_ascii_graphic() {
+                    bound.insert((c as char).to_ascii_lowercase());
+                }
+                i += pat.len();
+            } else {
+                i += 1;
+            }
+        }
+
+        let stale: Vec<char> = PALETTE_EXEMPT
+            .iter()
+            .map(|(c, _)| *c)
+            .filter(|c| !bound.contains(c))
+            .collect();
+
+        assert!(
+            stale.is_empty(),
+            "PALETTE_EXEMPT lists keys no longer bound in src/tui/home/input.rs: {:?}. \
+             Remove them from PALETTE_EXEMPT.",
+            stale
+        );
     }
 
     #[test]

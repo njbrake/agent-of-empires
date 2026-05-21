@@ -1573,14 +1573,13 @@ impl HomeView {
 
         groups.push((2, mk(if strict { "N" } else { "n" }, "New")));
 
-        // Priority 1: user's core daily workflow (message / restart / del).
+        // Priority 1: user's core daily workflow (message / del).
         // These survive the greedy pack under narrow-pane widths (iPad
         // Termius / Moshi ~80 cols) because they're the actions the user
-        // reaches for most often. Restart / Del stay at p3, less frequent,
+        // reaches for most often. Del stays at p3, less frequent,
         // OK to drop first.
         if self.selected_session.is_some() {
             groups.push((1, mk(if strict { "M" } else { "m" }, "Msg")));
-            groups.push((3, mk(if strict { "E" } else { "e" }, "Restart")));
         }
         if !self.flat_items.is_empty() {
             groups.push((3, mk(if strict { "D" } else { "d" }, "Del")));
@@ -1601,11 +1600,6 @@ impl HomeView {
 
         groups.push((4, mk_key("/")));
         groups.push((4, mk(if strict { "^D" } else { "D" }, "Diff")));
-        // Mouse capture is enabled globally, which disables the terminal's
-        // native drag-to-select. Surface the modifier-key workaround so users
-        // don't think copy-paste is broken. Moderate priority, useful but not
-        // critical, drops on narrow panes before ? / Quit.
-        groups.push((2, mk("\u{2325}/Shift+drag", "Select")));
         groups.push((1, mk("^K", "Cmds")));
         groups.push((0, mk_key("?")));
 
