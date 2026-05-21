@@ -360,6 +360,20 @@
       "components": []
     },
     {
+      "id": "cockpit.drafts",
+      "kind": "vitest",
+      "risk": "medium",
+      "specs": ["src/lib/cockpitDrafts.test.ts"],
+      "components": ["web/src/lib/cockpitDrafts.ts"]
+    },
+    {
+      "id": "cockpit.files-index",
+      "kind": "vitest",
+      "risk": "medium",
+      "specs": ["src/components/cockpit/useFilesIndex.test.tsx"],
+      "components": ["web/src/components/cockpit/useFilesIndex.ts"]
+    },
+    {
       "id": "read-only.mode",
       "kind": "live-playwright",
       "risk": "high",
