@@ -54,7 +54,7 @@ fn shortcuts(strict: bool) -> Vec<(&'static str, Vec<(&'static str, &'static str
                     ("T", "Toggle Agent/Terminal view"),
                     ("C", "Toggle container/host (sandbox)"),
                     ("Ctrl+D", "Diff view (git changes)"),
-                    ("H/L", "Resize list panel"),
+                    ("< >", "Resize list panel"),
                     ("O", "Cycle sort forward"),
                     ("Ctrl+O", "Cycle sort backward"),
                     ("Ctrl+G", "Toggle group by project"),
@@ -115,7 +115,7 @@ fn shortcuts(strict: bool) -> Vec<(&'static str, Vec<(&'static str, &'static str
                     ("t", "Toggle Agent/Terminal view"),
                     ("c", "Toggle container/host (sandbox)"),
                     ("D", "Diff view (git changes)"),
-                    ("H/L", "Resize list panel"),
+                    ("< >", "Resize list panel"),
                     ("o", "Cycle sort forward"),
                     ("Ctrl+o", "Cycle sort backward"),
                     ("g", "Toggle group by project"),
@@ -247,8 +247,8 @@ mod tests {
             assert!(views_section.is_some(), "Views section should exist");
             let (_, keys) = views_section.unwrap();
             assert!(
-                keys.iter().any(|(k, _)| *k == "H/L"),
-                "Views section should contain H/L resize shortcut"
+                keys.iter().any(|(k, _)| *k == "< >"),
+                "Views section should contain < > resize shortcut"
             );
         }
     }
