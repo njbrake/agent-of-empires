@@ -313,10 +313,11 @@ can't accept them yet. Two cases:
    `AcpSessionAssigned` event), the same drain effect fires the
    queue. See #1359.
 
-Queued entries persist in the per-tab localStorage snapshot
-(`aoe:cockpit-state:v1:<sid>`), so a page reload keeps them across the
-reconnect window. Closing the tab does drop the queue; server-side
-durability is not currently implemented.
+Queued entries persist in the per-origin localStorage snapshot at
+`aoe:cockpit-state:v1:<sid>`, so a page reload (and closing then
+reopening the tab on the same origin) keeps them across the reconnect
+window. Server-side durability is not currently implemented; clearing
+site data wipes the queue.
 
 ### Cross-machine attach
 

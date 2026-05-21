@@ -345,6 +345,7 @@ function CockpitChrome({
             onClear={clearQueue}
             pendingResume={
               status !== "open" ||
+              cockpitWorkerState !== "running" ||
               state.workerStopped ||
               state.workerRestarting
             }
