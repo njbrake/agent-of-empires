@@ -423,6 +423,13 @@
       "components": ["web/src/components/cockpit/SwitchSubstrateAction.tsx"]
     },
     {
+      "id": "cockpit.tool-error-body",
+      "kind": "vitest",
+      "risk": "medium",
+      "specs": ["src/components/cockpit/ToolErrorBody.test.tsx"],
+      "components": ["web/src/components/cockpit/ToolErrorBody.tsx"]
+    },
+    {
       "id": "read-only.mode",
       "kind": "live-playwright",
       "risk": "high",
