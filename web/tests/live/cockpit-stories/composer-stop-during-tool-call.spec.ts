@@ -1,0 +1,77 @@
+// User story: Stop while a tool call is in flight cancels the turn.
+//
+// ACP's tool_call session/update (status=pending) translates to a
+// ToolCallStarted server event so the cockpit renders a ToolCard.
+// Stop still cancels the turn via runtime.cancelRun().
+
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { test as base, expect } from "@playwright/test";
+import {
+  spawnAoeServe,
+  listSessions,
+  seedSessionViaAoeAdd,
+} from "../../helpers/aoeServe";
+import { waitForCockpitReady, waitForCockpitView } from "../../helpers/cockpit";
+
+const SCRIPT = {
+  turns: [
+    {
+      updates: [
+        {
+          sessionUpdate: "tool_call",
+          toolCallId: "tc-stop-tool-1",
+          title: "Slow tool",
+          kind: "read",
+          status: "pending",
+        },
+        { sessionUpdate: "wait_ms", ms: 5_000 },
+      ],
+      stopReason: "end_turn",
+    },
+  ],
+};
+
+base("Stop button cancels a turn during a tool call", async ({ page }, testInfo) => {
+  const scriptDir = mkdtempSync(join(tmpdir(), "aoe-pw-stop-tool-"));
+  const scriptPath = join(scriptDir, "script.json");
+  writeFileSync(scriptPath, JSON.stringify(SCRIPT));
+
+  const serve = await spawnAoeServe({
+    authMode: "none",
+    cockpit: true,
+    fakeAcpScript: scriptPath,
+    workerIndex: testInfo.workerIndex,
+    parallelIndex: testInfo.parallelIndex,
+    seedFn: seedSessionViaAoeAdd({ title: "story-stop-tool" }),
+  });
+
+  try {
+    const sessions = await listSessions(serve.baseUrl);
+    const sessionId = sessions[0]!.id;
+    await fetch(`${serve.baseUrl}/api/sessions/${sessionId}/cockpit/enable`, {
+      method: "POST",
+    });
+    await waitForCockpitReady(serve.baseUrl, sessionId);
+
+    await page.goto(`${serve.baseUrl}/session/${encodeURIComponent(sessionId)}`);
+    await waitForCockpitView(page);
+
+    const composer = page.getByRole("textbox", { name: /Send a message/i });
+    await composer.fill("run a slow tool");
+    await composer.press("Enter");
+
+    const stopButton = page.getByRole("button", { name: "Stop" });
+    await expect(stopButton).toBeVisible({ timeout: 10_000 });
+    await stopButton.click();
+
+    await expect(
+      page.getByRole("textbox", { name: /Send a message/i }),
+    ).toBeVisible({ timeout: 10_000 });
+    await expect(stopButton).toBeHidden({ timeout: 10_000 });
+  } finally {
+    await serve.stop();
+    rmSync(scriptDir, { recursive: true, force: true });
+  }
+});
