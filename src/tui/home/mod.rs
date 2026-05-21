@@ -18,8 +18,6 @@ use crate::session::{
     flatten_sessions_by_attention, flatten_tree, flatten_tree_all_profiles, resolve_config_or_warn,
     DefaultTerminalMode, EnsureReadyOutcome, Group, GroupTree, Instance, Item, Storage,
 };
-// Re-export for sibling modules (render, input, tests) that reference `super::ViewMode`.
-pub use crate::session::config::ViewMode;
 use crate::tmux::AvailableTools;
 
 use super::creation_poller::{CreationPoller, CreationRequest};
@@ -62,6 +60,16 @@ fn project_group_name(inst: &Instance) -> String {
 pub(super) struct GroupRenameContext {
     pub(super) old_path: String,
     pub(super) old_profile: String,
+}
+
+/// View mode for the home screen
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum ViewMode {
+    #[default]
+    Agent,
+    Terminal,
+    /// Previewing a tool session (lazygit, yazi, etc.)
+    Tool(String),
 }
 
 /// Terminal mode for sandboxed sessions (container vs host)
@@ -386,10 +394,7 @@ impl HomeView {
             .as_ref()
             .and_then(|c| c.app_state.group_by)
             .unwrap_or(default_group_by);
-        let view_mode = user_config
-            .as_ref()
-            .and_then(|c| c.app_state.default_view_mode.clone())
-            .unwrap_or_default();
+        let view_mode = ViewMode::default();
 
         let mut view = Self {
             storages,
