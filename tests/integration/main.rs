@@ -1,7 +1,7 @@
 //! Consolidated integration-test binary.
 //!
 //! Each previous `tests/<name>.rs` lives here as a submodule. Cargo links one
-//! binary instead of 20, which cuts test-build wall time substantially.
+//! binary instead of 19, which cuts test-build wall time substantially.
 //! Tests run as `cargo test --test integration [<module>::<test>]`.
 //!
 //! Per-test isolation still relies on `#[serial]` (see `serial_test`) for

@@ -11,7 +11,6 @@ use tempfile::TempDir;
 ///
 /// # Safety caveat
 /// `set_var` is not thread-safe. Callers must be `#[serial]`.
-#[allow(dead_code)]
 pub fn setup_temp_home() -> TempDir {
     let temp = TempDir::new().unwrap();
     set_temp_home(temp.path());
@@ -20,7 +19,6 @@ pub fn setup_temp_home() -> TempDir {
 
 /// Variant for tests that already own a `TempDir` (e.g. ones that also seed
 /// files under the same path before returning the guard).
-#[allow(dead_code)]
 pub fn set_temp_home(path: &Path) {
     std::env::set_var("HOME", path);
     #[cfg(target_os = "linux")]
