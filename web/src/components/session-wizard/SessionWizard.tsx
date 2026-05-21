@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useReducer } from "react";
 import type { CreateSessionRequest, SessionResponse } from "../../lib/types";
 import { fetchAgents, fetchGroups, fetchDockerStatus, fetchProfiles, fetchSettings, createSession } from "../../lib/api";
 import { ACP_CAPABLE_TOOLS } from "../../lib/acpCapableTools";
+import { safeGetItem, safeSetItem } from "../../lib/safeStorage";
 import { toastBus } from "../../lib/toastBus";
 import { StepIndicator } from "./StepIndicator";
 import type { StepDef, StepId } from "./StepIndicator";
@@ -20,26 +21,16 @@ import { initialData, reducer, type WizardData } from "./wizardReducer";
 const LAST_USED_TOOL_KEY = "aoe-cockpit-last-tool";
 
 function loadLastUsedTool(): string {
-  if (typeof window === "undefined") return "claude";
-  try {
-    const stored = window.localStorage.getItem(LAST_USED_TOOL_KEY);
-    if (stored && ACP_CAPABLE_TOOLS.has(stored)) {
-      return stored;
-    }
-  } catch {
-    // Private mode / storage disabled: fall through to default.
+  const stored = safeGetItem(LAST_USED_TOOL_KEY);
+  if (stored && ACP_CAPABLE_TOOLS.has(stored)) {
+    return stored;
   }
   return "claude";
 }
 
 function saveLastUsedTool(tool: string): void {
-  if (typeof window === "undefined") return;
   if (!ACP_CAPABLE_TOOLS.has(tool)) return;
-  try {
-    window.localStorage.setItem(LAST_USED_TOOL_KEY, tool);
-  } catch {
-    // Quota exceeded / storage disabled: silently skip.
-  }
+  safeSetItem(LAST_USED_TOOL_KEY, tool);
 }
 
 /** Layer the last-used tool over the shared `initialData` template so

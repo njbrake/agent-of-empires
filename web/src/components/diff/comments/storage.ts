@@ -1,3 +1,4 @@
+import { safeGetItem, safeSetItem } from "../../../lib/safeStorage";
 import type { DiffComment, DiffCommentsStorageV1 } from "./types";
 
 const KEY_PREFIX = "aoe:diff-comments:v1:";
@@ -18,9 +19,9 @@ export const EMPTY_STORAGE: DiffCommentsStorageV1 = {
  *  and version mismatches by falling back to an empty state. localStorage
  *  is browser-local; data corruption shouldn't kill the feature. */
 export function loadComments(sessionId: string): DiffCommentsStorageV1 {
+  const raw = safeGetItem(storageKey(sessionId));
+  if (!raw) return { ...EMPTY_STORAGE };
   try {
-    const raw = localStorage.getItem(storageKey(sessionId));
-    if (!raw) return { ...EMPTY_STORAGE };
     const parsed = JSON.parse(raw) as unknown;
     if (
       !parsed ||
@@ -47,12 +48,7 @@ export function saveComments(
   sessionId: string,
   state: DiffCommentsStorageV1,
 ): void {
-  try {
-    localStorage.setItem(storageKey(sessionId), JSON.stringify(state));
-  } catch {
-    // Quota exceeded or private mode; non-fatal. The in-memory state
-    // still works for the current page load.
-  }
+  safeSetItem(storageKey(sessionId), JSON.stringify(state));
 }
 
 export function isWellFormed(c: unknown): c is DiffComment {

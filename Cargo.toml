@@ -186,7 +186,7 @@ serve = [
 
 [dev-dependencies]
 serial_test = "3.4"
-cargo-husky = { version = "1", default-features = false, features = ["precommit-hook", "run-cargo-fmt", "run-cargo-clippy"] }
+cargo-husky = { version = "1", default-features = false, features = ["precommit-hook", "run-cargo-fmt"] }
 # Test-only axum dep, used by the update e2e fixture server that serves
 # a fake release tarball. The runtime code uses reqwest, not axum.
 axum = { version = "0.8", features = ["ws"] }

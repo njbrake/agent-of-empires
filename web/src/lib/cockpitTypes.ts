@@ -197,6 +197,18 @@ export interface CockpitState {
   /** Latest agent-reported context-window usage. Null until the agent
    *  emits its first ACP `UsageUpdate`. */
   sessionUsage: SessionUsage | null;
+  /** Cumulative cost snapshot captured at the most recent context
+   *  boundary (`/clear`, `/compact`). The ACP agent keeps reporting
+   *  session-lifetime cumulative cost via `UsageUpdate`, but the user
+   *  expects the composer footer to read "since the most recent
+   *  clear/compact." The `UsageUpdated` reducer arm subtracts this
+   *  baseline from the incoming cumulative before storing it on
+   *  `sessionUsage.cost`. Reset to null on `AgentSwitched` and
+   *  `SessionContextReset` (new backend or new ACP session restarts
+   *  the agent-side cumulative at zero). Re-derived on hard reload via
+   *  the full event-store replay, since boundary events are applied in
+   *  seq order. See #1354. */
+  usageBaseline: { cost: number } | null;
   /** Most recent assistant message chunks accumulated as a single
    *  text body. Cleared each time a new prompt is sent. */
   assistantMessage: string;
@@ -418,6 +430,7 @@ export function emptyCockpitState(): CockpitState {
     thinking: false,
     rateLimit: null,
     sessionUsage: null,
+    usageBaseline: null,
     assistantMessage: "",
     activity: [],
     lastSeq: 0,
@@ -474,6 +487,13 @@ export function applyEvent(
       // `compacted` kind to a "Conversation compacted" divider that
       // makes the boundary visible without nudging the user toward
       // pre-filling duplicate context. See #1109.
+      // Capture the agent's cumulative cost snapshot as the new
+      // baseline so the next UsageUpdate reports cost-since-compact
+      // instead of session-lifetime cumulative. See #1354.
+      const compactPriorUsage = state.sessionUsage?.cost?.amount ?? 0;
+      const compactPriorBaseline = state.usageBaseline?.cost ?? 0;
+      const compactCumulative = compactPriorUsage + compactPriorBaseline;
+      next.usageBaseline = { cost: compactCumulative };
       next.sessionUsage = null;
       next.activity = [
         ...next.activity,
@@ -514,6 +534,16 @@ export function applyEvent(
       next.plan = null;
       next.mode = "Default";
       next.pendingApprovals = [];
+      // Capture the agent's cumulative cost snapshot as the new
+      // baseline so the next UsageUpdate reports cost-since-clear
+      // instead of session-lifetime cumulative. `sessionUsage.cost`
+      // already stores the delta since the previous baseline, so the
+      // new baseline is the sum of both to track the true cumulative.
+      // See #1354.
+      const clearPriorUsage = state.sessionUsage?.cost?.amount ?? 0;
+      const clearPriorBaseline = state.usageBaseline?.cost ?? 0;
+      const clearCumulative = clearPriorUsage + clearPriorBaseline;
+      next.usageBaseline = { cost: clearCumulative };
       next.sessionUsage = null;
     }
     return next;
@@ -655,7 +685,23 @@ export function applyEvent(
     return next;
   }
   if ("UsageUpdated" in event) {
-    next.sessionUsage = event.UsageUpdated.usage;
+    // claude-agent-acp keeps reporting session-lifetime cumulative
+    // cost via UsageUpdate; `/clear` and `/compact` don't rotate the
+    // ACP session id so the agent's cumulative carries pre-boundary
+    // spend. Subtract the baseline captured at the most recent
+    // SessionCleared / ConversationCompacted so the composer footer
+    // reads "since the most recent boundary." `used` already reflects
+    // the post-boundary context size from the agent's side and stays
+    // raw; only `cost` is rebased. clamp to zero defensively in case
+    // an upstream restart ever reports a smaller cumulative. See #1354.
+    const incoming = event.UsageUpdated.usage;
+    if (next.usageBaseline && incoming.cost) {
+      const rebasedAmount = Math.max(0, incoming.cost.amount - next.usageBaseline.cost);
+      const rebasedCost = { amount: rebasedAmount, currency: incoming.cost.currency };
+      next.sessionUsage = { used: incoming.used, size: incoming.size, cost: rebasedCost };
+    } else {
+      next.sessionUsage = incoming;
+    }
     return next;
   }
   if ("ModeChanged" in event) {
@@ -927,6 +973,10 @@ export function applyEvent(
     // the composer footer doesn't keep showing the previous run's
     // "75k / 200k" until the next UsageUpdate arrives.
     next.sessionUsage = null;
+    // The new ACP session restarts the agent-side cumulative cost at
+    // zero, so any prior per-clear baseline no longer maps onto
+    // incoming UsageUpdate values. See #1354.
+    next.usageBaseline = null;
     // Suppress the visible notice on a session that never saw a user
     // prompt: claude-agent-acp doesn't persist a 0-prompt session, so
     // session/load failing on the next spawn is expected, not an
@@ -979,6 +1029,10 @@ export function applyEvent(
     next.thinking = false;
     next.pendingApprovals = [];
     next.sessionUsage = null;
+    // The new backend reports its own cumulative cost starting from
+    // zero, so the prior agent's per-clear baseline does not apply.
+    // See #1354.
+    next.usageBaseline = null;
     next.availableCommands = [];
     next.availableModes = [];
     next.currentModeId = null;
@@ -1080,6 +1134,7 @@ export function normaliseTurnCounters(
     rejectedPrompts?: RejectedPrompt[];
     agentUnresponsive?: boolean;
     agentOrphaned?: boolean;
+    usageBaseline?: { cost: number } | null;
   },
 ): CockpitState {
   const pendingUserPromptSeq =
@@ -1109,11 +1164,20 @@ export function normaliseTurnCounters(
   // `undefined`.
   const agentOrphaned =
     typeof state.agentOrphaned === "boolean" ? state.agentOrphaned : false;
+  // Pre-#1354 persisted entries lack usageBaseline; backfill to null
+  // so the UsageUpdated reducer's `next.usageBaseline && ...` check
+  // sees a well-typed value. The baseline stays null until the next
+  // SessionCleared / ConversationCompacted, which matches the
+  // pre-fix behaviour for that one session; subsequent /clear events
+  // start subtracting normally.
+  const usageBaseline =
+    state.usageBaseline === undefined ? null : state.usageBaseline;
   return {
     ...state,
     rejectedPrompts,
     agentUnresponsive,
     agentOrphaned,
+    usageBaseline,
     pendingUserPromptSeq,
     lastStoppedSeq,
     turnActive: isTurnActive({ pendingUserPromptSeq, lastStoppedSeq }),

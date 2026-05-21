@@ -92,12 +92,15 @@ pub enum FieldKey {
     DefaultTool,
     StrictHotkeys,
     SnoozeDurationMinutes,
+    RestartWakeMessage,
+    RowTag,
     AgentExtraArgs,
     AgentCommandOverride,
     AgentStatusHooks,
     CustomAgents,
     AgentDetectAs,
     HostEnvironment,
+    SessionIdPollerMaxThreads,
     // Sound
     SoundEnabled,
     SoundMode,
@@ -331,6 +334,33 @@ const LOG_LEVEL_OVERRIDE_OPTIONS: &[&str] =
     &["(default)", "trace", "debug", "info", "warn", "error"];
 const SINK_OPTIONS: &[&str] = &["file", "stdout"];
 const ROTATION_OPTIONS: &[&str] = &["size", "never"];
+
+/// Display labels for `RowTagMode` in the Settings picker. Order must match
+/// `row_tag_to_index` / `index_to_row_tag` so the index round-trips. `None`
+/// is first because it is the default; existing users see no tag.
+const ROW_TAG_OPTIONS: &[&str] = &["None", "Auto", "Profile", "Sandbox", "Branch"];
+
+fn row_tag_to_index(mode: crate::session::config::RowTagMode) -> usize {
+    use crate::session::config::RowTagMode::*;
+    match mode {
+        None => 0,
+        Auto => 1,
+        Profile => 2,
+        Sandbox => 3,
+        Branch => 4,
+    }
+}
+
+fn index_to_row_tag(idx: usize) -> crate::session::config::RowTagMode {
+    use crate::session::config::RowTagMode::*;
+    match idx {
+        1 => Auto,
+        2 => Profile,
+        3 => Sandbox,
+        4 => Branch,
+        _ => None,
+    }
+}
 
 fn level_index(level: &str, opts: &[&str]) -> usize {
     opts.iter().position(|&o| o == level).unwrap_or(0)
@@ -647,7 +677,7 @@ fn build_cockpit_fields(
         SettingField {
             key: FieldKey::CockpitSilentOrphanGraceSecs,
             label: "Silent-orphan grace (s)",
-            description: "Daemon-side watchdog that detects when the agent finishes streaming but the adapter never resolves the session/prompt request. Fires after this many seconds of no progress notifications, when no in-flight tool call is open and the prompt has produced at least one progress event. On fire, sends best-effort session/cancel and reuses the existing cancel-escalation path to SIGTERM + session/load respawn. Default 60s. Set 0 to disable. Long-running tools are not affected (watchdog suppresses while any tool call is active). See #1240.",
+            description: "Daemon-side watchdog that detects when the agent finishes streaming but the adapter never resolves the session/prompt request. Fires after this many seconds of no progress notifications, when no in-flight tool call is open and the prompt has produced at least one progress event. On fire, sends best-effort session/cancel and reuses the existing cancel-escalation path to SIGTERM + session/load respawn. Default 120s; raised from 60s in #1360 so async-agent flows (Claude SDK Agent tool with isAsync) survive normal sub-agent waits. Nonzero values below 120 clamp up to 120 at runtime. Set 0 to disable. Long-running tools are not affected (watchdog suppresses while any tool call is active). When the daemon detects an async-agent launch in the current prompt, the effective grace lifts to at least 30 minutes. See #1240, #1360.",
             value: FieldValue::Number(u64::from(silent_orphan_grace_secs)),
             category: SettingsCategory::Cockpit,
             has_override: sog_override,
@@ -1446,6 +1476,18 @@ fn build_session_fields(
             .map(|v| v as u64),
     );
 
+    let (restart_wake_message, restart_wake_message_override) = resolve_value(
+        scope,
+        global.session.restart_wake_message.clone(),
+        session.and_then(|s| s.restart_wake_message.clone()),
+    );
+
+    let (row_tag, row_tag_override) = resolve_value(
+        scope,
+        global.session.row_tag,
+        session.and_then(|s| s.row_tag),
+    );
+
     let (agent_status_hooks, status_hooks_override) = resolve_value(
         scope,
         global.session.agent_status_hooks,
@@ -1562,7 +1604,7 @@ fn build_session_fields(
         items
     };
 
-    vec![
+    let mut fields = vec![
         SettingField {
             key: FieldKey::DefaultTool,
             label: "Default Tool",
@@ -1616,6 +1658,38 @@ fn build_session_fields(
             inherited_display: inherited_if(
                 snooze_duration_override,
                 FieldValue::Number(global.session.snooze_duration_minutes as u64),
+            ),
+        },
+        SettingField {
+            key: FieldKey::RestartWakeMessage,
+            label: "Restart Wake Message",
+            description: "Sent to the agent after restart to resume work. Empty = no wake nudge.",
+            value: FieldValue::Text(restart_wake_message),
+            category: SettingsCategory::Session,
+            has_override: restart_wake_message_override,
+            inherited_display: inherited_if(
+                restart_wake_message_override,
+                FieldValue::Text(global.session.restart_wake_message.clone()),
+            ),
+        },
+        SettingField {
+            key: FieldKey::RowTag,
+            label: "Row Tag",
+            description:
+                "What to show next to each session title: Auto (profile in all-profiles view), \
+                 None, Profile (always), Sandbox (sb on sandboxed rows), or Branch.",
+            value: FieldValue::Select {
+                selected: row_tag_to_index(row_tag),
+                options: ROW_TAG_OPTIONS.iter().map(|s| s.to_string()).collect(),
+            },
+            category: SettingsCategory::Session,
+            has_override: row_tag_override,
+            inherited_display: inherited_if(
+                row_tag_override,
+                FieldValue::Select {
+                    selected: row_tag_to_index(global.session.row_tag),
+                    options: ROW_TAG_OPTIONS.iter().map(|s| s.to_string()).collect(),
+                },
             ),
         },
         SettingField {
@@ -1692,7 +1766,24 @@ fn build_session_fields(
                 FieldValue::List(global.environment.clone()),
             ),
         },
-    ]
+    ];
+
+    if scope == SettingsScope::Global {
+        fields.push(SettingField {
+            key: FieldKey::SessionIdPollerMaxThreads,
+            label: "Max Session-ID Poller Threads",
+            description:
+                "Process-wide cap on threads polling the tmux session ID for live sessions \
+                 (one thread per session). When the cap is reached, new sessions are not \
+                 polled and their session ID will not refresh.",
+            value: FieldValue::Number(u64::from(global.session.session_id_poller_max_threads)),
+            category: SettingsCategory::Session,
+            has_override: false,
+            inherited_display: None,
+        });
+    }
+
+    fields
 }
 
 fn build_sound_fields(
@@ -2164,6 +2255,12 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
         (FieldKey::SnoozeDurationMinutes, FieldValue::Number(v)) => {
             config.session.snooze_duration_minutes = *v as u32;
         }
+        (FieldKey::RestartWakeMessage, FieldValue::Text(v)) => {
+            config.session.restart_wake_message = v.clone();
+        }
+        (FieldKey::RowTag, FieldValue::Select { selected, .. }) => {
+            config.session.row_tag = index_to_row_tag(*selected);
+        }
         (FieldKey::AgentStatusHooks, FieldValue::Bool(v)) => {
             config.session.agent_status_hooks = *v;
         }
@@ -2412,6 +2509,9 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
             config.logging.show_spans = *v;
         }
         (FieldKey::HostEnvironment, FieldValue::List(v)) => config.environment = v.clone(),
+        (FieldKey::SessionIdPollerMaxThreads, FieldValue::Number(v)) => {
+            config.session.session_id_poller_max_threads = (*v).clamp(1, u32::MAX as u64) as u32;
+        }
         _ => {}
     }
 }
@@ -2619,6 +2719,18 @@ fn apply_field_to_profile(field: &SettingField, _global: &Config, config: &mut P
             set_profile_override(*v as u32, &mut config.session, |s, val| {
                 s.snooze_duration_minutes = val
             });
+        }
+        (FieldKey::RestartWakeMessage, FieldValue::Text(v)) => {
+            set_profile_override(v.clone(), &mut config.session, |s, val| {
+                s.restart_wake_message = val
+            });
+        }
+        (FieldKey::RowTag, FieldValue::Select { selected, .. }) => {
+            set_profile_override(
+                index_to_row_tag(*selected),
+                &mut config.session,
+                |s, val| s.row_tag = val,
+            );
         }
         (FieldKey::AgentStatusHooks, FieldValue::Bool(v)) => {
             set_profile_override(*v, &mut config.session, |s, val| {

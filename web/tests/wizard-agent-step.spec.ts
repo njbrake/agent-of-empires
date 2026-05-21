@@ -104,11 +104,14 @@ async function openAgentStep(page: Page) {
 }
 
 test.describe("Wizard agent step (#1219)", () => {
-  test("agent picker renders installed agents and click selects one", async ({ page }) => {
+  test("agent picker renders installed agents, including terminal fallback tools", async ({
+    page,
+  }) => {
     await mockApis(page, {
       agents: [
         { name: "claude", installed: true, host_only: false },
         { name: "codex", installed: true, host_only: false },
+        { name: "antigravity", installed: true, host_only: false },
         { name: "uninstalled-tool", installed: false, host_only: false, install_hint: "brew install x" },
       ],
     });
@@ -117,14 +120,12 @@ test.describe("Wizard agent step (#1219)", () => {
     await openAgentStep(page);
     const claudeBtn = page.getByRole("button", { name: "claude", exact: true });
     const codexBtn = page.getByRole("button", { name: "codex", exact: true });
+    const antigravityBtn = page.getByRole("button", { name: "antigravity", exact: true });
     await expect(claudeBtn).toBeVisible();
     await expect(codexBtn).toBeVisible();
+    await expect(antigravityBtn).toBeVisible();
     // Uninstalled agents are hidden from the picker grid.
     await expect(page.getByRole("button", { name: "uninstalled-tool", exact: true })).toHaveCount(0);
-    await codexBtn.click();
-    // Selected agent has the brand-600 border class via Tailwind; rather
-    // than asserting on class names, rely on the POST body covering this
-    // (see "submitted tool" assertion below).
   });
 
   test("profile picker is hidden when there is only one profile", async ({ page }) => {

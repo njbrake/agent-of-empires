@@ -330,6 +330,9 @@ impl SettingsView {
                         &app_dir,
                     );
                 }
+                crate::session::poller::set_session_id_poller_max_threads(
+                    self.global_config.session.session_id_poller_max_threads,
+                );
             }
             SettingsScope::Profile => {
                 save_profile_config(&self.profile, &self.profile_config)?;
