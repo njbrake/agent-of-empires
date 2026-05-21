@@ -300,6 +300,13 @@ pub struct HomeView {
     /// HashSet pattern: TUI-local, event-driven, no TTL needed.
     recovery_in_flight: std::collections::HashSet<String>,
 
+    /// Spam-debounce for the `e` / `E` / `F5` restart keybind: maps
+    /// session id to the wall-clock instant of the last restart attempt.
+    /// Presses arriving within 1.5s of the prior entry are dropped so
+    /// rapid key-repeat doesn't race overlapping `restart_with_size`
+    /// calls and tear down the still-booting tmux pane.
+    pub(super) restart_cooldown_at: std::collections::HashMap<String, std::time::Instant>,
+
     // Tool sessions config (lazygit, yazi, etc.)
     pub(super) tool_configs: HashMap<String, crate::session::config::ToolSessionConfig>,
     /// Pre-parsed and sorted view of valid tool hotkeys: (name, KeyCode, KeyModifiers).
@@ -354,9 +361,12 @@ impl HomeView {
         let live_ids: std::collections::HashSet<String> = instance_map.keys().cloned().collect();
         crate::hooks::sweep_orphaned_hook_dirs(&live_ids);
 
-        // In unified mode, config comes from "default" profile
-        let config_profile = active_profile.as_deref().unwrap_or("default");
-        let resolved = resolve_config_or_warn(config_profile);
+        // In unified mode there is no single active profile, so config is
+        // resolved from the user's default profile.
+        let config_profile = active_profile
+            .clone()
+            .unwrap_or_else(crate::session::config::resolve_default_profile);
+        let resolved = resolve_config_or_warn(&config_profile);
         let default_terminal_mode = match resolved.sandbox.default_terminal_mode {
             DefaultTerminalMode::Host => TerminalMode::Host,
             DefaultTerminalMode::Container => TerminalMode::Container,
@@ -367,7 +377,7 @@ impl HomeView {
             &storages,
         ));
         let status_hook_config = status_hook_configs
-            .get(config_profile)
+            .get(&config_profile)
             .cloned()
             .unwrap_or_else(|| resolved.status_hooks.clone());
         let strict_hotkeys = resolved.session.strict_hotkeys;
@@ -478,6 +488,7 @@ impl HomeView {
             recovery_rx: None,
             recovery_lock: None,
             recovery_in_flight: std::collections::HashSet::new(),
+            restart_cooldown_at: std::collections::HashMap::new(),
             tool_configs: user_config
                 .as_ref()
                 .map(|c| c.tools.clone())
@@ -1459,7 +1470,7 @@ impl HomeView {
                 let target_profile = self.creation_poller.last_profile().unwrap_or_else(|| {
                     self.active_profile
                         .clone()
-                        .unwrap_or_else(|| "default".to_string())
+                        .unwrap_or_else(crate::session::config::resolve_default_profile)
                 });
                 instance.source_profile = target_profile.clone();
 
@@ -1913,7 +1924,8 @@ impl HomeView {
             .active_profile
             .clone()
             .unwrap_or_else(|| "all".to_string());
-        let profiles = list_profiles().unwrap_or_else(|_| vec!["default".to_string()]);
+        let profiles = list_profiles()
+            .unwrap_or_else(|_| vec![crate::session::config::resolve_default_profile()]);
         let mut entries: Vec<ProfileEntry> = profiles
             .iter()
             .map(|name| {
@@ -2246,11 +2258,20 @@ impl HomeView {
             .unwrap_or(self.default_terminal_mode)
     }
 
+    /// The profile whose config the view should resolve. The active profile
+    /// when one is selected, otherwise (all-profiles mode) the user's default
+    /// profile. Never an empty string and never a hard-coded name.
+    pub(super) fn config_profile(&self) -> String {
+        self.active_profile
+            .clone()
+            .unwrap_or_else(crate::session::config::resolve_default_profile)
+    }
+
     /// Refresh all config-dependent state from the current profile's config.
     /// Call this after settings are saved to pick up any changes.
     pub fn refresh_from_config(&mut self) {
-        let profile = self.active_profile.as_deref().unwrap_or("default");
-        let config = resolve_config_or_warn(profile);
+        let profile = self.config_profile();
+        let config = resolve_config_or_warn(&profile);
         self.default_terminal_mode = match config.sandbox.default_terminal_mode {
             DefaultTerminalMode::Host => TerminalMode::Host,
             DefaultTerminalMode::Container => TerminalMode::Container,
@@ -2280,8 +2301,11 @@ impl HomeView {
             Some(profile) => vec![profile.to_string()],
             None => storages.keys().cloned().collect(),
         };
-        if !profile_names.iter().any(|profile| profile == "default") {
-            profile_names.push("default".to_string());
+        // Make sure the user's default profile is always probed so its status
+        // hooks load even when it currently has no sessions on disk.
+        let default_profile = crate::session::config::resolve_default_profile();
+        if !profile_names.contains(&default_profile) {
+            profile_names.push(default_profile);
         }
         profile_names.sort();
         profile_names.dedup();
@@ -2304,8 +2328,8 @@ impl HomeView {
         let profile_names =
             Self::status_hook_profile_names(self.active_profile.as_deref(), &self.storages);
         self.status_hook_configs = Self::load_status_hook_configs(profile_names);
-        let profile = self.active_profile.as_deref().unwrap_or("default");
-        if let Some(status_hooks) = self.status_hook_configs.get(profile) {
+        let profile = self.config_profile();
+        if let Some(status_hooks) = self.status_hook_configs.get(&profile) {
             self.status_hook_config = status_hooks.clone();
         }
     }

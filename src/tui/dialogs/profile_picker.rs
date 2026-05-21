@@ -67,8 +67,11 @@ impl ProfilePickerDialog {
     }
 
     fn can_delete_selected(&self) -> bool {
+        // The invariant is "at least one profile must exist", a count, not a
+        // name. Any non-active profile is deletable as long as it is not the
+        // last one. The backend `delete_profile` enforces the same rule.
         self.selected_profile()
-            .is_some_and(|p| !p.is_active && p.name != "default")
+            .is_some_and(|p| !p.is_active && self.profiles.len() > 1)
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> DialogResult<ProfilePickerAction> {
@@ -596,7 +599,9 @@ mod tests {
     }
 
     #[test]
-    fn test_delete_not_allowed_on_default() {
+    fn test_delete_allowed_on_profile_named_default() {
+        // A profile literally named "default" is ordinary: deletable when it
+        // is not active and is not the only profile left.
         let profiles = vec![
             ProfileEntry {
                 name: "default".to_string(),
@@ -614,6 +619,19 @@ mod tests {
         dialog.handle_key(key(KeyCode::Up));
         assert_eq!(dialog.selected, 0);
 
+        dialog.handle_key(key(KeyCode::Char('d')));
+        assert!(matches!(dialog.mode, Mode::ConfirmDelete));
+    }
+
+    #[test]
+    fn test_delete_not_allowed_on_last_profile() {
+        // The count invariant: the only remaining profile cannot be deleted.
+        let profiles = vec![ProfileEntry {
+            name: "only".to_string(),
+            session_count: 0,
+            is_active: false,
+        }];
+        let mut dialog = ProfilePickerDialog::new(profiles, "work");
         dialog.handle_key(key(KeyCode::Char('d')));
         assert!(matches!(dialog.mode, Mode::List));
     }

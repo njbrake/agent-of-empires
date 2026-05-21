@@ -1162,19 +1162,36 @@ pub async fn create_session(
             )
                 .into_response();
         }
-        // Verify the profile exists ("default" is always valid even without a dir)
-        if profile_name != "default" {
-            let known = crate::session::list_profiles().unwrap_or_default();
-            if !known.contains(profile_name) {
+        // Verify the profile exists. Every profile is a real directory under
+        // profiles/; there is no implicitly-valid profile name. Distinguish
+        // an enumeration failure (I/O, permissions) from a missing profile
+        // so the client doesn't see a 400 when the real problem is server-side.
+        let known = match crate::session::list_profiles() {
+            Ok(list) => list,
+            Err(e) => {
+                tracing::error!(
+                    target: "server.sessions",
+                    "failed to enumerate profiles while validating create_session: {e:#}"
+                );
                 return (
-                    StatusCode::BAD_REQUEST,
+                    StatusCode::INTERNAL_SERVER_ERROR,
                     Json(serde_json::json!({
-                        "error": "profile_not_found",
-                        "message": format!("Profile '{}' does not exist", profile_name)
+                        "error": "internal_error",
+                        "message": format!("Failed to enumerate profiles: {e}"),
                     })),
                 )
                     .into_response();
             }
+        };
+        if !known.contains(profile_name) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": "profile_not_found",
+                    "message": format!("Profile '{}' does not exist", profile_name)
+                })),
+            )
+                .into_response();
         }
     }
 

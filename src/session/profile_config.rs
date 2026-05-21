@@ -248,6 +248,9 @@ pub struct SessionConfigOverride {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snooze_duration_minutes: Option<u32>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub restart_wake_message: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -275,8 +278,13 @@ pub struct HooksConfigOverride {
 }
 
 /// Load profile-specific config. Returns empty config if file doesn't exist.
+///
+/// Pure read: never creates the profile directory. Goes through the
+/// non-creating path resolver so a GET /api/settings?profile=<unknown>
+/// (which the dashboard fires on mount before profiles resolve) does
+/// not pollute `profiles/` with a stub directory.
 pub fn load_profile_config(profile: &str) -> Result<ProfileConfig> {
-    let path = get_profile_config_path(profile)?;
+    let path = super::get_profile_dir_path(profile)?.join("config.toml");
     if !path.exists() {
         return Ok(ProfileConfig::default());
     }
@@ -296,7 +304,10 @@ pub fn save_profile_config(profile: &str, config: &ProfileConfig) -> Result<()> 
     Ok(())
 }
 
-/// Get the path to a profile's config file
+/// Get the path to a profile's config file. This goes through the
+/// creating [`get_profile_dir`] because the only remaining caller is
+/// [`save_profile_config`], which needs the directory to exist before
+/// the atomic write.
 pub fn get_profile_config_path(profile: &str) -> Result<std::path::PathBuf> {
     Ok(get_profile_dir(profile)?.join("config.toml"))
 }
@@ -463,6 +474,9 @@ pub fn apply_session_overrides(
     }
     if let Some(snooze_duration_minutes) = source.snooze_duration_minutes {
         target.snooze_duration_minutes = snooze_duration_minutes;
+    }
+    if let Some(ref restart_wake_message) = source.restart_wake_message {
+        target.restart_wake_message = restart_wake_message.clone();
     }
 }
 

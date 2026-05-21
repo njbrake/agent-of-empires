@@ -1553,17 +1553,6 @@ fn load_all_instances() -> anyhow::Result<Vec<Instance>> {
             }
         }
     }
-    // Also load from the default profile if it wasn't in the list
-    if !profiles.iter().any(|p| p == "default") {
-        if let Ok(storage) = Storage::new("default") {
-            if let Ok(mut instances) = storage.load() {
-                for inst in &mut instances {
-                    inst.source_profile = "default".to_string();
-                }
-                all.extend(instances);
-            }
-        }
-    }
     Ok(all)
 }
 

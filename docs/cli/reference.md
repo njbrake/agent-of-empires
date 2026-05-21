@@ -29,6 +29,8 @@ This document contains the help content for the `aoe` command-line program.
 * [`aoe session unsnooze`↴](#aoe-session-unsnooze)
 * [`aoe session favorite`↴](#aoe-session-favorite)
 * [`aoe session unfavorite`↴](#aoe-session-unfavorite)
+* [`aoe session archive`↴](#aoe-session-archive)
+* [`aoe session unarchive`↴](#aoe-session-unarchive)
 * [`aoe group`↴](#aoe-group)
 * [`aoe group list`↴](#aoe-group-list)
 * [`aoe group create`↴](#aoe-group-create)
@@ -298,6 +300,8 @@ Manage session lifecycle (start, stop, attach, etc.)
 * `unsnooze` — Wake a snoozed session immediately
 * `favorite` — Mark a session as a favorite. Favorited rows pin to the top of their status tier in the Attention sort and render with a leading `* ` glyph plus bold + underline
 * `unfavorite` — Clear the favorite flag on a session
+* `archive` — Archive a session (sinks it to the bottom of the Attention sort). Kills the tmux pane unless `--no-kill` is passed. The worktree, branch, and container are preserved; use `aoe remove` (optionally with `--delete-worktree` / `--delete-branch`) to fully destroy a session
+* `unarchive` — Unarchive a session (restores it to its tier in the Attention sort)
 
 
 
@@ -497,6 +501,34 @@ Mark a session as a favorite. Favorited rows pin to the top of their status tier
 Clear the favorite flag on a session
 
 **Usage:** `aoe session unfavorite <IDENTIFIER>`
+
+###### **Arguments:**
+
+* `<IDENTIFIER>` — Session ID or title
+
+
+
+## `aoe session archive`
+
+Archive a session (sinks it to the bottom of the Attention sort). Kills the tmux pane unless `--no-kill` is passed. The worktree, branch, and container are preserved; use `aoe remove` (optionally with `--delete-worktree` / `--delete-branch`) to fully destroy a session
+
+**Usage:** `aoe session archive [OPTIONS] <IDENTIFIER>`
+
+###### **Arguments:**
+
+* `<IDENTIFIER>` — Session ID or title
+
+###### **Options:**
+
+* `--no-kill` — Skip killing the tmux pane. By default archiving stops the running agent so the row renders as truly parked; pass this to keep the pane alive while still marking the session archived
+
+
+
+## `aoe session unarchive`
+
+Unarchive a session (restores it to its tier in the Attention sort)
+
+**Usage:** `aoe session unarchive <IDENTIFIER>`
 
 ###### **Arguments:**
 

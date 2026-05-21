@@ -28,7 +28,7 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
-use super::{get_app_dir, get_profile_dir, Group, GroupTree, Instance, DEFAULT_PROFILE};
+use super::{get_app_dir, get_profile_dir, Group, GroupTree, Instance};
 
 /// Write `content` to `path` atomically (temp file + fsync + rename + dir fsync).
 /// Existing perms are preserved; on a fresh file the result is tempfile's 0o600 default.
@@ -99,7 +99,7 @@ pub struct WorkspaceOrdering {
 impl Storage {
     pub fn new(profile: &str) -> Result<Self> {
         let profile_name = if profile.is_empty() {
-            DEFAULT_PROFILE.to_string()
+            super::config::resolve_default_profile()
         } else {
             profile.to_string()
         };
@@ -310,12 +310,52 @@ mod tests {
 
     #[test]
     #[serial]
-    fn test_storage_new_with_empty_profile() -> Result<()> {
+    fn test_storage_new_with_empty_profile_bootstraps() -> Result<()> {
+        // On a fresh install with no profiles, an empty profile argument
+        // resolves through `resolve_default_profile`, which bootstraps the
+        // first profile. The name is "main", never the magic "default".
         let temp = tempdir()?;
         setup_test_home(temp.path());
 
         let storage = Storage::new("")?;
-        assert_eq!(storage.profile(), "default");
+        assert_eq!(storage.profile(), "main");
+        Ok(())
+    }
+
+    #[test]
+    #[serial]
+    fn test_storage_new_with_empty_profile_uses_existing() -> Result<()> {
+        // When profiles already exist, an empty profile argument resolves to
+        // the first one (sorted), not a hard-coded name.
+        let temp = tempdir()?;
+        setup_test_home(temp.path());
+
+        get_profile_dir("work")?;
+        get_profile_dir("personal")?;
+
+        let storage = Storage::new("")?;
+        assert_eq!(storage.profile(), "personal");
+        Ok(())
+    }
+
+    #[test]
+    #[serial]
+    fn test_storage_new_with_empty_profile_honors_config() -> Result<()> {
+        // An explicitly configured default_profile wins over the first-found
+        // directory.
+        let temp = tempdir()?;
+        setup_test_home(temp.path());
+
+        get_profile_dir("work")?;
+        get_profile_dir("personal")?;
+        let config = super::super::config::Config {
+            default_profile: "work".to_string(),
+            ..Default::default()
+        };
+        super::super::config::save_config(&config)?;
+
+        let storage = Storage::new("")?;
+        assert_eq!(storage.profile(), "work");
         Ok(())
     }
 
