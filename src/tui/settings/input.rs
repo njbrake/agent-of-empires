@@ -564,9 +564,9 @@ impl SettingsView {
                 }
             }
             // Updates
-            FieldKey::CheckEnabled => {
+            FieldKey::UpdateCheckMode => {
                 if let Some(ref mut u) = config.updates {
-                    u.check_enabled = None;
+                    u.update_check_mode = None;
                 }
             }
             FieldKey::CheckIntervalHours => {

@@ -99,7 +99,7 @@ pub async fn run(profile: &str, startup_warning: Option<String>) -> Result<()> {
     // This ensures we have release notes for the changelog dialog.
     if check_version_change()?.is_some() {
         let settings = get_update_settings();
-        if settings.check_enabled {
+        if settings.update_check_mode.is_enabled() {
             let current_version = env!("CARGO_PKG_VERSION");
             // Don't let a network issue block startup
             let _ = tokio::time::timeout(
