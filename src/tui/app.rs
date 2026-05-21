@@ -959,12 +959,10 @@ impl App {
                 return Ok(());
             }
             (KeyCode::Char('q'), _) if !self.home.has_dialog() => {
-                // Aggressive quit. Ctrl-B D is the safe-detach path that bounces
-                // back to the shell without killing anything; `q` is the explicit
-                // "close aoe now" button. Even if a session creation is still in
-                // flight, cleanup_pending_creation() on shutdown cancels the hook
-                // and clears orphaned stubs (orphans are also swept on next
-                // launch; see home/mod.rs:820). No confirmation prompt.
+                if self.home.is_creation_pending() {
+                    self.home.show_quit_during_creation_confirm();
+                    return Ok(());
+                }
                 self.should_quit = true;
                 return Ok(());
             }
