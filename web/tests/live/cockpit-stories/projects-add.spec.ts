@@ -1,0 +1,50 @@
+// User story: add a new project from the Projects view.
+//
+// Navigate to /projects, click "+ Add project", type a path, click
+// Add. The project appears in the list below.
+
+import { mkdirSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { join } from "node:path";
+import { test as base, expect } from "@playwright/test";
+import { spawnAoeServe } from "../../helpers/aoeServe";
+
+base("add a project from the Projects view", async ({ page }, testInfo) => {
+  let projectPath = "";
+  const serve = await spawnAoeServe({
+    authMode: "none",
+    workerIndex: testInfo.workerIndex,
+    parallelIndex: testInfo.parallelIndex,
+    seedFn: ({ home, env }) => {
+      projectPath = join(home, "story-projects-add");
+      mkdirSync(projectPath, { recursive: true });
+      spawnSync("git", ["init", "-q"], { cwd: projectPath });
+      spawnSync("git", ["commit", "--allow-empty", "-q", "-m", "init"], {
+        cwd: projectPath,
+        env: {
+          ...env,
+          GIT_AUTHOR_NAME: "t",
+          GIT_AUTHOR_EMAIL: "t@t",
+          GIT_COMMITTER_NAME: "t",
+          GIT_COMMITTER_EMAIL: "t@t",
+        },
+      });
+    },
+  });
+
+  try {
+    await page.goto(`${serve.baseUrl}/projects`);
+    await expect(
+      page.getByRole("heading", { name: "Projects", exact: true }),
+    ).toBeVisible({ timeout: 10_000 });
+
+    await page.getByRole("button", { name: "+ Add project" }).click();
+    await page.getByPlaceholder("/path/to/repo").fill(projectPath);
+    await page.getByRole("button", { name: "Add", exact: true }).click();
+
+    await expect(page.getByText(projectPath)).toBeVisible({ timeout: 5_000 });
+    await expect(page.getByText("story-projects-add")).toBeVisible();
+  } finally {
+    await serve.stop();
+  }
+});

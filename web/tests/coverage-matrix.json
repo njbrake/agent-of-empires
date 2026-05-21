@@ -611,6 +611,34 @@
       "components": ["web/src/components/cockpit/CockpitView.tsx"]
     },
     {
+      "id": "story.profile-rename",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": ["tests/live/cockpit-stories/profile-rename.spec.ts"],
+      "components": ["web/src/components/settings/ProfileSelector.tsx"]
+    },
+    {
+      "id": "story.shortcut-toggle-right-panel",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": ["tests/live/cockpit-stories/shortcut-toggle-right-panel.spec.ts"],
+      "components": ["web/src/components/ContentSplit.tsx", "web/src/hooks/useKeyboardShortcuts.ts"]
+    },
+    {
+      "id": "story.projects-add",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": ["tests/live/cockpit-stories/projects-add.spec.ts"],
+      "components": ["web/src/components/ProjectsView.tsx"]
+    },
+    {
+      "id": "story.projects-remove",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": ["tests/live/cockpit-stories/projects-remove.spec.ts"],
+      "components": ["web/src/components/ProjectsView.tsx"]
+    },
+    {
       "id": "cockpit.rate-limit-recovery",
       "kind": "vitest",
       "risk": "high",
