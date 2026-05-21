@@ -37,18 +37,20 @@ Running one AI agent is easy. Running five of them across different branches, ke
 ## Features
 
 - **Multi-agent support**: Claude Code, OpenCode, Mistral Vibe, Codex CLI, Gemini CLI, Antigravity CLI, Cursor CLI, Copilot CLI, Pi.dev, Factory Droid, Hermes, Kiro CLI, and Qwen Code
-- **TUI app**: visual interface to create, monitor, and manage sessions
-- **Web app** (Beta, stabilization in progress): create, monitor, and control your agents from any browser, installable as a PWA ([guide](https://www.agent-of-empires.com/guides/web-dashboard/))
-  - **Cockpit** (Alpha, opt-in): mobile-first native rendering of agent state via the Agent Client Protocol, with plan panels, tool-call cards, and swipe-to-approve ([guide](https://www.agent-of-empires.com/docs/cockpit/))
-- **CLI app**: create, monitor, and control agents from the command line (integrates with tools like OpenClaw) ([reference](https://www.agent-of-empires.com/docs/cli/reference/))
-- **Remote access from your phone**: press `R` in the TUI to expose the web dashboard over HTTPS with QR + passphrase auth. Uses Tailscale Funnel when available (stable URL, installable PWAs keep working across restarts) or Cloudflare Tunnel as a fallback ([guide](https://www.agent-of-empires.com/guides/remote-phone-access/))
+- **TUI dashboard**: visual interface to create, monitor, and manage sessions
+- **Web dashboard** (Beta, stabilization in progress): create, monitor, and control your agents from any browser, installable as a PWA
+- **Cockpit** (Alpha, opt-in): mobile-first native rendering of agent state via the Agent Client Protocol, with plan panels, tool-call cards, and swipe-to-approve
+- **CLI and HTTP API**: drive sessions from the command line or external orchestrators (integrates with tools like OpenClaw)
+- **Remote phone access**: press `R` in the TUI to expose the web dashboard over HTTPS with QR + passphrase auth, via Tailscale Funnel or Cloudflare Tunnel
 - **Status detection**: see which agents are running, waiting for input, or idle
-- **Git worktrees**: run parallel agents on different branches of the same repo ([guide](https://www.agent-of-empires.com/guides/worktrees/))
-- **Multi-repo workspaces**: drive a single session across several git repositories ([guide](https://www.agent-of-empires.com/guides/multi-repo-workspaces/))
-- **Docker sandboxing**: isolate agents in containers with shared auth volumes ([guide](https://www.agent-of-empires.com/guides/sandbox/))
-- **Diff view**: review git changes and edit files without leaving the TUI ([guide](https://www.agent-of-empires.com/guides/diff-view/))
-- **Session resume**: persist and resume Claude conversations across reboots and upgrades ([guide](https://www.agent-of-empires.com/guides/session-resume/))
-- **Profiles**: separate workspaces for different projects or clients ([guide](https://www.agent-of-empires.com/docs/guides/configuration/#profiles))
+- **Git worktrees and multi-repo workspaces**: parallel agents across branches, or one session driving several git repositories
+- **Docker sandboxing**: isolate agents in containers with shared auth volumes (Podman and Apple Containers also supported)
+- **Diff view**: review git changes and edit files without leaving the TUI
+- **Session resume**: persist and resume Claude conversations across reboots and upgrades
+- **Sound and push notifications**: audible cues and browser/PWA push when an agent needs your attention
+- **Profiles, repo config, and agent overrides**: per-project settings, hooks, and custom agent launchers
+
+See the [full features inventory](https://www.agent-of-empires.com/docs/features/) for every shipping capability with links to each guide.
 
 ## Web Dashboard (Beta, stabilization in progress)
 

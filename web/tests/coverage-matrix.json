@@ -270,6 +270,21 @@
       ]
     },
     {
+      "id": "right-panel.diff-line-visibility",
+      "kind": "vitest",
+      "risk": "high",
+      "specs": [
+        "src/components/diff/__tests__/DiffLine.test.tsx",
+        "src/components/diff/__tests__/StringDiff.test.tsx",
+        "src/hooks/__tests__/useHighlightedLines.test.tsx"
+      ],
+      "components": [
+        "web/src/components/diff/DiffLine.tsx",
+        "web/src/components/diff/StringDiff.tsx",
+        "web/src/hooks/useHighlightedLines.ts"
+      ]
+    },
+    {
       "id": "devices",
       "kind": "live-playwright",
       "risk": "low",
