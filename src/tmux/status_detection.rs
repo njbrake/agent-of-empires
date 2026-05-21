@@ -964,6 +964,66 @@ pub fn detect_qwen_status(raw_content: &str) -> Status {
     Status::Idle
 }
 
+pub fn detect_antigravity_status(raw_content: &str) -> Status {
+    let content = raw_content.to_lowercase();
+    let lines: Vec<&str> = content.lines().collect();
+    let non_empty_lines: Vec<&str> = lines
+        .iter()
+        .filter(|l| !l.trim().is_empty())
+        .copied()
+        .collect();
+
+    let last_lines_lower: String = non_empty_lines
+        .iter()
+        .rev()
+        .take(30)
+        .rev()
+        .copied()
+        .collect::<Vec<&str>>()
+        .join("\n");
+
+    if last_lines_lower.contains("not signed in")
+        || last_lines_lower.contains("signing in")
+        || last_lines_lower.contains("authorization url")
+        || last_lines_lower.contains("authorization code")
+        || last_lines_lower.contains("google sign-in")
+    {
+        return Status::Waiting;
+    }
+
+    if contains_approval_prompt(
+        &last_lines_lower,
+        &[
+            "permission request",
+            "do you trust the contents",
+            "yes, i trust this folder",
+            "execute?",
+            "run command?",
+            "enter to select",
+            "enter confirm",
+            "esc to cancel",
+        ],
+    ) {
+        return Status::Waiting;
+    }
+
+    if last_lines_lower.contains("esc to interrupt")
+        || last_lines_lower.contains("ctrl+c to interrupt")
+    {
+        return Status::Running;
+    }
+
+    if has_any_spinner(&lines) {
+        return Status::Running;
+    }
+
+    if matches_input_prompt(&non_empty_lines, 10, &["agy>"]) {
+        return Status::Waiting;
+    }
+
+    Status::Idle
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2058,6 +2118,67 @@ run this command? (y/n)
     fn test_detect_qwen_status_idle() {
         assert_eq!(detect_qwen_status("file saved"), Status::Idle);
         assert_eq!(detect_qwen_status("random output text"), Status::Idle);
+    }
+
+    #[test]
+    fn test_detect_antigravity_status_waiting_for_auth() {
+        let content = "\
+     ▄▀▀▄
+    ▀▀▀▀▀▀
+
+ Welcome to the Antigravity CLI. You are currently not signed in.
+
+ ⣻  Signing in...";
+        assert_eq!(detect_antigravity_status(content), Status::Waiting);
+    }
+
+    #[test]
+    fn test_detect_antigravity_status_waiting_for_workspace_trust() {
+        let content = "\
+Accessing workspace:
+
+/tmp/aoe-agy-smoke-proj
+
+Do you trust the contents of this project?
+
+Antigravity CLI requires permission to read, edit, and execute files here.
+
+> Yes, I trust this folder
+  No, exit
+
+  ↑/↓ Navigate · enter Confirm
+                                                         Gemini 3.5 Flash (High)";
+        assert_eq!(detect_antigravity_status(content), Status::Waiting);
+    }
+
+    #[test]
+    fn test_detect_antigravity_status_running() {
+        assert_eq!(
+            detect_antigravity_status("processing request\nesc to interrupt"),
+            Status::Running
+        );
+        assert_eq!(
+            detect_antigravity_status("⠋ Thinking about your request"),
+            Status::Running
+        );
+    }
+
+    #[test]
+    fn test_detect_antigravity_status_waiting_for_prompt() {
+        assert_eq!(
+            detect_antigravity_status("run command? (y/n)"),
+            Status::Waiting
+        );
+        assert_eq!(detect_antigravity_status("complete\nagy>"), Status::Waiting);
+    }
+
+    #[test]
+    fn test_detect_antigravity_status_idle() {
+        assert_eq!(detect_antigravity_status("file saved"), Status::Idle);
+        assert_eq!(
+            detect_antigravity_status("random output text"),
+            Status::Idle
+        );
     }
 
     #[test]
