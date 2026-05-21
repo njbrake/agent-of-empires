@@ -490,9 +490,9 @@ export function applyEvent(
       // Capture the agent's cumulative cost snapshot as the new
       // baseline so the next UsageUpdate reports cost-since-compact
       // instead of session-lifetime cumulative. See #1354.
-      const compactCumulative =
-        (state.sessionUsage?.cost?.amount ?? 0) +
-        (state.usageBaseline?.cost ?? 0);
+      const compactPriorUsage = state.sessionUsage?.cost?.amount ?? 0;
+      const compactPriorBaseline = state.usageBaseline?.cost ?? 0;
+      const compactCumulative = compactPriorUsage + compactPriorBaseline;
       next.usageBaseline = { cost: compactCumulative };
       next.sessionUsage = null;
       next.activity = [
@@ -540,9 +540,9 @@ export function applyEvent(
       // already stores the delta since the previous baseline, so the
       // new baseline is the sum of both to track the true cumulative.
       // See #1354.
-      const clearCumulative =
-        (state.sessionUsage?.cost?.amount ?? 0) +
-        (state.usageBaseline?.cost ?? 0);
+      const clearPriorUsage = state.sessionUsage?.cost?.amount ?? 0;
+      const clearPriorBaseline = state.usageBaseline?.cost ?? 0;
+      const clearCumulative = clearPriorUsage + clearPriorBaseline;
       next.usageBaseline = { cost: clearCumulative };
       next.sessionUsage = null;
     }
