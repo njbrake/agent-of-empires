@@ -730,6 +730,34 @@
       "components": ["web/src/components/session-wizard/steps/ProjectStep.tsx"]
     },
     {
+      "id": "story.wizard-close-via-escape",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": ["tests/live/cockpit-stories/wizard-close-via-escape.spec.ts"],
+      "components": ["web/src/components/session-wizard/SessionWizard.tsx"]
+    },
+    {
+      "id": "story.profile-delete",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": ["tests/live/cockpit-stories/profile-delete.spec.ts"],
+      "components": ["web/src/components/settings/ProfileSelector.tsx"]
+    },
+    {
+      "id": "story.topbar-go-to-dashboard",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": ["tests/live/cockpit-stories/topbar-go-to-dashboard.spec.ts"],
+      "components": ["web/src/components/TopBar.tsx"]
+    },
+    {
+      "id": "cockpit.story.mode-picker",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": ["tests/live/cockpit-stories/cockpit-mode-picker.spec.ts"],
+      "components": ["web/src/components/cockpit/Composer.tsx"]
+    },
+    {
       "id": "cockpit.rate-limit-recovery",
       "kind": "vitest",
       "risk": "high",
