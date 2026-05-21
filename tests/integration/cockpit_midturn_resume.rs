@@ -12,14 +12,13 @@
 //!    the watchdog must stay disarmed when the session was idle.
 //!
 //! Skipped automatically if `node` is not on PATH.
-
-#![cfg(feature = "serve")]
-// Compiled only in debug builds because the watchdog grace is tunable
-// via `AOE_RESUME_IDLE_GRACE_MS` only under `cfg(debug_assertions)`
-// (see `resume_idle_grace()` in `src/cockpit/acp_client.rs`). Release
-// builds would wait the full 10s production default and fail the
-// 3s assertion below.
-#![cfg(debug_assertions)]
+//!
+//! Note: the parent `main.rs` only compiles this module under
+//! `cfg(all(feature = "serve", debug_assertions))`. Debug-only because
+//! the watchdog grace is tunable via `AOE_RESUME_IDLE_GRACE_MS` only
+//! under `cfg(debug_assertions)` (see `resume_idle_grace()` in
+//! `src/cockpit/acp_client.rs`); release builds would wait the full
+//! 10s production default and fail the 3s assertion below.
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};

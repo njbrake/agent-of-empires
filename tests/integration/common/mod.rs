@@ -1,9 +1,7 @@
 //! Shared helpers for integration tests.
 //!
-//! Files in `tests/` are compiled as separate integration-test crates, so this
-//! module lives under `tests/common/` (not `tests/common.rs`) to avoid being
-//! compiled into its own binary. Each consumer declares `mod common;` at the
-//! top of its test file.
+//! Declared once from `tests/integration/main.rs`; consumers import via
+//! `use crate::common::...`.
 
 use std::path::Path;
 use tempfile::TempDir;
