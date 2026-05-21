@@ -3,9 +3,12 @@ name: Open Release PR
 # Weekly release-staging PR (#1140). Runs every Wednesday at 09:00 UTC,
 # computes the next-patch version from the latest `v*` tag, bumps
 # `Cargo.toml` + `Cargo.lock`, and opens a PR labeled `release-staging`
-# with a changelog grouped by conventional-commit prefix. Merging that
-# PR fires `tag-release-pr.yml`, which tags the merge commit and
-# triggers `release.yml`.
+# with a plain newest-first commit list in the body. Merging that PR
+# fires `tag-release-pr.yml`, which tags the merge commit and triggers
+# `release.yml`.
+#
+# A richer conventional-commit changelog is queued for #1387 (git-cliff
+# wiring); until then the dumb dump is enough for maintainer review.
 #
 # The maintainer's only manual step is (optionally) editing the version
 # bump in the PR (patch -> minor/major) before clicking merge.
@@ -114,53 +117,19 @@ jobs:
             echo "Comparing $LAST_TAG..HEAD"
           fi
 
-          declare -A SECTIONS=(
-            [feat]='Features'
-            [fix]='Fixes'
-            [refactor]='Refactors'
-            [perf]='Performance'
-            [docs]='Docs'
-            [test]='Tests'
-            [chore]='Chores'
-            [ci]='CI'
-            [build]='Build'
-            [revert]='Reverts'
-          )
-          ORDER=(feat fix refactor perf docs test chore ci build revert)
-
-          declare -A BUCKETS=()
-          OTHER=""
-          while IFS= read -r line; do
-            [ -z "$line" ] && continue
-            # Extract `type(scope)?:` (optional scope, optional `!` for breaking)
-            if [[ "$line" =~ ^([a-z]+)(\([^)]+\))?!?:\ (.*)$ ]]; then
-              kind="${BASH_REMATCH[1]}"
-              rest="${BASH_REMATCH[3]}"
-              if [[ -n "${SECTIONS[$kind]:-}" ]]; then
-                BUCKETS[$kind]="${BUCKETS[$kind]:-}- ${line}"$'\n'
-                continue
-              fi
-            fi
-            OTHER="${OTHER}- ${line}"$'\n'
-          done < <(git log ${RANGE} --pretty=format:'%s')
-
+          # Simple newest-first commit dump. Proper conventional-commit
+          # grouping lands once #1387 wires git-cliff in; until then, a
+          # plain `git log` is honest about what's in the release and
+          # avoids hand-rolled regex parsing that would just get thrown
+          # away.
           {
             echo "## Changes since ${LAST_TAG:-the dawn of time}"
             echo
-            for kind in "${ORDER[@]}"; do
-              if [[ -n "${BUCKETS[$kind]:-}" ]]; then
-                echo "### ${SECTIONS[$kind]}"
-                echo
-                printf '%s' "${BUCKETS[$kind]}"
-                echo
-              fi
-            done
-            if [[ -n "$OTHER" ]]; then
-              echo "### Other"
-              echo
-              printf '%s' "$OTHER"
-              echo
-            fi
+            git log ${RANGE} \
+              --no-merges \
+              --pretty=format:'- %s (`%h`, %an, %ad)' \
+              --date=short
+            echo
           } > /tmp/changelog.md
 
           echo "Generated changelog:"

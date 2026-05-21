@@ -9,6 +9,8 @@ How `agent-of-empires` ships. Maintainer-facing reference for the weekly automat
 - Default semver bump is **patch**. The maintainer reviews the PR, optionally edits the version bump on the branch (patch -> minor / major), then clicks merge.
 - Merging the PR fires `.github/workflows/tag-release-pr.yml`, which tags the merge commit. The tag push triggers `.github/workflows/release.yml`, which builds the four platform binaries and publishes the GitHub release + ClawHub artifact.
 
+The staging PR body currently embeds a plain newest-first commit list. A richer conventional-commit grouped changelog (via [git-cliff](https://github.com/orhun/git-cliff)) is queued for #1387.
+
 The maintainer's only manual step on a normal release is: review the PR, optionally edit the version bump, click merge.
 
 ## Weekly release-staging PR
@@ -27,7 +29,7 @@ The workflow:
 2. Computes the next version based on the bump (defaults to patch).
 3. Refuses to run if the tag or the staging branch already exists.
 4. Bumps `Cargo.toml` + `Cargo.lock` on a new branch `release-staging/vX.Y.Z`.
-5. Generates a changelog by grouping commit subjects since the last `v*` tag into conventional-commit buckets (`feat`, `fix`, `refactor`, etc.).
+5. Dumps every commit since the last `v*` tag (newest first, `--no-merges`, with author + short SHA + date) into the PR body. Conventional-commit grouping lands with #1387 once `git-cliff` is wired up.
 6. Opens the PR labeled `release-staging`, with a `<!-- release-version: X.Y.Z -->` marker in the body.
 
 ### Adjusting the bump in-flight
