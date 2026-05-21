@@ -450,6 +450,13 @@
       "components": ["web/src/components/cockpit/Composer.tsx"]
     },
     {
+      "id": "cockpit.story.approval-allow",
+      "kind": "live-playwright",
+      "risk": "high",
+      "specs": ["tests/live/cockpit-stories/approval-allow.spec.ts"],
+      "components": ["web/src/components/cockpit/ApprovalCard.tsx"]
+    },
+    {
       "id": "cockpit.rate-limit-recovery",
       "kind": "vitest",
       "risk": "high",
