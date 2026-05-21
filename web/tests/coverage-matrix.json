@@ -125,6 +125,20 @@
       "components": ["web/src/components/TopBar.tsx"]
     },
     {
+      "id": "app-shell.routing",
+      "kind": "mocked-playwright",
+      "risk": "high",
+      "specs": ["tests/routing.spec.ts"],
+      "components": []
+    },
+    {
+      "id": "app-shell.sessions-loaded-sentinel",
+      "kind": "vitest",
+      "risk": "high",
+      "specs": ["src/hooks/useSessions.test.ts"],
+      "components": []
+    },
+    {
       "id": "profiles.lifecycle",
       "kind": "live-playwright",
       "risk": "high",
@@ -205,6 +219,13 @@
       "components": ["web/src/components/WorkspaceSidebar.tsx"]
     },
     {
+      "id": "sidebar.favorite-indicator",
+      "kind": "deferred",
+      "issue": "https://github.com/njbrake/agent-of-empires/issues/986",
+      "risk": "low",
+      "components": ["web/src/components/WorkspaceSidebar.tsx"]
+    },
+    {
       "id": "session.lifecycle",
       "kind": "live-playwright",
       "risk": "high",
@@ -223,6 +244,21 @@
       "risk": "low",
       "specs": ["src/components/__tests__/DeleteSessionDialog.test.tsx"],
       "components": ["web/src/components/DeleteSessionDialog.tsx"]
+    },
+    {
+      "id": "storage.quota-crash-regression",
+      "kind": "mocked-playwright",
+      "risk": "high",
+      "specs": [
+        "tests/sidebar-resize-quota.spec.ts",
+        "src/components/__tests__/ContentSplit.quota.test.tsx",
+        "src/lib/safeStorage.test.ts"
+      ],
+      "components": [
+        "web/src/lib/safeStorage.ts",
+        "web/src/components/WorkspaceSidebar.tsx",
+        "web/src/components/ContentSplit.tsx"
+      ]
     },
     {
       "id": "right-panel.diff",
@@ -245,6 +281,21 @@
         "web/src/components/diff/comments/CommentsBanner.tsx",
         "web/src/components/diff/comments/DiffCommentsUserCard.tsx",
         "web/src/components/diff/comments/SendCommentsDialog.tsx"
+      ]
+    },
+    {
+      "id": "right-panel.diff-line-visibility",
+      "kind": "vitest",
+      "risk": "high",
+      "specs": [
+        "src/components/diff/__tests__/DiffLine.test.tsx",
+        "src/components/diff/__tests__/StringDiff.test.tsx",
+        "src/hooks/__tests__/useHighlightedLines.test.tsx"
+      ],
+      "components": [
+        "web/src/components/diff/DiffLine.tsx",
+        "web/src/components/diff/StringDiff.tsx",
+        "web/src/hooks/useHighlightedLines.ts"
       ]
     },
     {
@@ -360,11 +411,32 @@
       "components": []
     },
     {
+      "id": "cockpit.usage-baseline",
+      "kind": "vitest",
+      "risk": "medium",
+      "specs": ["src/lib/cockpitTypes.test.ts"],
+      "components": ["web/src/lib/cockpitTypes.ts"]
+    },
+    {
       "id": "cockpit.drafts",
       "kind": "vitest",
       "risk": "medium",
       "specs": ["src/lib/cockpitDrafts.test.ts"],
       "components": ["web/src/lib/cockpitDrafts.ts"]
+    },
+    {
+      "id": "cockpit.queue-drain-clear-split",
+      "kind": "vitest",
+      "risk": "high",
+      "specs": [
+        "src/hooks/useCockpit.queue.test.ts",
+        "src/lib/agentProfiles.test.ts"
+      ],
+      "components": [
+        "web/src/hooks/useCockpit.ts",
+        "web/src/lib/agentProfiles.ts",
+        "web/src/components/cockpit/CockpitView.tsx"
+      ]
     },
     {
       "id": "cockpit.files-index",

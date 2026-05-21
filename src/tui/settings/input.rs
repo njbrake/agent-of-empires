@@ -678,6 +678,16 @@ impl SettingsView {
                     s.snooze_duration_minutes = None;
                 }
             }
+            FieldKey::RestartWakeMessage => {
+                if let Some(ref mut s) = config.session {
+                    s.restart_wake_message = None;
+                }
+            }
+            FieldKey::RowTag => {
+                if let Some(ref mut s) = config.session {
+                    s.row_tag = None;
+                }
+            }
             FieldKey::AgentExtraArgs => {
                 if let Some(ref mut s) = config.session {
                     s.agent_extra_args = None;
@@ -925,6 +935,7 @@ impl SettingsView {
             }
             // Logging is global-only for v1 (no profile overrides); the
             // "clear override" gesture is a no-op for these keys.
+            // SessionIdPollerMaxThreads is also global-only.
             FieldKey::LoggingDefaultLevel
             | FieldKey::LoggingTarget(_)
             | FieldKey::LoggingOutput
@@ -932,7 +943,8 @@ impl SettingsView {
             | FieldKey::LoggingRotation
             | FieldKey::LoggingMaxSizeMib
             | FieldKey::LoggingKeepCount
-            | FieldKey::LoggingShowSpans => {}
+            | FieldKey::LoggingShowSpans
+            | FieldKey::SessionIdPollerMaxThreads => {}
             FieldKey::HostEnvironment => {
                 config.environment = None;
             }

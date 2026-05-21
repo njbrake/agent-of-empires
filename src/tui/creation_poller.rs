@@ -146,6 +146,7 @@ impl CreationPoller {
         let has_on_create = hooks.as_ref().is_some_and(|h| !h.on_create.is_empty());
         let has_on_launch = hooks.as_ref().is_some_and(|h| !h.on_launch.is_empty());
         let mut container_started = false;
+        let hook_env = repo_config::lifecycle_env_vars(&instance);
 
         // Execute on_create hooks after worktree setup, before starting
         if has_on_create {
@@ -170,6 +171,7 @@ impl CreationPoller {
                         &sandbox.container_name,
                         &workdir,
                         progress_tx,
+                        &hook_env,
                     ) {
                         tracing::warn!(target: "session.create", "on_create hook failed in container: {:#}", e);
                         return CreationResult::Error(format!("on_create hook failed: {:#}", e));
@@ -179,6 +181,7 @@ impl CreationPoller {
                 &hooks.on_create,
                 std::path::Path::new(&instance.project_path),
                 progress_tx,
+                &hook_env,
             ) {
                 builder::cleanup_instance(
                     &instance,
@@ -211,6 +214,7 @@ impl CreationPoller {
                             &sandbox.container_name,
                             &workdir,
                             progress_tx,
+                            &hook_env,
                         ) {
                             tracing::warn!(target: "session.create", "on_launch hook failed in container: {}", e);
                         }
@@ -220,6 +224,7 @@ impl CreationPoller {
                 &hooks.on_launch,
                 std::path::Path::new(&instance.project_path),
                 progress_tx,
+                &hook_env,
             ) {
                 tracing::warn!(target: "session.create", "on_launch hook failed: {}", e);
             }

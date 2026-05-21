@@ -103,6 +103,53 @@ class ShimAgent {
       return { stopReason: "cancelled" };
     }
 
+    // ASYNC_AGENT_ORPHAN reproduces the Claude SDK async-agent shape
+    // for the #1360 watchdog suppression test. Sequence:
+    //   1. emit tool_call for an Agent invocation
+    //   2. emit tool_call_update with status=completed and content text
+    //      "Async agent launched successfully. agentId: ..." (the marker
+    //      the Rust classifier looks for to flip async_agent_running)
+    //   3. park until cancel() resolves the promise
+    // The Rust test then drains for longer than the base watchdog grace
+    // and asserts NO `prompt_orphaned` Stopped frame arrived. Without
+    // the async detection, the watchdog would fire ~300ms after the
+    // completion; with it, the effective grace is lifted to 30 minutes
+    // so the test window stays silent.
+    if (userText.includes("ASYNC_AGENT_ORPHAN")) {
+      await this.connection.sessionUpdate({
+        sessionId: params.sessionId,
+        update: {
+          sessionUpdate: "tool_call",
+          toolCallId: "tc-async-agent-1",
+          title: "Research async target",
+          kind: "other",
+          status: "pending",
+          rawInput: { description: "Research target", prompt: "..." },
+        },
+      });
+      await this.connection.sessionUpdate({
+        sessionId: params.sessionId,
+        update: {
+          sessionUpdate: "tool_call_update",
+          toolCallId: "tc-async-agent-1",
+          status: "completed",
+          content: [
+            {
+              type: "content",
+              content: {
+                type: "text",
+                text: "Async agent launched successfully.\nagentId: async-test-1 (internal ID)",
+              },
+            },
+          ],
+        },
+      });
+      await new Promise((resolve) => {
+        this._silentOrphanResolve = resolve;
+      });
+      return { stopReason: "cancelled" };
+    }
+
     // Optional slow path: tests that need to observe mid-turn UI
     // (e.g. the working spinner) include "SLOW" in the prompt so the
     // shim adds a configurable delay between events.

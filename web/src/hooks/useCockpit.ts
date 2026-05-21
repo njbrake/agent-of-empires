@@ -20,7 +20,10 @@ import {
   type QueuedPrompt,
 } from "../lib/cockpitTypes";
 import { useCockpitPrefs } from "../lib/cockpitPrefs";
+import { isClearAlias } from "../lib/agentProfiles";
+import { useAgentProfile } from "../lib/agentProfileContext";
 import { getOrCreateDeviceBindingSecret } from "../lib/deviceBinding";
+import { safeSetItem } from "../lib/safeStorage";
 import { getToken } from "../lib/token";
 
 export type Action =
@@ -75,18 +78,71 @@ function storageKey(sessionId: string): string {
   return STORAGE_KEY_PREFIX + sessionId;
 }
 
-function persistState(sessionId: string, state: CockpitState): void {
-  if (typeof window === "undefined") return;
+// Walk `aoe:cockpit-state:v1:*` keys and remove the single oldest one
+// (by `savedAt`), preferring corrupt entries when present. Returns true
+// when an entry was removed so the caller can retry the write. The
+// whitelist filter is load-bearing: it must never touch `cockpit:draft:*`
+// or any unrelated key. Drafts are authoritative client-side state and
+// cross-tab subscribers observe their removal immediately, so silently
+// evicting them would be data loss (see #1345 debate).
+function evictOldestPersistedCockpitState(currentKey: string): boolean {
+  if (typeof window === "undefined") return false;
   try {
-    const entry: PersistedEntry = { savedAt: Date.now(), state };
-    window.localStorage.setItem(storageKey(sessionId), JSON.stringify(entry));
+    let oldestKey: string | null = null;
+    let oldestTime = Infinity;
+    let firstCorruptKey: string | null = null;
+    for (let i = 0; i < window.localStorage.length; i++) {
+      const k = window.localStorage.key(i);
+      if (!k || !k.startsWith(STORAGE_KEY_PREFIX)) continue;
+      if (k === currentKey) continue;
+      const raw = window.localStorage.getItem(k);
+      if (raw === null) continue;
+      try {
+        const parsed = JSON.parse(raw) as PersistedEntry | null;
+        if (
+          !parsed ||
+          typeof parsed.savedAt !== "number" ||
+          Number.isNaN(parsed.savedAt)
+        ) {
+          if (firstCorruptKey === null) firstCorruptKey = k;
+          continue;
+        }
+        if (parsed.savedAt < oldestTime) {
+          oldestTime = parsed.savedAt;
+          oldestKey = k;
+        }
+      } catch {
+        if (firstCorruptKey === null) firstCorruptKey = k;
+      }
+    }
+    const victim = firstCorruptKey ?? oldestKey;
+    if (!victim) return false;
+    window.localStorage.removeItem(victim);
+    return true;
   } catch {
-    // Quota exceeded, private mode, or storage disabled. The in-memory
-    // cache still works; the next reload will fall back to the full
-    // replay path. Drop quietly so a single oversized session can't
-    // surface as a banner.
+    return false;
   }
 }
+
+function persistState(sessionId: string, state: CockpitState): void {
+  const key = storageKey(sessionId);
+  const body = JSON.stringify({ savedAt: Date.now(), state } satisfies PersistedEntry);
+  if (safeSetItem(key, body)) return;
+  // Storage write failed (likely QuotaExceeded). Evict a single oldest
+  // cockpit cache entry and retry exactly once. On a second failure the
+  // cache is best-effort: the next reload replays from the server, so
+  // we stay silent here per the deliberate UX choice for cache writes.
+  if (!evictOldestPersistedCockpitState(key)) return;
+  safeSetItem(key, body);
+}
+
+// Test-only exports so the eviction policy can be exercised without
+// driving the full hook lifecycle. Not part of the public API.
+export const __test = {
+  persistState,
+  evictOldestPersistedCockpitState,
+  STORAGE_KEY_PREFIX,
+};
 
 function loadPersistedState(sessionId: string): CockpitState | undefined {
   if (typeof window === "undefined") return undefined;
@@ -415,6 +471,18 @@ export function useCockpit(
   useEffect(() => {
     drainModeRef.current = queueDrainMode;
   }, [queueDrainMode]);
+  // Clear-conversation aliases for the session's active agent. The drain
+  // effect needs them to slice the queued-prompt snapshot at clear-command
+  // boundaries so `/clear` (claude) / `/new` (codex, opencode) fires as a
+  // standalone POST instead of being glued into a multi-paragraph combined
+  // prompt; the server's `is_clear_command` is head-anchored on a trimmed
+  // prompt, and an agent SDK receiving `/clear\n\n<follow-up>` does not
+  // see a clean clear boundary. See #1356.
+  const agentProfile = useAgentProfile();
+  const clearAliasesRef = useRef(agentProfile.clearAliases);
+  useEffect(() => {
+    clearAliasesRef.current = agentProfile.clearAliases;
+  }, [agentProfile.clearAliases]);
   // Mirror the server-side retention cap onto the reducer's
   // in-memory activity buffer. Without this, a frontend-only 200-row
   // cap clipped the rendered transcript regardless of what the user
@@ -974,12 +1042,38 @@ export function useCockpit(
     if (state.queuedPrompts.length === 0) return;
     drainingRef.current = true;
     if (drainModeRef.current === "combined") {
-      // Snapshot the ids we're about to send. The user can enqueue MORE
-      // prompts during the await; on success we only clear the items in
-      // the snapshot so newly-typed entries survive into the next turn.
-      // On failure (POST non-OK / network blip / WS dropped mid-send)
-      // we leave the queue untouched so the next Stopped retries.
-      const snapshot = state.queuedPrompts.slice();
+      // Slice the leading sub-batch out of the queue and POST only that.
+      // The boundary is each clear-command alias (`/clear`, `/new`); when
+      // the head is a clear alias it fires alone, otherwise the run of
+      // non-clear entries up to the next alias is joined into one
+      // combined POST. The remaining entries stay queued and the next
+      // `Stopped` re-runs this effect, dispatching the next sub-batch.
+      // Single-pass POST per drain matches the existing combined-mode
+      // contract (one prompt fires per turn cycle), and the agent sees a
+      // clean clear-command boundary instead of `/clear\n\n<text>`.
+      // See #1356.
+      //
+      // The user can enqueue MORE prompts during the await; on success
+      // we only clear the items in the snapshot so newly-typed entries
+      // survive into the next turn. On failure (POST non-OK / network
+      // blip / WS dropped mid-send) we leave the queue untouched so the
+      // next Stopped retries.
+      const queue = state.queuedPrompts;
+      const aliases = clearAliasesRef.current;
+      const headIsClear =
+        aliases.length > 0 && isClearAlias(queue[0]!.text, aliases);
+      let batchEnd = 1;
+      if (!headIsClear && aliases.length > 0) {
+        while (
+          batchEnd < queue.length &&
+          !isClearAlias(queue[batchEnd]!.text, aliases)
+        ) {
+          batchEnd += 1;
+        }
+      } else if (aliases.length === 0) {
+        batchEnd = queue.length;
+      }
+      const snapshot = queue.slice(0, batchEnd);
       const combined = combineQueuedPrompts(snapshot);
       const sentIds = snapshot.map((q) => q.id);
       void dispatchPromptNow(combined)

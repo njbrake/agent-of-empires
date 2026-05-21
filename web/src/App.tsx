@@ -4,6 +4,7 @@ import { IDLE_DECAY_WINDOW_MS, isSessionActive } from "./lib/session";
 import { useSessions } from "./hooks/useSessions";
 import { clearCockpitCache } from "./hooks/useCockpit";
 import { CockpitPrefsProvider } from "./lib/cockpitPrefs";
+import { safeGetItem, safeSetItem } from "./lib/safeStorage";
 import { useWorkspaces } from "./hooks/useWorkspaces";
 import { useRepoGroups } from "./hooks/useRepoGroups";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
@@ -195,6 +196,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
     setWorkspaceOrdering,
     markLocalOrderingUpdate,
     error,
+    loaded: sessionsLoaded,
     injectSession,
     setSessionStatus,
   } = useSessions();
@@ -232,13 +234,13 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
   const selectedFilePath = selectedFile?.path ?? null;
   const selectedRepoName = selectedFile?.repoName;
   const [diffCollapsed, setDiffCollapsed] = useState(() => {
-    const stored = localStorage.getItem(RIGHT_PANEL_COLLAPSED_KEY);
+    const stored = safeGetItem(RIGHT_PANEL_COLLAPSED_KEY);
     if (stored === "1") return true;
     if (stored === "0") return false;
     return window.innerWidth < 768;
   });
   useEffect(() => {
-    localStorage.setItem(RIGHT_PANEL_COLLAPSED_KEY, diffCollapsed ? "1" : "0");
+    safeSetItem(RIGHT_PANEL_COLLAPSED_KEY, diffCollapsed ? "1" : "0");
   }, [diffCollapsed]);
   const [showSessionWizard, setShowSessionWizard] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
@@ -644,6 +646,16 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
           readOnly={serverAbout?.read_only}
         />
       );
+    }
+
+    // Refresh on `/session/<id>` paints once with `sessions === []` before
+    // the first poll resolves. Without this guard the lookup misses, the
+    // dashboard fallback renders, and the cockpit/terminal view only
+    // reappears once the fetch lands. Hold the minimal pre-auth shell
+    // until the first fetch settles, then let the real fallback decide.
+    // See #1351.
+    if (activeSessionId && !sessionsLoaded) {
+      return <div className="h-dvh bg-surface-900 safe-area-inset" />;
     }
 
     if (!activeWorkspace || !activeSession) {

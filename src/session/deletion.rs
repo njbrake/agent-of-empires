@@ -342,16 +342,12 @@ pub fn perform_deletion(request: &DeletionRequest) -> DeletionResult {
 /// the same trust verification as on_launch: if the hooks hash has changed
 /// since the user last approved, repo hooks are silently skipped.
 fn run_on_destroy_hooks(instance: &Instance, detach: bool) {
-    let profile = if instance.source_profile.is_empty() {
-        "default"
-    } else {
-        &instance.source_profile
-    };
+    let profile = crate::session::config::effective_profile(&instance.source_profile);
 
     let project_path = Path::new(&instance.project_path);
 
     // Start with global+profile on_destroy hooks (implicitly trusted).
-    let mut resolved_on_destroy = crate::session::profile_config::resolve_config_or_warn(profile)
+    let mut resolved_on_destroy = crate::session::profile_config::resolve_config_or_warn(&profile)
         .hooks
         .on_destroy;
 
@@ -375,6 +371,7 @@ fn run_on_destroy_hooks(instance: &Instance, detach: bool) {
     tracing::info!(target: "session.delete", "Running on_destroy hooks for session {}", instance.id);
 
     let is_sandboxed = instance.sandbox_info.as_ref().is_some_and(|s| s.enabled);
+    let hook_env = repo_config::lifecycle_env_vars(instance);
 
     // The caller controls detachment: TUI/web pass detach=true to avoid
     // corrupting the rendered UI (see issue #901); CLI passes detach=false
@@ -387,12 +384,18 @@ fn run_on_destroy_hooks(instance: &Instance, detach: bool) {
                 &sandbox.container_name,
                 &workdir,
                 detach,
+                &hook_env,
             )
         } else {
             vec![]
         }
     } else {
-        repo_config::execute_hooks_best_effort(&resolved_on_destroy, project_path, detach)
+        repo_config::execute_hooks_best_effort(
+            &resolved_on_destroy,
+            project_path,
+            detach,
+            &hook_env,
+        )
     };
 
     if !errors.is_empty() {

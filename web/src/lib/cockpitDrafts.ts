@@ -5,7 +5,34 @@
 
 import { useMemo, useSyncExternalStore } from "react";
 
+import {
+  safeGetItem,
+  safeRemoveItem,
+  safeSetItem,
+} from "./safeStorage";
+import { toastBus } from "./toastBus";
+
 const DRAFT_KEY_PREFIX = "cockpit:draft:";
+
+// Sessions that have already surfaced a "storage full" toast this page
+// load. We dedupe so the composer does not toast on every keystroke once
+// storage is full. A successful write for the same session id clears the
+// flag, so a later exhaustion event after the user frees space surfaces
+// a fresh toast. Per-session granularity means two sessions failing in
+// parallel each get their own (single) toast. See #1345.
+const toastedSessions = new Set<string>();
+
+function notifyDraftPersistFailure(sessionId: string): void {
+  if (toastedSessions.has(sessionId)) return;
+  toastedSessions.add(sessionId);
+  toastBus.handler?.error(
+    "Storage full: unsent draft not saved. Free space or copy your draft elsewhere.",
+  );
+}
+
+function clearDraftPersistFailure(sessionId: string): void {
+  toastedSessions.delete(sessionId);
+}
 
 function draftKey(sessionId: string): string {
   return `${DRAFT_KEY_PREFIX}${sessionId}`;
@@ -30,34 +57,38 @@ function notify(sessionId: string | null) {
   }
 }
 
+// Test-only hook for resetting the per-session toast dedupe between
+// cases. Not part of the public API.
+export function __resetDraftPersistFailureNotifications(): void {
+  toastedSessions.clear();
+}
+
 export function getDraft(sessionId: string): string {
-  try {
-    return localStorage.getItem(draftKey(sessionId)) ?? "";
-  } catch {
-    return "";
-  }
+  return safeGetItem(draftKey(sessionId)) ?? "";
 }
 
 export function setDraft(sessionId: string, text: string): void {
-  try {
-    if (text.length === 0) {
-      localStorage.removeItem(draftKey(sessionId));
-    } else {
-      localStorage.setItem(draftKey(sessionId), text);
-    }
-  } catch {
-    /* localStorage blocked / quota; persistence is best-effort */
+  let ok = true;
+  if (text.length === 0) {
+    safeRemoveItem(draftKey(sessionId));
+  } else {
+    ok = safeSetItem(draftKey(sessionId), text);
+  }
+  if (!ok) {
+    // Non-empty draft failed to persist. Surface a single toast per
+    // session so the user knows their unsent text is at risk.
+    notifyDraftPersistFailure(sessionId);
+  } else {
+    // Any successful write (including a removal that clears the draft)
+    // resets the dedupe, so a later exhaustion re-toasts.
+    clearDraftPersistFailure(sessionId);
   }
   notify(sessionId);
 }
 
 export function hasDraft(sessionId: string): boolean {
-  try {
-    const v = localStorage.getItem(draftKey(sessionId));
-    return v !== null && v.length > 0;
-  } catch {
-    return false;
-  }
+  const v = safeGetItem(draftKey(sessionId));
+  return v !== null && v.length > 0;
 }
 
 // Subscribe to draft changes. `filter` scopes the listener to a specific

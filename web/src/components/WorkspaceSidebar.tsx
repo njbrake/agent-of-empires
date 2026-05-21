@@ -35,6 +35,7 @@ import type {
   Workspace,
 } from "../lib/types";
 import { MULTI_REPO_GROUP_ID } from "../hooks/useRepoGroups";
+import { safeGetItem, safeSetItem } from "../lib/safeStorage";
 import {
   STATUS_DOT_CLASS,
   getStatusTextClass,
@@ -126,14 +127,10 @@ function detectNotifyPreset(
 }
 
 function loadSavedWidth(): number {
-  try {
-    const saved = localStorage.getItem(SIDEBAR_WIDTH_KEY);
-    if (saved) {
-      const w = parseInt(saved, 10);
-      if (w >= MIN_WIDTH && w <= MAX_WIDTH) return w;
-    }
-  } catch {
-    // ignore
+  const saved = safeGetItem(SIDEBAR_WIDTH_KEY);
+  if (saved) {
+    const w = parseInt(saved, 10);
+    if (w >= MIN_WIDTH && w <= MAX_WIDTH) return w;
   }
   return DEFAULT_WIDTH;
 }
@@ -387,6 +384,11 @@ const SessionRow = memo(function SessionRow({
   const subtitleTitle = subtitle && baseBranch
     ? `${subtitle} (based on ${baseBranch})`
     : subtitle;
+  // Workspace renders as favorited when any of its sessions are
+  // favorited. Mirrors the TUI's within-tier pin: the star promotes the
+  // row visually so the user can find their starred work fast. Toggled
+  // via TUI `f`/`F` or `aoe session favorite|unfavorite`.
+  const isFavorited = workspace.sessions.some((s) => s.favorited);
   const sessionId = firstSession?.id;
   const navigationSessionId = runningSession?.id ?? firstSession?.id ?? null;
   const sessionPath = navigationSessionId
@@ -585,7 +587,16 @@ const SessionRow = memo(function SessionRow({
             />
           </span>
           <div className="min-w-0 flex-1">
-            <span className={`flex items-center gap-1.5 text-[13px] md:text-[14px] ${isSessionActive({ status: sessionStatus, idle_entered_at: idleEnteredAt }, idleDecayWindowMs) ? textClass : isActive ? "text-text-primary" : "text-text-secondary"}`}>
+            <span className={`flex items-center gap-1.5 text-[13px] md:text-[14px] ${isSessionActive({ status: sessionStatus, idle_entered_at: idleEnteredAt }, idleDecayWindowMs) ? textClass : isActive ? "text-text-primary" : "text-text-secondary"} ${isFavorited ? "font-semibold" : ""}`}>
+              {isFavorited && (
+                <span
+                  title="Favorited"
+                  aria-label="Favorited"
+                  className="shrink-0 text-amber-300"
+                >
+                  *
+                </span>
+              )}
               <span className="truncate" title={label}>{label}</span>
               {hasDraft && (
                 <span
@@ -918,7 +929,7 @@ export function WorkspaceSidebar({
       document.body.style.cursor = "";
       document.body.style.userSelect = "";
       setWidth((w) => {
-        localStorage.setItem(SIDEBAR_WIDTH_KEY, String(w));
+        safeSetItem(SIDEBAR_WIDTH_KEY, String(w));
         return w;
       });
     };
@@ -1122,6 +1133,7 @@ export function WorkspaceSidebar({
       </div>
       {/* Resize handle (desktop only) */}
       <div
+        data-testid="sidebar-resize-handle"
         onMouseDown={handleMouseDown}
         className="hidden md:block w-1 cursor-col-resize shrink-0 bg-surface-800 hover:bg-brand-600/50 transition-colors duration-75"
       />

@@ -147,6 +147,34 @@ const PAGES = [
       "Configure audio feedback for agent state transitions in Agent of Empires.",
   },
   {
+    source: "docs/push-notifications.md",
+    dest: "docs/push-notifications.md",
+    title: "Push Notifications",
+    description:
+      "Browser and PWA push notifications for Agent of Empires session status changes and cockpit approvals.",
+  },
+  {
+    source: "docs/features.md",
+    dest: "docs/features.md",
+    title: "Features",
+    description:
+      "Canonical inventory of every Agent of Empires feature, grouped by surface and capability, with links to each guide.",
+  },
+  {
+    source: "docs/guides/podman.md",
+    dest: "guides/podman.md",
+    title: "Podman",
+    description:
+      "Run Agent of Empires sandboxes on Podman, a daemonless and rootless Docker alternative.",
+  },
+  {
+    source: "docs/guides/apple-containers.md",
+    dest: "guides/apple-containers.md",
+    title: "Apple Containers",
+    description:
+      "Run Agent of Empires sandboxes on Apple's native macOS container runtime on Apple silicon.",
+  },
+  {
     source: "docs/guides/configuration.md",
     dest: "docs/guides/configuration.md",
     title: "Configuration Reference",
@@ -197,6 +225,8 @@ const URL_MAP = {
   "docs/installation.md": "/docs/installation/",
   "docs/quick-start.md": "/docs/quick-start/",
   "docs/sounds.md": "/docs/sounds/",
+  "docs/push-notifications.md": "/docs/push-notifications/",
+  "docs/features.md": "/docs/features/",
   "docs/development.md": "/docs/development/",
   "docs/development/adding-agents.md": "/docs/development/adding-agents/",
   "docs/development/logging.md": "/docs/development/logging/",
@@ -218,6 +248,8 @@ const URL_MAP = {
   "docs/guides/session-resume.md": "/guides/session-resume/",
   "docs/guides/multi-repo-workspaces.md": "/guides/multi-repo-workspaces/",
   "docs/guides/tool-sessions.md": "/guides/tool-sessions/",
+  "docs/guides/podman.md": "/guides/podman/",
+  "docs/guides/apple-containers.md": "/guides/apple-containers/",
 };
 
 const GITHUB_BASE =
