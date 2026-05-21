@@ -842,6 +842,62 @@
       "components": ["web/src/components/WorkspaceSidebar.tsx"]
     },
     {
+      "id": "story.delete-session-with-worktree",
+      "kind": "live-playwright",
+      "risk": "high",
+      "specs": ["tests/live/cockpit-stories/delete-session-with-worktree.spec.ts"],
+      "components": ["web/src/components/DeleteSessionDialog.tsx"]
+    },
+    {
+      "id": "story.delete-active-session",
+      "kind": "live-playwright",
+      "risk": "high",
+      "specs": ["tests/live/cockpit-stories/delete-active-session.spec.ts"],
+      "components": ["web/src/components/DeleteSessionDialog.tsx", "web/src/components/WorkspaceSidebar.tsx"]
+    },
+    {
+      "id": "story.mobile-toolbar-arrow-up",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": ["tests/live/cockpit-stories/mobile-toolbar-arrow-up.spec.ts"],
+      "components": ["web/src/components/MobileTerminalToolbar.tsx"]
+    },
+    {
+      "id": "story.mobile-toolbar-tab",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": ["tests/live/cockpit-stories/mobile-toolbar-tab.spec.ts"],
+      "components": ["web/src/components/MobileTerminalToolbar.tsx"]
+    },
+    {
+      "id": "story.mobile-toolbar-escape",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": ["tests/live/cockpit-stories/mobile-toolbar-escape.spec.ts"],
+      "components": ["web/src/components/MobileTerminalToolbar.tsx"]
+    },
+    {
+      "id": "story.mobile-toolbar-ctrl-modifier",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": ["tests/live/cockpit-stories/mobile-toolbar-ctrl-modifier.spec.ts"],
+      "components": ["web/src/components/MobileTerminalToolbar.tsx"]
+    },
+    {
+      "id": "story.mobile-toolbar-ctrl-c",
+      "kind": "live-playwright",
+      "risk": "high",
+      "specs": ["tests/live/cockpit-stories/mobile-toolbar-ctrl-c.spec.ts"],
+      "components": ["web/src/components/MobileTerminalToolbar.tsx"]
+    },
+    {
+      "id": "story.mobile-toolbar-hidden-on-desktop",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": ["tests/live/cockpit-stories/mobile-toolbar-hidden-on-desktop.spec.ts"],
+      "components": ["web/src/components/MobileTerminalToolbar.tsx"]
+    },
+    {
       "id": "cockpit.rate-limit-recovery",
       "kind": "vitest",
       "risk": "high",
