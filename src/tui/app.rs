@@ -282,11 +282,11 @@ impl App {
             terminal.backend_mut(),
             crossterm::terminal::LeaveAlternateScreen,
             DisableBracketedPaste,
-            crossterm::cursor::Show
         )?;
         if crate::tui::mouse_capture_requested() {
             crossterm::execute!(terminal.backend_mut(), DisableMouseCapture)?;
         }
+        crossterm::execute!(terminal.backend_mut(), crossterm::cursor::Show)?;
         self.mouse_captured = false;
         std::io::Write::flush(terminal.backend_mut())?;
 
