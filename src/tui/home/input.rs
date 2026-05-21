@@ -826,16 +826,16 @@ impl HomeView {
             // pane stays gone). Mnemonic: Zzz / archive box. Distinct from
             // `h`/`H` snooze (temporary, auto wakes) and separate from `d`/`D`
             // (destructive delete, unchanged).
-            KeyCode::Char('z') if !self.strict_hotkeys => {
-                if let Err(e) = self.toggle_archive_at_cursor() {
-                    tracing::error!("toggle_archive_at_cursor failed: {}", e);
-                }
-            }
-            KeyCode::Char('Z') if self.strict_hotkeys => {
-                if let Err(e) = self.toggle_archive_at_cursor() {
-                    tracing::error!("toggle_archive_at_cursor failed: {}", e);
-                }
-            }
+            KeyCode::Char('z') if !self.strict_hotkeys => match self.toggle_archive_at_cursor() {
+                Ok(Some(msg)) => return Some(Action::SetTransientStatus(msg)),
+                Ok(None) => {}
+                Err(e) => tracing::error!("toggle_archive_at_cursor failed: {}", e),
+            },
+            KeyCode::Char('Z') if self.strict_hotkeys => match self.toggle_archive_at_cursor() {
+                Ok(Some(msg)) => return Some(Action::SetTransientStatus(msg)),
+                Ok(None) => {}
+                Err(e) => tracing::error!("toggle_archive_at_cursor failed: {}", e),
+            },
             KeyCode::Char('?') => {
                 self.show_help = true;
             }

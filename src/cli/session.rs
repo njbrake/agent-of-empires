@@ -65,8 +65,9 @@ pub enum SessionCommands {
 
     /// Archive a session (sinks it to the bottom of the Attention sort).
     /// Kills the tmux pane unless `--no-kill` is passed. The worktree,
-    /// branch, and container are preserved; use `aoe remove --hard` to
-    /// fully destroy a session.
+    /// branch, and container are preserved; use `aoe remove` (optionally
+    /// with `--delete-worktree` / `--delete-branch`) to fully destroy a
+    /// session.
     Archive(ArchiveArgs),
 
     /// Unarchive a session (restores it to its tier in the Attention sort)

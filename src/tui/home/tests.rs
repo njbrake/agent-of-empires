@@ -3520,3 +3520,47 @@ fn toggle_favorite_at_cursor_returns_none_with_no_selection() {
     let msg = env.view.toggle_favorite_at_cursor().unwrap();
     assert!(msg.is_none(), "expected None when nothing is selected");
 }
+
+/// `toggle_archive_at_cursor` flips the cursor's instance archived state,
+/// persists the change, returns a toast message, and returns Ok(None) when
+/// nothing is selected.
+#[test]
+#[serial]
+fn toggle_archive_at_cursor_round_trip() {
+    let mut env = create_test_env_with_sessions(1);
+    let id = env.view.instances[0].id.clone();
+    env.view.selected_session = Some(id.clone());
+
+    // Initial state: not archived.
+    assert!(!env.view.instances[0].is_archived());
+
+    let archived_msg = env.view.toggle_archive_at_cursor().unwrap();
+    assert!(env.view.instances[0].is_archived());
+    assert!(
+        archived_msg
+            .as_deref()
+            .unwrap_or("")
+            .starts_with("Archived: "),
+        "expected 'Archived: ...' toast, got {archived_msg:?}",
+    );
+
+    let unarchived_msg = env.view.toggle_archive_at_cursor().unwrap();
+    assert!(!env.view.instances[0].is_archived());
+    assert!(
+        unarchived_msg
+            .as_deref()
+            .unwrap_or("")
+            .starts_with("Unarchived: "),
+        "expected 'Unarchived: ...' toast, got {unarchived_msg:?}",
+    );
+}
+
+/// When no session is selected, the toggle is a no-op and returns Ok(None).
+#[test]
+#[serial]
+fn toggle_archive_at_cursor_returns_none_with_no_selection() {
+    let mut env = create_test_env_empty();
+    env.view.selected_session = None;
+    let msg = env.view.toggle_archive_at_cursor().unwrap();
+    assert!(msg.is_none(), "expected None when nothing is selected");
+}
