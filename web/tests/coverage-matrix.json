@@ -639,6 +639,20 @@
       "components": ["web/src/components/ProjectsView.tsx"]
     },
     {
+      "id": "story.palette-session-switch",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": ["tests/live/cockpit-stories/palette-session-switch.spec.ts"],
+      "components": ["web/src/components/command-palette/CommandPalette.tsx", "web/src/hooks/useCommandActions.ts"]
+    },
+    {
+      "id": "story.settings-tmux-select",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": ["tests/live/cockpit-stories/settings-tmux-select.spec.ts"],
+      "components": ["web/src/components/settings/TmuxSettings.tsx", "web/src/components/settings/FormFields.tsx"]
+    },
+    {
       "id": "cockpit.rate-limit-recovery",
       "kind": "vitest",
       "risk": "high",
