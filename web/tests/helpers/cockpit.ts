@@ -1,4 +1,4 @@
-import { expect } from "@playwright/test";
+import { expect, type Page } from "@playwright/test";
 
 /**
  * Wait for the cockpit supervisor to be ready to accept prompts after a
@@ -39,4 +39,30 @@ export async function waitForCockpitReady(
       { timeout: timeoutMs, intervals: [100, 200, 200, 200] },
     )
     .toBeGreaterThan(0);
+}
+
+/**
+ * Wait for the cockpit React surface to be mounted and interactive on
+ * the current page. Resolves when the composer textarea is visible.
+ *
+ * `waitForCockpitReady` checks the server-side supervisor handshake via
+ * disk-backed replay; this checks the client side after `page.goto`. UI
+ * story specs need both: the supervisor must be alive (otherwise prompt
+ * sends drop), and the React tree must have mounted CockpitView so
+ * clicks have something to land on.
+ *
+ * Default timeout is 15s, matching `waitForCockpitReady`; the textbox
+ * appears within a few hundred ms on the local happy path. Lazy-loaded
+ * cockpit chunks (`App.tsx` dynamic `import("./components/cockpit/CockpitView")`)
+ * may add a short delay on first navigation.
+ */
+export async function waitForCockpitView(
+  page: Page,
+  timeoutMs = 15_000,
+): Promise<void> {
+  await expect(
+    page.getByRole("textbox", {
+      name: /Send a message|Queue a follow-up/i,
+    }),
+  ).toBeVisible({ timeout: timeoutMs });
 }
