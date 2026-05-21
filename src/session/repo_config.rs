@@ -1679,15 +1679,21 @@ mod tests {
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())
             .collect();
-        let joined = args.join(" ");
+        // Assert directly against the argv vector so a value with spaces ("My
+        // Title") must be a single argument; a substring match on the joined
+        // string would pass even if the value were split across two args.
+        let has_pair = |k: &str, v: &str| -> bool {
+            args.windows(2)
+                .any(|w| w[0] == "-e" && w[1] == format!("{}={}", k, v))
+        };
         assert!(
-            joined.contains("-e AOE_SESSION_ID=s_abc"),
-            "expected -e AOE_SESSION_ID=s_abc in args, got: {:?}",
+            has_pair("AOE_SESSION_ID", "s_abc"),
+            "expected (-e, AOE_SESSION_ID=s_abc) pair in argv, got: {:?}",
             args
         );
         assert!(
-            joined.contains("-e AOE_SESSION_TITLE=My Title"),
-            "expected -e AOE_SESSION_TITLE=My Title in args, got: {:?}",
+            has_pair("AOE_SESSION_TITLE", "My Title"),
+            "expected (-e, AOE_SESSION_TITLE=My Title) pair as single argv element, got: {:?}",
             args
         );
     }

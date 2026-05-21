@@ -55,7 +55,7 @@ Lifecycle hooks (`on_create`, `on_launch`, `on_destroy`) get session metadata as
 | --- | --- |
 | `AOE_SESSION_ID` | Stable session identifier (e.g. `s_abc123`). |
 | `AOE_SESSION_TITLE` | The session title (also used as the worktree branch name). |
-| `AOE_PROJECT_PATH` | Absolute path to the session's working directory (worktree path when applicable). |
+| `AOE_PROJECT_PATH` | Absolute path to the session's working directory (worktree path when applicable). Equal to `$PWD` inside `on_create` / `on_launch`. |
 | `AOE_PROFILE` | The resolved profile name. |
 | `AOE_TOOL` | The agent tool name (e.g. `claude`, `codex`). |
 | `AOE_GROUP_PATH` | Group path for grouped sessions; empty string otherwise. |
