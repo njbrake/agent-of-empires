@@ -5,7 +5,7 @@
 // can branch on safeSetItem's boolean return. Modules that must hard-fail on
 // quota (token.ts auth secret, deviceBinding.ts) continue to call
 // `window.localStorage.setItem` directly with an `eslint-disable-next-line` and
-// keep their own rethrow contracts. See docs/development/web-storage.md.
+// keep their own rethrow contracts.
 
 function getStorage(): Storage | null {
   const ls = (globalThis as { localStorage?: Storage }).localStorage;

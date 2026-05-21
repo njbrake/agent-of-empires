@@ -1,4 +1,19 @@
 // @vitest-environment jsdom
+//
+// Test fixtures for safeStorage and any caller that mocks quota errors:
+//
+// - `// @vitest-environment jsdom` at the top of a test file enables a real
+//   `window.localStorage`. Most component and hook tests use this.
+// - Module-level `installFakeLocalStorage()` polyfills `globalThis.localStorage`
+//   with a Map-backed Storage for node-env tests (see
+//   `web/src/components/diff/comments/storage.test.ts`). The helpers resolve
+//   storage via `globalThis.localStorage`, so both fixtures work unchanged.
+//
+// Canonical failure-path mock:
+//   vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+//     throw new DOMException("...", "QuotaExceededError");
+//   });
+
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {

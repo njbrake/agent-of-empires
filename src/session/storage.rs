@@ -19,7 +19,7 @@
 //!
 //! Cross-process races (the TUI and `aoe serve` mutating the same profile
 //! concurrently) are explicitly out of scope here; a future advisory `flock`
-//! would close them. See `docs/development/storage.md`.
+//! would close them.
 
 use anyhow::{anyhow, Result};
 use std::collections::HashMap;
