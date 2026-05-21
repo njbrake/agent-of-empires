@@ -402,6 +402,13 @@
       "components": ["web/src/components/cockpit/Markdown.tsx"]
     },
     {
+      "id": "cockpit.tool-cards",
+      "kind": "vitest",
+      "risk": "high",
+      "specs": ["src/components/cockpit/ToolCards.render.test.tsx"],
+      "components": ["web/src/components/cockpit/ToolCards.tsx"]
+    },
+    {
       "id": "read-only.mode",
       "kind": "live-playwright",
       "risk": "high",
