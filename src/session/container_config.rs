@@ -3224,8 +3224,12 @@ volume_ignores = ["target", "node_modules"]
             return; // git worktree add failed, skip
         }
 
-        // Write repo-level config with volume_ignores
-        let config_dir = worktree_path.join(".agent-of-empires");
+        // Write repo-level config with volume_ignores. Since #1329, repo config
+        // for a worktree is resolved from the main repo (via
+        // repo_config_source_path), not the worktree dir, so the config must
+        // live in the main repo. The ignore is still applied to the worktree's
+        // working dir, where builds run.
+        let config_dir = main_repo_path.join(".agent-of-empires");
         fs::create_dir_all(&config_dir).unwrap();
         fs::write(
             config_dir.join("config.toml"),
