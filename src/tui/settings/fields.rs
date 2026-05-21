@@ -100,6 +100,7 @@ pub enum FieldKey {
     CustomAgents,
     AgentDetectAs,
     HostEnvironment,
+    SessionIdPollerMaxThreads,
     // Sound
     SoundEnabled,
     SoundMode,
@@ -1603,7 +1604,7 @@ fn build_session_fields(
         items
     };
 
-    vec![
+    let mut fields = vec![
         SettingField {
             key: FieldKey::DefaultTool,
             label: "Default Tool",
@@ -1765,7 +1766,24 @@ fn build_session_fields(
                 FieldValue::List(global.environment.clone()),
             ),
         },
-    ]
+    ];
+
+    if scope == SettingsScope::Global {
+        fields.push(SettingField {
+            key: FieldKey::SessionIdPollerMaxThreads,
+            label: "Max Session-ID Poller Threads",
+            description:
+                "Process-wide cap on threads polling the tmux session ID for live sessions \
+                 (one thread per session). When the cap is reached, new sessions are not \
+                 polled and their session ID will not refresh.",
+            value: FieldValue::Number(u64::from(global.session.session_id_poller_max_threads)),
+            category: SettingsCategory::Session,
+            has_override: false,
+            inherited_display: None,
+        });
+    }
+
+    fields
 }
 
 fn build_sound_fields(
@@ -2491,6 +2509,9 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
             config.logging.show_spans = *v;
         }
         (FieldKey::HostEnvironment, FieldValue::List(v)) => config.environment = v.clone(),
+        (FieldKey::SessionIdPollerMaxThreads, FieldValue::Number(v)) => {
+            config.session.session_id_poller_max_threads = (*v).clamp(1, u32::MAX as u64) as u32;
+        }
         _ => {}
     }
 }
