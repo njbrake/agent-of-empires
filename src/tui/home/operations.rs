@@ -762,27 +762,22 @@ impl HomeView {
     /// but archiving clears it because archive is the strongest dismiss
     /// signal and a stale star on a buried row is just visual noise.
     /// Mutual exclusion lives in `Instance::archive()`, not here.
-    pub(super) fn toggle_favorite_at_cursor(&mut self) -> anyhow::Result<Option<String>> {
+    pub(super) fn toggle_favorite_at_cursor(&mut self) -> anyhow::Result<()> {
         let Some(id) = self.selected_session.clone() else {
-            return Ok(None);
+            return Ok(());
         };
-        let (is_fav, title) = {
-            let inst = self.instances.iter().find(|i| i.id == id);
-            match inst {
-                Some(i) => (i.is_favorited(), i.title.clone()),
-                None => return Ok(None),
-            }
+        let is_fav = match self.instances.iter().find(|i| i.id == id) {
+            Some(i) => i.is_favorited(),
+            None => return Ok(()),
         };
         if is_fav {
             self.mutate_instance(&id, |inst| inst.unfavorite());
-            self.save()?;
-            self.flat_items = self.build_flat_items();
-            return Ok(Some(format!("Unfavorited: {}", title)));
+        } else {
+            self.mutate_instance(&id, |inst| inst.favorite());
         }
-        self.mutate_instance(&id, |inst| inst.favorite());
         self.save()?;
         self.flat_items = self.build_flat_items();
-        Ok(Some(format!("Favorited: {}", title)))
+        Ok(())
     }
 
     /// Handle the archive keybind on the cursor's session. Symmetric toggle:
@@ -796,16 +791,13 @@ impl HomeView {
     /// indefinite, so there's nothing to ask the user before sinking the
     /// row. The session reappears at its real tier on unarchive or when
     /// the user sends a message (auto unarchive in `Instance::message_sent`).
-    pub(super) fn toggle_archive_at_cursor(&mut self) -> anyhow::Result<Option<String>> {
+    pub(super) fn toggle_archive_at_cursor(&mut self) -> anyhow::Result<()> {
         let Some(id) = self.selected_session.clone() else {
-            return Ok(None);
+            return Ok(());
         };
-        let (is_archived, title) = {
-            let inst = self.instances.iter().find(|i| i.id == id);
-            match inst {
-                Some(i) => (i.is_archived(), i.title.clone()),
-                None => return Ok(None),
-            }
+        let is_archived = match self.instances.iter().find(|i| i.id == id) {
+            Some(i) => i.is_archived(),
+            None => return Ok(()),
         };
         if is_archived {
             self.mutate_instance(&id, |inst| inst.unarchive());
@@ -816,7 +808,7 @@ impl HomeView {
             // tier, so without this the cursor stays at the old index and
             // ends up on whatever row slid into that slot.
             self.select_session_by_id(&id);
-            return Ok(Some(format!("Unarchived: {}", title)));
+            return Ok(());
         }
 
         // Kill the pane before flipping the archived bit. If the kill fails
@@ -834,6 +826,6 @@ impl HomeView {
         if self.sort_order == crate::session::config::SortOrder::Attention {
             self.select_top_attention(None);
         }
-        Ok(Some(format!("Archived: {}", title)))
+        Ok(())
     }
 }
