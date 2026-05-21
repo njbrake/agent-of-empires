@@ -3491,6 +3491,7 @@ mod workspace_ordering_tests {
             plan_summary: None,
             next_wakeup_at: None,
             next_wakeup_reason: None,
+            favorited: false,
         }
     }
 
