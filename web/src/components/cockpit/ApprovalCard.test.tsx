@@ -21,7 +21,7 @@ import type { Approval, ApprovalDecision } from "../../lib/cockpitTypes";
 
 vi.mock("../../lib/connectionState", () => ({
   useServerDown: () => false,
-  OFFLINE_TITLE: "Disconnected — reconnect to use",
+  OFFLINE_TITLE: "Disconnected",
 }));
 
 function makeApproval(over: Partial<Approval> = {}): Approval {

@@ -18,7 +18,7 @@ import { SwitchSubstrateAction } from "./SwitchSubstrateAction";
 let mockOffline = false;
 vi.mock("../../lib/connectionState", () => ({
   useServerDown: () => mockOffline,
-  OFFLINE_TITLE: "Disconnected — reconnect to use",
+  OFFLINE_TITLE: "Disconnected",
 }));
 
 function mockOkFetch(): ReturnType<typeof vi.fn> {
