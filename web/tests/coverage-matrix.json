@@ -388,6 +388,13 @@
       "components": ["web/src/lib/cockpitArgs.ts"]
     },
     {
+      "id": "cockpit.approval-card",
+      "kind": "vitest",
+      "risk": "high",
+      "specs": ["src/components/cockpit/ApprovalCard.test.tsx"],
+      "components": ["web/src/components/cockpit/ApprovalCard.tsx"]
+    },
+    {
       "id": "read-only.mode",
       "kind": "live-playwright",
       "risk": "high",
