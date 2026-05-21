@@ -776,6 +776,75 @@ fn test_select_session_by_id_nonexistent() {
 
 #[test]
 #[serial]
+fn test_select_top_attention_lands_on_first_session() {
+    let mut env = create_test_env_with_sessions(3);
+    env.view.cursor = 2;
+    env.view.update_selected();
+    assert_eq!(env.view.cursor, 2);
+
+    env.view.select_top_attention(None);
+
+    assert_eq!(env.view.cursor, 0);
+    if let Item::Session { id, .. } = &env.view.flat_items[0] {
+        assert_eq!(env.view.selected_session.as_deref(), Some(id.as_str()));
+    } else {
+        panic!("expected first flat_items row to be a Session");
+    }
+}
+
+#[test]
+#[serial]
+fn test_select_top_attention_skips_returning_session() {
+    let mut env = create_test_env_with_sessions(3);
+
+    // Grab id of first session (the one we're "returning from").
+    let first_id = if let Item::Session { id, .. } = &env.view.flat_items[0] {
+        id.clone()
+    } else {
+        panic!("expected first flat_items row to be a Session");
+    };
+    let second_id = if let Item::Session { id, .. } = &env.view.flat_items[1] {
+        id.clone()
+    } else {
+        panic!("expected second flat_items row to be a Session");
+    };
+
+    env.view.cursor = 0;
+    env.view.update_selected();
+
+    // Simulate returning from `first_id`: skip it, land on the next session.
+    env.view.select_top_attention(Some(&first_id));
+
+    assert_eq!(env.view.cursor, 1);
+    assert_eq!(
+        env.view.selected_session.as_deref(),
+        Some(second_id.as_str())
+    );
+}
+
+#[test]
+#[serial]
+fn test_select_top_attention_falls_back_to_returning_when_only_session() {
+    let mut env = create_test_env_with_sessions(1);
+
+    let only_id = if let Item::Session { id, .. } = &env.view.flat_items[0] {
+        id.clone()
+    } else {
+        panic!("expected first flat_items row to be a Session");
+    };
+
+    env.view.cursor = 0;
+    env.view.update_selected();
+
+    // Only one session; skip would leave nothing; must fall back to it.
+    env.view.select_top_attention(Some(&only_id));
+
+    assert_eq!(env.view.cursor, 0);
+    assert_eq!(env.view.selected_session.as_deref(), Some(only_id.as_str()));
+}
+
+#[test]
+#[serial]
 fn test_uppercase_p_opens_profile_picker() {
     let env = create_test_env_empty();
     let mut view = env.view;
@@ -1557,19 +1626,19 @@ fn test_grow_list_clamps_at_maximum() {
 
 #[test]
 #[serial]
-fn test_uppercase_h_shrinks_list() {
+fn test_lt_shrinks_list() {
     let mut env = create_test_env_empty();
     assert_eq!(env.view.list_width, 35);
-    env.view.handle_key(key(KeyCode::Char('H')), None);
+    env.view.handle_key(key(KeyCode::Char('<')), None);
     assert_eq!(env.view.list_width, 30);
 }
 
 #[test]
 #[serial]
-fn test_uppercase_l_grows_list() {
+fn test_gt_grows_list() {
     let mut env = create_test_env_empty();
     assert_eq!(env.view.list_width, 35);
-    env.view.handle_key(key(KeyCode::Char('L')), None);
+    env.view.handle_key(key(KeyCode::Char('>')), None);
     assert_eq!(env.view.list_width, 40);
 }
 
@@ -1591,6 +1660,9 @@ fn test_o_key_cycles_sort_order_forward() {
     assert_eq!(env.view.sort_order, SortOrder::Newest);
 
     env.view.handle_key(key(KeyCode::Char('o')), None);
+    assert_eq!(env.view.sort_order, SortOrder::Attention);
+
+    env.view.handle_key(key(KeyCode::Char('o')), None);
     assert_eq!(env.view.sort_order, SortOrder::LastActivity);
 
     env.view.handle_key(key(KeyCode::Char('o')), None);
@@ -1604,6 +1676,70 @@ fn test_o_key_cycles_sort_order_forward() {
 
     env.view.handle_key(key(KeyCode::Char('o')), None);
     assert_eq!(env.view.sort_order, SortOrder::Newest);
+}
+
+#[test]
+#[serial]
+fn test_shift_o_cycles_sort_in_strict_mode() {
+    // Regression guard: normalize_strict_key maps Shift+O → bare 'o'. The main
+    // match must handle 'o' without an `if !self.strict_hotkeys` guard,
+    // otherwise the key falls through to capture_letter_to_compose and opens
+    // the message dialog instead of cycling sort.
+    use crate::session::config::SortOrder;
+
+    let mut env = create_test_env_with_mixed_sessions();
+    env.view.strict_hotkeys = true;
+    assert_eq!(env.view.sort_order, SortOrder::Newest);
+
+    // Shift+O: Char('O') with SHIFT modifier. Normalizer lowercases to 'o',
+    // main match cycles forward.
+    env.view
+        .handle_key(KeyEvent::new(KeyCode::Char('O'), KeyModifiers::SHIFT), None);
+    assert_eq!(env.view.sort_order, SortOrder::Attention);
+
+    // Some terminals drop the SHIFT modifier and send bare uppercase. Cover
+    // that too.
+    env.view
+        .handle_key(KeyEvent::new(KeyCode::Char('O'), KeyModifiers::NONE), None);
+    assert_eq!(env.view.sort_order, SortOrder::LastActivity);
+
+    // Ctrl+o must still cycle backward in strict mode.
+    env.view.handle_key(
+        KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL),
+        None,
+    );
+    assert_eq!(env.view.sort_order, SortOrder::Attention);
+
+    // Sanity: message dialog must NOT have been opened as a side effect.
+    assert!(env.view.send_message_dialog.is_none());
+}
+
+#[test]
+#[serial]
+fn test_bare_lowercase_o_does_not_cycle_sort_in_strict_mode() {
+    // Regression guard (2026-04-22): in strict_hotkeys mode, plain lowercase 'o'
+    // MUST NOT cycle sort; it must fall through to the typing-guard catch-all
+    // (message dialog) per the "no destructive lowercase" rule. Only Shift+O
+    // (Char('O')) and Ctrl+O should change sort order in strict mode.
+    //
+    // The previous implementation collapsed the two sort arms into a single
+    // unguarded `Char('o') => cycle`, which fired for bare 'o' too, breaking
+    // the contract and silently changing the user's sort order whenever they
+    // tried to type 'o' as text input.
+    use crate::session::config::SortOrder;
+
+    let mut env = create_test_env_with_mixed_sessions();
+    env.view.strict_hotkeys = true;
+    let initial = env.view.sort_order;
+    assert_eq!(initial, SortOrder::Newest);
+
+    env.view
+        .handle_key(KeyEvent::new(KeyCode::Char('o'), KeyModifiers::NONE), None);
+
+    assert_eq!(
+        env.view.sort_order, initial,
+        "bare 'o' in strict mode must NOT cycle sort; expected it to stay at Newest"
+    );
 }
 
 #[test]
@@ -1644,6 +1780,12 @@ fn test_ctrl_o_key_cycles_sort_order_backward() {
         KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL),
         None,
     );
+    assert_eq!(env.view.sort_order, SortOrder::Attention);
+
+    env.view.handle_key(
+        KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL),
+        None,
+    );
     assert_eq!(env.view.sort_order, SortOrder::Newest);
 }
 
@@ -1655,7 +1797,8 @@ fn test_o_key_flat_items_sorted_az() {
     let mut env = create_test_env_with_mixed_sessions();
     assert_eq!(env.view.sort_order, SortOrder::Newest);
 
-    // Press 'o' three times to get to AZ (Newest -> LastActivity -> Oldest -> AZ)
+    // Press 'o' four times to get to AZ (Newest -> Attention -> LastActivity -> Oldest -> AZ)
+    env.view.handle_key(key(KeyCode::Char('o')), None);
     env.view.handle_key(key(KeyCode::Char('o')), None);
     env.view.handle_key(key(KeyCode::Char('o')), None);
     env.view.handle_key(key(KeyCode::Char('o')), None);
@@ -1688,8 +1831,9 @@ fn test_o_key_flat_items_sorted_za() {
 
     let mut env = create_test_env_with_mixed_sessions();
 
-    // Press 'o' four times to get to ZA
-    // (Newest -> LastActivity -> Oldest -> AZ -> ZA)
+    // Press 'o' five times to get to ZA
+    // (Newest -> Attention -> LastActivity -> Oldest -> AZ -> ZA)
+    env.view.handle_key(key(KeyCode::Char('o')), None);
     env.view.handle_key(key(KeyCode::Char('o')), None);
     env.view.handle_key(key(KeyCode::Char('o')), None);
     env.view.handle_key(key(KeyCode::Char('o')), None);
@@ -1723,8 +1867,9 @@ fn test_o_key_flat_items_newest_preserves_insertion_order() {
 
     let mut env = create_test_env_with_mixed_sessions();
 
-    // Press 'o' five times to wrap back to Newest
-    // (Newest -> LastActivity -> Oldest -> AZ -> ZA -> Newest)
+    // Press 'o' six times to wrap back to Newest
+    // (Newest -> Attention -> LastActivity -> Oldest -> AZ -> ZA -> Newest)
+    env.view.handle_key(key(KeyCode::Char('o')), None);
     env.view.handle_key(key(KeyCode::Char('o')), None);
     env.view.handle_key(key(KeyCode::Char('o')), None);
     env.view.handle_key(key(KeyCode::Char('o')), None);
@@ -1772,7 +1917,7 @@ fn test_o_key_clamps_cursor_when_list_shrinks() {
     assert!(filtered_count < initial_items);
 
     env.view.handle_key(key(KeyCode::Char('o')), None);
-    assert_eq!(env.view.sort_order, SortOrder::LastActivity);
+    assert_eq!(env.view.sort_order, SortOrder::Attention);
 
     let valid_max = env.view.flat_items.len().saturating_sub(1);
     assert!(env.view.cursor <= valid_max);
@@ -2723,6 +2868,18 @@ fn test_cursor_follows_session_after_deletion() {
 
 #[test]
 #[serial]
+fn home_defaults_to_agent_when_config_unset() {
+    let temp = TempDir::new().unwrap();
+    setup_test_home(&temp);
+    let _storage = Storage::new("test").unwrap();
+
+    let tools = AvailableTools::with_tools(&["claude"]);
+    let view = HomeView::new(Some("test".to_string()), tools).unwrap();
+    assert_eq!(view.view_mode, ViewMode::Agent);
+}
+
+#[test]
+#[serial]
 fn wants_text_selection_tracks_copy_friendly_surfaces() {
     use crate::tui::dialogs::ChangelogDialog;
 
@@ -2789,6 +2946,8 @@ fn apply_status_update_propagates_idle_entered_at_into_live_instance() {
         status: Status::Idle,
         last_error: None,
         idle_entered_at: Some(now),
+        last_accessed_at: None,
+        pane_dead: false,
     });
 
     let inst = env.view.get_instance(&id).unwrap();
@@ -2815,6 +2974,8 @@ fn apply_status_update_clears_idle_entered_at_on_idle_to_running() {
         status: Status::Idle,
         last_error: None,
         idle_entered_at: Some(stop_time),
+        last_accessed_at: None,
+        pane_dead: false,
     });
     assert_eq!(
         env.view.get_instance(&id).unwrap().idle_entered_at,
@@ -2830,6 +2991,8 @@ fn apply_status_update_clears_idle_entered_at_on_idle_to_running() {
         status: Status::Running,
         last_error: None,
         idle_entered_at: None,
+        last_accessed_at: None,
+        pane_dead: false,
     });
 
     let inst = env.view.get_instance(&id).unwrap();
@@ -2837,6 +3000,69 @@ fn apply_status_update_clears_idle_entered_at_on_idle_to_running() {
     assert_eq!(inst.idle_entered_at, None);
     // And `idle_age()` must not synthesize one out of stale state.
     assert_eq!(inst.idle_age(), None);
+}
+
+#[test]
+#[serial]
+fn archived_running_session_renders_stopped_icon_not_spinner() {
+    // Regression for af711cb: pre-fix, archived/snoozed rows still cycled
+    // through animated spinner frames driven by their underlying Running
+    // status, making sunk rows read as "still alive" and pulling the eye
+    // away from real attention items. Pin the icon to ICON_STOPPED for
+    // archived rows even when status is Running.
+    use super::render::agent_row_icon;
+    use super::ICON_STOPPED;
+    use crate::session::Status;
+
+    let mut env = create_test_env_with_sessions(1);
+    let id = match env.view.flat_items.first() {
+        Some(Item::Session { id, .. }) => id.clone(),
+        _ => panic!("expected one session"),
+    };
+
+    // Archive the session AND keep its underlying status as Running so the
+    // spinner branch would fire in the absence of the override.
+    env.view.mutate_instance(&id, |inst| {
+        inst.status = Status::Running;
+        inst.archived_at = Some(chrono::Utc::now());
+    });
+
+    let inst = env.view.get_instance(&id).expect("session present");
+    let icon = agent_row_icon(inst);
+
+    assert_eq!(
+        icon, ICON_STOPPED,
+        "archived row must render stopped icon, not animated spinner"
+    );
+
+    // Same expectation for snooze: a row snoozed into the future must not
+    // animate even if it's also Running underneath.
+    env.view.mutate_instance(&id, |inst| {
+        inst.status = Status::Running;
+        inst.archived_at = None;
+        inst.snoozed_until = Some(chrono::Utc::now() + chrono::Duration::minutes(15));
+    });
+    let inst = env.view.get_instance(&id).expect("session present");
+    assert_eq!(
+        agent_row_icon(inst),
+        ICON_STOPPED,
+        "snoozed row must render stopped icon, not animated spinner"
+    );
+
+    // Sanity: a plain Running row (no archive, no snooze) must NOT collapse
+    // to ICON_STOPPED; otherwise the test would pass trivially because the
+    // helper always returned the stopped glyph.
+    env.view.mutate_instance(&id, |inst| {
+        inst.status = Status::Running;
+        inst.archived_at = None;
+        inst.snoozed_until = None;
+    });
+    let inst = env.view.get_instance(&id).expect("session present");
+    assert_ne!(
+        agent_row_icon(inst),
+        ICON_STOPPED,
+        "non-archived Running row should keep its spinner; helper would be a no-op otherwise"
+    );
 }
 
 #[test]
@@ -2862,6 +3088,8 @@ fn apply_status_update_skips_terminal_states() {
         status: Status::Idle,
         last_error: None,
         idle_entered_at: Some(stale_ts),
+        last_accessed_at: None,
+        pane_dead: false,
     });
 
     // Status and timestamp should both stay untouched.
@@ -2896,6 +3124,8 @@ fn apply_status_update_runs_status_hook_on_transition() {
         status: Status::Waiting,
         last_error: None,
         idle_entered_at: None,
+        last_accessed_at: None,
+        pane_dead: false,
     });
 
     let launches = take_recorded_launches();
@@ -2959,6 +3189,8 @@ fn apply_status_update_does_not_run_status_hook_for_same_status() {
         status: Status::Idle,
         last_error: None,
         idle_entered_at: None,
+        last_accessed_at: None,
+        pane_dead: false,
     });
 
     assert!(take_recorded_launches().is_empty());
@@ -2990,6 +3222,8 @@ fn apply_status_updates_without_hooks_does_not_run_status_hook() {
             status: Status::Waiting,
             last_error: None,
             idle_entered_at: None,
+            last_accessed_at: None,
+            pane_dead: false,
         }]);
 
     assert_eq!(env.view.get_instance(&id).unwrap().status, Status::Waiting);

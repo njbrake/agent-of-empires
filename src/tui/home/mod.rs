@@ -15,8 +15,8 @@ use tui_input::Input;
 
 use crate::session::{
     config::{load_config, save_config, GroupByMode, SortOrder},
-    flatten_tree, flatten_tree_all_profiles, resolve_config_or_warn, DefaultTerminalMode,
-    EnsureReadyOutcome, Group, GroupTree, Instance, Item, Storage,
+    flatten_sessions_by_attention, flatten_tree, flatten_tree_all_profiles, resolve_config_or_warn,
+    DefaultTerminalMode, EnsureReadyOutcome, Group, GroupTree, Instance, Item, Storage,
 };
 use crate::tmux::AvailableTools;
 
@@ -27,8 +27,8 @@ use super::dialogs::ServeView;
 use super::dialogs::{
     ChangelogDialog, CommandPaletteDialog, ConfirmDialog, GroupDeleteOptionsDialog,
     HookTrustDialog, HooksInstallDialog, InfoDialog, NewSessionData, NewSessionDialog,
-    NoAgentsDialog, ProfilePickerDialog, ProjectsDialog, RenameDialog, UnifiedDeleteDialog,
-    UpdateConfirmDialog, WelcomeDialog,
+    NoAgentsDialog, ProfilePickerDialog, ProjectsDialog, RenameDialog, SnoozeDurationDialog,
+    UnifiedDeleteDialog, UpdateConfirmDialog, WelcomeDialog,
 };
 use super::diff::DiffView;
 use super::settings::SettingsView;
@@ -185,6 +185,10 @@ pub struct HomeView {
     pub(super) no_agents_dialog: Option<NoAgentsDialog>,
     pub(super) changelog_dialog: Option<ChangelogDialog>,
     pub(super) info_dialog: Option<InfoDialog>,
+    pub(super) snooze_duration_dialog: Option<SnoozeDurationDialog>,
+    /// Session id the snooze duration picker targets. Set when the dialog
+    /// opens, consumed on submit.
+    pub(super) pending_snooze_session: Option<String>,
     pub(super) profile_picker_dialog: Option<ProfilePickerDialog>,
     pub(super) projects_dialog: Option<ProjectsDialog>,
     pub(super) command_palette: Option<CommandPaletteDialog>,
@@ -244,6 +248,7 @@ pub struct HomeView {
     pub(super) preview_scroll_offset: u16,
     pub(super) preview_area: Rect,
     pub(super) diff_area: Rect,
+    pub(super) list_area: Rect,
 
     // Terminal mode for sandboxed sessions (per-session, ephemeral)
     pub(super) terminal_modes: HashMap<String, TerminalMode>,
@@ -342,6 +347,13 @@ impl HomeView {
             .map(|i| (i.id.clone(), i.clone()))
             .collect();
 
+        // One-shot sweep of orphaned /tmp/aoe-hooks/<id>/ dirs left behind
+        // by sessions destroyed while the TUI was not running. Per-session
+        // cleanup on destroy is handled by cleanup_hook_status_dir in
+        // src/session/deletion.rs; this is the catch-up pass.
+        let live_ids: std::collections::HashSet<String> = instance_map.keys().cloned().collect();
+        crate::hooks::sweep_orphaned_hook_dirs(&live_ids);
+
         // In unified mode, config comes from "default" profile
         let config_profile = active_profile.as_deref().unwrap_or("default");
         let resolved = resolve_config_or_warn(config_profile);
@@ -382,6 +394,7 @@ impl HomeView {
             .as_ref()
             .and_then(|c| c.app_state.group_by)
             .unwrap_or(default_group_by);
+        let view_mode = ViewMode::default();
 
         let mut view = Self {
             storages,
@@ -394,7 +407,7 @@ impl HomeView {
             selected_session: None,
             selected_group: None,
             selected_group_profile: None,
-            view_mode: ViewMode::default(),
+            view_mode,
             sort_order,
             group_by,
             project_group_collapsed: HashMap::new(),
@@ -413,6 +426,8 @@ impl HomeView {
             no_agents_dialog: None,
             changelog_dialog: None,
             info_dialog: None,
+            snooze_duration_dialog: None,
+            pending_snooze_session: None,
             profile_picker_dialog: None,
             projects_dialog: None,
             command_palette: None,
@@ -445,6 +460,7 @@ impl HomeView {
             preview_scroll_offset: 0,
             preview_area: Rect::default(),
             diff_area: Rect::default(),
+            list_area: Rect::default(),
             terminal_modes: HashMap::new(),
             default_terminal_mode,
             sound_config,
@@ -786,28 +802,49 @@ impl HomeView {
                 && s != Status::Stopped
                 && update.status != Status::Stopped
         });
-        if !should_update {
-            return;
-        }
 
-        let new_status = update.status;
-        let new_error = update.last_error;
-        let new_idle_entered_at = update.idle_entered_at;
-        self.mutate_instance(&update.id, |inst| {
-            inst.status = new_status;
-            inst.last_error = new_error;
-            // Propagate the timestamp the polling clone wrote;
-            // see StatusPoller for why this isn't a simple
-            // `inst.idle_entered_at = …` from inside the poll.
-            inst.idle_entered_at = new_idle_entered_at;
-        });
+        let new_last_accessed = update.last_accessed_at;
+        let new_pane_dead = update.pane_dead;
 
-        if let Some(old) = old_status {
-            if old != new_status {
-                if let Some(inst) = self.get_instance(&update.id).cloned() {
-                    self.handle_status_transition(&inst, old, new_status, play_sound, run_hooks);
+        if should_update {
+            let new_status = update.status;
+            let new_error = update.last_error;
+            let new_idle_entered_at = update.idle_entered_at;
+            self.mutate_instance(&update.id, |inst| {
+                inst.status = new_status;
+                inst.last_error = new_error;
+                // Propagate the timestamp the polling clone wrote;
+                // see StatusPoller for why this isn't a simple
+                // `inst.idle_entered_at = …` from inside the poll.
+                inst.idle_entered_at = new_idle_entered_at;
+                if new_last_accessed.is_some() {
+                    inst.last_accessed_at = new_last_accessed;
+                }
+                inst.pane_dead_observed = new_pane_dead;
+            });
+
+            if let Some(old) = old_status {
+                if old != new_status {
+                    if let Some(inst) = self.get_instance(&update.id).cloned() {
+                        self.handle_status_transition(
+                            &inst, old, new_status, play_sound, run_hooks,
+                        );
+                    }
                 }
             }
+        } else if new_last_accessed.is_some() {
+            self.mutate_instance(&update.id, |inst| {
+                inst.last_accessed_at = new_last_accessed;
+                inst.pane_dead_observed = new_pane_dead;
+            });
+        } else {
+            // No status change AND no fresh activity stamp. We still
+            // need to refresh pane_dead_observed: a corpse can sit
+            // unchanged for hours and the sort tier should reflect
+            // current reality. Cheap mutate (one bool write).
+            self.mutate_instance(&update.id, |inst| {
+                inst.pane_dead_observed = new_pane_dead;
+            });
         }
     }
 
@@ -1659,6 +1696,7 @@ impl HomeView {
             || self.no_agents_dialog.is_some()
             || self.changelog_dialog.is_some()
             || self.info_dialog.is_some()
+            || self.snooze_duration_dialog.is_some()
             || self.profile_picker_dialog.is_some()
             || self.projects_dialog.is_some()
             || self.command_palette.is_some()
@@ -1762,6 +1800,22 @@ impl HomeView {
     }
 
     pub(super) fn build_flat_items(&self) -> Vec<Item> {
+        // Attention sort is a flat priority view: skip groups entirely so
+        // Waiting/Error rows from different groups can interleave by tier
+        // instead of being walled off behind group headers.
+        if self.sort_order == SortOrder::Attention {
+            let filtered: Vec<Instance> = if let Some(profile) = &self.active_profile {
+                self.instances
+                    .iter()
+                    .filter(|i| i.source_profile == *profile)
+                    .cloned()
+                    .collect()
+            } else {
+                self.instances.clone()
+            };
+            return flatten_sessions_by_attention(&filtered);
+        }
+
         if self.group_by == GroupByMode::Project {
             return self.build_flat_items_by_project();
         }
@@ -1956,6 +2010,13 @@ impl HomeView {
             return None;
         }
         self.stamp_last_accessed(session_id);
+        if let Err(e) = self.save() {
+            tracing::error!("Failed to save after send: {}", e);
+        }
+        if self.sort_order == crate::session::config::SortOrder::Attention {
+            self.select_top_attention(None);
+            self.selected_session = None;
+        }
         stale_sid
     }
 
@@ -2144,6 +2205,36 @@ impl HomeView {
                     return;
                 }
             }
+        }
+    }
+
+    pub fn sort_order(&self) -> SortOrder {
+        self.sort_order
+    }
+
+    /// Move the cursor to the highest-priority session row, skipping
+    /// `returning_id` if provided. Used after returning from an attach while
+    /// sort_order=Attention: `stamp_last_accessed` bumps the returning session
+    /// to the top of its tier, so picking row 0 blindly would leave the cursor
+    /// on the session the user just handled. Skip it and land on the next
+    /// session that actually needs attention. Falls back to the returning
+    /// session itself if it's the only one in the list.
+    pub fn select_top_attention(&mut self, returning_id: Option<&str>) {
+        let mut fallback: Option<usize> = None;
+        for (idx, item) in self.flat_items.iter().enumerate() {
+            if let Item::Session { id, .. } = item {
+                if returning_id.is_some_and(|r| r == id) {
+                    fallback.get_or_insert(idx);
+                    continue;
+                }
+                self.cursor = idx;
+                self.update_selected();
+                return;
+            }
+        }
+        if let Some(idx) = fallback {
+            self.cursor = idx;
+            self.update_selected();
         }
     }
 

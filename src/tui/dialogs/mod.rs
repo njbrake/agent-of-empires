@@ -17,6 +17,7 @@ mod rename;
 mod send_message;
 #[cfg(feature = "serve")]
 mod serve;
+mod snooze_duration;
 mod tool_picker;
 mod update_confirm;
 mod welcome;
@@ -40,6 +41,7 @@ pub use rename::{RenameData, RenameDialog, RenameMode};
 pub use send_message::SendMessageDialog;
 #[cfg(feature = "serve")]
 pub use serve::{ServeAction, ServeView};
+pub use snooze_duration::SnoozeDurationDialog;
 pub use tool_picker::ToolPickerDialog;
 pub use update_confirm::UpdateConfirmDialog;
 pub use welcome::WelcomeDialog;

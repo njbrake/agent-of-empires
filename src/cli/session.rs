@@ -48,6 +48,23 @@ pub enum SessionCommands {
     /// the project default (stacked PRs, hotfix off `release/*`,
     /// renamed default branch). See #970.
     SetBase(SetBaseArgs),
+
+    /// Snooze a session for a duration (temporary archive, auto wakes)
+    Snooze(SnoozeArgs),
+
+    /// Wake a snoozed session immediately
+    Unsnooze(SessionIdArgs),
+}
+
+#[derive(Args)]
+pub struct SnoozeArgs {
+    /// Session ID or title
+    pub identifier: String,
+
+    /// Snooze duration in minutes; if omitted, uses `session.snooze_duration_minutes`
+    /// from the active config (default 30)
+    #[arg(long)]
+    pub minutes: Option<u32>,
 }
 
 #[derive(Args)]
@@ -187,7 +204,67 @@ pub async fn run(profile: &str, command: SessionCommands) -> Result<()> {
         SessionCommands::Current(args) => current_session(args).await,
         SessionCommands::SetSessionId(args) => set_session_id(profile, args).await,
         SessionCommands::SetBase(args) => set_base(profile, args).await,
+        SessionCommands::Snooze(args) => snooze_session(profile, args).await,
+        SessionCommands::Unsnooze(args) => unsnooze_session(profile, args).await,
     }
+}
+
+async fn snooze_session(profile: &str, args: SnoozeArgs) -> Result<()> {
+    let storage = Storage::new(profile)?;
+    let (mut instances, groups) = storage.load_with_groups()?;
+
+    let config = crate::session::profile_config::resolve_config(profile)?;
+
+    // `--minutes` overrides the profile default; otherwise use the
+    // configured `snooze_duration_minutes`. Validate either way so the
+    // on-disk config can't sneak in an out of range value.
+    let raw_minutes = args
+        .minutes
+        .map(|m| m as u64)
+        .unwrap_or(config.session.snooze_duration_minutes as u64);
+    crate::session::validate_snooze_duration(raw_minutes).map_err(|e| anyhow::anyhow!("{}", e))?;
+    let minutes = raw_minutes as u32;
+
+    let idx = instances
+        .iter()
+        .position(|i| {
+            i.id == args.identifier
+                || i.id.starts_with(&args.identifier)
+                || i.title == args.identifier
+        })
+        .ok_or_else(|| anyhow::anyhow!("Session not found: {}", args.identifier))?;
+
+    instances[idx].snooze(minutes);
+    let title = instances[idx].title.clone();
+
+    let group_tree = GroupTree::new_with_groups(&instances, &groups);
+    storage.commit(&instances, &group_tree)?;
+
+    println!("Snoozed for {}m: {}", minutes, title);
+    Ok(())
+}
+
+async fn unsnooze_session(profile: &str, args: SessionIdArgs) -> Result<()> {
+    let storage = Storage::new(profile)?;
+    let (mut instances, groups) = storage.load_with_groups()?;
+
+    let idx = instances
+        .iter()
+        .position(|i| {
+            i.id == args.identifier
+                || i.id.starts_with(&args.identifier)
+                || i.title == args.identifier
+        })
+        .ok_or_else(|| anyhow::anyhow!("Session not found: {}", args.identifier))?;
+
+    instances[idx].unsnooze();
+    let title = instances[idx].title.clone();
+
+    let group_tree = GroupTree::new_with_groups(&instances, &groups);
+    storage.commit(&instances, &group_tree)?;
+
+    println!("Woke: {}", title);
+    Ok(())
 }
 
 async fn start_session(profile: &str, args: SessionIdArgs) -> Result<()> {

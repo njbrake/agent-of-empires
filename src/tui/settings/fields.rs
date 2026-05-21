@@ -1,8 +1,8 @@
 //! Setting field definitions and config mapping
 
 use crate::session::{
-    validate_check_interval, Config, ContainerRuntimeName, DefaultTerminalMode, ProfileConfig,
-    TmuxClipboardMode, TmuxMouseMode, TmuxStatusBarMode,
+    validate_check_interval, validate_snooze_duration, Config, ContainerRuntimeName,
+    DefaultTerminalMode, ProfileConfig, TmuxClipboardMode, TmuxMouseMode, TmuxStatusBarMode,
 };
 use crate::sound::{
     validate_sound_exists, volume_from_option, volume_options, volume_to_index, SoundMode,
@@ -91,6 +91,7 @@ pub enum FieldKey {
     // Session
     DefaultTool,
     StrictHotkeys,
+    SnoozeDurationMinutes,
     AgentExtraArgs,
     AgentCommandOverride,
     AgentStatusHooks,
@@ -269,6 +270,10 @@ impl SettingField {
         match (&self.key, &self.value) {
             (FieldKey::CheckIntervalHours, FieldValue::Number(n)) => {
                 validate_check_interval(*n)?;
+                Ok(())
+            }
+            (FieldKey::SnoozeDurationMinutes, FieldValue::Number(n)) => {
+                validate_snooze_duration(*n)?;
                 Ok(())
             }
             (FieldKey::MemoryLimit, FieldValue::OptionalText(Some(v))) => {
@@ -1433,6 +1438,14 @@ fn build_session_fields(
         session.and_then(|s| s.strict_hotkeys),
     );
 
+    let (snooze_duration_minutes, snooze_duration_override) = resolve_value(
+        scope,
+        global.session.snooze_duration_minutes as u64,
+        session
+            .and_then(|s| s.snooze_duration_minutes)
+            .map(|v| v as u64),
+    );
+
     let (agent_status_hooks, status_hooks_override) = resolve_value(
         scope,
         global.session.agent_status_hooks,
@@ -1591,6 +1604,18 @@ fn build_session_fields(
             inherited_display: inherited_if(
                 strict_hotkeys_override,
                 FieldValue::Bool(global.session.strict_hotkeys),
+            ),
+        },
+        SettingField {
+            key: FieldKey::SnoozeDurationMinutes,
+            label: "Snooze Duration (minutes)",
+            description: "Default snooze for `aoe session snooze` (1-43200 min, picker overrides)",
+            value: FieldValue::Number(snooze_duration_minutes),
+            category: SettingsCategory::Session,
+            has_override: snooze_duration_override,
+            inherited_display: inherited_if(
+                snooze_duration_override,
+                FieldValue::Number(global.session.snooze_duration_minutes as u64),
             ),
         },
         SettingField {
@@ -2136,6 +2161,9 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
         }
         (FieldKey::YoloModeDefault, FieldValue::Bool(v)) => config.session.yolo_mode_default = *v,
         (FieldKey::StrictHotkeys, FieldValue::Bool(v)) => config.session.strict_hotkeys = *v,
+        (FieldKey::SnoozeDurationMinutes, FieldValue::Number(v)) => {
+            config.session.snooze_duration_minutes = *v as u32;
+        }
         (FieldKey::AgentStatusHooks, FieldValue::Bool(v)) => {
             config.session.agent_status_hooks = *v;
         }
@@ -2586,6 +2614,11 @@ fn apply_field_to_profile(field: &SettingField, _global: &Config, config: &mut P
         }
         (FieldKey::StrictHotkeys, FieldValue::Bool(v)) => {
             set_profile_override(*v, &mut config.session, |s, val| s.strict_hotkeys = val);
+        }
+        (FieldKey::SnoozeDurationMinutes, FieldValue::Number(v)) => {
+            set_profile_override(*v as u32, &mut config.session, |s, val| {
+                s.snooze_duration_minutes = val
+            });
         }
         (FieldKey::AgentStatusHooks, FieldValue::Bool(v)) => {
             set_profile_override(*v, &mut config.session, |s, val| {

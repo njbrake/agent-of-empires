@@ -386,6 +386,7 @@ fn default_replay_bytes() -> u64 {
 pub enum SortOrder {
     #[default]
     Newest,
+    Attention,
     LastActivity,
     Oldest,
     AZ,
@@ -395,7 +396,8 @@ pub enum SortOrder {
 impl SortOrder {
     pub fn cycle(self) -> Self {
         match self {
-            SortOrder::Newest => SortOrder::LastActivity,
+            SortOrder::Newest => SortOrder::Attention,
+            SortOrder::Attention => SortOrder::LastActivity,
             SortOrder::LastActivity => SortOrder::Oldest,
             SortOrder::Oldest => SortOrder::AZ,
             SortOrder::AZ => SortOrder::ZA,
@@ -406,7 +408,8 @@ impl SortOrder {
     pub fn cycle_reverse(self) -> Self {
         match self {
             SortOrder::Newest => SortOrder::ZA,
-            SortOrder::LastActivity => SortOrder::Newest,
+            SortOrder::Attention => SortOrder::Newest,
+            SortOrder::LastActivity => SortOrder::Attention,
             SortOrder::Oldest => SortOrder::LastActivity,
             SortOrder::AZ => SortOrder::Oldest,
             SortOrder::ZA => SortOrder::AZ,
@@ -416,6 +419,7 @@ impl SortOrder {
     pub fn label(self) -> &'static str {
         match self {
             SortOrder::Newest => "Newest",
+            SortOrder::Attention => "Attention",
             SortOrder::LastActivity => "Recent",
             SortOrder::Oldest => "Oldest",
             SortOrder::AZ => "A-Z",
@@ -529,6 +533,15 @@ pub struct SessionConfig {
     /// Off by default; existing users keep the legacy single-letter UX.
     #[serde(default)]
     pub strict_hotkeys: bool,
+
+    /// How long (in minutes) to snooze a session when the user presses
+    /// `w`/`W` or runs `aoe session snooze`. During the snooze window the
+    /// session is treated like archive: sinks to the bottom, renders
+    /// italic+dim with a `z ` prefix, ignored by the attention sort,
+    /// then rejoins the active list automatically when the timer expires.
+    /// Default: 30 minutes.
+    #[serde(default = "default_snooze_duration_minutes")]
+    pub snooze_duration_minutes: u32,
 }
 
 impl Default for SessionConfig {
@@ -538,12 +551,33 @@ impl Default for SessionConfig {
             yolo_mode_default: false,
             agent_extra_args: HashMap::new(),
             agent_command_override: HashMap::new(),
-            agent_status_hooks: default_true(),
+            agent_status_hooks: true,
             custom_agents: HashMap::new(),
             agent_detect_as: HashMap::new(),
             strict_hotkeys: false,
+            snooze_duration_minutes: 30,
         }
     }
+}
+
+fn default_snooze_duration_minutes() -> u32 {
+    30
+}
+
+/// Upper bound on snooze duration: 30 days (43,200 minutes). Originally
+/// capped at 24 hours but the TUI snooze dialog now offers up to a 1-week
+/// preset and longer ad-hoc values via the API are reasonable for
+/// long-tail "circle back next month" workflows.
+pub const SNOOZE_MAX_MINUTES: u64 = 30 * 24 * 60;
+
+pub fn validate_snooze_duration(minutes: u64) -> Result<(), String> {
+    if !(1..=SNOOZE_MAX_MINUTES).contains(&minutes) {
+        return Err(format!(
+            "Snooze duration must be between 1 and {} minutes (got {})",
+            SNOOZE_MAX_MINUTES, minutes
+        ));
+    }
+    Ok(())
 }
 
 impl SessionConfig {
@@ -1786,6 +1820,41 @@ mod tests {
     fn test_resolve_tool_command_returns_empty_for_unknown() {
         let config = SessionConfig::default();
         assert_eq!(config.resolve_tool_command("nonexistent"), "");
+    }
+
+    #[test]
+    fn test_session_config_default_snooze_duration_is_30() {
+        let config = SessionConfig::default();
+        assert_eq!(
+            config.snooze_duration_minutes, 30,
+            "default snooze duration must be 30 minutes"
+        );
+    }
+
+    #[test]
+    fn test_validate_snooze_duration_accepts_valid_range() {
+        assert!(validate_snooze_duration(1).is_ok());
+        assert!(validate_snooze_duration(30).is_ok());
+        assert!(validate_snooze_duration(1440).is_ok());
+    }
+
+    #[test]
+    fn test_validate_snooze_duration_rejects_out_of_range() {
+        assert!(validate_snooze_duration(0).is_err());
+        assert!(validate_snooze_duration(SNOOZE_MAX_MINUTES + 1).is_err());
+    }
+
+    #[test]
+    fn test_validate_snooze_duration_accepts_dialog_presets() {
+        // The TUI dialog presets must all pass the validator; otherwise
+        // the API silently rejects what the UI offered. Presets:
+        // 1-6h (60-360 min), 24h (1 day), 1 week.
+        for &m in &[60u64, 120, 180, 240, 300, 360, 1440, 7 * 1440] {
+            assert!(
+                validate_snooze_duration(m).is_ok(),
+                "preset {m} min must pass validator"
+            );
+        }
     }
 
     #[test]

@@ -29,6 +29,18 @@ use ratatui::prelude::*;
 use std::io::{self, IsTerminal, Write};
 
 use crate::migrations;
+
+/// Whether the TUI should request mouse capture (`\e[?1000h` etc.) from the
+/// terminal. Default ON to preserve the preview-pane mouse-wheel scroll
+/// feature added in #795. Set `AOE_MOUSE_CAPTURE=0` (or `false`) on iOS
+/// Mosh + Termius/Blink to opt out, so the terminal app's own scrollback
+/// buffer handles wheel events (Mosh doesn't reliably forward mouse
+/// tracking to mobile clients).
+pub fn mouse_capture_requested() -> bool {
+    std::env::var("AOE_MOUSE_CAPTURE")
+        .map(|v| !(v == "0" || v.eq_ignore_ascii_case("false")))
+        .unwrap_or(true)
+}
 use crate::session::get_update_settings;
 use crate::update::check_for_update;
 
@@ -105,17 +117,22 @@ pub async fn run(profile: &str, startup_warning: Option<String>) -> Result<()> {
     }
 
     // Setup terminal
+    // (mouse_capture_requested defined below; see top-of-file pub fn.)
     enable_raw_mode()?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)?;
-    // Mosh mangles xterm mouse-tracking escapes, producing inverted or
-    // duplicated scroll on mobile clients (Termius, Blink, Mosh4iOS) and
-    // breaking right-click selection on desktop Mosh. MOSH_CONNECTION is
-    // set by mosh-server and propagates through the user's environment;
-    // when present, fall back to the terminal's native scroll and let
-    // the user select text without aoe eating mouse events.
+    // Mouse capture is ON by default to preserve preview-pane wheel scroll
+    // (#795); set AOE_MOUSE_CAPTURE=0 to opt out on iOS Mosh + Termius/Blink,
+    // which can't reliably forward mouse-tracking escapes to mobile clients.
+    //
+    // Additionally: even when explicitly requested, Mosh mangles xterm
+    // mouse-tracking escapes (inverted/duplicated scroll on Termius, Blink,
+    // Mosh4iOS; broken right-click selection on desktop Mosh). MOSH_CONNECTION
+    // is set by mosh-server and propagates through the user's environment;
+    // when present, fall back to the terminal's native scroll regardless of
+    // AOE_MOUSE_CAPTURE so the user can select text without aoe eating events.
     let mosh_active = std::env::var_os("MOSH_CONNECTION").is_some();
-    if !mosh_active {
+    if mouse_capture_requested() && !mosh_active {
         execute!(stdout, EnableMouseCapture)?;
     }
     let backend = CrosstermBackend::new(stdout);
@@ -157,7 +174,7 @@ pub async fn run(profile: &str, startup_warning: Option<String>) -> Result<()> {
         LeaveAlternateScreen,
         DisableBracketedPaste
     )?;
-    if !mosh_active {
+    if mouse_capture_requested() && !mosh_active {
         execute!(terminal.backend_mut(), DisableMouseCapture)?;
     }
     terminal.show_cursor()?;
