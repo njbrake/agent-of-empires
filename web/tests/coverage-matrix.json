@@ -115,7 +115,10 @@
       "kind": "vitest",
       "risk": "medium",
       "specs": ["src/components/__tests__/TerminalSettings.test.tsx"],
-      "components": ["web/src/components/TerminalSettings.tsx"]
+      "components": [
+        "web/src/components/TerminalSettings.tsx",
+        "web/src/components/TerminalSessionStack.tsx"
+      ]
     },
     {
       "id": "app-shell.topbar-dev-badge",
@@ -202,6 +205,13 @@
       "kind": "live-playwright",
       "risk": "medium",
       "specs": ["tests/live/workspace-ordering.spec.ts"],
+      "components": ["web/src/components/WorkspaceSidebar.tsx"]
+    },
+    {
+      "id": "sidebar.client-side-navigation",
+      "kind": "mocked-playwright",
+      "risk": "medium",
+      "specs": ["tests/sidebar-multi-session.spec.ts"],
       "components": ["web/src/components/WorkspaceSidebar.tsx"]
     },
     {
