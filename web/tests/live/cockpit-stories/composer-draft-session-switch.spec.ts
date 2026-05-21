@@ -79,8 +79,17 @@ base("composer draft survives a session switch", async ({ page }, testInfo) => {
 
     const composer = page.getByRole("textbox", { name: /Send a message/i });
     await composer.fill("draft-on-session-a");
-    // Flush the 250ms localStorage debounce.
-    await page.waitForTimeout(400);
+    // Wait for the debounced localStorage write to land before navigating.
+    await expect
+      .poll(
+        async () =>
+          await page.evaluate(
+            (id) => localStorage.getItem(`cockpit:draft:${id}`),
+            sessionA.id,
+          ),
+        { timeout: 5_000 },
+      )
+      .toBe("draft-on-session-a");
 
     await page.goto(`${serve.baseUrl}/session/${encodeURIComponent(sessionB.id)}`);
     await waitForCockpitView(page);

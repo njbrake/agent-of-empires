@@ -11,7 +11,7 @@ import {
   listSessions,
   seedSessionViaAoeAdd,
 } from "../../helpers/aoeServe";
-import { waitForCockpitReady, waitForCockpitView } from "../../helpers/cockpit";
+import { waitForCockpitView , enableCockpitAndWait } from "../../helpers/cockpit";
 
 base("composer draft survives a full reload", async ({ page }, testInfo) => {
   const serve = await spawnAoeServe({
@@ -26,18 +26,25 @@ base("composer draft survives a full reload", async ({ page }, testInfo) => {
     const sessions = await listSessions(serve.baseUrl);
     const sessionId = sessions[0]!.id;
 
-    await fetch(`${serve.baseUrl}/api/sessions/${sessionId}/cockpit/enable`, {
-      method: "POST",
-    });
-    await waitForCockpitReady(serve.baseUrl, sessionId);
+    await enableCockpitAndWait(serve.baseUrl, sessionId);
 
     await page.goto(`${serve.baseUrl}/session/${encodeURIComponent(sessionId)}`);
     await waitForCockpitView(page);
 
     const composer = page.getByRole("textbox", { name: /Send a message/i });
     await composer.fill("unsent draft text");
-    // Flush the 250ms debounce before reload so localStorage is written.
-    await page.waitForTimeout(400);
+    // Deterministic poll for the debounced localStorage write instead of
+    // a fixed sleep so the assertion is robust on slow CI runners.
+    await expect
+      .poll(
+        async () =>
+          await page.evaluate(
+            (id) => localStorage.getItem(`cockpit:draft:${id}`),
+            sessionId,
+          ),
+        { timeout: 5_000 },
+      )
+      .toBe("unsent draft text");
 
     await page.reload();
     await waitForCockpitView(page);

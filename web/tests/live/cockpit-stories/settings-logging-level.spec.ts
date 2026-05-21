@@ -24,10 +24,11 @@ base("logging default-level SelectField round-trips through the UI", async ({ pa
       .locator("option")
       .evaluateAll((els) => (els as HTMLOptionElement[]).map((o) => o.value));
     const current = await level.inputValue();
-    const next = options.find((v) => v && v !== current) ?? options[0]!;
+    const next = options.find((v) => v && v !== current);
+    expect(next, "logging-level select needs at least one option distinct from current").toBeDefined();
 
-    await level.selectOption(next);
-    await expect(level).toHaveValue(next);
+    await level.selectOption(next!);
+    await expect(level).toHaveValue(next!);
 
     await page.reload();
     const reloaded = page
@@ -35,7 +36,7 @@ base("logging default-level SelectField round-trips through the UI", async ({ pa
       .filter({ has: page.locator("label", { hasText: "Default level" }) })
       .locator("select")
       .first();
-    await expect(reloaded).toHaveValue(next, { timeout: 10_000 });
+    await expect(reloaded).toHaveValue(next!, { timeout: 10_000 });
   } finally {
     await serve.stop();
   }

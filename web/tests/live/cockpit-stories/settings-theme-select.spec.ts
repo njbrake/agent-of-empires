@@ -34,10 +34,11 @@ base("theme name SelectField round-trips through the UI", async ({ page }, testI
       .locator("option")
       .evaluateAll((els) => (els as HTMLOptionElement[]).map((o) => o.value));
     const current = await themeSelect.inputValue();
-    const next = optionValues.find((v) => v && v !== current) ?? optionValues[0]!;
+    const next = optionValues.find((v) => v && v !== current);
+    expect(next, "theme select needs at least one option distinct from current").toBeDefined();
 
-    await themeSelect.selectOption(next);
-    await expect(themeSelect).toHaveValue(next);
+    await themeSelect.selectOption(next!);
+    await expect(themeSelect).toHaveValue(next!);
 
     await page.reload();
     const reloaded = page
@@ -45,7 +46,7 @@ base("theme name SelectField round-trips through the UI", async ({ page }, testI
       .filter({ has: page.locator("label", { hasText: /^Theme$/ }) })
       .locator("select")
       .first();
-    await expect(reloaded).toHaveValue(next, { timeout: 10_000 });
+    await expect(reloaded).toHaveValue(next!, { timeout: 10_000 });
   } finally {
     await serve.stop();
   }

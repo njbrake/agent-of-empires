@@ -15,7 +15,7 @@ import {
   listSessions,
   seedSessionViaAoeAdd,
 } from "../../helpers/aoeServe";
-import { waitForCockpitReady, waitForCockpitView } from "../../helpers/cockpit";
+import { waitForCockpitView , enableCockpitAndWait } from "../../helpers/cockpit";
 
 const PLAN_SCRIPT = {
   turns: [
@@ -56,10 +56,7 @@ base("plan session update renders in PlanStrip", async ({ page }, testInfo) => {
   try {
     const sessions = await listSessions(serve.baseUrl);
     const sessionId = sessions[0]!.id;
-    await fetch(`${serve.baseUrl}/api/sessions/${sessionId}/cockpit/enable`, {
-      method: "POST",
-    });
-    await waitForCockpitReady(serve.baseUrl, sessionId);
+    await enableCockpitAndWait(serve.baseUrl, sessionId);
 
     await page.goto(`${serve.baseUrl}/session/${encodeURIComponent(sessionId)}`);
     await waitForCockpitView(page);

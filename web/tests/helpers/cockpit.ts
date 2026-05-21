@@ -42,6 +42,29 @@ export async function waitForCockpitReady(
 }
 
 /**
+ * Enable the cockpit supervisor for a session and wait for it to be
+ * ready to accept prompts. Asserts the enable POST succeeded before
+ * polling readiness so a 4xx / 5xx surfaces as an explicit failure
+ * rather than a readiness timeout.
+ */
+export async function enableCockpitAndWait(
+  baseUrl: string,
+  sessionId: string,
+  timeoutMs = 15_000,
+): Promise<void> {
+  const res = await fetch(
+    `${baseUrl}/api/sessions/${sessionId}/cockpit/enable`,
+    { method: "POST" },
+  );
+  if (!res.ok) {
+    throw new Error(
+      `cockpit enable failed: status=${res.status} body=${await res.text()}`,
+    );
+  }
+  await waitForCockpitReady(baseUrl, sessionId, timeoutMs);
+}
+
+/**
  * Wait for the cockpit React surface to be mounted and interactive on
  * the current page. Resolves when the composer textarea is visible.
  *

@@ -16,7 +16,7 @@ import {
   listSessions,
   seedSessionViaAoeAdd,
 } from "../../helpers/aoeServe";
-import { waitForCockpitReady } from "../../helpers/cockpit";
+import { enableCockpitAndWait } from "../../helpers/cockpit";
 
 const PLAN_SCRIPT = {
   turns: [
@@ -59,10 +59,7 @@ base("sidebar PlanProgressMini renders the cockpit plan summary", async ({ page 
 
     // Enable cockpit and send a prompt via REST so the plan update
     // lands without needing the cockpit view mounted.
-    await fetch(`${serve.baseUrl}/api/sessions/${sessionId}/cockpit/enable`, {
-      method: "POST",
-    });
-    await waitForCockpitReady(serve.baseUrl, sessionId);
+    await enableCockpitAndWait(serve.baseUrl, sessionId);
     await fetch(`${serve.baseUrl}/api/sessions/${sessionId}/cockpit/prompt`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },

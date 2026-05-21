@@ -36,7 +36,7 @@ base("Launch button on Review step creates the session", async ({ page }, testIn
     await page.getByRole("button", { name: "Next" }).click();
 
     await expect(
-      page.getByRole("heading", { name: /Choose an agent|Agent/i }),
+      page.getByRole("heading", { name: /^Choose an agent$|^Agent$/i }),
     ).toBeVisible({ timeout: 10_000 });
     await page.getByRole("button", { name: "claude", exact: true }).click();
     await page.getByRole("button", { name: "Next" }).click();

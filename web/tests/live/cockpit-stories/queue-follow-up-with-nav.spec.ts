@@ -27,7 +27,10 @@ const SCRIPT = {
           sessionUpdate: "agent_message_chunk",
           content: { type: "text", text: "First turn." },
         },
-        { sessionUpdate: "wait_ms", ms: 1_000 },
+        // Long enough that the navigation cycle below happens while
+        // turn 1 is still alive. 1s left only a sliver of time under
+        // CI load.
+        { sessionUpdate: "wait_ms", ms: 8_000 },
       ],
       stopReason: "end_turn",
     },

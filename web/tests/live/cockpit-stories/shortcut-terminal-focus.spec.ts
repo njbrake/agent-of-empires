@@ -37,6 +37,20 @@ base("Cmd/Ctrl+` activates the paired terminal panel", async ({ page }, testInfo
 
     const paired = page.locator('[data-term="paired"]').first();
     await expect(paired).toBeVisible({ timeout: 10_000 });
+    // Visibility alone can pass even if the chord no-ops because the
+    // right pane is already mounted. Confirm focus actually lives
+    // inside the paired panel after the chord; that's the real signal.
+    await expect
+      .poll(
+        async () =>
+          await page.evaluate(() => {
+            const el = document.querySelector('[data-term="paired"]');
+            const active = document.activeElement;
+            return !!el && !!active && el.contains(active);
+          }),
+        { timeout: 10_000 },
+      )
+      .toBe(true);
   } finally {
     await serve.stop();
   }

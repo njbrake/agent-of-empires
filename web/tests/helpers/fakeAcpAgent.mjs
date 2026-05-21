@@ -163,7 +163,11 @@ async function emitSessionUpdates(sessionId, updates) {
       // Story-spec helper: pause emission inside a turn so the UI
       // observes the turn as active long enough to click Stop, queue a
       // follow-up, etc. Not part of ACP; the fake just swallows it.
-      const ms = typeof u.ms === "number" ? u.ms : 200;
+      // Clamp the raw value: NaN, Infinity, or negative numbers would
+      // make setTimeout fire immediately or behave unpredictably and
+      // mask bad fixture data. Cap at 60s so a typo can't hang CI.
+      const raw = typeof u.ms === "number" && Number.isFinite(u.ms) ? u.ms : 200;
+      const ms = Math.min(60_000, Math.max(0, Math.floor(raw)));
       await new Promise((resolve) => setTimeout(resolve, ms));
       continue;
     }

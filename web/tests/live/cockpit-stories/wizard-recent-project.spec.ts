@@ -40,7 +40,7 @@ base("wizard Recent tab selects a known project", async ({ page }, testInfo) => 
     // The next step in the wizard is "Choose an agent" (AgentStep
     // heading) once a project is locked in.
     await expect(
-      page.getByRole("heading", { name: /Choose an agent|Agent/i }),
+      page.getByRole("heading", { name: /^Choose an agent$|^Agent$/i }),
     ).toBeVisible({ timeout: 10_000 });
   } finally {
     await serve.stop();

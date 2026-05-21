@@ -25,7 +25,9 @@ base("substrate switch from terminal to cockpit mounts the cockpit view", async 
 
   try {
     const sessions = await listSessions(serve.baseUrl);
-    const sessionId = sessions[0]!.id;
+    const target = sessions.find((s) => s.title === "story-substrate");
+    if (!target) throw new Error("seeded session 'story-substrate' missing");
+    const sessionId = target.id;
 
     await page.goto(`${serve.baseUrl}/session/${encodeURIComponent(sessionId)}`);
 
