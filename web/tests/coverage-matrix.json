@@ -395,6 +395,13 @@
       "components": ["web/src/components/cockpit/ApprovalCard.tsx"]
     },
     {
+      "id": "cockpit.markdown",
+      "kind": "vitest",
+      "risk": "high",
+      "specs": ["src/components/cockpit/Markdown.test.tsx"],
+      "components": ["web/src/components/cockpit/Markdown.tsx"]
+    },
+    {
       "id": "read-only.mode",
       "kind": "live-playwright",
       "risk": "high",
