@@ -1689,7 +1689,7 @@ function RejectedPromptsStrip({
   );
 }
 
-function QueuedPromptsStrip({
+export function QueuedPromptsStrip({
   queued,
   onRemove,
   onEdit,

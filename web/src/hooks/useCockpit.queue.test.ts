@@ -717,4 +717,115 @@ describe("useCockpit drain split at clear-command boundary (#1356)", () => {
 
     expect(bodyTexts()).toEqual(["a", "/clear --hard", "b"]);
   });
+
+  it("codex profile splits at `/new` boundaries", async () => {
+    const codexWrapper = ({ children }: { children: ReactNode }) =>
+      createElement(AgentProfileProvider, { toolKey: "codex" }, children);
+    const { result: hookResult } = renderHook(
+      () => useCockpit("sess-split-codex"),
+      { wrapper: codexWrapper },
+    );
+    await flushAsync();
+    const ws = sockets[sockets.length - 1]!;
+    act(() => {
+      ws.readyState = FakeWebSocket.OPEN;
+      ws.onopen?.({} as Event);
+    });
+    await flushAsync();
+    let seq = 0;
+    const nextSeq = () => ++seq;
+    act(() => {
+      ws.onmessage?.({
+        data: JSON.stringify({
+          session_id: "sess-split-codex",
+          seq: nextSeq(),
+          event: { UserPromptSent: { text: "kicker" } },
+        }),
+      } as MessageEvent);
+    });
+    await flushAsync();
+    async function pumpStopped() {
+      act(() => {
+        ws.onmessage?.({
+          data: JSON.stringify({
+            session_id: "sess-split-codex",
+            seq: nextSeq(),
+            event: { Stopped: { reason: "prompt_complete" } },
+          }),
+        } as MessageEvent);
+      });
+      await flushAsync();
+    }
+    act(() => {
+      void hookResult.current.sendPrompt("a");
+    });
+    act(() => {
+      void hookResult.current.sendPrompt("/new");
+    });
+    act(() => {
+      void hookResult.current.sendPrompt("b");
+    });
+    await flushAsync();
+
+    await pumpStopped();
+    await pumpStopped();
+    await pumpStopped();
+
+    expect(bodyTexts()).toEqual(["a", "/new", "b"]);
+  });
+
+  it("gemini profile (no clear aliases) keeps the original single-POST combined behavior", async () => {
+    const geminiWrapper = ({ children }: { children: ReactNode }) =>
+      createElement(AgentProfileProvider, { toolKey: "gemini" }, children);
+    const { result: hookResult } = renderHook(
+      () => useCockpit("sess-split-gemini"),
+      { wrapper: geminiWrapper },
+    );
+    await flushAsync();
+    const ws = sockets[sockets.length - 1]!;
+    act(() => {
+      ws.readyState = FakeWebSocket.OPEN;
+      ws.onopen?.({} as Event);
+    });
+    await flushAsync();
+    let seq = 0;
+    const nextSeq = () => ++seq;
+    act(() => {
+      ws.onmessage?.({
+        data: JSON.stringify({
+          session_id: "sess-split-gemini",
+          seq: nextSeq(),
+          event: { UserPromptSent: { text: "kicker" } },
+        }),
+      } as MessageEvent);
+    });
+    await flushAsync();
+    act(() => {
+      void hookResult.current.sendPrompt("a");
+    });
+    act(() => {
+      void hookResult.current.sendPrompt("/clear");
+    });
+    act(() => {
+      void hookResult.current.sendPrompt("b");
+    });
+    await flushAsync();
+
+    act(() => {
+      ws.onmessage?.({
+        data: JSON.stringify({
+          session_id: "sess-split-gemini",
+          seq: nextSeq(),
+          event: { Stopped: { reason: "prompt_complete" } },
+        }),
+      } as MessageEvent);
+    });
+    await flushAsync();
+
+    // Single POST with all three glued via blank-line join. `/clear` is
+    // not a gemini clear-alias so no boundary fires.
+    expect(promptPostCount).toBe(1);
+    expect(bodyTexts()).toEqual(["a\n\n/clear\n\nb"]);
+    expect(hookResult.current.state.queuedPrompts).toEqual([]);
+  });
 });
