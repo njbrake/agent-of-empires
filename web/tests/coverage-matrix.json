@@ -386,7 +386,7 @@
       "kind": "vitest",
       "risk": "medium",
       "specs": ["src/lib/cockpitTypes.test.ts"],
-      "components": ["web/src/components/cockpit/Composer.tsx"]
+      "components": ["web/src/lib/cockpitTypes.ts"]
     },
     {
       "id": "cockpit.drafts",
