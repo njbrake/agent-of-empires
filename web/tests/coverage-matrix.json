@@ -132,6 +132,13 @@
       "components": []
     },
     {
+      "id": "app-shell.sessions-loaded-sentinel",
+      "kind": "vitest",
+      "risk": "high",
+      "specs": ["src/hooks/useSessions.test.ts"],
+      "components": []
+    },
+    {
       "id": "profiles.lifecycle",
       "kind": "live-playwright",
       "risk": "high",
