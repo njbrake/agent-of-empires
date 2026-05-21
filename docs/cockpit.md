@@ -160,8 +160,8 @@ node_path = ""
 show_tool_durations = true  # per-tool elapsed-time label in the web UI
 queue_drain_mode = "combined"  # how the composer drains client-side queued prompts: "combined" | "serial" (#1031)
 force_end_turn_threshold_secs = 30  # seconds of streaming silence before the spinner offers a "Force end turn" button (#1100)
-silent_orphan_grace_secs = 60  # daemon-side watchdog grace when the adapter stops talking with no in-flight tool; 0 disables (#1240)
-silent_orphan_fast_grace_secs = 20  # accelerated grace used once a cost-populated UsageUpdate has arrived for the current prompt (#1240)
+silent_orphan_grace_secs = 120  # daemon-side watchdog grace when the adapter stops talking with no in-flight tool; 0 disables (#1240); bumped from 60 in #1360 for async-agent flows; nonzero values below 120 clamp up at runtime
+silent_orphan_fast_grace_secs = 20  # accelerated grace used once a cost-populated UsageUpdate has arrived for the current prompt (#1240); ignored while an async-agent wait is active (#1360)
 ```
 
 `max_concurrent_resumes` bounds how many cockpit workers the reconciler
@@ -771,7 +771,7 @@ The detector fires only when ALL hold for the current prompt:
 - At least one progress notification has already arrived for this
   prompt (avoids false-firing on a slow first chunk).
 - No further progress notification has arrived for
-  `silent_orphan_grace_secs` (default 60), reduced to
+  `silent_orphan_grace_secs` (default 120), reduced to
   `silent_orphan_fast_grace_secs` (default 20) for the rest of the
   prompt once a cost-populated `UsageUpdate` has arrived. The
   accelerated path lowers MTTR on the specific claude-agent-acp
@@ -782,9 +782,29 @@ rate limit, usage updates without cost) explicitly do NOT reset the
 timer, so an adapter that emits periodic ambient state after the
 final transcript event still trips the watchdog.
 
+**Async-agent extension (#1360):** when the Claude SDK launches a
+sub-agent in async mode via the `Agent` tool (SuperPowers-style
+fan-out, `isAsync: true`), the sub-agent runs INSIDE the claude binary
+with no further ACP-layer signaling, so the daemon cannot observe
+progress for the entire wait window. The watchdog detects this from
+the completion text `Async agent launched successfully` on the
+launch's `ToolCallUpdate`, flips a sticky `async_agent_running` flag
+for the rest of the prompt, and promotes the effective grace to at
+least 30 minutes; the async branch also takes precedence over the
+cost-seen fast path (a cost-populated UsageUpdate mid-wait could be
+intermediate billing telemetry rather than turn termination). The
+grace stays finite by design so a real adapter wedge during an async
+wait still recovers, just slower. This is a bandaid until upstream
+`agentclientprotocol/claude-agent-acp#336` forwards the SDK's
+`task_notification` and `task_started` system messages as proper ACP
+SessionUpdates.
+
 Set `cockpit.silent_orphan_grace_secs = 0` to disable. Both knobs are
 editable per profile in the TUI Settings (`Cockpit` category) and in
-the web dashboard's Settings tab under `Cockpit`.
+the web dashboard's Settings tab under `Cockpit`. Nonzero values
+below 120 are clamped up to 120 at runtime so a typo cannot drop the
+watchdog into a tight-loop false-positive regime; debug builds honour
+`AOE_SILENT_ORPHAN_GRACE_MS` to keep test cadences sub-second.
 
 In debug builds, set `AOE_COCKPIT_SIMULATE_ORPHAN_NEXT_PROMPT=1`
 before sending a cockpit prompt to manually reproduce the wedge: the
