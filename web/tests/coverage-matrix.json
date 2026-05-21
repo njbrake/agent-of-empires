@@ -828,6 +828,20 @@
       "components": ["web/src/components/session-wizard/steps/ExtraReposPicker.tsx"]
     },
     {
+      "id": "story.modal-about-escape",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": ["tests/live/cockpit-stories/modal-about-escape.spec.ts"],
+      "components": ["web/src/components/AboutModal.tsx"]
+    },
+    {
+      "id": "story.sidebar-row-click-navigate",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": ["tests/live/cockpit-stories/sidebar-row-click-navigate.spec.ts"],
+      "components": ["web/src/components/WorkspaceSidebar.tsx"]
+    },
+    {
       "id": "cockpit.rate-limit-recovery",
       "kind": "vitest",
       "risk": "high",
