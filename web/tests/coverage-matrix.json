@@ -443,6 +443,13 @@
       "components": ["web/src/components/cockpit/Composer.tsx"]
     },
     {
+      "id": "cockpit.story.composer-queue-follow-up",
+      "kind": "live-playwright",
+      "risk": "high",
+      "specs": ["tests/live/cockpit-stories/composer-queue-follow-up.spec.ts"],
+      "components": ["web/src/components/cockpit/Composer.tsx"]
+    },
+    {
       "id": "cockpit.rate-limit-recovery",
       "kind": "vitest",
       "risk": "high",
