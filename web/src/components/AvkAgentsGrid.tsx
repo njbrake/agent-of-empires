@@ -119,6 +119,26 @@ export function AvkAgentsGrid() {
     return () => clearInterval(id);
   }, [expandedSlug]);
 
+  // FUR-4154 Alt-iPhone tam ekran (Furkan canon 2026-05-21):
+  // Modal açıkken ESC ile kapanma + body scroll lock.
+  useEffect(() => {
+    if (!expandedSlug) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setExpandedSlug(null);
+    };
+    document.addEventListener("keydown", onKey);
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [expandedSlug]);
+
+  const expandedAgent = expandedSlug
+    ? agents.find((a) => a.slug === expandedSlug)
+    : null;
+
   if (loading) {
     return (
       <div>
@@ -176,7 +196,6 @@ export function AvkAgentsGrid() {
                     ? `canlı · ${effectiveTarget}`
                     : `pane yok · kayıt: ${agent.tmux_target}`;
                   const expanded = expandedSlug === agent.slug;
-                  const peek = peekMap[agent.slug];
                   return (
                     <article
                       key={agent.slug}
@@ -184,14 +203,14 @@ export function AvkAgentsGrid() {
                         expanded
                           ? "border-brand-500/50"
                           : "border-surface-700 hover:border-surface-600"
-                      } ${expanded ? "sm:col-span-2 lg:col-span-3" : ""}`}
+                      }`}
                     >
                       <button
                         type="button"
                         onClick={() => togglePeek(agent.slug)}
                         className="w-full text-left cursor-pointer"
+                        aria-haspopup="dialog"
                         aria-expanded={expanded}
-                        aria-controls={`peek-${agent.slug}`}
                       >
                         <div className="flex items-center justify-between mb-1">
                           <div className="flex items-center gap-2 min-w-0">
@@ -220,20 +239,6 @@ export function AvkAgentsGrid() {
                           </span>
                         </div>
                       </button>
-                      {expanded && (
-                        <>
-                          <PeekPanel
-                            id={`peek-${agent.slug}`}
-                            peek={peek}
-                            target={effectiveTarget}
-                          />
-                          <InjectBox
-                            slug={agent.slug}
-                            label={agent.label}
-                            onSent={() => refreshPeek(agent.slug, true)}
-                          />
-                        </>
-                      )}
                     </article>
                   );
                 })}
@@ -241,6 +246,87 @@ export function AvkAgentsGrid() {
             </section>
           );
         })}
+      </div>
+
+      {expandedAgent && (
+        <AgentFullScreenModal
+          agent={expandedAgent}
+          peek={peekMap[expandedAgent.slug]}
+          onClose={() => setExpandedSlug(null)}
+          onSent={() => refreshPeek(expandedAgent.slug, true)}
+        />
+      )}
+    </div>
+  );
+}
+
+function AgentFullScreenModal({
+  agent,
+  peek,
+  onClose,
+  onSent,
+}: {
+  agent: AvkAgentInfo;
+  peek: PeekState | undefined;
+  onClose: () => void;
+  onSent: () => void;
+}) {
+  const effectiveTarget = agent.runtime_target ?? agent.tmux_target;
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={`${agent.label} pane detay`}
+      className="fixed inset-0 z-50 flex items-stretch justify-center bg-black/80 backdrop-blur-sm sm:p-4"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div className="flex flex-col w-full max-w-5xl h-full sm:h-auto sm:max-h-[95vh] bg-surface-900 sm:rounded-lg border-0 sm:border border-brand-500/30 shadow-2xl">
+        <header className="flex items-center justify-between p-4 border-b border-surface-700 shrink-0">
+          <div className="flex items-center gap-3 min-w-0">
+            <span
+              className={`inline-block w-2.5 h-2.5 rounded-full shrink-0 ${
+                agent.pane_alive ? "bg-status-running" : "bg-surface-600"
+              }`}
+              aria-label={agent.pane_alive ? "canlı" : "pane yok"}
+            />
+            <div className="flex flex-col min-w-0">
+              <h2 className="font-body text-[16px] font-semibold truncate">
+                {agent.label}
+              </h2>
+              <p className="font-mono text-[11px] text-text-muted truncate">
+                {agent.slug} · {effectiveTarget}
+              </p>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Kapat"
+            className="font-mono text-text-muted hover:text-text px-3 py-2 rounded hover:bg-surface-800 transition-colors text-xl leading-none"
+          >
+            ×
+          </button>
+        </header>
+
+        <div className="flex-1 overflow-auto p-4 min-h-0">
+          <PeekPanel
+            id={`peek-modal-${agent.slug}`}
+            peek={peek}
+            target={effectiveTarget}
+            fullScreen
+          />
+        </div>
+
+        <div className="border-t border-surface-700 p-4 shrink-0">
+          <InjectBox
+            slug={agent.slug}
+            label={agent.label}
+            onSent={onSent}
+            fullScreen
+          />
+        </div>
       </div>
     </div>
   );
@@ -250,10 +336,12 @@ function InjectBox({
   slug,
   label,
   onSent,
+  fullScreen = false,
 }: {
   slug: string;
   label: string;
   onSent: () => void;
+  fullScreen?: boolean;
 }) {
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
@@ -295,7 +383,7 @@ function InjectBox({
   }
 
   return (
-    <div className="mt-3 border-t border-surface-700 pt-3">
+    <div className={fullScreen ? "" : "mt-3 border-t border-surface-700 pt-3"}>
       <label
         htmlFor={`inject-${slug}`}
         className="block font-mono text-[10px] uppercase tracking-wider text-text-muted mb-1"
@@ -309,8 +397,10 @@ function InjectBox({
         onChange={(e) => setMessage(e.target.value)}
         onKeyDown={handleKeyDown}
         placeholder={`@${slug} — Cmd/Ctrl+Enter ile gönder`}
-        rows={3}
-        className="w-full font-mono text-[12px] bg-surface-900 border border-surface-700 rounded p-2 text-text-secondary focus:border-brand-500/50 focus:outline-none resize-y"
+        rows={fullScreen ? 6 : 3}
+        className={`w-full font-mono ${
+          fullScreen ? "text-[14px] p-3" : "text-[12px] p-2"
+        } bg-surface-900 border border-surface-700 rounded text-text-secondary focus:border-brand-500/50 focus:outline-none resize-y`}
       />
       <div className="flex items-center justify-between mt-2 gap-2">
         <span className="font-mono text-[10px] text-text-dim">
@@ -326,7 +416,9 @@ function InjectBox({
           type="button"
           onClick={handleSend}
           disabled={busy || message.trim().length === 0}
-          className="font-mono text-[11px] uppercase tracking-wider px-3 py-1 rounded border border-brand-500/50 text-brand-300 hover:bg-brand-500/10 disabled:opacity-40 disabled:cursor-not-allowed"
+          className={`font-mono uppercase tracking-wider rounded border border-brand-500/50 text-brand-300 hover:bg-brand-500/10 disabled:opacity-40 disabled:cursor-not-allowed ${
+            fullScreen ? "text-[13px] px-5 py-2" : "text-[11px] px-3 py-1"
+          }`}
         >
           {busy ? "gönderiliyor…" : "Gönder"}
         </button>
@@ -339,14 +431,19 @@ function PeekPanel({
   id,
   peek,
   target,
+  fullScreen = false,
 }: {
   id: string;
   peek: PeekState | undefined;
   target: string;
+  fullScreen?: boolean;
 }) {
+  const wrapperClass = fullScreen
+    ? "h-full flex flex-col min-h-0"
+    : "mt-3 border-t border-surface-700 pt-3";
   if (!peek || peek.kind === "loading") {
     return (
-      <div id={id} className="mt-3 border-t border-surface-700 pt-3">
+      <div id={id} className={wrapperClass}>
         <p className="font-body text-[12px] text-text-muted">
           Önizleme alınıyor (`tmux capture-pane -t {target} -pS -{PEEK_LINES}`)…
         </p>
@@ -355,7 +452,7 @@ function PeekPanel({
   }
   if (peek.kind === "error") {
     return (
-      <div id={id} className="mt-3 border-t border-surface-700 pt-3">
+      <div id={id} className={wrapperClass}>
         <p className="font-body text-[12px] text-status-error">
           Önizleme alınamadı (404 slug bilinmiyor veya tmux capture hata).
         </p>
@@ -365,8 +462,8 @@ function PeekPanel({
   const text = peek.data.content.replace(/\[[0-9;]*[A-Za-z]/g, "");
   const trimmed = text.trimEnd();
   return (
-    <div id={id} className="mt-3 border-t border-surface-700 pt-3">
-      <div className="flex items-center justify-between mb-1 font-mono text-[10px] text-text-muted">
+    <div id={id} className={wrapperClass}>
+      <div className="flex items-center justify-between mb-1 font-mono text-[10px] text-text-muted shrink-0">
         <span>
           son {peek.data.lines} satır ·{" "}
           {peek.data.runtime_resolved ? "runtime" : "kayıt"} ·{" "}
@@ -377,7 +474,11 @@ function PeekPanel({
         )}
       </div>
       {trimmed.length > 0 && (
-        <pre className="font-mono text-[11px] leading-snug text-text-secondary bg-surface-900 border border-surface-700 rounded p-2 max-h-72 overflow-auto whitespace-pre-wrap break-words">
+        <pre className={`font-mono leading-snug text-text-secondary bg-surface-900 border border-surface-700 rounded whitespace-pre-wrap break-words ${
+            fullScreen
+              ? "text-[12px] p-3 flex-1 overflow-auto min-h-0"
+              : "text-[11px] p-2 max-h-72 overflow-auto"
+          }`}>
           {trimmed}
         </pre>
       )}
