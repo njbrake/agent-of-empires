@@ -65,9 +65,11 @@ Example: use a sibling CLI to track session directories.
 
 ```toml
 [hooks]
-on_create = ["port $AOE_SESSION_TITLE"]
-on_destroy = ["port rm $AOE_SESSION_TITLE"]
+on_create = ["port \"$AOE_SESSION_TITLE\""]
+on_destroy = ["port rm \"$AOE_SESSION_TITLE\""]
 ```
+
+Quote any expansion that may contain spaces; titles often do, and the values are passed as-is to the shell.
 
 Container hooks receive the same variables (forwarded via `docker exec -e`). Inside `on_create` and `on_launch` the hook's working directory is already `$AOE_PROJECT_PATH`, so `$PWD` works too.
 
