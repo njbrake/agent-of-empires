@@ -7,11 +7,17 @@
 // `window.localStorage.setItem` directly with an `eslint-disable-next-line` and
 // keep their own rethrow contracts. See docs/development/web-storage.md.
 
+function getStorage(): Storage | null {
+  const ls = (globalThis as { localStorage?: Storage }).localStorage;
+  return ls ?? null;
+}
+
 export function safeSetItem(key: string, value: string): boolean {
-  if (typeof window === "undefined") return false;
+  const storage = getStorage();
+  if (!storage) return false;
   try {
     // eslint-disable-next-line no-restricted-syntax -- the canonical safe wrapper
-    window.localStorage.setItem(key, value);
+    storage.setItem(key, value);
     return true;
   } catch {
     return false;
@@ -19,18 +25,20 @@ export function safeSetItem(key: string, value: string): boolean {
 }
 
 export function safeRemoveItem(key: string): void {
-  if (typeof window === "undefined") return;
+  const storage = getStorage();
+  if (!storage) return;
   try {
-    window.localStorage.removeItem(key);
+    storage.removeItem(key);
   } catch {
     // private mode or storage disabled; non-fatal
   }
 }
 
 export function safeGetItem(key: string): string | null {
-  if (typeof window === "undefined") return null;
+  const storage = getStorage();
+  if (!storage) return null;
   try {
-    return window.localStorage.getItem(key);
+    return storage.getItem(key);
   } catch {
     return null;
   }
