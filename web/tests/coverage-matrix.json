@@ -457,6 +457,13 @@
       "components": ["web/src/components/cockpit/ApprovalCard.tsx"]
     },
     {
+      "id": "cockpit.story.approval-deny",
+      "kind": "live-playwright",
+      "risk": "high",
+      "specs": ["tests/live/cockpit-stories/approval-deny.spec.ts"],
+      "components": ["web/src/components/cockpit/ApprovalCard.tsx"]
+    },
+    {
       "id": "cockpit.rate-limit-recovery",
       "kind": "vitest",
       "risk": "high",
