@@ -285,9 +285,9 @@ web_poll_interval_minutes = 60
 
 ### `update_check_mode`
 
-- `auto` — when a new release is detected, install it silently in the background using the same tarball install path as `aoe update`. The new binary is picked up on the next launch (no mid-session restart). Only fires when the install location is writable; Homebrew installs fall through to manual `brew upgrade`.
-- `notify` (default) — show the TUI banner and (if `notify_in_cli = true`) the CLI eprintln nag. Press `Ctrl+x` on the banner to snooze for the current latest version; the banner returns automatically when a newer release ships.
-- `off` — skip every check, banner, fetch, and dashboard poll. Use this on offline / restricted networks.
+- `auto`: when a new release is detected, install it silently in the background using the same tarball install path as `aoe update`. The new binary is picked up on the next launch (no mid-session restart). Only fires when the install location is writable; Homebrew installs fall through to manual `brew upgrade`.
+- `notify` (default): show the TUI banner and, if `notify_in_cli = true`, the CLI eprintln nag. Press `Ctrl+x` on the banner to snooze for the current latest version; the banner returns automatically when a newer release ships.
+- `off`: skip every check, banner, fetch, and dashboard poll. Use this on offline / restricted networks.
 
 The TUI banner snooze is persisted to `app_state.dismissed_update_version`, so dismissing on v1.5.3 keeps the banner hidden across `aoe` restarts until v1.5.4 (or later) ships. See #1140.
 
