@@ -758,6 +758,34 @@
       "components": ["web/src/components/cockpit/Composer.tsx"]
     },
     {
+      "id": "story.wizard-prefill-from-group",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": ["tests/live/cockpit-stories/wizard-prefill-from-group.spec.ts"],
+      "components": ["web/src/components/session-wizard/SessionWizard.tsx", "web/src/components/WorkspaceSidebar.tsx"]
+    },
+    {
+      "id": "story.wizard-session-title-edit",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": ["tests/live/cockpit-stories/wizard-session-title-edit.spec.ts"],
+      "components": ["web/src/components/session-wizard/steps/SessionStep.tsx"]
+    },
+    {
+      "id": "story.diff-base-picker",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": ["tests/live/cockpit-stories/diff-base-picker.spec.ts"],
+      "components": ["web/src/components/diff/DiffFileList.tsx"]
+    },
+    {
+      "id": "cockpit.story.composer-toolbar-insert",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": ["tests/live/cockpit-stories/composer-toolbar-insert.spec.ts"],
+      "components": ["web/src/components/cockpit/Composer.tsx"]
+    },
+    {
       "id": "cockpit.rate-limit-recovery",
       "kind": "vitest",
       "risk": "high",
