@@ -251,6 +251,9 @@ pub struct SessionConfigOverride {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub restart_wake_message: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub row_tag: Option<super::config::RowTagMode>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -477,6 +480,9 @@ pub fn apply_session_overrides(
     }
     if let Some(ref restart_wake_message) = source.restart_wake_message {
         target.restart_wake_message = restart_wake_message.clone();
+    }
+    if let Some(row_tag) = source.row_tag {
+        target.row_tag = row_tag;
     }
 }
 

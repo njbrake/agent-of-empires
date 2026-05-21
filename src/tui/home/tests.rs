@@ -2068,6 +2068,283 @@ fn test_all_profiles_view_shows_all_sessions_flat() {
     }
 }
 
+/// Flatten a rendered row into its plain text, dropping styling.
+fn rendered_row_text(view: &HomeView, item: &Item) -> String {
+    use crate::tui::styles::Theme;
+    let theme = Theme::default();
+    view.render_item_line(item, false, false, &theme, 200)
+        .spans
+        .iter()
+        .map(|s| s.content.as_ref())
+        .collect()
+}
+
+/// Default `RowTagMode::None` renders no tag in any view; existing users
+/// see no change from the row-tag feature being added.
+#[test]
+#[serial]
+fn test_default_row_tag_mode_renders_no_tag() {
+    let temp = TempDir::new().unwrap();
+    setup_test_home(&temp);
+
+    let storage_a = Storage::new("alpha").unwrap();
+    let instances_a = vec![Instance::new("A1", "/tmp/a")];
+    let group_tree_a = GroupTree::new_with_groups(&instances_a, &[]);
+    storage_a.commit(&instances_a, &group_tree_a).unwrap();
+
+    let tools = AvailableTools::with_tools(&["claude"]);
+    let mut view = HomeView::new(None, tools).unwrap();
+    view.group_by = crate::session::config::GroupByMode::Manual;
+    view.flat_items = view.build_flat_items();
+    view.update_selected();
+
+    // Default `row_tag_mode` is `None`; no row should carry a bracketed tag.
+    for item in &view.flat_items {
+        if let Item::Session { .. } = item {
+            let text = rendered_row_text(&view, item);
+            assert!(
+                !text.contains('['),
+                "default RowTagMode::None must render no tag: {text:?}"
+            );
+        }
+    }
+}
+
+/// `RowTagMode::Auto` shows the profile short code in all-profiles view.
+#[test]
+#[serial]
+fn test_row_tag_auto_renders_profile_in_all_profiles_view() {
+    let temp = TempDir::new().unwrap();
+    setup_test_home(&temp);
+
+    let storage_a = Storage::new("alpha").unwrap();
+    let instances_a = vec![Instance::new("A1", "/tmp/a")];
+    let group_tree_a = GroupTree::new_with_groups(&instances_a, &[]);
+    storage_a.commit(&instances_a, &group_tree_a).unwrap();
+
+    let storage_b = Storage::new("beta").unwrap();
+    let instances_b = vec![Instance::new("B1", "/tmp/b")];
+    let group_tree_b = GroupTree::new_with_groups(&instances_b, &[]);
+    storage_b.commit(&instances_b, &group_tree_b).unwrap();
+
+    let tools = AvailableTools::with_tools(&["claude"]);
+    let mut view = HomeView::new(None, tools).unwrap();
+    view.group_by = crate::session::config::GroupByMode::Manual;
+    view.row_tag_mode = crate::session::config::RowTagMode::Auto;
+    view.flat_items = view.build_flat_items();
+    view.update_selected();
+
+    let mut seen = 0;
+    for item in &view.flat_items {
+        if let Item::Session { id, .. } = item {
+            let profile = view.get_instance(id).unwrap().source_profile.clone();
+            let code = super::render::profile_short_code(&profile);
+            let text = rendered_row_text(&view, item);
+            assert!(
+                text.contains(&format!("[{code}]")),
+                "all-view row for profile {profile} missing tag [{code}]: {text:?}"
+            );
+            seen += 1;
+        }
+    }
+    assert_eq!(seen, 2, "expected both profile sessions to render");
+}
+
+/// `RowTagMode::Auto` does not render in a filtered view (profile already
+/// in the list title).
+#[test]
+#[serial]
+fn test_row_tag_auto_omits_tag_in_filtered_view() {
+    let temp = TempDir::new().unwrap();
+    setup_test_home(&temp);
+
+    let storage_a = Storage::new("alpha").unwrap();
+    let instances_a = vec![Instance::new("A1", "/tmp/a")];
+    let group_tree_a = GroupTree::new_with_groups(&instances_a, &[]);
+    storage_a.commit(&instances_a, &group_tree_a).unwrap();
+
+    let tools = AvailableTools::with_tools(&["claude"]);
+    let mut view = HomeView::new(Some("alpha".to_string()), tools).unwrap();
+    view.group_by = crate::session::config::GroupByMode::Manual;
+    view.row_tag_mode = crate::session::config::RowTagMode::Auto;
+    view.flat_items = view.build_flat_items();
+    view.update_selected();
+
+    let code = super::render::profile_short_code("alpha");
+    for item in &view.flat_items {
+        if let Item::Session { .. } = item {
+            let text = rendered_row_text(&view, item);
+            assert!(
+                !text.contains(&format!("[{code}]")),
+                "Auto in filtered view should omit the tag: {text:?}"
+            );
+        }
+    }
+}
+
+/// `RowTagMode::Profile` renders the profile tag in BOTH views (unlike
+/// Auto which gates on all-profiles view).
+#[test]
+#[serial]
+fn test_row_tag_profile_renders_in_filtered_view() {
+    let temp = TempDir::new().unwrap();
+    setup_test_home(&temp);
+
+    let storage_a = Storage::new("alpha").unwrap();
+    let instances_a = vec![Instance::new("A1", "/tmp/a")];
+    let group_tree_a = GroupTree::new_with_groups(&instances_a, &[]);
+    storage_a.commit(&instances_a, &group_tree_a).unwrap();
+
+    let tools = AvailableTools::with_tools(&["claude"]);
+    let mut view = HomeView::new(Some("alpha".to_string()), tools).unwrap();
+    view.group_by = crate::session::config::GroupByMode::Manual;
+    view.row_tag_mode = crate::session::config::RowTagMode::Profile;
+    view.flat_items = view.build_flat_items();
+    view.update_selected();
+
+    let code = super::render::profile_short_code("alpha");
+    let mut seen = 0;
+    for item in &view.flat_items {
+        if let Item::Session { .. } = item {
+            let text = rendered_row_text(&view, item);
+            assert!(
+                text.contains(&format!("[{code}]")),
+                "Profile mode should always render the tag: {text:?}"
+            );
+            seen += 1;
+        }
+    }
+    assert!(seen > 0);
+}
+
+/// `RowTagMode::Branch` complements the existing branch-on-divergence
+/// display rather than duplicating it: when `worktree.branch != title`
+/// the divergence display already shows the branch (in `theme.branch`
+/// color, earlier in the row), so the Branch tag suppresses itself to
+/// avoid showing the same information twice.
+#[test]
+#[serial]
+fn test_row_tag_branch_dedups_with_divergence_display() {
+    let temp = TempDir::new().unwrap();
+    setup_test_home(&temp);
+
+    let storage = Storage::new("alpha").unwrap();
+    // Title and branch DIFFER, so the existing divergence display
+    // would render the branch.
+    let mut inst = Instance::new("my-session", "/tmp/a");
+    inst.worktree_info = Some(crate::session::WorktreeInfo {
+        branch: "feature/foo".to_string(),
+        main_repo_path: "/tmp/a-main".to_string(),
+        managed_by_aoe: true,
+        created_at: chrono::Utc::now(),
+        base_branch: None,
+    });
+    let instances = vec![inst];
+    let group_tree = GroupTree::new_with_groups(&instances, &[]);
+    storage.commit(&instances, &group_tree).unwrap();
+
+    let tools = AvailableTools::with_tools(&["claude"]);
+    let mut view = HomeView::new(None, tools).unwrap();
+    view.group_by = crate::session::config::GroupByMode::Manual;
+    view.row_tag_mode = crate::session::config::RowTagMode::Branch;
+    view.flat_items = view.build_flat_items();
+    view.update_selected();
+
+    // No bracketed `[...]` tag on this row: divergence display owns the
+    // branch label here. The plain `feature/foo` from the divergence
+    // display is still expected in the rendered text.
+    for item in &view.flat_items {
+        if let Item::Session { .. } = item {
+            let text = rendered_row_text(&view, item);
+            assert!(
+                !text.contains('['),
+                "Branch mode must suppress its tag when divergence display already shows the branch: {text:?}"
+            );
+            assert!(
+                text.contains("feature/foo"),
+                "the existing divergence display should still render: {text:?}"
+            );
+        }
+    }
+}
+
+/// `RowTagMode::Branch` DOES render the tag when title matches branch
+/// (the divergence display stays quiet, so the user would otherwise not
+/// know which branch this session is on).
+#[test]
+#[serial]
+fn test_row_tag_branch_renders_when_title_matches_branch() {
+    let temp = TempDir::new().unwrap();
+    setup_test_home(&temp);
+
+    let storage = Storage::new("alpha").unwrap();
+    // Title and branch MATCH, so the divergence display stays quiet.
+    let mut inst = Instance::new("feature/foo", "/tmp/a");
+    inst.worktree_info = Some(crate::session::WorktreeInfo {
+        branch: "feature/foo".to_string(),
+        main_repo_path: "/tmp/a-main".to_string(),
+        managed_by_aoe: true,
+        created_at: chrono::Utc::now(),
+        base_branch: None,
+    });
+    let instances = vec![inst];
+    let group_tree = GroupTree::new_with_groups(&instances, &[]);
+    storage.commit(&instances, &group_tree).unwrap();
+
+    let tools = AvailableTools::with_tools(&["claude"]);
+    let mut view = HomeView::new(None, tools).unwrap();
+    view.group_by = crate::session::config::GroupByMode::Manual;
+    view.row_tag_mode = crate::session::config::RowTagMode::Branch;
+    view.flat_items = view.build_flat_items();
+    view.update_selected();
+
+    // The tag uses the last `/`-segment of the branch, truncated to 8
+    // chars, so `feature/foo` becomes `[foo]`.
+    for item in &view.flat_items {
+        if let Item::Session { .. } = item {
+            let text = rendered_row_text(&view, item);
+            assert!(
+                text.contains("[foo]"),
+                "Branch mode must render the tag when divergence display is quiet: {text:?}"
+            );
+        }
+    }
+}
+
+/// Legacy `Instance::new` left `source_profile` empty before the per-profile
+/// plumbing landed. The render branch must skip the tag entirely in that
+/// case rather than emit a literal `  []`.
+#[test]
+#[serial]
+fn test_row_tag_auto_skips_for_empty_source_profile() {
+    let temp = TempDir::new().unwrap();
+    setup_test_home(&temp);
+
+    let storage = Storage::new("legacy").unwrap();
+    let mut inst = Instance::new("Legacy1", "/tmp/legacy");
+    inst.source_profile = String::new();
+    let instances = vec![inst];
+    let group_tree = GroupTree::new_with_groups(&instances, &[]);
+    storage.commit(&instances, &group_tree).unwrap();
+
+    let tools = AvailableTools::with_tools(&["claude"]);
+    let mut view = HomeView::new(None, tools).unwrap();
+    view.group_by = crate::session::config::GroupByMode::Manual;
+    view.row_tag_mode = crate::session::config::RowTagMode::Auto;
+    view.flat_items = view.build_flat_items();
+    view.update_selected();
+
+    for item in &view.flat_items {
+        if let Item::Session { .. } = item {
+            let text = rendered_row_text(&view, item);
+            assert!(
+                !text.contains("[]"),
+                "row with empty source_profile must not render a literal []: {text:?}"
+            );
+        }
+    }
+}
+
 #[test]
 #[serial]
 fn test_create_session_in_all_mode_is_findable() {
@@ -3480,9 +3757,9 @@ fn footer_hides_attention_workflow_hints_outside_attention_sort() {
     );
 }
 
-/// `toggle_favorite_at_cursor` flips the cursor's instance favorited state,
-/// persists the change, returns a toast message, and returns Ok(None) when
-/// nothing is selected.
+/// `toggle_favorite_at_cursor` flips the cursor's instance favorited state
+/// and persists the change. No toast: the row's visual treatment (bold +
+/// leading `* ` glyph) is the feedback.
 #[test]
 #[serial]
 fn toggle_favorite_at_cursor_round_trip() {
@@ -3493,37 +3770,25 @@ fn toggle_favorite_at_cursor_round_trip() {
     // Initial state: not favorited.
     assert!(!env.view.instances[0].is_favorited());
 
-    let fav_msg = env.view.toggle_favorite_at_cursor().unwrap();
+    env.view.toggle_favorite_at_cursor().unwrap();
     assert!(env.view.instances[0].is_favorited());
-    assert!(
-        fav_msg.as_deref().unwrap_or("").starts_with("Favorited: "),
-        "expected 'Favorited: ...' toast, got {fav_msg:?}",
-    );
 
-    let unfav_msg = env.view.toggle_favorite_at_cursor().unwrap();
+    env.view.toggle_favorite_at_cursor().unwrap();
     assert!(!env.view.instances[0].is_favorited());
-    assert!(
-        unfav_msg
-            .as_deref()
-            .unwrap_or("")
-            .starts_with("Unfavorited: "),
-        "expected 'Unfavorited: ...' toast, got {unfav_msg:?}",
-    );
 }
 
-/// When no session is selected, the toggle is a no-op and returns Ok(None).
+/// When no session is selected, the toggle is a silent no-op.
 #[test]
 #[serial]
-fn toggle_favorite_at_cursor_returns_none_with_no_selection() {
+fn toggle_favorite_at_cursor_noop_with_no_selection() {
     let mut env = create_test_env_empty();
     env.view.selected_session = None;
-    let msg = env.view.toggle_favorite_at_cursor().unwrap();
-    assert!(msg.is_none(), "expected None when nothing is selected");
+    env.view.toggle_favorite_at_cursor().unwrap();
 }
 
-/// `toggle_archive_at_cursor` flips the cursor's instance archived state,
-/// persists the change, returns a toast message, and returns Ok(None) when
-/// nothing is selected.
+/// `toggle_archive_at_cursor` flips the cursor's instance archived state
+/// and persists the change. No toast: the row sinks to tier 99 and that
+/// visible reordering is the feedback.
 #[test]
 #[serial]
 fn toggle_archive_at_cursor_round_trip() {
@@ -3534,35 +3799,20 @@ fn toggle_archive_at_cursor_round_trip() {
     // Initial state: not archived.
     assert!(!env.view.instances[0].is_archived());
 
-    let archived_msg = env.view.toggle_archive_at_cursor().unwrap();
+    env.view.toggle_archive_at_cursor().unwrap();
     assert!(env.view.instances[0].is_archived());
-    assert!(
-        archived_msg
-            .as_deref()
-            .unwrap_or("")
-            .starts_with("Archived: "),
-        "expected 'Archived: ...' toast, got {archived_msg:?}",
-    );
 
-    let unarchived_msg = env.view.toggle_archive_at_cursor().unwrap();
+    env.view.toggle_archive_at_cursor().unwrap();
     assert!(!env.view.instances[0].is_archived());
-    assert!(
-        unarchived_msg
-            .as_deref()
-            .unwrap_or("")
-            .starts_with("Unarchived: "),
-        "expected 'Unarchived: ...' toast, got {unarchived_msg:?}",
-    );
 }
 
-/// When no session is selected, the toggle is a no-op and returns Ok(None).
+/// When no session is selected, the toggle is a silent no-op.
 #[test]
 #[serial]
-fn toggle_archive_at_cursor_returns_none_with_no_selection() {
+fn toggle_archive_at_cursor_noop_with_no_selection() {
     let mut env = create_test_env_empty();
     env.view.selected_session = None;
-    let msg = env.view.toggle_archive_at_cursor().unwrap();
-    assert!(msg.is_none(), "expected None when nothing is selected");
+    env.view.toggle_archive_at_cursor().unwrap();
 }
 
 /// `restart_selected_session` must drop the press silently when nothing is

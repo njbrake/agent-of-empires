@@ -7,11 +7,13 @@
 //!
 //! Public surface is re-exported here so callers keep `crate::tui::styles::*`.
 
+mod contrast;
 mod palette;
 #[cfg(feature = "serve")]
 mod resolved;
 mod themes;
 
+pub use contrast::has_min_contrast;
 #[cfg(feature = "serve")]
 pub use resolved::{resolve_theme, ResolvedTheme};
 #[cfg(any(feature = "serve", test))]
