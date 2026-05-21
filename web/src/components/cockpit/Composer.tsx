@@ -338,19 +338,35 @@ export function Composer({
 
     let writeTimer: number | null = null;
     const flush = () => {
-      writeTimer = null;
+      if (writeTimer !== null) {
+        window.clearTimeout(writeTimer);
+        writeTimer = null;
+      }
       setDraft(sessionId, composerRuntime.getState().text);
     };
     const unsub = composerRuntime.subscribe(() => {
       if (writeTimer !== null) window.clearTimeout(writeTimer);
       writeTimer = window.setTimeout(flush, 250);
     });
+    // Page-unload flush. Effect cleanup runs on React unmount (sidebar
+    // navigation) but not on a full reload, PWA cold start, or mobile
+    // OS evicting the tab. Without these listeners, whatever sits in
+    // writeTimer at the moment the page dies is lost; on a fast typer
+    // that's the last sentence or two of the draft (#1358).
+    // visibilitychange covers iOS Safari, which fires pagehide only on
+    // real unload, not on app-switch.
+    const onHidden = () => {
+      if (document.visibilityState === "hidden") flush();
+    };
+    window.addEventListener("beforeunload", flush);
+    window.addEventListener("pagehide", flush);
+    document.addEventListener("visibilitychange", onHidden);
     return () => {
       unsub();
-      if (writeTimer !== null) {
-        window.clearTimeout(writeTimer);
-        flush();
-      }
+      window.removeEventListener("beforeunload", flush);
+      window.removeEventListener("pagehide", flush);
+      document.removeEventListener("visibilitychange", onHidden);
+      flush();
     };
   }, [composerRuntime, sessionId]);
 
