@@ -2079,9 +2079,41 @@ fn rendered_row_text(view: &HomeView, item: &Item) -> String {
         .collect()
 }
 
+/// Default `RowTagMode::None` renders no tag in any view; existing users
+/// see no change from the row-tag feature being added.
 #[test]
 #[serial]
-fn test_all_profiles_view_renders_per_row_profile_tag() {
+fn test_default_row_tag_mode_renders_no_tag() {
+    let temp = TempDir::new().unwrap();
+    setup_test_home(&temp);
+
+    let storage_a = Storage::new("alpha").unwrap();
+    let instances_a = vec![Instance::new("A1", "/tmp/a")];
+    let group_tree_a = GroupTree::new_with_groups(&instances_a, &[]);
+    storage_a.commit(&instances_a, &group_tree_a).unwrap();
+
+    let tools = AvailableTools::with_tools(&["claude"]);
+    let mut view = HomeView::new(None, tools).unwrap();
+    view.group_by = crate::session::config::GroupByMode::Manual;
+    view.flat_items = view.build_flat_items();
+    view.update_selected();
+
+    // Default `row_tag_mode` is `None`; no row should carry a bracketed tag.
+    for item in &view.flat_items {
+        if let Item::Session { .. } = item {
+            let text = rendered_row_text(&view, item);
+            assert!(
+                !text.contains('['),
+                "default RowTagMode::None must render no tag: {text:?}"
+            );
+        }
+    }
+}
+
+/// `RowTagMode::Auto` shows the profile short code in all-profiles view.
+#[test]
+#[serial]
+fn test_row_tag_auto_renders_profile_in_all_profiles_view() {
     let temp = TempDir::new().unwrap();
     setup_test_home(&temp);
 
@@ -2098,12 +2130,10 @@ fn test_all_profiles_view_renders_per_row_profile_tag() {
     let tools = AvailableTools::with_tools(&["claude"]);
     let mut view = HomeView::new(None, tools).unwrap();
     view.group_by = crate::session::config::GroupByMode::Manual;
+    view.row_tag_mode = crate::session::config::RowTagMode::Auto;
     view.flat_items = view.build_flat_items();
     view.update_selected();
 
-    // Every session row in all-profiles view carries its own profile tag,
-    // since the list title only shows `[all]`. The tag is the short code,
-    // not the full profile name.
     let mut seen = 0;
     for item in &view.flat_items {
         if let Item::Session { id, .. } = item {
@@ -2120,9 +2150,11 @@ fn test_all_profiles_view_renders_per_row_profile_tag() {
     assert_eq!(seen, 2, "expected both profile sessions to render");
 }
 
+/// `RowTagMode::Auto` does not render in a filtered view (profile already
+/// in the list title).
 #[test]
 #[serial]
-fn test_filtered_view_omits_per_row_profile_tag() {
+fn test_row_tag_auto_omits_tag_in_filtered_view() {
     let temp = TempDir::new().unwrap();
     setup_test_home(&temp);
 
@@ -2134,21 +2166,55 @@ fn test_filtered_view_omits_per_row_profile_tag() {
     let tools = AvailableTools::with_tools(&["claude"]);
     let mut view = HomeView::new(Some("alpha".to_string()), tools).unwrap();
     view.group_by = crate::session::config::GroupByMode::Manual;
+    view.row_tag_mode = crate::session::config::RowTagMode::Auto;
     view.flat_items = view.build_flat_items();
     view.update_selected();
 
-    // A filtered view names the profile in the list title, so the per-row
-    // tag is redundant and must not be rendered.
     let code = super::render::profile_short_code("alpha");
     for item in &view.flat_items {
         if let Item::Session { .. } = item {
             let text = rendered_row_text(&view, item);
             assert!(
                 !text.contains(&format!("[{code}]")),
-                "filtered view should not render a per-row profile tag: {text:?}"
+                "Auto in filtered view should omit the tag: {text:?}"
             );
         }
     }
+}
+
+/// `RowTagMode::Profile` renders the profile tag in BOTH views (unlike
+/// Auto which gates on all-profiles view).
+#[test]
+#[serial]
+fn test_row_tag_profile_renders_in_filtered_view() {
+    let temp = TempDir::new().unwrap();
+    setup_test_home(&temp);
+
+    let storage_a = Storage::new("alpha").unwrap();
+    let instances_a = vec![Instance::new("A1", "/tmp/a")];
+    let group_tree_a = GroupTree::new_with_groups(&instances_a, &[]);
+    storage_a.commit(&instances_a, &group_tree_a).unwrap();
+
+    let tools = AvailableTools::with_tools(&["claude"]);
+    let mut view = HomeView::new(Some("alpha".to_string()), tools).unwrap();
+    view.group_by = crate::session::config::GroupByMode::Manual;
+    view.row_tag_mode = crate::session::config::RowTagMode::Profile;
+    view.flat_items = view.build_flat_items();
+    view.update_selected();
+
+    let code = super::render::profile_short_code("alpha");
+    let mut seen = 0;
+    for item in &view.flat_items {
+        if let Item::Session { .. } = item {
+            let text = rendered_row_text(&view, item);
+            assert!(
+                text.contains(&format!("[{code}]")),
+                "Profile mode should always render the tag: {text:?}"
+            );
+            seen += 1;
+        }
+    }
+    assert!(seen > 0);
 }
 
 /// Legacy `Instance::new` left `source_profile` empty before the per-profile
@@ -2156,14 +2222,11 @@ fn test_filtered_view_omits_per_row_profile_tag() {
 /// case rather than emit a literal `  []`.
 #[test]
 #[serial]
-fn test_all_profiles_view_skips_tag_for_empty_source_profile() {
+fn test_row_tag_auto_skips_for_empty_source_profile() {
     let temp = TempDir::new().unwrap();
     setup_test_home(&temp);
 
     let storage = Storage::new("legacy").unwrap();
-    // Build an instance the way legacy callers did, with an empty
-    // source_profile. The storage profile is "legacy" but the field on
-    // the Instance itself is blank.
     let mut inst = Instance::new("Legacy1", "/tmp/legacy");
     inst.source_profile = String::new();
     let instances = vec![inst];
@@ -2173,6 +2236,7 @@ fn test_all_profiles_view_skips_tag_for_empty_source_profile() {
     let tools = AvailableTools::with_tools(&["claude"]);
     let mut view = HomeView::new(None, tools).unwrap();
     view.group_by = crate::session::config::GroupByMode::Manual;
+    view.row_tag_mode = crate::session::config::RowTagMode::Auto;
     view.flat_items = view.build_flat_items();
     view.update_selected();
 

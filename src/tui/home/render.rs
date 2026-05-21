@@ -159,6 +159,61 @@ pub(crate) fn agent_row_icon(inst: &crate::session::Instance) -> &'static str {
 /// The mapping is per-name and deterministic, so two profiles that collapse to
 /// the same code render identically; the full name still shows in a filtered
 /// view's list title and in the New/Restart dialogs.
+/// Compute the per-row tag string for a given instance + mode, or `None`
+/// when the row should not render a tag in this context.
+///
+/// `Auto` only renders in all-profiles view (no `active_profile`). Other
+/// modes always render when their content is available (e.g. `Branch`
+/// returns `None` for sessions without a worktree).
+pub(crate) fn compute_row_tag(
+    inst: &crate::session::Instance,
+    mode: crate::session::config::RowTagMode,
+    in_all_profiles_view: bool,
+) -> Option<String> {
+    use crate::session::config::RowTagMode;
+    match mode {
+        RowTagMode::None => None,
+        RowTagMode::Auto => {
+            if !in_all_profiles_view {
+                return None;
+            }
+            let code = profile_short_code(&inst.source_profile);
+            if code.is_empty() {
+                None
+            } else {
+                Some(code)
+            }
+        }
+        RowTagMode::Profile => {
+            let code = profile_short_code(&inst.source_profile);
+            if code.is_empty() {
+                None
+            } else {
+                Some(code)
+            }
+        }
+        RowTagMode::Sandbox => {
+            if inst.is_sandboxed() {
+                Some("sb".to_string())
+            } else {
+                None
+            }
+        }
+        RowTagMode::Branch => inst.worktree_info.as_ref().and_then(|w| {
+            // Show the last `/`-segment of the branch (most informative
+            // for `feature/foo` style names), truncated to 8 chars so the
+            // tag stays narrow.
+            let last = w.branch.rsplit('/').next().unwrap_or("");
+            let trimmed: String = last.chars().take(8).collect();
+            if trimmed.is_empty() {
+                Option::<String>::None
+            } else {
+                Some(trimmed)
+            }
+        }),
+    }
+}
+
 pub(crate) fn profile_short_code(profile: &str) -> String {
     let segments: Vec<&str> = profile
         .split(['-', '_'])
@@ -915,27 +970,20 @@ impl HomeView {
                     }
                 }
 
-                // In all-profiles view the list block title only shows
-                // `[all]`, so each row carries its own profile tag; without
-                // it, sessions from different profiles are indistinguishable.
-                // The tag is a short code (`profile_short_code`), not the full
-                // name, so it stays narrow and does not crowd the title or
-                // shove the activity column. A filtered view already names the
-                // profile in the title, so the per-row tag would be redundant
-                // there and is omitted. Counted into `used_width` below so the
-                // activity column still right-aligns past the tag.
-                //
-                // Empty `source_profile` (legacy callers that built an
-                // Instance before profile plumbing landed) skips the tag
-                // rather than rendering a literal `  []`.
-                if self.active_profile.is_none() {
-                    let code = profile_short_code(&inst.source_profile);
-                    if !code.is_empty() {
-                        line_spans.push(Span::styled(
-                            format!("  [{}]", code),
-                            Style::default().fg(theme.dimmed),
-                        ));
-                    }
+                // Per-row tag. The mode is config-driven (see
+                // `SessionConfig.row_tag` and the Settings UI "Row Tag"
+                // field). Default is `None` so existing users see no
+                // tag; power users opt in for `Auto` (profile in all-
+                // profiles view), `Profile`, `Sandbox`, or `Branch`.
+                // Counted into `used_width` below so the activity
+                // column still right-aligns past the tag.
+                if let Some(tag) =
+                    compute_row_tag(inst, self.row_tag_mode, self.active_profile.is_none())
+                {
+                    line_spans.push(Span::styled(
+                        format!("  [{}]", tag),
+                        Style::default().fg(theme.dimmed),
+                    ));
                 }
 
                 // Right edge of the row: optional terminal-mode badge, and

@@ -551,6 +551,39 @@ pub struct SessionConfig {
     /// itself still runs).
     #[serde(default = "default_restart_wake_message")]
     pub restart_wake_message: String,
+
+    /// Per-row label shown next to the session title in the home view.
+    /// `Auto` (default) preserves the historical UX: show a profile short
+    /// code in all-profiles view and nothing in filtered views. Other
+    /// variants override that to always show the chosen tag, or to
+    /// suppress the row label entirely.
+    #[serde(default)]
+    pub row_tag: RowTagMode,
+}
+
+/// What to render in the per-row tag slot next to the session title.
+///
+/// Defaults to `None` so existing users see no behavior change. Power
+/// users opt in via Settings: pick `Auto` (profile tag in all-profiles
+/// view only), `Profile`, `Sandbox`, or `Branch`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RowTagMode {
+    /// Never render a per-row tag. The historical behavior on `main`
+    /// before the row-tag feature landed; default so the feature is
+    /// fully opt-in.
+    #[default]
+    None,
+    /// Show the profile short code in all-profiles view, nothing in
+    /// filtered views.
+    Auto,
+    /// Always render the profile short code (`fb` for `forit-backup`).
+    Profile,
+    /// Render `sb` on sandboxed sessions, nothing on host sessions.
+    Sandbox,
+    /// Render the worktree branch name (last segment if `/`-namespaced,
+    /// truncated to 8 chars).
+    Branch,
 }
 
 impl Default for SessionConfig {
@@ -566,6 +599,7 @@ impl Default for SessionConfig {
             strict_hotkeys: false,
             snooze_duration_minutes: 30,
             restart_wake_message: default_restart_wake_message(),
+            row_tag: RowTagMode::default(),
         }
     }
 }
