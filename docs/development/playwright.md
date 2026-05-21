@@ -109,6 +109,56 @@ Script file shape:
 
 Specs that need a custom script call `spawnAoeServe({ cockpit: true, fakeAcpScript: "/tmp/script.json", ... })` directly instead of using the `serveCockpit` fixture.
 
+## Cockpit user-story specs
+
+`web/tests/live/cockpit-stories/` holds UI-driven cockpit specs that
+drive the React surface end-to-end (clicks, keystrokes, navigation) and
+assert on rendered DOM. They complement the REST-contract specs at
+`web/tests/live/cockpit-*.spec.ts`, which assert against
+`/api/sessions/:id/cockpit/replay`. The story specs catch reducer-to-render
+plumbing breakage that the REST tracers cannot see.
+
+Pattern:
+
+```ts
+import { test as base, expect } from "@playwright/test";
+import { spawnAoeServe, listSessions, seedSessionViaAoeAdd } from "../../helpers/aoeServe";
+import { waitForCockpitReady, waitForCockpitView } from "../../helpers/cockpit";
+
+base("send message via Enter renders agent chunk", async ({ page }, testInfo) => {
+  const serve = await spawnAoeServe({
+    authMode: "none",
+    cockpit: true,
+    workerIndex: testInfo.workerIndex,
+    parallelIndex: testInfo.parallelIndex,
+    seedFn: seedSessionViaAoeAdd({ title: "story" }),
+  });
+  try {
+    const [{ id: sessionId }] = await listSessions(serve.baseUrl);
+    await fetch(`${serve.baseUrl}/api/sessions/${sessionId}/cockpit/enable`, {
+      method: "POST",
+    });
+    await waitForCockpitReady(serve.baseUrl, sessionId);
+    await page.goto(`${serve.baseUrl}/session/${sessionId}`);
+    await waitForCockpitView(page);
+    const composer = page.getByRole("textbox", { name: /Send a message/i });
+    await composer.fill("hello");
+    await composer.press("Enter");
+    await expect(page.getByText(/Hello from fake ACP agent/)).toBeVisible();
+  } finally {
+    await serve.stop();
+  }
+});
+```
+
+`waitForCockpitReady` (server handshake) and `waitForCockpitView`
+(React tree mounted) together ensure both sides are ready before any
+click or keystroke.
+
+Custom per-spec scripts go through a temp file (see
+`cockpit-approval.spec.ts` for the canonical setup); the `serveCockpit`
+fixture is for stories happy with the default chunk-then-stop script.
+
 ## Coverage matrix
 
 `web/tests/coverage-matrix.json` is the source of truth for "what does each spec cover". Every entry has:
