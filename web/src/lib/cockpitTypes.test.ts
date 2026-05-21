@@ -1259,3 +1259,141 @@ describe("cockpitHookReducer / dismiss_mode_switch_failed", () => {
     expect(next.modeSwitchFailed).toBeNull();
   });
 });
+
+// Reducer coverage for the silent-orphan watchdog (#1240). The
+// daemon-side detector is exercised by the Rust integration test in
+// tests/cockpit_silent_orphan.rs; this block just pins down the
+// frontend half so a future refactor of the worker-state banner
+// doesn't silently regress the prompt_orphaned path.
+function stoppedFrame(reason: string, seq: number): CockpitFrame {
+  return {
+    session_id: "s-orphan",
+    seq,
+    event: { Stopped: { reason } },
+  };
+}
+
+describe("CockpitState reducer / silent-orphan watchdog (#1240)", () => {
+  it("sets agentOrphaned and workerRestarting on prompt_orphaned", () => {
+    let state: CockpitState = {
+      ...emptyCockpitState(),
+      pendingUserPromptSeq: 1,
+      lastStoppedSeq: 0,
+    };
+    state = applyEvent(state, stoppedFrame("prompt_orphaned", 1));
+    expect(state.agentOrphaned).toBe(true);
+    expect(state.workerRestarting).toBe(true);
+    expect(state.workerStopped).toBe(false);
+    expect(state.agentUnresponsive).toBe(false);
+  });
+
+  it("clears agentUnresponsive when prompt_orphaned arrives after it", () => {
+    let state: CockpitState = {
+      ...emptyCockpitState(),
+      pendingUserPromptSeq: 2,
+      lastStoppedSeq: 0,
+    };
+    state = applyEvent(state, stoppedFrame("agent_unresponsive", 1));
+    expect(state.agentUnresponsive).toBe(true);
+    expect(state.agentOrphaned).toBe(false);
+    state = applyEvent(state, stoppedFrame("prompt_orphaned", 2));
+    expect(state.agentUnresponsive).toBe(false);
+    expect(state.agentOrphaned).toBe(true);
+  });
+
+  it("clears agentOrphaned on AcpSessionAssigned (respawn completed)", () => {
+    let state: CockpitState = {
+      ...emptyCockpitState(),
+      pendingUserPromptSeq: 1,
+      lastStoppedSeq: 0,
+    };
+    state = applyEvent(state, stoppedFrame("prompt_orphaned", 1));
+    expect(state.agentOrphaned).toBe(true);
+    state = applyEvent(state, {
+      session_id: "s-orphan",
+      seq: 2,
+      event: { AcpSessionAssigned: { acp_session_id: "sess-abc" } },
+    });
+    expect(state.agentOrphaned).toBe(false);
+    expect(state.workerRestarting).toBe(false);
+  });
+
+  it("clears agentOrphaned on UserPromptSent (user moving on)", () => {
+    let state: CockpitState = {
+      ...emptyCockpitState(),
+      pendingUserPromptSeq: 1,
+      lastStoppedSeq: 0,
+    };
+    state = applyEvent(state, stoppedFrame("prompt_orphaned", 1));
+    expect(state.agentOrphaned).toBe(true);
+    state = applyEvent(state, {
+      session_id: "s-orphan",
+      seq: 2,
+      event: { UserPromptSent: { text: "next prompt" } },
+    });
+    expect(state.agentOrphaned).toBe(false);
+  });
+
+  it("clears agentOrphaned on user_stopped", () => {
+    let state: CockpitState = {
+      ...emptyCockpitState(),
+      pendingUserPromptSeq: 1,
+      lastStoppedSeq: 0,
+    };
+    state = applyEvent(state, stoppedFrame("prompt_orphaned", 1));
+    expect(state.agentOrphaned).toBe(true);
+    state = applyEvent(state, stoppedFrame("user_stopped", 2));
+    expect(state.agentOrphaned).toBe(false);
+  });
+
+  it("backfills agentOrphaned=false on pre-#1240 persisted state", () => {
+    // Simulate a localStorage entry written before #1240: agentOrphaned
+    // absent. normaliseTurnCounters must default it to false so the
+    // reducer and banner code see a well-typed value.
+    const stale = {
+      ...emptyCockpitState(),
+      pendingUserPromptSeq: 0,
+      lastStoppedSeq: 0,
+    } as CockpitState & { agentOrphaned?: boolean };
+    delete stale.agentOrphaned;
+    const normalised = normaliseTurnCounters(stale);
+    expect(normalised.agentOrphaned).toBe(false);
+  });
+
+  it("clears agentOrphaned on restart_pending", () => {
+    // Supervisor's reap_user_stopped sweep publishes restart_pending
+    // when a worker disappears out-of-band; that supersedes a prior
+    // orphan escalation, so the banner must downgrade to the generic
+    // "Restarting…" copy. See CodeRabbit review on #1248.
+    let state: CockpitState = {
+      ...emptyCockpitState(),
+      pendingUserPromptSeq: 1,
+      lastStoppedSeq: 0,
+    };
+    state = applyEvent(state, stoppedFrame("prompt_orphaned", 1));
+    expect(state.agentOrphaned).toBe(true);
+    state = applyEvent(state, stoppedFrame("restart_pending", 2));
+    expect(state.agentOrphaned).toBe(false);
+    expect(state.workerRestarting).toBe(true);
+  });
+
+  it("clears agentOrphaned when agent_unresponsive arrives next", () => {
+    // The cancel-escalation watchdog (agent_unresponsive) is the
+    // proximate path that downstream supervisor logic uses to drive
+    // SIGTERM + respawn even when the silent-orphan watchdog (#1240)
+    // armed first. If both reasons fire in sequence, the banner must
+    // flip away from agentOrphaned so the user sees the cancel-
+    // escalation copy that matches the active recovery phase.
+    let state: CockpitState = {
+      ...emptyCockpitState(),
+      pendingUserPromptSeq: 2,
+      lastStoppedSeq: 0,
+    };
+    state = applyEvent(state, stoppedFrame("prompt_orphaned", 1));
+    expect(state.agentOrphaned).toBe(true);
+    state = applyEvent(state, stoppedFrame("agent_unresponsive", 2));
+    expect(state.agentOrphaned).toBe(false);
+    expect(state.agentUnresponsive).toBe(true);
+    expect(state.workerRestarting).toBe(true);
+  });
+});

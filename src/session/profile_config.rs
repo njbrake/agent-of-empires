@@ -92,6 +92,10 @@ pub struct CockpitConfigOverride {
     pub max_concurrent_resumes: Option<u32>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub force_end_turn_threshold_secs: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub silent_orphan_grace_secs: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub silent_orphan_fast_grace_secs: Option<u32>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -567,6 +571,12 @@ pub fn merge_configs(mut global: Config, profile: &ProfileConfig) -> Config {
         }
         if let Some(v) = cockpit_override.force_end_turn_threshold_secs {
             global.cockpit.force_end_turn_threshold_secs = v;
+        }
+        if let Some(v) = cockpit_override.silent_orphan_grace_secs {
+            global.cockpit.silent_orphan_grace_secs = v;
+        }
+        if let Some(v) = cockpit_override.silent_orphan_fast_grace_secs {
+            global.cockpit.silent_orphan_fast_grace_secs = v;
         }
     }
 

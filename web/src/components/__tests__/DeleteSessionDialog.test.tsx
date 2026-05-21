@@ -138,6 +138,137 @@ describe("DeleteSessionDialog keyboard affordances", () => {
     expect(titleEl?.textContent).toMatch(/Delete Session/);
   });
 
+  it("toggling delete-worktree off hides the force checkbox and sends a worktree=false body", () => {
+    const onConfirm = vi.fn().mockResolvedValue(undefined);
+    const { container } = setup({ onConfirm });
+
+    const worktreeBox = container.querySelector<HTMLLabelElement>(
+      '[data-testid="delete-session-checkbox-worktree"]',
+    );
+    expect(worktreeBox).toBeTruthy();
+    expect(worktreeBox!.dataset.checked).toBe("true");
+    // The force-delete checkbox is only rendered while delete-worktree is on.
+    expect(
+      container.querySelector('[data-testid="delete-session-checkbox-force"]'),
+    ).toBeTruthy();
+
+    fireEvent.click(worktreeBox!.querySelector("span")!);
+    expect(worktreeBox!.dataset.checked).toBe("false");
+    expect(
+      container.querySelector('[data-testid="delete-session-checkbox-force"]'),
+    ).toBeNull();
+
+    fireEvent.keyDown(document, { key: "Enter" });
+    expect(onConfirm).toHaveBeenCalledWith({
+      delete_worktree: false,
+      delete_branch: false,
+      delete_sandbox: false,
+      force_delete: false,
+    });
+  });
+
+  it("force checkbox flips force_delete in the confirm body when enabled", () => {
+    const onConfirm = vi.fn().mockResolvedValue(undefined);
+    const { container } = setup({ onConfirm });
+
+    const forceBox = container.querySelector<HTMLLabelElement>(
+      '[data-testid="delete-session-checkbox-force"]',
+    );
+    expect(forceBox).toBeTruthy();
+    expect(forceBox!.dataset.checked).toBe("false");
+
+    fireEvent.click(forceBox!.querySelector("span")!);
+    expect(forceBox!.dataset.checked).toBe("true");
+
+    fireEvent.keyDown(document, { key: "Enter" });
+    expect(onConfirm).toHaveBeenCalledWith({
+      delete_worktree: true,
+      delete_branch: false,
+      delete_sandbox: false,
+      force_delete: true,
+    });
+  });
+
+  it("enabling delete-branch flips delete_branch in the confirm body", () => {
+    const onConfirm = vi.fn().mockResolvedValue(undefined);
+    const { container } = setup({ onConfirm });
+
+    const branchBox = container.querySelector<HTMLLabelElement>(
+      '[data-testid="delete-session-checkbox-branch"]',
+    );
+    expect(branchBox).toBeTruthy();
+    expect(branchBox!.dataset.checked).toBe("false");
+
+    fireEvent.click(branchBox!.querySelector("span")!);
+    expect(branchBox!.dataset.checked).toBe("true");
+
+    fireEvent.keyDown(document, { key: "Enter" });
+    expect(onConfirm).toHaveBeenCalledWith({
+      delete_worktree: true,
+      delete_branch: true,
+      delete_sandbox: false,
+      force_delete: false,
+    });
+  });
+
+  it("sandbox checkbox is the only one rendered when the session has no managed worktree", () => {
+    const onConfirm = vi.fn().mockResolvedValue(undefined);
+    const { container } = setup({
+      onConfirm,
+      hasManagedWorktree: false,
+      isSandboxed: true,
+    });
+
+    expect(
+      container.querySelector('[data-testid="delete-session-checkbox-worktree"]'),
+    ).toBeNull();
+    expect(
+      container.querySelector('[data-testid="delete-session-checkbox-branch"]'),
+    ).toBeNull();
+    expect(
+      container.querySelector('[data-testid="delete-session-checkbox-force"]'),
+    ).toBeNull();
+
+    const sandboxBox = container.querySelector<HTMLLabelElement>(
+      '[data-testid="delete-session-checkbox-sandbox"]',
+    );
+    expect(sandboxBox).toBeTruthy();
+    // Sandbox default flips on automatically because cleanupDefaults.delete_sandbox
+    // is false but the dialog re-derives off isSandboxed. Here cleanupDefaults
+    // has delete_sandbox=false, so it should start off.
+    expect(sandboxBox!.dataset.checked).toBe("false");
+
+    fireEvent.click(sandboxBox!.querySelector("span")!);
+    fireEvent.keyDown(document, { key: "Enter" });
+    expect(onConfirm).toHaveBeenCalledWith({
+      delete_worktree: false,
+      delete_branch: false,
+      delete_sandbox: true,
+      force_delete: false,
+    });
+  });
+
+  it("no-options session (no worktree, no sandbox) confirms with an all-false body", () => {
+    const onConfirm = vi.fn().mockResolvedValue(undefined);
+    const { container } = setup({
+      onConfirm,
+      hasManagedWorktree: false,
+      isSandboxed: false,
+    });
+
+    expect(
+      container.querySelectorAll('[data-testid^="delete-session-checkbox-"]'),
+    ).toHaveLength(0);
+
+    fireEvent.keyDown(document, { key: "Enter" });
+    expect(onConfirm).toHaveBeenCalledWith({
+      delete_worktree: false,
+      delete_branch: false,
+      delete_sandbox: false,
+      force_delete: false,
+    });
+  });
+
   it("restores focus to the previously focused element when the dialog unmounts", () => {
     // Create a trigger button outside the dialog and focus it before mount,
     // mirroring how the sidebar context-menu item is focused when the user

@@ -29,6 +29,7 @@ pub fn read_hook_status(instance_id: &str) -> Option<Status> {
         "running" => Some(Status::Running),
         "waiting" => Some(Status::Waiting),
         "idle" => Some(Status::Idle),
+        "error" => Some(Status::Error),
         other => {
             tracing::warn!(target: "hooks.status", "Unexpected hook status value: {:?}", other);
             None
@@ -82,6 +83,14 @@ mod tests {
         let id = "test_read_idle";
         let dir = setup_status_file(id, "idle");
         assert_eq!(read_hook_status(id), Some(Status::Idle));
+        fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn test_read_error_status() {
+        let id = "test_read_error";
+        let dir = setup_status_file(id, "error");
+        assert_eq!(read_hook_status(id), Some(Status::Error));
         fs::remove_dir_all(dir).ok();
     }
 

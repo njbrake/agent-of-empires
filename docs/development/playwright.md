@@ -76,6 +76,7 @@ Isolation per test:
 - Port: `5200 + workerIndex*100 + parallelIndex + attempt*7`. Five retries on bind failure.
 - Fake `claude` shim in `home/bin/claude` (`exec tail -f /dev/null`). Cockpit fixture overrides with the fake-ACP shim, installed under `claude`, `claude-agent-acp`, and `aoe-agent`.
 - `stop()` does `SIGTERM` with a 2s wait, `SIGKILL` fallback, then `rm -rf home`. Never calls `tmux kill-server` (would kill the developer's tmux).
+- `restart()` kills the running proc (`SIGTERM` then `SIGKILL` after 2s) and respawns with the same args on the same port. Used by connectivity-recovery specs (`disconnect-banner.spec.ts`) that need to observe `setServerDown(true)` on SIGTERM and `setServerDown(false)` after the server comes back. Token mode re-reads the freshly written `serve.token` so `handle.authToken` tracks the second boot. Does NOT re-run passphrase prelogin or cockpit master-enable across the restart; specs that need those should call `spawnAoeServe` again.
 
 Binary resolution: `AOE_E2E_BINARY` env wins; otherwise `<repo>/target/release/aoe`. `liveGlobalSetup.ts` runs once before any worker and calls `cargo build --features serve --release` if the binary is missing.
 

@@ -139,6 +139,18 @@ export interface ServeHandle {
    */
   tmuxPrefix: "aoe_" | "aoe_dev_";
   stop(): Promise<void>;
+  /**
+   * Kill the running `aoe serve` proc and respawn it with the same args
+   * on the same port. Used by connectivity-recovery specs (disconnect
+   * banner) that need to observe the dashboard's `setServerDown(true)`
+   * path on SIGTERM and then `setServerDown(false)` once the server is
+   * back. The captured port is reused after the dead listener releases
+   * it on `exit`. Token-mode reads the freshly written `serve.token`
+   * and updates `handle.authToken`. Does NOT re-run passphrase
+   * `preloginViaHarness` or cockpit master enable; specs that need
+   * those across a restart should call `spawnAoeServe` again.
+   */
+  restart(): Promise<void>;
 }
 
 /**
@@ -447,14 +459,9 @@ export async function spawnAoeServe(opts: SpawnOptions): Promise<ServeHandle> {
   const passphrase = authMode === "passphrase" ? opts.passphrase ?? DEFAULT_PASSPHRASE : undefined;
 
   const spawnTimeoutMs = opts.spawnTimeoutMs ?? 10_000;
-  let proc: ChildProcess | null = null;
-  let port = 0;
-  let baseUrl = "";
 
-  for (let attempt = 0; attempt < 5; attempt++) {
-    port = portFor(opts.workerIndex, opts.parallelIndex, attempt);
-    baseUrl = `http://127.0.0.1:${port}`;
-    const args = ["serve", "--host", "127.0.0.1", "--port", String(port)];
+  function buildArgs(boundPort: number): string[] {
+    const args = ["serve", "--host", "127.0.0.1", "--port", String(boundPort)];
     if (authMode === "none") args.push("--no-auth");
     if (authMode === "token") args.push("--auth", "token");
     if (authMode === "passphrase") {
@@ -472,8 +479,14 @@ export async function spawnAoeServe(opts: SpawnOptions): Promise<ServeHandle> {
     if (passphrase) args.push("--passphrase", passphrase);
     if (opts.readOnly) args.push("--read-only");
     if (opts.extraArgs) args.push(...opts.extraArgs);
+    return args;
+  }
 
-    proc = spawn(aoeBinary, args, {
+  async function spawnOnce(
+    args: string[],
+    boundBaseUrl: string,
+  ): Promise<ChildProcess> {
+    const child = spawn(aoeBinary, args, {
       stdio: ["ignore", "pipe", "pipe"],
       env: seedEnv,
     });
@@ -486,26 +499,43 @@ export async function spawnAoeServe(opts: SpawnOptions): Promise<ServeHandle> {
       const fs = await import("node:fs");
       const log = fs.createWriteStream(logPath, { flags: "a" });
       log.write(`\n=== spawn ${args.join(" ")} (home=${home}) ===\n`);
-      proc.stdout?.on("data", (b) => log.write(`[stdout] ${b}`));
-      proc.stderr?.on("data", (b) => log.write(`[stderr] ${b}`));
+      child.stdout?.on("data", (b) => log.write(`[stdout] ${b}`));
+      child.stderr?.on("data", (b) => log.write(`[stderr] ${b}`));
     }
 
     let spawnFailed = false;
-    proc.once("error", () => {
+    child.once("error", () => {
       spawnFailed = true;
     });
 
     try {
-      await waitForServer(baseUrl, spawnTimeoutMs, proc, authMode);
-      break;
+      await waitForServer(boundBaseUrl, spawnTimeoutMs, child, authMode);
+      return child;
     } catch (err) {
       try {
-        proc.kill("SIGKILL");
+        child.kill("SIGKILL");
       } catch {
         // ignore
       }
-      proc = null;
-      if (spawnFailed || attempt === 4) {
+      const wrapped = spawnFailed
+        ? new Error(`spawn failed before listen: ${String(err)}`)
+        : err;
+      throw wrapped;
+    }
+  }
+
+  let proc: ChildProcess | null = null;
+  let port = 0;
+  let baseUrl = "";
+
+  for (let attempt = 0; attempt < 5; attempt++) {
+    port = portFor(opts.workerIndex, opts.parallelIndex, attempt);
+    baseUrl = `http://127.0.0.1:${port}`;
+    try {
+      proc = await spawnOnce(buildArgs(port), baseUrl);
+      break;
+    } catch (err) {
+      if (attempt === 4) {
         rmSync(home, { recursive: true, force: true });
         throw err;
       }
@@ -525,6 +555,37 @@ export async function spawnAoeServe(opts: SpawnOptions): Promise<ServeHandle> {
     authToken = await readTokenFile(tokenFile, spawnTimeoutMs);
   }
 
+  async function killProc(child: ChildProcess): Promise<void> {
+    if (child.exitCode !== null || child.signalCode !== null) return;
+    child.kill("SIGTERM");
+    await new Promise<void>((resolveExit) => {
+      let resolved = false;
+      const done = () => {
+        if (resolved) return;
+        resolved = true;
+        clearTimeout(escalate);
+        clearTimeout(backstop);
+        resolveExit();
+      };
+      // 2s after SIGTERM, escalate to SIGKILL. Do NOT resolve here:
+      // restart() reuses the same port and a too-early resolve races
+      // the kernel's TCP cleanup, so spawnOnce can land on EADDRINUSE.
+      // Wait for the real exit event (or the backstop below).
+      const escalate = setTimeout(() => {
+        try {
+          child.kill("SIGKILL");
+        } catch {
+          // ignore
+        }
+      }, 2000);
+      // Hard backstop so a pathologically uncooperative child can't
+      // hang the test forever. SIGKILL is uninterruptible on POSIX
+      // outside zombie/D-state, so this should not fire in practice.
+      const backstop = setTimeout(done, 4000);
+      child.once("exit", done);
+    });
+  }
+
   const handle: ServeHandle = {
     baseUrl,
     port,
@@ -536,26 +597,19 @@ export async function spawnAoeServe(opts: SpawnOptions): Promise<ServeHandle> {
     authToken,
     tokenFile,
     tmuxPrefix: tmuxPrefixFor(aoeBinary),
+    async restart() {
+      if (proc) await killProc(proc);
+      const next = await spawnOnce(buildArgs(port), baseUrl);
+      proc = next;
+      handle.proc = next;
+      if (authMode === "token" && tokenFile) {
+        const refreshed = await readTokenFile(tokenFile, spawnTimeoutMs);
+        handle.authToken = refreshed;
+      }
+    },
     async stop() {
       try {
-        if (proc && proc.exitCode === null && proc.signalCode === null) {
-          proc.kill("SIGTERM");
-          // Give the server 2s to drain, then SIGKILL.
-          await new Promise<void>((resolveExit) => {
-            const t = setTimeout(() => {
-              try {
-                proc!.kill("SIGKILL");
-              } catch {
-                // ignore
-              }
-              resolveExit();
-            }, 2000);
-            proc!.once("exit", () => {
-              clearTimeout(t);
-              resolveExit();
-            });
-          });
-        }
+        if (proc) await killProc(proc);
       } finally {
         // Best-effort: kill any tmux server bound to the isolated socket
         // before deleting the dir. Cockpit specs leave tmux child

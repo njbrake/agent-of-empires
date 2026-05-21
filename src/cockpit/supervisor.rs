@@ -61,12 +61,12 @@ pub enum SupervisorError {
     /// rather than retrying.
     #[error("cockpit worker capacity full ({current}/{limit}); raise [cockpit] max_concurrent_workers or delete an existing cockpit session")]
     CapacityFull { current: usize, limit: u32 },
-    /// The spawn was cancelled by a concurrent `shutdown` call (e.g. the
-    /// user clicked Disable while the ACP handshake was still in
-    /// flight). The freshly-spawned client is dropped cleanly. Callers
-    /// should treat this as a soft success: the requested end state
-    /// (no worker for this session) holds.
-    #[error("spawn for session {0:?} was cancelled by a concurrent shutdown")]
+    /// The in-flight resume (spawn or attach) was cancelled by a
+    /// concurrent `shutdown` call, e.g. the user clicked Disable while
+    /// the ACP handshake was still in flight. The freshly-built client
+    /// is dropped cleanly. Callers should treat this as a soft success:
+    /// the requested end state (no worker for this session) holds.
+    #[error("resume of session {0:?} was cancelled by a concurrent shutdown")]
     SpawnCancelled(String),
 }
 
@@ -192,15 +192,17 @@ pub struct Supervisor<S: BroadcastSink> {
     /// check and race to insert. The RAII `ResumeReservation` guard
     /// removes the entry on success, error, or panic.
     pending_resumes: Arc<std::sync::Mutex<HashMap<String, ResumeKind>>>,
-    /// Session ids whose in-flight `spawn` should bail out instead of
-    /// inserting the freshly-spawned WorkerHandle. Set by `shutdown`
-    /// when it observes a session that's in `pending_resumes` but not
-    /// yet in `workers` — without this, a `cockpit_disable` arriving
-    /// during the 2-3s ACP handshake would no-op (shutdown returns
-    /// UnknownSession) but the in-flight spawn would still complete a
-    /// few seconds later, producing an orphaned worker the user can no
+    /// Session ids whose in-flight resume (spawn or attach) should
+    /// bail out instead of inserting the freshly-built WorkerHandle.
+    /// Set by `shutdown` when it observes a session that's in
+    /// `pending_resumes`, either with no live runner record (the
+    /// `pending_has_it` path) or against an existing runner about to
+    /// be SIGTERMed (the registry-terminate path). Without this, a
+    /// `cockpit_disable` arriving during the 2-3s ACP handshake
+    /// would no-op while the in-flight resume still completed a few
+    /// seconds later, producing an orphaned worker the user can no
     /// longer manage.
-    cancelled_spawns: Arc<std::sync::Mutex<HashSet<String>>>,
+    cancelled_resumes: Arc<std::sync::Mutex<HashSet<String>>>,
     /// Per-agent install gate. claude-agent-acp lazy-installs its
     /// native binary on first ever run; two concurrent `session/new`
     /// calls against a partially-installed SDK race the install and
@@ -320,7 +322,7 @@ impl<S: BroadcastSink> Supervisor<S> {
             workers: Arc::new(Mutex::new(HashMap::new())),
             next_seqs: Arc::new(std::sync::Mutex::new(HashMap::new())),
             pending_resumes: Arc::new(std::sync::Mutex::new(HashMap::new())),
-            cancelled_spawns: Arc::new(std::sync::Mutex::new(HashSet::new())),
+            cancelled_resumes: Arc::new(std::sync::Mutex::new(HashSet::new())),
             warmed_up_agents: Arc::new(std::sync::Mutex::new(HashSet::new())),
             agent_warmup_locks: Arc::new(std::sync::Mutex::new(HashMap::new())),
             worker_notify: Arc::new(tokio::sync::Notify::new()),
@@ -800,7 +802,7 @@ impl<S: BroadcastSink> Supervisor<S> {
         // and skip the workers insert so the user's "disable" actually
         // takes effect instead of being silently overwritten by the
         // 2-3s-late spawn completion.
-        if lock_recover(&self.cancelled_spawns).remove(&session_id) {
+        if lock_recover(&self.cancelled_resumes).remove(&session_id) {
             debug!(
                 target: "cockpit.supervisor",
                 session = %session_id,
@@ -875,12 +877,15 @@ impl<S: BroadcastSink> Supervisor<S> {
                 loop {
                     // Tracks whether the connection task ended because the
                     // cancel-escalation watchdog declared the agent
-                    // unresponsive (see acp_client.rs's CANCEL_ESCALATION_GRACE).
-                    // When true, the runner subprocess is alive but wedged
-                    // around a tool call the agent never cancelled, so the
-                    // supervisor must SIGTERM it before respawning;
-                    // otherwise the next `session/load` would attach to the
-                    // same wedged process. See #1196.
+                    // unresponsive (see acp_client.rs's CANCEL_ESCALATION_GRACE)
+                    // OR because the silent-orphan watchdog detected the
+                    // adapter dropped PromptResponse (see #1240). Both
+                    // failure modes need the same recovery: SIGTERM the
+                    // wedged runner before respawning so the next
+                    // `session/load` doesn't attach to the same wedged
+                    // process. The Stopped reason in the published event
+                    // preserves the distinction; this flag only gates the
+                    // local kill behavior.
                     let mut agent_unresponsive = false;
                     // Set when the connection task signals a non-crash exit
                     // due to a provider quota / rate-limit hit. The acp_client
@@ -897,7 +902,7 @@ impl<S: BroadcastSink> Supervisor<S> {
                     let mut rate_limited = false;
                     while let Some(event) = inbound.recv().await {
                         if let Event::Stopped { reason } = &event {
-                            if reason == "agent_unresponsive" {
+                            if reason == "agent_unresponsive" || reason == "prompt_orphaned" {
                                 agent_unresponsive = true;
                             } else if reason == "rate_limited" {
                                 rate_limited = true;
@@ -1401,22 +1406,35 @@ impl<S: BroadcastSink> Supervisor<S> {
             .flatten()
             .is_some()
         {
+            // If a resume is mid-handshake against this same runner,
+            // the SIGTERM below races the handshake; mark the session
+            // so attach's (or spawn's) pre-insert check bails instead
+            // of installing a worker pointing at a dying agent. Set
+            // the breadcrumb under the workers lock so the racing
+            // resume that re-acquires workers cannot observe an empty
+            // cancelled_resumes between our drop and its read.
+            if pending_has_it {
+                lock_recover(&self.cancelled_resumes).insert(session_id.to_string());
+            }
             drop(workers);
             terminate_runner_for_session(session_id);
             return Ok(());
         }
         if pending_has_it {
-            // Spawn is mid-handshake. Mark it cancelled so
-            // `Supervisor::spawn`'s pre-insert check bails instead of
-            // installing an orphaned worker. The reservation cleanup
+            // Resume is mid-handshake. Mark it cancelled so the
+            // resume's pre-insert check (in `spawn` or `attach`)
+            // bails instead of installing an orphaned worker. Insert
+            // under the workers lock so a resume that re-acquires
+            // workers cannot observe an empty cancelled_resumes
+            // between our drop and its read. The reservation cleanup
             // (ResumeReservation::Drop) clears `pending_resumes` on
             // exit, so we don't have to.
+            lock_recover(&self.cancelled_resumes).insert(session_id.to_string());
             drop(workers);
-            lock_recover(&self.cancelled_spawns).insert(session_id.to_string());
             debug!(
                 target: "cockpit.supervisor",
                 session = %session_id,
-                "shutdown: spawn in flight; marked for cancellation"
+                "shutdown: resume in flight; marked for cancellation"
             );
             return Ok(());
         }
@@ -1593,6 +1611,7 @@ impl<S: BroadcastSink> Supervisor<S> {
             cockpit_session_id,
             sandbox_resources,
             attach_agent_key,
+            record.source_profile.clone(),
         )
         .await?;
         super::worker_registry::mark_attached(&session_id);
@@ -1606,6 +1625,21 @@ impl<S: BroadcastSink> Supervisor<S> {
             drop(workers);
             drop(client);
             return Err(SupervisorError::AlreadyRunning(session_id));
+        }
+        // Cancellation: a concurrent shutdown observed this session
+        // mid-attach (or terminated its runner) and asked us to bail.
+        // Mirrors `spawn`'s pre-insert check so the breadcrumb
+        // shutdown sets in either the `pending_has_it` path or the
+        // registry-terminate path is honored regardless of ResumeKind.
+        if lock_recover(&self.cancelled_resumes).remove(&session_id) {
+            debug!(
+                target: "cockpit.supervisor",
+                session = %session_id,
+                "attach cancelled by concurrent shutdown; dropping freshly-attached client"
+            );
+            drop(workers);
+            drop(client);
+            return Err(SupervisorError::SpawnCancelled(session_id));
         }
         let drain_task = self.start_drain_task(session_id.clone(), inbound);
         workers.insert(
@@ -1919,11 +1953,17 @@ fn next_seq(next_seqs: &SeqMap, session_id: &str) -> u64 {
 
 /// Take a `std::sync::Mutex` guard, recovering the inner data if
 /// the lock is poisoned. The supervisor maps wrapped in `std::sync::Mutex`
-/// only ever hold short, panic free critical sections (HashMap inserts
+/// only ever hold short, panic-free critical sections (HashMap inserts
 /// or removes), so a poisoned lock from an unrelated panic on the same
 /// state is recoverable rather than fatal.
 fn lock_recover<T>(m: &std::sync::Mutex<T>) -> std::sync::MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(|e| e.into_inner())
+    m.lock().unwrap_or_else(|e| {
+        warn!(
+            target: "cockpit.supervisor",
+            "recovered poisoned supervisor lock"
+        );
+        e.into_inner()
+    })
 }
 
 /// A `BroadcastSink` impl backed by a tokio broadcast channel. The
@@ -2877,15 +2917,6 @@ mod tests {
         );
     }
 
-    /// Regression: `publish_startup_error` and a subsequent drain-task
-    /// publish must not collide on seq=1, otherwise the client-side
-    /// dedupe (`frame.seq <= state.lastSeq → drop`) eats the agent's
-    /// Regression: `shutdown` arriving while a spawn is mid-handshake
-    /// must mark the in-flight spawn for cancellation, so the spawn's
-    /// pre-insert check drops the freshly-built client instead of
-    /// installing an orphaned worker. This test exercises the
-    /// supervisor-side state machine without a real ACP handshake by
-    /// pre-seeding `pending_resumes` and asserting `shutdown`'s effect.
     /// Regression: `ResumeReservation::drop` must not need a tokio
     /// runtime. The previous shape detached a `tokio::spawn` to
     /// release a `tokio::sync::Mutex`; that pattern panicked or
@@ -2994,13 +3025,19 @@ mod tests {
         );
     }
 
+    /// Regression: `shutdown` arriving while a spawn is mid-handshake
+    /// must mark the in-flight spawn for cancellation, so the spawn's
+    /// pre-insert check drops the freshly-built client instead of
+    /// installing an orphaned worker. This test exercises the
+    /// supervisor-side state machine without a real ACP handshake by
+    /// pre-seeding `pending_resumes` and asserting `shutdown`'s effect.
     #[tokio::test]
     async fn shutdown_during_pending_spawn_marks_for_cancellation() {
         let sink = VecSink::new();
         let sup = Supervisor::new(sink);
         // Simulate "spawn in flight": session is in pending_resumes
         // but no WorkerHandle yet. This is the exact window where
-        // the bug used to bite — shutdown returned UnknownSession
+        // the bug used to bite, shutdown returned UnknownSession
         // and the late spawn completion installed an orphan.
         sup.pending_resumes
             .lock()
@@ -3009,13 +3046,13 @@ mod tests {
         assert!(sup.is_running("s-cancel").await);
 
         // The new shutdown contract: success (Ok(())), and the id is
-        // recorded in cancelled_spawns so the spawn's pre-insert
+        // recorded in cancelled_resumes so the spawn's pre-insert
         // check can bail.
         sup.shutdown("s-cancel")
             .await
             .expect("shutdown of pending spawn should succeed");
         assert!(
-            sup.cancelled_spawns.lock().unwrap().contains("s-cancel"),
+            sup.cancelled_resumes.lock().unwrap().contains("s-cancel"),
             "shutdown must mark the pending spawn for cancellation"
         );
 
@@ -3027,6 +3064,34 @@ mod tests {
         }
     }
 
+    /// Regression: `shutdown` arriving while an `attach` is
+    /// mid-handshake must also set the cancellation breadcrumb, so
+    /// `attach`'s pre-insert check bails before installing a worker
+    /// against a SIGTERMed runner. Mirrors the spawn variant; the
+    /// breadcrumb is kind-agnostic by design.
+    #[tokio::test]
+    async fn shutdown_during_pending_attach_marks_for_cancellation() {
+        let sink = VecSink::new();
+        let sup = Supervisor::new(sink);
+        sup.pending_resumes
+            .lock()
+            .unwrap()
+            .insert("s-attach-cancel".into(), ResumeKind::Attach);
+        sup.shutdown("s-attach-cancel")
+            .await
+            .expect("shutdown of pending attach should succeed");
+        assert!(
+            sup.cancelled_resumes
+                .lock()
+                .unwrap()
+                .contains("s-attach-cancel"),
+            "shutdown must mark the pending attach for cancellation regardless of ResumeKind"
+        );
+    }
+
+    /// Regression: `publish_startup_error` and a subsequent drain-task
+    /// publish must not collide on seq=1, otherwise the client-side
+    /// dedupe (`frame.seq <= state.lastSeq → drop`) eats the agent's
     /// first message after a retry.
     #[tokio::test]
     async fn startup_error_then_drain_publish_have_distinct_seqs() {

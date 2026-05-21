@@ -191,10 +191,27 @@
       "components": ["web/src/components/DirectoryBrowser.tsx"]
     },
     {
+      "id": "sidebar.groups",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": ["tests/live/sidebar-groups.spec.ts"],
+      "components": ["web/src/components/WorkspaceSidebar.tsx"]
+    },
+    {
+      "id": "sidebar.workspace-ordering",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": ["tests/live/workspace-ordering.spec.ts"],
+      "components": ["web/src/components/WorkspaceSidebar.tsx"]
+    },
+    {
       "id": "session.lifecycle",
-      "kind": "deferred",
-      "issue": "https://github.com/njbrake/agent-of-empires/issues/1220",
+      "kind": "live-playwright",
       "risk": "high",
+      "specs": [
+        "tests/live/session-rename.spec.ts",
+        "tests/live/session-delete.spec.ts"
+      ],
       "components": [
         "web/src/components/DeleteSessionDialog.tsx",
         "web/src/components/WorkspaceSidebar.tsx"
@@ -209,9 +226,13 @@
     },
     {
       "id": "right-panel.diff",
-      "kind": "deferred",
-      "issue": "https://github.com/njbrake/agent-of-empires/issues/1221",
+      "kind": "live-playwright",
       "risk": "medium",
+      "specs": [
+        "tests/live/right-panel-diff-files.spec.ts",
+        "tests/live/right-panel-large-diff.spec.ts",
+        "tests/live/right-panel-notifications.spec.ts"
+      ],
       "components": [
         "web/src/components/RightPanel.tsx",
         "web/src/components/diff/DiffFileList.tsx",
@@ -228,16 +249,16 @@
     },
     {
       "id": "devices",
-      "kind": "deferred",
-      "issue": "https://github.com/njbrake/agent-of-empires/issues/1222",
+      "kind": "live-playwright",
       "risk": "low",
+      "specs": ["tests/live/devices.spec.ts"],
       "components": ["web/src/components/ConnectedDevices.tsx"]
     },
     {
       "id": "connectivity.disconnect-banner",
-      "kind": "deferred",
-      "issue": "https://github.com/njbrake/agent-of-empires/issues/1222",
+      "kind": "live-playwright",
       "risk": "medium",
+      "specs": ["tests/live/disconnect-banner.spec.ts"],
       "components": ["web/src/components/DisconnectBanner.tsx"]
     },
     {
@@ -327,6 +348,16 @@
         "src/components/cockpit/RateLimitRecoveryModal.test.tsx"
       ],
       "components": ["web/src/components/cockpit/RateLimitRecoveryModal.tsx"]
+    },
+    {
+      "id": "cockpit.silent-orphan-watchdog",
+      "kind": "vitest",
+      "risk": "medium",
+      "specs": [
+        "src/lib/cockpitTypes.test.ts",
+        "src/components/cockpit/__tests__/WorkerRestartingBanner.test.tsx"
+      ],
+      "components": []
     },
     {
       "id": "read-only.mode",
