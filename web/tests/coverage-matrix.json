@@ -786,6 +786,34 @@
       "components": ["web/src/components/cockpit/Composer.tsx"]
     },
     {
+      "id": "story.wizard-worktree-toggle",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": ["tests/live/cockpit-stories/wizard-worktree-toggle.spec.ts"],
+      "components": ["web/src/components/session-wizard/steps/SessionStep.tsx"]
+    },
+    {
+      "id": "story.wizard-group-field",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": ["tests/live/cockpit-stories/wizard-group-field.spec.ts"],
+      "components": ["web/src/components/session-wizard/steps/SessionStep.tsx"]
+    },
+    {
+      "id": "story.profile-switch-view",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": ["tests/live/cockpit-stories/profile-switch-view.spec.ts"],
+      "components": ["web/src/components/settings/ProfileSelector.tsx"]
+    },
+    {
+      "id": "story.shortcut-terminal-focus",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": ["tests/live/cockpit-stories/shortcut-terminal-focus.spec.ts"],
+      "components": ["web/src/hooks/useKeyboardShortcuts.ts"]
+    },
+    {
       "id": "cockpit.rate-limit-recovery",
       "kind": "vitest",
       "risk": "high",
