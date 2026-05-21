@@ -935,6 +935,7 @@ impl SettingsView {
             }
             // Logging is global-only for v1 (no profile overrides); the
             // "clear override" gesture is a no-op for these keys.
+            // SessionIdPollerMaxThreads is also global-only.
             FieldKey::LoggingDefaultLevel
             | FieldKey::LoggingTarget(_)
             | FieldKey::LoggingOutput
@@ -942,7 +943,8 @@ impl SettingsView {
             | FieldKey::LoggingRotation
             | FieldKey::LoggingMaxSizeMib
             | FieldKey::LoggingKeepCount
-            | FieldKey::LoggingShowSpans => {}
+            | FieldKey::LoggingShowSpans
+            | FieldKey::SessionIdPollerMaxThreads => {}
             FieldKey::HostEnvironment => {
                 config.environment = None;
             }

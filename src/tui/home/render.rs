@@ -557,6 +557,7 @@ impl HomeView {
             .padding(Padding::horizontal(1));
 
         let inner = block.inner(area);
+        self.list_inner_area = inner;
         frame.render_widget(block, area);
 
         if self.instances().is_empty() && !self.has_any_groups() {
@@ -592,6 +593,7 @@ impl HomeView {
             )));
         }
 
+        let hover_idx = self.hovered_index();
         for (i, item) in self
             .flat_items
             .iter()
@@ -601,16 +603,24 @@ impl HomeView {
         {
             let abs_idx = i + scroll.scroll_offset;
             let is_selected = abs_idx == self.cursor;
+            let is_hovered = !is_selected && Some(abs_idx) == hover_idx;
             let is_match =
                 !self.search_matches.is_empty() && self.search_matches.contains(&abs_idx);
             let mut line = self.render_item_line(item, is_selected, is_match, theme, inner.width);
-            if is_selected {
-                // Pad to full width so the selection background fills the entire row
+            // Selection wins over hover: when the mouse is over the
+            // already-selected row, keep the brighter selected bg rather
+            // than the dimmer hover bg.
+            if is_selected || is_hovered {
                 let pad = (inner.width as usize).saturating_sub(line.width());
                 if pad > 0 {
                     line.spans.push(Span::raw(" ".repeat(pad)));
                 }
-                line = line.style(Style::default().bg(theme.session_selection));
+                let bg = if is_selected {
+                    theme.session_selection
+                } else {
+                    theme.selection
+                };
+                line = line.style(Style::default().bg(bg));
             }
             lines.push(line);
         }

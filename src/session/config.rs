@@ -276,10 +276,16 @@ pub struct CockpitConfig {
     /// `session/cancel` and arms the existing cancel-escalation grace.
     /// Closes the gap where claude-agent-acp finishes streaming but
     /// never sends `PromptResponse` (upstream
-    /// agentclientprotocol/claude-agent-acp#688). Default 60s. `0`
-    /// disables the watchdog. Long-running tools are not affected; the
-    /// watchdog only fires when no in-flight tool call is open.
-    /// See #1240.
+    /// agentclientprotocol/claude-agent-acp#688). Default 120s; raised
+    /// from 60s in #1360 so async-agent flows (Claude SDK `Agent` tool
+    /// with `isAsync: true`) get a longer wait window before the
+    /// watchdog cancels them. `0` disables the watchdog. Long-running
+    /// tools are not affected; the watchdog only fires when no
+    /// in-flight tool call is open. The async-agent extension lifts the
+    /// effective grace to at least 30 minutes when the daemon observes
+    /// an async-agent launch in the current prompt. Nonzero values
+    /// below 120 clamp up at runtime so a typo cannot disable the
+    /// watchdog accidentally. See #1240, #1360.
     #[serde(default = "default_silent_orphan_grace_secs")]
     pub silent_orphan_grace_secs: u32,
     /// Silent-orphan watchdog: accelerated grace used when the current
@@ -302,7 +308,7 @@ fn default_force_end_turn_threshold_secs() -> u32 {
 }
 
 fn default_silent_orphan_grace_secs() -> u32 {
-    60
+    120
 }
 
 fn default_silent_orphan_fast_grace_secs() -> u32 {
@@ -559,6 +565,13 @@ pub struct SessionConfig {
     /// suppress the row label entirely.
     #[serde(default)]
     pub row_tag: RowTagMode,
+
+    /// Process-wide cap on concurrent session-id poller threads (one per
+    /// live session). Edited via the TUI Settings panel; saving in Global
+    /// scope pushes the new value into the runtime atomic for new sessions
+    /// to pick up immediately.
+    #[serde(default = "default_session_id_poller_max_threads")]
+    pub session_id_poller_max_threads: u32,
 }
 
 /// What to render in the per-row tag slot next to the session title.
@@ -600,6 +613,7 @@ impl Default for SessionConfig {
             snooze_duration_minutes: 30,
             restart_wake_message: default_restart_wake_message(),
             row_tag: RowTagMode::default(),
+            session_id_poller_max_threads: default_session_id_poller_max_threads(),
         }
     }
 }
@@ -626,6 +640,10 @@ pub fn validate_snooze_duration(minutes: u64) -> Result<(), String> {
         ));
     }
     Ok(())
+}
+
+fn default_session_id_poller_max_threads() -> u32 {
+    crate::session::poller::DEFAULT_SESSION_ID_POLLER_MAX_THREADS
 }
 
 impl SessionConfig {
@@ -1157,7 +1175,8 @@ impl Config {
         }
 
         let content = fs::read_to_string(&path)?;
-        let config: Config = toml::from_str(&content)?;
+        let mut config: Config = toml::from_str(&content)?;
+        config.normalize();
         Ok(config)
     }
 
@@ -1170,6 +1189,15 @@ impl Config {
                 tracing::warn!(target: "session.store", "Failed to load global config, using defaults: {e}");
                 Config::default()
             }
+        }
+    }
+
+    /// Clamp invariants that the type system can't enforce. Keeps config,
+    /// TUI, and runtime in agreement when a user hand-edits a value below
+    /// its minimum (zero would silently disable session-id polling).
+    fn normalize(&mut self) {
+        if self.session.session_id_poller_max_threads == 0 {
+            self.session.session_id_poller_max_threads = 1;
         }
     }
 }
@@ -1854,6 +1882,48 @@ mod tests {
             deserialized.session.agent_extra_args.get("opencode"),
             Some(&"--port 8080".to_string()),
             "agent_extra_args should survive roundtrip"
+        );
+    }
+
+    #[test]
+    fn test_session_config_default_session_id_poller_max_threads() {
+        let cfg = SessionConfig::default();
+        assert_eq!(
+            cfg.session_id_poller_max_threads,
+            crate::session::poller::DEFAULT_SESSION_ID_POLLER_MAX_THREADS
+        );
+    }
+
+    #[test]
+    fn test_session_config_session_id_poller_max_threads_roundtrip() {
+        let mut config = Config::default();
+        config.session.session_id_poller_max_threads = 137;
+        let serialized = toml::to_string_pretty(&config).unwrap();
+        let deserialized: Config = toml::from_str(&serialized).unwrap();
+        assert_eq!(deserialized.session.session_id_poller_max_threads, 137);
+    }
+
+    #[test]
+    fn test_session_config_session_id_poller_max_threads_defaults_when_absent() {
+        let toml = r#"
+            [session]
+            default_tool = "claude"
+        "#;
+        let cfg: Config = toml::from_str(toml).unwrap();
+        assert_eq!(
+            cfg.session.session_id_poller_max_threads,
+            crate::session::poller::DEFAULT_SESSION_ID_POLLER_MAX_THREADS
+        );
+    }
+
+    #[test]
+    fn test_session_config_normalize_clamps_zero_poller_threads() {
+        let mut cfg = Config::default();
+        cfg.session.session_id_poller_max_threads = 0;
+        cfg.normalize();
+        assert_eq!(
+            cfg.session.session_id_poller_max_threads, 1,
+            "normalize() must clamp zero to 1 to keep config, UI, and runtime aligned"
         );
     }
 

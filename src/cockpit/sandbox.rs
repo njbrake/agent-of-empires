@@ -65,7 +65,7 @@ pub async fn ensure_container_for_session(
     // and create the container, both of which can take many seconds;
     // running it here keeps the tokio worker free for other requests.
     let session_id_owned = session_id.to_string();
-    let (sandbox_info, container_workdir, hooks) =
+    let (sandbox_info, container_workdir, hooks, hook_env) =
         tokio::task::spawn_blocking(move || -> Result<_> {
             let _container = instance_clone
                 .get_container_for_instance()
@@ -77,7 +77,8 @@ pub async fn ensure_container_for_session(
             } else {
                 None
             };
-            Ok((instance_clone.sandbox_info.clone(), workdir, hooks))
+            let env = crate::session::repo_config::lifecycle_env_vars(&instance_clone);
+            Ok((instance_clone.sandbox_info.clone(), workdir, hooks, env))
         })
         .await
         .context("docker ensure task failed to join")??;
@@ -111,6 +112,7 @@ pub async fn ensure_container_for_session(
                     &container_name,
                     &workdir,
                     true,
+                    &hook_env,
                 )
             })
             .await
