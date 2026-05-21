@@ -577,7 +577,15 @@ impl HomeView {
                     let profile = data.profile.as_deref();
                     let tool = data.tool.as_deref();
                     if let Err(e) = self.restart_selected_session(profile, tool) {
-                        tracing::error!("restart_selected_session failed: {}", e);
+                        // Surface the restart error to the user via the
+                        // InfoDialog rather than only the debug log; the
+                        // user explicitly initiated this action and needs
+                        // to know it failed.
+                        tracing::warn!("restart_selected_session failed: {}", e);
+                        self.info_dialog = Some(InfoDialog::new(
+                            "Restart Failed",
+                            &format!("Could not restart session: {e}"),
+                        ));
                     }
                 }
             }
@@ -2264,6 +2272,13 @@ impl HomeView {
     /// and/or swapping the AI engine. No-op if no session is selected or the
     /// selected session is mid-transition.
     fn open_restart_dialog(&mut self) {
+        // Match the new-session paths: bail with the no-agents modal if no
+        // tool is installed, instead of opening a picker with an empty
+        // tool list the user would have to submit blank.
+        if !self.available_tools.any_available() {
+            self.show_no_agents();
+            return;
+        }
         let Some(id) = self.selected_session.clone() else {
             return;
         };
