@@ -971,6 +971,11 @@ impl App {
             // open so it doesn't fire during dialog input. On next launch
             // the startup check runs again and the bar reappears if the
             // update is still available.
+            //
+            // No `needs_redraw = true` here: that forces a `terminal.clear()`
+            // before the next event arrives, so the whole screen blanks for
+            // a beat (visible flash). Ratatui's diff renderer handles the
+            // 1-row layout shrink on the next normal draw.
             (KeyCode::Char('x'), KeyModifiers::CONTROL)
                 if (self.update_info.is_some() || self.update_status.is_some())
                     && !self.home.has_dialog() =>
@@ -978,7 +983,6 @@ impl App {
                 self.update_info = None;
                 self.update_status = None;
                 self.update_bar_dismissed = true;
-                self.needs_redraw = true;
                 return Ok(());
             }
             _ => {}

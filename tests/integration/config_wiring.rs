@@ -10,8 +10,7 @@ use agent_of_empires::session::{save_config, Config, SandboxConfig, WorktreeConf
 use agent_of_empires::tui::dialogs::{DeleteDialogConfig, UnifiedDeleteDialog};
 use serial_test::serial;
 
-mod common;
-use common::setup_temp_home;
+use crate::common::setup_temp_home;
 
 #[test]
 #[serial]

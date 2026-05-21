@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { fetchUpdateStatus } from "../lib/api";
 import type { UpdateStatus } from "../lib/api";
+import { safeGetItem, safeSetItem } from "../lib/safeStorage";
 
 const DISMISS_KEY = "aoe-update-dismissed-version";
 
@@ -11,19 +12,11 @@ const DISMISS_KEY = "aoe-update-dismissed-version";
 const MIN_POLL_MINUTES = 5;
 
 function readDismissed(): string | null {
-  try {
-    return localStorage.getItem(DISMISS_KEY);
-  } catch {
-    return null;
-  }
+  return safeGetItem(DISMISS_KEY);
 }
 
 function writeDismissed(version: string) {
-  try {
-    localStorage.setItem(DISMISS_KEY, version);
-  } catch {
-    // ignore
-  }
+  safeSetItem(DISMISS_KEY, version);
 }
 
 /**

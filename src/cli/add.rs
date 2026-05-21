@@ -590,7 +590,8 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
         if let Some(hooks) = resolved_hooks {
             if !hooks.on_create.is_empty() {
                 println!("Running on_create hooks...");
-                repo_config::execute_hooks(&hooks.on_create, &path)?;
+                let hook_env = repo_config::lifecycle_env_vars(&instance);
+                repo_config::execute_hooks(&hooks.on_create, &path, &hook_env)?;
                 println!("✓ on_create hooks completed");
             }
         }

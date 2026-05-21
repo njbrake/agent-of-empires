@@ -7,6 +7,7 @@ import { MobileTerminalToolbar } from "./MobileTerminalToolbar";
 import { BackToLiveButton } from "./BackToLiveButton";
 import { KeyboardFab } from "./KeyboardFab";
 import { ensureTerminal } from "../lib/api";
+import { safeGetItem, safeSetItem } from "../lib/safeStorage";
 import type { RepoBase, RichDiffFile, SessionResponse } from "../lib/types";
 import {
   FOCUS_TERMINAL_EVENT,
@@ -22,14 +23,10 @@ const MIN_TOP_PX = 80;
 const MIN_BOTTOM_PX = 120;
 
 function loadSavedRatio(): number {
-  try {
-    const saved = localStorage.getItem(VSPLIT_STORAGE_KEY);
-    if (saved) {
-      const r = parseFloat(saved);
-      if (r > 0 && r < 1) return r;
-    }
-  } catch {
-    // ignore
+  const saved = safeGetItem(VSPLIT_STORAGE_KEY);
+  if (saved) {
+    const r = parseFloat(saved);
+    if (r > 0 && r < 1) return r;
   }
   return DEFAULT_TOP_RATIO;
 }
@@ -280,11 +277,7 @@ export function RightPanel({
       document.body.style.cursor = "";
       document.body.style.userSelect = "";
       setTopRatio((r) => {
-        try {
-          localStorage.setItem(VSPLIT_STORAGE_KEY, String(r));
-        } catch {
-          // quota exceeded or private mode; non-fatal
-        }
+        safeSetItem(VSPLIT_STORAGE_KEY, String(r));
         return r;
       });
       window.dispatchEvent(new Event("resize"));

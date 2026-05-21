@@ -7,8 +7,7 @@ use agent_of_empires::session::{
 use anyhow::Result;
 use serial_test::serial;
 
-mod common;
-use common::setup_temp_home;
+use crate::common::setup_temp_home;
 
 // T014: Global hooks resolve when no repo config exists
 #[test]

@@ -7,8 +7,6 @@ type PlusSide = "old" | "new";
 interface Props {
   line: RichDiffLine;
   tokens?: SyntaxToken[];
-  /** True while Shiki is loading; hides content to avoid a flash of unstyled text. */
-  highlightPending?: boolean;
   /** Hide the per-side line-number gutters. Used inside compact embedded
    *  diffs (e.g. the cockpit Edit card) where snippet line numbers add
    *  more clutter than signal. */
@@ -34,7 +32,6 @@ interface Props {
 function DiffLineImpl({
   line,
   tokens,
-  highlightPending,
   hideLineNumbers,
   plusEnabled,
   plusHunkIndex,
@@ -126,7 +123,7 @@ function DiffLineImpl({
         {prefix}
       </span>
       <span
-        className={`flex-1 font-mono text-[12px] whitespace-pre transition-opacity duration-100${tokens ? "" : ` ${textClass}`}${highlightPending ? " opacity-0" : ""}`}
+        className={`flex-1 font-mono text-[12px] whitespace-pre${tokens ? "" : ` ${textClass}`}`}
       >
         {renderContent()}
       </span>

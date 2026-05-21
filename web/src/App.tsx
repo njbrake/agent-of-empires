@@ -4,6 +4,7 @@ import { IDLE_DECAY_WINDOW_MS, isSessionActive } from "./lib/session";
 import { useSessions } from "./hooks/useSessions";
 import { clearCockpitCache } from "./hooks/useCockpit";
 import { CockpitPrefsProvider } from "./lib/cockpitPrefs";
+import { safeGetItem, safeSetItem } from "./lib/safeStorage";
 import { useWorkspaces } from "./hooks/useWorkspaces";
 import { useRepoGroups } from "./hooks/useRepoGroups";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
@@ -232,13 +233,13 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
   const selectedFilePath = selectedFile?.path ?? null;
   const selectedRepoName = selectedFile?.repoName;
   const [diffCollapsed, setDiffCollapsed] = useState(() => {
-    const stored = localStorage.getItem(RIGHT_PANEL_COLLAPSED_KEY);
+    const stored = safeGetItem(RIGHT_PANEL_COLLAPSED_KEY);
     if (stored === "1") return true;
     if (stored === "0") return false;
     return window.innerWidth < 768;
   });
   useEffect(() => {
-    localStorage.setItem(RIGHT_PANEL_COLLAPSED_KEY, diffCollapsed ? "1" : "0");
+    safeSetItem(RIGHT_PANEL_COLLAPSED_KEY, diffCollapsed ? "1" : "0");
   }, [diffCollapsed]);
   const [showSessionWizard, setShowSessionWizard] = useState(false);
   const [showHelp, setShowHelp] = useState(false);

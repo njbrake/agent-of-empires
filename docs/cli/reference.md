@@ -27,6 +27,10 @@ This document contains the help content for the `aoe` command-line program.
 * [`aoe session set-base`↴](#aoe-session-set-base)
 * [`aoe session snooze`↴](#aoe-session-snooze)
 * [`aoe session unsnooze`↴](#aoe-session-unsnooze)
+* [`aoe session favorite`↴](#aoe-session-favorite)
+* [`aoe session unfavorite`↴](#aoe-session-unfavorite)
+* [`aoe session archive`↴](#aoe-session-archive)
+* [`aoe session unarchive`↴](#aoe-session-unarchive)
 * [`aoe group`↴](#aoe-group)
 * [`aoe group list`↴](#aoe-group-list)
 * [`aoe group create`↴](#aoe-group-create)
@@ -294,6 +298,10 @@ Manage session lifecycle (start, stop, attach, etc.)
 * `set-base` — Set or clear the per-session diff base branch. The diff view compares the worktree against this ref instead of the auto-detected default. Useful when the PR target differs from the project default (stacked PRs, hotfix off `release/*`, renamed default branch). See #970
 * `snooze` — Snooze a session for a duration (temporary archive, auto wakes)
 * `unsnooze` — Wake a snoozed session immediately
+* `favorite` — Mark a session as a favorite. Favorited rows pin to the top of their status tier in the Attention sort and render with a leading `* ` glyph plus bold + underline
+* `unfavorite` — Clear the favorite flag on a session
+* `archive` — Archive a session (sinks it to the bottom of the Attention sort). Kills the tmux pane unless `--no-kill` is passed. The worktree, branch, and container are preserved; use `aoe remove` (optionally with `--delete-worktree` / `--delete-branch`) to fully destroy a session
+* `unarchive` — Unarchive a session (restores it to its tier in the Attention sort)
 
 
 
@@ -469,6 +477,58 @@ Snooze a session for a duration (temporary archive, auto wakes)
 Wake a snoozed session immediately
 
 **Usage:** `aoe session unsnooze <IDENTIFIER>`
+
+###### **Arguments:**
+
+* `<IDENTIFIER>` — Session ID or title
+
+
+
+## `aoe session favorite`
+
+Mark a session as a favorite. Favorited rows pin to the top of their status tier in the Attention sort and render with a leading `* ` glyph plus bold + underline
+
+**Usage:** `aoe session favorite <IDENTIFIER>`
+
+###### **Arguments:**
+
+* `<IDENTIFIER>` — Session ID or title
+
+
+
+## `aoe session unfavorite`
+
+Clear the favorite flag on a session
+
+**Usage:** `aoe session unfavorite <IDENTIFIER>`
+
+###### **Arguments:**
+
+* `<IDENTIFIER>` — Session ID or title
+
+
+
+## `aoe session archive`
+
+Archive a session (sinks it to the bottom of the Attention sort). Kills the tmux pane unless `--no-kill` is passed. The worktree, branch, and container are preserved; use `aoe remove` (optionally with `--delete-worktree` / `--delete-branch`) to fully destroy a session
+
+**Usage:** `aoe session archive [OPTIONS] <IDENTIFIER>`
+
+###### **Arguments:**
+
+* `<IDENTIFIER>` — Session ID or title
+
+###### **Options:**
+
+* `--no-kill` — Skip killing the tmux pane. By default archiving stops the running agent so the row renders as truly parked; pass this to keep the pane alive while still marking the session archived
+
+
+
+## `aoe session unarchive`
+
+Unarchive a session (restores it to its tier in the Attention sort)
+
+**Usage:** `aoe session unarchive <IDENTIFIER>`
 
 ###### **Arguments:**
 
