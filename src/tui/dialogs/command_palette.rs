@@ -724,7 +724,7 @@ mod tests {
     /// `builtin_commands` above and the drift test will pass automatically.
     const PALETTE_EXEMPT: &[(char, &str)] = &[
         ('j', "vim-style move down"),
-        ('k', "vim-style move up; Ctrl+K opens this palette"),
+        ('k', "vim-style move up"),
         ('l', "vim-style move right / expand"),
         ('g', "g/G top/bottom jump; cycle-group-by uses 'g' too, covered by palette entry"),
         ('q', "quit; Esc and the global quit path cover this"),
@@ -738,19 +738,13 @@ mod tests {
         ('>', "grow list pane width; layout tweak, not an action"),
     ];
 
-    /// Guard against the palette drifting from the input dispatcher. Scans
-    /// `home/input.rs` for `KeyCode::Char('X')` patterns, case-folds each char,
-    /// and asserts every one is either covered by a palette entry or in
-    /// `PALETTE_EXEMPT`. Catches the "added a hotkey and forgot the palette"
-    /// failure mode at test time instead of at user-bug-report time.
-    #[test]
-    fn home_view_hotkeys_appear_in_palette_or_exempt() {
-        use std::collections::{HashMap, HashSet};
-
+    /// Scan `home/input.rs` for `KeyCode::Char('X')` patterns and return the
+    /// case-folded set of bound chars. Shared by the two drift tests below.
+    /// The test module at the bottom of input.rs constructs synthetic
+    /// KeyEvents in assertions, which would inflate the set with chars that
+    /// aren't real bindings, so we truncate at the first `#[cfg(test)]`.
+    fn home_input_bound_chars() -> std::collections::HashSet<char> {
         let src = include_str!("../home/input.rs");
-        // The test module at the bottom of input.rs constructs synthetic
-        // KeyEvents in assertions, which would inflate the scanned set with
-        // chars that aren't real bindings. Truncate at the first `#[cfg(test)]`.
         let scan_region = match src.find("#[cfg(test)]") {
             Some(idx) => &src[..idx],
             None => src,
@@ -758,7 +752,7 @@ mod tests {
 
         let pat = b"KeyCode::Char('";
         let bytes = scan_region.as_bytes();
-        let mut bound: HashSet<char> = HashSet::new();
+        let mut bound = std::collections::HashSet::new();
         let mut i = 0;
         while i + pat.len() + 2 <= bytes.len() {
             if &bytes[i..i + pat.len()] == pat {
@@ -772,9 +766,22 @@ mod tests {
                 i += 1;
             }
         }
+        bound
+    }
 
-        // Build palette char set from both possible builds (strict and serve
-        // toggled on) so a serve-only command still counts as covered.
+    /// Guard against the palette drifting from the input dispatcher. Asserts
+    /// every char bound in `home/input.rs` is either covered by a palette
+    /// entry or in `PALETTE_EXEMPT`. Catches the "added a hotkey and forgot
+    /// the palette" failure mode at test time instead of at user-bug-report
+    /// time.
+    #[test]
+    fn home_view_hotkeys_appear_in_palette_or_exempt() {
+        use std::collections::{HashMap, HashSet};
+
+        let bound = home_input_bound_chars();
+
+        // Build palette char set with serve toggled on so serve-only commands
+        // still count as covered.
         let mut palette_chars: HashSet<char> = HashSet::new();
         for cmd in builtin_commands(true, false) {
             if let PaletteAction::Key(ke) = cmd.payload {
@@ -808,30 +815,7 @@ mod tests {
     /// real bindings that happen to reuse the same key.
     #[test]
     fn palette_exempt_entries_are_still_bound() {
-        use std::collections::HashSet;
-
-        let src = include_str!("../home/input.rs");
-        let scan_region = match src.find("#[cfg(test)]") {
-            Some(idx) => &src[..idx],
-            None => src,
-        };
-
-        let pat = b"KeyCode::Char('";
-        let bytes = scan_region.as_bytes();
-        let mut bound: HashSet<char> = HashSet::new();
-        let mut i = 0;
-        while i + pat.len() + 2 <= bytes.len() {
-            if &bytes[i..i + pat.len()] == pat {
-                let c = bytes[i + pat.len()];
-                let close = bytes[i + pat.len() + 1];
-                if close == b'\'' && c.is_ascii_graphic() {
-                    bound.insert((c as char).to_ascii_lowercase());
-                }
-                i += pat.len();
-            } else {
-                i += 1;
-            }
-        }
+        let bound = home_input_bound_chars();
 
         let stale: Vec<char> = PALETTE_EXEMPT
             .iter()
