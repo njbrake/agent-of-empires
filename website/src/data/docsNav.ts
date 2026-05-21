@@ -13,6 +13,7 @@ export const docsNav: NavSection[] = [
     title: "Getting Started",
     items: [
       { title: "Introduction", href: "/docs/" },
+      { title: "Features", href: "/docs/features/" },
       { title: "Installation", href: "/docs/installation/" },
       { title: "Quick Start", href: "/docs/quick-start/" },
     ],
@@ -21,6 +22,8 @@ export const docsNav: NavSection[] = [
     title: "Guides",
     items: [
       { title: "Docker Sandbox", href: "/guides/sandbox/" },
+      { title: "Podman", href: "/guides/podman/" },
+      { title: "Apple Containers", href: "/guides/apple-containers/" },
       { title: "Web Dashboard", href: "/guides/web-dashboard/" },
       { title: "Cockpit (Native Agent Rendering)", href: "/docs/cockpit/" },
       { title: "Cockpit Multi-Agent Support", href: "/docs/cockpit/multi-agent/" },
@@ -34,6 +37,7 @@ export const docsNav: NavSection[] = [
       { title: "Tool Sessions", href: "/guides/tool-sessions/" },
       { title: "Session Resume (Claude)", href: "/guides/session-resume/" },
       { title: "Sound Effects", href: "/docs/sounds/" },
+      { title: "Push Notifications", href: "/docs/push-notifications/" },
     ],
   },
   {
