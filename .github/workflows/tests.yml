@@ -86,6 +86,7 @@ jobs:
       # Playwright coverage merge script already emits "web/src/..."
       # paths, so only the vitest LCOV needs the prefix.
       - name: Rewrite LCOV paths for codecov
+        if: ${{ !cancelled() }}
         run: sed -i 's|^SF:src/|SF:web/src/|' web/coverage/vitest/lcov.info
       - name: Upload to Codecov (vitest flag)
         if: ${{ !cancelled() }}
