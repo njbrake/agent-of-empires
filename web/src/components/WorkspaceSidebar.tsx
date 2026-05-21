@@ -35,6 +35,7 @@ import type {
   Workspace,
 } from "../lib/types";
 import { MULTI_REPO_GROUP_ID } from "../hooks/useRepoGroups";
+import { safeGetItem, safeSetItem } from "../lib/safeStorage";
 import {
   STATUS_DOT_CLASS,
   getStatusTextClass,
@@ -126,14 +127,10 @@ function detectNotifyPreset(
 }
 
 function loadSavedWidth(): number {
-  try {
-    const saved = localStorage.getItem(SIDEBAR_WIDTH_KEY);
-    if (saved) {
-      const w = parseInt(saved, 10);
-      if (w >= MIN_WIDTH && w <= MAX_WIDTH) return w;
-    }
-  } catch {
-    // ignore
+  const saved = safeGetItem(SIDEBAR_WIDTH_KEY);
+  if (saved) {
+    const w = parseInt(saved, 10);
+    if (w >= MIN_WIDTH && w <= MAX_WIDTH) return w;
   }
   return DEFAULT_WIDTH;
 }
@@ -918,7 +915,7 @@ export function WorkspaceSidebar({
       document.body.style.cursor = "";
       document.body.style.userSelect = "";
       setWidth((w) => {
-        localStorage.setItem(SIDEBAR_WIDTH_KEY, String(w));
+        safeSetItem(SIDEBAR_WIDTH_KEY, String(w));
         return w;
       });
     };
@@ -1122,6 +1119,7 @@ export function WorkspaceSidebar({
       </div>
       {/* Resize handle (desktop only) */}
       <div
+        data-testid="sidebar-resize-handle"
         onMouseDown={handleMouseDown}
         className="hidden md:block w-1 cursor-col-resize shrink-0 bg-surface-800 hover:bg-brand-600/50 transition-colors duration-75"
       />

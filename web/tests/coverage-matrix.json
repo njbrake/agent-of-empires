@@ -225,6 +225,21 @@
       "components": ["web/src/components/DeleteSessionDialog.tsx"]
     },
     {
+      "id": "storage.quota-crash-regression",
+      "kind": "mocked-playwright",
+      "risk": "high",
+      "specs": [
+        "tests/sidebar-resize-quota.spec.ts",
+        "src/components/__tests__/ContentSplit.quota.test.tsx",
+        "src/lib/safeStorage.test.ts"
+      ],
+      "components": [
+        "web/src/lib/safeStorage.ts",
+        "web/src/components/WorkspaceSidebar.tsx",
+        "web/src/components/ContentSplit.tsx"
+      ]
+    },
+    {
       "id": "right-panel.diff",
       "kind": "live-playwright",
       "risk": "medium",
