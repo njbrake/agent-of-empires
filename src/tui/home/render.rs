@@ -200,6 +200,20 @@ pub(crate) fn compute_row_tag(
             }
         }
         RowTagMode::Branch => inst.worktree_info.as_ref().and_then(|w| {
+            // Complement the existing branch-on-divergence display
+            // (rendered in `theme.branch` color earlier in the row) rather
+            // than duplicate it. When `branch != title` the divergence
+            // display already shows the branch, so the tag would just be
+            // redundant. When `branch == title` the divergence display
+            // stays quiet and the tag fills in.
+            //
+            // Workspace sessions (multi-repo, rendered as
+            // `<branch> [N repos]`) are handled by a separate display
+            // path and have no `worktree_info`, so they fall through to
+            // `None` here naturally.
+            if w.branch != inst.title {
+                return Option::<String>::None;
+            }
             // Show the last `/`-segment of the branch (most informative
             // for `feature/foo` style names), truncated to 8 chars so the
             // tag stays narrow.

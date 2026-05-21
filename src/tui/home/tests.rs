@@ -2217,6 +2217,100 @@ fn test_row_tag_profile_renders_in_filtered_view() {
     assert!(seen > 0);
 }
 
+/// `RowTagMode::Branch` complements the existing branch-on-divergence
+/// display rather than duplicating it: when `worktree.branch != title`
+/// the divergence display already shows the branch (in `theme.branch`
+/// color, earlier in the row), so the Branch tag suppresses itself to
+/// avoid showing the same information twice.
+#[test]
+#[serial]
+fn test_row_tag_branch_dedups_with_divergence_display() {
+    let temp = TempDir::new().unwrap();
+    setup_test_home(&temp);
+
+    let storage = Storage::new("alpha").unwrap();
+    // Title and branch DIFFER, so the existing divergence display
+    // would render the branch.
+    let mut inst = Instance::new("my-session", "/tmp/a");
+    inst.worktree_info = Some(crate::session::WorktreeInfo {
+        branch: "feature/foo".to_string(),
+        main_repo_path: "/tmp/a-main".to_string(),
+        managed_by_aoe: true,
+        created_at: chrono::Utc::now(),
+        base_branch: None,
+    });
+    let instances = vec![inst];
+    let group_tree = GroupTree::new_with_groups(&instances, &[]);
+    storage.commit(&instances, &group_tree).unwrap();
+
+    let tools = AvailableTools::with_tools(&["claude"]);
+    let mut view = HomeView::new(None, tools).unwrap();
+    view.group_by = crate::session::config::GroupByMode::Manual;
+    view.row_tag_mode = crate::session::config::RowTagMode::Branch;
+    view.flat_items = view.build_flat_items();
+    view.update_selected();
+
+    // No bracketed `[...]` tag on this row: divergence display owns the
+    // branch label here. The plain `feature/foo` from the divergence
+    // display is still expected in the rendered text.
+    for item in &view.flat_items {
+        if let Item::Session { .. } = item {
+            let text = rendered_row_text(&view, item);
+            assert!(
+                !text.contains('['),
+                "Branch mode must suppress its tag when divergence display already shows the branch: {text:?}"
+            );
+            assert!(
+                text.contains("feature/foo"),
+                "the existing divergence display should still render: {text:?}"
+            );
+        }
+    }
+}
+
+/// `RowTagMode::Branch` DOES render the tag when title matches branch
+/// (the divergence display stays quiet, so the user would otherwise not
+/// know which branch this session is on).
+#[test]
+#[serial]
+fn test_row_tag_branch_renders_when_title_matches_branch() {
+    let temp = TempDir::new().unwrap();
+    setup_test_home(&temp);
+
+    let storage = Storage::new("alpha").unwrap();
+    // Title and branch MATCH, so the divergence display stays quiet.
+    let mut inst = Instance::new("feature/foo", "/tmp/a");
+    inst.worktree_info = Some(crate::session::WorktreeInfo {
+        branch: "feature/foo".to_string(),
+        main_repo_path: "/tmp/a-main".to_string(),
+        managed_by_aoe: true,
+        created_at: chrono::Utc::now(),
+        base_branch: None,
+    });
+    let instances = vec![inst];
+    let group_tree = GroupTree::new_with_groups(&instances, &[]);
+    storage.commit(&instances, &group_tree).unwrap();
+
+    let tools = AvailableTools::with_tools(&["claude"]);
+    let mut view = HomeView::new(None, tools).unwrap();
+    view.group_by = crate::session::config::GroupByMode::Manual;
+    view.row_tag_mode = crate::session::config::RowTagMode::Branch;
+    view.flat_items = view.build_flat_items();
+    view.update_selected();
+
+    // The tag uses the last `/`-segment of the branch, truncated to 8
+    // chars, so `feature/foo` becomes `[foo]`.
+    for item in &view.flat_items {
+        if let Item::Session { .. } = item {
+            let text = rendered_row_text(&view, item);
+            assert!(
+                text.contains("[foo]"),
+                "Branch mode must render the tag when divergence display is quiet: {text:?}"
+            );
+        }
+    }
+}
+
 /// Legacy `Instance::new` left `source_profile` empty before the per-profile
 /// plumbing landed. The render branch must skip the tag entirely in that
 /// case rather than emit a literal `  []`.
