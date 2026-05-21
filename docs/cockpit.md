@@ -728,6 +728,18 @@ Query init and does not rotate it when conversation context is reset,
 so the cached list stays authoritative for the lifetime of the
 cockpit's underlying agent process. See #1128.
 
+The session cost figure in the composer footer reads "since the most
+recent `/clear` (or `/compact`)" rather than session-lifetime
+cumulative. `claude-agent-acp` keeps reporting its cumulative cost
+across the ACP session's whole lifetime (the adapter does not rotate
+the ACP session id on `/clear`), so the cockpit captures the
+cumulative at each boundary and subtracts it from incoming
+`UsageUpdate` frames. Switching backends (`AgentSwitched`) or starting
+a fresh ACP session (`SessionContextReset`) clears the baseline, since
+the new backend reports its own cumulative starting at zero. The
+`used` / context-window figures stay raw because the adapter already
+reflects the post-boundary context size on its side. See #1354.
+
 ### "Force end turn" button under the spinner
 
 If the agent finished a turn but the cockpit's working spinner is

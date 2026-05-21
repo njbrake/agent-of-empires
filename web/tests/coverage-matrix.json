@@ -382,6 +382,13 @@
       "components": []
     },
     {
+      "id": "cockpit.usage-baseline",
+      "kind": "vitest",
+      "risk": "medium",
+      "specs": ["src/lib/cockpitTypes.test.ts"],
+      "components": ["web/src/components/cockpit/Composer.tsx"]
+    },
+    {
       "id": "cockpit.drafts",
       "kind": "vitest",
       "risk": "medium",
