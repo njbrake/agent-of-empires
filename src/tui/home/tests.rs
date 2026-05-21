@@ -3479,3 +3479,44 @@ fn footer_hides_attention_workflow_hints_outside_attention_sort() {
         "Archive hint should appear in Attention sort.\n{attention_out}"
     );
 }
+
+/// `toggle_favorite_at_cursor` flips the cursor's instance favorited state,
+/// persists the change, returns a toast message, and returns Ok(None) when
+/// nothing is selected.
+#[test]
+#[serial]
+fn toggle_favorite_at_cursor_round_trip() {
+    let mut env = create_test_env_with_sessions(1);
+    let id = env.view.instances[0].id.clone();
+    env.view.selected_session = Some(id.clone());
+
+    // Initial state: not favorited.
+    assert!(!env.view.instances[0].is_favorited());
+
+    let fav_msg = env.view.toggle_favorite_at_cursor().unwrap();
+    assert!(env.view.instances[0].is_favorited());
+    assert!(
+        fav_msg.as_deref().unwrap_or("").starts_with("Favorited: "),
+        "expected 'Favorited: ...' toast, got {fav_msg:?}",
+    );
+
+    let unfav_msg = env.view.toggle_favorite_at_cursor().unwrap();
+    assert!(!env.view.instances[0].is_favorited());
+    assert!(
+        unfav_msg
+            .as_deref()
+            .unwrap_or("")
+            .starts_with("Unfavorited: "),
+        "expected 'Unfavorited: ...' toast, got {unfav_msg:?}",
+    );
+}
+
+/// When no session is selected, the toggle is a no-op and returns Ok(None).
+#[test]
+#[serial]
+fn toggle_favorite_at_cursor_returns_none_with_no_selection() {
+    let mut env = create_test_env_empty();
+    env.view.selected_session = None;
+    let msg = env.view.toggle_favorite_at_cursor().unwrap();
+    assert!(msg.is_none(), "expected None when nothing is selected");
+}
