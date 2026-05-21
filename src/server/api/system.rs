@@ -318,14 +318,19 @@ pub async fn list_profiles(State(state): State<Arc<AppState>>) -> Json<Vec<Profi
     // feedback on #1274.
     let active_profile = state.profile.clone();
     let result = tokio::task::spawn_blocking(move || {
-        let profiles = crate::session::list_profiles().unwrap_or_default();
-        // Treat empty profile (server launched without --profile) as "default"
-        let active: &str = if active_profile.is_empty() {
-            "default"
+        // Resolve the active profile *before* enumerating. A server launched
+        // without --profile carries an empty profile; resolution then picks
+        // the first profile, bootstrapping `main` on a genuine first run.
+        // That bootstrap creates the profile directory as a side effect, so
+        // it must run before `list_profiles()` or the freshly bootstrapped
+        // profile would be absent from the returned list.
+        let active: String = if active_profile.is_empty() {
+            crate::session::config::resolve_default_profile()
         } else {
-            &active_profile
+            active_profile
         };
-        let mut result: Vec<ProfileInfo> = profiles
+        let profiles = crate::session::list_profiles().unwrap_or_default();
+        profiles
             .into_iter()
             .map(|name| {
                 let is_default = name == active;
@@ -338,21 +343,7 @@ pub async fn list_profiles(State(state): State<Arc<AppState>>) -> Json<Vec<Profi
                     description,
                 }
             })
-            .collect();
-        // Ensure the active profile appears even if list_profiles missed it
-        if !active.is_empty() && !result.iter().any(|p| p.name == active) {
-            result.insert(
-                0,
-                ProfileInfo {
-                    name: active.to_string(),
-                    is_default: true,
-                    description: crate::session::load_profile_config(active)
-                        .ok()
-                        .and_then(|c| c.description),
-                },
-            );
-        }
-        result
+            .collect::<Vec<ProfileInfo>>()
     })
     .await
     .unwrap_or_default();

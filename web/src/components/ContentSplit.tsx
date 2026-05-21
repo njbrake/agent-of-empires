@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { safeGetItem, safeSetItem } from "../lib/safeStorage";
+
 const SPLIT_STORAGE_KEY = "aoe-split-ratio";
 const DEFAULT_DIFF_WIDTH = 380;
 const MIN_TERMINAL_WIDTH = 400;
@@ -13,14 +15,10 @@ interface Props {
 }
 
 function loadSavedWidth(): number {
-  try {
-    const saved = localStorage.getItem(SPLIT_STORAGE_KEY);
-    if (saved) {
-      const w = parseInt(saved, 10);
-      if (w >= MIN_DIFF_WIDTH) return w;
-    }
-  } catch {
-    // ignore
+  const saved = safeGetItem(SPLIT_STORAGE_KEY);
+  if (saved) {
+    const w = parseInt(saved, 10);
+    if (w >= MIN_DIFF_WIDTH) return w;
   }
   return DEFAULT_DIFF_WIDTH;
 }
@@ -64,7 +62,7 @@ export function ContentSplit({
       document.body.style.userSelect = "";
       // Persist
       setDiffWidth((w) => {
-        localStorage.setItem(SPLIT_STORAGE_KEY, String(w));
+        safeSetItem(SPLIT_STORAGE_KEY, String(w));
         return w;
       });
       // Trigger resize for terminal fit
@@ -93,6 +91,7 @@ export function ContentSplit({
         <>
           {/* Drag handle (desktop) */}
           <div
+            data-testid="content-split-resize-handle"
             onMouseDown={handleMouseDown}
             onDoubleClick={onToggleCollapse}
             className="hidden md:block w-1 cursor-col-resize shrink-0 bg-surface-800 hover:bg-brand-600/50 transition-colors duration-75"

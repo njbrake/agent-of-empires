@@ -542,6 +542,48 @@ pub struct SessionConfig {
     /// Default: 30 minutes.
     #[serde(default = "default_snooze_duration_minutes")]
     pub snooze_duration_minutes: u32,
+
+    /// Text sent to the agent after a successful `aoe session restart` /
+    /// `e`-keybind restart, once the post-restart readiness probe says the
+    /// pane is alive. Restart re-execs the agent at a blank prompt; this
+    /// nudge tells the agent to pick up where it left off. Set to an
+    /// empty string to disable the wake-up message entirely (the restart
+    /// itself still runs).
+    #[serde(default = "default_restart_wake_message")]
+    pub restart_wake_message: String,
+
+    /// Per-row label shown next to the session title in the home view.
+    /// `Auto` (default) preserves the historical UX: show a profile short
+    /// code in all-profiles view and nothing in filtered views. Other
+    /// variants override that to always show the chosen tag, or to
+    /// suppress the row label entirely.
+    #[serde(default)]
+    pub row_tag: RowTagMode,
+}
+
+/// What to render in the per-row tag slot next to the session title.
+///
+/// Defaults to `None` so existing users see no behavior change. Power
+/// users opt in via Settings: pick `Auto` (profile tag in all-profiles
+/// view only), `Profile`, `Sandbox`, or `Branch`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RowTagMode {
+    /// Never render a per-row tag. The historical behavior on `main`
+    /// before the row-tag feature landed; default so the feature is
+    /// fully opt-in.
+    #[default]
+    None,
+    /// Show the profile short code in all-profiles view, nothing in
+    /// filtered views.
+    Auto,
+    /// Always render the profile short code (`fb` for `forit-backup`).
+    Profile,
+    /// Render `sb` on sandboxed sessions, nothing on host sessions.
+    Sandbox,
+    /// Render the worktree branch name (last segment if `/`-namespaced,
+    /// truncated to 8 chars).
+    Branch,
 }
 
 impl Default for SessionConfig {
@@ -556,12 +598,18 @@ impl Default for SessionConfig {
             agent_detect_as: HashMap::new(),
             strict_hotkeys: false,
             snooze_duration_minutes: 30,
+            restart_wake_message: default_restart_wake_message(),
+            row_tag: RowTagMode::default(),
         }
     }
 }
 
 fn default_snooze_duration_minutes() -> u32 {
     30
+}
+
+fn default_restart_wake_message() -> String {
+    "wake up: pick up what you were doing".to_string()
 }
 
 /// Upper bound on snooze duration: 30 days (43,200 minutes). Originally
@@ -707,8 +755,12 @@ impl Default for WebConfig {
     }
 }
 
+/// Serde default for `Config.default_profile`. Empty means "not explicitly
+/// chosen"; the active profile is then resolved at runtime by
+/// `resolve_default_profile`, which picks the first existing profile or
+/// bootstraps one. There is no magic profile name.
 fn default_profile() -> String {
-    "default".to_string()
+    String::new()
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -1137,14 +1189,38 @@ pub fn save_config(config: &Config) -> Result<()> {
     Ok(())
 }
 
-/// Load the user's default profile name, falling back to "default" on error.
+/// Resolve the active profile name.
+///
+/// If the user has explicitly set `config.default_profile`, that name is
+/// returned verbatim. Otherwise this returns the first profile directory
+/// found under `<app_dir>/profiles/` (sorted, so the choice is
+/// deterministic). On a genuine first run, when no profile directory exists
+/// yet, one is bootstrapped (see `ensure_bootstrap_profile`).
 pub fn resolve_default_profile() -> String {
     let config = Config::load_or_warn();
-    if config.default_profile.is_empty() {
-        "default".to_string()
-    } else {
-        config.default_profile
+    if !config.default_profile.is_empty() {
+        return config.default_profile;
     }
+    match super::list_profiles() {
+        Ok(profiles) => match profiles.into_iter().next() {
+            Some(first) => first,
+            None => ensure_bootstrap_profile(),
+        },
+        Err(_) => ensure_bootstrap_profile(),
+    }
+}
+
+/// Name of the profile created on a genuine first run.
+const BOOTSTRAP_PROFILE: &str = "main";
+
+/// Create the first profile on a genuine first run and return its name.
+///
+/// AoE always needs at least one profile (somewhere to file sessions). When
+/// `profiles/` has no entries, this creates `main`. It is idempotent: calling
+/// it when `main` already exists just returns the name.
+fn ensure_bootstrap_profile() -> String {
+    let _ = super::get_profile_dir(BOOTSTRAP_PROFILE);
+    BOOTSTRAP_PROFILE.to_string()
 }
 
 /// Return `profile` if non-empty, otherwise the user's globally configured
@@ -1239,10 +1315,11 @@ mod tests {
     #[test]
     fn test_config_default() {
         let config = Config::default();
-        // default_profile uses default_profile() function which returns "default"
-        // but Default derive gives empty string, so check deserialize case works
+        // An unset default_profile deserializes empty: "not explicitly
+        // chosen". The active profile is resolved at runtime, not baked in
+        // as a magic name here.
         let deserialized: Config = toml::from_str("").unwrap();
-        assert_eq!(deserialized.default_profile, "default");
+        assert_eq!(deserialized.default_profile, "");
         assert!(!config.worktree.enabled);
         assert!(!config.sandbox.enabled_by_default);
         assert!(config.updates.check_enabled);
@@ -1251,7 +1328,7 @@ mod tests {
     #[test]
     fn test_config_deserialize_empty_toml() {
         let config: Config = toml::from_str("").unwrap();
-        assert_eq!(config.default_profile, "default");
+        assert_eq!(config.default_profile, "");
     }
 
     #[test]

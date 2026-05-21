@@ -672,26 +672,54 @@ export function useTerminal(
       dir: "up" | "down",
       cell: { col: number; row: number },
     ) => `\x1b[<${dir === "up" ? 64 : 65};${cell.col};${cell.row}M`;
-    const cellFromClientPoint = (clientX: number, clientY: number) => {
-      const el = term.element;
+    const wheelGrid = () => {
+      const sentGrid =
+        lastSentCols > 0 && lastSentRows > 0
+          ? { cols: lastSentCols, rows: lastSentRows }
+          : null;
+      // While reading tmux scrollback, resize messages are deferred to
+      // avoid SIGWINCH redraws. xterm may still refit to a new monitor
+      // size, so mouse coordinates must stay in the pane size tmux
+      // actually knows about.
+      if (isInScrollbackRef.current && sentGrid) return sentGrid;
+      return {
+        cols: Math.max(1, term.cols),
+        rows: Math.max(1, term.rows),
+      };
+    };
+    const cellFromClientPoint = (
+      clientX: number,
+      clientY: number,
+      eventTarget?: EventTarget | null,
+    ) => {
+      const targetEl =
+        eventTarget instanceof HTMLElement ? eventTarget : null;
+      const targetRect = targetEl?.getBoundingClientRect();
+      const el =
+        targetRect && targetRect.width > 0 && targetRect.height > 0
+          ? targetEl
+          : term.element;
       if (!el) return { col: 1, row: 1 };
       const rect = el.getBoundingClientRect();
-      const cellWidth = rect.width > 0 ? rect.width / Math.max(1, term.cols) : 0;
-      const cellHeight =
-        rect.height > 0 ? rect.height / Math.max(1, term.rows) : 0;
+      const grid = wheelGrid();
+      const cellWidth = rect.width > 0 ? rect.width / grid.cols : 0;
+      const cellHeight = rect.height > 0 ? rect.height / grid.rows : 0;
       const rawCol =
         cellWidth > 0 ? Math.floor((clientX - rect.left) / cellWidth) + 1 : 1;
       const rawRow =
         cellHeight > 0 ? Math.floor((clientY - rect.top) / cellHeight) + 1 : 1;
       return {
-        col: Math.max(1, Math.min(Math.max(1, term.cols), rawCol)),
-        row: Math.max(1, Math.min(Math.max(1, term.rows), rawRow)),
+        col: Math.max(1, Math.min(grid.cols, rawCol)),
+        row: Math.max(1, Math.min(grid.rows, rawRow)),
       };
     };
-    const centerCell = () => ({
-      col: Math.max(1, Math.ceil(term.cols / 2)),
-      row: Math.max(1, Math.ceil(term.rows / 2)),
-    });
+    const centerCell = () => {
+      const grid = wheelGrid();
+      return {
+        col: Math.max(1, Math.ceil(grid.cols / 2)),
+        row: Math.max(1, Math.ceil(grid.rows / 2)),
+      };
+    };
     let scrollbackDepth = 0;
     const sendWheel = (
       dir: "up" | "down",
@@ -928,7 +956,7 @@ export function useTerminal(
           sendWheel(
             wheels > 0 ? "up" : "down",
             Math.abs(wheels),
-            cellFromClientPoint(singleX, y),
+            cellFromClientPoint(singleX, y, e.currentTarget),
           );
           singleAccum -= wheels * step;
           const dt = Math.max(1, now - singleLastTs);
@@ -978,7 +1006,7 @@ export function useTerminal(
         sendWheel(
           wheels > 0 ? "up" : "down",
           Math.abs(wheels),
-          cellFromClientPoint(touchMidX, y),
+          cellFromClientPoint(touchMidX, y, e.currentTarget),
         );
         touchAccum -= wheels * step;
         const dt = Math.max(1, now - lastMoveTs);
@@ -1064,6 +1092,18 @@ export function useTerminal(
     let wheelAccum = 0;
     let scrollWheelAccum = 0;
     let wheelPersistTimer: ReturnType<typeof setTimeout> | null = null;
+    let lastCapturedWheelCell: { col: number; row: number } | null = null;
+    const onWheelCapture = (e: WheelEvent) => {
+      lastCapturedWheelCell = cellFromClientPoint(
+        e.clientX,
+        e.clientY,
+        e.currentTarget ?? e.target,
+      );
+    };
+    viewport.addEventListener("wheel", onWheelCapture, {
+      capture: true,
+      passive: true,
+    });
     term.attachCustomWheelEventHandler((e: WheelEvent) => {
       e.preventDefault();
 
@@ -1095,10 +1135,19 @@ export function useTerminal(
         Math.min(MAX_WHEELS_PER_FRAME, rawWheels),
       );
       if (wheels !== 0) {
+        const eventCell = cellFromClientPoint(
+          e.clientX,
+          e.clientY,
+          e.currentTarget ?? e.target,
+        );
+        const cell =
+          eventCell.col === 1 && eventCell.row === 1 && lastCapturedWheelCell
+            ? lastCapturedWheelCell
+            : eventCell;
         sendWheel(
           wheels > 0 ? "down" : "up",
           Math.abs(wheels),
-          cellFromClientPoint(e.clientX, e.clientY),
+          cell,
         );
         scrollWheelAccum -= wheels * step;
       }
@@ -1174,6 +1223,7 @@ export function useTerminal(
       viewport.removeEventListener("touchend", onTouchEnd, touchOpts);
       viewport.removeEventListener("touchcancel", onTouchEnd, touchOpts);
       viewport.removeEventListener("click", onClickCapture, true);
+      viewport.removeEventListener("wheel", onWheelCapture, true);
       if (wheelPersistTimer) clearTimeout(wheelPersistTimer);
       if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
       if (fontSizeRaf !== null) cancelAnimationFrame(fontSizeRaf);

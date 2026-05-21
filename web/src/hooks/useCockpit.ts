@@ -21,6 +21,7 @@ import {
 } from "../lib/cockpitTypes";
 import { useCockpitPrefs } from "../lib/cockpitPrefs";
 import { getOrCreateDeviceBindingSecret } from "../lib/deviceBinding";
+import { safeSetItem } from "../lib/safeStorage";
 import { getToken } from "../lib/token";
 
 export type Action =
@@ -75,18 +76,71 @@ function storageKey(sessionId: string): string {
   return STORAGE_KEY_PREFIX + sessionId;
 }
 
-function persistState(sessionId: string, state: CockpitState): void {
-  if (typeof window === "undefined") return;
+// Walk `aoe:cockpit-state:v1:*` keys and remove the single oldest one
+// (by `savedAt`), preferring corrupt entries when present. Returns true
+// when an entry was removed so the caller can retry the write. The
+// whitelist filter is load-bearing: it must never touch `cockpit:draft:*`
+// or any unrelated key. Drafts are authoritative client-side state and
+// cross-tab subscribers observe their removal immediately, so silently
+// evicting them would be data loss (see #1345 debate).
+function evictOldestPersistedCockpitState(currentKey: string): boolean {
+  if (typeof window === "undefined") return false;
   try {
-    const entry: PersistedEntry = { savedAt: Date.now(), state };
-    window.localStorage.setItem(storageKey(sessionId), JSON.stringify(entry));
+    let oldestKey: string | null = null;
+    let oldestTime = Infinity;
+    let firstCorruptKey: string | null = null;
+    for (let i = 0; i < window.localStorage.length; i++) {
+      const k = window.localStorage.key(i);
+      if (!k || !k.startsWith(STORAGE_KEY_PREFIX)) continue;
+      if (k === currentKey) continue;
+      const raw = window.localStorage.getItem(k);
+      if (raw === null) continue;
+      try {
+        const parsed = JSON.parse(raw) as PersistedEntry | null;
+        if (
+          !parsed ||
+          typeof parsed.savedAt !== "number" ||
+          Number.isNaN(parsed.savedAt)
+        ) {
+          if (firstCorruptKey === null) firstCorruptKey = k;
+          continue;
+        }
+        if (parsed.savedAt < oldestTime) {
+          oldestTime = parsed.savedAt;
+          oldestKey = k;
+        }
+      } catch {
+        if (firstCorruptKey === null) firstCorruptKey = k;
+      }
+    }
+    const victim = firstCorruptKey ?? oldestKey;
+    if (!victim) return false;
+    window.localStorage.removeItem(victim);
+    return true;
   } catch {
-    // Quota exceeded, private mode, or storage disabled. The in-memory
-    // cache still works; the next reload will fall back to the full
-    // replay path. Drop quietly so a single oversized session can't
-    // surface as a banner.
+    return false;
   }
 }
+
+function persistState(sessionId: string, state: CockpitState): void {
+  const key = storageKey(sessionId);
+  const body = JSON.stringify({ savedAt: Date.now(), state } satisfies PersistedEntry);
+  if (safeSetItem(key, body)) return;
+  // Storage write failed (likely QuotaExceeded). Evict a single oldest
+  // cockpit cache entry and retry exactly once. On a second failure the
+  // cache is best-effort: the next reload replays from the server, so
+  // we stay silent here per the deliberate UX choice for cache writes.
+  if (!evictOldestPersistedCockpitState(key)) return;
+  safeSetItem(key, body);
+}
+
+// Test-only exports so the eviction policy can be exercised without
+// driving the full hook lifecycle. Not part of the public API.
+export const __test = {
+  persistState,
+  evictOldestPersistedCockpitState,
+  STORAGE_KEY_PREFIX,
+};
 
 function loadPersistedState(sessionId: string): CockpitState | undefined {
   if (typeof window === "undefined") return undefined;

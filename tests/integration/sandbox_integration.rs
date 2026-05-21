@@ -7,6 +7,7 @@
 
 use agent_of_empires::containers::{self, ContainerRuntimeInterface, DockerContainer};
 use agent_of_empires::session::{GroupTree, Instance, SandboxInfo, Storage};
+use serial_test::serial;
 
 fn docker_available() -> bool {
     let rt = containers::get_container_runtime();
@@ -60,7 +61,12 @@ fn test_instance_is_sandboxed() {
     assert!(!inst.is_sandboxed());
 }
 
+// `#[serial]` because this test mutates the process-global `HOME` env var.
+// Without serialization, parallel tests in the same binary that also set HOME
+// will race with us and may drop their TempDir mid-test (see `setup_temp_home`
+// in `crate::common`).
 #[test]
+#[serial]
 fn test_sandbox_info_persists_across_save_load() {
     let temp = tempfile::TempDir::new().unwrap();
     std::env::set_var("HOME", temp.path());

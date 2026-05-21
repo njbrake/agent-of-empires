@@ -63,21 +63,18 @@ pub async fn run(command: Option<ProfileCommands>) -> Result<()> {
 
 async fn list_profiles() -> Result<()> {
     let profiles = session::list_profiles()?;
-    let config = session::load_config()?;
-    let default_profile = config
-        .as_ref()
-        .map(|c| c.default_profile.as_str())
-        .unwrap_or(session::DEFAULT_PROFILE);
 
     if profiles.is_empty() {
         println!("No profiles found.");
-        println!("Run 'aoe' to create the default profile automatically.");
+        println!("Run 'aoe' to create the first profile automatically.");
         return Ok(());
     }
 
+    let default_profile = session::config::resolve_default_profile();
+
     println!("Profiles:");
     for p in &profiles {
-        if p == default_profile {
+        if *p == default_profile {
             println!("  * {} (default)", p);
         } else {
             println!("    {}", p);
@@ -122,12 +119,10 @@ async fn delete_profile(name: &str) -> Result<()> {
 }
 
 async fn show_default_profile() -> Result<()> {
-    let config = session::load_config()?;
-    let default_profile = config
-        .as_ref()
-        .map(|c| c.default_profile.as_str())
-        .unwrap_or(session::DEFAULT_PROFILE);
-    println!("Default profile: {}", default_profile);
+    println!(
+        "Default profile: {}",
+        session::config::resolve_default_profile()
+    );
     Ok(())
 }
 

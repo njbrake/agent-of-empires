@@ -206,19 +206,35 @@ impl GroupTree {
     /// child instances; cascading is the caller's responsibility (see
     /// HomeView::toggle_archive_at_cursor in operations.rs).
     pub fn toggle_archived(&mut self, path: &str) -> Option<bool> {
-        let group = self.groups_by_path.get_mut(path)?;
-        if group.archived_at.is_some() {
-            group.archived_at = None;
-            Some(false)
-        } else {
-            group.archived_at = Some(Utc::now());
-            Some(true)
-        }
+        let new_state = {
+            let group = self.groups_by_path.get_mut(path)?;
+            if group.archived_at.is_some() {
+                group.archived_at = None;
+                false
+            } else {
+                group.archived_at = Some(Utc::now());
+                true
+            }
+        };
+        self.rebuild_tree();
+        Some(new_state)
     }
 
     pub fn set_archived(&mut self, path: &str, archived: bool) {
+        let mut changed = false;
         if let Some(group) = self.groups_by_path.get_mut(path) {
-            group.archived_at = if archived { Some(Utc::now()) } else { None };
+            // Skip redundant set_archived(true) so we don't churn the
+            // timestamp on every UI re-archive.
+            match (group.archived_at, archived) {
+                (Some(_), true) | (None, false) => {}
+                _ => {
+                    group.archived_at = if archived { Some(Utc::now()) } else { None };
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            self.rebuild_tree();
         }
     }
 
@@ -434,7 +450,7 @@ fn last_activity_group_key(
 /// in italic+dim by the row formatter); only the sort order is suppressed.
 fn attention_tier(inst: &Instance) -> u8 {
     use crate::session::Status::*;
-    if inst.is_archived() || inst.is_snoozed() {
+    if inst.is_archived() || inst.is_snoozed() || inst.pane_dead_observed {
         // Tier 99 sinks: archived and snoozed (snoozed = temporary archive,
         // wakes automatically when timer expires). Both read as "do not
         // bother me with this row" so they share the bottom tier.

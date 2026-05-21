@@ -27,7 +27,7 @@ test("create profile via + New round-trips through POST /api/profiles", async ({
   page,
 }) => {
   const baseline = await fetchProfiles(serve);
-  expect(baseline.map((p) => p.name)).toEqual(["default"]);
+  expect(baseline.map((p) => p.name)).toEqual(["main"]);
 
   await page.goto(`${serve.baseUrl}/settings/session`);
   await expect(page.getByText("Profile", { exact: true })).toBeVisible();
@@ -39,8 +39,8 @@ test("create profile via + New round-trips through POST /api/profiles", async ({
 
   await expect(async () => {
     const profiles = await fetchProfiles(serve);
-    expect(profiles.map((p) => p.name).sort()).toEqual(["default", "work"]);
-    expect(profiles.find((p) => p.name === "default")?.is_default).toBe(true);
+    expect(profiles.map((p) => p.name).sort()).toEqual(["main", "work"]);
+    expect(profiles.find((p) => p.name === "main")?.is_default).toBe(true);
     expect(profiles.find((p) => p.name === "work")?.is_default).toBe(false);
   }).toPass({ timeout: 5_000 });
 });
@@ -75,7 +75,7 @@ test("rename profile via Rename button round-trips through PATCH .../rename", as
 
   await expect(async () => {
     const profiles = await fetchProfiles(serve);
-    expect(profiles.map((p) => p.name).sort()).toEqual(["clients", "default"]);
+    expect(profiles.map((p) => p.name).sort()).toEqual(["clients", "main"]);
   }).toPass({ timeout: 5_000 });
   await expect(profileSelect).toHaveValue("clients");
 });
@@ -116,7 +116,7 @@ test("set default profile via Default profile dropdown round-trips through PATCH
     .locator("label", { hasText: /^Default profile$/ })
     .locator("..")
     .locator("select");
-  await expect(defaultSelect).toHaveValue("default");
+  await expect(defaultSelect).toHaveValue("main");
   await defaultSelect.selectOption("work");
 
   const patchRes = await patchPromise;
@@ -165,7 +165,7 @@ test("delete profile via Delete button round-trips through DELETE /api/profiles/
   expect(deleteRes.ok()).toBe(true);
 
   const profiles = await fetchProfiles(serve);
-  expect(profiles.map((p) => p.name)).toEqual(["default"]);
+  expect(profiles.map((p) => p.name)).toEqual(["main"]);
 });
 
 test("invalid profile name: client validation blocks POST /api/profiles", async ({
@@ -195,5 +195,5 @@ test("invalid profile name: client validation blocks POST /api/profiles", async 
   expect(posted).toBe(false);
 
   const profiles = await fetchProfiles(serve);
-  expect(profiles.map((p) => p.name)).toEqual(["default"]);
+  expect(profiles.map((p) => p.name)).toEqual(["main"]);
 });

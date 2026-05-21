@@ -1,5 +1,7 @@
 import { useCallback, useSyncExternalStore } from "react";
 
+import { safeGetItem, safeSetItem } from "../lib/safeStorage";
+
 const STORAGE_KEY = "aoe-web-settings";
 
 export interface WebSettings {
@@ -21,11 +23,13 @@ function getDefaults(): WebSettings {
 }
 
 function getSnapshot(): WebSettings {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) return { ...getDefaults(), ...JSON.parse(raw) };
-  } catch {
-    // ignore
+  const raw = safeGetItem(STORAGE_KEY);
+  if (raw) {
+    try {
+      return { ...getDefaults(), ...JSON.parse(raw) };
+    } catch {
+      // malformed JSON; fall through to defaults
+    }
   }
   return getDefaults();
 }
@@ -49,7 +53,7 @@ let cachedRaw: string | null = null;
 let cachedSettings: WebSettings = getDefaults();
 
 function getStableSnapshot(): WebSettings {
-  const raw = localStorage.getItem(STORAGE_KEY);
+  const raw = safeGetItem(STORAGE_KEY);
   if (raw !== cachedRaw) {
     cachedRaw = raw;
     cachedSettings = getSnapshot();
@@ -63,10 +67,8 @@ export function useWebSettings() {
   const update = useCallback((patch: Partial<WebSettings>) => {
     const current = getSnapshot();
     const next = { ...current, ...patch };
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
-    } catch (err) {
-      console.warn("aoe-web-settings: failed to persist", err);
+    if (!safeSetItem(STORAGE_KEY, JSON.stringify(next))) {
+      console.warn("aoe-web-settings: failed to persist (storage full or disabled)");
     }
     cachedRaw = null;
     emitChange();

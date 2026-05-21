@@ -35,14 +35,36 @@ use crate::session::Instance;
 use anyhow::{bail, Result};
 
 pub fn resolve_session<'a>(identifier: &str, instances: &'a [Instance]) -> Result<&'a Instance> {
-    // Try exact ID match
+    // Try exact ID match. Exact matches always win over prefix matches and
+    // can never be ambiguous (IDs are unique).
     if let Some(inst) = instances.iter().find(|i| i.id == identifier) {
         return Ok(inst);
     }
 
-    // Try ID prefix match
-    if let Some(inst) = instances.iter().find(|i| i.id.starts_with(identifier)) {
-        return Ok(inst);
+    // Try ID prefix match. If more than one session has an ID starting with
+    // `identifier`, fail loudly instead of silently mutating the first one.
+    // Mutating commands (archive, kill, snooze) could otherwise act on the
+    // wrong session when the user provides a too-short prefix.
+    let prefix_matches: Vec<&Instance> = instances
+        .iter()
+        .filter(|i| i.id.starts_with(identifier))
+        .collect();
+    match prefix_matches.len() {
+        0 => {}
+        1 => return Ok(prefix_matches[0]),
+        _ => {
+            let mut candidates: Vec<String> = prefix_matches
+                .iter()
+                .map(|i| format!("  {} ({})", i.id, i.title))
+                .collect();
+            candidates.sort();
+            bail!(
+                "Ambiguous session identifier {:?} matches {} sessions:\n{}\nUse a longer prefix or the full ID.",
+                identifier,
+                prefix_matches.len(),
+                candidates.join("\n")
+            );
+        }
     }
 
     // Try exact title match
