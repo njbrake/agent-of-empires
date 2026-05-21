@@ -728,6 +728,16 @@ Query init and does not rotate it when conversation context is reset,
 so the cached list stays authoritative for the lifetime of the
 cockpit's underlying agent process. See #1128.
 
+A `/clear` queued mid-turn (or any agent's clear alias, e.g. codex /
+opencode `/new`) is honoured as a standalone POST when the turn ends,
+even under `combined` drain mode. The drain effect splits the queued
+prompts at each clear-command boundary, so an ordering like
+`foo`, `/clear`, `bar` fires as three separate POSTs (`foo`, then
+`/clear`, then `bar`) instead of one multi-paragraph prompt that would
+otherwise glue `/clear` past the server's head-anchored detection. The
+queued-prompt strip shows an amber `fires separately` divider between
+rows that will land in different sub-batches. See #1356.
+
 ### "Force end turn" button under the spinner
 
 If the agent finished a turn but the cockpit's working spinner is
