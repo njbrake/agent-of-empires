@@ -75,7 +75,6 @@ function HunkView({
   hunk,
   hunkIndex,
   lineTokens,
-  highlightPending,
   rangeStart,
   draft,
   cardsByEndRow,
@@ -90,7 +89,6 @@ function HunkView({
   hunk: RichDiffHunk;
   hunkIndex: number;
   lineTokens?: SyntaxToken[][];
-  highlightPending?: boolean;
   rangeStart: RangeStart | null;
   draft: DraftRange | null;
   cardsByEndRow: Map<number, AnchoredComment[]>;
@@ -131,7 +129,6 @@ function HunkView({
             <DiffLine
               line={line}
               tokens={lineTokens?.[i]}
-              highlightPending={highlightPending}
               plusEnabled={plusEnabled}
               plusHunkIndex={hunkIndex}
               plusSide={side ?? undefined}
@@ -231,7 +228,7 @@ export function DiffFileViewer({
     repoName,
     revision,
   );
-  const { tokens: tokenGrid, loading: highlightLoading } = useHighlightedLines(
+  const { tokens: tokenGrid } = useHighlightedLines(
     diff?.hunks ?? [],
     diff?.file.path ?? filePath,
   );
@@ -483,7 +480,6 @@ export function DiffFileViewer({
                 hunk={hunk}
                 hunkIndex={hi}
                 lineTokens={tokenGrid?.[hi]}
-                highlightPending={highlightLoading}
                 rangeStart={rangeStart}
                 draft={draft?.hunkIndex === hi ? draft : null}
                 cardsByEndRow={cardsByHunkRow.get(hi) ?? EMPTY_MAP}
