@@ -969,6 +969,41 @@
       "components": ["web/src/components/SettingsView.tsx", "web/src/components/settings/ProfileSelector.tsx"]
     },
     {
+      "id": "cockpit.story.queue-follow-up-with-nav",
+      "kind": "live-playwright",
+      "risk": "high",
+      "specs": ["tests/live/cockpit-stories/queue-follow-up-with-nav.spec.ts"],
+      "components": ["web/src/components/cockpit/Composer.tsx", "web/src/hooks/useCockpit.ts"]
+    },
+    {
+      "id": "cockpit.story.stop-during-sub-agent",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": ["tests/live/cockpit-stories/composer-stop-during-sub-agent.spec.ts"],
+      "components": ["web/src/components/cockpit/Composer.tsx", "web/src/components/cockpit/ToolCards.tsx"]
+    },
+    {
+      "id": "story.sidebar-plan-progress",
+      "kind": "live-playwright",
+      "risk": "high",
+      "specs": ["tests/live/cockpit-stories/sidebar-plan-progress.spec.ts"],
+      "components": ["web/src/components/WorkspaceSidebar.tsx"]
+    },
+    {
+      "id": "story.wizard-launch-button",
+      "kind": "live-playwright",
+      "risk": "high",
+      "specs": ["tests/live/cockpit-stories/wizard-launch-button.spec.ts"],
+      "components": ["web/src/components/session-wizard/steps/ReviewStep.tsx"]
+    },
+    {
+      "id": "story.wizard-branch-from-title",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": ["tests/live/cockpit-stories/wizard-branch-from-title.spec.ts"],
+      "components": ["web/src/components/session-wizard/sessionNames.ts", "web/src/components/session-wizard/steps/ReviewStep.tsx"]
+    },
+    {
       "id": "cockpit.rate-limit-recovery",
       "kind": "vitest",
       "risk": "high",
