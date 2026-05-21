@@ -125,6 +125,20 @@
       "components": ["web/src/components/TopBar.tsx"]
     },
     {
+      "id": "app-shell.routing",
+      "kind": "mocked-playwright",
+      "risk": "high",
+      "specs": ["tests/routing.spec.ts"],
+      "components": []
+    },
+    {
+      "id": "app-shell.sessions-loaded-sentinel",
+      "kind": "vitest",
+      "risk": "high",
+      "specs": ["src/hooks/useSessions.test.ts"],
+      "components": []
+    },
+    {
       "id": "profiles.lifecycle",
       "kind": "live-playwright",
       "risk": "high",
