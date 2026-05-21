@@ -196,6 +196,7 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
     setWorkspaceOrdering,
     markLocalOrderingUpdate,
     error,
+    loaded: sessionsLoaded,
     injectSession,
     setSessionStatus,
   } = useSessions();
@@ -645,6 +646,16 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
           readOnly={serverAbout?.read_only}
         />
       );
+    }
+
+    // Refresh on `/session/<id>` paints once with `sessions === []` before
+    // the first poll resolves. Without this guard the lookup misses, the
+    // dashboard fallback renders, and the cockpit/terminal view only
+    // reappears once the fetch lands. Hold the minimal pre-auth shell
+    // until the first fetch settles, then let the real fallback decide.
+    // See #1351.
+    if (activeSessionId && !sessionsLoaded) {
+      return <div className="h-dvh bg-surface-900 safe-area-inset" />;
     }
 
     if (!activeWorkspace || !activeSession) {
