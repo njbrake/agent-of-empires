@@ -89,6 +89,8 @@ When deciding which suite to use:
 
 **Mandate:** any PR that changes a user-facing dashboard flow under auth, wizard / session creation, settings, profiles, sessions / sidebar, right panel / diff / notifications, directory browser, devices, git clone, connectivity, or read-only behavior must update `web/tests/coverage-matrix.json` and add or modify the appropriate test. CI fails on a missing matrix entry via `web/tests/validate-coverage-matrix.mjs`. Pure styling or copy-only changes may add a `kind: "deferred"` entry with a `reason` and a linked issue.
 
+**User-story spec mandate:** any new user-facing dashboard feature MUST land with a user-story Playwright spec that drives the React UI end-to-end (clicks, keystrokes, navigation) and asserts on rendered DOM. Component-level Vitest coverage and REST-contract live specs do not satisfy this requirement; the user-story spec is what catches reducer-to-render plumbing breakage, route gating, and multi-component focus / keyboard handling. Mocked Playwright is acceptable when the flow does not depend on real backend state; otherwise use live Playwright. Tracking issue: #1383.
+
 **Coverage reports.** Vitest uses `@vitest/coverage-v8`; Playwright uses `vite-plugin-istanbul` gated by `AOE_COVERAGE=1`. The merge script (`web/scripts/merge-coverage.mjs`, via `npm run coverage:merge`) feeds both into `monocart-coverage-reports` and writes `web/coverage/merged/` (LCOV + HTML + summary). The CI `coverage` job posts a PR comment with deltas via `davelosert/vitest-coverage-report-action`; baseline is the most recent main-branch artifact.
 
 Full recipe, harness API, and fake-ACP-agent details live in `docs/development/playwright.md`.
