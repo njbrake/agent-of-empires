@@ -808,16 +808,16 @@ impl HomeView {
             // leading `* ` glyph. Favorite survives an unsnooze (positive
             // care-more signal) but archive clears it (mutex in
             // `Instance::archive()`).
-            KeyCode::Char('f') if !self.strict_hotkeys => {
-                if let Err(e) = self.toggle_favorite_at_cursor() {
-                    tracing::error!("toggle_favorite_at_cursor failed: {}", e);
-                }
-            }
-            KeyCode::Char('F') if self.strict_hotkeys => {
-                if let Err(e) = self.toggle_favorite_at_cursor() {
-                    tracing::error!("toggle_favorite_at_cursor failed: {}", e);
-                }
-            }
+            KeyCode::Char('f') if !self.strict_hotkeys => match self.toggle_favorite_at_cursor() {
+                Ok(Some(msg)) => return Some(Action::SetTransientStatus(msg)),
+                Ok(None) => {}
+                Err(e) => tracing::error!("toggle_favorite_at_cursor failed: {}", e),
+            },
+            KeyCode::Char('F') if self.strict_hotkeys => match self.toggle_favorite_at_cursor() {
+                Ok(Some(msg)) => return Some(Action::SetTransientStatus(msg)),
+                Ok(None) => {}
+                Err(e) => tracing::error!("toggle_favorite_at_cursor failed: {}", e),
+            },
             KeyCode::Char('?') => {
                 self.show_help = true;
             }

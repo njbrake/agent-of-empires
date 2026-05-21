@@ -236,7 +236,7 @@ async fn favorite_session(profile: &str, args: SessionIdArgs) -> Result<()> {
     let title = instances[idx].title.clone();
 
     let group_tree = GroupTree::new_with_groups(&instances, &groups);
-    storage.save_with_groups(&instances, &group_tree)?;
+    storage.commit(&instances, &group_tree)?;
 
     println!("Favorited: {}", title);
     Ok(())
@@ -259,7 +259,7 @@ async fn unfavorite_session(profile: &str, args: SessionIdArgs) -> Result<()> {
     let title = instances[idx].title.clone();
 
     let group_tree = GroupTree::new_with_groups(&instances, &groups);
-    storage.save_with_groups(&instances, &group_tree)?;
+    storage.commit(&instances, &group_tree)?;
 
     println!("Unfavorited: {}", title);
     Ok(())

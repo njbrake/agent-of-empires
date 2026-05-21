@@ -205,6 +205,13 @@
       "components": ["web/src/components/WorkspaceSidebar.tsx"]
     },
     {
+      "id": "sidebar.favorite-indicator",
+      "kind": "deferred",
+      "issue": "https://github.com/njbrake/agent-of-empires/issues/986",
+      "risk": "low",
+      "components": ["web/src/components/WorkspaceSidebar.tsx"]
+    },
+    {
       "id": "session.lifecycle",
       "kind": "live-playwright",
       "risk": "high",
