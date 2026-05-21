@@ -118,7 +118,13 @@ test.describe("Terminal Ctrl+wheel zoom (desktop)", () => {
       (window as unknown as { __LS_WRITES__: string[] }).__LS_WRITES__ = [];
     });
 
-    await fireWheel(page, { deltaY: -120, ctrlKey: false, times: 5 });
+    await fireWheel(page, {
+      deltaY: -120,
+      ctrlKey: false,
+      times: 5,
+      xRatio: 0.83,
+      yRatio: 0.21,
+    });
 
     // 500ms is longer than the 400ms debounce — if the handler leaked
     // writes through without ctrlKey, they would have landed by now.
@@ -136,6 +142,13 @@ test.describe("Terminal Ctrl+wheel zoom (desktop)", () => {
       .filter((m) => m.startsWith("\x1b[<64;") || m.startsWith("\x1b[<65;"));
     expect(wheelMessages.length).toBeGreaterThan(0);
     expect(wheelMessages.every((m) => !m.includes(";1;1M"))).toBe(true);
+
+    const wheelCoords = wheelMessages
+      .map((m) => /\x1b\[<\d+;(\d+);(\d+)[Mm]/.exec(m))
+      .filter((m): m is RegExpExecArray => m !== null)
+      .map(([, col, row]) => ({ col: Number(col), row: Number(row) }));
+    expect(wheelCoords.length).toBeGreaterThan(0);
+    expect(wheelCoords.some(({ col, row }) => col > 1 && row > 1)).toBe(true);
   });
 
   test("Ctrl+wheel zoom does NOT re-mount the terminal (live-sync regression guard)", async ({
