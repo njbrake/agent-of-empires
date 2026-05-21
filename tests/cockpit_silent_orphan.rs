@@ -272,6 +272,14 @@ async fn silent_orphan_suppressed_during_async_agent_wait() {
         return;
     }
 
+    // Capture previous env so we restore them after the test. Without this
+    // the three knobs leak into subsequent tests in the same binary and
+    // produce intermittent failures depending on test execution order;
+    // CodeRabbit caught this on PR #1364.
+    let prev_grace = std::env::var("AOE_SILENT_ORPHAN_GRACE_MS").ok();
+    let prev_fast = std::env::var("AOE_SILENT_ORPHAN_FAST_GRACE_MS").ok();
+    let prev_check = std::env::var("AOE_SILENT_ORPHAN_CHECK_INTERVAL_MS").ok();
+
     // Base grace 300ms; if the async detection works, effective grace
     // jumps to ASYNC_AGENT_GRACE_FLOOR (30 minutes), so a 2s drain must
     // see no `prompt_orphaned`. The fast grace is set tight so a wrongly
@@ -307,6 +315,19 @@ async fn silent_orphan_suppressed_during_async_agent_wait() {
     let stopped =
         drain_for_stopped_reason(&mut client, Instant::now() + Duration::from_secs(2)).await;
     let _ = client.shutdown().await;
+
+    match prev_grace {
+        Some(v) => std::env::set_var("AOE_SILENT_ORPHAN_GRACE_MS", v),
+        None => std::env::remove_var("AOE_SILENT_ORPHAN_GRACE_MS"),
+    }
+    match prev_fast {
+        Some(v) => std::env::set_var("AOE_SILENT_ORPHAN_FAST_GRACE_MS", v),
+        None => std::env::remove_var("AOE_SILENT_ORPHAN_FAST_GRACE_MS"),
+    }
+    match prev_check {
+        Some(v) => std::env::set_var("AOE_SILENT_ORPHAN_CHECK_INTERVAL_MS", v),
+        None => std::env::remove_var("AOE_SILENT_ORPHAN_CHECK_INTERVAL_MS"),
+    }
 
     assert!(
         stopped.is_none(),

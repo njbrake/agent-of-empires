@@ -341,10 +341,21 @@ fn classify_lifecycle_signal(
         SessionUpdate::ToolCallUpdate(update) => {
             let id = update.tool_call_id.0.to_string();
             match update.fields.status {
-                Some(ToolCallStatus::Completed) | Some(ToolCallStatus::Failed) => {
+                Some(ToolCallStatus::Completed) => {
+                    // Only successful completions can mark a real async-agent launch.
+                    // A `Failed` update may carry arbitrary error content that happens
+                    // to mention "Async agent launched successfully" (e.g. as part of
+                    // a stack trace or echoed input), and treating that as an async
+                    // launch would pin `async_agent_running` to true for 30 minutes
+                    // even though no sub-agent is actually running. See CodeRabbit
+                    // feedback on PR #1364.
                     let is_async = detect_async_agent_launch(&update.fields.content);
                     Some(LifecycleSignal::ToolCompleted { id, is_async })
                 }
+                Some(ToolCallStatus::Failed) => Some(LifecycleSignal::ToolCompleted {
+                    id,
+                    is_async: false,
+                }),
                 Some(ToolCallStatus::InProgress) => Some(LifecycleSignal::ToolStarted(id)),
                 _ => Some(LifecycleSignal::Progress),
             }
@@ -2470,13 +2481,26 @@ async fn run_connection_task<W, R>(
                         }
                     }
                     if let Some(sig) = lifecycle_signal {
-                        // Non-blocking try_send: if the prompt loop is
-                        // already in the middle of a watchdog escalation
-                        // the channel could backpressure; dropping a
-                        // signal is safer than blocking the notification
-                        // handler since the watchdog is itself a
-                        // recovery mechanism.
-                        if lifecycle_signal_tx.try_send(sig).is_err() {
+                        // Non-blocking try_send for ambient signals: if the prompt
+                        // loop is already in the middle of a watchdog escalation the
+                        // channel could backpressure, and dropping a Progress or
+                        // ToolStarted signal is safer than blocking the notification
+                        // handler (the watchdog is itself a recovery mechanism).
+                        //
+                        // Exception: `ToolCompleted { is_async: true }` is load-
+                        // bearing for the #1360 async-agent suppression. If that
+                        // single signal is dropped, `async_agent_running` never
+                        // flips and the watchdog can still cancel a legitimate
+                        // async wait after the base 120s grace. Fall back to an
+                        // awaited send for that variant so we never lose it. See
+                        // CodeRabbit feedback on PR #1364.
+                        let dropped = match sig {
+                            sig @ LifecycleSignal::ToolCompleted { is_async: true, .. } => {
+                                lifecycle_signal_tx.send(sig).await.is_err()
+                            }
+                            sig => lifecycle_signal_tx.try_send(sig).is_err(),
+                        };
+                        if dropped {
                             trace!(
                                 target: "cockpit.acp",
                                 session = %session_label,
