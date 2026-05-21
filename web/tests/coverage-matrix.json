@@ -409,6 +409,13 @@
       "components": ["web/src/components/cockpit/ToolCards.tsx"]
     },
     {
+      "id": "cockpit.context-primer-banner",
+      "kind": "vitest",
+      "risk": "medium",
+      "specs": ["src/components/cockpit/ContextPrimerBanner.test.tsx"],
+      "components": ["web/src/components/cockpit/ContextPrimerBanner.tsx"]
+    },
+    {
       "id": "read-only.mode",
       "kind": "live-playwright",
       "risk": "high",
