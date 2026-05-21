@@ -1277,12 +1277,14 @@ impl Instance {
         let cmd = if self.is_sandboxed() {
             let container = self.get_container_for_instance()?;
             if let Some(ref hook_cmds) = on_launch_hooks {
+                let hook_env = super::repo_config::lifecycle_env_vars(self);
                 if let Some(ref sandbox) = self.sandbox_info {
                     let workdir = self.container_workdir();
                     if let Err(e) = super::repo_config::execute_hooks_in_container(
                         hook_cmds,
                         &sandbox.container_name,
                         &workdir,
+                        &hook_env,
                     ) {
                         tracing::warn!(target: "session.store", "on_launch hook failed in container: {}", e);
                     }
@@ -1468,9 +1470,12 @@ impl Instance {
     ) -> Option<String> {
         // Run on_launch hooks on host for non-sandboxed sessions
         if let Some(ref hook_cmds) = on_launch_hooks {
-            if let Err(e) =
-                super::repo_config::execute_hooks(hook_cmds, Path::new(&self.project_path))
-            {
+            let hook_env = super::repo_config::lifecycle_env_vars(self);
+            if let Err(e) = super::repo_config::execute_hooks(
+                hook_cmds,
+                Path::new(&self.project_path),
+                &hook_env,
+            ) {
                 tracing::warn!(target: "session.store", "on_launch hook failed: {}", e);
             }
         }
