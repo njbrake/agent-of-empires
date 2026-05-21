@@ -492,6 +492,20 @@
       "components": ["web/src/components/OverflowMenu.tsx", "web/src/components/TopBar.tsx"]
     },
     {
+      "id": "story.modal-about",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": ["tests/live/cockpit-stories/modal-about.spec.ts"],
+      "components": ["web/src/components/AboutModal.tsx"]
+    },
+    {
+      "id": "story.modal-help",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": ["tests/live/cockpit-stories/modal-help.spec.ts"],
+      "components": ["web/src/components/HelpOverlay.tsx"]
+    },
+    {
       "id": "cockpit.rate-limit-recovery",
       "kind": "vitest",
       "risk": "high",
