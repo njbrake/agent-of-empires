@@ -658,24 +658,32 @@ async fn restart_session(profile: &str, args: SessionIdArgs) -> Result<()> {
     let session_id = instances[idx].id.clone();
     let tool = instances[idx].tool.clone();
 
-    // Restart re-execs the agent at a blank prompt; nudge it back into its
-    // prior task. Poll capture-pane for steady-state output instead of a
-    // blind sleep, so the keys land as soon as the agent is at a prompt
-    // and don't get stranded mid-banner on slow machines.
-    wait_for_pane_ready(&session_id, &title, std::time::Duration::from_secs(5)).await;
+    // Resolve the configured wake message (global default with per-profile
+    // override). Empty string is the documented opt-out: the restart still
+    // runs but no keys are sent.
+    let wake_msg = crate::session::resolve_config(profile)
+        .map(|c| c.session.restart_wake_message.clone())
+        .unwrap_or_else(|_| "wake up: pick up what you were doing".to_string());
 
-    let tmux_session = crate::tmux::Session::new(&session_id, &title)?;
-    if tmux_session.exists() {
-        let delay = crate::agents::send_keys_enter_delay(&tool);
-        let wake_msg = "wake up: pick up what you were doing";
-        match tmux_session.send_keys_with_delay(wake_msg, delay) {
-            Ok(()) => {
-                if let Some(inst) = instances.iter_mut().find(|i| i.id == session_id) {
-                    inst.touch_last_accessed();
+    if !wake_msg.is_empty() {
+        // Restart re-execs the agent at a blank prompt; nudge it back into
+        // its prior task. Poll capture-pane for steady-state output instead
+        // of a blind sleep, so the keys land as soon as the agent is at a
+        // prompt and don't get stranded mid-banner on slow machines.
+        wait_for_pane_ready(&session_id, &title, std::time::Duration::from_secs(5)).await;
+
+        let tmux_session = crate::tmux::Session::new(&session_id, &title)?;
+        if tmux_session.exists() {
+            let delay = crate::agents::send_keys_enter_delay(&tool);
+            match tmux_session.send_keys_with_delay(&wake_msg, delay) {
+                Ok(()) => {
+                    if let Some(inst) = instances.iter_mut().find(|i| i.id == session_id) {
+                        inst.touch_last_accessed();
+                    }
                 }
-            }
-            Err(e) => {
-                eprintln!("Warning: failed to send wake-up message: {}", e);
+                Err(e) => {
+                    eprintln!("Warning: failed to send wake-up message: {}", e);
+                }
             }
         }
     }

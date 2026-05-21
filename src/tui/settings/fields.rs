@@ -92,6 +92,7 @@ pub enum FieldKey {
     DefaultTool,
     StrictHotkeys,
     SnoozeDurationMinutes,
+    RestartWakeMessage,
     AgentExtraArgs,
     AgentCommandOverride,
     AgentStatusHooks,
@@ -1446,6 +1447,12 @@ fn build_session_fields(
             .map(|v| v as u64),
     );
 
+    let (restart_wake_message, restart_wake_message_override) = resolve_value(
+        scope,
+        global.session.restart_wake_message.clone(),
+        session.and_then(|s| s.restart_wake_message.clone()),
+    );
+
     let (agent_status_hooks, status_hooks_override) = resolve_value(
         scope,
         global.session.agent_status_hooks,
@@ -1616,6 +1623,18 @@ fn build_session_fields(
             inherited_display: inherited_if(
                 snooze_duration_override,
                 FieldValue::Number(global.session.snooze_duration_minutes as u64),
+            ),
+        },
+        SettingField {
+            key: FieldKey::RestartWakeMessage,
+            label: "Restart Wake Message",
+            description: "Sent to the agent after restart to resume work. Empty = no wake nudge.",
+            value: FieldValue::Text(restart_wake_message),
+            category: SettingsCategory::Session,
+            has_override: restart_wake_message_override,
+            inherited_display: inherited_if(
+                restart_wake_message_override,
+                FieldValue::Text(global.session.restart_wake_message.clone()),
             ),
         },
         SettingField {
@@ -2164,6 +2183,9 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
         (FieldKey::SnoozeDurationMinutes, FieldValue::Number(v)) => {
             config.session.snooze_duration_minutes = *v as u32;
         }
+        (FieldKey::RestartWakeMessage, FieldValue::Text(v)) => {
+            config.session.restart_wake_message = v.clone();
+        }
         (FieldKey::AgentStatusHooks, FieldValue::Bool(v)) => {
             config.session.agent_status_hooks = *v;
         }
@@ -2618,6 +2640,11 @@ fn apply_field_to_profile(field: &SettingField, _global: &Config, config: &mut P
         (FieldKey::SnoozeDurationMinutes, FieldValue::Number(v)) => {
             set_profile_override(*v as u32, &mut config.session, |s, val| {
                 s.snooze_duration_minutes = val
+            });
+        }
+        (FieldKey::RestartWakeMessage, FieldValue::Text(v)) => {
+            set_profile_override(v.clone(), &mut config.session, |s, val| {
+                s.restart_wake_message = val
             });
         }
         (FieldKey::AgentStatusHooks, FieldValue::Bool(v)) => {

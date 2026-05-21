@@ -3564,3 +3564,97 @@ fn toggle_archive_at_cursor_returns_none_with_no_selection() {
     let msg = env.view.toggle_archive_at_cursor().unwrap();
     assert!(msg.is_none(), "expected None when nothing is selected");
 }
+
+/// `restart_selected_session` must drop the press silently when nothing is
+/// selected. No restart_with_size call, no save, no cooldown insertion.
+#[test]
+#[serial]
+fn restart_selected_session_noop_with_no_selection() {
+    let mut env = create_test_env_empty();
+    env.view.selected_session = None;
+    let result = env.view.restart_selected_session();
+    assert!(result.is_ok());
+    assert!(env.view.restart_cooldown_at.is_empty());
+}
+
+/// Sunk rows (`archived` / `snoozed` / `pane_dead_observed`) and transient
+/// lifecycle states (`Creating` / `Deleting`) must skip the restart path.
+/// Archive's contract is "don't auto-revive"; restart should respect that.
+#[test]
+#[serial]
+fn restart_selected_session_skips_archived_row() {
+    let mut env = create_test_env_with_sessions(1);
+    let id = env.view.instances[0].id.clone();
+    env.view.selected_session = Some(id.clone());
+    env.view.mutate_instance(&id, |inst| inst.archive());
+
+    let result = env.view.restart_selected_session();
+    assert!(result.is_ok());
+    assert!(
+        env.view.instances[0].is_archived(),
+        "archive bit should still be set: restart must not unarchive"
+    );
+    assert!(
+        env.view.restart_cooldown_at.is_empty(),
+        "cooldown should not be set on a skipped restart"
+    );
+}
+
+#[test]
+#[serial]
+fn restart_selected_session_skips_snoozed_row() {
+    let mut env = create_test_env_with_sessions(1);
+    let id = env.view.instances[0].id.clone();
+    env.view.selected_session = Some(id.clone());
+    env.view.mutate_instance(&id, |inst| inst.snooze(30));
+
+    let result = env.view.restart_selected_session();
+    assert!(result.is_ok());
+    assert!(env.view.instances[0].is_snoozed());
+    assert!(env.view.restart_cooldown_at.is_empty());
+}
+
+#[test]
+#[serial]
+fn restart_selected_session_skips_creating_row() {
+    let mut env = create_test_env_with_sessions(1);
+    let id = env.view.instances[0].id.clone();
+    env.view.selected_session = Some(id.clone());
+    env.view
+        .mutate_instance(&id, |inst| inst.status = crate::session::Status::Creating);
+
+    let result = env.view.restart_selected_session();
+    assert!(result.is_ok());
+    assert!(env.view.restart_cooldown_at.is_empty());
+}
+
+/// The cooldown map debounces rapid presses. A second press within the
+/// cooldown window must be dropped before the restart_with_size call
+/// would otherwise tear down a still-booting tmux pane.
+///
+/// We cannot exercise the full restart path under unit tests (no tmux),
+/// so this test confirms the cooldown bookkeeping: after the first call
+/// inserts an entry, a second call with the same id within the window
+/// returns immediately and does not overwrite the timestamp.
+#[test]
+#[serial]
+fn restart_selected_session_debounces_via_cooldown_map() {
+    let mut env = create_test_env_with_sessions(1);
+    let id = env.view.instances[0].id.clone();
+    env.view.selected_session = Some(id.clone());
+
+    // Seed the cooldown so the next press is debounced. This stands in
+    // for the "first restart already ran" precondition: we cannot run
+    // restart_with_size in a unit test (no tmux), but the debounce check
+    // happens before that, on the cooldown map.
+    let now = std::time::Instant::now();
+    env.view.restart_cooldown_at.insert(id.clone(), now);
+
+    let result = env.view.restart_selected_session();
+    assert!(result.is_ok());
+    let stored = env.view.restart_cooldown_at.get(&id).copied().unwrap();
+    assert_eq!(
+        stored, now,
+        "cooldown timestamp must not be overwritten on a debounced press"
+    );
+}

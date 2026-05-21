@@ -300,6 +300,13 @@ pub struct HomeView {
     /// HashSet pattern: TUI-local, event-driven, no TTL needed.
     recovery_in_flight: std::collections::HashSet<String>,
 
+    /// Spam-debounce for the `e` / `E` / `F5` restart keybind: maps
+    /// session id to the wall-clock instant of the last restart attempt.
+    /// Presses arriving within 1.5s of the prior entry are dropped so
+    /// rapid key-repeat doesn't race overlapping `restart_with_size`
+    /// calls and tear down the still-booting tmux pane.
+    pub(super) restart_cooldown_at: std::collections::HashMap<String, std::time::Instant>,
+
     // Tool sessions config (lazygit, yazi, etc.)
     pub(super) tool_configs: HashMap<String, crate::session::config::ToolSessionConfig>,
     /// Pre-parsed and sorted view of valid tool hotkeys: (name, KeyCode, KeyModifiers).
@@ -478,6 +485,7 @@ impl HomeView {
             recovery_rx: None,
             recovery_lock: None,
             recovery_in_flight: std::collections::HashSet::new(),
+            restart_cooldown_at: std::collections::HashMap::new(),
             tool_configs: user_config
                 .as_ref()
                 .map(|c| c.tools.clone())

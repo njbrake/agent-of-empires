@@ -678,6 +678,11 @@ impl SettingsView {
                     s.snooze_duration_minutes = None;
                 }
             }
+            FieldKey::RestartWakeMessage => {
+                if let Some(ref mut s) = config.session {
+                    s.restart_wake_message = None;
+                }
+            }
             FieldKey::AgentExtraArgs => {
                 if let Some(ref mut s) = config.session {
                     s.agent_extra_args = None;

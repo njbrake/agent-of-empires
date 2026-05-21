@@ -87,57 +87,101 @@ impl HomeView {
         Ok(session_id)
     }
 
+    /// Restart the cursor's session via the `e` / `E` / `F5` keybind path.
+    ///
+    /// Guards:
+    /// - No selection: no-op.
+    /// - Transient lifecycle (`Creating` / `Deleting`): drop.
+    /// - Sunk rows (`is_archived`, `is_snoozed`, `pane_dead_observed`):
+    ///   drop. Archive's contract is "do not auto-revive"; the user must
+    ///   unarchive or send first. Dead panes have a dedicated revive path.
+    /// - Spam-debounce: if the same session was restarted within the last
+    ///   1.5s, the press is dropped. Without this guard rapid `e` presses
+    ///   would each spawn a wake-up worker AND tear down the still-booting
+    ///   tmux pane via overlapping `restart_with_size` calls.
+    ///
+    /// Restart goes through `try_mutate_instance_writeback_on_err` so all
+    /// of `restart_with_size`'s mutations (cleared stale `agent_session_id`
+    /// on Tier-2 resume fallback, `last_accessed_at` bumps, etc.) are
+    /// preserved on the live instance.
+    ///
+    /// The wake-up message is read from the resolved config
+    /// (`session.restart_wake_message`); an empty value disables the
+    /// wake-up entirely while still running the restart.
+    ///
+    /// The readiness probe + send-keys runs on a background OS thread so
+    /// the TUI event loop never blocks.
     pub(super) fn restart_selected_session(&mut self) -> anyhow::Result<()> {
         let id = match &self.selected_session {
             Some(id) => id.clone(),
             None => return Ok(()),
         };
-        let is_transient = match self.get_instance(&id) {
-            Some(inst) => matches!(inst.status, Status::Creating | Status::Deleting),
+
+        // Skip transient + sunk rows. Pull the snapshot details we need on
+        // the worker thread in the same borrow so we don't re-look up the
+        // instance under different conditions later.
+        let (skip, title, tool) = match self.get_instance(&id) {
+            Some(inst) => {
+                let skip = matches!(inst.status, Status::Creating | Status::Deleting)
+                    || inst.is_archived()
+                    || inst.is_snoozed()
+                    || inst.pane_dead_observed;
+                (skip, inst.title.clone(), inst.tool.clone())
+            }
             None => return Ok(()),
         };
-        if is_transient {
+        if skip {
             return Ok(());
         }
 
-        let mut snapshot = match self.get_instance(&id) {
-            Some(inst) => inst.clone(),
-            None => return Ok(()),
-        };
-        snapshot.restart_with_size(crate::terminal::get_size())?;
+        // Spam-debounce. Holding `e` or pressing it twice fast otherwise
+        // races overlapping restart_with_size calls.
+        let now = std::time::Instant::now();
+        if let Some(prev) = self.restart_cooldown_at.get(&id) {
+            if now.duration_since(*prev) < std::time::Duration::from_millis(1500) {
+                return Ok(());
+            }
+        }
+        self.restart_cooldown_at.insert(id.clone(), now);
 
-        self.mutate_instance(&id, |inst| {
-            inst.status = snapshot.status;
-        });
+        // Restart the live instance (not a detached clone) so all
+        // non-status fields restart_with_size touches are kept.
+        let size = crate::terminal::get_size();
+        self.try_mutate_instance_writeback_on_err(&id, |inst| {
+            inst.restart_with_size(size).map(|_| ())
+        })?;
+
+        // Stamp touch_last_accessed on the user's gesture (the row should
+        // visibly bump immediately). save() pushes both the restart-side
+        // mutations and the touch.
+        self.mutate_instance(&id, |inst| inst.touch_last_accessed());
         self.save()?;
 
-        // Restart re-execs the agent at a blank prompt; nudge it back into
-        // its prior task. The wake-up must wait for the agent to finish
-        // booting (otherwise the message lands in the pre-agent boot
-        // prompt), but we cannot block the TUI event loop -- a sync sleep
-        // here freezes input/render. Spawn the readiness probe + send-keys
-        // onto a background OS thread so the TUI returns immediately.
-        //
-        // `touch_last_accessed` is stamped eagerly on the main thread (the
-        // user did initiate the restart at this moment) so the worker does
-        // not need to hold a `&mut self`.
-        let title = snapshot.title.clone();
-        let session_id = snapshot.id.clone();
-        let tool = snapshot.tool.clone();
+        // Resolve the wake message via the active profile's config (which
+        // already merges global + profile overrides). Empty string is the
+        // documented opt-out.
+        let profile = self
+            .active_profile
+            .clone()
+            .unwrap_or_else(|| "default".to_string());
+        let wake_msg = crate::session::resolve_config(&profile)
+            .map(|c| c.session.restart_wake_message.clone())
+            .unwrap_or_else(|_| "wake up: pick up what you were doing".to_string());
+        if wake_msg.is_empty() {
+            return Ok(());
+        }
 
-        self.mutate_instance(&session_id, |inst| {
-            inst.touch_last_accessed();
-        });
-
-        let worker_session_id = session_id.clone();
-        let worker_title = title.clone();
-        let _ = std::thread::Builder::new()
-            .name(format!("aoe-restart-wake/{}", session_id))
+        // Background worker: wait for the pane to be live + past the boot
+        // shell, then send the wake-up keys. Failure to even spawn is
+        // logged so the user can correlate a missing wake-up with a real
+        // OS-level failure rather than silent loss.
+        let worker_session_id = id.clone();
+        let worker_title = title;
+        let worker_tool = tool;
+        let spawn_result = std::thread::Builder::new()
+            .name(format!("aoe-restart-wake/{}", id))
             .stack_size(128 * 1024)
             .spawn(move || {
-                // Poll the tmux pane until it is live and (when reliably
-                // detectable) past the boot shell, or 3s elapse. Matches
-                // the cadence used by `Instance::wait_for_pane_ready`.
                 let Ok(tmux_session) = crate::tmux::Session::new(&worker_session_id, &worker_title)
                 else {
                     return;
@@ -161,12 +205,14 @@ impl HomeView {
                 if !tmux_session.exists() {
                     return;
                 }
-                let delay = crate::agents::send_keys_enter_delay(&tool);
-                let wake_msg = "wake up: pick up what you were doing";
-                if let Err(e) = tmux_session.send_keys_with_delay(wake_msg, delay) {
+                let delay = crate::agents::send_keys_enter_delay(&worker_tool);
+                if let Err(e) = tmux_session.send_keys_with_delay(&wake_msg, delay) {
                     tracing::warn!("failed to send wake-up message after restart: {}", e);
                 }
             });
+        if let Err(err) = spawn_result {
+            tracing::warn!(?err, "failed to spawn restart wake-up worker");
+        }
         Ok(())
     }
 
