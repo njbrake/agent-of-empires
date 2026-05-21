@@ -847,6 +847,289 @@ describe("applyEvent / ConversationCompacted", () => {
   });
 });
 
+describe("applyEvent / usageBaseline (#1354)", () => {
+  // /clear and /compact do not rotate the underlying ACP session, so
+  // claude-agent-acp keeps reporting session-lifetime cumulative cost
+  // via UsageUpdate. The reducer captures a baseline at each boundary
+  // and subtracts it from incoming UsageUpdate.cost so the composer
+  // footer reads "since the most recent boundary."
+  it("SessionCleared captures the cumulative cost as the baseline", () => {
+    let state = applyEvent(emptyCockpitState(), {
+      session_id: "s-1",
+      seq: 1,
+      event: {
+        UsageUpdated: {
+          usage: {
+            used: 10_000,
+            size: 200_000,
+            cost: { amount: 0.42, currency: "USD" },
+          },
+        },
+      },
+    });
+    expect(state.sessionUsage?.cost?.amount).toBeCloseTo(0.42, 6);
+    expect(state.usageBaseline).toBeNull();
+
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 2,
+      event: "SessionCleared",
+    });
+    expect(state.sessionUsage).toBeNull();
+    expect(state.usageBaseline?.cost).toBeCloseTo(0.42, 6);
+  });
+
+  it("UsageUpdated after /clear subtracts the baseline from cumulative cost", () => {
+    let state = applyEvent(emptyCockpitState(), {
+      session_id: "s-1",
+      seq: 1,
+      event: {
+        UsageUpdated: {
+          usage: {
+            used: 10_000,
+            size: 200_000,
+            cost: { amount: 0.42, currency: "USD" },
+          },
+        },
+      },
+    });
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 2,
+      event: "SessionCleared",
+    });
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 3,
+      event: {
+        UsageUpdated: {
+          usage: {
+            used: 5_000,
+            size: 200_000,
+            cost: { amount: 0.49, currency: "USD" },
+          },
+        },
+      },
+    });
+    // Cost is delta since clear; `used` and `size` flow through raw
+    // (the agent already reports post-clear context size).
+    expect(state.sessionUsage?.cost?.amount).toBeCloseTo(0.07, 6);
+    expect(state.sessionUsage?.cost?.currency).toBe("USD");
+    expect(state.sessionUsage?.used).toBe(5_000);
+    expect(state.sessionUsage?.size).toBe(200_000);
+  });
+
+  it("/clear with no prior usage leaves the next UsageUpdate untouched", () => {
+    let state = applyEvent(emptyCockpitState(), {
+      session_id: "s-1",
+      seq: 1,
+      event: "SessionCleared",
+    });
+    expect(state.usageBaseline?.cost).toBe(0);
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 2,
+      event: {
+        UsageUpdated: {
+          usage: {
+            used: 1_000,
+            size: 200_000,
+            cost: { amount: 0.05, currency: "USD" },
+          },
+        },
+      },
+    });
+    expect(state.sessionUsage?.cost?.amount).toBeCloseTo(0.05, 6);
+  });
+
+  it("repeated /clear accumulates the baseline to the true cumulative", () => {
+    let state = applyEvent(emptyCockpitState(), {
+      session_id: "s-1",
+      seq: 1,
+      event: {
+        UsageUpdated: {
+          usage: {
+            used: 10_000,
+            size: 200_000,
+            cost: { amount: 0.10, currency: "USD" },
+          },
+        },
+      },
+    });
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 2,
+      event: "SessionCleared",
+    });
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 3,
+      event: {
+        UsageUpdated: {
+          usage: {
+            used: 4_000,
+            size: 200_000,
+            cost: { amount: 0.15, currency: "USD" },
+          },
+        },
+      },
+    });
+    // Delta since first clear is 0.05.
+    expect(state.sessionUsage?.cost?.amount).toBeCloseTo(0.05, 6);
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 4,
+      event: "SessionCleared",
+    });
+    // Baseline is now the true cumulative (0.15), not the displayed
+    // delta (0.05).
+    expect(state.usageBaseline?.cost).toBeCloseTo(0.15, 6);
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 5,
+      event: {
+        UsageUpdated: {
+          usage: {
+            used: 2_000,
+            size: 200_000,
+            cost: { amount: 0.18, currency: "USD" },
+          },
+        },
+      },
+    });
+    expect(state.sessionUsage?.cost?.amount).toBeCloseTo(0.03, 6);
+  });
+
+  it("ConversationCompacted captures the baseline the same way as /clear", () => {
+    let state = applyEvent(emptyCockpitState(), {
+      session_id: "s-1",
+      seq: 1,
+      event: {
+        UsageUpdated: {
+          usage: {
+            used: 20_000,
+            size: 200_000,
+            cost: { amount: 0.30, currency: "USD" },
+          },
+        },
+      },
+    });
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 2,
+      event: "ConversationCompacted",
+    });
+    expect(state.usageBaseline?.cost).toBeCloseTo(0.30, 6);
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 3,
+      event: {
+        UsageUpdated: {
+          usage: {
+            used: 1_000,
+            size: 200_000,
+            cost: { amount: 0.32, currency: "USD" },
+          },
+        },
+      },
+    });
+    expect(state.sessionUsage?.cost?.amount).toBeCloseTo(0.02, 6);
+  });
+
+  it("AgentSwitched clears the baseline so the new backend starts at zero", () => {
+    let state = applyEvent(emptyCockpitState(), {
+      session_id: "s-1",
+      seq: 1,
+      event: {
+        UsageUpdated: {
+          usage: {
+            used: 10_000,
+            size: 200_000,
+            cost: { amount: 0.42, currency: "USD" },
+          },
+        },
+      },
+    });
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 2,
+      event: "SessionCleared",
+    });
+    expect(state.usageBaseline?.cost).toBeCloseTo(0.42, 6);
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 3,
+      event: {
+        AgentSwitched: { from: "claude", to: "codex", reason: "rate_limited" },
+      },
+    });
+    expect(state.usageBaseline).toBeNull();
+    // The new agent reports its own cumulative starting at zero; no
+    // subtraction should happen.
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 4,
+      event: {
+        UsageUpdated: {
+          usage: {
+            used: 500,
+            size: 200_000,
+            cost: { amount: 0.01, currency: "USD" },
+          },
+        },
+      },
+    });
+    expect(state.sessionUsage?.cost?.amount).toBeCloseTo(0.01, 6);
+  });
+
+  it("SessionContextReset clears the baseline (new ACP session starts at zero)", () => {
+    let state = applyEvent(emptyCockpitState(), {
+      session_id: "s-1",
+      seq: 1,
+      event: {
+        UsageUpdated: {
+          usage: {
+            used: 10_000,
+            size: 200_000,
+            cost: { amount: 0.20, currency: "USD" },
+          },
+        },
+      },
+    });
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 2,
+      event: "SessionCleared",
+    });
+    expect(state.usageBaseline?.cost).toBeCloseTo(0.20, 6);
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 3,
+      event: { SessionContextReset: { reason: "session/load failed" } },
+    });
+    expect(state.usageBaseline).toBeNull();
+  });
+
+  it("UsageUpdated with no cost field is a no-op for the baseline", () => {
+    // Codex / opencode / gemini adapters do not currently report cost.
+    // The reducer must not crash and must not invent a cost value.
+    let state = applyEvent(emptyCockpitState(), {
+      session_id: "s-1",
+      seq: 1,
+      event: "SessionCleared",
+    });
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 2,
+      event: {
+        UsageUpdated: { usage: { used: 100, size: 200_000 } },
+      },
+    });
+    expect(state.sessionUsage?.cost ?? null).toBeNull();
+    expect(state.sessionUsage?.used).toBe(100);
+  });
+});
+
 describe("applyEvent / AgentSwitched", () => {
   // Cockpit hand-off (#1282) moves the session from one ACP backend
   // to another. Reducer must drop everything tied to the prior
