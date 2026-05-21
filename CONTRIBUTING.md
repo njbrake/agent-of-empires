@@ -101,6 +101,10 @@ Example: `feat: add session export command`
 - Screenshots/recordings for UI changes
 - Link to related issues
 
+## Releases
+
+`agent-of-empires` releases at least weekly via an automated staging PR (Wednesday 09:00 UTC) that the maintainer reviews and merges. See [`docs/development/releases.md`](docs/development/releases.md) for the full cadence, the post-merge tagger flow, and how emergency releases work.
+
 ## Your First Contribution
 
 New to the project? Here are some ways to get started:

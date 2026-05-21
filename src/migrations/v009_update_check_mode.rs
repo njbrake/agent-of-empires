@@ -9,7 +9,7 @@
 //! - `check_enabled = false` => `update_check_mode = "off"`
 //! - `check_enabled = true`  => `update_check_mode = "notify"` (the default)
 //! - field missing           => no-op (`update_check_mode` already defaults
-//!                              to `notify` via serde)
+//!   to `notify` via serde)
 //!
 //! Also drops the orphaned `auto_update` boolean that lingered in older
 //! configs (it was never wired to anything; see the legacy-fields test in
