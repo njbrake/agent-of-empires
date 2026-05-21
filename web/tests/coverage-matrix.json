@@ -702,6 +702,34 @@
       "components": ["web/src/components/settings/SoundSettings.tsx"]
     },
     {
+      "id": "story.wizard-tabs-visible",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": ["tests/live/cockpit-stories/wizard-tabs-visible.spec.ts"],
+      "components": ["web/src/components/session-wizard/steps/ProjectStep.tsx"]
+    },
+    {
+      "id": "story.wizard-clone-url-input",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": ["tests/live/cockpit-stories/wizard-clone-url-input.spec.ts"],
+      "components": ["web/src/components/session-wizard/steps/ProjectStep.tsx"]
+    },
+    {
+      "id": "story.wizard-browse-disk",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": ["tests/live/cockpit-stories/wizard-browse-disk.spec.ts"],
+      "components": ["web/src/components/DirectoryBrowser.tsx"]
+    },
+    {
+      "id": "story.wizard-recent-project",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": ["tests/live/cockpit-stories/wizard-recent-project.spec.ts"],
+      "components": ["web/src/components/session-wizard/steps/ProjectStep.tsx"]
+    },
+    {
       "id": "cockpit.rate-limit-recovery",
       "kind": "vitest",
       "risk": "high",
