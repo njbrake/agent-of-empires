@@ -374,6 +374,20 @@
       "components": ["web/src/components/cockpit/useFilesIndex.ts"]
     },
     {
+      "id": "cockpit.rattle",
+      "kind": "vitest",
+      "risk": "medium",
+      "specs": ["src/lib/cockpitRattle.test.ts"],
+      "components": ["web/src/lib/cockpitRattle.ts"]
+    },
+    {
+      "id": "cockpit.args",
+      "kind": "vitest",
+      "risk": "medium",
+      "specs": ["src/lib/cockpitArgs.test.ts"],
+      "components": ["web/src/lib/cockpitArgs.ts"]
+    },
+    {
       "id": "read-only.mode",
       "kind": "live-playwright",
       "risk": "high",
