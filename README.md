@@ -162,21 +162,31 @@ This is a known Claude Code issue, not an aoe problem: https://github.com/anthro
 ## Development
 
 ```bash
-cargo check          # Type-check
-cargo test           # Run tests
-cargo fmt            # Format
-cargo clippy         # Lint
-cargo build --release  # Release build
+cargo check                       # Type-check
+cargo test                        # Run tests
+cargo fmt                         # Format
+cargo clippy                      # Lint
+cargo build --release             # Release build (TUI only)
 
-# Debug logging (writes to debug.log in app data dir)
-AGENT_OF_EMPIRES_DEBUG=1 cargo run
+# Web dashboard build (pulls in axum + the React frontend via build.rs)
+cargo build --release --features serve
+
+# Run from source
+cargo run                         # TUI
+cargo run --features serve -- serve  # Web dashboard on :8081 (debug namespace)
+
+# Logging at startup. AOE_LOG_LEVEL is the canonical knob.
+AOE_LOG_LEVEL=debug cargo run
+AOE_LOG_LEVEL=trace cargo run
+AOE_ACP_TRACE=1 cargo run         # Adds raw ACP JSON-RPC firehose
+AOE_TERMINAL_TRACE=1 cargo run    # Adds per-message web terminal WS bytes
 
 # View the resulting log with the best viewer available
-# (lnav > bat > less > stdout). Add --serve for the daemon log,
-# --all to merge both, --follow to live-tail, --path to print the
-# resolved file path, --no-pager to dump plain text.
+# (lnav > bat > less > stdout). Flags: --follow, --path, --no-pager, -n N.
 aoe logs
 ```
+
+See [`docs/development.md`](docs/development.md) and [`docs/development/logging.md`](docs/development/logging.md) for the full development and logging reference.
 
 Debug builds use a parallel namespace so they don't collide with an installed
 release `aoe`: app data lives in `~/.agent-of-empires-dev` (macOS/Windows) or
