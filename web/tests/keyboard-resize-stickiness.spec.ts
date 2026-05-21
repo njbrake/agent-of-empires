@@ -91,9 +91,8 @@ async function openSession(page: Page, handle: MockHandle) {
   const sidebarToggle = page.getByRole("button", { name: "Toggle sidebar" });
   if (await sidebarToggle.isVisible()) {
     await sidebarToggle.click();
+    await page.waitForTimeout(200);
   }
-  // clickSidebarSession waits up to 5s for the session link to be visible,
-  // which covers the sidebar slide-in animation; no explicit sleep needed.
   await clickSidebarSession(page, "pinch-test");
   await page
     .locator('[data-term="agent"] .xterm')
