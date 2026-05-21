@@ -343,6 +343,11 @@ function CockpitChrome({
             onRemove={removeQueuedPrompt}
             onEdit={editQueuedPrompt}
             onClear={clearQueue}
+            pendingResume={
+              status !== "open" ||
+              state.workerStopped ||
+              state.workerRestarting
+            }
           />
 
           <RejectedPromptsStrip
@@ -1601,6 +1606,12 @@ interface QueuedPromptsStripProps {
   onRemove: (id: string) => void;
   onEdit: (id: string, text: string) => void;
   onClear: () => void;
+  /** True when the session is not in a state where the drain effect
+   *  can fire (WS closed, worker stopped, worker restarting, or the
+   *  worker is still cold-starting). Drives the heading copy so the
+   *  user can tell whether queued prompts fire on the next turn-end
+   *  or wait for the session to resume. See #1359. */
+  pendingResume: boolean;
 }
 
 /** Strip rendered above the composer listing prompts the user has
@@ -1690,6 +1701,7 @@ function QueuedPromptsStrip({
   onRemove,
   onEdit,
   onClear,
+  pendingResume,
 }: QueuedPromptsStripProps) {
   // Strip-level collapse: when the queue exceeds `visibleDefault` rows,
   // only the first N render until the user expands. State resets when
@@ -1713,7 +1725,9 @@ function QueuedPromptsStrip({
         <div className="flex items-center justify-between pb-1.5 text-[11px] uppercase tracking-wider text-text-dim">
           <span className="inline-flex items-center gap-1">
             <Clock className="h-3 w-3" />
-            Queued ({queued.length})
+            {pendingResume
+              ? `Pending until session resumes (${queued.length})`
+              : `Queued (${queued.length})`}
           </span>
           {queued.length > 1 && (
             <button

@@ -904,38 +904,40 @@ export function useCockpit(
     [sessionId],
   );
 
-  // Public sendPrompt. When the agent is already working we enqueue
-  // client-side; the drain effect dispatches the head once the current
-  // turn ends. When idle we dispatch immediately. Background: #1031.
+  // Public sendPrompt. Enqueues locally whenever the session is not in
+  // a state where an immediate POST would succeed; the drain effect
+  // below dispatches once the session resumes. Inactive states covered:
+  //   - WS not open (disconnected, reconnecting): #1359.
+  //   - turn already in flight: #1031.
+  //   - worker not in `running` (cold start, restart, stopped): #1088.
+  //   - worker stopped or restarting at the session level: #1359.
+  // Only when every gate clears does the prompt take the immediate POST
+  // path. The guard set mirrors the drain effect below so the moment
+  // the last gate flips the parked prompts fire. dispatchPromptNow keeps
+  // its own status guard for the drain effect, which can race the WS
+  // reopen window (see #1144).
   const sendPrompt = useCallback(
     async (text: string) => {
       if (!sessionId) return;
-      // The reducer sees the same `turnActive` the UI does. statusRef
-      // covers the WS-closed case separately so disconnected users
-      // still get the existing error banner even when typing into a
-      // running session.
-      if (statusRef.current !== "open") {
-        dispatch({
-          kind: "error",
-          message: "Cockpit disconnected; message not sent. Reconnect to retry.",
-        });
-        return;
-      }
-      if (state.turnActive) {
-        dispatch({ kind: "enqueue_prompt", text });
-        return;
-      }
-      // Worker still resuming (e.g. cold-start parallel reconciler
-      // hasn't reached this session yet). Queue locally rather than
-      // POSTing into a worker that isn't online; the drain effect
-      // fires once `workerState` transitions to `"running"`. See #1088.
-      if (workerStateRef.current !== "running") {
+      if (
+        statusRef.current !== "open" ||
+        workerStateRef.current !== "running" ||
+        state.turnActive ||
+        state.workerStopped ||
+        state.workerRestarting
+      ) {
         dispatch({ kind: "enqueue_prompt", text });
         return;
       }
       await dispatchPromptNow(text);
     },
-    [sessionId, state.turnActive, dispatchPromptNow],
+    [
+      sessionId,
+      state.turnActive,
+      state.workerStopped,
+      state.workerRestarting,
+      dispatchPromptNow,
+    ],
   );
 
   // Drain effect: when the agent transitions to idle and the queue is

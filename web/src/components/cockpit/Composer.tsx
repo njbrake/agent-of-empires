@@ -143,11 +143,13 @@ interface Props {
    *  AvailableCommandsUpdate. Includes plugins/skills/MCP commands.
    *  Empty until the agent emits the first list. */
   availableCommands: CockpitState["availableCommands"];
-  /** True when the cockpit WS is open. When false the composer
-   *  refuses new submissions: prompts dispatched while disconnected
-   *  would be lost (the POST /cockpit/prompt would fail with no way
-   *  to retry). TODO(post-disconnect): queue locally and flush on
-   *  reconnect instead of blocking. */
+  /** True when the cockpit WS is open and the worker is healthy
+   *  (running, not stopped, not restarting). When false the Send /
+   *  QueueSend buttons stay clickable, but submissions take the
+   *  enqueue path in `sendPrompt` so they fire on resume rather than
+   *  POSTing into a non-running session. The tooltip swaps to name
+   *  the queue behavior so users understand the click is not lost.
+   *  See #1359. */
   connected: boolean;
   /** True while the agent is producing the current turn. When true the
    *  composer keeps its textarea editable and surfaces a queue-send
@@ -555,13 +557,13 @@ export function Composer({
                   <>
                     <StopButton />
                     <QueueSendButton
-                      disabled={!connected}
+                      connected={connected}
                       queuedCount={queuedCount}
                       onSend={() => sendFromTextarea(taRef, composerRuntime, enqueuePrompt)}
                     />
                   </>
                 ) : (
-                  <SendButton disabled={!connected} />
+                  <SendButton connected={connected} />
                 )}
               </div>
             </div>
@@ -965,24 +967,27 @@ function formatCost(amount: number, currency: string): string {
 
 /* ── Send / Stop ─────────────────────────────────────────────────── */
 
-function SendButton({ disabled = false }: { disabled?: boolean }) {
-  // When the WS is closed we surface the offline state via `disabled`
-  // and a swapped tooltip; ComposerPrimitive.Send would still try to
-  // dispatch otherwise (it only knows about thread-runtime state, not
-  // our connection status). TODO: queue prompts locally and flush on
-  // reconnect instead of dropping them.
+function SendButton({ connected = true }: { connected?: boolean }) {
+  // When the session is inactive (WS closed, worker stopped, worker
+  // restarting) we leave the button clickable: `sendPrompt` routes the
+  // text into the local queue and the drain effect fires it on resume.
+  // The tooltip swaps so users can tell the click queued rather than
+  // sent. ComposerPrimitive.Send still drives the assistant-ui submit
+  // flow; it does not look at our `connected` flag. See #1359.
+  const title = connected
+    ? "Send, Enter"
+    : "Session not active, will send on resume";
+  const label = connected ? "Send message" : "Queue message until session resumes";
   return (
     <ComposerPrimitive.Send asChild>
       <button
         type="submit"
-        aria-label="Send message"
-        title={disabled ? "Disconnected — reconnect to send" : "Send · Enter"}
-        disabled={disabled}
+        aria-label={label}
+        title={title}
         className={[
           "group/send inline-flex items-center justify-center gap-1",
           "rounded-lg bg-brand-600 px-2.5 py-1.5 text-white shadow-sm",
           "hover:bg-brand-500 active:scale-[0.98]",
-          "disabled:cursor-not-allowed disabled:bg-surface-700 disabled:text-text-dim disabled:shadow-none",
           "transition-all duration-100",
         ].join(" ")}
       >
@@ -1018,35 +1023,36 @@ function StopButton() {
  *  Bypasses ComposerPrimitive.Send (which is disabled by the SDK when
  *  the thread is running). Shows a small badge with the current queue
  *  length so users can see at a glance how many follow-ups are stacked
- *  up. See #1031. */
+ *  up. See #1031. Inactive sessions (WS closed, worker stopped /
+ *  restarting) keep the button clickable and swap the tooltip; the
+ *  click routes through `sendPrompt`'s enqueue branch instead of
+ *  POSTing. See #1359. */
 function QueueSendButton({
-  disabled,
+  connected,
   queuedCount,
   onSend,
 }: {
-  disabled: boolean;
+  connected: boolean;
   queuedCount: number;
   onSend: () => void;
 }) {
-  const title = disabled
-    ? "Disconnected, reconnect to send"
+  const title = !connected
+    ? queuedCount > 0
+      ? `Queue follow-up (${queuedCount} pending), will send on resume, Enter`
+      : "Queue follow-up, will send on resume, Enter"
     : queuedCount > 0
-      ? `Queue follow-up (${queuedCount} pending) · Enter`
-      : "Queue follow-up (sent when current turn ends) · Enter";
+      ? `Queue follow-up (${queuedCount} pending), Enter`
+      : "Queue follow-up (sent when current turn ends), Enter";
   return (
     <button
       type="button"
       aria-label="Queue follow-up message"
       title={title}
-      disabled={disabled}
-      onClick={() => {
-        if (!disabled) onSend();
-      }}
+      onClick={onSend}
       className={[
         "group/send relative inline-flex items-center justify-center gap-1",
         "rounded-lg bg-brand-600 px-2.5 py-1.5 text-white shadow-sm",
         "hover:bg-brand-500 active:scale-[0.98]",
-        "disabled:cursor-not-allowed disabled:bg-surface-700 disabled:text-text-dim disabled:shadow-none",
         "transition-all duration-100",
       ].join(" ")}
     >
