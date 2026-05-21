@@ -201,7 +201,7 @@ impl App {
             update_bar_dismissed: false,
             event_stream: Some(EventStream::new()),
             // Initial state matches whatever `tui::run` did at startup;
-            // capture is enabled iff AOE_MOUSE_CAPTURE=1.
+            // capture is on by default, off only if AOE_MOUSE_CAPTURE=0.
             mouse_captured: crate::tui::mouse_capture_requested(),
             #[cfg(feature = "serve")]
             pending_cockpit_open: None,
@@ -219,10 +219,10 @@ impl App {
         &mut self,
         terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
     ) -> Result<()> {
-        // Mouse capture is opt-in (AOE_MOUSE_CAPTURE=1). Without the env, we
-        // never enable xterm mouse tracking; iOS Mosh + Termius/Blink rely
-        // on the terminal app's native scrollback for touch-scroll, and Mosh
-        // doesn't reliably forward mouse-tracking escapes to mobile clients.
+        // Mouse capture is on by default; AOE_MOUSE_CAPTURE=0 opts out so
+        // iOS Mosh + Termius/Blink use the terminal app's native scrollback
+        // for touch-scroll (Mosh doesn't reliably forward mouse-tracking
+        // escapes to mobile clients).
         if !crate::tui::mouse_capture_requested() {
             return Ok(());
         }
@@ -311,7 +311,7 @@ impl App {
         // Defer mouse-capture restore to sync_mouse_capture so we don't
         // briefly enable it only to disable again when the user returned
         // to the serve view. sync_mouse_capture itself respects the
-        // AOE_MOUSE_CAPTURE env gate.
+        // AOE_MOUSE_CAPTURE opt-out.
         self.sync_mouse_capture(terminal)?;
         std::io::Write::flush(terminal.backend_mut())?;
 

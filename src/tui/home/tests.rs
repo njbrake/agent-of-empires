@@ -3143,6 +3143,8 @@ fn apply_status_update_runs_status_hook_on_transition() {
         status: Status::Waiting,
         last_error: None,
         idle_entered_at: None,
+        last_accessed_at: None,
+        pane_dead: false,
     });
 
     let launches = take_recorded_launches();
@@ -3206,6 +3208,8 @@ fn apply_status_update_does_not_run_status_hook_for_same_status() {
         status: Status::Idle,
         last_error: None,
         idle_entered_at: None,
+        last_accessed_at: None,
+        pane_dead: false,
     });
 
     assert!(take_recorded_launches().is_empty());
@@ -3237,6 +3241,8 @@ fn apply_status_updates_without_hooks_does_not_run_status_hook() {
             status: Status::Waiting,
             last_error: None,
             idle_entered_at: None,
+            last_accessed_at: None,
+            pane_dead: false,
         }]);
 
     assert_eq!(env.view.get_instance(&id).unwrap().status, Status::Waiting);

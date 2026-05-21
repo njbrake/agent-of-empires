@@ -179,6 +179,8 @@ mod tests {
                 status: Status::Waiting,
                 last_error: None,
                 idle_entered_at: None,
+                last_accessed_at: None,
+                pane_dead: false,
             }],
             true,
         );
