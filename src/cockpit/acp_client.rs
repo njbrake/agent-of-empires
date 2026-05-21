@@ -257,6 +257,16 @@ const CANCEL_ESCALATION_GRACE: std::time::Duration = std::time::Duration::from_s
 /// agent wait windows. See `silent_orphan_grace()`.
 const SILENT_ORPHAN_GRACE_DEFAULT: std::time::Duration = std::time::Duration::from_secs(120);
 
+/// Minimum effective grace applied when the prompt loop has observed an
+/// async-agent launch (`LifecycleSignal::ToolCompleted { is_async: true }`).
+/// The watchdog stays armed but uses this as a floor against the
+/// configured base grace, so an operator who deliberately set a higher
+/// `silent_orphan_grace_secs` still wins. Finite by design: if claude-
+/// agent-acp hangs DURING an async wait, the watchdog still recovers
+/// after 30 minutes rather than holding the turn open forever. See
+/// #1360 and upstream agentclientprotocol/claude-agent-acp#336.
+const ASYNC_AGENT_GRACE_FLOOR: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+
 /// Accelerated silent-orphan grace fallback used when a cost-populated
 /// `UsageUpdate` notification has arrived for the current prompt. The
 /// daemon treats that frame as claude-agent-acp's "wrap up accounting"
@@ -293,7 +303,13 @@ enum LifecycleSignal {
     /// A tool call reached terminal status (`Completed` or `Failed`).
     /// Removed from `tool_calls_in_flight`; when the set drains to
     /// empty after at least one progress event, the watchdog arms.
-    ToolCompleted(String),
+    /// `is_async` is `true` when the completion content text indicates
+    /// a Claude SDK async-agent launch ("Async agent launched
+    /// successfully ..."); in that case the prompt loop also flips its
+    /// sticky `async_agent_running` flag so the watchdog extends the
+    /// grace window. See #1360 and upstream
+    /// agentclientprotocol/claude-agent-acp#336.
+    ToolCompleted { id: String, is_async: bool },
     /// Cost-populated `UsageUpdate`: claude-agent-acp's "wrap up
     /// accounting" marker. Switches the effective grace from the
     /// vendor-agnostic default to the accelerated value for this
@@ -326,7 +342,8 @@ fn classify_lifecycle_signal(
             let id = update.tool_call_id.0.to_string();
             match update.fields.status {
                 Some(ToolCallStatus::Completed) | Some(ToolCallStatus::Failed) => {
-                    Some(LifecycleSignal::ToolCompleted(id))
+                    let is_async = detect_async_agent_launch(&update.fields.content);
+                    Some(LifecycleSignal::ToolCompleted { id, is_async })
                 }
                 Some(ToolCallStatus::InProgress) => Some(LifecycleSignal::ToolStarted(id)),
                 _ => Some(LifecycleSignal::Progress),
@@ -334,6 +351,30 @@ fn classify_lifecycle_signal(
         }
         _ => None,
     }
+}
+
+/// Detect whether a `ToolCallUpdate` completion content array carries the
+/// Claude SDK's "Async agent launched successfully" marker, which fires
+/// when the `Agent` tool is invoked with `isAsync: true`. The sub-agent
+/// then runs INSIDE the claude binary, polled via an internal SDK channel
+/// that is invisible at the ACP layer; the prompt loop uses this signal to
+/// flip its `async_agent_running` flag so the silent-orphan watchdog
+/// extends its grace window for the rest of the turn.
+///
+/// Text detection is intentionally narrow. The prefix is hardcoded in the
+/// Anthropic Claude SDK and is the most stable identifier available short
+/// of upstream agentclientprotocol/claude-agent-acp#336 forwarding the
+/// background task notifications natively. If the prefix ever changes, this
+/// detector returns `false` and the watchdog falls back to the (now 120s)
+/// base grace, which is still survivable for shorter async-agent flows but
+/// will reintroduce false-positives for the long-tail. See #1360.
+fn detect_async_agent_launch(
+    content: &Option<Vec<agent_client_protocol::schema::ToolCallContent>>,
+) -> bool {
+    let Some(blocks) = content else {
+        return false;
+    };
+    extract_tool_content_text(blocks).contains("Async agent launched successfully")
 }
 
 /// Monotonic counter appended to synthetic tool-call IDs so two events
@@ -2835,6 +2876,17 @@ async fn run_connection_task<W, R>(
                         let mut cost_seen = false;
                         let mut orphan_cancel_sent = false;
                         let mut prompt_orphaned = false;
+                        // Sticky for the rest of the prompt: set the first time we see
+                        // `LifecycleSignal::ToolCompleted { is_async: true }`, cleared
+                        // only when the prompt loop exits and the next prompt begins.
+                        // There is no ACP-layer completion signal for async sub-agents
+                        // (the SDK polls them internally; see upstream
+                        // agentclientprotocol/claude-agent-acp#336), so clearing mid-
+                        // turn would be fake precision. While set, the watchdog
+                        // promotes `effective_grace` to at least 30 minutes and
+                        // ignores the cost-seen fast path so legitimate async waits
+                        // do not false-fire. See #1360.
+                        let mut async_agent_running = false;
 
                         let silent_orphan_grace_default =
                             silent_orphan_grace(source_profile.as_deref());
@@ -2964,10 +3016,25 @@ async fn run_connection_task<W, R>(
                                             last_progress_at = Some(tokio::time::Instant::now());
                                             cost_seen = false;
                                         }
-                                        Some(LifecycleSignal::ToolCompleted(id)) => {
+                                        Some(LifecycleSignal::ToolCompleted { id, is_async }) => {
                                             tool_calls_in_flight.remove(&id);
                                             last_progress_at = Some(tokio::time::Instant::now());
                                             cost_seen = false;
+                                            if is_async {
+                                                // The visible `Agent` tool call just
+                                                // completed but the actual sub-agent is
+                                                // now running INSIDE the claude binary
+                                                // with no further ACP signaling. Flip
+                                                // the sticky flag so the watchdog
+                                                // extends its grace for the rest of
+                                                // this prompt. Also forces
+                                                // `saw_first_progress = true` because
+                                                // the launch itself counts as progress
+                                                // even on a first-tool-call turn. See
+                                                // #1360.
+                                                async_agent_running = true;
+                                                saw_first_progress = true;
+                                            }
                                         }
                                         Some(LifecycleSignal::TerminalUsage) => {
                                             // Don't touch
@@ -2996,7 +3063,23 @@ async fn run_connection_task<W, R>(
                                     // to the default grace instead of an
                                     // unbounded ZERO duration. See #1240
                                     // CodeRabbit feedback.
-                                    let effective_grace = if cost_seen
+                                    //
+                                    // The async-agent branch takes precedence over
+                                    // the cost-seen fast path: once
+                                    // `async_agent_running` is set, sub-agents are
+                                    // polling INSIDE the claude binary and silence
+                                    // is expected. A cost-populated UsageUpdate
+                                    // mid-wait could be intermediate billing
+                                    // telemetry rather than turn termination, and
+                                    // collapsing to the 20s fast grace would
+                                    // reintroduce the exact false-positive class
+                                    // this fix targets. `.max(1800s)` lifts the
+                                    // floor to 30 minutes while respecting a higher
+                                    // operator-configured base grace. See #1360.
+                                    let effective_grace = if async_agent_running {
+                                        silent_orphan_grace_default
+                                            .max(ASYNC_AGENT_GRACE_FLOOR)
+                                    } else if cost_seen
                                         && silent_orphan_grace_fast > std::time::Duration::ZERO
                                     {
                                         silent_orphan_grace_fast
@@ -3015,6 +3098,8 @@ async fn run_connection_task<W, R>(
                                             target: "cockpit.acp",
                                             session = %session_label,
                                             cost_seen,
+                                            async_agent_running,
+                                            in_flight_tools = tool_calls_in_flight.len(),
                                             grace_secs = effective_grace.as_secs(),
                                             elapsed_secs = elapsed.map(|d| d.as_secs()).unwrap_or(0),
                                             "silent-orphan watchdog fired: no progress past grace and no in-flight tools; sending session/cancel"
@@ -4460,6 +4545,74 @@ mod tests {
         // status word ("completed" / "tool failed") in that case so
         // the card still conveys state.
         assert_eq!(extract_tool_content_text(&[]), "");
+    }
+
+    #[test]
+    fn detect_async_agent_launch_matches_sdk_prefix() {
+        use agent_client_protocol::schema::{Content, ToolCallContent};
+        let blocks = vec![ToolCallContent::Content(Content::new(
+            "Async agent launched successfully.\nagentId: af2a6a5d46bc21f91 (internal ID)",
+        ))];
+        assert!(detect_async_agent_launch(&Some(blocks)));
+    }
+
+    #[test]
+    fn detect_async_agent_launch_false_on_regular_completion() {
+        use agent_client_protocol::schema::{Content, ToolCallContent};
+        let blocks = vec![ToolCallContent::Content(Content::new(
+            "abc1234 first commit\nabc1235 second commit",
+        ))];
+        assert!(!detect_async_agent_launch(&Some(blocks)));
+    }
+
+    #[test]
+    fn detect_async_agent_launch_false_on_none_content() {
+        assert!(!detect_async_agent_launch(&None));
+    }
+
+    #[test]
+    fn detect_async_agent_launch_false_on_empty_content() {
+        assert!(!detect_async_agent_launch(&Some(vec![])));
+    }
+
+    #[test]
+    fn classify_lifecycle_signal_sets_is_async_on_async_agent_completion() {
+        use agent_client_protocol::schema::{
+            Content, ToolCallContent, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields,
+        };
+        let fields = ToolCallUpdateFields::new()
+            .status(ToolCallStatus::Completed)
+            .content(vec![ToolCallContent::Content(Content::new(
+                "Async agent launched successfully. agentId: async-test-1",
+            ))]);
+        let update = ToolCallUpdate::new("tc-async-1", fields);
+        match classify_lifecycle_signal(&SessionUpdate::ToolCallUpdate(update)) {
+            Some(LifecycleSignal::ToolCompleted { id, is_async }) => {
+                assert_eq!(id, "tc-async-1");
+                assert!(is_async, "async-launch ToolCallUpdate must set is_async");
+            }
+            other => panic!("expected ToolCompleted {{ is_async: true }}, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_lifecycle_signal_clears_is_async_on_regular_completion() {
+        use agent_client_protocol::schema::{
+            Content, ToolCallContent, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields,
+        };
+        let fields = ToolCallUpdateFields::new()
+            .status(ToolCallStatus::Completed)
+            .content(vec![ToolCallContent::Content(Content::new(
+                "ls /tmp/foo done",
+            ))]);
+        let update = ToolCallUpdate::new("tc-bash-1", fields);
+        match classify_lifecycle_signal(&SessionUpdate::ToolCallUpdate(update)) {
+            Some(LifecycleSignal::ToolCompleted { id, is_async }) => {
+                assert_eq!(id, "tc-bash-1");
+                assert!(!is_async, "regular ToolCallUpdate must not set is_async");
+            }
+            other => panic!("expected ToolCompleted {{ is_async: false }}, got {other:?}"),
+        }
     }
 
     #[test]
