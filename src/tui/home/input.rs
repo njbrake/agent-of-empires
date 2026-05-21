@@ -21,6 +21,12 @@ use crate::tui::dialogs::{
 use crate::tui::diff::{DiffAction, DiffView};
 use crate::tui::settings::{SettingsAction, SettingsView};
 
+/// Maximum gap between two left-clicks on the same row that still
+/// counts as a double-click. 400ms matches the default on most desktop
+/// environments. Worth tuning if real-world feedback says it's too
+/// fast for trackpads or too slow on remote sessions.
+const DOUBLE_CLICK_THRESHOLD: std::time::Duration = std::time::Duration::from_millis(400);
+
 fn resolve_hook_install_agent(
     tool_name: &str,
     session_config: &crate::session::config::SessionConfig,
@@ -1722,43 +1728,8 @@ impl HomeView {
                 self.update_selected();
             }
             KeyCode::Enter => {
-                if let Some(id) = &self.selected_session {
-                    if let Some(inst) = self.get_instance(id) {
-                        if matches!(inst.status, Status::Deleting | Status::Creating) {
-                            return None;
-                        }
-                        if inst.is_cockpit_mode() {
-                            #[cfg(feature = "serve")]
-                            {
-                                return Some(Action::OpenCockpit(id.clone()));
-                            }
-                            #[cfg(not(feature = "serve"))]
-                            {
-                                return Some(Action::SetTransientStatus(
-                                    "Cockpit session: rebuild with --features serve to attach"
-                                        .to_string(),
-                                ));
-                            }
-                        }
-                    }
-                    return match self.view_mode {
-                        ViewMode::Agent => Some(Action::AttachSession(id.clone())),
-                        ViewMode::Terminal => {
-                            let terminal_mode = if let Some(inst) = self.get_instance(id) {
-                                if inst.is_sandboxed() {
-                                    self.get_terminal_mode(id)
-                                } else {
-                                    TerminalMode::Host
-                                }
-                            } else {
-                                TerminalMode::Host
-                            };
-                            Some(Action::AttachTerminal(id.clone(), terminal_mode))
-                        }
-                        ViewMode::Tool(ref tool_name) => {
-                            Some(Action::AttachToolSession(id.clone(), tool_name.clone()))
-                        }
-                    };
+                if self.selected_session.is_some() {
+                    return self.activate_selected_session();
                 } else if let Some(Item::Group { path, .. }) = self.flat_items.get(self.cursor) {
                     let path = path.clone();
                     self.toggle_group_collapsed(&path);
@@ -2043,6 +2014,49 @@ impl HomeView {
         self.update_selected();
     }
 
+    /// Resolve the action that "activating" the currently-selected session
+    /// should produce (cockpit open, attach to tmux session, attach to a
+    /// tool session, etc.). Returns `None` for in-flight sessions
+    /// (`Creating`/`Deleting`) and when no session is selected. Shared
+    /// between the `Enter` keybind and double-click activation so the two
+    /// paths can't drift.
+    pub(super) fn activate_selected_session(&mut self) -> Option<Action> {
+        let id = self.selected_session.clone()?;
+        if let Some(inst) = self.get_instance(&id) {
+            if matches!(inst.status, Status::Deleting | Status::Creating) {
+                return None;
+            }
+            if inst.is_cockpit_mode() {
+                #[cfg(feature = "serve")]
+                {
+                    return Some(Action::OpenCockpit(id));
+                }
+                #[cfg(not(feature = "serve"))]
+                {
+                    return Some(Action::SetTransientStatus(
+                        "Cockpit session: rebuild with --features serve to attach".to_string(),
+                    ));
+                }
+            }
+        }
+        match self.view_mode {
+            ViewMode::Agent => Some(Action::AttachSession(id)),
+            ViewMode::Terminal => {
+                let terminal_mode = if let Some(inst) = self.get_instance(&id) {
+                    if inst.is_sandboxed() {
+                        self.get_terminal_mode(&id)
+                    } else {
+                        TerminalMode::Host
+                    }
+                } else {
+                    TerminalMode::Host
+                };
+                Some(Action::AttachTerminal(id, terminal_mode))
+            }
+            ViewMode::Tool(ref tool_name) => Some(Action::AttachToolSession(id, tool_name.clone())),
+        }
+    }
+
     pub(super) fn update_selected(&mut self) {
         if let Some(item) = self.flat_items.get(self.cursor) {
             let prev_session = self.selected_session.clone();
@@ -2183,6 +2197,142 @@ impl HomeView {
         }
         self.preview_scroll_offset = clamped;
         true
+    }
+
+    /// Map a (col, row) inside the list's inner content rect to a
+    /// `flat_items` index, or `None` for rows that don't resolve to a real
+    /// item (search bar, `[N more above/below]` indicator rows, empty list,
+    /// outside the inner rect, dialog open, diff view active). Shared by
+    /// `handle_click` and `hovered_index` so selection and hover use the
+    /// exact same math.
+    pub(super) fn resolve_row_to_index(&self, col: u16, row: u16) -> Option<usize> {
+        if self.diff_view.is_some() || self.has_dialog() {
+            return None;
+        }
+        let inner = self.list_inner_area;
+        if !inner.contains(Position::from((col, row))) {
+            return None;
+        }
+        if self.flat_items.is_empty() {
+            return None;
+        }
+        let visible_height = if self.search_active {
+            (inner.height as usize).saturating_sub(1)
+        } else {
+            inner.height as usize
+        };
+        if visible_height == 0 {
+            return None;
+        }
+        let row_in_inner = row.saturating_sub(inner.y) as usize;
+        if self.search_active && row_in_inner + 1 == inner.height as usize {
+            return None;
+        }
+
+        let scroll = crate::tui::components::scroll::calculate_scroll(
+            self.flat_items.len(),
+            self.cursor,
+            visible_height,
+        );
+        let row_offset = if scroll.has_more_above { 1 } else { 0 };
+        if row_in_inner < row_offset {
+            return None;
+        }
+        let item_row = row_in_inner - row_offset;
+        if item_row >= scroll.list_visible {
+            return None;
+        }
+        let abs_idx = scroll.scroll_offset + item_row;
+        if abs_idx >= self.flat_items.len() {
+            return None;
+        }
+        Some(abs_idx)
+    }
+
+    /// Currently hovered `flat_items` index, derived from the last mouse
+    /// position. `None` when the mouse is off the list or over a row that
+    /// doesn't resolve to a real item. Recomputed on every call so wheel
+    /// scrolls implicitly move the hover with the items under the cursor.
+    pub(super) fn hovered_index(&self) -> Option<usize> {
+        self.mouse_pos
+            .and_then(|(c, r)| self.resolve_row_to_index(c, r))
+    }
+
+    /// Route a left-click at (col, row) inside the session list. A single
+    /// click on a session row selects it (same effect as arrow-key
+    /// navigation); a single click on a group row toggles its collapsed
+    /// state; a second click on the same row within
+    /// `DOUBLE_CLICK_THRESHOLD` activates the session (the same Action
+    /// the `Enter` keybind would have produced). Returns the activation
+    /// `Action` for the caller to dispatch, or `None` for selection-only /
+    /// no-op clicks. The caller redraws unconditionally so the moved
+    /// cursor / toggled group always paints before the action executes.
+    /// Gated by `has_dialog()` (via `resolve_row_to_index`) so clicks
+    /// don't shift selection out from under an open modal.
+    pub fn handle_click(&mut self, col: u16, row: u16) -> Option<Action> {
+        self.handle_click_at(std::time::Instant::now(), col, row)
+    }
+
+    /// Same as `handle_click`, but the caller supplies `now`. Used by
+    /// unit tests to drive double-click detection deterministically
+    /// without relying on `thread::sleep`.
+    pub(super) fn handle_click_at(
+        &mut self,
+        now: std::time::Instant,
+        col: u16,
+        row: u16,
+    ) -> Option<Action> {
+        let abs_idx = self.resolve_row_to_index(col, row)?;
+
+        let is_double_click = matches!(
+            self.last_click,
+            Some((prev_time, _, prev_row))
+                if prev_row == row
+                    && now.duration_since(prev_time) <= DOUBLE_CLICK_THRESHOLD
+        );
+        self.last_click = Some((now, col, row));
+
+        let item = self.flat_items[abs_idx].clone();
+        if is_double_click {
+            // First click already selected the row (and toggled a group);
+            // the second click only activates a session. Re-toggling a
+            // group on the second click would undo the first toggle and
+            // flicker, so groups intentionally swallow the second click.
+            return match item {
+                Item::Session { .. } => self.activate_selected_session(),
+                Item::Group { .. } => None,
+            };
+        }
+
+        match item {
+            Item::Group { path, .. } => {
+                self.toggle_group_collapsed(&path);
+            }
+            Item::Session { .. } => {
+                if self.cursor != abs_idx {
+                    self.cursor = abs_idx;
+                    self.update_selected();
+                }
+            }
+        }
+        None
+    }
+
+    /// Record the mouse position from a `MouseEventKind::Moved` event so
+    /// the list can render a hover highlight on the row under the cursor.
+    /// `mouse_pos` is cleared when the cursor leaves `list_inner_area`.
+    /// Returns `true` only when the resolved hovered item changes, so the
+    /// caller can skip a redraw on every pixel-level mouse twitch.
+    pub fn handle_hover(&mut self, col: u16, row: u16) -> bool {
+        let new_pos = if self.list_inner_area.contains(Position::from((col, row))) {
+            Some((col, row))
+        } else {
+            None
+        };
+        let prev_idx = self.hovered_index();
+        self.mouse_pos = new_pos;
+        let new_idx = self.hovered_index();
+        prev_idx != new_idx
     }
 
     /// Route a mouse-wheel-down at (col, row); see handle_scroll_up.

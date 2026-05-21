@@ -255,6 +255,22 @@ pub struct HomeView {
     pub(super) preview_area: Rect,
     pub(super) diff_area: Rect,
     pub(super) list_area: Rect,
+    /// Inner content rect of the session list (borders/padding stripped).
+    /// Used to map a click coordinate to a `flat_items` index. The outer
+    /// `list_area` still drives `hit_list` so wheel events over the border
+    /// keep working; clicks use the inner rect so we don't try to select
+    /// the border row.
+    pub(super) list_inner_area: Rect,
+    /// Last reported mouse position when it was over `list_inner_area`,
+    /// `None` when the cursor is outside the list. Stored as a position
+    /// rather than a resolved item index so wheel scrolls implicitly
+    /// re-resolve the hovered item without an extra event round-trip.
+    pub(super) mouse_pos: Option<(u16, u16)>,
+    /// Timestamp and row of the previous left-click. The next click is
+    /// classified as a double-click when it lands within
+    /// `DOUBLE_CLICK_THRESHOLD` on the same row, which then activates the
+    /// session (same as pressing Enter on the selected row).
+    pub(super) last_click: Option<(std::time::Instant, u16, u16)>,
 
     // Terminal mode for sandboxed sessions (per-session, ephemeral)
     pub(super) terminal_modes: HashMap<String, TerminalMode>,
@@ -479,6 +495,9 @@ impl HomeView {
             preview_area: Rect::default(),
             diff_area: Rect::default(),
             list_area: Rect::default(),
+            list_inner_area: Rect::default(),
+            mouse_pos: None,
+            last_click: None,
             terminal_modes: HashMap::new(),
             default_terminal_mode,
             sound_config,
