@@ -8,10 +8,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  clearDraft,
   getDraft,
   hasDraft,
   setDraft,
   subscribeDrafts,
+  sweepOrphanDrafts,
 } from "./cockpitDrafts";
 
 beforeEach(() => {
@@ -180,5 +182,85 @@ describe("subscribeDrafts pub/sub", () => {
     expect(cbWildcard).toHaveBeenCalledTimes(1);
     unsub1();
     unsub2();
+  });
+});
+
+describe("clearDraft", () => {
+  it("removes the persisted key", () => {
+    setDraft("s-1", "x");
+    clearDraft("s-1");
+    expect(localStorage.getItem("cockpit:draft:s-1")).toBeNull();
+    expect(hasDraft("s-1")).toBe(false);
+  });
+
+  it("notifies filtered subscribers", () => {
+    setDraft("s-1", "x");
+    const cb = vi.fn();
+    const unsub = subscribeDrafts(cb, new Set(["s-1"]));
+    clearDraft("s-1");
+    expect(cb).toHaveBeenCalledTimes(1);
+    unsub();
+  });
+
+  it("is a no-op when no draft existed", () => {
+    expect(() => clearDraft("s-missing")).not.toThrow();
+    expect(getDraft("s-missing")).toBe("");
+  });
+});
+
+describe("sweepOrphanDrafts", () => {
+  it("removes drafts whose session id is not in the active set", () => {
+    setDraft("s-keep", "alive");
+    setDraft("s-orphan-1", "gone");
+    setDraft("s-orphan-2", "also gone");
+    sweepOrphanDrafts(new Set(["s-keep"]));
+    expect(getDraft("s-keep")).toBe("alive");
+    expect(localStorage.getItem("cockpit:draft:s-orphan-1")).toBeNull();
+    expect(localStorage.getItem("cockpit:draft:s-orphan-2")).toBeNull();
+  });
+
+  it("leaves non-draft keys untouched", () => {
+    localStorage.setItem("aoe:other", "untouched");
+    localStorage.setItem("cockpit:draft:s-orphan", "gone");
+    sweepOrphanDrafts(new Set());
+    expect(localStorage.getItem("aoe:other")).toBe("untouched");
+    expect(localStorage.getItem("cockpit:draft:s-orphan")).toBeNull();
+  });
+
+  it("fires a single wildcard notify when keys were removed", () => {
+    setDraft("s-orphan", "gone");
+    const cb = vi.fn();
+    const unsub = subscribeDrafts(cb, null);
+    sweepOrphanDrafts(new Set());
+    expect(cb).toHaveBeenCalledTimes(1);
+    unsub();
+  });
+
+  it("does not notify when nothing was removed", () => {
+    setDraft("s-keep", "alive");
+    const cb = vi.fn();
+    const unsub = subscribeDrafts(cb, null);
+    sweepOrphanDrafts(new Set(["s-keep"]));
+    expect(cb).not.toHaveBeenCalled();
+    unsub();
+  });
+
+  it("swallows localStorage iteration errors", () => {
+    setDraft("s-orphan", "gone");
+    const spy = vi
+      .spyOn(Storage.prototype, "key")
+      .mockImplementation(() => {
+        throw new Error("blocked");
+      });
+    expect(() => sweepOrphanDrafts(new Set())).not.toThrow();
+    spy.mockRestore();
+  });
+
+  it("handles an empty active set", () => {
+    setDraft("s-a", "a");
+    setDraft("s-b", "b");
+    sweepOrphanDrafts(new Set());
+    expect(hasDraft("s-a")).toBe(false);
+    expect(hasDraft("s-b")).toBe(false);
   });
 });

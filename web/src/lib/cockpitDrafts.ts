@@ -51,6 +51,39 @@ export function setDraft(sessionId: string, text: string): void {
   notify(sessionId);
 }
 
+// Drop the persisted draft for a single session id. Convenience over
+// `setDraft(id, "")`; intended for session-delete paths so callers
+// don't have to import an empty-string sentinel.
+export function clearDraft(sessionId: string): void {
+  setDraft(sessionId, "");
+}
+
+// Remove every `cockpit:draft:<id>` key whose session id is not in the
+// given active set. Run once on app mount to catch drafts left behind
+// by session deletions that happened in another tab or on another
+// device (the local-tab delete path calls `clearDraft` directly).
+// Fires a single wildcard notify after the batch so the sidebar's
+// "unsent draft" dot recomputes.
+export function sweepOrphanDrafts(
+  activeSessionIds: ReadonlySet<string>,
+): void {
+  if (typeof window === "undefined") return;
+  const toRemove: string[] = [];
+  try {
+    for (let i = 0; i < window.localStorage.length; i++) {
+      const k = window.localStorage.key(i);
+      if (!k) continue;
+      const sid = sessionIdFromKey(k);
+      if (sid === null) continue;
+      if (!activeSessionIds.has(sid)) toRemove.push(k);
+    }
+    for (const k of toRemove) window.localStorage.removeItem(k);
+  } catch {
+    /* localStorage blocked; sweep is best-effort */
+  }
+  if (toRemove.length > 0) notify(null);
+}
+
 export function hasDraft(sessionId: string): boolean {
   try {
     const v = localStorage.getItem(draftKey(sessionId));
