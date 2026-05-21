@@ -2599,6 +2599,13 @@ fn format_env_var_prefix(key: &str, value: &str, cmd: &str) -> String {
     format!("{}={} {}", key, escaped, cmd)
 }
 
+/// Prepend agent-specific environment overrides to a launch command.
+///
+/// Antigravity inherits the parent tmux env, which can carry `NO_COLOR=1` and
+/// silently disable its terminal palette even though the web renderer handles
+/// ANSI fine. Unsetting `NO_COLOR` and forcing `FORCE_COLOR=1` /
+/// `COLORTERM=truecolor` at launch keeps color on without leaking the override
+/// to other agents.
 fn apply_agent_launch_env(cmd: &mut String, agent: Option<&'static crate::agents::AgentDef>) {
     if !matches!(agent.map(|a| a.name), Some("antigravity")) {
         return;
