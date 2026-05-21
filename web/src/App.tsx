@@ -5,6 +5,7 @@ import { useSessions } from "./hooks/useSessions";
 import { clearCockpitCache } from "./hooks/useCockpit";
 import { clearDraft, sweepOrphanDrafts } from "./lib/cockpitDrafts";
 import { CockpitPrefsProvider } from "./lib/cockpitPrefs";
+import { safeGetItem, safeSetItem } from "./lib/safeStorage";
 import { useWorkspaces } from "./hooks/useWorkspaces";
 import { useRepoGroups } from "./hooks/useRepoGroups";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
@@ -196,23 +197,28 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
     setWorkspaceOrdering,
     markLocalOrderingUpdate,
     error,
+    loaded: sessionsLoaded,
     injectSession,
     setSessionStatus,
   } = useSessions();
   const workspaces = useWorkspaces(sessions);
 
-  // One-shot orphan-draft sweep on first non-empty session list. Catches
-  // cockpit:draft:<id> keys left behind by deletions that happened in
-  // another tab or on another device since the last load (#1358). The
-  // local-tab delete path calls clearDraft directly so it doesn't need
-  // to wait for this. Bounded by localStorage entry count; cheap.
+  // One-shot orphan-draft sweep once useSessions has settled its first
+  // fetch (success or null). Catches cockpit:draft:<id> keys left behind
+  // by deletions that happened in another tab or on another device since
+  // the last load (#1358). The local-tab delete path calls clearDraft
+  // directly so it does not need to wait for this. Gating on
+  // `sessionsLoaded` rather than `sessions.length > 0` covers the
+  // legitimate empty-server case: a brand-new user with zero sessions
+  // must still get prior orphan drafts swept. Bounded by localStorage
+  // entry count; cheap.
   const sweptDraftsRef = useRef(false);
   useEffect(() => {
     if (sweptDraftsRef.current) return;
-    if (sessions.length === 0) return;
+    if (!sessionsLoaded) return;
     sweptDraftsRef.current = true;
     sweepOrphanDrafts(new Set(sessions.map((s) => s.id)));
-  }, [sessions]);
+  }, [sessionsLoaded, sessions]);
 
   const { groups, toggleRepoCollapsed } = useRepoGroups(
     workspaces,
@@ -246,13 +252,13 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
   const selectedFilePath = selectedFile?.path ?? null;
   const selectedRepoName = selectedFile?.repoName;
   const [diffCollapsed, setDiffCollapsed] = useState(() => {
-    const stored = localStorage.getItem(RIGHT_PANEL_COLLAPSED_KEY);
+    const stored = safeGetItem(RIGHT_PANEL_COLLAPSED_KEY);
     if (stored === "1") return true;
     if (stored === "0") return false;
     return window.innerWidth < 768;
   });
   useEffect(() => {
-    localStorage.setItem(RIGHT_PANEL_COLLAPSED_KEY, diffCollapsed ? "1" : "0");
+    safeSetItem(RIGHT_PANEL_COLLAPSED_KEY, diffCollapsed ? "1" : "0");
   }, [diffCollapsed]);
   const [showSessionWizard, setShowSessionWizard] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
@@ -662,6 +668,16 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
           readOnly={serverAbout?.read_only}
         />
       );
+    }
+
+    // Refresh on `/session/<id>` paints once with `sessions === []` before
+    // the first poll resolves. Without this guard the lookup misses, the
+    // dashboard fallback renders, and the cockpit/terminal view only
+    // reappears once the fetch lands. Hold the minimal pre-auth shell
+    // until the first fetch settles, then let the real fallback decide.
+    // See #1351.
+    if (activeSessionId && !sessionsLoaded) {
+      return <div className="h-dvh bg-surface-900 safe-area-inset" />;
     }
 
     if (!activeWorkspace || !activeSession) {

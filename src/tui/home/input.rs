@@ -15,11 +15,17 @@ use crate::tui::dialogs::{
     builtin_commands, CommandPaletteDialog, ConfirmDialog, DeleteDialogConfig, DialogResult,
     GroupDeleteOptionsDialog, HookTrustAction, HooksInstallDialog, InfoDialog, NewSessionData,
     NewSessionDialog, NoAgentsAction, PaletteAction, PaletteCommand, PaletteGroup,
-    ProfilePickerAction, ProjectsDialog, RenameDialog, RenameMode, SendMessageDialog,
-    UnifiedDeleteDialog,
+    ProfilePickerAction, ProjectsDialog, RenameDialog, RenameMode, RestartDialog,
+    SendMessageDialog, UnifiedDeleteDialog,
 };
 use crate::tui::diff::{DiffAction, DiffView};
 use crate::tui::settings::{SettingsAction, SettingsView};
+
+/// Maximum gap between two left-clicks on the same row that still
+/// counts as a double-click. 400ms matches the default on most desktop
+/// environments. Worth tuning if real-world feedback says it's too
+/// fast for trackpads or too slow on remote sessions.
+const DOUBLE_CLICK_THRESHOLD: std::time::Duration = std::time::Duration::from_millis(400);
 
 fn resolve_hook_install_agent(
     tool_name: &str,
@@ -150,9 +156,7 @@ impl HomeView {
                         self.settings_view = None;
                         self.confirm_dialog = None;
                         self.settings_close_confirm = false;
-                        let config = resolve_config_or_warn(
-                            self.active_profile.as_deref().unwrap_or("default"),
-                        );
+                        let config = resolve_config_or_warn(&self.config_profile());
                         let theme_name = if config.theme.name.is_empty() {
                             "default".to_string()
                         } else {
@@ -175,8 +179,7 @@ impl HomeView {
                     // Refresh config-dependent state in case settings changed
                     self.refresh_from_config();
                     // Reload theme from saved config
-                    let config =
-                        resolve_config_or_warn(self.active_profile.as_deref().unwrap_or("default"));
+                    let config = resolve_config_or_warn(&self.config_profile());
                     let theme_name = if config.theme.name.is_empty() {
                         "default".to_string()
                     } else {
@@ -569,6 +572,32 @@ impl HomeView {
             return None;
         }
 
+        if let Some(dialog) = &mut self.restart_dialog {
+            match dialog.handle_key(key) {
+                DialogResult::Continue => {}
+                DialogResult::Cancel => {
+                    self.restart_dialog = None;
+                }
+                DialogResult::Submit(data) => {
+                    self.restart_dialog = None;
+                    let profile = data.profile.as_deref();
+                    let tool = data.tool.as_deref();
+                    if let Err(e) = self.restart_selected_session(profile, tool) {
+                        // Surface the restart error to the user via the
+                        // InfoDialog rather than only the debug log; the
+                        // user explicitly initiated this action and needs
+                        // to know it failed.
+                        tracing::warn!("restart_selected_session failed: {}", e);
+                        self.info_dialog = Some(InfoDialog::new(
+                            "Restart Failed",
+                            &format!("Could not restart session: {e}"),
+                        ));
+                    }
+                }
+            }
+            return None;
+        }
+
         if let Some(dialog) = &mut self.projects_dialog {
             match dialog.handle_key(key) {
                 DialogResult::Continue => {}
@@ -800,15 +829,60 @@ impl HomeView {
                     tracing::error!("toggle_snooze_at_cursor failed: {}", e);
                 }
             }
+            // `f` / `F`: toggle favorite on the cursor's session. Within
+            // the Attention sort, favorited rows pin above non-favorited
+            // peers in the same status tier; a favorited Running stays in
+            // the Running bucket but bubbles above plain Running rows.
+            // Render layer (`render.rs`) adds bold + underline and a
+            // leading `* ` glyph. Favorite survives an unsnooze (positive
+            // care-more signal) but archive clears it (mutex in
+            // `Instance::archive()`).
+            KeyCode::Char('f') if !self.strict_hotkeys => {
+                if let Err(e) = self.toggle_favorite_at_cursor() {
+                    tracing::error!("toggle_favorite_at_cursor failed: {}", e);
+                }
+            }
+            KeyCode::Char('F') if self.strict_hotkeys => {
+                if let Err(e) = self.toggle_favorite_at_cursor() {
+                    tracing::error!("toggle_favorite_at_cursor failed: {}", e);
+                }
+            }
+            // `z` / `Z`: toggle archive on the cursor's session. Archive is
+            // the "park this, I'm done with it" sink. The row drops to tier
+            // 99 in the Attention sort, the spinner stops, and the agent
+            // pane is killed so a stale process can't keep claiming attention.
+            // Pressing it again on an archived row unarchives (no kill, the
+            // pane stays gone). Mnemonic: Zzz / archive box. Distinct from
+            // `h`/`H` snooze (temporary, auto wakes) and separate from `d`/`D`
+            // (destructive delete, unchanged).
+            KeyCode::Char('z') if !self.strict_hotkeys => {
+                if let Err(e) = self.toggle_archive_at_cursor() {
+                    tracing::error!("toggle_archive_at_cursor failed: {}", e);
+                }
+            }
+            KeyCode::Char('Z') if self.strict_hotkeys => {
+                if let Err(e) = self.toggle_archive_at_cursor() {
+                    tracing::error!("toggle_archive_at_cursor failed: {}", e);
+                }
+            }
             KeyCode::Char('?') => {
                 self.show_help = true;
+            }
+            KeyCode::Char('e') if !self.strict_hotkeys => {
+                self.open_restart_dialog();
+            }
+            KeyCode::Char('E') if self.strict_hotkeys => {
+                self.open_restart_dialog();
+            }
+            KeyCode::F(5) => {
+                self.open_restart_dialog();
             }
             KeyCode::Char('P') => {
                 self.show_profile_picker();
             }
             KeyCode::Char('p') if !self.strict_hotkeys => {
-                let profile = self.active_profile.as_deref().unwrap_or("default");
-                self.projects_dialog = Some(ProjectsDialog::new(profile));
+                let profile = self.config_profile();
+                self.projects_dialog = Some(ProjectsDialog::new(&profile));
             }
             KeyCode::Char('p')
                 if self.strict_hotkeys && key.modifiers.contains(KeyModifiers::CONTROL) =>
@@ -968,10 +1042,7 @@ impl HomeView {
                 } else {
                     let existing_groups: Vec<String> =
                         self.all_groups().iter().map(|g| g.path.clone()).collect();
-                    let current_profile = self
-                        .active_profile
-                        .clone()
-                        .unwrap_or_else(|| "default".to_string());
+                    let current_profile = self.config_profile();
                     let profiles =
                         list_profiles().unwrap_or_else(|_| vec![current_profile.clone()]);
                     self.new_dialog = Some(NewSessionDialog::new(
@@ -991,10 +1062,7 @@ impl HomeView {
                 } else {
                     let existing_groups: Vec<String> =
                         self.all_groups().iter().map(|g| g.path.clone()).collect();
-                    let current_profile = self
-                        .active_profile
-                        .clone()
-                        .unwrap_or_else(|| "default".to_string());
+                    let current_profile = self.config_profile();
                     let profiles =
                         list_profiles().unwrap_or_else(|_| vec![current_profile.clone()]);
                     self.new_dialog = Some(NewSessionDialog::new(
@@ -1058,8 +1126,7 @@ impl HomeView {
                             self.all_groups().iter().map(|g| g.path.clone()).collect();
                         let current_profile = self
                             .profile_for_cursor(self.cursor)
-                            .or_else(|| self.active_profile.clone())
-                            .unwrap_or_else(|| "default".to_string());
+                            .unwrap_or_else(|| self.config_profile());
                         let profiles =
                             list_profiles().unwrap_or_else(|_| vec![current_profile.clone()]);
                         let mut dialog = NewSessionDialog::new(
@@ -1116,8 +1183,7 @@ impl HomeView {
                             self.all_groups().iter().map(|g| g.path.clone()).collect();
                         let current_profile = self
                             .profile_for_cursor(self.cursor)
-                            .or_else(|| self.active_profile.clone())
-                            .unwrap_or_else(|| "default".to_string());
+                            .unwrap_or_else(|| self.config_profile());
                         let profiles =
                             list_profiles().unwrap_or_else(|_| vec![current_profile.clone()]);
                         let mut dialog = NewSessionDialog::new(
@@ -1142,10 +1208,7 @@ impl HomeView {
                     .as_ref()
                     .and_then(|id| self.get_instance(id))
                     .map(|inst| inst.project_path.clone());
-                match SettingsView::new(
-                    self.active_profile.as_deref().unwrap_or("default"),
-                    project_path,
-                ) {
+                match SettingsView::new(&self.config_profile(), project_path) {
                     Ok(view) => self.settings_view = Some(view),
                     Err(e) => {
                         tracing::error!("Failed to open settings: {}", e);
@@ -1162,10 +1225,7 @@ impl HomeView {
                     .as_ref()
                     .and_then(|id| self.get_instance(id))
                     .map(|inst| inst.project_path.clone());
-                match SettingsView::new(
-                    self.active_profile.as_deref().unwrap_or("default"),
-                    project_path,
-                ) {
+                match SettingsView::new(&self.config_profile(), project_path) {
                     Ok(view) => self.settings_view = Some(view),
                     Err(e) => {
                         tracing::error!(target: "tui.input", "Failed to open settings: {}", e);
@@ -1358,18 +1418,18 @@ impl HomeView {
                             project_path: Some(inst.project_path.clone()),
                         };
 
-                        let profile = self.active_profile.as_deref().unwrap_or("default");
+                        let profile = self.config_profile();
                         self.unified_delete_dialog = Some(UnifiedDeleteDialog::new(
                             inst.title.clone(),
                             config,
-                            profile,
+                            &profile,
                         ));
                     } else {
-                        let profile = self.active_profile.as_deref().unwrap_or("default");
+                        let profile = self.config_profile();
                         self.unified_delete_dialog = Some(UnifiedDeleteDialog::new(
                             "Unknown Session".to_string(),
                             DeleteDialogConfig::default(),
-                            profile,
+                            &profile,
                         ));
                     }
                 } else if let Some(group_path) = &self.selected_group {
@@ -1447,18 +1507,18 @@ impl HomeView {
                             project_path: Some(inst.project_path.clone()),
                         };
 
-                        let profile = self.active_profile.as_deref().unwrap_or("default");
+                        let profile = self.config_profile();
                         self.unified_delete_dialog = Some(UnifiedDeleteDialog::new(
                             inst.title.clone(),
                             config,
-                            profile,
+                            &profile,
                         ));
                     } else {
-                        let profile = self.active_profile.as_deref().unwrap_or("default");
+                        let profile = self.config_profile();
                         self.unified_delete_dialog = Some(UnifiedDeleteDialog::new(
                             "Unknown Session".to_string(),
                             DeleteDialogConfig::default(),
-                            profile,
+                            &profile,
                         ));
                     }
                 } else if let Some(group_path) = &self.selected_group {
@@ -1502,10 +1562,11 @@ impl HomeView {
                         if matches!(inst.status, Status::Deleting | Status::Creating) {
                             return None;
                         }
-                        let current_profile = self
-                            .active_profile
-                            .clone()
-                            .unwrap_or_else(|| "default".to_string());
+                        // Rename is anchored to the selected session, so the dialog
+                        // must open against that session's profile, not the
+                        // view-level active/config profile (which can differ in
+                        // all-profiles mode).
+                        let current_profile = inst.source_profile.clone();
                         let profiles =
                             list_profiles().unwrap_or_else(|_| vec![current_profile.clone()]);
                         let existing_groups: Vec<String> =
@@ -1530,8 +1591,7 @@ impl HomeView {
                     let current_profile = self
                         .selected_group_profile
                         .clone()
-                        .or_else(|| self.active_profile.clone())
-                        .unwrap_or_else(|| "default".to_string());
+                        .unwrap_or_else(|| self.config_profile());
                     let profiles =
                         list_profiles().unwrap_or_else(|_| vec![current_profile.clone()]);
                     let existing_groups: Vec<String> =
@@ -1554,10 +1614,9 @@ impl HomeView {
                         if matches!(inst.status, Status::Deleting | Status::Creating) {
                             return None;
                         }
-                        let current_profile = self
-                            .active_profile
-                            .clone()
-                            .unwrap_or_else(|| "default".to_string());
+                        // See the corresponding `r` handler above: rename targets
+                        // the selected session, so anchor on its source_profile.
+                        let current_profile = inst.source_profile.clone();
                         let profiles =
                             list_profiles().unwrap_or_else(|_| vec![current_profile.clone()]);
                         let existing_groups: Vec<String> =
@@ -1582,8 +1641,7 @@ impl HomeView {
                     let current_profile = self
                         .selected_group_profile
                         .clone()
-                        .or_else(|| self.active_profile.clone())
-                        .unwrap_or_else(|| "default".to_string());
+                        .unwrap_or_else(|| self.config_profile());
                     let profiles =
                         list_profiles().unwrap_or_else(|_| vec![current_profile.clone()]);
                     let existing_groups: Vec<String> =
@@ -1670,43 +1728,8 @@ impl HomeView {
                 self.update_selected();
             }
             KeyCode::Enter => {
-                if let Some(id) = &self.selected_session {
-                    if let Some(inst) = self.get_instance(id) {
-                        if matches!(inst.status, Status::Deleting | Status::Creating) {
-                            return None;
-                        }
-                        if inst.is_cockpit_mode() {
-                            #[cfg(feature = "serve")]
-                            {
-                                return Some(Action::OpenCockpit(id.clone()));
-                            }
-                            #[cfg(not(feature = "serve"))]
-                            {
-                                return Some(Action::SetTransientStatus(
-                                    "Cockpit session: rebuild with --features serve to attach"
-                                        .to_string(),
-                                ));
-                            }
-                        }
-                    }
-                    return match self.view_mode {
-                        ViewMode::Agent => Some(Action::AttachSession(id.clone())),
-                        ViewMode::Terminal => {
-                            let terminal_mode = if let Some(inst) = self.get_instance(id) {
-                                if inst.is_sandboxed() {
-                                    self.get_terminal_mode(id)
-                                } else {
-                                    TerminalMode::Host
-                                }
-                            } else {
-                                TerminalMode::Host
-                            };
-                            Some(Action::AttachTerminal(id.clone(), terminal_mode))
-                        }
-                        ViewMode::Tool(ref tool_name) => {
-                            Some(Action::AttachToolSession(id.clone(), tool_name.clone()))
-                        }
-                    };
+                if self.selected_session.is_some() {
+                    return self.activate_selected_session();
                 } else if let Some(Item::Group { path, .. }) = self.flat_items.get(self.cursor) {
                     let path = path.clone();
                     self.toggle_group_collapsed(&path);
@@ -1991,6 +2014,49 @@ impl HomeView {
         self.update_selected();
     }
 
+    /// Resolve the action that "activating" the currently-selected session
+    /// should produce (cockpit open, attach to tmux session, attach to a
+    /// tool session, etc.). Returns `None` for in-flight sessions
+    /// (`Creating`/`Deleting`) and when no session is selected. Shared
+    /// between the `Enter` keybind and double-click activation so the two
+    /// paths can't drift.
+    pub(super) fn activate_selected_session(&mut self) -> Option<Action> {
+        let id = self.selected_session.clone()?;
+        if let Some(inst) = self.get_instance(&id) {
+            if matches!(inst.status, Status::Deleting | Status::Creating) {
+                return None;
+            }
+            if inst.is_cockpit_mode() {
+                #[cfg(feature = "serve")]
+                {
+                    return Some(Action::OpenCockpit(id));
+                }
+                #[cfg(not(feature = "serve"))]
+                {
+                    return Some(Action::SetTransientStatus(
+                        "Cockpit session: rebuild with --features serve to attach".to_string(),
+                    ));
+                }
+            }
+        }
+        match self.view_mode {
+            ViewMode::Agent => Some(Action::AttachSession(id)),
+            ViewMode::Terminal => {
+                let terminal_mode = if let Some(inst) = self.get_instance(&id) {
+                    if inst.is_sandboxed() {
+                        self.get_terminal_mode(&id)
+                    } else {
+                        TerminalMode::Host
+                    }
+                } else {
+                    TerminalMode::Host
+                };
+                Some(Action::AttachTerminal(id, terminal_mode))
+            }
+            ViewMode::Tool(ref tool_name) => Some(Action::AttachToolSession(id, tool_name.clone())),
+        }
+    }
+
     pub(super) fn update_selected(&mut self) {
         if let Some(item) = self.flat_items.get(self.cursor) {
             let prev_session = self.selected_session.clone();
@@ -2075,9 +2141,9 @@ impl HomeView {
     /// Route a mouse-wheel-up at (col, row) to the pane under the cursor:
     /// diff view (if open) → diff scroll; list pane → list cursor up;
     /// preview pane → preview scroll. Returns `true` if the UI should
-    /// redraw. Position-aware so iOS-Mosh touch-scroll moves the LIST
-    /// when the user is touching the list pane (regardless of whether
-    /// a session is currently selected).
+    /// redraw. Scrolls do not cross pane boundaries: a wheel over the
+    /// preview never moves the list cursor, even when the preview is at
+    /// its scroll boundary or has no session selected.
     pub fn handle_scroll_up(&mut self, col: u16, row: u16) -> bool {
         const STEP: u16 = 3;
         if let Some(ref mut diff) = self.diff_view {
@@ -2094,10 +2160,8 @@ impl HomeView {
         if !self.hit_preview(col, row) {
             return false;
         }
-        // Wheel over preview with no session selected: fall through to list nav.
         if self.selected_session.is_none() {
-            self.move_cursor(-1);
-            return true;
+            return false;
         }
 
         let active_cache = match self.view_mode {
@@ -2129,12 +2193,160 @@ impl HomeView {
         let new_offset = self.preview_scroll_offset.saturating_add(STEP);
         let clamped = new_offset.min(real_max);
         if clamped == self.preview_scroll_offset {
-            // Preview already at top; fall through to list nav so the wheel isn't a no-op.
-            self.move_cursor(-1);
-            return true;
+            return false;
         }
         self.preview_scroll_offset = clamped;
         true
+    }
+
+    /// Map a (col, row) inside the list's inner content rect to a
+    /// `flat_items` index, or `None` for rows that don't resolve to a real
+    /// item (search bar, `[N more above/below]` indicator rows, empty list,
+    /// outside the inner rect, dialog open, diff view active). Shared by
+    /// `handle_click` and `hovered_index` so selection and hover use the
+    /// exact same math.
+    pub(super) fn resolve_row_to_index(&self, col: u16, row: u16) -> Option<usize> {
+        if self.diff_view.is_some() || self.has_dialog() {
+            return None;
+        }
+        let inner = self.list_inner_area;
+        if !inner.contains(Position::from((col, row))) {
+            return None;
+        }
+        if self.flat_items.is_empty() {
+            return None;
+        }
+        let visible_height = if self.search_active {
+            (inner.height as usize).saturating_sub(1)
+        } else {
+            inner.height as usize
+        };
+        if visible_height == 0 {
+            return None;
+        }
+        let row_in_inner = row.saturating_sub(inner.y) as usize;
+        if self.search_active && row_in_inner + 1 == inner.height as usize {
+            return None;
+        }
+
+        let scroll = crate::tui::components::scroll::calculate_scroll(
+            self.flat_items.len(),
+            self.cursor,
+            visible_height,
+        );
+        let row_offset = if scroll.has_more_above { 1 } else { 0 };
+        if row_in_inner < row_offset {
+            return None;
+        }
+        let item_row = row_in_inner - row_offset;
+        if item_row >= scroll.list_visible {
+            return None;
+        }
+        let abs_idx = scroll.scroll_offset + item_row;
+        if abs_idx >= self.flat_items.len() {
+            return None;
+        }
+        Some(abs_idx)
+    }
+
+    /// Currently hovered `flat_items` index, derived from the last mouse
+    /// position. `None` when the mouse is off the list or over a row that
+    /// doesn't resolve to a real item. Recomputed on every call so wheel
+    /// scrolls implicitly move the hover with the items under the cursor.
+    pub(super) fn hovered_index(&self) -> Option<usize> {
+        self.mouse_pos
+            .and_then(|(c, r)| self.resolve_row_to_index(c, r))
+    }
+
+    /// Route a left-click at (col, row) inside the session list. A single
+    /// click on a session row selects it (same effect as arrow-key
+    /// navigation); a single click on a group row toggles its collapsed
+    /// state; a second click on the same row within
+    /// `DOUBLE_CLICK_THRESHOLD` activates the session (the same Action
+    /// the `Enter` keybind would have produced). Returns the activation
+    /// `Action` for the caller to dispatch, or `None` for selection-only /
+    /// no-op clicks. The caller redraws unconditionally so the moved
+    /// cursor / toggled group always paints before the action executes.
+    /// Gated by `has_dialog()` (via `resolve_row_to_index`) so clicks
+    /// don't shift selection out from under an open modal.
+    pub fn handle_click(&mut self, col: u16, row: u16) -> Option<Action> {
+        self.handle_click_at(std::time::Instant::now(), col, row)
+    }
+
+    /// Same as `handle_click`, but the caller supplies `now`. Used by
+    /// unit tests to drive double-click detection deterministically
+    /// without relying on `thread::sleep`.
+    pub(super) fn handle_click_at(
+        &mut self,
+        now: std::time::Instant,
+        col: u16,
+        row: u16,
+    ) -> Option<Action> {
+        let abs_idx = self.resolve_row_to_index(col, row)?;
+
+        let is_double_click = matches!(
+            self.last_click,
+            Some((prev_time, _, prev_row))
+                if prev_row == row
+                    && now.duration_since(prev_time) <= DOUBLE_CLICK_THRESHOLD
+        );
+        self.last_click = Some((now, col, row));
+
+        let item = self.flat_items[abs_idx].clone();
+        if is_double_click {
+            // First click already selected the row (and toggled a group);
+            // the second click only activates a session. Re-toggling a
+            // group on the second click would undo the first toggle and
+            // flicker, so groups intentionally swallow the second click.
+            //
+            // We re-sync `cursor` to `abs_idx` before activating because
+            // anything between the two clicks (an arrow keypress, a
+            // status-poll-driven re-sort) can move the cursor away from
+            // the row the user is actually double-clicking. Without this,
+            // `activate_selected_session()` reads `selected_session` —
+            // which tracks `cursor`, not the click target — and we'd open
+            // the wrong session.
+            return match item {
+                Item::Session { .. } => {
+                    if self.cursor != abs_idx {
+                        self.cursor = abs_idx;
+                        self.update_selected();
+                    }
+                    self.activate_selected_session()
+                }
+                Item::Group { .. } => None,
+            };
+        }
+
+        match item {
+            Item::Group { path, .. } => {
+                self.toggle_group_collapsed(&path);
+            }
+            Item::Session { .. } => {
+                if self.cursor != abs_idx {
+                    self.cursor = abs_idx;
+                    self.update_selected();
+                }
+            }
+        }
+        None
+    }
+
+    /// Record the mouse position from a `MouseEventKind::Moved` event so
+    /// the list can render a hover highlight on the row under the cursor.
+    /// `mouse_pos` is cleared when the cursor leaves `list_inner_area`.
+    /// Returns `true` only when the resolved hovered item changes, so the
+    /// caller can skip a redraw on every pixel-level mouse twitch.
+    pub fn handle_hover(&mut self, col: u16, row: u16) -> bool {
+        let new_pos = if self.list_inner_area.contains(Position::from((col, row))) {
+            Some((col, row))
+        } else {
+            None
+        };
+        let prev_idx = self.hovered_index();
+        self.mouse_pos = new_pos;
+        let new_idx = self.hovered_index();
+        prev_idx != new_idx
     }
 
     /// Route a mouse-wheel-down at (col, row); see handle_scroll_up.
@@ -2154,15 +2366,11 @@ impl HomeView {
         if !self.hit_preview(col, row) {
             return false;
         }
-        // Wheel over preview with no session selected: fall through to list nav.
         if self.selected_session.is_none() {
-            self.move_cursor(1);
-            return true;
+            return false;
         }
         if self.preview_scroll_offset == 0 {
-            // Preview already at bottom; fall through to list nav so the wheel isn't a no-op.
-            self.move_cursor(1);
-            return true;
+            return false;
         }
         self.preview_scroll_offset = self.preview_scroll_offset.saturating_sub(STEP);
         true
@@ -2212,6 +2420,48 @@ impl HomeView {
             Some(buf) => buf.push_str(text),
             None => self.pending_paste = Some(text.to_string()),
         }
+    }
+
+    /// Open the restart dialog for the currently-selected session. The dialog
+    /// pre-fills profile + AI engine from the instance's current values, and on
+    /// submit restarts the session, optionally migrating to the picked profile
+    /// and/or swapping the AI engine. No-op if no session is selected or the
+    /// selected session is mid-transition.
+    fn open_restart_dialog(&mut self) {
+        // Match the new-session paths: bail with the no-agents modal if no
+        // tool is installed, instead of opening a picker with an empty
+        // tool list the user would have to submit blank.
+        if !self.available_tools.any_available() {
+            self.show_no_agents();
+            return;
+        }
+        let Some(id) = self.selected_session.clone() else {
+            return;
+        };
+        let Some(inst) = self.get_instance(&id) else {
+            return;
+        };
+        if matches!(inst.status, Status::Deleting | Status::Creating) {
+            return;
+        }
+        let current_title = inst.title.clone();
+        let current_profile = if inst.source_profile.is_empty() {
+            self.active_profile
+                .clone()
+                .unwrap_or_else(|| "default".to_string())
+        } else {
+            inst.source_profile.clone()
+        };
+        let current_tool = inst.tool.clone();
+        let profiles = list_profiles().unwrap_or_else(|_| vec![current_profile.clone()]);
+        let tools: Vec<String> = self.available_tools.available_list().to_vec();
+        self.restart_dialog = Some(RestartDialog::new(
+            &current_title,
+            &current_profile,
+            &current_tool,
+            profiles,
+            tools,
+        ));
     }
 
     /// Open the send-message dialog for the currently-selected running session.

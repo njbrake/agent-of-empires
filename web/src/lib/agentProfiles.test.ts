@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   DEFAULT_AGENT_PROFILE,
+  isClearAlias,
   resolveAgentProfile,
 } from "./agentProfiles";
 
@@ -70,5 +71,43 @@ describe("resolveAgentProfile", () => {
     expect(resolveAgentProfile("codex").clearAliases).toEqual(["/new"]);
     expect(resolveAgentProfile("opencode").clearAliases).toEqual(["/new"]);
     expect(resolveAgentProfile("gemini").clearAliases).toEqual([]);
+  });
+});
+
+describe("isClearAlias", () => {
+  const claude = ["/clear"];
+  const codex = ["/new"];
+
+  it("matches the exact alias", () => {
+    expect(isClearAlias("/clear", claude)).toBe(true);
+    expect(isClearAlias("/new", codex)).toBe(true);
+  });
+
+  it("tolerates surrounding whitespace", () => {
+    expect(isClearAlias("  /clear  ", claude)).toBe(true);
+    expect(isClearAlias("\n/clear\n", claude)).toBe(true);
+  });
+
+  it("matches an invocation with trailing args after a space", () => {
+    expect(isClearAlias("/clear --hard", claude)).toBe(true);
+    expect(isClearAlias("/new fresh session", codex)).toBe(true);
+  });
+
+  it("rejects partial matches and embedded occurrences", () => {
+    expect(isClearAlias("clear", claude)).toBe(false);
+    expect(isClearAlias("/cleart", claude)).toBe(false);
+    expect(isClearAlias("hello /clear world", claude)).toBe(false);
+    expect(isClearAlias("", claude)).toBe(false);
+    expect(isClearAlias("   ", claude)).toBe(false);
+  });
+
+  it("returns false when the alias list is empty (e.g. gemini)", () => {
+    expect(isClearAlias("/clear", [])).toBe(false);
+    expect(isClearAlias("/new", [])).toBe(false);
+  });
+
+  it("does not cross-match aliases between agents", () => {
+    expect(isClearAlias("/new", claude)).toBe(false);
+    expect(isClearAlias("/clear", codex)).toBe(false);
   });
 });

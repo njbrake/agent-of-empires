@@ -13,7 +13,7 @@
 // CockpitRuntime.tsx. We never let assistant-ui own the chat state; it
 // only renders what we feed it and surfaces user actions back.
 
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useLayoutEffect, useRef, useState } from "react";
 import {
   MessagePrimitive,
   ThreadPrimitive,
@@ -55,7 +55,11 @@ import {
   chooseVerb,
 } from "../../lib/cockpitRattle";
 import { useCockpitPrefs } from "../../lib/cockpitPrefs";
-import { AgentProfileProvider } from "../../lib/agentProfileContext";
+import {
+  AgentProfileProvider,
+  useAgentProfile,
+} from "../../lib/agentProfileContext";
+import { isClearAlias } from "../../lib/agentProfiles";
 import { useApprovalSound } from "../../hooks/useApprovalSound";
 import { useIsCoarsePointer } from "../../hooks/useIsCoarsePointer";
 import type {
@@ -343,6 +347,7 @@ function CockpitChrome({
             onRemove={removeQueuedPrompt}
             onEdit={editQueuedPrompt}
             onClear={clearQueue}
+            pendingResume={status !== "open" || cockpitWorkerState !== "running" || state.workerStopped || state.workerRestarting}
           />
 
           <RejectedPromptsStrip
@@ -1601,6 +1606,12 @@ interface QueuedPromptsStripProps {
   onRemove: (id: string) => void;
   onEdit: (id: string, text: string) => void;
   onClear: () => void;
+  /** True when the session is not in a state where the drain effect
+   *  can fire (WS closed, worker stopped, worker restarting, or the
+   *  worker is still cold-starting). Drives the heading copy so the
+   *  user can tell whether queued prompts fire on the next turn-end
+   *  or wait for the session to resume. See #1359. */
+  pendingResume: boolean;
 }
 
 /** Strip rendered above the composer listing prompts the user has
@@ -1685,11 +1696,12 @@ function RejectedPromptsStrip({
   );
 }
 
-function QueuedPromptsStrip({
+export function QueuedPromptsStrip({
   queued,
   onRemove,
   onEdit,
   onClear,
+  pendingResume,
 }: QueuedPromptsStripProps) {
   // Strip-level collapse: when the queue exceeds `visibleDefault` rows,
   // only the first N render until the user expands. State resets when
@@ -1700,6 +1712,7 @@ function QueuedPromptsStrip({
   // See #1232.
   const isMobile = useIsCoarsePointer();
   const [expanded, setExpanded] = useState(false);
+  const profile = useAgentProfile();
   if (queued.length === 0) return null;
   const layout = queuedStripLayout({
     queuedCount: queued.length,
@@ -1707,13 +1720,14 @@ function QueuedPromptsStrip({
     expanded,
   });
   const visible = queued.slice(0, layout.visibleCount);
+  const aliases = profile.clearAliases;
   return (
     <div className="border-t border-surface-800 bg-surface-900/60 px-4 py-2">
       <div className="mx-auto max-w-3xl xl:max-w-4xl 2xl:max-w-5xl">
         <div className="flex items-center justify-between pb-1.5 text-[11px] uppercase tracking-wider text-text-dim">
           <span className="inline-flex items-center gap-1">
             <Clock className="h-3 w-3" />
-            Queued ({queued.length})
+            {pendingResume ? `Pending until session resumes (${queued.length})` : `Queued (${queued.length})`}
           </span>
           {queued.length > 1 && (
             <button
@@ -1726,14 +1740,38 @@ function QueuedPromptsStrip({
           )}
         </div>
         <ul className="flex flex-col gap-1.5">
-          {visible.map((q) => (
-            <QueuedPromptRow
-              key={q.id}
-              prompt={q}
-              onRemove={() => onRemove(q.id)}
-              onEdit={(text) => onEdit(q.id, text)}
-            />
-          ))}
+          {visible.map((q, i) => {
+            // Insert a clear-boundary divider between this row and the
+            // previous when either side is a clear-command alias. Signals
+            // that the drain effect will fire these as separate POSTs
+            // rather than gluing them into one combined prompt (#1356).
+            const prev = i > 0 ? visible[i - 1] : undefined;
+            const showDivider =
+              aliases.length > 0 &&
+              prev !== undefined &&
+              (isClearAlias(prev.text, aliases) ||
+                isClearAlias(q.text, aliases));
+            return (
+              <Fragment key={q.id}>
+                {showDivider && (
+                  <li
+                    aria-hidden="true"
+                    data-testid="queued-clear-boundary"
+                    className="flex items-center gap-2 px-1 text-[10px] uppercase tracking-wider text-amber-300/60"
+                  >
+                    <span className="h-px flex-1 bg-amber-500/20" />
+                    fires separately
+                    <span className="h-px flex-1 bg-amber-500/20" />
+                  </li>
+                )}
+                <QueuedPromptRow
+                  prompt={q}
+                  onRemove={() => onRemove(q.id)}
+                  onEdit={(text) => onEdit(q.id, text)}
+                />
+              </Fragment>
+            );
+          })}
         </ul>
         {layout.toggleLabel && (
           <button

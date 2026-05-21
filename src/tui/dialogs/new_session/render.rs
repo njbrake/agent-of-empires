@@ -8,7 +8,8 @@ use rattles::presets::prelude as spinners;
 
 use super::{NewSessionDialog, FIELD_HELP, HELP_DIALOG_WIDTH};
 use crate::tui::components::{
-    render_text_field, render_text_field_with_ghost, set_prefixed_input_cursor_position,
+    profile_cycler_spans, render_text_field, render_text_field_with_ghost,
+    set_prefixed_input_cursor_position, tool_cycler_spans,
 };
 use crate::tui::styles::Theme;
 
@@ -177,79 +178,38 @@ impl NewSessionDialog {
         );
         ci += 1;
 
-        // Tool (always shown, interactive or read-only)
+        // Tool (always shown, interactive or read-only). The cycler itself is
+        // shared with the Restart dialog via `tool_cycler_spans`; the New
+        // dialog appends its own config summary and Ctrl+P hint afterwards.
         let tool_field = base + 2;
         let is_tool_focused = has_tool_selection && self.focused_field == tool_field;
-        if has_tool_selection {
-            let label_style = if is_tool_focused {
-                Style::default().fg(theme.accent).underlined()
-            } else {
-                Style::default().fg(theme.text)
-            };
-
-            let mut tool_spans = vec![Span::styled("Tool:", label_style), Span::raw(" ")];
-
-            let selected_name = &self.available_tools[self.tool_index];
-            let total = self.available_tools.len();
-            let dimmed = Style::default().fg(theme.dimmed);
-            let accent = Style::default().fg(theme.accent).bold();
-
-            if is_tool_focused {
-                tool_spans.push(Span::styled("← ", dimmed));
-            }
-            tool_spans.push(Span::styled("● ", accent));
-            tool_spans.push(Span::styled(selected_name.as_str(), accent));
+        let mut tool_spans = tool_cycler_spans(
+            "Tool:",
+            self.available_tools[self.tool_index].as_str(),
+            self.tool_index,
+            self.available_tools.len(),
+            is_tool_focused,
+            theme,
+        );
+        let has_config =
+            !self.extra_args.value().is_empty() || !self.command_override.value().is_empty();
+        if has_config {
             tool_spans.push(Span::styled(
-                format!("  [{}/{}]", self.tool_index + 1, total),
-                dimmed,
+                "  (configured)",
+                Style::default().fg(theme.dimmed),
             ));
-            if is_tool_focused {
-                tool_spans.push(Span::styled("  →", dimmed));
-            }
-
-            // Show Ctrl+P hint and summary of tool config
-            let has_config =
-                !self.extra_args.value().is_empty() || !self.command_override.value().is_empty();
-            if has_config {
-                tool_spans.push(Span::styled(
-                    "  (configured)",
-                    Style::default().fg(theme.dimmed),
-                ));
-            }
-            if is_tool_focused {
-                tool_spans.push(Span::styled(
-                    if has_config {
-                        "  Ctrl+P: edit"
-                    } else {
-                        "  (Ctrl+P to configure)"
-                    },
-                    Style::default().fg(theme.dimmed),
-                ));
-            }
-
-            frame.render_widget(Paragraph::new(Line::from(tool_spans)), chunks[ci]);
-        } else {
-            let tool_style = Style::default().fg(theme.text);
-            let mut tool_spans = vec![
-                Span::styled("Tool:", tool_style),
-                Span::raw(" "),
-                Span::styled(
-                    self.available_tools[0].as_str(),
-                    Style::default().fg(theme.accent),
-                ),
-            ];
-
-            let has_config =
-                !self.extra_args.value().is_empty() || !self.command_override.value().is_empty();
-            if has_config {
-                tool_spans.push(Span::styled(
-                    "  (configured)",
-                    Style::default().fg(theme.dimmed),
-                ));
-            }
-
-            frame.render_widget(Paragraph::new(Line::from(tool_spans)), chunks[ci]);
         }
+        if is_tool_focused {
+            tool_spans.push(Span::styled(
+                if has_config {
+                    "  Ctrl+P: edit"
+                } else {
+                    "  (Ctrl+P to configure)"
+                },
+                Style::default().fg(theme.dimmed),
+            ));
+        }
+        frame.render_widget(Paragraph::new(Line::from(tool_spans)), chunks[ci]);
         ci += 1;
 
         // YOLO Mode checkbox (hidden for AlwaysYolo agents like pi)
@@ -499,29 +459,13 @@ impl NewSessionDialog {
     }
 
     fn render_profile_field(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
-        let is_focused = self.focused_field == 0;
-        let label_style = if is_focused {
-            Style::default().fg(theme.accent).underlined()
-        } else {
-            Style::default().fg(theme.text)
-        };
-
-        let selected = self.selected_profile();
-        let profile_style = if is_focused {
-            Style::default().fg(theme.accent).bold()
-        } else {
-            Style::default().fg(theme.accent)
-        };
-
-        let mut spans = vec![Span::styled("Profile:", label_style), Span::raw(" ")];
-
-        if self.available_profiles.len() > 1 {
-            spans.push(Span::styled("< ", Style::default().fg(theme.dimmed)));
-            spans.push(Span::styled(selected, profile_style));
-            spans.push(Span::styled(" >", Style::default().fg(theme.dimmed)));
-        } else {
-            spans.push(Span::styled(selected, profile_style));
-        }
+        let spans = profile_cycler_spans(
+            "Profile:",
+            self.selected_profile(),
+            self.available_profiles.len(),
+            self.focused_field == 0,
+            theme,
+        );
 
         let mut lines = vec![Line::from(spans)];
         // Show the selected profile's description on the line below when one

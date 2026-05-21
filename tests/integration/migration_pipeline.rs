@@ -4,8 +4,7 @@ use anyhow::Result;
 use serial_test::serial;
 use std::fs;
 
-mod common;
-use common::setup_temp_home;
+use crate::common::setup_temp_home;
 
 fn get_schema_version_path() -> Result<std::path::PathBuf> {
     let app_dir = agent_of_empires::session::get_app_dir()?;

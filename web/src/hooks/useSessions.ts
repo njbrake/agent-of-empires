@@ -15,6 +15,12 @@ export function useSessions() {
   const [sessions, setSessions] = useState<SessionResponse[]>([]);
   const [workspaceOrdering, setWorkspaceOrdering] = useState<string[]>([]);
   const [error, setError] = useState(false);
+  // True once the first fetch attempt resolves (success or failure). Lets
+  // callers distinguish "still loading" from "list confirmed empty / no
+  // such session," which matters for refresh on `/session/<id>` where an
+  // empty `sessions` array during initial paint otherwise indistinguishably
+  // collapses to the dashboard fallback. See #1351.
+  const [loaded, setLoaded] = useState(false);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastLocalOrderingAtRef = useRef<number>(0);
 
@@ -45,6 +51,7 @@ export function useSessions() {
       setError(true);
       setServerDown(true);
     }
+    setLoaded(true);
   }, []);
 
   const refresh = useCallback(async () => {
@@ -72,6 +79,7 @@ export function useSessions() {
     setWorkspaceOrdering,
     markLocalOrderingUpdate,
     error,
+    loaded,
     refresh,
     injectSession,
     setSessionStatus,

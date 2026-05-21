@@ -8,6 +8,7 @@ import { SwitchSubstrateAction } from "./cockpit/SwitchSubstrateAction";
 import { ViewportFullscreenFab } from "./ViewportFullscreenFab";
 import { ensureSession } from "../lib/api";
 import { ACP_CAPABLE_TOOLS } from "../lib/acpCapableTools";
+import { safeSetItem } from "../lib/safeStorage";
 import type { SessionResponse } from "../lib/types";
 import {
   FOCUS_TERMINAL_EVENT,
@@ -190,11 +191,7 @@ export function TerminalView({ session, cockpitMasterEnabled = false }: Props) {
     if (!showScrollHint) return;
     const markSeen = () => {
       setHintDismissed(true);
-      try {
-        localStorage.setItem(SCROLL_HINT_SEEN_KEY, "1");
-      } catch {
-        // ignore
-      }
+      safeSetItem(SCROLL_HINT_SEEN_KEY, "1");
     };
     const t = setTimeout(markSeen, SCROLL_HINT_TIMEOUT_MS);
     const c = containerRef.current;

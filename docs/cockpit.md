@@ -160,8 +160,8 @@ node_path = ""
 show_tool_durations = true  # per-tool elapsed-time label in the web UI
 queue_drain_mode = "combined"  # how the composer drains client-side queued prompts: "combined" | "serial" (#1031)
 force_end_turn_threshold_secs = 30  # seconds of streaming silence before the spinner offers a "Force end turn" button (#1100)
-silent_orphan_grace_secs = 60  # daemon-side watchdog grace when the adapter stops talking with no in-flight tool; 0 disables (#1240)
-silent_orphan_fast_grace_secs = 20  # accelerated grace used once a cost-populated UsageUpdate has arrived for the current prompt (#1240)
+silent_orphan_grace_secs = 120  # daemon-side watchdog grace when the adapter stops talking with no in-flight tool; 0 disables (#1240); bumped from 60 in #1360 for async-agent flows; nonzero values below 120 clamp up at runtime
+silent_orphan_fast_grace_secs = 20  # accelerated grace used once a cost-populated UsageUpdate has arrived for the current prompt (#1240); ignored while an async-agent wait is active (#1360)
 ```
 
 `max_concurrent_resumes` bounds how many cockpit workers the reconciler
@@ -287,6 +287,37 @@ An iPad with a Bluetooth keyboard (or any device that reports both
 `(pointer: coarse)` and `(any-pointer: fine)` to the browser) keeps
 the desktop Enter-to-send convention so hardware-keyboard typing
 feels natural. See #1129.
+
+### Queued prompts (mid-turn + inactive session)
+
+The web composer keeps your messages around even when the session
+can't accept them yet. Two cases:
+
+1. **Mid-turn follow-up.** While the agent is producing the current
+   response, the Send button switches to a paper-plane with a small
+   pending-count badge. Click (or press Enter) and your text lands in
+   the **Queued (N)** strip above the composer. As soon as the agent
+   reports `Stopped`, the cockpit drains the queue per the
+   `cockpit.queue_drain_mode` setting (combined, the default, sends
+   every parked entry as one prompt; serial fires them one at a time).
+   See #1031 for the original feature.
+
+2. **Inactive session.** If the WebSocket is mid-reconnect, the worker
+   is stopped (`user_stopped`), or the worker is restarting
+   (`restart_pending`, `agent_unresponsive`, `prompt_orphaned`), the
+   composer still accepts submissions. The tooltip swaps to
+   `Queue message until session resumes`, the strip heading changes to
+   `Pending until session resumes (N)`, and the parked entry stays
+   editable. The moment the WS reopens AND the worker reaches
+   `running` AND the session-level `Stopped` flag clears (an
+   `AcpSessionAssigned` event), the same drain effect fires the
+   queue. See #1359.
+
+Queued entries persist in the per-origin localStorage snapshot at
+`aoe:cockpit-state:v1:<sid>`, so a page reload (and closing then
+reopening the tab on the same origin) keeps them across the reconnect
+window. Server-side durability is not currently implemented; clearing
+site data wipes the queue.
 
 ### Cross-machine attach
 
@@ -728,6 +759,28 @@ Query init and does not rotate it when conversation context is reset,
 so the cached list stays authoritative for the lifetime of the
 cockpit's underlying agent process. See #1128.
 
+A `/clear` queued mid-turn (or any agent's clear alias, e.g. codex /
+opencode `/new`) is honoured as a standalone POST when the turn ends,
+even under `combined` drain mode. The drain effect splits the queued
+prompts at each clear-command boundary, so an ordering like
+`foo`, `/clear`, `bar` fires as three separate POSTs (`foo`, then
+`/clear`, then `bar`) instead of one multi-paragraph prompt that would
+otherwise glue `/clear` past the server's head-anchored detection. The
+queued-prompt strip shows an amber `fires separately` divider between
+rows that will land in different sub-batches. See #1356.
+
+The session cost figure in the composer footer reads "since the most
+recent `/clear` (or `/compact`)" rather than session-lifetime
+cumulative. `claude-agent-acp` keeps reporting its cumulative cost
+across the ACP session's whole lifetime (the adapter does not rotate
+the ACP session id on `/clear`), so the cockpit captures the
+cumulative at each boundary and subtracts it from incoming
+`UsageUpdate` frames. Switching backends (`AgentSwitched`) or starting
+a fresh ACP session (`SessionContextReset`) clears the baseline, since
+the new backend reports its own cumulative starting at zero. The
+`used` / context-window figures stay raw because the adapter already
+reflects the post-boundary context size on its side. See #1354.
+
 ### "Force end turn" button under the spinner
 
 If the agent finished a turn but the cockpit's working spinner is
@@ -771,7 +824,7 @@ The detector fires only when ALL hold for the current prompt:
 - At least one progress notification has already arrived for this
   prompt (avoids false-firing on a slow first chunk).
 - No further progress notification has arrived for
-  `silent_orphan_grace_secs` (default 60), reduced to
+  `silent_orphan_grace_secs` (default 120), reduced to
   `silent_orphan_fast_grace_secs` (default 20) for the rest of the
   prompt once a cost-populated `UsageUpdate` has arrived. The
   accelerated path lowers MTTR on the specific claude-agent-acp
@@ -782,9 +835,29 @@ rate limit, usage updates without cost) explicitly do NOT reset the
 timer, so an adapter that emits periodic ambient state after the
 final transcript event still trips the watchdog.
 
+**Async-agent extension (#1360):** when the Claude SDK launches a
+sub-agent in async mode via the `Agent` tool (SuperPowers-style
+fan-out, `isAsync: true`), the sub-agent runs INSIDE the claude binary
+with no further ACP-layer signaling, so the daemon cannot observe
+progress for the entire wait window. The watchdog detects this from
+the completion text `Async agent launched successfully` on the
+launch's `ToolCallUpdate`, flips a sticky `async_agent_running` flag
+for the rest of the prompt, and promotes the effective grace to at
+least 30 minutes; the async branch also takes precedence over the
+cost-seen fast path (a cost-populated UsageUpdate mid-wait could be
+intermediate billing telemetry rather than turn termination). The
+grace stays finite by design so a real adapter wedge during an async
+wait still recovers, just slower. This is a bandaid until upstream
+`agentclientprotocol/claude-agent-acp#336` forwards the SDK's
+`task_notification` and `task_started` system messages as proper ACP
+SessionUpdates.
+
 Set `cockpit.silent_orphan_grace_secs = 0` to disable. Both knobs are
 editable per profile in the TUI Settings (`Cockpit` category) and in
-the web dashboard's Settings tab under `Cockpit`.
+the web dashboard's Settings tab under `Cockpit`. Nonzero values
+below 120 are clamped up to 120 at runtime so a typo cannot drop the
+watchdog into a tight-loop false-positive regime; debug builds honour
+`AOE_SILENT_ORPHAN_GRACE_MS` to keep test cadences sub-second.
 
 In debug builds, set `AOE_COCKPIT_SIMULATE_ORPHAN_NEXT_PROMPT=1`
 before sending a cockpit prompt to manually reproduce the wedge: the

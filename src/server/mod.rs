@@ -1299,8 +1299,13 @@ async fn http_request_span(
 /// Content-Security-Policy for the dashboard.
 ///
 /// - `default-src 'self'`: deny everything we don't explicitly allow.
-/// - `script-src 'self'`: scripts are bundled by Vite from the same
-///   origin; no inline scripts, no `eval`, no WASM.
+/// - `script-src 'self' 'wasm-unsafe-eval'`: scripts are bundled by
+///   Vite from the same origin; no inline scripts, no `eval`. The
+///   `'wasm-unsafe-eval'` source is the CSP3 opt-in for WebAssembly
+///   compilation; Shiki's Oniguruma regex engine ships as WASM, so
+///   the diff syntax highlighter falls over without it (PR #1275
+///   dropped this when wterm was replaced with xterm.js on the
+///   incorrect premise that nothing else still needed WASM).
 /// - `style-src 'self' 'unsafe-inline'`: React writes to element.style at
 ///   runtime (terminal font-size updates) and Tailwind v4 emits inline
 ///   `<style>` blocks in dev. Blocking inline styles breaks xterm.js's
@@ -1315,7 +1320,7 @@ async fn http_request_span(
 /// - `base-uri 'self'`, `form-action 'self'`, `object-src 'none'`: tighten
 ///   the usual attack surfaces on injection bugs.
 const CSP: &str = "default-src 'self'; \
-    script-src 'self'; \
+    script-src 'self' 'wasm-unsafe-eval'; \
     style-src 'self' 'unsafe-inline'; \
     img-src 'self' data: https://github.com https://avatars.githubusercontent.com; \
     font-src 'self'; \
@@ -1548,17 +1553,6 @@ fn load_all_instances() -> anyhow::Result<Vec<Instance>> {
             if let Ok(mut instances) = storage.load() {
                 for inst in &mut instances {
                     inst.source_profile = profile.clone();
-                }
-                all.extend(instances);
-            }
-        }
-    }
-    // Also load from the default profile if it wasn't in the list
-    if !profiles.iter().any(|p| p == "default") {
-        if let Ok(storage) = Storage::new("default") {
-            if let Ok(mut instances) = storage.load() {
-                for inst in &mut instances {
-                    inst.source_profile = "default".to_string();
                 }
                 all.extend(instances);
             }
@@ -2609,7 +2603,7 @@ mod tests {
         // accidentally drops one fails loudly.
         for needle in [
             "default-src 'self'",
-            "script-src 'self'",
+            "script-src 'self' 'wasm-unsafe-eval'",
             "img-src 'self' data: https://github.com https://avatars.githubusercontent.com",
             "connect-src 'self' ws: wss:",
             "frame-ancestors 'none'",

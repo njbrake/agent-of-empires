@@ -22,12 +22,14 @@ export interface ResolvedTheme {
   syntax: { shikiTheme: string };
 }
 
+import { safeGetItem, safeSetItem } from "./safeStorage";
+
 const STORAGE_KEY = "aoe-resolved-theme";
 
 export function readCachedResolvedTheme(): ResolvedTheme | null {
+  const raw = safeGetItem(STORAGE_KEY);
+  if (!raw) return null;
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return null;
     return JSON.parse(raw) as ResolvedTheme;
   } catch {
     return null;
@@ -35,11 +37,7 @@ export function readCachedResolvedTheme(): ResolvedTheme | null {
 }
 
 function writeCachedResolvedTheme(theme: ResolvedTheme): void {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(theme));
-  } catch {
-    // Quota / private mode; safe to ignore.
-  }
+  safeSetItem(STORAGE_KEY, JSON.stringify(theme));
 }
 
 // Apply the resolved theme to the document root. Uses setProperty

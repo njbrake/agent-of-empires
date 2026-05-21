@@ -12,6 +12,7 @@ import {
   listSessions,
   seedSessionViaAoeAdd,
 } from "../helpers/aoeServe";
+import { waitForCockpitReady } from "../helpers/cockpit";
 
 base("cockpit spawn + prompt round-trip emits an agent_message_chunk", async ({}, testInfo) => {
   const serve = await spawnAoeServe({
@@ -37,10 +38,11 @@ base("cockpit spawn + prompt round-trip emits an agent_message_chunk", async ({}
       { method: "POST" },
     );
     expect(enableRes.ok).toBeTruthy();
-    // Wait for the tokio::spawn'd supervisor to come up before prompting.
-    // The ACP handshake (initialize + session/new) needs to complete
-    // before prompts route to the fake agent. 2s is conservative.
-    await new Promise((r) => setTimeout(r, 2_000));
+    // Wait for the tokio::spawn'd supervisor to finish its ACP handshake
+    // (initialize + session/new) before prompting, by polling replay for
+    // any frame. The previous `setTimeout(2_000)` race proved tight under
+    // CI load.
+    await waitForCockpitReady(serve.baseUrl, sessionId);
 
     const promptRes = await fetch(
       `${serve.baseUrl}/api/sessions/${sessionId}/cockpit/prompt`,
