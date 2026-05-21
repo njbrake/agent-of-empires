@@ -2534,6 +2534,84 @@ extra_volumes = ["/host/data:/container/data:ro"]
         );
     }
 
+    /// Regression: when project_path is a sibling worktree, `.agent-of-empires/config.toml`
+    /// lives in the main repo, not the worktree. `build_container_config` must
+    /// resolve repo config from the main repo path so extra_volumes still mount.
+    #[test]
+    #[serial_test::serial]
+    fn test_build_container_config_sibling_worktree_loads_main_repo_extra_volumes() {
+        let temp_home = TempDir::new().unwrap();
+        std::env::set_var("HOME", temp_home.path());
+        #[cfg(target_os = "linux")]
+        std::env::set_var("XDG_CONFIG_HOME", temp_home.path().join(".config"));
+
+        // Main repo with repo config under .agent-of-empires/
+        let parent = TempDir::new().unwrap();
+        let main_repo = parent.path().join("main");
+        fs::create_dir_all(&main_repo).unwrap();
+        let repo = git2::Repository::init(&main_repo).unwrap();
+        let sig = git2::Signature::now("Test", "test@example.com").unwrap();
+        let tree_id = repo.index().unwrap().write_tree().unwrap();
+        let tree = repo.find_tree(tree_id).unwrap();
+        repo.commit(Some("HEAD"), &sig, &sig, "Initial", &tree, &[])
+            .unwrap();
+
+        let config_dir = main_repo.join(".agent-of-empires");
+        fs::create_dir_all(&config_dir).unwrap();
+        fs::write(
+            config_dir.join("config.toml"),
+            r#"
+[sandbox]
+extra_volumes = ["/host/screenshots:/root/screenshots"]
+"#,
+        )
+        .unwrap();
+
+        // Sibling worktree under <parent>/worktrees/feat
+        let worktree_path = parent.path().join("worktrees").join("feat");
+        fs::create_dir_all(worktree_path.parent().unwrap()).unwrap();
+        let out = std::process::Command::new("git")
+            .args(["worktree", "add", worktree_path.to_str().unwrap(), "HEAD"])
+            .current_dir(&main_repo)
+            .output()
+            .expect("git worktree add");
+        if !out.status.success() {
+            // git not available or worktree add failed; skip.
+            return;
+        }
+
+        let sandbox_info = super::super::instance::SandboxInfo {
+            enabled: true,
+            container_id: None,
+            image: "test:latest".to_string(),
+            container_name: "test-container".to_string(),
+            extra_env: None,
+            custom_instruction: None,
+        };
+
+        let config = build_container_config(
+            worktree_path.to_str().unwrap(),
+            &sandbox_info,
+            ContainerAgentSelection::new("claude", None),
+            false,
+            "test-instance-id",
+            None,
+            "",
+        )
+        .unwrap();
+
+        let volume_pairs: Vec<(&str, &str)> = config
+            .volumes
+            .iter()
+            .map(|v| (v.host_path.as_str(), v.container_path.as_str()))
+            .collect();
+        assert!(
+            volume_pairs.contains(&("/host/screenshots", "/root/screenshots")),
+            "extra_volumes from main-repo config should mount in sibling worktree session, got: {:?}",
+            volume_pairs
+        );
+    }
+
     #[test]
     #[serial_test::serial]
     fn test_build_container_config_installs_codex_hooks_files() {

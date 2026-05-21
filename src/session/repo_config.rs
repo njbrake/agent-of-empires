@@ -276,11 +276,28 @@ pub fn profile_to_repo_config(profile: &ProfileConfig) -> RepoConfig {
     }
 }
 
+/// For worktrees, `.agent-of-empires/config.toml` lives in the main repo, not
+/// the worktree dir. Resolve the main repo path so repo config follows the
+/// session regardless of which checkout it was created from.
+///
+/// Only attempts the lookup when `project_path` itself has a `.git` entry,
+/// matching the guard in `compute_volume_paths` (avoids `Repository::discover`
+/// walking up to an unrelated ancestor repo, e.g. a dotfile-managed `$HOME`).
+fn repo_config_source_path(project_path: &Path) -> PathBuf {
+    if project_path.join(".git").exists() {
+        if let Ok(main_repo) = crate::git::GitWorktree::find_main_repo(project_path) {
+            return main_repo;
+        }
+    }
+    project_path.to_path_buf()
+}
+
 /// Resolve config with repo overrides: global -> profile -> repo.
 pub fn resolve_config_with_repo(profile: &str, project_path: &Path) -> Result<Config> {
     let config = super::profile_config::resolve_config(profile)?;
+    let config_path = repo_config_source_path(project_path);
 
-    match load_repo_config(project_path)? {
+    match load_repo_config(&config_path)? {
         Some(repo_config) => Ok(merge_repo_config(config, &repo_config)),
         None => Ok(config),
     }
@@ -292,13 +309,14 @@ pub fn resolve_config_with_repo(profile: &str, project_path: &Path) -> Result<Co
 /// and a malformed profile config degrades to defaults.
 pub fn resolve_config_with_repo_or_warn(profile: &str, project_path: &Path) -> Config {
     let base = super::profile_config::resolve_config_or_warn(profile);
-    match load_repo_config(project_path) {
+    let config_path = repo_config_source_path(project_path);
+    match load_repo_config(&config_path) {
         Ok(Some(repo_config)) => merge_repo_config(base, &repo_config),
         Ok(None) => base,
         Err(e) => {
             tracing::warn!(target: "session.store",
                 "Failed to load repo config at '{}', falling back to profile config: {e}",
-                project_path.display()
+                config_path.display()
             );
             base
         }
@@ -454,8 +472,12 @@ pub enum HookTrustStatus {
 
 /// Check hook trust status for a project path.
 /// Loads the repo config, checks for hooks, and validates trust.
+///
+/// `project_path` may be a worktree path; the repo config and trust entry
+/// live with the main repo, so resolve that before lookup.
 pub fn check_hook_trust(project_path: &Path) -> Result<HookTrustStatus> {
-    let normalized = normalize_path(project_path);
+    let config_path = repo_config_source_path(project_path);
+    let normalized = normalize_path(&config_path);
     let repo_config = match load_repo_config(Path::new(&normalized))? {
         Some(rc) => rc,
         None => return Ok(HookTrustStatus::NoHooks),
