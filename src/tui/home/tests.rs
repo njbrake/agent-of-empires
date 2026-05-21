@@ -2151,6 +2151,42 @@ fn test_filtered_view_omits_per_row_profile_tag() {
     }
 }
 
+/// Legacy `Instance::new` left `source_profile` empty before the per-profile
+/// plumbing landed. The render branch must skip the tag entirely in that
+/// case rather than emit a literal `  []`.
+#[test]
+#[serial]
+fn test_all_profiles_view_skips_tag_for_empty_source_profile() {
+    let temp = TempDir::new().unwrap();
+    setup_test_home(&temp);
+
+    let storage = Storage::new("legacy").unwrap();
+    // Build an instance the way legacy callers did, with an empty
+    // source_profile. The storage profile is "legacy" but the field on
+    // the Instance itself is blank.
+    let mut inst = Instance::new("Legacy1", "/tmp/legacy");
+    inst.source_profile = String::new();
+    let instances = vec![inst];
+    let group_tree = GroupTree::new_with_groups(&instances, &[]);
+    storage.commit(&instances, &group_tree).unwrap();
+
+    let tools = AvailableTools::with_tools(&["claude"]);
+    let mut view = HomeView::new(None, tools).unwrap();
+    view.group_by = crate::session::config::GroupByMode::Manual;
+    view.flat_items = view.build_flat_items();
+    view.update_selected();
+
+    for item in &view.flat_items {
+        if let Item::Session { .. } = item {
+            let text = rendered_row_text(&view, item);
+            assert!(
+                !text.contains("[]"),
+                "row with empty source_profile must not render a literal []: {text:?}"
+            );
+        }
+    }
+}
+
 #[test]
 #[serial]
 fn test_create_session_in_all_mode_is_findable() {

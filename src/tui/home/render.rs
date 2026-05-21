@@ -924,11 +924,18 @@ impl HomeView {
                 // profile in the title, so the per-row tag would be redundant
                 // there and is omitted. Counted into `used_width` below so the
                 // activity column still right-aligns past the tag.
+                //
+                // Empty `source_profile` (legacy callers that built an
+                // Instance before profile plumbing landed) skips the tag
+                // rather than rendering a literal `  []`.
                 if self.active_profile.is_none() {
-                    line_spans.push(Span::styled(
-                        format!("  [{}]", profile_short_code(&inst.source_profile)),
-                        Style::default().fg(theme.dimmed),
-                    ));
+                    let code = profile_short_code(&inst.source_profile);
+                    if !code.is_empty() {
+                        line_spans.push(Span::styled(
+                            format!("  [{}]", code),
+                            Style::default().fg(theme.dimmed),
+                        ));
+                    }
                 }
 
                 // Right edge of the row: optional terminal-mode badge, and
