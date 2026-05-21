@@ -27,11 +27,11 @@ import {
 } from "../lib/safeStorage";
 ```
 
-- `safeSetItem(key, value): boolean` — returns `true` on success, `false`
+- `safeSetItem(key, value): boolean`, returns `true` on success, `false`
   on any storage throw (quota, security, disabled).
-- `safeGetItem(key): string | null` — returns `null` on throw.
-- `safeRemoveItem(key): void` — never throws.
-- `isQuotaExceededError(err): boolean` — classifies a caught error.
+- `safeGetItem(key): string | null`, returns `null` on throw.
+- `safeRemoveItem(key): void`, never throws.
+- `isQuotaExceededError(err): boolean`, classifies a caught error.
   Cross-browser: matches `QuotaExceededError`, Firefox's
   `NS_ERROR_DOM_QUOTA_REACHED`, legacy DOMException codes 22 and 1014.
 
@@ -68,9 +68,9 @@ it today:
 Two modules deliberately keep raw `localStorage.setItem` with inline
 lint disables:
 
-- `web/src/lib/token.ts` — token persistence falls back to cookie + URL
+- `web/src/lib/token.ts`: token persistence falls back to cookie + URL
   on throw; the catch path is load-bearing for the auth flow.
-- `web/src/lib/deviceBinding.ts` — must hard-fail on quota so callers
+- `web/src/lib/deviceBinding.ts`: must hard-fail on quota so callers
   can surface the error to the user; silently swallowing the throw
   would leave the user with an invalid device binding.
 
