@@ -42,26 +42,56 @@ fn test_list_profiles_includes_default() -> Result<()> {
 fn test_delete_profile() -> Result<()> {
     let _temp = setup_temp_home();
 
+    // Deletion is now count-gated (at least one profile must remain), so we
+    // need a sibling profile around for the deletion under test to succeed.
+    create_profile("keeper")?;
     create_profile("temporary")?;
     assert!(list_profiles()?.contains(&"temporary".to_string()));
 
     delete_profile("temporary")?;
     assert!(!list_profiles()?.contains(&"temporary".to_string()));
+    assert!(list_profiles()?.contains(&"keeper".to_string()));
 
     Ok(())
 }
 
 #[test]
 #[serial]
-fn test_cannot_delete_default_profile() -> Result<()> {
+fn test_cannot_delete_last_remaining_profile() -> Result<()> {
     let _temp = setup_temp_home();
 
-    let result = delete_profile("default");
+    // The protection used to be "cannot delete the profile literally named
+    // 'default'". It is now "cannot delete the only profile that exists",
+    // applied uniformly regardless of name. Create exactly one profile and
+    // verify it cannot be removed.
+    create_profile("solo")?;
+
+    let result = delete_profile("solo");
     assert!(result.is_err());
     assert!(result
         .unwrap_err()
         .to_string()
-        .contains("Cannot delete the default profile"));
+        .contains("at least one profile must exist"));
+    assert!(list_profiles()?.contains(&"solo".to_string()));
+
+    Ok(())
+}
+
+#[test]
+#[serial]
+fn test_delete_profile_named_default_allowed_when_others_exist() -> Result<()> {
+    // A profile literally named "default" is now an ordinary profile and is
+    // deletable as long as deleting it would not leave zero. Regression
+    // guard against the old name-based protection sneaking back in.
+    let _temp = setup_temp_home();
+
+    create_profile("default")?;
+    create_profile("work")?;
+
+    delete_profile("default")?;
+    let remaining = list_profiles()?;
+    assert!(!remaining.contains(&"default".to_string()));
+    assert!(remaining.contains(&"work".to_string()));
 
     Ok(())
 }
