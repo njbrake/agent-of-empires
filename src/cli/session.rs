@@ -655,6 +655,38 @@ async fn restart_session(profile: &str, args: SessionIdArgs) -> Result<()> {
     bail_if_cockpit(&instances[idx], "restart")?;
     let outcome = instances[idx].restart_with_size(crate::terminal::get_size())?;
     let title = instances[idx].title.clone();
+    let session_id = instances[idx].id.clone();
+    let tool = instances[idx].tool.clone();
+
+    // Resolve the configured wake message (global default with per-profile
+    // override). Empty string is the documented opt-out: the restart still
+    // runs but no keys are sent.
+    let wake_msg = crate::session::resolve_config(profile)
+        .map(|c| c.session.restart_wake_message.clone())
+        .unwrap_or_else(|_| "wake up: pick up what you were doing".to_string());
+
+    if !wake_msg.is_empty() {
+        // Restart re-execs the agent at a blank prompt; nudge it back into
+        // its prior task. Poll capture-pane for steady-state output instead
+        // of a blind sleep, so the keys land as soon as the agent is at a
+        // prompt and don't get stranded mid-banner on slow machines.
+        wait_for_pane_ready(&session_id, &title, std::time::Duration::from_secs(5)).await;
+
+        let tmux_session = crate::tmux::Session::new(&session_id, &title)?;
+        if tmux_session.exists() {
+            let delay = crate::agents::send_keys_enter_delay(&tool);
+            match tmux_session.send_keys_with_delay(&wake_msg, delay) {
+                Ok(()) => {
+                    if let Some(inst) = instances.iter_mut().find(|i| i.id == session_id) {
+                        inst.touch_last_accessed();
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Warning: failed to send wake-up message: {}", e);
+                }
+            }
+        }
+    }
 
     let group_tree = GroupTree::new_with_groups(&instances, &groups);
     storage.commit(&instances, &group_tree)?;
@@ -672,6 +704,32 @@ async fn restart_session(profile: &str, args: SessionIdArgs) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Poll the tmux pane until capture-pane content stops changing for two
+/// consecutive samples (the agent has finished printing its startup banner
+/// and is sitting at a prompt) or `max_wait` elapses. Failsafe: always
+/// returns by `max_wait` so the caller's send-keys still runs even if the
+/// pane never settles.
+async fn wait_for_pane_ready(session_id: &str, title: &str, max_wait: std::time::Duration) {
+    let Ok(tmux) = crate::tmux::Session::new(session_id, title) else {
+        return;
+    };
+    let poll_interval = std::time::Duration::from_millis(200);
+    let start = std::time::Instant::now();
+    let mut last: Option<String> = None;
+    while start.elapsed() < max_wait {
+        tokio::time::sleep(poll_interval).await;
+        let Ok(now) = tmux.capture_pane(5) else {
+            continue;
+        };
+        if now.trim().len() > 20 {
+            if last.as_deref() == Some(&now) {
+                return;
+            }
+            last = Some(now);
+        }
+    }
 }
 
 async fn attach_session(profile: &str, args: SessionIdArgs) -> Result<()> {

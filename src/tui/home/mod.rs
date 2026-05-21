@@ -27,8 +27,8 @@ use super::dialogs::ServeView;
 use super::dialogs::{
     ChangelogDialog, CommandPaletteDialog, ConfirmDialog, GroupDeleteOptionsDialog,
     HookTrustDialog, HooksInstallDialog, InfoDialog, NewSessionData, NewSessionDialog,
-    NoAgentsDialog, ProfilePickerDialog, ProjectsDialog, RenameDialog, SnoozeDurationDialog,
-    UnifiedDeleteDialog, UpdateConfirmDialog, WelcomeDialog,
+    NoAgentsDialog, ProfilePickerDialog, ProjectsDialog, RenameDialog, RestartDialog,
+    SnoozeDurationDialog, UnifiedDeleteDialog, UpdateConfirmDialog, WelcomeDialog,
 };
 use super::diff::DiffView;
 use super::settings::SettingsView;
@@ -174,6 +174,7 @@ pub struct HomeView {
     pub(super) unified_delete_dialog: Option<UnifiedDeleteDialog>,
     pub(super) group_delete_options_dialog: Option<GroupDeleteOptionsDialog>,
     pub(super) rename_dialog: Option<RenameDialog>,
+    pub(super) restart_dialog: Option<RestartDialog>,
     pub(super) group_rename_context: Option<GroupRenameContext>,
     pub(super) hook_trust_dialog: Option<HookTrustDialog>,
     /// Session data pending hook trust approval
@@ -300,6 +301,13 @@ pub struct HomeView {
     /// HashSet pattern: TUI-local, event-driven, no TTL needed.
     recovery_in_flight: std::collections::HashSet<String>,
 
+    /// Spam-debounce for the `e` / `E` / `F5` restart keybind: maps
+    /// session id to the wall-clock instant of the last restart attempt.
+    /// Presses arriving within 1.5s of the prior entry are dropped so
+    /// rapid key-repeat doesn't race overlapping `restart_with_size`
+    /// calls and tear down the still-booting tmux pane.
+    pub(super) restart_cooldown_at: std::collections::HashMap<String, std::time::Instant>,
+
     // Tool sessions config (lazygit, yazi, etc.)
     pub(super) tool_configs: HashMap<String, crate::session::config::ToolSessionConfig>,
     /// Pre-parsed and sorted view of valid tool hotkeys: (name, KeyCode, KeyModifiers).
@@ -420,6 +428,7 @@ impl HomeView {
             unified_delete_dialog: None,
             group_delete_options_dialog: None,
             rename_dialog: None,
+            restart_dialog: None,
             group_rename_context: None,
             hook_trust_dialog: None,
             pending_hook_trust_data: None,
@@ -481,6 +490,7 @@ impl HomeView {
             recovery_rx: None,
             recovery_lock: None,
             recovery_in_flight: std::collections::HashSet::new(),
+            restart_cooldown_at: std::collections::HashMap::new(),
             tool_configs: user_config
                 .as_ref()
                 .map(|c| c.tools.clone())
@@ -1693,6 +1703,7 @@ impl HomeView {
             || self.unified_delete_dialog.is_some()
             || self.group_delete_options_dialog.is_some()
             || self.rename_dialog.is_some()
+            || self.restart_dialog.is_some()
             || self.hook_trust_dialog.is_some()
             || self.hooks_install_dialog.is_some()
             || self.welcome_dialog.is_some()

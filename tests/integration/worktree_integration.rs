@@ -5,6 +5,7 @@ use agent_of_empires::git::error::GitError;
 use agent_of_empires::git::GitWorktree;
 use agent_of_empires::session::{GroupTree, Instance, Storage, WorktreeInfo};
 use chrono::Utc;
+use serial_test::serial;
 use tempfile::TempDir;
 
 fn setup_test_environment() -> (TempDir, git2::Repository, TempDir) {
@@ -83,7 +84,11 @@ fn test_session_has_worktree_info_after_creation() {
     assert_eq!(info.created_at, now);
 }
 
+// `#[serial]` because this test mutates the process-global `HOME` env var.
+// Without serialization, parallel tests in the same binary that also set HOME
+// will race with us.
 #[test]
+#[serial]
 fn test_worktree_info_persists_across_save_load() {
     let temp_home = TempDir::new().unwrap();
     std::env::set_var("HOME", temp_home.path());

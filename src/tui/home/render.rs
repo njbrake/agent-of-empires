@@ -376,6 +376,7 @@ impl HomeView {
             unified_delete_dialog,
             group_delete_options_dialog,
             rename_dialog,
+            restart_dialog,
             hooks_install_dialog,
             hook_trust_dialog,
             welcome_dialog,
