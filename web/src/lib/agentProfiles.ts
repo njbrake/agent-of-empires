@@ -212,3 +212,25 @@ export function resolveAgentProfile(
   if (!toolKey) return DEFAULT_AGENT_PROFILE;
   return PROFILES[toolKey] ?? DEFAULT_AGENT_PROFILE;
 }
+
+/** True when `text`'s trimmed body matches one of `aliases`, either as
+ *  the entire prompt or as a `<alias> <args>` invocation. Mirror of the
+ *  server-side `AgentProfile::is_clear_command` in
+ *  `src/cockpit/agent_profiles.rs` so the cockpit's combined-mode drain
+ *  splits at exactly the same boundary the server detects as a session
+ *  clear (#1356). */
+export function isClearAlias(
+  text: string,
+  aliases: ReadonlyArray<string>,
+): boolean {
+  const trimmed = text.trim();
+  if (trimmed.length === 0) return false;
+  for (const alias of aliases) {
+    if (trimmed === alias) return true;
+    if (trimmed.startsWith(alias)) {
+      const rest = trimmed.slice(alias.length);
+      if (rest.length > 0 && /^\s/.test(rest)) return true;
+    }
+  }
+  return false;
+}
