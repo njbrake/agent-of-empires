@@ -478,6 +478,13 @@
       "components": ["web/src/components/cockpit/Composer.tsx", "web/src/lib/cockpitDrafts.ts"]
     },
     {
+      "id": "cockpit.story.substrate-switch-to-cockpit",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": ["tests/live/cockpit-stories/substrate-switch-to-cockpit.spec.ts"],
+      "components": ["web/src/components/cockpit/SwitchSubstrateAction.tsx"]
+    },
+    {
       "id": "cockpit.rate-limit-recovery",
       "kind": "vitest",
       "risk": "high",
