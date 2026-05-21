@@ -217,12 +217,17 @@ fn test_quit_during_creation_shows_confirm() {
     h.send_keys("q");
 
     // Should show a confirmation dialog instead of quitting.
-    h.wait_for_timeout("Session Creating", Duration::from_secs(3));
+    // Use a 5s timeout (the convention in this file) so a CI runner under
+    // load has enough headroom for tmux capture-pane to see the dialog
+    // after the `q` key triggers the state transition; the previous 3s
+    // budget was a flake source on ubuntu-latest (empty screen captures
+    // mid-render).
+    h.wait_for_timeout("Session Creating", Duration::from_secs(5));
     h.assert_screen_contains("Quit anyway");
 
     // Decline to quit.
     h.send_keys("n");
-    h.wait_for_absent("Session Creating", Duration::from_secs(3));
+    h.wait_for_absent("Session Creating", Duration::from_secs(5));
     // TUI is still running with the Creating stub.
     h.assert_screen_contains("Creating...");
 
