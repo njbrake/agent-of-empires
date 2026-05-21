@@ -991,6 +991,19 @@ pub fn detect_antigravity_status(raw_content: &str) -> Status {
         return Status::Waiting;
     }
 
+    // "Approval Required" is the actual header Antigravity renders above tool
+    // permission prompts. The substring "approve" does NOT appear in
+    // "approval", so the base contains_approval_prompt list misses it; match
+    // explicitly. "deny access" is the rejection button rendered alongside.
+    // "awaiting user approval" is the status line shown while the agent is
+    // blocked on the user's decision.
+    if last_lines_lower.contains("approval required")
+        || last_lines_lower.contains("awaiting user approval")
+        || last_lines_lower.contains("deny access")
+    {
+        return Status::Waiting;
+    }
+
     if contains_approval_prompt(
         &last_lines_lower,
         &[
@@ -1015,10 +1028,6 @@ pub fn detect_antigravity_status(raw_content: &str) -> Status {
 
     if has_any_spinner(&lines) {
         return Status::Running;
-    }
-
-    if matches_input_prompt(&non_empty_lines, 10, &["agy>"]) {
-        return Status::Waiting;
     }
 
     Status::Idle
@@ -2169,7 +2178,32 @@ Antigravity CLI requires permission to read, edit, and execute files here.
             detect_antigravity_status("run command? (y/n)"),
             Status::Waiting
         );
-        assert_eq!(detect_antigravity_status("complete\nagy>"), Status::Waiting);
+    }
+
+    #[test]
+    fn test_detect_antigravity_status_waiting_for_tool_approval() {
+        // Real header rendered above Antigravity tool permission prompts.
+        // "approval" does not contain "approve", so the shared
+        // contains_approval_prompt helper misses this header; the detector
+        // matches "approval required" explicitly instead.
+        let content = "\
+read_file
+path: /workspace/secrets.env
+
+⚠ Approval Required
+
+> Yes, just this once
+  Yes, allow always
+  No, deny access";
+        assert_eq!(detect_antigravity_status(content), Status::Waiting);
+    }
+
+    #[test]
+    fn test_detect_antigravity_status_waiting_user_approval_status_line() {
+        // "awaiting user approval" is the status line shown while the agent
+        // is blocked on the user's tool-permission decision.
+        let content = "I'll read that file now.\n awaiting user approval.";
+        assert_eq!(detect_antigravity_status(content), Status::Waiting);
     }
 
     #[test]
