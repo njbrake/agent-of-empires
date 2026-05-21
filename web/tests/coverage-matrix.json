@@ -674,6 +674,34 @@
       "components": ["web/src/components/settings/ThemeSettings.tsx"]
     },
     {
+      "id": "story.settings-tmux-mouse",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": ["tests/live/cockpit-stories/settings-tmux-mouse.spec.ts"],
+      "components": ["web/src/components/settings/TmuxSettings.tsx"]
+    },
+    {
+      "id": "story.settings-logging-level",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": ["tests/live/cockpit-stories/settings-logging-level.spec.ts"],
+      "components": ["web/src/components/settings/LoggingSettings.tsx"]
+    },
+    {
+      "id": "story.settings-update-interval",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": ["tests/live/cockpit-stories/settings-update-interval.spec.ts"],
+      "components": ["web/src/components/settings/UpdateSettings.tsx"]
+    },
+    {
+      "id": "story.settings-sound-toggle",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": ["tests/live/cockpit-stories/settings-sound-toggle.spec.ts"],
+      "components": ["web/src/components/settings/SoundSettings.tsx"]
+    },
+    {
       "id": "cockpit.rate-limit-recovery",
       "kind": "vitest",
       "risk": "high",
