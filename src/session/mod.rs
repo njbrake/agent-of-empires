@@ -172,6 +172,33 @@ pub fn get_profile_dir(profile: &str) -> Result<PathBuf> {
     Ok(dir)
 }
 
+/// Resolve the on-disk profile directory path WITHOUT creating it.
+///
+/// Use this for read-only operations (loading config, looking up paths)
+/// where the directory-creation side effect of [`get_profile_dir`] would
+/// pollute `profiles/` with empty stub directories. Notably, GET
+/// /api/settings?profile=<name> for an unknown profile used to create
+/// that profile's directory as a side effect of the read, which then
+/// made the unknown profile appear in subsequent GET /api/profiles
+/// responses. Routing those reads through this helper keeps the lookup
+/// pure.
+///
+/// Empty `profile` resolves through [`config::resolve_default_profile`]
+/// just like [`get_profile_dir`] does, including its bootstrap side
+/// effect on a genuine first run; callers that want to avoid that should
+/// pass an explicit non-empty name.
+pub fn get_profile_dir_path(profile: &str) -> Result<PathBuf> {
+    let base = get_app_dir()?;
+    let resolved;
+    let profile_name = if profile.is_empty() {
+        resolved = config::resolve_default_profile();
+        resolved.as_str()
+    } else {
+        profile
+    };
+    Ok(base.join("profiles").join(profile_name))
+}
+
 pub fn list_profiles() -> Result<Vec<String>> {
     let base = get_app_dir()?;
     let profiles_dir = base.join("profiles");
@@ -710,5 +737,34 @@ mod tests {
                 .err()
                 .unwrap_or_else(|| panic!("expected {bad:?} to be rejected"));
         }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_load_profile_config_does_not_create_dir_for_unknown_profile() {
+        // Regression: previously `load_profile_config` flowed through
+        // `get_profile_dir` which `create_dir_all`'d the profile dir as a
+        // side effect of the read. That meant any GET against a profile
+        // name that did not yet exist (the dashboard's mount-time settings
+        // fetch fires before the profile list resolves) polluted
+        // `profiles/` with a stub directory, and the stub then showed up
+        // in subsequent GET /api/profiles responses. The read must stay
+        // pure.
+        let temp = isolate_app_dir();
+        let dir = app_dir(&temp);
+        fs::create_dir_all(dir.join("profiles").join("real")).unwrap();
+        let unknown_dir = dir.join("profiles").join("does-not-exist");
+        assert!(!unknown_dir.exists());
+
+        let cfg = crate::session::profile_config::load_profile_config("does-not-exist")
+            .expect("loading config for an unknown profile must succeed with defaults");
+        assert!(
+            !crate::session::profile_config::profile_has_overrides(&cfg),
+            "unknown profile must load to defaults",
+        );
+        assert!(
+            !unknown_dir.exists(),
+            "load_profile_config must not create profiles/<unknown>/ as a side effect",
+        );
     }
 }

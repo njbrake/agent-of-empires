@@ -157,13 +157,16 @@ fn test_source_profile_not_serialized() {
 
 #[test]
 #[serial]
-fn test_storage_defaults_to_default_profile() -> Result<()> {
+fn test_storage_empty_profile_resolves_to_bootstrap() -> Result<()> {
+    // Empty profile names now route through resolve_default_profile, which
+    // on a fresh install bootstraps "main" (the PR's intentional rename,
+    // see src/session/config.rs::ensure_bootstrap_profile). Confirm the
+    // resolution lands on that name and that storage round-trips after.
     let _temp = setup_temp_home();
 
     let storage = Storage::new("")?;
-    assert_eq!(storage.profile(), "default");
+    assert_eq!(storage.profile(), "main");
 
-    // Verify it can save and load
     let instances = vec![Instance::new("Test", "/path/test")];
     storage.commit(&instances, &GroupTree::new_with_groups(&instances, &[]))?;
     let loaded = storage.load()?;
