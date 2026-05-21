@@ -1573,22 +1573,30 @@ impl HomeView {
 
         groups.push((2, mk(if strict { "N" } else { "n" }, "New")));
 
-        // Priority 1: user's core daily workflow (message / archive / fav /
-        // snooze). These survive the greedy pack under narrow-pane widths
-        // (iPad Termius / Moshi ~80 cols) because they're the actions the
-        // user reaches for most often. Restart / Del stay at p3, less
-        // frequent, OK to drop first.
+        // Priority 1: user's core daily workflow (message / restart / del).
+        // These survive the greedy pack under narrow-pane widths (iPad
+        // Termius / Moshi ~80 cols) because they're the actions the user
+        // reaches for most often. Restart / Del stay at p3, less frequent,
+        // OK to drop first.
         if self.selected_session.is_some() {
             groups.push((1, mk(if strict { "M" } else { "m" }, "Msg")));
             groups.push((3, mk(if strict { "E" } else { "e" }, "Restart")));
         }
         if !self.flat_items.is_empty() {
             groups.push((3, mk(if strict { "D" } else { "d" }, "Del")));
-            groups.push((1, mk(if strict { "Z" } else { "z" }, "Archive")));
         }
-        if self.selected_session.is_some() {
-            groups.push((1, mk(if strict { "F" } else { "f" }, "Fav")));
-            groups.push((1, mk(if strict { "H" } else { "h" }, "Snooze")));
+        // Attention-workflow shortcuts (Archive / Fav / Snooze) only render
+        // when the user is in Attention sort. They are only useful for
+        // shaping the Attention queue; in Newest / Created / Last Accessed
+        // they just take footer space without changing what the user sees.
+        if self.sort_order == SortOrder::Attention {
+            if !self.flat_items.is_empty() {
+                groups.push((1, mk(if strict { "Z" } else { "z" }, "Archive")));
+            }
+            if self.selected_session.is_some() {
+                groups.push((1, mk(if strict { "F" } else { "f" }, "Fav")));
+                groups.push((1, mk(if strict { "H" } else { "h" }, "Snooze")));
+            }
         }
 
         groups.push((4, mk_key("/")));
