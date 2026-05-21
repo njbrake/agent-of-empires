@@ -3133,8 +3133,10 @@ extra_volumes = ["/host/personal-only:/container/personal-only:ro"]
             return; // git not available, skip
         }
 
-        // Write repo-level config with volume_ignores
-        let config_dir = worktree_path.join(".agent-of-empires");
+        // Write repo-level config in the main repo dir, since
+        // resolve_config_with_repo loads it from there (find_main_repo) even
+        // when the session targets a sibling worktree.
+        let config_dir = repo_path.join(".agent-of-empires");
         fs::create_dir_all(&config_dir).unwrap();
         fs::write(
             config_dir.join("config.toml"),
@@ -3224,8 +3226,10 @@ volume_ignores = ["target", "node_modules"]
             return; // git worktree add failed, skip
         }
 
-        // Write repo-level config with volume_ignores
-        let config_dir = worktree_path.join(".agent-of-empires");
+        // Write repo-level config in the main repo dir, since
+        // resolve_config_with_repo loads it from there (find_main_repo) even
+        // when the session targets a sibling worktree.
+        let config_dir = main_repo_path.join(".agent-of-empires");
         fs::create_dir_all(&config_dir).unwrap();
         fs::write(
             config_dir.join("config.toml"),

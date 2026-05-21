@@ -6,7 +6,7 @@
 // color mode). Part of #1217.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, render, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 
 vi.mock("../../../lib/api", () => ({
   fetchThemes: vi.fn(() =>
@@ -35,6 +35,7 @@ function mount(initial: Record<string, unknown> = {}) {
 }
 
 afterEach(() => {
+  cleanup();
   dispatchSpy.mockClear();
 });
 
