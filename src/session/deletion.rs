@@ -342,16 +342,12 @@ pub fn perform_deletion(request: &DeletionRequest) -> DeletionResult {
 /// the same trust verification as on_launch: if the hooks hash has changed
 /// since the user last approved, repo hooks are silently skipped.
 fn run_on_destroy_hooks(instance: &Instance, detach: bool) {
-    let profile = if instance.source_profile.is_empty() {
-        "default"
-    } else {
-        &instance.source_profile
-    };
+    let profile = crate::session::config::effective_profile(&instance.source_profile);
 
     let project_path = Path::new(&instance.project_path);
 
     // Start with global+profile on_destroy hooks (implicitly trusted).
-    let mut resolved_on_destroy = crate::session::profile_config::resolve_config_or_warn(profile)
+    let mut resolved_on_destroy = crate::session::profile_config::resolve_config_or_warn(&profile)
         .hooks
         .on_destroy;
 

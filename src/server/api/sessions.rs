@@ -1156,19 +1156,18 @@ pub async fn create_session(
             )
                 .into_response();
         }
-        // Verify the profile exists ("default" is always valid even without a dir)
-        if profile_name != "default" {
-            let known = crate::session::list_profiles().unwrap_or_default();
-            if !known.contains(profile_name) {
-                return (
-                    StatusCode::BAD_REQUEST,
-                    Json(serde_json::json!({
-                        "error": "profile_not_found",
-                        "message": format!("Profile '{}' does not exist", profile_name)
-                    })),
-                )
-                    .into_response();
-            }
+        // Verify the profile exists. Every profile is a real directory under
+        // profiles/; there is no implicitly-valid profile name.
+        let known = crate::session::list_profiles().unwrap_or_default();
+        if !known.contains(profile_name) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": "profile_not_found",
+                    "message": format!("Profile '{}' does not exist", profile_name)
+                })),
+            )
+                .into_response();
         }
     }
 

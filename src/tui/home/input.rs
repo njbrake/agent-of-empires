@@ -150,9 +150,7 @@ impl HomeView {
                         self.settings_view = None;
                         self.confirm_dialog = None;
                         self.settings_close_confirm = false;
-                        let config = resolve_config_or_warn(
-                            self.active_profile.as_deref().unwrap_or("default"),
-                        );
+                        let config = resolve_config_or_warn(&self.config_profile());
                         let theme_name = if config.theme.name.is_empty() {
                             "default".to_string()
                         } else {
@@ -175,8 +173,7 @@ impl HomeView {
                     // Refresh config-dependent state in case settings changed
                     self.refresh_from_config();
                     // Reload theme from saved config
-                    let config =
-                        resolve_config_or_warn(self.active_profile.as_deref().unwrap_or("default"));
+                    let config = resolve_config_or_warn(&self.config_profile());
                     let theme_name = if config.theme.name.is_empty() {
                         "default".to_string()
                     } else {
@@ -750,8 +747,8 @@ impl HomeView {
                 self.show_profile_picker();
             }
             KeyCode::Char('p') => {
-                let profile = self.active_profile.as_deref().unwrap_or("default");
-                self.projects_dialog = Some(ProjectsDialog::new(profile));
+                let profile = self.config_profile();
+                self.projects_dialog = Some(ProjectsDialog::new(&profile));
             }
             #[cfg(feature = "serve")]
             KeyCode::Char('R') => {
@@ -840,10 +837,7 @@ impl HomeView {
                 } else {
                     let existing_groups: Vec<String> =
                         self.all_groups().iter().map(|g| g.path.clone()).collect();
-                    let current_profile = self
-                        .active_profile
-                        .clone()
-                        .unwrap_or_else(|| "default".to_string());
+                    let current_profile = self.config_profile();
                     let profiles =
                         list_profiles().unwrap_or_else(|_| vec![current_profile.clone()]);
                     self.new_dialog = Some(NewSessionDialog::new(
@@ -898,8 +892,7 @@ impl HomeView {
                             self.all_groups().iter().map(|g| g.path.clone()).collect();
                         let current_profile = self
                             .profile_for_cursor(self.cursor)
-                            .or_else(|| self.active_profile.clone())
-                            .unwrap_or_else(|| "default".to_string());
+                            .unwrap_or_else(|| self.config_profile());
                         let profiles =
                             list_profiles().unwrap_or_else(|_| vec![current_profile.clone()]);
                         let mut dialog = NewSessionDialog::new(
@@ -925,10 +918,7 @@ impl HomeView {
                     .as_ref()
                     .and_then(|id| self.get_instance(id))
                     .map(|inst| inst.project_path.clone());
-                match SettingsView::new(
-                    self.active_profile.as_deref().unwrap_or("default"),
-                    project_path,
-                ) {
+                match SettingsView::new(&self.config_profile(), project_path) {
                     Ok(view) => self.settings_view = Some(view),
                     Err(e) => {
                         tracing::error!(target: "tui.input", "Failed to open settings: {}", e);
@@ -1075,18 +1065,18 @@ impl HomeView {
                             project_path: Some(inst.project_path.clone()),
                         };
 
-                        let profile = self.active_profile.as_deref().unwrap_or("default");
+                        let profile = self.config_profile();
                         self.unified_delete_dialog = Some(UnifiedDeleteDialog::new(
                             inst.title.clone(),
                             config,
-                            profile,
+                            &profile,
                         ));
                     } else {
-                        let profile = self.active_profile.as_deref().unwrap_or("default");
+                        let profile = self.config_profile();
                         self.unified_delete_dialog = Some(UnifiedDeleteDialog::new(
                             "Unknown Session".to_string(),
                             DeleteDialogConfig::default(),
-                            profile,
+                            &profile,
                         ));
                     }
                 } else if let Some(group_path) = &self.selected_group {
@@ -1130,10 +1120,7 @@ impl HomeView {
                         if matches!(inst.status, Status::Deleting | Status::Creating) {
                             return None;
                         }
-                        let current_profile = self
-                            .active_profile
-                            .clone()
-                            .unwrap_or_else(|| "default".to_string());
+                        let current_profile = self.config_profile();
                         let profiles =
                             list_profiles().unwrap_or_else(|_| vec![current_profile.clone()]);
                         let existing_groups: Vec<String> =
@@ -1158,8 +1145,7 @@ impl HomeView {
                     let current_profile = self
                         .selected_group_profile
                         .clone()
-                        .or_else(|| self.active_profile.clone())
-                        .unwrap_or_else(|| "default".to_string());
+                        .unwrap_or_else(|| self.config_profile());
                     let profiles =
                         list_profiles().unwrap_or_else(|_| vec![current_profile.clone()]);
                     let existing_groups: Vec<String> =

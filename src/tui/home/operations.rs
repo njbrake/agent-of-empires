@@ -381,11 +381,7 @@ impl HomeView {
                 let current_profile = self
                     .get_instance(&id)
                     .map(|i| i.source_profile.clone())
-                    .unwrap_or_else(|| {
-                        self.active_profile
-                            .clone()
-                            .unwrap_or_else(|| "default".to_string())
-                    });
+                    .unwrap_or_else(|| self.config_profile());
                 if target_profile != current_profile {
                     // Validate target profile exists
                     let profiles = list_profiles()?;
@@ -479,11 +475,7 @@ impl HomeView {
                 let profile = self
                     .get_instance(&id)
                     .map(|i| i.source_profile.clone())
-                    .unwrap_or_else(|| {
-                        self.active_profile
-                            .clone()
-                            .unwrap_or_else(|| "default".to_string())
-                    });
+                    .unwrap_or_else(|| self.config_profile());
                 if let Some(tree) = self.group_trees.get_mut(&profile) {
                     tree.create_group(&effective_group);
                 }

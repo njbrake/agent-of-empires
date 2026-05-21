@@ -54,8 +54,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-pub const DEFAULT_PROFILE: &str = "default";
-
 /// Linux app dir name (under `$XDG_CONFIG_HOME`). Debug builds use a `-dev`
 /// suffix so a `cargo run` instance shares no state with an installed
 /// release binary.
@@ -157,8 +155,10 @@ pub fn format_debug_namespace_warning(release: &Path, dev: &Path) -> String {
 
 pub fn get_profile_dir(profile: &str) -> Result<PathBuf> {
     let base = get_app_dir()?;
+    let resolved;
     let profile_name = if profile.is_empty() {
-        DEFAULT_PROFILE
+        resolved = config::resolve_default_profile();
+        resolved.as_str()
     } else {
         profile
     };
@@ -211,15 +211,17 @@ pub fn create_profile(name: &str) -> Result<()> {
 }
 
 pub fn delete_profile(name: &str) -> Result<()> {
-    if name == DEFAULT_PROFILE {
-        anyhow::bail!("Cannot delete the default profile");
-    }
-
     let base = get_app_dir()?;
     let profile_dir = base.join("profiles").join(name);
 
     if !profile_dir.exists() {
         anyhow::bail!("Profile '{}' does not exist", name);
+    }
+
+    // The invariant is "at least one profile must exist", a count, not a name.
+    // Any profile is deletable as long as deleting it would not leave zero.
+    if list_profiles()?.len() <= 1 {
+        anyhow::bail!("Cannot delete '{}': at least one profile must exist", name);
     }
 
     fs::remove_dir_all(&profile_dir)?;
@@ -276,22 +278,14 @@ pub fn collect_startup_config_warnings(profile: &str) -> Option<String> {
         .map(|p| p.display().to_string())
         .unwrap_or_else(|_| "config.toml".to_string());
 
-    let global_ok = match Config::load() {
-        Ok(_) => true,
-        Err(e) => {
-            messages.push(format!(
-                "Failed to load global config ({global_path_display}); using defaults.\n{e}"
-            ));
-            false
-        }
-    };
+    if let Err(e) = Config::load() {
+        messages.push(format!(
+            "Failed to load global config ({global_path_display}); using defaults.\n{e}"
+        ));
+    }
 
     let effective = if profile.is_empty() {
-        if global_ok {
-            config::resolve_default_profile()
-        } else {
-            DEFAULT_PROFILE.to_string()
-        }
+        config::resolve_default_profile()
     } else {
         profile.to_string()
     };
@@ -480,5 +474,78 @@ mod tests {
         assert!(msg.contains("/home/u/.config/agent-of-empires-dev"));
         assert!(msg.contains("cp -r"));
         assert!(msg.contains("not repeat"));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_fresh_install_bootstraps_main_profile() {
+        // Genuine first run: no profiles/ entries. Resolution must create a
+        // single profile named "main", never the magic "default".
+        let _temp = isolate_app_dir();
+        assert!(list_profiles().unwrap().is_empty());
+
+        let resolved = config::resolve_default_profile();
+        assert_eq!(resolved, "main");
+        assert_eq!(list_profiles().unwrap(), vec!["main".to_string()]);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_existing_default_profile_is_untouched_and_usable() {
+        // An install that already has profiles/default/ keeps it; "default"
+        // is now an ordinary profile, resolved like any other first entry.
+        let temp = isolate_app_dir();
+        let dir = app_dir(&temp);
+        fs::create_dir_all(dir.join("profiles").join("default")).unwrap();
+
+        let resolved = config::resolve_default_profile();
+        assert_eq!(resolved, "default");
+        assert!(dir.join("profiles").join("default").exists());
+
+        let storage = Storage::new("default").unwrap();
+        assert_eq!(storage.profile(), "default");
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_get_profile_dir_empty_resolves_without_default_literal() {
+        // An empty profile argument resolves through resolve_default_profile,
+        // landing on the first existing profile rather than a "default" name.
+        let temp = isolate_app_dir();
+        let dir = app_dir(&temp);
+        fs::create_dir_all(dir.join("profiles").join("alpha")).unwrap();
+        fs::create_dir_all(dir.join("profiles").join("beta")).unwrap();
+
+        let resolved = get_profile_dir("").unwrap();
+        assert_eq!(resolved, dir.join("profiles").join("alpha"));
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_delete_profile_refuses_last_remaining() {
+        // The invariant is a count, not a name: deleting the only profile is
+        // refused so AoE always has somewhere to file sessions.
+        let temp = isolate_app_dir();
+        let dir = app_dir(&temp);
+        fs::create_dir_all(dir.join("profiles").join("solo")).unwrap();
+
+        let err = delete_profile("solo").expect_err("deleting the last profile must fail");
+        assert!(err.to_string().contains("at least one profile must exist"));
+        assert!(dir.join("profiles").join("solo").exists());
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_delete_profile_named_default_allowed_when_others_exist() {
+        // A profile literally named "default" carries no protection once
+        // other profiles exist; only the count invariant applies.
+        let temp = isolate_app_dir();
+        let dir = app_dir(&temp);
+        fs::create_dir_all(dir.join("profiles").join("default")).unwrap();
+        fs::create_dir_all(dir.join("profiles").join("work")).unwrap();
+
+        delete_profile("default").expect("a non-last profile named default is deletable");
+        assert!(!dir.join("profiles").join("default").exists());
+        assert!(dir.join("profiles").join("work").exists());
     }
 }

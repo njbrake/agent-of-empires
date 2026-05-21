@@ -673,8 +673,12 @@ impl Default for WebConfig {
     }
 }
 
+/// Serde default for `Config.default_profile`. Empty means "not explicitly
+/// chosen"; the active profile is then resolved at runtime by
+/// `resolve_default_profile`, which picks the first existing profile or
+/// bootstraps one. There is no magic profile name.
 fn default_profile() -> String {
-    "default".to_string()
+    String::new()
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -1103,14 +1107,38 @@ pub fn save_config(config: &Config) -> Result<()> {
     Ok(())
 }
 
-/// Load the user's default profile name, falling back to "default" on error.
+/// Resolve the active profile name.
+///
+/// If the user has explicitly set `config.default_profile`, that name is
+/// returned verbatim. Otherwise this returns the first profile directory
+/// found under `<app_dir>/profiles/` (sorted, so the choice is
+/// deterministic). On a genuine first run, when no profile directory exists
+/// yet, one is bootstrapped (see `ensure_bootstrap_profile`).
 pub fn resolve_default_profile() -> String {
     let config = Config::load_or_warn();
-    if config.default_profile.is_empty() {
-        "default".to_string()
-    } else {
-        config.default_profile
+    if !config.default_profile.is_empty() {
+        return config.default_profile;
     }
+    match super::list_profiles() {
+        Ok(profiles) => match profiles.into_iter().next() {
+            Some(first) => first,
+            None => ensure_bootstrap_profile(),
+        },
+        Err(_) => ensure_bootstrap_profile(),
+    }
+}
+
+/// Name of the profile created on a genuine first run.
+const BOOTSTRAP_PROFILE: &str = "main";
+
+/// Create the first profile on a genuine first run and return its name.
+///
+/// AoE always needs at least one profile (somewhere to file sessions). When
+/// `profiles/` has no entries, this creates `main`. It is idempotent: calling
+/// it when `main` already exists just returns the name.
+fn ensure_bootstrap_profile() -> String {
+    let _ = super::get_profile_dir(BOOTSTRAP_PROFILE);
+    BOOTSTRAP_PROFILE.to_string()
 }
 
 /// Return `profile` if non-empty, otherwise the user's globally configured
@@ -1205,10 +1233,11 @@ mod tests {
     #[test]
     fn test_config_default() {
         let config = Config::default();
-        // default_profile uses default_profile() function which returns "default"
-        // but Default derive gives empty string, so check deserialize case works
+        // An unset default_profile deserializes empty: "not explicitly
+        // chosen". The active profile is resolved at runtime, not baked in
+        // as a magic name here.
         let deserialized: Config = toml::from_str("").unwrap();
-        assert_eq!(deserialized.default_profile, "default");
+        assert_eq!(deserialized.default_profile, "");
         assert!(!config.worktree.enabled);
         assert!(!config.sandbox.enabled_by_default);
         assert!(config.updates.check_enabled);
@@ -1217,7 +1246,7 @@ mod tests {
     #[test]
     fn test_config_deserialize_empty_toml() {
         let config: Config = toml::from_str("").unwrap();
-        assert_eq!(config.default_profile, "default");
+        assert_eq!(config.default_profile, "");
     }
 
     #[test]
