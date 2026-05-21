@@ -15,7 +15,9 @@ use anyhow::{Context, Result};
 use fs2::FileExt as _;
 use serde_json::Value;
 
-pub use status_file::{cleanup_hook_status_dir, hook_status_dir, read_hook_status};
+pub use status_file::{
+    cleanup_hook_status_dir, hook_status_dir, read_hook_status, read_hook_urgent,
+};
 
 /// Base directory for all AoE hook status files.
 pub(crate) const HOOK_STATUS_BASE: &str = "/tmp/aoe-hooks";
@@ -69,6 +71,34 @@ pub(crate) fn codex_config_path_display_for_host_environment(entries: &[String])
                 .to_string()
         })
         .unwrap_or_else(codex_config_path_display)
+}
+
+/// Sweep `/tmp/aoe-hooks/*/` removing per-instance dirs that no longer
+/// correspond to a live AoE session. Called on TUI startup to clean up
+/// dirs left behind by sessions destroyed while the TUI was not running.
+/// Skips the special `_global` dir (holds session-aggregate state).
+pub fn sweep_orphaned_hook_dirs(live_session_ids: &std::collections::HashSet<String>) {
+    let base = std::path::Path::new(HOOK_STATUS_BASE);
+    let Ok(entries) = std::fs::read_dir(base) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let Ok(name) = entry.file_name().into_string() else {
+            continue;
+        };
+        if name == "_global" {
+            continue;
+        }
+        if live_session_ids.contains(&name) {
+            continue;
+        }
+        let path = entry.path();
+        if let Err(e) = std::fs::remove_dir_all(&path) {
+            tracing::warn!("hooks: failed to remove orphan dir {:?}: {}", path, e);
+        } else {
+            tracing::info!("hooks: removed orphan dir {:?}", path);
+        }
+    }
 }
 
 /// Build the shell command for a hook that writes a status value.

@@ -360,6 +360,76 @@
       "components": []
     },
     {
+      "id": "cockpit.drafts",
+      "kind": "vitest",
+      "risk": "medium",
+      "specs": ["src/lib/cockpitDrafts.test.ts"],
+      "components": ["web/src/lib/cockpitDrafts.ts"]
+    },
+    {
+      "id": "cockpit.files-index",
+      "kind": "vitest",
+      "risk": "medium",
+      "specs": ["src/components/cockpit/useFilesIndex.test.tsx"],
+      "components": ["web/src/components/cockpit/useFilesIndex.ts"]
+    },
+    {
+      "id": "cockpit.rattle",
+      "kind": "vitest",
+      "risk": "medium",
+      "specs": ["src/lib/cockpitRattle.test.ts"],
+      "components": ["web/src/lib/cockpitRattle.ts"]
+    },
+    {
+      "id": "cockpit.args",
+      "kind": "vitest",
+      "risk": "medium",
+      "specs": ["src/lib/cockpitArgs.test.ts"],
+      "components": ["web/src/lib/cockpitArgs.ts"]
+    },
+    {
+      "id": "cockpit.approval-card",
+      "kind": "vitest",
+      "risk": "high",
+      "specs": ["src/components/cockpit/ApprovalCard.test.tsx"],
+      "components": ["web/src/components/cockpit/ApprovalCard.tsx"]
+    },
+    {
+      "id": "cockpit.markdown",
+      "kind": "vitest",
+      "risk": "high",
+      "specs": ["src/components/cockpit/Markdown.test.tsx"],
+      "components": ["web/src/components/cockpit/Markdown.tsx"]
+    },
+    {
+      "id": "cockpit.tool-cards",
+      "kind": "vitest",
+      "risk": "high",
+      "specs": ["src/components/cockpit/ToolCards.render.test.tsx"],
+      "components": ["web/src/components/cockpit/ToolCards.tsx"]
+    },
+    {
+      "id": "cockpit.context-primer-banner",
+      "kind": "vitest",
+      "risk": "medium",
+      "specs": ["src/components/cockpit/ContextPrimerBanner.test.tsx"],
+      "components": ["web/src/components/cockpit/ContextPrimerBanner.tsx"]
+    },
+    {
+      "id": "cockpit.switch-substrate-action",
+      "kind": "vitest",
+      "risk": "medium",
+      "specs": ["src/components/cockpit/SwitchSubstrateAction.test.tsx"],
+      "components": ["web/src/components/cockpit/SwitchSubstrateAction.tsx"]
+    },
+    {
+      "id": "cockpit.tool-error-body",
+      "kind": "vitest",
+      "risk": "medium",
+      "specs": ["src/components/cockpit/ToolErrorBody.test.tsx"],
+      "components": ["web/src/components/cockpit/ToolErrorBody.tsx"]
+    },
+    {
       "id": "read-only.mode",
       "kind": "live-playwright",
       "risk": "high",

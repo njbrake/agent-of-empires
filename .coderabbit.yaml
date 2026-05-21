@@ -81,11 +81,11 @@ reviews:
 
   auto_review:
     enabled: true
-    # Off to stop CodeRabbit from re-reviewing on every push, which edited
-    # its walkthrough comment and pinged subscribers each time. CodeRabbit
-    # still reviews once when a PR opens; ask for a re-review explicitly
-    # with `@coderabbitai review` after a meaningful change.
-    auto_incremental_review: false
+    # On. CodeRabbit does proper housekeeping between incremental reviews
+    # (does not keep previous reviews open) and self-caps at roughly 3
+    # follow-up commits per PR before switching to manual review, so the
+    # noise that originally motivated turning this off is bounded.
+    auto_incremental_review: true
     ignore_title_keywords:
       - "Dependencies"
       - "update dependency"

@@ -245,6 +245,9 @@ pub struct SessionConfigOverride {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub strict_hotkeys: Option<bool>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snooze_duration_minutes: Option<u32>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -457,6 +460,9 @@ pub fn apply_session_overrides(
     }
     if let Some(strict_hotkeys) = source.strict_hotkeys {
         target.strict_hotkeys = strict_hotkeys;
+    }
+    if let Some(snooze_duration_minutes) = source.snooze_duration_minutes {
+        target.snooze_duration_minutes = snooze_duration_minutes;
     }
 }
 

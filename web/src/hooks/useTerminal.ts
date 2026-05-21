@@ -668,10 +668,36 @@ export function useTerminal(
     //
     // Pause/resume apply to BOTH platforms: claude's continued output
     // shifts scrollback under the reader regardless of client size.
-    const WHEEL_UP_SEQ = "\x1b[<64;1;1M";
-    const WHEEL_DOWN_SEQ = "\x1b[<65;1;1M";
+    const wheelSeq = (
+      dir: "up" | "down",
+      cell: { col: number; row: number },
+    ) => `\x1b[<${dir === "up" ? 64 : 65};${cell.col};${cell.row}M`;
+    const cellFromClientPoint = (clientX: number, clientY: number) => {
+      const el = term.element;
+      if (!el) return { col: 1, row: 1 };
+      const rect = el.getBoundingClientRect();
+      const cellWidth = rect.width > 0 ? rect.width / Math.max(1, term.cols) : 0;
+      const cellHeight =
+        rect.height > 0 ? rect.height / Math.max(1, term.rows) : 0;
+      const rawCol =
+        cellWidth > 0 ? Math.floor((clientX - rect.left) / cellWidth) + 1 : 1;
+      const rawRow =
+        cellHeight > 0 ? Math.floor((clientY - rect.top) / cellHeight) + 1 : 1;
+      return {
+        col: Math.max(1, Math.min(Math.max(1, term.cols), rawCol)),
+        row: Math.max(1, Math.min(Math.max(1, term.rows), rawRow)),
+      };
+    };
+    const centerCell = () => ({
+      col: Math.max(1, Math.ceil(term.cols / 2)),
+      row: Math.max(1, Math.ceil(term.rows / 2)),
+    });
     let scrollbackDepth = 0;
-    const sendWheel = (dir: "up" | "down", count: number) => {
+    const sendWheel = (
+      dir: "up" | "down",
+      count: number,
+      cell = centerCell(),
+    ) => {
       const ws = wsRef.current;
       if (ws?.readyState !== WebSocket.OPEN) return;
 
@@ -682,7 +708,7 @@ export function useTerminal(
       // them. isInScrollback stays false; downstream UI (BackToLiveButton)
       // hides itself accordingly.
       if (claudeFullscreen) {
-        const seq = dir === "up" ? WHEEL_UP_SEQ : WHEEL_DOWN_SEQ;
+        const seq = wheelSeq(dir, cell);
         for (let i = 0; i < count; i++) {
           ws.send(new TextEncoder().encode(seq));
         }
@@ -703,7 +729,7 @@ export function useTerminal(
         // so the resume transition fires when the user scrolls back.
         scrollbackDepth = Math.max(0, scrollbackDepth - sendCount);
       }
-      const seq = dir === "up" ? WHEEL_UP_SEQ : WHEEL_DOWN_SEQ;
+      const seq = wheelSeq(dir, cell);
       for (let i = 0; i < sendCount; i++) {
         ws.send(new TextEncoder().encode(seq));
       }
@@ -752,7 +778,9 @@ export function useTerminal(
     let pinchStartDist = 0;
     let pinchStartSize = DEFAULT_FONT_SIZE;
     let pinchStartMidY = 0;
+    let touchMidX = 0;
     let singleStartY = 0;
+    let singleX = 0;
     let singleY = 0;
     let singleAccum = 0;
     let singleLastTs = 0;
@@ -843,6 +871,7 @@ export function useTerminal(
       if (e.touches.length === 1) {
         const t = e.touches[0]!;
         singleStartY = t.clientY;
+        singleX = t.clientX;
         singleY = t.clientY;
         singleAccum = 0;
         singleLastTs = performance.now();
@@ -853,6 +882,7 @@ export function useTerminal(
 
       if (e.touches.length === 2) {
         gestureMode = null;
+        touchMidX = (e.touches[0]!.clientX + e.touches[1]!.clientX) / 2;
         touchMidY = midpointY(e);
         touchAccum = 0;
         velocity = 0;
@@ -872,6 +902,7 @@ export function useTerminal(
         const t = e.touches[0]!;
         const y = t.clientY;
         const now = performance.now();
+        singleX = t.clientX;
 
         if (gestureMode === null) {
           if (Math.abs(y - singleStartY) < GESTURE_LOCK_PX) {
@@ -894,7 +925,11 @@ export function useTerminal(
           Math.min(MAX_WHEELS_PER_FRAME, rawWheels),
         );
         if (wheels !== 0) {
-          sendWheel(wheels > 0 ? "up" : "down", Math.abs(wheels));
+          sendWheel(
+            wheels > 0 ? "up" : "down",
+            Math.abs(wheels),
+            cellFromClientPoint(singleX, y),
+          );
           singleAccum -= wheels * step;
           const dt = Math.max(1, now - singleLastTs);
           velocity = clampV(dy / dt);
@@ -906,6 +941,7 @@ export function useTerminal(
       // Two-finger gesture (scroll or pinch)
       if (e.touches.length !== 2) return;
       e.preventDefault();
+      touchMidX = (e.touches[0]!.clientX + e.touches[1]!.clientX) / 2;
       const y = midpointY(e);
       const now = performance.now();
       const dist = touchDistance(e);
@@ -939,7 +975,11 @@ export function useTerminal(
         Math.min(MAX_WHEELS_PER_FRAME, rawWheels),
       );
       if (wheels !== 0) {
-        sendWheel(wheels > 0 ? "up" : "down", Math.abs(wheels));
+        sendWheel(
+          wheels > 0 ? "up" : "down",
+          Math.abs(wheels),
+          cellFromClientPoint(touchMidX, y),
+        );
         touchAccum -= wheels * step;
         const dt = Math.max(1, now - lastMoveTs);
         velocity = clampV(dy / dt);
@@ -980,7 +1020,7 @@ export function useTerminal(
           Math.min(MAX_WHEELS_PER_FRAME, rawW),
         );
         if (w !== 0) {
-          sendWheel(w > 0 ? "up" : "down", Math.abs(w));
+          sendWheel(w > 0 ? "up" : "down", Math.abs(w), centerCell());
           carry -= w * step;
         }
         if (Math.abs(v) > 0.05) {
@@ -1055,7 +1095,11 @@ export function useTerminal(
         Math.min(MAX_WHEELS_PER_FRAME, rawWheels),
       );
       if (wheels !== 0) {
-        sendWheel(wheels > 0 ? "down" : "up", Math.abs(wheels));
+        sendWheel(
+          wheels > 0 ? "down" : "up",
+          Math.abs(wheels),
+          cellFromClientPoint(e.clientX, e.clientY),
+        );
         scrollWheelAccum -= wheels * step;
       }
       return false;

@@ -7,6 +7,20 @@ use crate::tui::dialogs::{DeleteOptions, GroupDeleteOptions, NewSessionData};
 
 use super::HomeView;
 
+/// Compact human readable label for the snooze status line (`"30 min"`,
+/// `"1 hr"`, `"24 hr"`, `"2 hr 30 min"`). The picker only ever submits
+/// 30 / 60 / 1440, but formatting is kept general so arbitrary values
+/// from other callers read cleanly too.
+fn humanize_minutes(m: u32) -> String {
+    let hours = m / 60;
+    let mins = m % 60;
+    match (hours, mins) {
+        (0, _) => format!("{} min", mins),
+        (_, 0) => format!("{} hr", hours),
+        _ => format!("{} hr {} min", hours, mins),
+    }
+}
+
 impl HomeView {
     pub(super) fn create_session(&mut self, data: NewSessionData) -> anyhow::Result<String> {
         let target_profile = data.profile.clone();
@@ -493,5 +507,67 @@ impl HomeView {
             self.reload()?;
         }
         Ok(())
+    }
+
+    /// Handle the snooze keybind on the cursor's session. If already snoozed,
+    /// wake it immediately (no picker, the user just wants it back).
+    /// Otherwise open the duration picker (`SnoozeDurationDialog`) so they
+    /// can choose a duration before the row sinks. The actual snooze runs in
+    /// `snooze_session_for` once the dialog submits.
+    ///
+    /// Snooze semantics: a temporary archive that sets `snoozed_until = now +
+    /// minutes`, the row sinks to tier 99 alongside archived rows, renders
+    /// italic+dim with a `z ` prefix and remaining time in the age column,
+    /// and wakes back up automatically when the timer elapses (lazy, no
+    /// background task). Duration is resolved at snooze time; changing the
+    /// config default does NOT extend in flight snoozes.
+    pub(super) fn toggle_snooze_at_cursor(&mut self) -> anyhow::Result<Option<String>> {
+        let Some(id) = self.selected_session.clone() else {
+            return Ok(None);
+        };
+        let (is_snoozed, title) = {
+            let inst = self.instances.iter().find(|i| i.id == id);
+            match inst {
+                Some(i) => (i.is_snoozed(), i.title.clone()),
+                None => return Ok(None),
+            }
+        };
+        if is_snoozed {
+            self.mutate_instance(&id, |inst| inst.unsnooze());
+            self.save()?;
+            self.flat_items = self.build_flat_items();
+            return Ok(Some(format!("Woke: {}", title)));
+        }
+
+        self.pending_snooze_session = Some(id);
+        self.snooze_duration_dialog = Some(crate::tui::dialogs::SnoozeDurationDialog::new(&title));
+        Ok(None)
+    }
+
+    /// Apply a snooze with an explicit duration. Called by the duration
+    /// picker on submit; also the single place that actually mutates
+    /// `snoozed_until` from the TUI. After sinking the row in the Attention
+    /// sort, jump to the next needs attention item so the user can keep
+    /// triaging.
+    pub(super) fn snooze_session_for(
+        &mut self,
+        id: &str,
+        minutes: u32,
+    ) -> anyhow::Result<Option<String>> {
+        let mut title = String::new();
+        self.mutate_instance(id, |inst| {
+            inst.snooze(minutes);
+            title = inst.title.clone();
+        });
+        self.save()?;
+        self.flat_items = self.build_flat_items();
+        if self.sort_order == crate::session::config::SortOrder::Attention {
+            self.select_top_attention(None);
+        }
+        Ok(Some(format!(
+            "Snoozed for {}: {}",
+            humanize_minutes(minutes),
+            title
+        )))
     }
 }

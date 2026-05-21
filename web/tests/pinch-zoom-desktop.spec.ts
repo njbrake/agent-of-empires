@@ -32,12 +32,21 @@ test.describe("Terminal Ctrl+wheel zoom (desktop)", () => {
   // Dispatch wheel events on .xterm with configurable ctrlKey/deltaY.
   async function fireWheel(
     page: Page,
-    opts: { deltaY: number; ctrlKey: boolean; times?: number },
+    opts: {
+      deltaY: number;
+      ctrlKey: boolean;
+      times?: number;
+      xRatio?: number;
+      yRatio?: number;
+    },
   ) {
     await page.evaluate(
-      ({ deltaY, ctrlKey, times }) => {
+      ({ deltaY, ctrlKey, times, xRatio, yRatio }) => {
         const target = document.querySelector<HTMLElement>(".xterm");
         if (!target) throw new Error(".xterm not mounted");
+        const rect = target.getBoundingClientRect();
+        const clientX = rect.left + rect.width * (xRatio ?? 0.5);
+        const clientY = rect.top + rect.height * (yRatio ?? 0.5);
         for (let i = 0; i < (times ?? 1); i++) {
           target.dispatchEvent(
             new WheelEvent("wheel", {
@@ -45,6 +54,8 @@ test.describe("Terminal Ctrl+wheel zoom (desktop)", () => {
               cancelable: true,
               deltaY,
               ctrlKey,
+              clientX,
+              clientY,
             }),
           );
         }
@@ -96,7 +107,7 @@ test.describe("Terminal Ctrl+wheel zoom (desktop)", () => {
     page,
   }) => {
     await installTerminalSpies(page);
-    await mockTerminalApis(page);
+    const terminal = await mockTerminalApis(page);
     await page.goto("/");
     await seedSettings(page, { desktopFontSize: 14 });
     await page.reload();
@@ -107,7 +118,13 @@ test.describe("Terminal Ctrl+wheel zoom (desktop)", () => {
       (window as unknown as { __LS_WRITES__: string[] }).__LS_WRITES__ = [];
     });
 
-    await fireWheel(page, { deltaY: -120, ctrlKey: false, times: 5 });
+    await fireWheel(page, {
+      deltaY: -120,
+      ctrlKey: false,
+      times: 5,
+      xRatio: 0.83,
+      yRatio: 0.21,
+    });
 
     // 500ms is longer than the 400ms debounce — if the handler leaked
     // writes through without ctrlKey, they would have landed by now.
@@ -119,6 +136,19 @@ test.describe("Terminal Ctrl+wheel zoom (desktop)", () => {
     );
     expect(writes).toEqual([]);
     expect(await readFontSize(page, "desktop")).toBe(14);
+
+    const wheelMessages = terminal.wsMessages
+      .map((m) => m.toString("utf8"))
+      .filter((m) => m.startsWith("\x1b[<64;") || m.startsWith("\x1b[<65;"));
+    expect(wheelMessages.length).toBeGreaterThan(0);
+    expect(wheelMessages.every((m) => !m.includes(";1;1M"))).toBe(true);
+
+    const wheelCoords = wheelMessages
+      .map((m) => /\x1b\[<\d+;(\d+);(\d+)[Mm]/.exec(m))
+      .filter((m): m is RegExpExecArray => m !== null)
+      .map(([, col, row]) => ({ col: Number(col), row: Number(row) }));
+    expect(wheelCoords.length).toBeGreaterThan(0);
+    expect(wheelCoords.some(({ col, row }) => col > 1 && row > 1)).toBe(true);
   });
 
   test("Ctrl+wheel zoom does NOT re-mount the terminal (live-sync regression guard)", async ({

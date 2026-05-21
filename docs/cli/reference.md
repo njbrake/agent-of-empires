@@ -25,6 +25,8 @@ This document contains the help content for the `aoe` command-line program.
 * [`aoe session current`↴](#aoe-session-current)
 * [`aoe session set-session-id`↴](#aoe-session-set-session-id)
 * [`aoe session set-base`↴](#aoe-session-set-base)
+* [`aoe session snooze`↴](#aoe-session-snooze)
+* [`aoe session unsnooze`↴](#aoe-session-unsnooze)
 * [`aoe group`↴](#aoe-group)
 * [`aoe group list`↴](#aoe-group-list)
 * [`aoe group create`↴](#aoe-group-create)
@@ -290,6 +292,8 @@ Manage session lifecycle (start, stop, attach, etc.)
 * `current` — Auto-detect current session
 * `set-session-id` — Set agent session ID for a session
 * `set-base` — Set or clear the per-session diff base branch. The diff view compares the worktree against this ref instead of the auto-detected default. Useful when the PR target differs from the project default (stacked PRs, hotfix off `release/*`, renamed default branch). See #970
+* `snooze` — Snooze a session for a duration (temporary archive, auto wakes)
+* `unsnooze` — Wake a snoozed session immediately
 
 
 
@@ -441,6 +445,34 @@ Set or clear the per-session diff base branch. The diff view compares the worktr
 ###### **Options:**
 
 * `--clear` — Clear the override and fall back to the profile default / auto-detected base
+
+
+
+## `aoe session snooze`
+
+Snooze a session for a duration (temporary archive, auto wakes)
+
+**Usage:** `aoe session snooze [OPTIONS] <IDENTIFIER>`
+
+###### **Arguments:**
+
+* `<IDENTIFIER>` — Session ID or title
+
+###### **Options:**
+
+* `--minutes <MINUTES>` — Snooze duration in minutes; if omitted, uses `session.snooze_duration_minutes` from the active config (default 30)
+
+
+
+## `aoe session unsnooze`
+
+Wake a snoozed session immediately
+
+**Usage:** `aoe session unsnooze <IDENTIFIER>`
+
+###### **Arguments:**
+
+* `<IDENTIFIER>` — Session ID or title
 
 
 
