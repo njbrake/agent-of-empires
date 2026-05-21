@@ -576,6 +576,27 @@
       "components": ["web/src/components/TopBar.tsx"]
     },
     {
+      "id": "story.projects-open",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": ["tests/live/cockpit-stories/projects-open.spec.ts"],
+      "components": ["web/src/components/ProjectsView.tsx"]
+    },
+    {
+      "id": "story.profile-create",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": ["tests/live/cockpit-stories/profile-create.spec.ts"],
+      "components": ["web/src/components/settings/ProfileSelector.tsx"]
+    },
+    {
+      "id": "story.wizard-open-close",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": ["tests/live/cockpit-stories/wizard-open-close.spec.ts"],
+      "components": ["web/src/components/session-wizard/SessionWizard.tsx"]
+    },
+    {
       "id": "cockpit.rate-limit-recovery",
       "kind": "vitest",
       "risk": "high",
