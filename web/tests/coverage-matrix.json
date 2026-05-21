@@ -426,6 +426,16 @@
       "components": ["web/src/components/cockpit/Composer.tsx"]
     },
     {
+      "id": "cockpit.story.composer-streamed-response",
+      "kind": "live-playwright",
+      "risk": "high",
+      "specs": ["tests/live/cockpit-stories/composer-streamed-response.spec.ts"],
+      "components": [
+        "web/src/components/cockpit/CockpitView.tsx",
+        "web/src/components/cockpit/Markdown.tsx"
+      ]
+    },
+    {
       "id": "cockpit.rate-limit-recovery",
       "kind": "vitest",
       "risk": "high",
