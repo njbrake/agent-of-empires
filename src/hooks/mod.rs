@@ -77,11 +77,10 @@ pub(crate) fn codex_config_path_display_for_host_environment(entries: &[String])
 ///
 /// The command must never exit non-zero, otherwise the agent treats the hook
 /// as a blocking failure and refuses to run further tool calls. `/tmp/aoe-hooks/<id>`
-/// can disappear mid-session (e.g. when another AoE TUI in a different
-/// namespace runs its orphan-dir sweep, or when /tmp is swept by the OS), so
-/// both mkdir and printf must tolerate a missing parent dir. We swallow stderr
-/// and force a final `exit 0`: at worst the status file is one tick stale and
-/// the next hook call recreates the dir.
+/// can disappear mid-session (OS /tmp cleanup, transient FS hiccup, external
+/// tooling), so both mkdir and printf must tolerate a missing parent dir. We
+/// swallow stderr and force a final `exit 0`: at worst the status file is one
+/// tick stale and the next hook call recreates the dir.
 fn hook_command(status: &str) -> String {
     hook_command_with_base(status, HOOK_STATUS_BASE)
 }
@@ -1824,8 +1823,8 @@ command = "echo user-hook"
     #[test]
     fn test_hook_command_tolerates_unwritable_base_dir() {
         // Regression for #1390: if /tmp/aoe-hooks/<id> disappears mid-session
-        // (e.g. a sibling AoE namespace sweeps it, or /tmp gets cleaned), the
-        // hook must still exit 0 so the agent doesn't treat it as blocking and
+        // (OS /tmp cleanup, transient FS hiccup, external tooling), the hook
+        // must still exit 0 so the agent doesn't treat it as blocking and
         // freeze further tool calls.
         use std::process::Command;
 
