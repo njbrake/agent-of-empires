@@ -576,10 +576,16 @@ const PROMPT_SUPPRESS_ENV: &[(&str, &str)] = &[
 
 /// Build a `Command` for running a hook. Local hooks use the user's `$SHELL`;
 /// container hooks use `bash` since the user shell may not be installed.
+///
+/// `extra_env` carries session metadata (see [`lifecycle_env_vars`]) that
+/// scripts can read via `$AOE_SESSION_ID`, `$AOE_PROJECT_PATH`, etc. For
+/// container hooks these are re-emitted as `docker exec -e KEY=VALUE` since
+/// host env vars don't propagate into `docker exec` by default.
 fn build_hook_command(
     cmd: &str,
     target: &HookTarget,
     opts: HookSpawnOpts,
+    extra_env: &[(&'static str, String)],
 ) -> std::process::Command {
     let shell_cmd = if opts.merge_stderr {
         format!("{} 2>&1", cmd)
@@ -592,6 +598,9 @@ fn build_hook_command(
             let shell = super::environment::user_shell();
             let mut command = std::process::Command::new(shell);
             command.arg("-c").arg(shell_cmd).current_dir(project_path);
+            for (k, v) in extra_env {
+                command.env(k, v);
+            }
             command
         }
         HookTarget::Container {
@@ -603,6 +612,9 @@ fn build_hook_command(
             command.arg("exec").arg("--workdir").arg(workdir);
             // For container hooks, env vars on the `docker exec` parent do not
             // propagate inside the container; inject them via `-e` instead.
+            for (k, v) in extra_env {
+                command.arg("-e").arg(format!("{}={}", k, v));
+            }
             if opts.detach_tty {
                 for (k, v) in PROMPT_SUPPRESS_ENV {
                     command.arg("-e").arg(format!("{}={}", k, v));
@@ -649,6 +661,27 @@ fn build_hook_command(
     command
 }
 
+/// Env vars exposed to lifecycle hooks (`on_create`, `on_launch`, `on_destroy`).
+///
+/// Mirrors the naming in [`crate::status_hooks::StatusHookContext::env_vars`]
+/// so a single vocabulary covers both hook surfaces. `AOE_SESSION_BRANCH` is
+/// only present when the session has a worktree; other fields may be empty
+/// strings (e.g., `AOE_GROUP_PATH` for ungrouped sessions).
+pub(crate) fn lifecycle_env_vars(instance: &super::Instance) -> Vec<(&'static str, String)> {
+    let mut env = vec![
+        ("AOE_SESSION_ID", instance.id.clone()),
+        ("AOE_SESSION_TITLE", instance.title.clone()),
+        ("AOE_PROJECT_PATH", instance.project_path.clone()),
+        ("AOE_PROFILE", instance.effective_profile()),
+        ("AOE_TOOL", instance.tool.clone()),
+        ("AOE_GROUP_PATH", instance.group_path.clone()),
+    ];
+    if let Some(wt) = instance.worktree_info.as_ref() {
+        env.push(("AOE_SESSION_BRANCH", wt.branch.clone()));
+    }
+    env
+}
+
 /// Format a hook failure error message from captured output.
 fn format_hook_error(
     cmd: &str,
@@ -678,12 +711,16 @@ fn format_hook_error(
 }
 
 /// Run hook commands with captured output (non-streamed).
-fn run_hooks_captured(commands: &[String], target: &HookTarget) -> Result<()> {
+fn run_hooks_captured(
+    commands: &[String],
+    target: &HookTarget,
+    extra_env: &[(&'static str, String)],
+) -> Result<()> {
     let in_container = matches!(target, HookTarget::Container { .. });
 
     for cmd in commands {
         tracing::info!(target: "session.store", "Running hook: {}", cmd);
-        let mut command = build_hook_command(cmd, target, HookSpawnOpts::default());
+        let mut command = build_hook_command(cmd, target, HookSpawnOpts::default(), extra_env);
         let output = command
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -717,6 +754,7 @@ fn run_hooks_streamed(
     commands: &[String],
     target: &HookTarget,
     progress_tx: &mpsc::Sender<HookProgress>,
+    extra_env: &[(&'static str, String)],
 ) -> Result<()> {
     use std::io::BufRead;
 
@@ -733,6 +771,7 @@ fn run_hooks_streamed(
                 merge_stderr: true,
                 detach_tty: true,
             },
+            extra_env,
         );
         let mut child = command
             .stdout(std::process::Stdio::piped())
@@ -760,8 +799,16 @@ fn run_hooks_streamed(
 }
 
 /// Execute a list of hook commands in the given directory.
-pub fn execute_hooks(commands: &[String], project_path: &Path) -> Result<()> {
-    run_hooks_captured(commands, &HookTarget::Local { project_path })
+///
+/// `extra_env` is exported to each hook process; see [`lifecycle_env_vars`]
+/// for the canonical set of session env vars. Pass `&[]` if no session context
+/// is available.
+pub fn execute_hooks(
+    commands: &[String],
+    project_path: &Path,
+    extra_env: &[(&'static str, String)],
+) -> Result<()> {
+    run_hooks_captured(commands, &HookTarget::Local { project_path }, extra_env)
 }
 
 /// Execute hooks inside a Docker container.
@@ -769,6 +816,7 @@ pub fn execute_hooks_in_container(
     commands: &[String],
     container_name: &str,
     workdir: &str,
+    extra_env: &[(&'static str, String)],
 ) -> Result<()> {
     run_hooks_captured(
         commands,
@@ -776,6 +824,7 @@ pub fn execute_hooks_in_container(
             container_name,
             workdir,
         },
+        extra_env,
     )
 }
 
@@ -790,6 +839,7 @@ fn run_hooks_best_effort(
     commands: &[String],
     target: &HookTarget,
     detach_tty: bool,
+    extra_env: &[(&'static str, String)],
 ) -> Vec<String> {
     let in_container = matches!(target, HookTarget::Container { .. });
     let mut errors = Vec::new();
@@ -803,6 +853,7 @@ fn run_hooks_best_effort(
                 merge_stderr: false,
                 detach_tty,
             },
+            extra_env,
         );
         match command
             .stdout(std::process::Stdio::piped())
@@ -850,8 +901,14 @@ pub fn execute_hooks_best_effort(
     commands: &[String],
     project_path: &Path,
     detach_tty: bool,
+    extra_env: &[(&'static str, String)],
 ) -> Vec<String> {
-    run_hooks_best_effort(commands, &HookTarget::Local { project_path }, detach_tty)
+    run_hooks_best_effort(
+        commands,
+        &HookTarget::Local { project_path },
+        detach_tty,
+        extra_env,
+    )
 }
 
 /// Execute hooks in a container with best-effort semantics (all commands attempted).
@@ -864,6 +921,7 @@ pub fn execute_hooks_in_container_best_effort(
     container_name: &str,
     workdir: &str,
     detach_tty: bool,
+    extra_env: &[(&'static str, String)],
 ) -> Vec<String> {
     run_hooks_best_effort(
         commands,
@@ -872,6 +930,7 @@ pub fn execute_hooks_in_container_best_effort(
             workdir,
         },
         detach_tty,
+        extra_env,
     )
 }
 
@@ -880,8 +939,14 @@ pub fn execute_hooks_streamed(
     commands: &[String],
     project_path: &Path,
     progress_tx: &mpsc::Sender<HookProgress>,
+    extra_env: &[(&'static str, String)],
 ) -> Result<()> {
-    run_hooks_streamed(commands, &HookTarget::Local { project_path }, progress_tx)
+    run_hooks_streamed(
+        commands,
+        &HookTarget::Local { project_path },
+        progress_tx,
+        extra_env,
+    )
 }
 
 /// Execute hooks inside a Docker container with streamed output.
@@ -890,6 +955,7 @@ pub fn execute_hooks_in_container_streamed(
     container_name: &str,
     workdir: &str,
     progress_tx: &mpsc::Sender<HookProgress>,
+    extra_env: &[(&'static str, String)],
 ) -> Result<()> {
     run_hooks_streamed(
         commands,
@@ -898,6 +964,7 @@ pub fn execute_hooks_in_container_streamed(
             workdir,
         },
         progress_tx,
+        extra_env,
     )
 }
 
@@ -1286,6 +1353,7 @@ mod tests {
             &["echo test".to_string()],
             "nonexistent_container",
             "/workspace/myproject",
+            &[],
         );
         // Should fail because docker/container doesn't exist, but should not panic
         assert!(result.is_err());
@@ -1339,7 +1407,7 @@ mod tests {
             echo "SSH_ASKPASS=${SSH_ASKPASS:-unset}"
         "#;
         let (tx, rx) = mpsc::channel();
-        execute_hooks_streamed(&[probe.to_string()], tmp.path(), &tx).unwrap();
+        execute_hooks_streamed(&[probe.to_string()], tmp.path(), &tx, &[]).unwrap();
         drop(tx);
 
         let lines: Vec<String> = rx
@@ -1381,7 +1449,7 @@ mod tests {
     fn captured_hook_does_not_force_git_env() {
         let tmp = tempfile::tempdir().unwrap();
         let probe = "echo \"GIT_TERMINAL_PROMPT=${GIT_TERMINAL_PROMPT:-unset}\" > out.txt";
-        execute_hooks(&[probe.to_string()], tmp.path()).unwrap();
+        execute_hooks(&[probe.to_string()], tmp.path(), &[]).unwrap();
         let out = std::fs::read_to_string(tmp.path().join("out.txt")).unwrap();
         assert!(
             !out.contains("GIT_TERMINAL_PROMPT=0"),
@@ -1407,6 +1475,7 @@ mod tests {
                 merge_stderr: true,
                 detach_tty: true,
             },
+            &[],
         );
         let args: Vec<String> = detached
             .get_args()
@@ -1429,7 +1498,8 @@ mod tests {
             args
         );
 
-        let attached = build_hook_command("rm -rf /work/build", &target, HookSpawnOpts::default());
+        let attached =
+            build_hook_command("rm -rf /work/build", &target, HookSpawnOpts::default(), &[]);
         let attached_args: Vec<String> = attached
             .get_args()
             .map(|a| a.to_string_lossy().into_owned())
@@ -1448,7 +1518,7 @@ mod tests {
     fn best_effort_hook_detaches_when_requested() {
         let tmp = tempfile::tempdir().unwrap();
         let probe = "echo \"GIT_TERMINAL_PROMPT=${GIT_TERMINAL_PROMPT:-unset}\" > out.txt";
-        let errors = execute_hooks_best_effort(&[probe.to_string()], tmp.path(), true);
+        let errors = execute_hooks_best_effort(&[probe.to_string()], tmp.path(), true, &[]);
         assert!(
             errors.is_empty(),
             "hook should succeed, errors: {:?}",
@@ -1466,7 +1536,7 @@ mod tests {
     fn best_effort_hook_attached_for_cli() {
         let tmp = tempfile::tempdir().unwrap();
         let probe = "echo \"GIT_TERMINAL_PROMPT=${GIT_TERMINAL_PROMPT:-unset}\" > out.txt";
-        let errors = execute_hooks_best_effort(&[probe.to_string()], tmp.path(), false);
+        let errors = execute_hooks_best_effort(&[probe.to_string()], tmp.path(), false, &[]);
         assert!(
             errors.is_empty(),
             "hook should succeed, errors: {:?}",
@@ -1477,6 +1547,148 @@ mod tests {
             !out.contains("GIT_TERMINAL_PROMPT=0"),
             "CLI best-effort path must not force GIT_TERMINAL_PROMPT, got: {}",
             out
+        );
+    }
+
+    /// `lifecycle_env_vars` is the contract advertised to hook authors in
+    /// docs/guides/repo-config.md. Keys (and conditional inclusion of
+    /// `AOE_SESSION_BRANCH`) must stay stable; pin the shape here so changes
+    /// have to update both the helper and the docs in lockstep.
+    #[test]
+    fn lifecycle_env_vars_shape() {
+        use super::super::instance::WorktreeInfo;
+        use crate::session::Instance;
+
+        let mut instance = Instance::new("My Session", "/tmp/proj");
+        instance.tool = "claude".to_string();
+        instance.group_path = "backend/api".to_string();
+        instance.source_profile = "work".to_string();
+
+        let env: std::collections::HashMap<_, _> =
+            lifecycle_env_vars(&instance).into_iter().collect();
+
+        assert_eq!(
+            env.get("AOE_SESSION_ID").map(String::as_str),
+            Some(instance.id.as_str())
+        );
+        assert_eq!(
+            env.get("AOE_SESSION_TITLE").map(String::as_str),
+            Some("My Session")
+        );
+        assert_eq!(
+            env.get("AOE_PROJECT_PATH").map(String::as_str),
+            Some("/tmp/proj")
+        );
+        assert_eq!(env.get("AOE_TOOL").map(String::as_str), Some("claude"));
+        assert_eq!(
+            env.get("AOE_GROUP_PATH").map(String::as_str),
+            Some("backend/api")
+        );
+        assert!(env.contains_key("AOE_PROFILE"));
+        assert!(
+            !env.contains_key("AOE_SESSION_BRANCH"),
+            "branch should be omitted when no worktree is attached"
+        );
+
+        instance.worktree_info = Some(WorktreeInfo {
+            branch: "feature/auth".to_string(),
+            main_repo_path: "/tmp/proj".to_string(),
+            managed_by_aoe: true,
+            created_at: chrono::Utc::now(),
+            base_branch: None,
+        });
+        let env_with_branch: std::collections::HashMap<_, _> =
+            lifecycle_env_vars(&instance).into_iter().collect();
+        assert_eq!(
+            env_with_branch
+                .get("AOE_SESSION_BRANCH")
+                .map(String::as_str),
+            Some("feature/auth")
+        );
+    }
+
+    /// End-to-end check that session env vars actually reach the hook process:
+    /// run a real local hook that echoes its env into a file, then read it
+    /// back. Covers the captured (`execute_hooks`), streamed
+    /// (`execute_hooks_streamed`), and best-effort (`execute_hooks_best_effort`)
+    /// paths so a regression in any one of them fails this test.
+    #[test]
+    fn local_hooks_see_session_env_vars() {
+        use crate::session::Instance;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let mut instance = Instance::new("My Title", tmp.path().to_str().unwrap());
+        instance.tool = "codex".to_string();
+        instance.source_profile = "work".to_string();
+        let env = lifecycle_env_vars(&instance);
+
+        let probe = r#"
+            echo "ID=${AOE_SESSION_ID}" > env.txt
+            echo "TITLE=${AOE_SESSION_TITLE}" >> env.txt
+            echo "PATH=${AOE_PROJECT_PATH}" >> env.txt
+            echo "TOOL=${AOE_TOOL}" >> env.txt
+        "#;
+
+        execute_hooks(&[probe.to_string()], tmp.path(), &env).unwrap();
+        let out = std::fs::read_to_string(tmp.path().join("env.txt")).unwrap();
+        assert!(
+            out.contains(&format!("ID={}", instance.id)),
+            "captured: {}",
+            out
+        );
+        assert!(out.contains("TITLE=My Title"), "captured: {}", out);
+        assert!(out.contains("TOOL=codex"), "captured: {}", out);
+
+        std::fs::remove_file(tmp.path().join("env.txt")).unwrap();
+        let errors = execute_hooks_best_effort(&[probe.to_string()], tmp.path(), false, &env);
+        assert!(errors.is_empty(), "best-effort errors: {:?}", errors);
+        let out = std::fs::read_to_string(tmp.path().join("env.txt")).unwrap();
+        assert!(
+            out.contains(&format!("ID={}", instance.id)),
+            "best-effort: {}",
+            out
+        );
+
+        std::fs::remove_file(tmp.path().join("env.txt")).unwrap();
+        let (tx, _rx) = mpsc::channel();
+        execute_hooks_streamed(&[probe.to_string()], tmp.path(), &tx, &env).unwrap();
+        drop(tx);
+        let out = std::fs::read_to_string(tmp.path().join("env.txt")).unwrap();
+        assert!(
+            out.contains(&format!("ID={}", instance.id)),
+            "streamed: {}",
+            out
+        );
+    }
+
+    /// Container hooks must forward session env via `docker exec -e KEY=VALUE`
+    /// since host env doesn't propagate into `docker exec`. Structural check
+    /// against the constructed argv (CI has no docker daemon).
+    #[test]
+    fn container_hook_forwards_session_env_via_dash_e() {
+        let target = HookTarget::Container {
+            container_name: "test_container",
+            workdir: "/work",
+        };
+        let env = vec![
+            ("AOE_SESSION_ID", "s_abc".to_string()),
+            ("AOE_SESSION_TITLE", "My Title".to_string()),
+        ];
+        let cmd = build_hook_command("true", &target, HookSpawnOpts::default(), &env);
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        let joined = args.join(" ");
+        assert!(
+            joined.contains("-e AOE_SESSION_ID=s_abc"),
+            "expected -e AOE_SESSION_ID=s_abc in args, got: {:?}",
+            args
+        );
+        assert!(
+            joined.contains("-e AOE_SESSION_TITLE=My Title"),
+            "expected -e AOE_SESSION_TITLE=My Title in args, got: {:?}",
+            args
         );
     }
 }

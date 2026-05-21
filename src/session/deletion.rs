@@ -371,6 +371,7 @@ fn run_on_destroy_hooks(instance: &Instance, detach: bool) {
     tracing::info!(target: "session.delete", "Running on_destroy hooks for session {}", instance.id);
 
     let is_sandboxed = instance.sandbox_info.as_ref().is_some_and(|s| s.enabled);
+    let hook_env = repo_config::lifecycle_env_vars(instance);
 
     // The caller controls detachment: TUI/web pass detach=true to avoid
     // corrupting the rendered UI (see issue #901); CLI passes detach=false
@@ -383,12 +384,18 @@ fn run_on_destroy_hooks(instance: &Instance, detach: bool) {
                 &sandbox.container_name,
                 &workdir,
                 detach,
+                &hook_env,
             )
         } else {
             vec![]
         }
     } else {
-        repo_config::execute_hooks_best_effort(&resolved_on_destroy, project_path, detach)
+        repo_config::execute_hooks_best_effort(
+            &resolved_on_destroy,
+            project_path,
+            detach,
+            &hook_env,
+        )
     };
 
     if !errors.is_empty() {
