@@ -814,6 +814,20 @@
       "components": ["web/src/hooks/useKeyboardShortcuts.ts"]
     },
     {
+      "id": "cockpit.story.queue-fold-unfold",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": ["tests/live/cockpit-stories/queue-fold-unfold.spec.ts"],
+      "components": ["web/src/components/cockpit/CockpitView.tsx"]
+    },
+    {
+      "id": "story.wizard-extra-repos",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": ["tests/live/cockpit-stories/wizard-extra-repos.spec.ts"],
+      "components": ["web/src/components/session-wizard/steps/ExtraReposPicker.tsx"]
+    },
+    {
       "id": "cockpit.rate-limit-recovery",
       "kind": "vitest",
       "risk": "high",
