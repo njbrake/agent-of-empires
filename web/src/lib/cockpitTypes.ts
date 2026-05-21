@@ -490,11 +490,10 @@ export function applyEvent(
       // Capture the agent's cumulative cost snapshot as the new
       // baseline so the next UsageUpdate reports cost-since-compact
       // instead of session-lifetime cumulative. See #1354.
-      next.usageBaseline = {
-        cost:
-          (state.sessionUsage?.cost?.amount ?? 0) +
-          (state.usageBaseline?.cost ?? 0),
-      };
+      const compactCumulative =
+        (state.sessionUsage?.cost?.amount ?? 0) +
+        (state.usageBaseline?.cost ?? 0);
+      next.usageBaseline = { cost: compactCumulative };
       next.sessionUsage = null;
       next.activity = [
         ...next.activity,
@@ -541,11 +540,10 @@ export function applyEvent(
       // already stores the delta since the previous baseline, so the
       // new baseline is the sum of both to track the true cumulative.
       // See #1354.
-      next.usageBaseline = {
-        cost:
-          (state.sessionUsage?.cost?.amount ?? 0) +
-          (state.usageBaseline?.cost ?? 0),
-      };
+      const clearCumulative =
+        (state.sessionUsage?.cost?.amount ?? 0) +
+        (state.usageBaseline?.cost ?? 0);
+      next.usageBaseline = { cost: clearCumulative };
       next.sessionUsage = null;
     }
     return next;
@@ -698,14 +696,9 @@ export function applyEvent(
     // an upstream restart ever reports a smaller cumulative. See #1354.
     const incoming = event.UsageUpdated.usage;
     if (next.usageBaseline && incoming.cost) {
-      next.sessionUsage = {
-        used: incoming.used,
-        size: incoming.size,
-        cost: {
-          amount: Math.max(0, incoming.cost.amount - next.usageBaseline.cost),
-          currency: incoming.cost.currency,
-        },
-      };
+      const rebasedAmount = Math.max(0, incoming.cost.amount - next.usageBaseline.cost);
+      const rebasedCost = { amount: rebasedAmount, currency: incoming.cost.currency };
+      next.sessionUsage = { used: incoming.used, size: incoming.size, cost: rebasedCost };
     } else {
       next.sessionUsage = incoming;
     }
