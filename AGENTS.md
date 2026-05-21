@@ -33,6 +33,7 @@
 - `cargo build --features serve`: includes the web dashboard (needs Node.js + npm).
 - `cargo test`: unit + integration tests (some skip if `tmux` unavailable).
 - `cargo fmt` + `cargo clippy`: run before pushing; fix clippy warnings unless there's a strong reason not to.
+- Pre-commit hook (auto-installed by `cargo-husky` during `cargo build`) runs `cargo fmt -- --check` only. Clippy is enforced in CI (`.github/workflows/ci.yml`), not on every commit, to keep `git commit` fast. If you have an older clone with a stale hook that still runs clippy, run `cargo build` once to regenerate `.git/hooks/pre-commit`, or delete the file and let the next build re-create it.
 - Debug logging: `AGENT_OF_EMPIRES_DEBUG=1 cargo run` (writes `debug.log` in app data dir).
 - Running from source needs `tmux` installed.
 - Debug builds use an isolated namespace so they don't collide with an installed release `aoe`: app data dir is `~/.agent-of-empires-dev` (macOS/Windows) or `~/.config/agent-of-empires-dev` (Linux), tmux session prefix is `aoe_dev_`, and `aoe serve` defaults to port `8081`. Release builds keep the original `agent-of-empires` paths, `aoe_` prefix, and port `8080`.
