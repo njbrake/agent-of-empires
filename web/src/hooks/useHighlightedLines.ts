@@ -49,7 +49,21 @@ export function useHighlightedLines(
 ): HighlightResult {
   const [state, setState] = useState<GridState | null>(null);
   const requestRef = useRef(0);
+  // Tracks whether the host component is still mounted. The async IIFE
+  // below awaits Shiki imports / WASM init that can outlive a fast
+  // unmount (e.g. test teardown, route switch). Without this guard the
+  // final `setState` fires after unmount and React's scheduler then
+  // touches a torn-down environment, surfacing as an unhandled
+  // "ReferenceError: window is not defined" in Vitest CI.
+  const isMountedRef = useRef(true);
   const shiki = useShikiTheme();
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     const reqId = ++requestRef.current;
@@ -80,7 +94,7 @@ export function useHighlightedLines(
           }
         }
 
-        if (reqId !== requestRef.current) return;
+        if (!isMountedRef.current || reqId !== requestRef.current) return;
 
         // Determine the language id from the first registration.
         const langId = (langs[0] as { name?: string }).name;
@@ -117,7 +131,7 @@ export function useHighlightedLines(
           result.push(hunkTokens);
         }
 
-        if (reqId === requestRef.current) {
+        if (isMountedRef.current && reqId === requestRef.current) {
           setState({ grid: result, path: filePath });
         }
       } catch (err) {
@@ -126,7 +140,7 @@ export function useHighlightedLines(
         // the diff renders unstyled (DiffLine falls back to textClass
         // when tokens is undefined for a row). Without this, an
         // unhandled rejection would leave loading=true forever.
-        if (reqId === requestRef.current) {
+        if (isMountedRef.current && reqId === requestRef.current) {
           console.error("useHighlightedLines: highlighter failed", err);
           setState({ grid: [], path: filePath });
         }
