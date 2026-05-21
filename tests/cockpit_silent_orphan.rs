@@ -257,3 +257,59 @@ async fn silent_orphan_disabled_by_zero_grace() {
         "silent-orphan watchdog must stay fully disarmed when grace = 0; saw Stopped reason={stopped:?}"
     );
 }
+
+/// #1360: a `ToolCallUpdate` whose completion content carries the Claude
+/// SDK marker `"Async agent launched successfully"` must flip the prompt
+/// loop's sticky `async_agent_running` flag so the watchdog promotes its
+/// effective grace to at least 30 minutes (capped by `ASYNC_AGENT_GRACE_FLOOR`).
+/// Without the fix, the watchdog would fire ~300ms after the completion;
+/// with it, the test window stays silent.
+#[tokio::test]
+#[serial]
+async fn silent_orphan_suppressed_during_async_agent_wait() {
+    if !node_available() || !shim_path().exists() {
+        eprintln!("skipping: node or shim missing");
+        return;
+    }
+
+    // Base grace 300ms; if the async detection works, effective grace
+    // jumps to ASYNC_AGENT_GRACE_FLOOR (30 minutes), so a 2s drain must
+    // see no `prompt_orphaned`. The fast grace is set tight so a wrongly
+    // ordered effective_grace branch (cost-seen > async) would still
+    // false-fire and fail the assertion.
+    std::env::set_var("AOE_SILENT_ORPHAN_GRACE_MS", "300");
+    std::env::set_var("AOE_SILENT_ORPHAN_FAST_GRACE_MS", "100");
+    std::env::set_var("AOE_SILENT_ORPHAN_CHECK_INTERVAL_MS", "50");
+
+    let preseed = "silent-orphan-async-agent";
+    let (socket_path, _tmp) = spawn_shim_socket_bridge_with_preseed(preseed).await;
+
+    let client = AcpClient::attach(
+        socket_path,
+        std::env::temp_dir(),
+        vec![],
+        preseed.to_string(),
+        false,
+        CockpitSessionId("silent-orphan-async-agent".into()),
+        None,
+        "claude".into(),
+        None,
+    )
+    .await
+    .expect("attach for async-agent silent-orphan test");
+
+    let mut client = client;
+    client
+        .send_prompt("ASYNC_AGENT_ORPHAN trigger")
+        .await
+        .expect("send prompt");
+
+    let stopped =
+        drain_for_stopped_reason(&mut client, Instant::now() + Duration::from_secs(2)).await;
+    let _ = client.shutdown().await;
+
+    assert!(
+        stopped.is_none(),
+        "silent-orphan watchdog must stay suppressed while async-agent is running; saw Stopped reason={stopped:?}"
+    );
+}
