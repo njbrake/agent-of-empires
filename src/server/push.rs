@@ -332,11 +332,12 @@ pub struct PushState {
     /// either `mailto:` or an `https://` URL per the spec. Not strongly
     /// validated by push endpoints in practice.
     pub subject: String,
-    /// Shared `SEND_CONCURRENCY` budget across every send_one path.
-    /// `spawn_consumer`'s fire_due_pushes loop and the wake fire path
-    /// both `acquire_owned` here, so a session with many subscribers
-    /// cannot fan out beyond the gateway concurrency the consumer
-    /// pipeline expects.
+    /// Shared `SEND_CONCURRENCY` budget across the consumer-driven
+    /// (`fire_due_pushes`) and wake-fire (`fire_wake_fired_push`) fan-out
+    /// paths, so a session with many subscribers cannot fan out beyond
+    /// the gateway concurrency the consumer pipeline expects. The admin
+    /// test-push handler (`send_one` in the `/api/push/test` route) is
+    /// intentionally ungated since it is a one-shot user-triggered send.
     pub send_semaphore: std::sync::Arc<tokio::sync::Semaphore>,
 }
 

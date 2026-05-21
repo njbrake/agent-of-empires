@@ -29,9 +29,10 @@ pub enum PanicPolicy {
 }
 
 /// Spawn a future on the tokio runtime with panic logging. The
-/// returned `JoinHandle` matches `tokio::spawn`'s shape; callers
-/// that drop it still get the diagnostic via `tracing::error!` on
-/// panic, which is the whole point.
+/// returned `JoinHandle<()>` is equivalent to `tokio::spawn` for
+/// futures with `Output = ()`; callers that drop it still get the
+/// diagnostic via `tracing::error!` on panic, which is the whole
+/// point.
 ///
 /// Pair with `tracing::Instrument` at the call site to propagate
 /// a span across the spawn boundary:
@@ -49,7 +50,7 @@ where
         match AssertUnwindSafe(fut).catch_unwind().await {
             Ok(()) => {}
             Err(payload) => {
-                let msg = panic_payload_string(&payload);
+                let msg = panic_payload_string(&*payload);
                 tracing::error!(
                     target: "task.panic",
                     task = name,
@@ -64,7 +65,7 @@ where
     })
 }
 
-fn panic_payload_string(payload: &Box<dyn std::any::Any + Send>) -> String {
+fn panic_payload_string(payload: &(dyn std::any::Any + Send)) -> String {
     if let Some(s) = payload.downcast_ref::<&'static str>() {
         return (*s).to_string();
     }
@@ -81,7 +82,7 @@ mod tests {
     use std::sync::Arc;
 
     #[tokio::test]
-    async fn normal_completion_returns_value() {
+    async fn normal_completion_runs_to_end() {
         let touched = Arc::new(AtomicBool::new(false));
         let t = touched.clone();
         let handle = spawn_supervised("test.normal", PanicPolicy::Log, async move {

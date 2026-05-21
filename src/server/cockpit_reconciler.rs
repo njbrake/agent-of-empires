@@ -165,12 +165,52 @@ pub async fn reconcile_cockpit_workers(state: &Arc<AppState>, attempted: &mut Ha
             attempted.insert(id);
             continue;
         }
+        // Rate-limit park: if the most recent lifecycle event for this
+        // session is `Stopped { reason: "rate_limited" }`, the previous
+        // worker exited because the adapter hit a quota. Auto-resuming
+        // would `session/load` and immediately fail the next prompt the
+        // same way; on daemon restart that would undo the entire #1281
+        // fix. Hold the session parked until the user explicitly retries
+        // via `/cockpit/spawn` or hands off via `/cockpit/switch-agent`.
+        // SQLite call wrapped in spawn_blocking to match the
+        // has_in_flight_turn pattern below; the reconciler runs on the
+        // tokio runtime and these queries can stall under load.
+        let store = Arc::clone(&state.cockpit_event_store);
+        let id_for_status = id.clone();
+        let latest_status =
+            tokio::task::spawn_blocking(move || store.latest_status_event(&id_for_status))
+                .await
+                .unwrap_or(None);
+        if let Some(crate::cockpit::Event::Stopped { reason }) = latest_status {
+            if reason == "rate_limited" {
+                tracing::debug!(
+                    target: "cockpit.supervisor",
+                    session = %id,
+                    "skipping auto-resume: latest lifecycle event is Stopped{{rate_limited}}"
+                );
+                attempted.insert(id);
+                continue;
+            }
+        }
         let store = Arc::clone(&state.cockpit_event_store);
         let id_owned = id.clone();
         let in_flight_turn =
-            tokio::task::spawn_blocking(move || store.has_in_flight_turn(&id_owned))
-                .await
-                .unwrap_or(false);
+            match tokio::task::spawn_blocking(move || store.has_in_flight_turn(&id_owned)).await {
+                Ok(v) => v,
+                Err(e) => {
+                    // `attempted.insert` below runs unconditionally, so a swallowed
+                    // panic does not produce a retry storm; the only consequence is
+                    // the synthetic Stopped fanout is skipped this tick and the UI
+                    // may stay "thinking" until the next live event.
+                    tracing::warn!(
+                        target: "cockpit.supervisor",
+                        session_id = %id,
+                        error = %e,
+                        "in-flight turn probe blocking task failed; assuming no in-flight turn"
+                    );
+                    false
+                }
+            };
         // Mark before spawning so the next 2s tick doesn't double-poke
         // while the parallel resume task is still in flight. A task
         // that returns RetryAfterAttachTimeout will clear itself below.

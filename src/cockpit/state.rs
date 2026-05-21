@@ -93,6 +93,19 @@ pub struct RateLimitInfo {
     pub kind: String,
 }
 
+/// Snapshot of the most recent ACP agent handoff. Stored on
+/// `CockpitState` so reload/replay reflects the active backend without
+/// needing to walk the event log. Emitted by the `/cockpit/switch-agent`
+/// path when a session moves from one ACP backend to another (e.g.
+/// Claude -> Codex after a rate-limit). See #1282.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentSwitchInfo {
+    pub from: String,
+    pub to: String,
+    pub reason: String,
+    pub switched_at: DateTime<Utc>,
+}
+
 /// Snapshot of the agent's last-reported context-window usage and
 /// (optionally) cumulative session cost. Mirrors the ACP
 /// `UsageUpdate` notification.
@@ -171,6 +184,12 @@ pub struct CockpitState {
     /// commands instead of a hard-coded placeholder list.
     #[serde(default)]
     pub available_commands: Vec<AvailableCommand>,
+    /// Most recent `AgentSwitched` snapshot. Used by the UI to render a
+    /// transcript divider (e.g. "Switched claude -> codex due to
+    /// rate_limit") and by the post-switch context-primer fetch. None
+    /// until the session has ever moved backends. See #1282.
+    #[serde(default)]
+    pub last_agent_switch: Option<AgentSwitchInfo>,
 
     pub last_seq: u64,
     pub updated_at: DateTime<Utc>,
@@ -196,6 +215,7 @@ impl CockpitState {
             rate_limit: None,
             usage: None,
             available_commands: Vec::new(),
+            last_agent_switch: None,
             last_seq: 0,
             updated_at: Utc::now(),
         }
@@ -438,6 +458,19 @@ pub enum Event {
     /// an inline divider but does NOT surface the context-primer
     /// banner. See #1109.
     ConversationCompacted,
+    /// The session's ACP backend was switched from one agent to
+    /// another (e.g. Claude -> Codex after a rate-limit). Emitted by
+    /// the `/cockpit/switch-agent` endpoint AFTER the new worker has
+    /// spawned and the instance's `cockpit_agent` is persisted. The
+    /// reducer drops all agent-specific transient state (rate-limit
+    /// banner, in-flight tool, thinking, pending approvals, usage,
+    /// available commands, modes) since none of it carries over to a
+    /// different backend. See #1282.
+    AgentSwitched {
+        from: String,
+        to: String,
+        reason: String,
+    },
 }
 
 impl CockpitState {
@@ -562,6 +595,30 @@ impl CockpitState {
             // pill from the broadcast frame and the event_store entry
             // carries the historical record. See #1196.
             Event::PromptRejected { .. } => {}
+            Event::AgentSwitched { from, to, reason } => {
+                // The new backend has no knowledge of the prior agent's
+                // session state. Drop everything tied to the previous
+                // model/process so the UI doesn't render Claude's usage
+                // bar, in-flight tool card, or mode pills while talking
+                // to Codex. The transcript itself stays intact in the
+                // event log; the visible history is regenerated from
+                // replay on next reload.
+                self.agent = AgentName(to.clone());
+                self.rate_limit = None;
+                self.in_flight_tool = None;
+                self.thinking = None;
+                self.pending_approvals = Vec::new();
+                self.usage = None;
+                self.available_commands = Vec::new();
+                self.current_plan = None;
+                self.mode = SessionMode::Default;
+                self.last_agent_switch = Some(AgentSwitchInfo {
+                    from,
+                    to,
+                    reason,
+                    switched_at: Utc::now(),
+                });
+            }
         }
         self.last_seq = self.last_seq.saturating_add(1);
         self.updated_at = Utc::now();

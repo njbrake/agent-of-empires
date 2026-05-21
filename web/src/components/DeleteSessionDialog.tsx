@@ -89,6 +89,7 @@ export function DeleteSessionDialog({
       role="dialog"
       aria-modal="true"
       aria-labelledby="delete-session-dialog-title"
+      data-testid="delete-session-dialog"
       className="fixed inset-0 bg-black/60 flex items-center justify-center z-50 animate-fade-in"
       onClick={onCancel}
     >
@@ -122,6 +123,7 @@ export function DeleteSessionDialog({
                     onChange={setDeleteWorktree}
                     label="Delete worktree"
                     detail={branchName ? `Removes worktree for branch "${branchName}"` : undefined}
+                    testId="delete-session-checkbox-worktree"
                   />
                   {deleteWorktree && (
                     <div className="pl-6">
@@ -130,6 +132,7 @@ export function DeleteSessionDialog({
                         onChange={setForceDelete}
                         label="Force delete"
                         detail="Delete even if worktree has uncommitted changes"
+                        testId="delete-session-checkbox-force"
                       />
                     </div>
                   )}
@@ -138,6 +141,7 @@ export function DeleteSessionDialog({
                     onChange={setDeleteBranch}
                     label="Delete branch"
                     detail={branchName ? `Removes branch "${branchName}"` : undefined}
+                    testId="delete-session-checkbox-branch"
                   />
                 </>
               )}
@@ -147,6 +151,7 @@ export function DeleteSessionDialog({
                   onChange={setDeleteSandbox}
                   label="Delete container"
                   detail="Removes the Docker sandbox container"
+                  testId="delete-session-checkbox-sandbox"
                 />
               )}
             </div>
@@ -187,14 +192,20 @@ function Checkbox({
   onChange,
   label,
   detail,
+  testId,
 }: {
   checked: boolean;
   onChange: (val: boolean) => void;
   label: string;
   detail?: string;
+  testId?: string;
 }) {
   return (
-    <label className="flex items-start gap-2.5 cursor-pointer group">
+    <label
+      className="flex items-start gap-2.5 cursor-pointer group"
+      data-testid={testId}
+      data-checked={checked ? "true" : "false"}
+    >
       <span
         onClick={() => onChange(!checked)}
         className={`mt-0.5 w-4 h-4 rounded border flex items-center justify-center shrink-0 transition-colors ${

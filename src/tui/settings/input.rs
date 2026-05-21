@@ -913,6 +913,16 @@ impl SettingsView {
                     c.force_end_turn_threshold_secs = None;
                 }
             }
+            FieldKey::CockpitSilentOrphanGraceSecs => {
+                if let Some(c) = config.cockpit.as_mut() {
+                    c.silent_orphan_grace_secs = None;
+                }
+            }
+            FieldKey::CockpitSilentOrphanFastGraceSecs => {
+                if let Some(c) = config.cockpit.as_mut() {
+                    c.silent_orphan_fast_grace_secs = None;
+                }
+            }
             // Logging is global-only for v1 (no profile overrides); the
             // "clear override" gesture is a no-op for these keys.
             FieldKey::LoggingDefaultLevel

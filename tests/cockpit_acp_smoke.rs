@@ -480,3 +480,93 @@ async fn shim_agent_set_mode_emits_current_mode_changed() {
         "expected CurrentModeChanged(bypassPermissions) after set_mode"
     );
 }
+
+/// Rate-limit classifier round-trip: shim returns a JSON-RPC error
+/// with `data.errorKind = "rate_limit"` on prompt; acp_client must
+/// emit RateLimit + Stopped{rate_limited} instead of letting the
+/// connection task die with an AgentStartupError. See #1281.
+#[tokio::test]
+async fn shim_agent_emits_rate_limit_event() {
+    use agent_of_empires::cockpit::state::Event;
+    if !node_available() {
+        eprintln!("skipping: node not on PATH");
+        return;
+    }
+    let shim = shim_path();
+    if !shim.exists() {
+        return;
+    }
+
+    let cwd = std::env::temp_dir();
+    let config = SpawnConfig {
+        agent_key: "claude".into(),
+        spec: AgentSpec {
+            command: "node".into(),
+            args: vec![shim.to_string_lossy().to_string()],
+            description: "test shim".into(),
+            env_allowlist: None,
+        },
+        cwd,
+        additional_dirs: vec![],
+        provider_env: vec![],
+        socket_path: None,
+        stored_acp_session_id: None,
+        sandbox_info: None,
+        source_profile: None,
+    };
+
+    let mut client = AcpClient::spawn(config, CockpitSessionId("rl".into()))
+        .await
+        .expect("spawn shim agent");
+
+    client
+        .send_prompt("trigger RATE_LIMIT now")
+        .await
+        .expect("send_prompt");
+
+    let mut events: Vec<Event> = Vec::new();
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while std::time::Instant::now() < deadline {
+        match tokio::time::timeout(Duration::from_millis(500), client.next_event()).await {
+            Ok(Some(event)) => {
+                let stopped_rate_limited = matches!(
+                    &event,
+                    Event::Stopped { reason } if reason == "rate_limited"
+                );
+                events.push(event);
+                if stopped_rate_limited {
+                    break;
+                }
+            }
+            Ok(None) | Err(_) => continue,
+        }
+    }
+
+    let _ = client.shutdown().await;
+
+    let rate_limit_count = events
+        .iter()
+        .filter(|e| matches!(e, Event::RateLimit { .. }))
+        .count();
+    let stopped_rate_limited_count = events
+        .iter()
+        .filter(|e| matches!(e, Event::Stopped { reason } if reason == "rate_limited"))
+        .count();
+    let startup_error_count = events
+        .iter()
+        .filter(|e| matches!(e, Event::AgentStartupError { .. }))
+        .count();
+
+    assert_eq!(
+        rate_limit_count, 1,
+        "expected exactly one RateLimit event, got {rate_limit_count} in {events:?}"
+    );
+    assert_eq!(
+        stopped_rate_limited_count, 1,
+        "expected exactly one Stopped{{rate_limited}}, got {stopped_rate_limited_count}"
+    );
+    assert_eq!(
+        startup_error_count, 0,
+        "rate-limit must NOT surface as AgentStartupError; got {startup_error_count}"
+    );
+}

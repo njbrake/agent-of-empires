@@ -160,6 +160,8 @@ node_path = ""
 show_tool_durations = true  # per-tool elapsed-time label in the web UI
 queue_drain_mode = "combined"  # how the composer drains client-side queued prompts: "combined" | "serial" (#1031)
 force_end_turn_threshold_secs = 30  # seconds of streaming silence before the spinner offers a "Force end turn" button (#1100)
+silent_orphan_grace_secs = 60  # daemon-side watchdog grace when the adapter stops talking with no in-flight tool; 0 disables (#1240)
+silent_orphan_fast_grace_secs = 20  # accelerated grace used once a cost-populated UsageUpdate has arrived for the current prompt (#1240)
 ```
 
 `max_concurrent_resumes` bounds how many cockpit workers the reconciler
@@ -631,6 +633,23 @@ If the agent ignores `session/cancel` mid-tool-call (most commonly a `block: tru
 
 Follow-up prompts the daemon refused while the original turn was still in flight no longer vanish silently. The composer shows them as amber "Rejected" pills with a Retry button; clicking Retry re-dispatches the prompt through the normal send path against the freshly-respawned worker.
 
+### Rate-limit recovery
+
+When the active ACP backend reports `errorKind: "rate_limit"` on `session/prompt` (Claude's adapter does this when the Anthropic account is over its limit), aoe treats this as a non-crash terminal state rather than as a worker crash:
+
+- The connection task emits a typed `RateLimit` event (which the dashboard banner reads to show the reset time) and a `Stopped { reason: "rate_limited" }` lifecycle event, then exits cleanly.
+- The supervisor drops the worker handle and does NOT respawn. Earlier behaviour respawned the runner inside the restart budget, then immediately hit the same limit on the next `session/prompt` and burned the budget. The session now sits parked until the user explicitly retries or hands off.
+- `aoe serve` restart while a session is parked respects the `Stopped { reason: "rate_limited" }` signal in the on-disk event log and does NOT auto-resume the worker; otherwise daemon restart at minute 30 of a 90-minute window would undo the fix.
+
+The rate-limit banner offers a primary "Continue in another agent" CTA. Clicking it opens a modal that lists the cockpit ACP registry (claude / codex / opencode / gemini / vibe / pi / aoe-agent by default, plus anything you've added via the settings TUI) and preselects `codex` when installed. Picking a target calls `POST /api/sessions/{id}/cockpit/switch-agent`, which:
+
+1. Stops the current worker and waits for the runner subprocess to release its socket.
+2. Spawns the target agent. On failure, the instance is left untouched.
+3. Persists `cockpit_agent = <target>` and clears `cockpit_acp_session_id` (the old session id belongs to a different vendor and would be rejected by the new adapter).
+4. Emits an `AgentSwitched { from, to, reason }` event so reducers drop transient state tied to the prior backend (rate-limit banner, in-flight tool, usage, mode pills, available commands) and the transcript shows a divider.
+
+After the switch, the modal fetches the context primer and pre-fills the composer with a framed recap of the prior conversation. If the user's last prompt is what triggered the rate-limit (it was published to the event log before the adapter rejected it), the primer endpoint surfaces it separately as `unprocessed_prompt`; the modal drops it into the composer as the user's pending request so they don't have to retype it. The composer is NOT auto-sent; review and submit manually.
+
 ### Cockpit feels "stuck" with no events
 
 - Check `aoe cockpit logs --follow` (when the worker supervisor lands)
@@ -726,6 +745,53 @@ threshold ("Waiting on tool… 1m 23s") so the wait is visible, but the
 button stays hidden so clicking it cannot discard the in-flight
 tool's progress. The escape hatch is reserved for a silent model with
 no tool running. See #1176.
+
+### Silent-orphan watchdog
+
+The cockpit daemon also watches for the case where the agent adapter
+finishes streaming a turn but never sends the JSON-RPC
+`PromptResponse` that closes out `session/prompt`. The user-visible
+symptom is identical to the bug above (spinner stuck), but the cause
+is a protocol violation on the adapter side: the response was lost,
+not just delayed. Tracked upstream at
+[agentclientprotocol/claude-agent-acp#688](https://github.com/agentclientprotocol/claude-agent-acp/issues/688).
+
+When the daemon detects this, it sends `session/cancel`, waits the
+existing cancel-escalation grace (10s) for the adapter to respond,
+then SIGTERMs the runner and respawns via `session/load` so the
+transcript is preserved. The web UI shows a distinct banner ("Agent
+finished but didn't notify the daemon. Restarting worker; your
+transcript will be preserved.") so the user can tell this apart from
+the cancel-escalation path (`agent_unresponsive`). See #1240.
+
+The detector fires only when ALL hold for the current prompt:
+- `tool_calls_in_flight` is empty (no open tool call; long-running
+  npm install / Playwright / Task subagent runs are never affected
+  because their tool stays open until done).
+- At least one progress notification has already arrived for this
+  prompt (avoids false-firing on a slow first chunk).
+- No further progress notification has arrived for
+  `silent_orphan_grace_secs` (default 60), reduced to
+  `silent_orphan_fast_grace_secs` (default 20) for the rest of the
+  prompt once a cost-populated `UsageUpdate` has arrived. The
+  accelerated path lowers MTTR on the specific claude-agent-acp
+  failure shape without weakening the vendor-agnostic baseline.
+
+Out-of-band notifications (mode changes, available_commands_update,
+rate limit, usage updates without cost) explicitly do NOT reset the
+timer, so an adapter that emits periodic ambient state after the
+final transcript event still trips the watchdog.
+
+Set `cockpit.silent_orphan_grace_secs = 0` to disable. Both knobs are
+editable per profile in the TUI Settings (`Cockpit` category) and in
+the web dashboard's Settings tab under `Cockpit`.
+
+In debug builds, set `AOE_COCKPIT_SIMULATE_ORPHAN_NEXT_PROMPT=1`
+before sending a cockpit prompt to manually reproduce the wedge: the
+daemon will discard the next prompt response, the watchdog will fire
+within the configured grace, and you can verify the end-to-end UX
+(banner, lockdown, SIGTERM, respawn). The env var is single-shot
+(cleared after one use) and compiled out in release builds.
 
 ### Sharing debug logs
 

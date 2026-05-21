@@ -69,6 +69,14 @@ pub struct WsHandle {
     /// codebase (`state.shutdown`, tunnel watchdog) and avoids the
     /// `Option<Sender>` dance because cancellation is idempotent.
     shutdown: tokio_util::sync::CancellationToken,
+    /// Drop-cancel: restores the prior `mpsc::Sender`-drop semantics
+    /// from before #1295. Without this, dropping a `WsHandle` without
+    /// an explicit `shutdown().await` would leave `reader_loop` parked
+    /// on `stream.next()` instead of sending a Close frame and
+    /// exiting. The guard cancels the same token on drop; the
+    /// explicit `shutdown()` path's earlier `cancel()` is idempotent
+    /// so there is no double-cancel hazard.
+    _drop_guard: tokio_util::sync::DropGuard,
 }
 
 /// Wait this long for the reader task to send its close frame and
@@ -86,11 +94,12 @@ impl WsHandle {
     /// Falls back to `abort()` if the task doesn't finish within
     /// `SHUTDOWN_GRACE` so a stuck or already-aborted task can't
     /// block teardown.
-    pub async fn shutdown(mut self) {
+    pub async fn shutdown(self) {
         self.shutdown.cancel();
-        match tokio::time::timeout(SHUTDOWN_GRACE, &mut self.task).await {
+        let mut task = self.task;
+        match tokio::time::timeout(SHUTDOWN_GRACE, &mut task).await {
             Ok(_) => {}
-            Err(_) => self.task.abort(),
+            Err(_) => task.abort(),
         }
     }
 }
@@ -116,11 +125,13 @@ pub async fn connect(
     let (stream, _) = connect_async(request).await?;
     let (frame_tx, frame_rx) = mpsc::channel(64);
     let shutdown = tokio_util::sync::CancellationToken::new();
+    let _drop_guard = shutdown.clone().drop_guard();
     let task = tokio::spawn(reader_loop(stream, frame_tx, shutdown.clone()));
     Ok(WsHandle {
         rx: frame_rx,
         task,
         shutdown,
+        _drop_guard,
     })
 }
 

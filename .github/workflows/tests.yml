@@ -78,6 +78,16 @@ jobs:
       - name: Run Vitest with coverage
         working-directory: web
         run: npm run test:unit -- --coverage
+      # Vitest's v8 coverage reporter emits LCOV paths relative to the
+      # vitest cwd (web/), so SF: lines read "SF:src/...". Codecov
+      # matches file paths against the PR diff, which uses repo-root
+      # paths ("web/src/..."), so without this fixup new component
+      # files report 0% coverage even when vitest hit 85%. The
+      # Playwright coverage merge script already emits "web/src/..."
+      # paths, so only the vitest LCOV needs the prefix.
+      - name: Rewrite LCOV paths for codecov
+        if: ${{ !cancelled() }}
+        run: sed -i 's|^SF:src/|SF:web/src/|' web/coverage/vitest/lcov.info
       - name: Upload to Codecov (vitest flag)
         if: ${{ !cancelled() }}
         uses: codecov/codecov-action@57e3a136b779b570ffcdbf80b3bdc90e7fab3de2 # v6.0.0

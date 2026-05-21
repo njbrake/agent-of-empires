@@ -1185,6 +1185,10 @@ fn build_router(state: Arc<AppState>) -> Router {
         .route("/api/sessions/{id}/cockpit/spawn", post(api::spawn_cockpit))
         .route("/api/sessions/{id}/cockpit", delete(api::shutdown_cockpit))
         .route(
+            "/api/sessions/{id}/cockpit/switch-agent",
+            post(api::switch_cockpit_agent),
+        )
+        .route(
             "/api/sessions/{id}/cockpit/prompt",
             post(api::cockpit_prompt),
         )
@@ -1221,7 +1225,8 @@ fn build_router(state: Arc<AppState>) -> Router {
             "/api/sessions/{id}/cockpit/approvals/{nonce}",
             post(api::resolve_approval),
         )
-        .route("/api/cockpit/master", patch(api::set_cockpit_master));
+        .route("/api/cockpit/master", patch(api::set_cockpit_master))
+        .route("/api/cockpit/agents", get(api::list_cockpit_agents));
 
     app
         // Static assets (Vite build output: assets/, manifest.json, sw.js, icons)
@@ -2379,6 +2384,12 @@ pub(crate) fn derive_cockpit_status(event: &crate::cockpit::Event) -> Option<Sta
             Some(StatusIntent::Set(Status::Running))
         }
         Event::ApprovalRequested { .. } => Some(StatusIntent::Set(Status::Waiting)),
+        // All Stopped reasons surface as Idle, including the
+        // rate-limit park: the worker is not crashed, the user just
+        // hit a provider quota and the session is waiting for reset
+        // (or for the user to switch to another ACP backend). The
+        // dedicated RateLimit banner carries the reset time, so the
+        // sidebar pill staying grey is the right signal. See #1281.
         Event::Stopped { .. } => Some(StatusIntent::Set(Status::Idle)),
         Event::AgentStartupError { .. } => Some(StatusIntent::Set(Status::Error)),
         // A successful session/new or session/load means the agent
@@ -2430,6 +2441,14 @@ mod tests {
         assert_eq!(
             derive_cockpit_status(&Event::Stopped {
                 reason: "prompt_complete".into()
+            }),
+            Some(StatusIntent::Set(Status::Idle))
+        );
+        // Rate-limit park: NOT an error; sidebar stays grey, the
+        // dedicated RateLimit banner carries the reset time. See #1281.
+        assert_eq!(
+            derive_cockpit_status(&Event::Stopped {
+                reason: "rate_limited".into()
             }),
             Some(StatusIntent::Set(Status::Idle))
         );

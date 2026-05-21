@@ -39,6 +39,7 @@ import {
 } from "./CockpitRuntime";
 import { Composer } from "./Composer";
 import { ContextPrimerBanner } from "./ContextPrimerBanner";
+import { RateLimitRecoveryModal } from "./RateLimitRecoveryModal";
 import { Markdown } from "./Markdown";
 import {
   isQueuedPromptLong,
@@ -164,6 +165,17 @@ function CockpitChrome({
   const [primerPrefill, setPrimerPrefill] = useState<
     { id: string; text: string } | null
   >(null);
+  // Rate-limit recovery modal toggle. Opened from the rate-limit row
+  // in `SystemNotices`; the modal owns the agent picker and the
+  // switch / primer-fetch round-trip. Wrapped in a tiny exported
+  // component so the wiring (banner trigger -> modal open -> prefill
+  // dispatch) is testable in isolation without mounting the full
+  // CockpitView (which depends on many hooks). See #1282.
+  const recoveryHandoffPrefill = (text: string) =>
+    setPrimerPrefill({
+      id: `rate-limit-recovery-${Date.now()}`,
+      text,
+    });
 
   // Browser-side approval chime. Fires once on the 0 -> >=1 edge of
   // pendingApprovals; complements the OS push (delivered via the SW
@@ -221,19 +233,28 @@ function CockpitChrome({
     <div className="flex h-full flex-col bg-surface-900 text-text-primary">
       <PlanStrip plan={state.plan} />
 
-      {(status !== "open" || state.lagged || state.rateLimit || reconnecting) && (
-        <SystemNotices
-          status={status}
-          lagged={state.lagged}
-          rateLimit={state.rateLimit}
-          hasEverOpened={hasEverOpened}
-          reconnecting={reconnecting}
-          retryCount={retryCount}
-          retryCountdown={retryCountdown}
-          maxRetries={maxRetries}
-          manualReconnect={manualReconnect}
-        />
-      )}
+      <RateLimitRecoverySection
+        sessionId={sessionId}
+        currentAgent={state.agent}
+        onPrefill={recoveryHandoffPrefill}
+      >
+        {({ onSwitchAgent }) =>
+          (status !== "open" || state.lagged || state.rateLimit || reconnecting) ? (
+            <SystemNotices
+              status={status}
+              lagged={state.lagged}
+              rateLimit={state.rateLimit}
+              hasEverOpened={hasEverOpened}
+              reconnecting={reconnecting}
+              retryCount={retryCount}
+              retryCountdown={retryCountdown}
+              maxRetries={maxRetries}
+              manualReconnect={manualReconnect}
+              onSwitchAgent={onSwitchAgent}
+            />
+          ) : null
+        }
+      </RateLimitRecoverySection>
 
       {state.startupError && (
         <StartupErrorBanner sessionId={sessionId} message={state.startupError} />
@@ -242,7 +263,10 @@ function CockpitChrome({
         <WorkerStoppedBanner sessionId={sessionId} />
       )}
       {state.workerRestarting && !state.startupError && !state.workerStopped && (
-        <WorkerRestartingBanner agentUnresponsive={state.agentUnresponsive} />
+        <WorkerRestartingBanner
+          agentUnresponsive={state.agentUnresponsive}
+          agentOrphaned={state.agentOrphaned}
+        />
       )}
       {cockpitWorkerState === "resuming" &&
         !state.startupError &&
@@ -1013,7 +1037,37 @@ function PendingApproval({
 
 /* ── System notices ──────────────────────────────────────────────── */
 
-function SystemNotices({
+/** Wires the rate-limit handoff banner to the recovery modal. Owns the
+ *  open/close toggle so CockpitView (which is wide and pulls in many
+ *  hooks) does not have to. Exported so the wiring can be unit-tested
+ *  without mounting all of CockpitView. See #1282. */
+export function RateLimitRecoverySection({
+  sessionId,
+  currentAgent,
+  onPrefill,
+  children,
+}: {
+  sessionId: string;
+  currentAgent: string | null;
+  onPrefill: (text: string) => void;
+  children: (renderProps: { onSwitchAgent: () => void }) => React.ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      {children({ onSwitchAgent: () => setOpen(true) })}
+      <RateLimitRecoveryModal
+        open={open}
+        sessionId={sessionId}
+        currentAgent={currentAgent}
+        onClose={() => setOpen(false)}
+        onPrefill={onPrefill}
+      />
+    </>
+  );
+}
+
+export function SystemNotices({
   status,
   lagged,
   rateLimit,
@@ -1023,6 +1077,7 @@ function SystemNotices({
   retryCountdown,
   maxRetries,
   manualReconnect,
+  onSwitchAgent,
 }: {
   status: CockpitContext["status"];
   lagged: boolean;
@@ -1033,6 +1088,7 @@ function SystemNotices({
   retryCountdown: number;
   maxRetries: number;
   manualReconnect: () => void;
+  onSwitchAgent?: () => void;
 }) {
   const messages: { kind: string; text: string }[] = [];
   // Retry envelope exhausted: the auto-reconnect chain stopped after
@@ -1095,6 +1151,17 @@ function SystemNotices({
           {m.text}
         </div>
       ))}
+      {rateLimit && onSwitchAgent && (
+        <div className="flex items-center justify-end pt-1">
+          <button
+            type="button"
+            onClick={onSwitchAgent}
+            className="shrink-0 rounded-md border border-brand-700 bg-brand-900/40 px-2 py-1 text-[10px] font-mono uppercase tracking-wide text-brand-100 hover:bg-brand-900/60"
+          >
+            Continue in another agent
+          </button>
+        </div>
+      )}
       {retriesExhausted && (
         <div className="flex items-center justify-between gap-3 text-xs text-brand-400">
           <span>Connection lost. Auto-retry stopped.</span>
@@ -1135,23 +1202,30 @@ function InteractionErrorBanner({
   );
 }
 
-function WorkerRestartingBanner({
+export function WorkerRestartingBanner({
   agentUnresponsive,
+  agentOrphaned,
 }: {
   agentUnresponsive: boolean;
+  agentOrphaned: boolean;
 }) {
-  // Two reasons land here:
+  // Three reasons land here:
   //   - `aoe cockpit restart` (deletes registry, daemon's reaper
   //     publishes Stopped{reason:"restart_pending"}, reconciler spawns
   //     a fresh worker with the cached acp_session_id).
   //   - Cancel-escalation watchdog fired: claude-agent-acp ignored
   //     `session/cancel` for the grace window, the supervisor SIGTERMed
   //     the wedged runner and is respawning via `session/load`.
-  // Both end with `AcpSessionAssigned` clearing the banner.
+  //   - Silent-orphan watchdog fired: the adapter finished streaming
+  //     the turn but never sent the JSON-RPC `PromptResponse`; the
+  //     supervisor restarts the runner the same way. See #1240.
+  // All paths end with `AcpSessionAssigned` clearing the banner.
   // See #1196 for the agent_unresponsive variant.
-  const message = agentUnresponsive
-    ? "Agent stopped responding to cancel. Restarting worker; your transcript will be preserved."
-    : "Restarting cockpit worker… the daemon will respawn the agent with your existing transcript shortly.";
+  const message = agentOrphaned
+    ? "Agent finished but didn't notify the daemon. Restarting worker; your transcript will be preserved."
+    : agentUnresponsive
+      ? "Agent stopped responding to cancel. Restarting worker; your transcript will be preserved."
+      : "Restarting cockpit worker… the daemon will respawn the agent with your existing transcript shortly.";
   return (
     <div className="flex items-center gap-2 border-b border-sky-900/60 bg-sky-950/40 px-4 py-2 text-xs text-sky-200">
       <span

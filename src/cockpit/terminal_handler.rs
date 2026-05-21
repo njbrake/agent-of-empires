@@ -48,6 +48,11 @@ pub enum TerminalError {
 pub type TerminalId = String;
 
 /// One terminal's captured output and exit status.
+///
+/// `stdout` and `stderr` are decoded from raw child bytes via
+/// `String::from_utf8_lossy`, so invalid UTF-8 from misbehaving tools is
+/// replaced with U+FFFD rather than failing the whole capture (the agent
+/// still gets partial output instead of an error).
 #[derive(Debug, Clone)]
 pub struct TerminalOutput {
     pub stdout: String,
@@ -268,6 +273,7 @@ mod tests {
         let out = mgr.output(&id).await.unwrap();
         assert_eq!(out.stdout.len(), 204_800);
         assert_eq!(out.stderr.len(), 204_800);
+        assert_eq!(out.exit_code, Some(0));
     }
 
     #[test]

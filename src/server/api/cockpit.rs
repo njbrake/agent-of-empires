@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use crate::cockpit::approvals::Nonce;
 use crate::cockpit::protocol::{
     ContextPrimerQuery, ContextPrimerResponse, PromptRequest, ReplayQuery, ReplayResponse,
-    ResolveApprovalRequest,
+    ResolveApprovalRequest, SwitchAgentRequest, SwitchAgentResponse,
 };
 use crate::cockpit::supervisor::SupervisorError;
 use crate::server::AppState;
@@ -207,6 +207,229 @@ pub async fn shutdown_cockpit(
         )
             .into_response(),
     }
+}
+
+/// One entry in the cockpit ACP registry. Names match the `target`
+/// field accepted by `/cockpit/switch-agent`. Used by the rate-limit
+/// recovery modal to list available backends. See #1282.
+#[derive(Debug, Serialize)]
+pub struct CockpitAgentInfo {
+    pub name: String,
+    pub description: String,
+    pub command: String,
+}
+
+/// `GET /api/cockpit/agents`: list the ACP registry entries the
+/// supervisor knows about. Distinct from `/api/agents` (which lists
+/// session-tool agents like claude/codex/cursor for the wizard);
+/// this returns the *cockpit* ACP backend registry so the recovery
+/// modal can show what the user can hand off to. See #1282.
+pub async fn list_cockpit_agents(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let registry = state.cockpit_supervisor.registry_snapshot().await;
+    let mut entries: Vec<CockpitAgentInfo> = registry
+        .list()
+        .into_iter()
+        .map(|(name, spec)| CockpitAgentInfo {
+            name: name.clone(),
+            description: spec.description.clone(),
+            command: spec.command.clone(),
+        })
+        .collect();
+    entries.sort_by(|a, b| a.name.cmp(&b.name));
+    Json(entries).into_response()
+}
+
+/// Atomically move a cockpit session from one ACP backend to another.
+/// Used by the rate-limit recovery flow (#1282) so the user can
+/// continue a Claude-rate-limited session in `codex` (or another
+/// installed ACP backend) without losing the transcript.
+///
+/// Sequence:
+///   1. Validate `target` exists in the cockpit registry.
+///   2. Snapshot `before_seq` = highest seq in the event store, so the
+///      handoff `AgentSwitched` event lands at a known cursor and the
+///      frontend's primer fetch (`fetchContextPrimer(before_seq)`)
+///      excludes the handoff itself from the recap.
+///   3. `shutdown_and_wait` on the current worker so the runner
+///      subprocess actually exits and releases its socket before the
+///      new spawn binds the same path.
+///   4. Spawn the target agent. On failure: do NOT mutate the
+///      instance, return 5xx. The user keeps their prior
+///      `cockpit_agent` and can retry from the recovery banner.
+///   5. Persist `cockpit_agent = target`, clear
+///      `cockpit_acp_session_id` (the Claude session id is meaningless
+///      to Codex, so a future `session/load` against it would fail and
+///      surface a `SessionContextReset` we don't want).
+///   6. Emit `AgentSwitched { from, to, reason }` so the reducer
+///      clears agent-specific transient state and the UI renders a
+///      transcript divider.
+pub async fn switch_cockpit_agent(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(req): Json<SwitchAgentRequest>,
+) -> impl IntoResponse {
+    if let Some(resp) = read_only_block(&state) {
+        return resp;
+    }
+    if let Err(reason) = cockpit_gate(&state) {
+        return reason.into_response();
+    }
+
+    let target = req.target.trim().to_string();
+    if target.is_empty() {
+        return (StatusCode::BAD_REQUEST, "target is required").into_response();
+    }
+    if !state.cockpit_supervisor.registry_has_agent(&target).await {
+        return (
+            StatusCode::BAD_REQUEST,
+            format!("unknown cockpit agent: {target}"),
+        )
+            .into_response();
+    }
+
+    let instance = {
+        let instances = state.instances.read().await;
+        match instances.iter().find(|i| i.id == id).cloned() {
+            Some(inst) => inst,
+            None => return (StatusCode::NOT_FOUND, "session not found").into_response(),
+        }
+    };
+    let from_agent = state
+        .cockpit_supervisor
+        .pick_agent_for_tool(&instance.tool, instance.cockpit_agent.as_deref())
+        .await;
+    if from_agent == target {
+        return (
+            StatusCode::BAD_REQUEST,
+            format!("session is already using {target}"),
+        )
+            .into_response();
+    }
+    let before_seq = state.cockpit_event_store.highest_seq(&id);
+
+    if let Err(e) = state
+        .cockpit_supervisor
+        .shutdown_and_wait(&id, std::time::Duration::from_secs(5))
+        .await
+    {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("shutdown failed before agent switch: {e}"),
+        )
+            .into_response();
+    }
+
+    let cwd = PathBuf::from(&instance.project_path);
+    let inst_lock = state.instance_lock(&id).await;
+    let sandbox_info = match crate::cockpit::sandbox::ensure_container_for_session(
+        &state.instances,
+        &inst_lock,
+        &id,
+        false,
+    )
+    .await
+    {
+        Ok(info) => info,
+        Err(e) => {
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("sandbox container ensure failed: {e}"),
+            )
+                .into_response();
+        }
+    };
+    let source_profile = sandbox_info
+        .as_ref()
+        .map(|_| instance.source_profile.clone());
+
+    let model = req.model.clone().or(instance.cockpit_model.clone());
+    let spawn_result = state
+        .cockpit_supervisor
+        .spawn(crate::cockpit::supervisor::SpawnRequest {
+            session_id: id.clone(),
+            agent: target.clone(),
+            cwd,
+            additional_dirs: vec![],
+            provider_env: vec![],
+            model: model.clone(),
+            // Different ACP backend; the cached Claude session id would
+            // be rejected by codex / opencode.
+            stored_acp_session_id: None,
+            sandbox_info,
+            source_profile,
+            yolo_mode: instance.yolo_mode,
+        })
+        .await;
+    if let Err(e) = spawn_result {
+        return match e {
+            SupervisorError::UnknownAgent(name) => (
+                StatusCode::BAD_REQUEST,
+                format!("unknown cockpit agent: {name}"),
+            )
+                .into_response(),
+            SupervisorError::AlreadyRunning(_) => (
+                StatusCode::CONFLICT,
+                "cockpit worker already running for session",
+            )
+                .into_response(),
+            e @ SupervisorError::CapacityFull { .. } => {
+                (StatusCode::SERVICE_UNAVAILABLE, format!("{e}")).into_response()
+            }
+            e => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("spawn failed: {e}"),
+            )
+                .into_response(),
+        };
+    }
+
+    // Persist the agent change AFTER spawn succeeded. The new agent's
+    // session/new will emit a fresh AcpSessionAssigned which will then
+    // populate cockpit_acp_session_id via the existing listener.
+    let profile_for_save = instance.source_profile.clone();
+    let id_for_save = id.clone();
+    let target_for_save = target.clone();
+    {
+        let mut instances = state.instances.write().await;
+        if let Some(inst) = instances.iter_mut().find(|i| i.id == id) {
+            inst.cockpit_agent = Some(target_for_save.clone());
+            inst.cockpit_acp_session_id = None;
+            if let Some(m) = &model {
+                inst.cockpit_model = Some(m.clone());
+            }
+        }
+    }
+    if let Ok(storage) = crate::session::Storage::new(&profile_for_save) {
+        if let Err(e) = storage.update(|instances, _groups| {
+            if let Some(inst) = instances.iter_mut().find(|i| i.id == id_for_save) {
+                inst.cockpit_agent = Some(target_for_save.clone());
+                inst.cockpit_acp_session_id = None;
+            }
+            Ok(())
+        }) {
+            tracing::error!(
+                target: "http.api.cockpit",
+                session = %id_for_save,
+                "failed to persist cockpit_agent after switch: {e}"
+            );
+        }
+    }
+
+    let switch_seq = state.cockpit_supervisor.publish_agent_switched(
+        &id,
+        from_agent.clone(),
+        target.clone(),
+        "rate_limited".into(),
+    );
+
+    Json(SwitchAgentResponse {
+        session_id: id,
+        agent: target,
+        before_seq,
+        switch_seq,
+        status: "running",
+    })
+    .into_response()
 }
 
 pub async fn cockpit_prompt(
@@ -746,6 +969,7 @@ pub async fn cockpit_context_primer(
         included_turn_count: primer.included_turn_count,
         truncated: primer.truncated,
         max_chars: primer.max_chars,
+        unprocessed_prompt: primer.unprocessed_prompt,
     })
     .into_response()
 }

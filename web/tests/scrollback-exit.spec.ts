@@ -15,8 +15,11 @@ import {
 // Desktop keeps tmux's default copy-mode-with-`-e` behavior untouched.
 test.use({ ...devices["iPhone 13"] });
 
-const WHEEL_UP_SEQ = "\x1b[<64;1;1M";
-const WHEEL_DOWN_SEQ = "\x1b[<65;1;1M";
+// SGR mouse wheel sequences are `\x1b[<64;<col>;<row>M` (up) and
+// `\x1b[<65;...M` (down). Coordinates now track the pointer, so match
+// by the button-code prefix and count one hit per emitted event.
+const WHEEL_UP_SEQ = "\x1b[<64;";
+const WHEEL_DOWN_SEQ = "\x1b[<65;";
 const ESC = "\x1b";
 
 function countSeq(handle: MockHandle, seq: string): number {

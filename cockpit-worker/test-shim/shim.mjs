@@ -29,6 +29,11 @@ class ShimAgent {
     if (preseed) {
       this.sessions.set(preseed, {});
     }
+    // Resolver used by the SILENT_ORPHAN test mode: prompt() parks on
+    // a Promise that the cancel() handler resolves so the test can
+    // assert the watchdog without waiting for CANCEL_ESCALATION_GRACE
+    // to elapse.
+    this._silentOrphanResolve = null;
   }
 
   async initialize(params) {
@@ -63,11 +68,61 @@ class ShimAgent {
       .map((c) => c.text)
       .join("\n");
 
+    // SILENT_ORPHAN reproduces the upstream
+    // `agentclientprotocol/claude-agent-acp#688` failure mode for the
+    // silent-orphan watchdog test in
+    // tests/cockpit_silent_orphan.rs. Sequence:
+    //   1. emit one assistant chunk
+    //   2. emit a cost-populated usage_update (claude-agent-acp's
+    //      "wrap up accounting" marker the daemon uses as a
+    //      terminal-candidate signal)
+    //   3. park until cancel() resolves the promise
+    // Without the cancel handler we'd hang the test for the full
+    // CANCEL_ESCALATION_GRACE; the explicit resolve keeps the test
+    // under a second while still exercising the watchdog. See #1240.
+    if (userText.includes("SILENT_ORPHAN")) {
+      await this.connection.sessionUpdate({
+        sessionId: params.sessionId,
+        update: {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: "wedged response complete" },
+        },
+      });
+      await this.connection.sessionUpdate({
+        sessionId: params.sessionId,
+        update: {
+          sessionUpdate: "usage_update",
+          input_tokens: 100,
+          output_tokens: 200,
+          cost: { amount: 0.01, currency: "USD" },
+        },
+      });
+      await new Promise((resolve) => {
+        this._silentOrphanResolve = resolve;
+      });
+      return { stopReason: "cancelled" };
+    }
+
     // Optional slow path: tests that need to observe mid-turn UI
     // (e.g. the working spinner) include "SLOW" in the prompt so the
     // shim adds a configurable delay between events.
     const slow = userText.includes("SLOW");
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+    // Optional rate-limit path: tests for #1281 include "RATE_LIMIT"
+    // in the prompt so the shim returns the same JSON-RPC error shape
+    // claude-agent-acp emits when the Anthropic API rejects a request
+    // for quota reasons. Uses the SDK's RequestError so the structured
+    // `data` field reaches the wire (a plain `throw new Error(...)`
+    // would be stringified into the message). The Rust ACP client
+    // must classify this as RateLimit + Stopped{rate_limited} instead
+    // of treating it as a worker crash.
+    if (userText.includes("RATE_LIMIT")) {
+      throw acp.RequestError.internalError(
+        { errorKind: "rate_limit" },
+        "You've hit your limit · resets 12:10pm (Europe/Paris)",
+      );
+    }
 
     await this.connection.sessionUpdate({
       sessionId: params.sessionId,
@@ -221,7 +276,14 @@ class ShimAgent {
   }
 
   async cancel(_params) {
-    // Shim doesn't track cancellable work.
+    // Unstick the SILENT_ORPHAN park so prompt() returns and the
+    // daemon's prompt_fut resolves. Other prompt branches finish
+    // synchronously so this is a no-op for them.
+    if (this._silentOrphanResolve) {
+      const resolve = this._silentOrphanResolve;
+      this._silentOrphanResolve = null;
+      resolve();
+    }
   }
 }
 

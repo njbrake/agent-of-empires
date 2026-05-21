@@ -831,6 +831,7 @@ fn event_kind(event: &crate::cockpit::Event) -> &'static str {
         Event::ConversationCompacted => "conversation_compacted",
         Event::WakeupScheduled { .. } => "wakeup_scheduled",
         Event::PromptRejected { .. } => "prompt_rejected",
+        Event::AgentSwitched { .. } => "agent_switched",
     }
 }
 

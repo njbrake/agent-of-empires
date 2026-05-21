@@ -175,7 +175,8 @@ export type CockpitEvent =
   | { AcpSessionAssigned: { acp_session_id: string } }
   | { SessionContextReset: { reason: string } }
   | { WakeupScheduled: { at: string; reason: string | null } }
-  | { PromptRejected: { reason: string; text: string } };
+  | { PromptRejected: { reason: string; text: string } }
+  | { AgentSwitched: { from: string; to: string; reason: string } };
 
 export interface CockpitFrame {
   session_id: string;
@@ -321,6 +322,29 @@ export interface CockpitState {
    *  styling kicks in; cleared on `AcpSessionAssigned` (the respawned
    *  worker came online) or `UserPromptSent`. See #1196. */
   agentUnresponsive: boolean;
+  /** Most recent `AgentSwitched` snapshot. Populated when the user
+   *  hands off a rate-limited session to a different ACP backend via
+   *  `/cockpit/switch-agent`. Drives a transcript divider ("Switched
+   *  claude -> codex due to rate_limit") and lets the recovery flow
+   *  identify the cursor where the handoff happened. Cleared by
+   *  `SessionCleared`. See #1282. */
+  lastAgentSwitch: {
+    from: string;
+    to: string;
+    reason: string;
+    at: string;
+  } | null;
+  /** Set when the daemon emitted `Stopped { reason: "prompt_orphaned" }`,
+   *  meaning the silent-orphan watchdog detected that the adapter
+   *  finished streaming the turn but never sent the JSON-RPC
+   *  `PromptResponse`. The supervisor is SIGTERMing the runner and
+   *  respawning via `session/load` (transcript preserved). Pairs with
+   *  `workerRestarting = true` for composer lockdown; banner copy
+   *  distinguishes this from `agentUnresponsive` so users can tell
+   *  whether the adapter ignored their cancel (`agentUnresponsive`)
+   *  or finished without notifying the daemon (`agentOrphaned`).
+   *  Cleared on `AcpSessionAssigned` or `UserPromptSent`. See #1240. */
+  agentOrphaned: boolean;
 }
 
 export interface RejectedPrompt {
@@ -416,7 +440,9 @@ export function emptyCockpitState(): CockpitState {
     contextPrimerAvailable: null,
     rejectedPrompts: [],
     agentUnresponsive: false,
+    agentOrphaned: false,
     modeSwitchFailed: null,
+    lastAgentSwitch: null,
   };
 }
 
@@ -709,10 +735,12 @@ export function applyEvent(
       // flag so a future `restart_pending` doesn't accidentally
       // render unresponsive copy. See #1196.
       next.agentUnresponsive = false;
+      next.agentOrphaned = false;
     } else if (event.Stopped.reason === "restart_pending") {
       next.workerRestarting = true;
       next.workerStopped = false;
       next.agentUnresponsive = false;
+      next.agentOrphaned = false;
     } else if (event.Stopped.reason === "agent_unresponsive") {
       // Cancel-escalation watchdog in the daemon fired: claude-agent-acp
       // ignored `session/cancel` for the grace window, the supervisor
@@ -725,6 +753,20 @@ export function applyEvent(
       next.workerRestarting = true;
       next.workerStopped = false;
       next.agentUnresponsive = true;
+      next.agentOrphaned = false;
+    } else if (event.Stopped.reason === "prompt_orphaned") {
+      // Silent-orphan watchdog in the daemon fired: the adapter
+      // finished streaming the turn but never sent the JSON-RPC
+      // `PromptResponse`, the supervisor is SIGTERMing the runner
+      // and respawning via `session/load` (transcript preserved).
+      // Distinct from `agent_unresponsive`: this is "adapter stopped
+      // talking" vs. "adapter ignored cancel"; both reuse the
+      // `workerRestarting` lockdown, but the banner copy differs so
+      // users can tell which failure happened. See #1240.
+      next.workerRestarting = true;
+      next.workerStopped = false;
+      next.agentUnresponsive = false;
+      next.agentOrphaned = true;
     }
     // Some upstream slash commands (e.g. /usage, /status, /memory in
     // claude-agent-acp) advertise via available_commands_update but
@@ -832,6 +874,7 @@ export function applyEvent(
     // See #1196.
     next.rejectedPrompts = [];
     next.agentUnresponsive = false;
+    next.agentOrphaned = false;
     // /loop dynamic mode self-fires a UserPromptSent on wake, but a
     // user-typed follow-up during the wait is NOT the wake firing;
     // only clear when the scheduled time has already elapsed. The
@@ -872,6 +915,10 @@ export function applyEvent(
     // The respawn after an `agent_unresponsive` escalation completed;
     // clear the banner so the user can interact again. See #1196.
     next.agentUnresponsive = false;
+    // Same shape for `prompt_orphaned`: the silent-orphan watchdog
+    // fired, the runner was SIGTERMed, and the respawn handshake has
+    // now landed. See #1240.
+    next.agentOrphaned = false;
     return next;
   }
   if ("SessionContextReset" in event) {
@@ -914,6 +961,50 @@ export function applyEvent(
   if ("WakeupScheduled" in event) {
     next.nextWakeupAt = event.WakeupScheduled.at;
     next.nextWakeupReason = event.WakeupScheduled.reason ?? null;
+    return next;
+  }
+  if ("AgentSwitched" in event) {
+    // ACP backend handoff completed (e.g. claude -> codex after a
+    // rate-limit). Drop everything tied to the prior backend so the
+    // composer/footer don't keep showing Claude's usage bar, mode
+    // pills, or in-flight tool card while talking to Codex. The
+    // transcript stays intact on the event log; only the visible
+    // overlay state is dropped. Append a session-divider row so the
+    // UI shows where the handoff happened. See #1282.
+    const { from, to, reason } = event.AgentSwitched;
+    const now = new Date().toISOString();
+    next.agent = to;
+    next.rateLimit = null;
+    next.inFlightTool = null;
+    next.thinking = false;
+    next.pendingApprovals = [];
+    next.sessionUsage = null;
+    next.availableCommands = [];
+    next.availableModes = [];
+    next.currentModeId = null;
+    next.plan = null;
+    next.mode = "Default";
+    next.startupError = null;
+    next.lastAgentSwitch = { from, to, reason, at: now };
+    // The switch path emits Stopped { user_stopped } from the
+    // shutdown of the prior backend just before AgentSwitched, which
+    // flips workerStopped/agentUnresponsive on. Without an explicit
+    // clear here the user sees a "worker stopped / reconnecting"
+    // banner on top of a freshly switched session during the new
+    // agent's session/new handshake (until AcpSessionAssigned clears
+    // it). Clear them eagerly so the banner stays hidden.
+    next.workerStopped = false;
+    next.workerRestarting = false;
+    next.agentUnresponsive = false;
+    next.activity = [
+      ...next.activity,
+      {
+        id: `agent-switched-${frame.seq}`,
+        kind: "session_cleared",
+        text: `Switched cockpit agent from ${from} to ${to} (${reason}).`,
+        at: now,
+      },
+    ];
     return next;
   }
   if ("PromptRejected" in event) {
@@ -988,6 +1079,7 @@ export function normaliseTurnCounters(
     lastStoppedSeq?: number;
     rejectedPrompts?: RejectedPrompt[];
     agentUnresponsive?: boolean;
+    agentOrphaned?: boolean;
   },
 ): CockpitState {
   const pendingUserPromptSeq =
@@ -1012,10 +1104,16 @@ export function normaliseTurnCounters(
     typeof state.agentUnresponsive === "boolean"
       ? state.agentUnresponsive
       : false;
+  // Pre-#1240 persisted entries lack agentOrphaned; backfill to false
+  // so the reducer and renderers see a well-typed value instead of
+  // `undefined`.
+  const agentOrphaned =
+    typeof state.agentOrphaned === "boolean" ? state.agentOrphaned : false;
   return {
     ...state,
     rejectedPrompts,
     agentUnresponsive,
+    agentOrphaned,
     pendingUserPromptSeq,
     lastStoppedSeq,
     turnActive: isTurnActive({ pendingUserPromptSeq, lastStoppedSeq }),

@@ -396,6 +396,66 @@ export interface ContextPrimerResponse {
   included_turn_count: number;
   truncated: boolean;
   max_chars: number;
+  /** When the recap was built from a session that ended in a non-
+   *  success terminal (rate-limit park or AgentStartupError), the
+   *  user's most recent UserPromptSent never reached the agent. The
+   *  backend pops it from the primer body and surfaces it here so the
+   *  recovery UI can drop it back into the composer as the user's
+   *  pending request. See #1281 / #1282. */
+  unprocessed_prompt?: string | null;
+}
+
+// --- Cockpit ACP registry ---
+
+export interface CockpitAgentInfo {
+  name: string;
+  description: string;
+  command: string;
+}
+
+/** List ACP registry entries the cockpit supervisor knows about.
+ *  Distinct from `/api/agents` (session-tool agents for the wizard);
+ *  this is the *cockpit* registry used by the rate-limit recovery
+ *  modal to populate the handoff target list. See #1282. */
+export async function fetchCockpitAgents(): Promise<CockpitAgentInfo[]> {
+  return (await fetchJson<CockpitAgentInfo[]>("/api/cockpit/agents")) ?? [];
+}
+
+// --- Cockpit switch agent ---
+
+export interface SwitchAgentResponse {
+  session_id: string;
+  agent: string;
+  /** Highest seq BEFORE AgentSwitched was emitted. Pass to
+   *  fetchContextPrimer so the recap excludes the handoff event. */
+  before_seq: number;
+  /** Seq assigned to the AgentSwitched event. The frontend awaits the
+   *  reducer reaching this seq before prefilling so the divider and
+   *  composer prefill arrive in order. */
+  switch_seq: number;
+  status: string;
+}
+
+/** Hand off a cockpit session from its current ACP backend to
+ *  `target` (registry key, e.g. "codex"). Backend stops the old
+ *  worker, spawns the new one, persists the agent change, and emits
+ *  an AgentSwitched event. On failure (unknown target, spawn error)
+ *  the instance is left untouched. See #1282. */
+export async function switchCockpitAgent(
+  sessionId: string,
+  target: string,
+  model?: string | null,
+): Promise<SwitchAgentResponse | null> {
+  const body: { target: string; model?: string } = { target };
+  if (model) body.model = model;
+  return fetchJson<SwitchAgentResponse>(
+    `/api/sessions/${encodeURIComponent(sessionId)}/cockpit/switch-agent`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    },
+  );
 }
 
 /** Fetch a markdown primer built from events `seq < beforeSeq`. Used
