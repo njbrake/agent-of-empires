@@ -15,7 +15,7 @@ use crate::session::config::{GroupByMode, SortOrder};
 use crate::session::{Item, Status};
 use crate::tui::components::{set_prefixed_input_cursor_position, HelpOverlay, Preview};
 use crate::tui::responsive;
-use crate::tui::styles::Theme;
+use crate::tui::styles::{has_min_contrast, Theme};
 use crate::update::UpdateInfo;
 
 /// Derive a frame offset from a session's creation timestamp so that
@@ -859,15 +859,22 @@ impl HomeView {
         line_spans.push(Span::styled(
             text.into_owned(),
             if is_selected {
-                // Selected rows override fg to theme.text so faded statuses
-                // (idle/dim for archived/snoozed/stopped) stay readable
-                // against session_selection bg. Some themes (notably
-                // phosphor) have dim fg luminance close to session_selection
-                // luminance, making status-colored selected titles
-                // unreadable. Bold alone doesn't close the gap. Keeping
-                // italic where set so archive/snooze visual language still
-                // reads.
-                style.fg(theme.text).bold()
+                // Selected-row contrast gate. The previous unconditional
+                // override stripped per-status color from every selected
+                // row (running-green, error-red, etc.); the contrast check
+                // only swaps in theme.text when the status fg actually
+                // clashes with session_selection. 3:1 is WCAG AA Large /
+                // bold-UI, which matches the row styling. Non-Rgb fg
+                // (palette mode after downsample) falls through to the
+                // override branch for safety. Italic/dim modifiers on
+                // `style` survive both branches so archive/snooze visual
+                // language reads either way.
+                let fg = style.fg.unwrap_or(theme.text);
+                if has_min_contrast(fg, theme.session_selection, 3.0) {
+                    style.bold()
+                } else {
+                    style.fg(theme.text).bold()
+                }
             } else {
                 style
             },
