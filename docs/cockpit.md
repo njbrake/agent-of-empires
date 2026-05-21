@@ -288,6 +288,36 @@ An iPad with a Bluetooth keyboard (or any device that reports both
 the desktop Enter-to-send convention so hardware-keyboard typing
 feels natural. See #1129.
 
+### Queued prompts (mid-turn + inactive session)
+
+The web composer keeps your messages around even when the session
+can't accept them yet. Two cases:
+
+1. **Mid-turn follow-up.** While the agent is producing the current
+   response, the Send button switches to a paper-plane with a small
+   pending-count badge. Click (or press Enter) and your text lands in
+   the **Queued (N)** strip above the composer. As soon as the agent
+   reports `Stopped`, the cockpit drains the queue per the
+   `cockpit.queue_drain_mode` setting (combined, the default, sends
+   every parked entry as one prompt; serial fires them one at a time).
+   See #1031 for the original feature.
+
+2. **Inactive session.** If the WebSocket is mid-reconnect, the worker
+   is stopped (`user_stopped`), or the worker is restarting
+   (`restart_pending`, `agent_unresponsive`, `prompt_orphaned`), the
+   composer still accepts submissions. The tooltip swaps to
+   `Queue message until session resumes`, the strip heading changes to
+   `Pending until session resumes (N)`, and the parked entry stays
+   editable. The moment the WS reopens AND the worker reaches
+   `running` AND the session-level `Stopped` flag clears (an
+   `AcpSessionAssigned` event), the same drain effect fires the
+   queue. See #1359.
+
+Queued entries persist in the per-tab localStorage snapshot
+(`aoe:cockpit-state:v1:<sid>`), so a page reload keeps them across the
+reconnect window. Closing the tab does drop the queue; server-side
+durability is not currently implemented.
+
 ### Cross-machine attach
 
 Set `AOE_DAEMON_URL` (and optionally `AOE_DAEMON_TOKEN`) to point at

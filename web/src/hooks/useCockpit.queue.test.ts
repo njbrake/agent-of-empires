@@ -306,31 +306,86 @@ describe("useCockpit drain race (#1144)", () => {
     vi.unstubAllGlobals();
   });
 
-  it("does not POST while the WS is still connecting, even if the queue is non-empty", async () => {
+  it("enqueues without POSTing when sendPrompt is called while the WS is still connecting (#1359)", async () => {
     const { result } = renderHook(() => useCockpit("sess-drain-1"));
     await flushAsync();
     expect(sockets).toHaveLength(1);
     // WS is still in CONNECTING (FakeWebSocket starts at readyState=0).
-    // sendPrompt's status guard would itself reject the call, so
-    // simulate the in-the-wild path: directly dispatch onto the
-    // reducer-backed queue while turnActive is false. We do that by
-    // calling the public sendPrompt while turnActive is true (so it
-    // enqueues), then releasing turnActive without opening the socket.
-    //
-    // The simplest deterministic reproduction is to pre-seed the queue
-    // via sendPrompt in the connecting window with turnActive flipped
-    // by a Stopped frame on the WS. Easier still: invoke the public
-    // sendPrompt with status not "open" to confirm the gate; then
-    // verify zero prompt POSTs went out.
+    // sendPrompt should not POST (drain effect is gated on status ===
+    // "open"), and per #1359 it should also not drop the message: park
+    // it in the queue so the drain effect can fire it once the socket
+    // reopens.
     act(() => {
       void result.current.sendPrompt("queued before open");
     });
     await flushAsync();
     expect(promptPostCount).toBe(0);
-    // The error banner from sendPrompt's own status guard is fine; the
-    // important thing is that the drain effect did NOT also fire and
-    // optimistically clear a queue.
+    expect(result.current.state.queuedPrompts).toHaveLength(1);
+    expect(result.current.state.queuedPrompts[0]?.text).toBe(
+      "queued before open",
+    );
+  });
+
+  it("drains the queue once the WS opens after an inactive-state enqueue (#1359)", async () => {
+    const { result } = renderHook(() => useCockpit("sess-drain-resume"));
+    await flushAsync();
+    const ws = sockets[0]!;
+    // Enqueue while WS is still CONNECTING: per #1359 sendPrompt parks
+    // the entry rather than erroring.
+    act(() => {
+      void result.current.sendPrompt("parked while offline");
+    });
+    await flushAsync();
+    expect(promptPostCount).toBe(0);
+    expect(result.current.state.queuedPrompts).toHaveLength(1);
+
+    // Open the socket; the drain effect should now POST the parked
+    // entry and clear the queue.
+    act(() => {
+      ws.readyState = FakeWebSocket.OPEN;
+      ws.onopen?.({} as Event);
+    });
+    await flushAsync();
+    expect(promptPostCount).toBe(1);
+    expect(promptPostBodies[0]).toContain("parked while offline");
     expect(result.current.state.queuedPrompts).toEqual([]);
+  });
+
+  it("enqueues when sendPrompt is called while workerStopped is true (#1359)", async () => {
+    const { result } = renderHook(() => useCockpit("sess-stopped"));
+    await flushAsync();
+    const ws = sockets[0]!;
+    act(() => {
+      ws.readyState = FakeWebSocket.OPEN;
+      ws.onopen?.({} as Event);
+    });
+    await flushAsync();
+
+    // Push a `Stopped { reason: "user_stopped" }` frame so the reducer
+    // sets workerStopped=true. The drain effect parks on that flag, and
+    // per #1359 sendPrompt mirrors the same guard so user-typed
+    // messages also park instead of POSTing into a stopped worker.
+    act(() => {
+      ws.onmessage?.({
+        data: JSON.stringify({
+          session_id: "sess-stopped",
+          seq: 1,
+          event: { Stopped: { reason: "user_stopped" } },
+        }),
+      } as MessageEvent);
+    });
+    await flushAsync();
+    expect(result.current.state.workerStopped).toBe(true);
+
+    act(() => {
+      void result.current.sendPrompt("typed while stopped");
+    });
+    await flushAsync();
+    expect(promptPostCount).toBe(0);
+    expect(result.current.state.queuedPrompts).toHaveLength(1);
+    expect(result.current.state.queuedPrompts[0]?.text).toBe(
+      "typed while stopped",
+    );
   });
 
   it("combined-mode drain leaves the queue intact when the prompt POST fails", async () => {
