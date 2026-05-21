@@ -485,6 +485,13 @@
       "components": ["web/src/components/cockpit/SwitchSubstrateAction.tsx"]
     },
     {
+      "id": "story.auth-sign-out",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": ["tests/live/cockpit-stories/auth-sign-out.spec.ts"],
+      "components": ["web/src/components/OverflowMenu.tsx", "web/src/components/TopBar.tsx"]
+    },
+    {
       "id": "cockpit.rate-limit-recovery",
       "kind": "vitest",
       "risk": "high",
