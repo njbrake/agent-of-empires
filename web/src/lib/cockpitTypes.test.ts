@@ -1128,6 +1128,158 @@ describe("applyEvent / usageBaseline (#1354)", () => {
     expect(state.sessionUsage?.cost ?? null).toBeNull();
     expect(state.sessionUsage?.used).toBe(100);
   });
+
+  it("compact after /clear stacks the baseline onto the prior cumulative", () => {
+    // Baseline carries across boundaries: /clear stashes the agent's
+    // cumulative, then /compact must capture the still-cumulative value
+    // (displayed delta plus the existing baseline), not just the
+    // delta-since-clear. Otherwise the second boundary would
+    // under-subtract from subsequent UsageUpdate frames.
+    let state = applyEvent(emptyCockpitState(), {
+      session_id: "s-1",
+      seq: 1,
+      event: {
+        UsageUpdated: {
+          usage: {
+            used: 10_000,
+            size: 200_000,
+            cost: { amount: 0.10, currency: "USD" },
+          },
+        },
+      },
+    });
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 2,
+      event: "SessionCleared",
+    });
+    expect(state.usageBaseline?.cost).toBeCloseTo(0.10, 6);
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 3,
+      event: {
+        UsageUpdated: {
+          usage: {
+            used: 5_000,
+            size: 200_000,
+            cost: { amount: 0.15, currency: "USD" },
+          },
+        },
+      },
+    });
+    // Displayed delta after /clear is 0.05.
+    expect(state.sessionUsage?.cost?.amount).toBeCloseTo(0.05, 6);
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 4,
+      event: "ConversationCompacted",
+    });
+    // Baseline at compact must be the true agent cumulative (0.15),
+    // i.e. previous baseline 0.10 plus displayed delta 0.05.
+    expect(state.usageBaseline?.cost).toBeCloseTo(0.15, 6);
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 5,
+      event: {
+        UsageUpdated: {
+          usage: {
+            used: 2_000,
+            size: 200_000,
+            cost: { amount: 0.17, currency: "USD" },
+          },
+        },
+      },
+    });
+    expect(state.sessionUsage?.cost?.amount).toBeCloseTo(0.02, 6);
+  });
+
+  it("UsageUpdated with baseline set but no incoming cost passes the usage through raw", () => {
+    // Branch coverage: baseline-set + missing cost should hit the else
+    // arm without crashing on the absent cost field, and store the raw
+    // usage so used / size still surface in the footer.
+    let state = applyEvent(emptyCockpitState(), {
+      session_id: "s-1",
+      seq: 1,
+      event: {
+        UsageUpdated: {
+          usage: {
+            used: 10_000,
+            size: 200_000,
+            cost: { amount: 0.10, currency: "USD" },
+          },
+        },
+      },
+    });
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 2,
+      event: "SessionCleared",
+    });
+    expect(state.usageBaseline?.cost).toBeCloseTo(0.10, 6);
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 3,
+      event: {
+        UsageUpdated: { usage: { used: 1_000, size: 200_000 } },
+      },
+    });
+    expect(state.sessionUsage?.used).toBe(1_000);
+    expect(state.sessionUsage?.cost ?? null).toBeNull();
+    // Baseline persists across a no-cost frame; the next cost-bearing
+    // frame still subtracts correctly.
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 4,
+      event: {
+        UsageUpdated: {
+          usage: {
+            used: 1_500,
+            size: 200_000,
+            cost: { amount: 0.12, currency: "USD" },
+          },
+        },
+      },
+    });
+    expect(state.sessionUsage?.cost?.amount).toBeCloseTo(0.02, 6);
+  });
+
+  it("clamps cost to zero if the agent ever reports a smaller cumulative than the baseline", () => {
+    // Defensive: an upstream ACP-session restart could reset the
+    // adapter's cumulative below the captured baseline. The reducer
+    // must clamp at zero rather than display a negative dollar figure.
+    let state = applyEvent(emptyCockpitState(), {
+      session_id: "s-1",
+      seq: 1,
+      event: {
+        UsageUpdated: {
+          usage: {
+            used: 10_000,
+            size: 200_000,
+            cost: { amount: 0.50, currency: "USD" },
+          },
+        },
+      },
+    });
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 2,
+      event: "SessionCleared",
+    });
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 3,
+      event: {
+        UsageUpdated: {
+          usage: {
+            used: 100,
+            size: 200_000,
+            cost: { amount: 0.10, currency: "USD" },
+          },
+        },
+      },
+    });
+    expect(state.sessionUsage?.cost?.amount).toBe(0);
+  });
 });
 
 describe("applyEvent / AgentSwitched", () => {
@@ -1641,6 +1793,35 @@ describe("CockpitState reducer / silent-orphan watchdog (#1240)", () => {
     delete stale.agentOrphaned;
     const normalised = normaliseTurnCounters(stale);
     expect(normalised.agentOrphaned).toBe(false);
+  });
+
+  it("backfills usageBaseline=null on pre-#1354 persisted state", () => {
+    // Simulate a localStorage entry written before #1354: usageBaseline
+    // absent. normaliseTurnCounters must default it to null so the
+    // UsageUpdated reducer arm's `next.usageBaseline && ...` check sees
+    // a well-typed value rather than `undefined`.
+    const stale = {
+      ...emptyCockpitState(),
+      pendingUserPromptSeq: 0,
+      lastStoppedSeq: 0,
+    } as CockpitState & { usageBaseline?: { cost: number } | null };
+    delete stale.usageBaseline;
+    const normalised = normaliseTurnCounters(stale);
+    expect(normalised.usageBaseline).toBeNull();
+  });
+
+  it("preserves a non-null usageBaseline through normaliseTurnCounters", () => {
+    // A session that ran /clear before reload writes a baseline into
+    // localStorage. Hydration must keep it so post-reload UsageUpdate
+    // frames continue subtracting the boundary cumulative.
+    const cached: CockpitState = {
+      ...emptyCockpitState(),
+      pendingUserPromptSeq: 3,
+      lastStoppedSeq: 3,
+      usageBaseline: { cost: 0.42 },
+    };
+    const normalised = normaliseTurnCounters(cached);
+    expect(normalised.usageBaseline?.cost).toBeCloseTo(0.42, 6);
   });
 
   it("clears agentOrphaned on restart_pending", () => {
