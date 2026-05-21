@@ -419,6 +419,13 @@
       ]
     },
     {
+      "id": "cockpit.story.composer-mobile-enter-newline",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": ["tests/live/cockpit-stories/composer-mobile-enter-newline.spec.ts"],
+      "components": ["web/src/components/cockpit/Composer.tsx"]
+    },
+    {
       "id": "cockpit.rate-limit-recovery",
       "kind": "vitest",
       "risk": "high",
