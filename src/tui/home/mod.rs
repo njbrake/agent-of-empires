@@ -164,6 +164,11 @@ pub struct HomeView {
     pub(super) view_mode: ViewMode,
     pub(super) sort_order: SortOrder,
     pub(super) group_by: GroupByMode,
+    /// Per-row tag config; what to show next to each session title.
+    /// Cached from resolved SessionConfig at construction + reload_settings;
+    /// the render layer reads this rather than re-resolving the config on
+    /// every paint.
+    pub(super) row_tag_mode: crate::session::config::RowTagMode,
     /// Collapsed state for project-mode groups (persists across rebuilds)
     pub(super) project_group_collapsed: HashMap<String, bool>,
 
@@ -421,6 +426,7 @@ impl HomeView {
             view_mode,
             sort_order,
             group_by,
+            row_tag_mode: resolved.session.row_tag,
             project_group_collapsed: HashMap::new(),
             show_help: false,
             new_dialog: None,
@@ -2283,6 +2289,7 @@ impl HomeView {
         self.status_hook_config = config.status_hooks.clone();
         self.refresh_status_hook_config_cache();
         self.strict_hotkeys = config.session.strict_hotkeys;
+        self.row_tag_mode = config.session.row_tag;
         self.idle_decay_window =
             crate::tui::styles::idle_decay_window(config.theme.idle_decay_minutes);
         self.tool_configs = config.tools;
