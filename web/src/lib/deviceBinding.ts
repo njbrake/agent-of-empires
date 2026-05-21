@@ -63,6 +63,9 @@ export function getOrCreateDeviceBindingSecret(): string {
   crypto.getRandomValues(bytes);
   const secret = base64UrlEncode(bytes);
   try {
+    // Device binding must hard-fail on quota; callers surface the error
+    // to the user rather than silently degrading. Stays on raw setItem.
+    // eslint-disable-next-line no-restricted-syntax
     window.localStorage.setItem(STORAGE_KEY, secret);
   } catch (err) {
     throw new Error(
