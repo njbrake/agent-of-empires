@@ -9,8 +9,6 @@
 //! requires Node anyway, so on a real cockpit-enabled build environment
 //! this test runs).
 
-#![cfg(feature = "serve")]
-
 use std::time::Duration;
 
 use agent_of_empires::cockpit::acp_client::{AcpClient, SpawnConfig};

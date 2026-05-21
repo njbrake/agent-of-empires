@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
+import { safeGetItem, safeSetItem } from "../lib/safeStorage";
+
 const RESERVATION_STORAGE_KEY = "aoe-mobile-keyboard-reservation";
 
 // Initial value for reservedKeyboardHeight on mobile. Returning visitors
@@ -10,14 +12,10 @@ const RESERVATION_STORAGE_KEY = "aoe-mobile-keyboard-reservation";
 function readReservationSeed(): number {
   if (typeof window === "undefined") return 0;
   if (!window.matchMedia?.("(pointer: coarse)").matches) return 0;
-  try {
-    const saved = localStorage.getItem(RESERVATION_STORAGE_KEY);
-    if (saved) {
-      const n = parseInt(saved, 10);
-      if (Number.isFinite(n) && n > 0 && n < window.innerHeight) return n;
-    }
-  } catch {
-    // ignore
+  const saved = safeGetItem(RESERVATION_STORAGE_KEY);
+  if (saved) {
+    const n = parseInt(saved, 10);
+    if (Number.isFinite(n) && n > 0 && n < window.innerHeight) return n;
   }
   return Math.max(200, Math.floor(window.innerHeight * 0.4));
 }
@@ -70,14 +68,7 @@ export function useMobileKeyboard() {
   // same value without any first-open resize.
   useEffect(() => {
     if (!isMobile || reservedKeyboardHeight <= 0) return;
-    try {
-      localStorage.setItem(
-        RESERVATION_STORAGE_KEY,
-        String(reservedKeyboardHeight),
-      );
-    } catch {
-      // ignore (private mode, storage quota, etc.)
-    }
+    safeSetItem(RESERVATION_STORAGE_KEY, String(reservedKeyboardHeight));
   }, [isMobile, reservedKeyboardHeight]);
 
   useEffect(() => {

@@ -122,6 +122,70 @@ test.describe("Diff syntax highlighting", () => {
     expect(count).toBeGreaterThan(3);
   });
 
+  test("renders diff text even when Shiki dynamic imports fail", async ({
+    page,
+  }) => {
+    // Regression for the case where the content span was rendered with
+    // `opacity-0` until `useHighlightedLines.loading` flipped. The async
+    // IIFE in that hook had no top-level try/catch, so any rejected
+    // dynamic import (grammar or theme module) left the text invisible
+    // forever. Playwright's `toBeVisible` ignores opacity, so we probe
+    // the computed opacity directly. We deliberately block the Shiki
+    // language modules to keep the highlighter pending; the diff text
+    // must still render at opacity 1. See PR #1355.
+    await setupDiffMocks(page);
+    // Block the dynamic imports Shiki uses for language grammars
+    // (`/assets/typescript-*.js`, `/assets/tsx-*.js`, ...). The pre-fix
+    // build kept the content span at opacity 0 forever while the
+    // highlighter promise was unresolved; the fix renders raw text
+    // unconditionally.
+    await page.route(/\/assets\/(typescript|tsx|jsx|javascript)-[^/]+\.js/, (r) =>
+      r.abort(),
+    );
+    await page.goto("/");
+    await openSessionAndWaitForDiffList(page);
+    await page.getByText("example.ts").first().click();
+
+    const diffRoot = page.locator(".leading-\\[1\\.6\\]");
+    await expect(diffRoot).toBeVisible({ timeout: 10000 });
+    // Give the (failing) highlighter promise time to settle.
+    await page.waitForTimeout(1500);
+
+    // Pick the content span on every diff row: the last direct-child
+    // <span> of each row's wrapping div (row > [linenumOld, linenumNew,
+    // prefix, contentSpan]).
+    const probes = await page.evaluate(() => {
+      const rows = Array.from(
+        document.querySelectorAll(".leading-\\[1\\.6\\] > div > div"),
+      );
+      return rows.map((row) => {
+        const directSpans = Array.from(row.children).filter(
+          (c) => c.tagName === "SPAN",
+        );
+        const contentSpan = directSpans[directSpans.length - 1] as
+          | HTMLSpanElement
+          | undefined;
+        if (!contentSpan) return null;
+        const cs = getComputedStyle(contentSpan);
+        return {
+          opacity: cs.opacity,
+          text: contentSpan.textContent ?? "",
+          hasOpacity0Class: contentSpan.className.includes("opacity-0"),
+        };
+      });
+    });
+
+    const contentProbes = probes.filter(
+      (p): p is { opacity: string; text: string; hasOpacity0Class: boolean } =>
+        p !== null && p.text.trim().length > 0,
+    );
+    expect(contentProbes.length).toBeGreaterThan(0);
+    for (const probe of contentProbes) {
+      expect(probe.opacity).toBe("1");
+      expect(probe.hasOpacity0Class).toBe(false);
+    }
+  });
+
   test("preserves diff +/- prefix markers alongside syntax tokens", async ({
     page,
   }) => {

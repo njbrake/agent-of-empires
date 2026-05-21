@@ -1,23 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { browseFilesystem, getHomePath } from "../lib/api";
+import { safeGetItem, safeSetItem } from "../lib/safeStorage";
 import type { DirEntry } from "../lib/types";
 
 const LAST_DIR_KEY = "aoe-last-browse-dir";
 
 function loadLastDir(): string | null {
-  try {
-    return localStorage.getItem(LAST_DIR_KEY);
-  } catch {
-    return null;
-  }
+  return safeGetItem(LAST_DIR_KEY);
 }
 
 function saveLastDir(path: string) {
-  try {
-    localStorage.setItem(LAST_DIR_KEY, path);
-  } catch {
-    // ignore
-  }
+  safeSetItem(LAST_DIR_KEY, path);
 }
 
 interface Props {

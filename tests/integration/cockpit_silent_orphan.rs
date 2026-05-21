@@ -13,13 +13,12 @@
 //!   3. disabled (grace = 0): watchdog skipped entirely → no orphan.
 //!
 //! Skipped automatically if `node` is missing.
-
-#![cfg(feature = "serve")]
-// Compiled only in debug builds because the watchdog grace is tunable
-// via `AOE_SILENT_ORPHAN_GRACE_MS` / `AOE_SILENT_ORPHAN_FAST_GRACE_MS`
-// only under `cfg(debug_assertions)`; release builds would wait the
-// full 60s production default.
-#![cfg(debug_assertions)]
+//!
+//! Note: the parent `main.rs` only compiles this module under
+//! `cfg(all(feature = "serve", debug_assertions))`. Debug-only because
+//! the watchdog grace is tunable via `AOE_SILENT_ORPHAN_GRACE_MS` /
+//! `AOE_SILENT_ORPHAN_FAST_GRACE_MS` only under `cfg(debug_assertions)`;
+//! release builds would wait the full 60s production default.
 
 use std::path::PathBuf;
 use std::time::{Duration, Instant};

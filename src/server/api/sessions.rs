@@ -46,6 +46,11 @@ pub struct SessionResponse {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub base_branch_override: Option<String>,
     pub is_sandboxed: bool,
+    /// True when the session is marked as a user favorite. Mirrors
+    /// `Instance::is_favorited()`; surfaced so the web sidebar can pin
+    /// favorited rows and render the `*` marker without re-implementing
+    /// the predicate. Cross-feature parity with the TUI's `f`/`F` keybind.
+    pub favorited: bool,
     pub has_managed_worktree: bool,
     pub has_terminal: bool,
     pub profile: String,
@@ -186,6 +191,7 @@ impl SessionResponse {
                 .and_then(|w| w.base_branch.clone()),
             base_branch_override: inst.base_branch_override.clone(),
             is_sandboxed: inst.is_sandboxed(),
+            favorited: inst.is_favorited(),
             has_managed_worktree: inst
                 .worktree_info
                 .as_ref()
@@ -1156,19 +1162,36 @@ pub async fn create_session(
             )
                 .into_response();
         }
-        // Verify the profile exists ("default" is always valid even without a dir)
-        if profile_name != "default" {
-            let known = crate::session::list_profiles().unwrap_or_default();
-            if !known.contains(profile_name) {
+        // Verify the profile exists. Every profile is a real directory under
+        // profiles/; there is no implicitly-valid profile name. Distinguish
+        // an enumeration failure (I/O, permissions) from a missing profile
+        // so the client doesn't see a 400 when the real problem is server-side.
+        let known = match crate::session::list_profiles() {
+            Ok(list) => list,
+            Err(e) => {
+                tracing::error!(
+                    target: "server.sessions",
+                    "failed to enumerate profiles while validating create_session: {e:#}"
+                );
                 return (
-                    StatusCode::BAD_REQUEST,
+                    StatusCode::INTERNAL_SERVER_ERROR,
                     Json(serde_json::json!({
-                        "error": "profile_not_found",
-                        "message": format!("Profile '{}' does not exist", profile_name)
+                        "error": "internal_error",
+                        "message": format!("Failed to enumerate profiles: {e}"),
                     })),
                 )
                     .into_response();
             }
+        };
+        if !known.contains(profile_name) {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(serde_json::json!({
+                    "error": "profile_not_found",
+                    "message": format!("Profile '{}' does not exist", profile_name)
+                })),
+            )
+                .into_response();
         }
     }
 
@@ -3485,6 +3508,7 @@ mod workspace_ordering_tests {
             plan_summary: None,
             next_wakeup_at: None,
             next_wakeup_reason: None,
+            favorited: false,
         }
     }
 

@@ -15,7 +15,7 @@ use crate::session::config::{GroupByMode, SortOrder};
 use crate::session::{Item, Status};
 use crate::tui::components::{set_prefixed_input_cursor_position, HelpOverlay, Preview};
 use crate::tui::responsive;
-use crate::tui::styles::Theme;
+use crate::tui::styles::{has_min_contrast, Theme};
 use crate::update::UpdateInfo;
 
 /// Derive a frame offset from a session's creation timestamp so that
@@ -148,6 +148,101 @@ pub(crate) fn agent_row_icon(inst: &crate::session::Instance) -> &'static str {
     } else {
         icon
     }
+}
+
+/// Compact display code for a profile name, used by the per-row profile tag
+/// in all-profiles view where the full name is too wide.
+///
+/// Hyphen/underscore-delimited names collapse to their segment initials
+/// (`forit-backup` becomes `fb`); single-segment names take their first three
+/// chars (`default` becomes `def`). Always lowercased, capped at four chars.
+/// The mapping is per-name and deterministic, so two profiles that collapse to
+/// the same code render identically; the full name still shows in a filtered
+/// view's list title and in the New/Restart dialogs.
+/// Compute the per-row tag string for a given instance + mode, or `None`
+/// when the row should not render a tag in this context.
+///
+/// `Auto` only renders in all-profiles view (no `active_profile`). Other
+/// modes always render when their content is available (e.g. `Branch`
+/// returns `None` for sessions without a worktree).
+pub(crate) fn compute_row_tag(
+    inst: &crate::session::Instance,
+    mode: crate::session::config::RowTagMode,
+    in_all_profiles_view: bool,
+) -> Option<String> {
+    use crate::session::config::RowTagMode;
+    match mode {
+        RowTagMode::None => None,
+        RowTagMode::Auto => {
+            if !in_all_profiles_view {
+                return None;
+            }
+            let code = profile_short_code(&inst.source_profile);
+            if code.is_empty() {
+                None
+            } else {
+                Some(code)
+            }
+        }
+        RowTagMode::Profile => {
+            let code = profile_short_code(&inst.source_profile);
+            if code.is_empty() {
+                None
+            } else {
+                Some(code)
+            }
+        }
+        RowTagMode::Sandbox => {
+            if inst.is_sandboxed() {
+                Some("sb".to_string())
+            } else {
+                None
+            }
+        }
+        RowTagMode::Branch => inst.worktree_info.as_ref().and_then(|w| {
+            // Complement the existing branch-on-divergence display
+            // (rendered in `theme.branch` color earlier in the row) rather
+            // than duplicate it. When `branch != title` the divergence
+            // display already shows the branch, so the tag would just be
+            // redundant. When `branch == title` the divergence display
+            // stays quiet and the tag fills in.
+            //
+            // Workspace sessions (multi-repo, rendered as
+            // `<branch> [N repos]`) are handled by a separate display
+            // path and have no `worktree_info`, so they fall through to
+            // `None` here naturally.
+            if w.branch != inst.title {
+                return Option::<String>::None;
+            }
+            // Show the last `/`-segment of the branch (most informative
+            // for `feature/foo` style names), truncated to 8 chars so the
+            // tag stays narrow.
+            let last = w.branch.rsplit('/').next().unwrap_or("");
+            let trimmed: String = last.chars().take(8).collect();
+            if trimmed.is_empty() {
+                Option::<String>::None
+            } else {
+                Some(trimmed)
+            }
+        }),
+    }
+}
+
+pub(crate) fn profile_short_code(profile: &str) -> String {
+    let segments: Vec<&str> = profile
+        .split(['-', '_'])
+        .filter(|s| !s.is_empty())
+        .collect();
+    let code: String = match segments.as_slice() {
+        [] => String::new(),
+        [single] => single.chars().take(3).collect(),
+        many => many
+            .iter()
+            .filter_map(|s| s.chars().next())
+            .take(4)
+            .collect(),
+    };
+    code.to_lowercase()
 }
 
 /// Format a timestamp as a compact relative age (e.g. `3m`, `2h`, `4d`, `2mo`).
@@ -376,6 +471,7 @@ impl HomeView {
             unified_delete_dialog,
             group_delete_options_dialog,
             rename_dialog,
+            restart_dialog,
             hooks_install_dialog,
             hook_trust_dialog,
             welcome_dialog,
@@ -605,7 +701,7 @@ impl HomeView {
             || serve_open
     }
 
-    fn render_item_line(
+    pub(super) fn render_item_line(
         &self,
         item: &Item,
         is_selected: bool,
@@ -858,15 +954,22 @@ impl HomeView {
         line_spans.push(Span::styled(
             text.into_owned(),
             if is_selected {
-                // Selected rows override fg to theme.text so faded statuses
-                // (idle/dim for archived/snoozed/stopped) stay readable
-                // against session_selection bg. Some themes (notably
-                // phosphor) have dim fg luminance close to session_selection
-                // luminance, making status-colored selected titles
-                // unreadable. Bold alone doesn't close the gap. Keeping
-                // italic where set so archive/snooze visual language still
-                // reads.
-                style.fg(theme.text).bold()
+                // Selected-row contrast gate. The previous unconditional
+                // override stripped per-status color from every selected
+                // row (running-green, error-red, etc.); the contrast check
+                // only swaps in theme.text when the status fg actually
+                // clashes with session_selection. 3:1 is WCAG AA Large /
+                // bold-UI, which matches the row styling. Non-Rgb fg
+                // (palette mode after downsample) falls through to the
+                // override branch for safety. Italic/dim modifiers on
+                // `style` survive both branches so archive/snooze visual
+                // language reads either way.
+                let fg = style.fg.unwrap_or(theme.text);
+                if has_min_contrast(fg, theme.session_selection, 3.0) {
+                    style.bold()
+                } else {
+                    style.fg(theme.text).bold()
+                }
             } else {
                 style
             },
@@ -886,6 +989,22 @@ impl HomeView {
                             Style::default().fg(theme.branch),
                         ));
                     }
+                }
+
+                // Per-row tag. The mode is config-driven (see
+                // `SessionConfig.row_tag` and the Settings UI "Row Tag"
+                // field). Default is `None` so existing users see no
+                // tag; power users opt in for `Auto` (profile in all-
+                // profiles view), `Profile`, `Sandbox`, or `Branch`.
+                // Counted into `used_width` below so the activity
+                // column still right-aligns past the tag.
+                if let Some(tag) =
+                    compute_row_tag(inst, self.row_tag_mode, self.active_profile.is_none())
+                {
+                    line_spans.push(Span::styled(
+                        format!("  [{}]", tag),
+                        Style::default().fg(theme.dimmed),
+                    ));
                 }
 
                 // Right edge of the row: optional terminal-mode badge, and
@@ -1573,31 +1692,33 @@ impl HomeView {
 
         groups.push((2, mk(if strict { "N" } else { "n" }, "New")));
 
-        // Priority 1: user's core daily workflow (message / archive / fav /
-        // snooze). These survive the greedy pack under narrow-pane widths
-        // (iPad Termius / Moshi ~80 cols) because they're the actions the
-        // user reaches for most often. Restart / Del stay at p3, less
-        // frequent, OK to drop first.
+        // Priority 1: user's core daily workflow (message / del).
+        // These survive the greedy pack under narrow-pane widths (iPad
+        // Termius / Moshi ~80 cols) because they're the actions the user
+        // reaches for most often. Del stays at p3, less frequent,
+        // OK to drop first.
         if self.selected_session.is_some() {
             groups.push((1, mk(if strict { "M" } else { "m" }, "Msg")));
-            groups.push((3, mk(if strict { "E" } else { "e" }, "Restart")));
         }
         if !self.flat_items.is_empty() {
             groups.push((3, mk(if strict { "D" } else { "d" }, "Del")));
-            groups.push((1, mk(if strict { "Z" } else { "z" }, "Archive")));
         }
-        if self.selected_session.is_some() {
-            groups.push((1, mk(if strict { "F" } else { "f" }, "Fav")));
-            groups.push((1, mk(if strict { "H" } else { "h" }, "Snooze")));
+        // Attention-workflow shortcuts (Archive / Fav / Snooze) only render
+        // when the user is in Attention sort. They are only useful for
+        // shaping the Attention queue; in Newest / Created / Last Accessed
+        // they just take footer space without changing what the user sees.
+        if self.sort_order == SortOrder::Attention {
+            if !self.flat_items.is_empty() {
+                groups.push((1, mk(if strict { "Z" } else { "z" }, "Archive")));
+            }
+            if self.selected_session.is_some() {
+                groups.push((1, mk(if strict { "F" } else { "f" }, "Fav")));
+                groups.push((1, mk(if strict { "H" } else { "h" }, "Snooze")));
+            }
         }
 
         groups.push((4, mk_key("/")));
         groups.push((4, mk(if strict { "^D" } else { "D" }, "Diff")));
-        // Mouse capture is enabled globally, which disables the terminal's
-        // native drag-to-select. Surface the modifier-key workaround so users
-        // don't think copy-paste is broken. Moderate priority, useful but not
-        // critical, drops on narrow panes before ? / Quit.
-        groups.push((2, mk("\u{2325}/Shift+drag", "Select")));
         groups.push((1, mk("^K", "Cmds")));
         groups.push((0, mk_key("?")));
 
@@ -1784,6 +1905,31 @@ mod tests {
     fn compose_list_title_renders_za_sort_label() {
         let title = compose_list_title("aoe", None, GroupByMode::Manual, SortOrder::ZA);
         assert_eq!(title, " aoe · Z-A ");
+    }
+
+    #[test]
+    fn profile_short_code_multi_segment_takes_initials() {
+        assert_eq!(profile_short_code("forit-backup"), "fb");
+        assert_eq!(profile_short_code("pivot-main"), "pm");
+        assert_eq!(profile_short_code("wma-work"), "ww");
+    }
+
+    #[test]
+    fn profile_short_code_single_segment_takes_first_three() {
+        assert_eq!(profile_short_code("default"), "def");
+        assert_eq!(profile_short_code("ForIT"), "for");
+    }
+
+    #[test]
+    fn profile_short_code_caps_at_four_chars() {
+        assert_eq!(profile_short_code("a-b-c-d-e-f"), "abcd");
+    }
+
+    #[test]
+    fn profile_short_code_lowercases_and_ignores_empty_segments() {
+        assert_eq!(profile_short_code("Forit_Backup"), "fb");
+        assert_eq!(profile_short_code("--foo--"), "foo");
+        assert_eq!(profile_short_code(""), "");
     }
 
     #[test]

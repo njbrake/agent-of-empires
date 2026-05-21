@@ -25,10 +25,34 @@ const compactFeatures = [
     tint: 'green' as const,
   },
   {
+    icon: 'web',
+    title: 'Web Dashboard (Beta)',
+    description: 'Drive the same sessions from any browser. Real terminal in the page, PWA install on desktop and mobile.',
+    tint: 'brand' as const,
+  },
+  {
+    icon: 'cockpit',
+    title: 'Cockpit (Alpha)',
+    description: 'Mobile-first native rendering of agent state via the Agent Client Protocol. Plan panels, tool-call cards, swipe-to-approve.',
+    tint: 'accent' as const,
+  },
+  {
+    icon: 'phone',
+    title: 'Remote Phone Access',
+    description: 'Press R in the TUI to expose the dashboard over HTTPS with QR pairing. Tailscale Funnel or Cloudflare Tunnel.',
+    tint: 'green' as const,
+  },
+  {
+    icon: 'groups',
+    title: 'Multi-Repo Workspaces',
+    description: 'Drive one session across several git repositories with project registry and multi-select pickers.',
+    tint: 'brand' as const,
+  },
+  {
     icon: 'status',
     title: 'Status Detection',
     description: 'Know when agents are working, waiting for input, or idle without switching sessions.',
-    tint: 'brand' as const,
+    tint: 'accent' as const,
   },
   {
     icon: 'tmux',
@@ -125,6 +149,14 @@ const compactFeatures = [
             />
           </div>
         ))}
+      </div>
+      <div class="mt-8 flex justify-center">
+        <a href="/docs/features/" class="btn-secondary text-base px-6 py-3 inline-flex items-center gap-2 group">
+          See all features
+          <svg class="w-4 h-4 group-hover:translate-x-0.5 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 8l4 4m0 0l-4 4m4-4H3"/>
+          </svg>
+        </a>
       </div>
     </div>
   </section>

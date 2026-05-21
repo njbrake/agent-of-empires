@@ -54,6 +54,24 @@ pub enum SessionCommands {
 
     /// Wake a snoozed session immediately
     Unsnooze(SessionIdArgs),
+
+    /// Mark a session as a favorite. Favorited rows pin to the top of
+    /// their status tier in the Attention sort and render with a leading
+    /// `* ` glyph plus bold + underline.
+    Favorite(SessionIdArgs),
+
+    /// Clear the favorite flag on a session.
+    Unfavorite(SessionIdArgs),
+
+    /// Archive a session (sinks it to the bottom of the Attention sort).
+    /// Kills the tmux pane unless `--no-kill` is passed. The worktree,
+    /// branch, and container are preserved; use `aoe remove` (optionally
+    /// with `--delete-worktree` / `--delete-branch`) to fully destroy a
+    /// session.
+    Archive(ArchiveArgs),
+
+    /// Unarchive a session (restores it to its tier in the Attention sort)
+    Unarchive(SessionIdArgs),
 }
 
 #[derive(Args)]
@@ -65,6 +83,18 @@ pub struct SnoozeArgs {
     /// from the active config (default 30)
     #[arg(long)]
     pub minutes: Option<u32>,
+}
+
+#[derive(Args)]
+pub struct ArchiveArgs {
+    /// Session ID or title
+    pub identifier: String,
+
+    /// Skip killing the tmux pane. By default archiving stops the running
+    /// agent so the row renders as truly parked; pass this to keep the
+    /// pane alive while still marking the session archived.
+    #[arg(long = "no-kill")]
+    pub no_kill: bool,
 }
 
 #[derive(Args)]
@@ -206,7 +236,107 @@ pub async fn run(profile: &str, command: SessionCommands) -> Result<()> {
         SessionCommands::SetBase(args) => set_base(profile, args).await,
         SessionCommands::Snooze(args) => snooze_session(profile, args).await,
         SessionCommands::Unsnooze(args) => unsnooze_session(profile, args).await,
+        SessionCommands::Favorite(args) => favorite_session(profile, args).await,
+        SessionCommands::Unfavorite(args) => unfavorite_session(profile, args).await,
+        SessionCommands::Archive(args) => archive_session(profile, args).await,
+        SessionCommands::Unarchive(args) => unarchive_session(profile, args).await,
     }
+}
+
+async fn favorite_session(profile: &str, args: SessionIdArgs) -> Result<()> {
+    let storage = Storage::new(profile)?;
+    let (mut instances, groups) = storage.load_with_groups()?;
+
+    let idx = instances
+        .iter()
+        .position(|i| {
+            i.id == args.identifier
+                || i.id.starts_with(&args.identifier)
+                || i.title == args.identifier
+        })
+        .ok_or_else(|| anyhow::anyhow!("Session not found: {}", args.identifier))?;
+
+    instances[idx].favorite();
+    let title = instances[idx].title.clone();
+
+    let group_tree = GroupTree::new_with_groups(&instances, &groups);
+    storage.commit(&instances, &group_tree)?;
+
+    println!("Favorited: {}", title);
+    Ok(())
+}
+
+async fn unfavorite_session(profile: &str, args: SessionIdArgs) -> Result<()> {
+    let storage = Storage::new(profile)?;
+    let (mut instances, groups) = storage.load_with_groups()?;
+
+    let idx = instances
+        .iter()
+        .position(|i| {
+            i.id == args.identifier
+                || i.id.starts_with(&args.identifier)
+                || i.title == args.identifier
+        })
+        .ok_or_else(|| anyhow::anyhow!("Session not found: {}", args.identifier))?;
+
+    instances[idx].unfavorite();
+    let title = instances[idx].title.clone();
+
+    let group_tree = GroupTree::new_with_groups(&instances, &groups);
+    storage.commit(&instances, &group_tree)?;
+
+    println!("Unfavorited: {}", title);
+    Ok(())
+}
+
+async fn archive_session(profile: &str, args: ArchiveArgs) -> Result<()> {
+    let storage = Storage::new(profile)?;
+    let (mut instances, groups) = storage.load_with_groups()?;
+
+    let id = super::resolve_session(&args.identifier, &instances)?
+        .id
+        .clone();
+    let idx = instances
+        .iter()
+        .position(|i| i.id == id)
+        .expect("resolve_session returned an id that is no longer in instances");
+
+    if !args.no_kill {
+        if let Err(e) = instances[idx].kill() {
+            eprintln!("Warning: failed to kill tmux session: {}", e);
+        }
+    }
+
+    instances[idx].archive();
+    let title = instances[idx].title.clone();
+
+    let group_tree = GroupTree::new_with_groups(&instances, &groups);
+    storage.commit(&instances, &group_tree)?;
+
+    println!("Archived: {}", title);
+    Ok(())
+}
+
+async fn unarchive_session(profile: &str, args: SessionIdArgs) -> Result<()> {
+    let storage = Storage::new(profile)?;
+    let (mut instances, groups) = storage.load_with_groups()?;
+
+    let id = super::resolve_session(&args.identifier, &instances)?
+        .id
+        .clone();
+    let idx = instances
+        .iter()
+        .position(|i| i.id == id)
+        .expect("resolve_session returned an id that is no longer in instances");
+
+    instances[idx].unarchive();
+    let title = instances[idx].title.clone();
+
+    let group_tree = GroupTree::new_with_groups(&instances, &groups);
+    storage.commit(&instances, &group_tree)?;
+
+    println!("Unarchived: {}", title);
+    Ok(())
 }
 
 async fn snooze_session(profile: &str, args: SnoozeArgs) -> Result<()> {
@@ -525,6 +655,38 @@ async fn restart_session(profile: &str, args: SessionIdArgs) -> Result<()> {
     bail_if_cockpit(&instances[idx], "restart")?;
     let outcome = instances[idx].restart_with_size(crate::terminal::get_size())?;
     let title = instances[idx].title.clone();
+    let session_id = instances[idx].id.clone();
+    let tool = instances[idx].tool.clone();
+
+    // Resolve the configured wake message (global default with per-profile
+    // override). Empty string is the documented opt-out: the restart still
+    // runs but no keys are sent.
+    let wake_msg = crate::session::resolve_config(profile)
+        .map(|c| c.session.restart_wake_message.clone())
+        .unwrap_or_else(|_| "wake up: pick up what you were doing".to_string());
+
+    if !wake_msg.is_empty() {
+        // Restart re-execs the agent at a blank prompt; nudge it back into
+        // its prior task. Poll capture-pane for steady-state output instead
+        // of a blind sleep, so the keys land as soon as the agent is at a
+        // prompt and don't get stranded mid-banner on slow machines.
+        wait_for_pane_ready(&session_id, &title, std::time::Duration::from_secs(5)).await;
+
+        let tmux_session = crate::tmux::Session::new(&session_id, &title)?;
+        if tmux_session.exists() {
+            let delay = crate::agents::send_keys_enter_delay(&tool);
+            match tmux_session.send_keys_with_delay(&wake_msg, delay) {
+                Ok(()) => {
+                    if let Some(inst) = instances.iter_mut().find(|i| i.id == session_id) {
+                        inst.touch_last_accessed();
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Warning: failed to send wake-up message: {}", e);
+                }
+            }
+        }
+    }
 
     let group_tree = GroupTree::new_with_groups(&instances, &groups);
     storage.commit(&instances, &group_tree)?;
@@ -542,6 +704,32 @@ async fn restart_session(profile: &str, args: SessionIdArgs) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Poll the tmux pane until capture-pane content stops changing for two
+/// consecutive samples (the agent has finished printing its startup banner
+/// and is sitting at a prompt) or `max_wait` elapses. Failsafe: always
+/// returns by `max_wait` so the caller's send-keys still runs even if the
+/// pane never settles.
+async fn wait_for_pane_ready(session_id: &str, title: &str, max_wait: std::time::Duration) {
+    let Ok(tmux) = crate::tmux::Session::new(session_id, title) else {
+        return;
+    };
+    let poll_interval = std::time::Duration::from_millis(200);
+    let start = std::time::Instant::now();
+    let mut last: Option<String> = None;
+    while start.elapsed() < max_wait {
+        tokio::time::sleep(poll_interval).await;
+        let Ok(now) = tmux.capture_pane(5) else {
+            continue;
+        };
+        if now.trim().len() > 20 {
+            if last.as_deref() == Some(&now) {
+                return;
+            }
+            last = Some(now);
+        }
+    }
 }
 
 async fn attach_session(profile: &str, args: SessionIdArgs) -> Result<()> {

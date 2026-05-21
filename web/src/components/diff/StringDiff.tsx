@@ -24,7 +24,7 @@ export function StringDiff({ oldText, newText, filePath }: Props) {
     [oldText, newText],
   );
   const hunks = useMemo(() => [hunk], [hunk]);
-  const { tokens, loading } = useHighlightedLines(hunks, filePath);
+  const { tokens } = useHighlightedLines(hunks, filePath);
 
   if (hunk.lines.length === 0) return null;
 
@@ -37,7 +37,6 @@ export function StringDiff({ oldText, newText, filePath }: Props) {
           key={`${line.old_line_num ?? "_"}-${line.new_line_num ?? "_"}-${i}`}
           line={line}
           tokens={lineTokens?.[i]}
-          highlightPending={loading}
           hideLineNumbers
         />
       ))}

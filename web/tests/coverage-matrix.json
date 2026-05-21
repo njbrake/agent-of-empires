@@ -205,6 +205,13 @@
       "components": ["web/src/components/WorkspaceSidebar.tsx"]
     },
     {
+      "id": "sidebar.favorite-indicator",
+      "kind": "deferred",
+      "issue": "https://github.com/njbrake/agent-of-empires/issues/986",
+      "risk": "low",
+      "components": ["web/src/components/WorkspaceSidebar.tsx"]
+    },
+    {
       "id": "session.lifecycle",
       "kind": "live-playwright",
       "risk": "high",
@@ -223,6 +230,21 @@
       "risk": "low",
       "specs": ["src/components/__tests__/DeleteSessionDialog.test.tsx"],
       "components": ["web/src/components/DeleteSessionDialog.tsx"]
+    },
+    {
+      "id": "storage.quota-crash-regression",
+      "kind": "mocked-playwright",
+      "risk": "high",
+      "specs": [
+        "tests/sidebar-resize-quota.spec.ts",
+        "src/components/__tests__/ContentSplit.quota.test.tsx",
+        "src/lib/safeStorage.test.ts"
+      ],
+      "components": [
+        "web/src/lib/safeStorage.ts",
+        "web/src/components/WorkspaceSidebar.tsx",
+        "web/src/components/ContentSplit.tsx"
+      ]
     },
     {
       "id": "right-panel.diff",
@@ -245,6 +267,21 @@
         "web/src/components/diff/comments/CommentsBanner.tsx",
         "web/src/components/diff/comments/DiffCommentsUserCard.tsx",
         "web/src/components/diff/comments/SendCommentsDialog.tsx"
+      ]
+    },
+    {
+      "id": "right-panel.diff-line-visibility",
+      "kind": "vitest",
+      "risk": "high",
+      "specs": [
+        "src/components/diff/__tests__/DiffLine.test.tsx",
+        "src/components/diff/__tests__/StringDiff.test.tsx",
+        "src/hooks/__tests__/useHighlightedLines.test.tsx"
+      ],
+      "components": [
+        "web/src/components/diff/DiffLine.tsx",
+        "web/src/components/diff/StringDiff.tsx",
+        "web/src/hooks/useHighlightedLines.ts"
       ]
     },
     {

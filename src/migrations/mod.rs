@@ -15,13 +15,14 @@ mod v004_unified_environment;
 mod v005_cockpit_defaults;
 mod v006_unlimited_cockpit_history;
 mod v007_serve_log_to_legacy;
+mod v008_lock_in_default_profile;
 
 use anyhow::Result;
 use std::fs;
 use std::path::PathBuf;
 use tracing::{debug, info};
 
-const CURRENT_VERSION: u32 = 7;
+const CURRENT_VERSION: u32 = 8;
 const VERSION_FILE: &str = ".schema_version";
 
 struct Migration {
@@ -65,6 +66,11 @@ const MIGRATIONS: &[Migration] = &[
         version: 7,
         name: "serve_log_to_legacy",
         run: v007_serve_log_to_legacy::run,
+    },
+    Migration {
+        version: 8,
+        name: "lock_in_default_profile",
+        run: v008_lock_in_default_profile::run,
     },
 ];
 
