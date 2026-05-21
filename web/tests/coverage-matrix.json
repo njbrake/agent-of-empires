@@ -506,6 +506,20 @@
       "components": ["web/src/components/HelpOverlay.tsx"]
     },
     {
+      "id": "story.shortcut-palette",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": ["tests/live/cockpit-stories/shortcut-palette.spec.ts"],
+      "components": ["web/src/components/command-palette/CommandPalette.tsx", "web/src/hooks/useKeyboardShortcuts.ts"]
+    },
+    {
+      "id": "story.shortcut-toggle-sidebar",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": ["tests/live/cockpit-stories/shortcut-toggle-sidebar.spec.ts"],
+      "components": ["web/src/components/WorkspaceSidebar.tsx", "web/src/hooks/useKeyboardShortcuts.ts"]
+    },
+    {
       "id": "cockpit.rate-limit-recovery",
       "kind": "vitest",
       "risk": "high",
