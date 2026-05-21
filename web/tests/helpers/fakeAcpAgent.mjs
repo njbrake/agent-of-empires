@@ -159,6 +159,14 @@ const DEFAULT_PERMISSION_OPTIONS = [
 
 async function emitSessionUpdates(sessionId, updates) {
   for (const u of updates) {
+    if (u && u.sessionUpdate === "wait_ms") {
+      // Story-spec helper: pause emission inside a turn so the UI
+      // observes the turn as active long enough to click Stop, queue a
+      // follow-up, etc. Not part of ACP; the fake just swallows it.
+      const ms = typeof u.ms === "number" ? u.ms : 200;
+      await new Promise((resolve) => setTimeout(resolve, ms));
+      continue;
+    }
     if (u && u.sessionUpdate === "permission_request") {
       // ACP carries permissions on a separate JSON-RPC request, not on
       // session/update. Translate the scripted entry into a real

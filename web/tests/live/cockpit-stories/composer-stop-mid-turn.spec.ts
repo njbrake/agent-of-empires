@@ -1,0 +1,87 @@
+// User story: Stop button cancels an active turn.
+//
+// Custom FAKE_ACP_SCRIPT keeps the turn alive with a wait_ms gap after
+// the first chunk so the UI surfaces the Stop affordance long enough to
+// click. Clicking Stop dispatches `runtime.cancelRun()` which POSTs
+// /cockpit/cancel; the fake responds with stopped { cancelled } and the
+// composer flips back to the idle "Send a message…" placeholder.
+
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { test as base, expect } from "@playwright/test";
+import {
+  spawnAoeServe,
+  listSessions,
+  seedSessionViaAoeAdd,
+} from "../../helpers/aoeServe";
+import { waitForCockpitReady, waitForCockpitView } from "../../helpers/cockpit";
+
+const STOP_SCRIPT = {
+  turns: [
+    {
+      updates: [
+        {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: "Thinking..." },
+        },
+        { sessionUpdate: "wait_ms", ms: 5_000 },
+        {
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: "Should never appear." },
+        },
+      ],
+      stopReason: "end_turn",
+    },
+  ],
+};
+
+base("Stop button cancels a running turn", async ({ page }, testInfo) => {
+  const scriptDir = mkdtempSync(join(tmpdir(), "aoe-pw-story-stop-"));
+  const scriptPath = join(scriptDir, "script.json");
+  writeFileSync(scriptPath, JSON.stringify(STOP_SCRIPT));
+
+  const serve = await spawnAoeServe({
+    authMode: "none",
+    cockpit: true,
+    fakeAcpScript: scriptPath,
+    workerIndex: testInfo.workerIndex,
+    parallelIndex: testInfo.parallelIndex,
+    seedFn: seedSessionViaAoeAdd({ title: "story-stop" }),
+  });
+
+  try {
+    const sessions = await listSessions(serve.baseUrl);
+    const sessionId = sessions[0]!.id;
+
+    await fetch(`${serve.baseUrl}/api/sessions/${sessionId}/cockpit/enable`, {
+      method: "POST",
+    });
+    await waitForCockpitReady(serve.baseUrl, sessionId);
+
+    await page.goto(`${serve.baseUrl}/session/${encodeURIComponent(sessionId)}`);
+    await waitForCockpitView(page);
+
+    const composer = page.getByRole("textbox", { name: /Send a message/i });
+    await composer.fill("start a long turn");
+    await composer.press("Enter");
+
+    // First chunk arrives, then the fake waits. The Stop affordance is
+    // mounted while the turn is active.
+    await expect(page.getByText("Thinking...")).toBeVisible({ timeout: 10_000 });
+    const stopButton = page.getByRole("button", { name: "Stop" });
+    await expect(stopButton).toBeVisible({ timeout: 5_000 });
+    await stopButton.click();
+
+    // Composer placeholder flips back to idle once the turn ends.
+    await expect(
+      page.getByRole("textbox", { name: /Send a message/i }),
+    ).toBeVisible({ timeout: 10_000 });
+    await expect(stopButton).toBeHidden({ timeout: 10_000 });
+    // The chunk scheduled to land after the wait must not have rendered.
+    await expect(page.getByText("Should never appear.")).toHaveCount(0);
+  } finally {
+    await serve.stop();
+    rmSync(scriptDir, { recursive: true, force: true });
+  }
+});

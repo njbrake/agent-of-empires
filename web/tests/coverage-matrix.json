@@ -436,6 +436,13 @@
       ]
     },
     {
+      "id": "cockpit.story.composer-stop-mid-turn",
+      "kind": "live-playwright",
+      "risk": "high",
+      "specs": ["tests/live/cockpit-stories/composer-stop-mid-turn.spec.ts"],
+      "components": ["web/src/components/cockpit/Composer.tsx"]
+    },
+    {
       "id": "cockpit.rate-limit-recovery",
       "kind": "vitest",
       "risk": "high",
