@@ -204,6 +204,10 @@ const INITIALIZE_RESULT = {
       sse: false,
     },
   },
+  agentInfo: {
+    name: "@agentclientprotocol/claude-agent-acp",
+    version: "0.37.0",
+  },
   // No authMethods key at all. An empty array is interpreted by some
   // ACP client implementations as "auth methods listed but none
   // available", which surfaces as AuthRequired on the next call.

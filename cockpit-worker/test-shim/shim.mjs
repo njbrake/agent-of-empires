@@ -42,6 +42,10 @@ class ShimAgent {
       agentCapabilities: {
         loadSession: false,
       },
+      agentInfo: {
+        name: "@agentclientprotocol/claude-agent-acp",
+        version: "0.37.0",
+      },
     };
   }
 
