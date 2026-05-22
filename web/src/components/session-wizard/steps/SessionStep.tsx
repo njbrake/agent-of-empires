@@ -13,6 +13,7 @@ interface WizardData {
   baseBranch: string;
   group: string;
   tool: string;
+  throwaway: boolean;
   [key: string]: unknown;
 }
 
@@ -60,23 +61,37 @@ export function SessionStep({ data, onChange }: Props) {
         <p className="text-xs text-text-dim mt-1">Shown in the dashboard. Renaming it later does not rename the git branch.</p>
       </div>
 
-      <label
-        className="flex items-center justify-between gap-3 p-3 bg-surface-900 border border-surface-700 rounded-lg cursor-pointer mb-3"
-        onClick={() => onChange("useWorktree", !data.useWorktree)}
-      >
-        <div className="flex-1">
-          <div className="text-sm font-medium text-text-primary">Create a worktree</div>
-          <div className="text-xs text-text-dim mt-0.5 leading-snug">
-            Run the agent in a new git worktree branched off the current HEAD. Off = run directly in the repo folder.
+      {/* Worktree controls are meaningless for throwaway sessions: the
+          working directory is a fresh temp dir, not a git repo. The
+          reducer also forces useWorktree to false when throwaway flips
+          on; this hide is purely a UX confirmation that the worktree
+          path is not available in throwaway mode. */}
+      {data.throwaway ? (
+        <p
+          className="text-xs text-text-dim mb-3"
+          aria-label="Worktree disabled: throwaway session"
+        >
+          Throwaway sessions do not use git worktrees.
+        </p>
+      ) : (
+        <label
+          className="flex items-center justify-between gap-3 p-3 bg-surface-900 border border-surface-700 rounded-lg cursor-pointer mb-3"
+          onClick={() => onChange("useWorktree", !data.useWorktree)}
+        >
+          <div className="flex-1">
+            <div className="text-sm font-medium text-text-primary">Create a worktree</div>
+            <div className="text-xs text-text-dim mt-0.5 leading-snug">
+              Run the agent in a new git worktree branched off the current HEAD. Off = run directly in the repo folder.
+            </div>
           </div>
-        </div>
-        <Toggle
-          checked={data.useWorktree}
-          onChange={(v) => onChange("useWorktree", v)}
-        />
-      </label>
+          <Toggle
+            checked={data.useWorktree}
+            onChange={(v) => onChange("useWorktree", v)}
+          />
+        </label>
+      )}
 
-      {data.useWorktree && (
+      {!data.throwaway && data.useWorktree && (
         <div className="mb-5">
           <label className="block text-sm text-text-dim mb-1.5">Branch / worktree name</label>
           <input
