@@ -46,6 +46,24 @@ export interface ToolCall {
    *  sub-tools under their parent Task. Undefined for top-level
    *  calls. See #1041. */
   parent_tool_call_id?: string;
+  /** Populated when claude-agent-acp v0.37.0+ routes a session-start
+   *  memory recall through the tool channel (upstream #703). The
+   *  cockpit renders a dedicated MemoryRecallCard instead of treating
+   *  it as a generic read. `recall` mode carries the list of file
+   *  paths the SDK loaded into the agent's context; `synthesize`
+   *  mode carries the synthesised memory text. */
+  memory_recall?: MemoryRecall | null;
+}
+
+export interface MemoryRecall {
+  /** "recall" (file list) or "synthesize" (text body). */
+  mode: string;
+  /** Absolute paths of the memory files loaded into the agent's
+   *  context. Empty in synthesize mode. */
+  paths?: string[];
+  /** Synthesised summary the SDK produced from the loaded memories.
+   *  Present in synthesize mode only. */
+  synthesized_text?: string | null;
 }
 
 export interface DiffPreview {

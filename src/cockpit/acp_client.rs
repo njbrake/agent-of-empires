@@ -40,7 +40,7 @@ use super::approvals::{is_destructive, ApprovalDecision, Nonce};
 use super::fs_handler::{self, FsPolicy, SandboxPathMap};
 use super::permissions::build_approval;
 use super::state::{
-    AvailableCommand, CockpitSessionId, DiffPreview, Event, ModeInfo, Plan, PlanStep,
+    AvailableCommand, CockpitSessionId, DiffPreview, Event, MemoryRecall, ModeInfo, Plan, PlanStep,
     PlanStepStatus, RateLimitInfo, SessionMode, SessionUsage, StartupErrorDetail, ToolCall,
     UsageCost,
 };
@@ -2027,6 +2027,11 @@ fn map_update_to_events(
                     "subagent child tool_call linked to parent via _meta.claudeCode.parentToolUseId"
                 );
             }
+            let memory_recall = if profile.supports_memory_recall_tool() {
+                extract_memory_recall(&tc.meta, &tc.locations, &tc.content)
+            } else {
+                None
+            };
             let tool_call = ToolCall {
                 id: tc.tool_call_id.0.to_string(),
                 name: tc.title.clone(),
@@ -2034,6 +2039,7 @@ fn map_update_to_events(
                 args_preview: args_preview.clone(),
                 started_at: chrono::Utc::now(),
                 parent_tool_call_id,
+                memory_recall,
             };
             let mut events = vec![Event::ToolCallStarted { tool_call }];
             if is_destructive(&tc.title, &args_preview) {
@@ -2202,6 +2208,7 @@ fn map_update_to_events(
                         args_preview,
                         started_at: now,
                         parent_tool_call_id: None,
+                        memory_recall: None,
                     },
                 },
                 Event::PlanUpdated {
@@ -2360,6 +2367,53 @@ fn extract_tool_content_text(blocks: &[agent_client_protocol::schema::ToolCallCo
         }
     }
     out
+}
+
+/// Inspect a `tool_call` payload for the `memory_recall` shape
+/// claude-agent-acp v0.37.0 routes through the tool channel (upstream
+/// #703). The adapter sends `_meta.claudeCode.toolName == "memory_recall"`
+/// plus either `locations` (recall mode, one entry per loaded memory
+/// file) or `content` (synthesize mode, one text block with the
+/// synthesised reply). Returns `None` when the meta marker is absent.
+/// Caller gates this on `AgentProfile::supports_memory_recall_tool`
+/// so unrelated agents that happen to share field shapes don't trip
+/// the classifier.
+fn extract_memory_recall(
+    meta: &Option<serde_json::Map<String, serde_json::Value>>,
+    locations: &[agent_client_protocol::schema::ToolCallLocation],
+    content: &[agent_client_protocol::schema::ToolCallContent],
+) -> Option<MemoryRecall> {
+    let map = meta.as_ref()?;
+    let claude_code = map.get("claudeCode")?;
+    let tool_name = claude_code.get("toolName").and_then(|v| v.as_str())?;
+    if tool_name != "memory_recall" {
+        return None;
+    }
+    let mode = claude_code
+        .get("toolResponse")
+        .and_then(|tr| tr.get("mode"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("recall")
+        .to_string();
+    let paths: Vec<String> = locations
+        .iter()
+        .map(|loc| loc.path.to_string_lossy().to_string())
+        .collect();
+    let synthesized_text = if mode == "synthesize" {
+        let text = extract_tool_content_text(content);
+        if text.is_empty() {
+            None
+        } else {
+            Some(text)
+        }
+    } else {
+        None
+    };
+    Some(MemoryRecall {
+        mode,
+        paths,
+        synthesized_text,
+    })
 }
 
 fn extract_diff_from_locations(
@@ -3991,6 +4045,7 @@ async fn handle_permission_request(
         args_preview,
         started_at: chrono::Utc::now(),
         parent_tool_call_id: profile.parent_tool_use_id_from_meta(&request.tool_call.meta),
+        memory_recall: None,
     };
     let approval = build_approval(tool_call);
     let nonce = approval.nonce.clone();

@@ -77,6 +77,16 @@ impl AgentProfile {
         }
         None
     }
+
+    /// True iff the agent surfaces session-start memory recall through
+    /// the tool channel with the `_meta.claudeCode.toolName` namespace
+    /// claude-agent-acp adopted in v0.37.0 (upstream #703). Other
+    /// agents don't emit this shape today; gating the classifier off
+    /// the profile prevents accidental matches against unrelated
+    /// custom tool metadata.
+    pub fn supports_memory_recall_tool(&self) -> bool {
+        self.parent_meta_namespaces.contains(&"claudeCode")
+    }
 }
 
 /// Claude via `claude-agent-acp`. Reference profile; verified against

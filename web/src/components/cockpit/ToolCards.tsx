@@ -108,6 +108,14 @@ function renderToolCard(
   result: ActivityRow | undefined,
   profile: AgentProfile,
 ) {
+  // claude-agent-acp v0.37.0+ routes session-start memory recall
+  // through the tool channel with structured metadata (upstream #703).
+  // Render the dedicated card before falling through to the path-sniff
+  // MemoryCard so adapters that emit the structured shape don't end up
+  // double-classified.
+  if (tool.memory_recall) {
+    return <MemoryRecallCard tool={tool} result={result} />;
+  }
   const memory = classifyMemory(tool);
   if (memory.isMemory) {
     return <MemoryCard tool={tool} result={result} hit={memory} />;
@@ -1534,6 +1542,91 @@ function MemoryCard({ tool, result, hit }: MemoryCardProps) {
               />
             )}
           </div>
+          ) : null}
+        </ToolErrorBody>
+      }
+    />
+  );
+}
+
+/* ── memory_recall (session-start memory load) ──────────────────── */
+
+/** Dedicated card for the session-start memory recall claude-agent-acp
+ *  routes through the tool channel in v0.37.0 (upstream
+ *  agentclientprotocol/claude-agent-acp#703). Two modes:
+ *
+ *  - recall: SDK loaded one or more memory files into the agent's
+ *    context. Render the list of paths so the user sees what the
+ *    agent already knows about them.
+ *  - synthesize: SDK summarised the memories into a single text body.
+ *    Render the body verbatim.
+ *
+ *  Replaces the aoe#1071 path-sniff workaround that inferred memory
+ *  loads from subsequent Read tool calls; that path only caught
+ *  user-driven reads of memory files, never the session-start load
+ *  the agent received before any prompt was sent. The structured tool
+ *  call now makes the load visible. */
+function MemoryRecallCard({ tool, result }: Props) {
+  const status = statusFor(result);
+  const recall = tool.memory_recall;
+  const [open, setOpen] = useState(false);
+
+  if (!recall) {
+    // Defensive: dispatcher only enters this branch when memory_recall
+    // is set, but type narrowing requires the check.
+    return <GenericToolCard tool={tool} result={result} />;
+  }
+  const paths = recall.paths ?? [];
+  const synthesized = recall.synthesized_text ?? "";
+  const isSynthesize = recall.mode === "synthesize";
+
+  const primary = isSynthesize ? (
+    <span>Synthesised memory</span>
+  ) : (
+    <>
+      <span>Recalled</span>
+      <span className="ml-2 text-text-dim">
+        · {paths.length} {paths.length === 1 ? "memory" : "memories"}
+      </span>
+    </>
+  );
+
+  const hasBody = isSynthesize ? synthesized.length > 0 : paths.length > 0;
+
+  return (
+    <CardChrome
+      status={status}
+      startedAt={tool.started_at}
+      endedAt={result?.at}
+      icon={<Brain className="h-3.5 w-3.5" />}
+      label="Memory recall"
+      primary={primary}
+      expanded={open || status === "err"}
+      onToggle={hasBody ? () => setOpen((v) => !v) : undefined}
+      body={
+        <ToolErrorBody status={status} errorText={result?.text}>
+          {status !== "err" && hasBody ? (
+            <div className="border-t border-surface-800 bg-surface-950 px-3 py-2">
+              {isSynthesize ? (
+                <pre
+                  data-testid="memory-recall-synthesized"
+                  className="whitespace-pre-wrap break-words text-[11px] text-text-secondary"
+                >
+                  {synthesized}
+                </pre>
+              ) : (
+                <ul
+                  data-testid="memory-recall-paths"
+                  className="space-y-0.5 text-[11px] text-text-secondary"
+                >
+                  {paths.map((p) => (
+                    <li key={p} className="break-all font-mono">
+                      {p}
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
           ) : null}
         </ToolErrorBody>
       }

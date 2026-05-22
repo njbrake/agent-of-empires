@@ -71,6 +71,32 @@ pub struct ToolCall {
     /// stream. None for top-level tool calls. See #1041.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parent_tool_call_id: Option<String>,
+    /// Populated when claude-agent-acp routes a session-start memory
+    /// recall through the tool channel
+    /// (`_meta.claudeCode.toolName == "memory_recall"`, upstream
+    /// agentclientprotocol/claude-agent-acp#703 in v0.37.0). Carries
+    /// the file paths the SDK loaded into the agent's context (recall
+    /// mode) or the synthesized memory text (synthesize mode) so the
+    /// cockpit can render a dedicated card instead of treating it as a
+    /// generic read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memory_recall: Option<MemoryRecall>,
+}
+
+/// Structured payload for a `memory_recall` tool call. `mode` mirrors
+/// the adapter's `_meta.claudeCode.toolResponse.mode` field:
+/// `"recall"` populates `paths` (one per loaded memory file);
+/// `"synthesize"` populates `synthesized_text` with the SDK's
+/// summarised reply. Either field may be empty when the adapter
+/// reports the mode but no entries; the renderer falls back to the
+/// title in that case.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MemoryRecall {
+    pub mode: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub paths: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub synthesized_text: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
