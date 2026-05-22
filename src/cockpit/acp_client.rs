@@ -2787,10 +2787,21 @@ async fn run_connection_task<W, R>(
                 let session_label = session_label_for_notif.clone();
                 let last_event_at = last_event_at_for_notif.clone();
                 let lifecycle_signal_tx = lifecycle_signal_tx_for_notif.clone();
+                let current_prompt_epoch = current_prompt_epoch_for_notif.clone();
                 async move {
                     last_event_at
                         .store(chrono::Utc::now().timestamp_millis(), Ordering::Relaxed);
                     let suppressing = suppress.load(Ordering::Relaxed);
+                    // Snapshot the prompt epoch ONCE per notification so
+                    // every signal derived from this update shares the
+                    // same epoch. If the prompt loop bumps the atomic
+                    // between the classifier call and the send, the
+                    // envelope's epoch reflects the prompt the signal
+                    // semantically belongs to (the one current when
+                    // the notification arrived), not the one that
+                    // started racing it.
+                    let envelope_epoch =
+                        current_prompt_epoch.load(Ordering::Relaxed);
                     // Classify before consuming `notification.update` in
                     // the event mapping below; emit only when we're not
                     // in the post-load history-replay window so stale
@@ -2831,10 +2842,26 @@ async fn run_connection_task<W, R>(
                     // store's monotonic seq anyway. See #1401 post-
                     // impl review.
                     if let Some(sig) = lifecycle_signal {
-                        send_lifecycle_signal(&lifecycle_signal_tx, sig, &session_label).await;
+                        send_lifecycle_signal(
+                            &lifecycle_signal_tx,
+                            LifecycleEnvelope {
+                                epoch: envelope_epoch,
+                                signal: sig,
+                            },
+                            &session_label,
+                        )
+                        .await;
                     }
                     for sig in wakeup_signals {
-                        send_lifecycle_signal(&lifecycle_signal_tx, sig, &session_label).await;
+                        send_lifecycle_signal(
+                            &lifecycle_signal_tx,
+                            LifecycleEnvelope {
+                                epoch: envelope_epoch,
+                                signal: sig,
+                            },
+                            &session_label,
+                        )
+                        .await;
                     }
                     for event in mapped_events {
                         // During the post-load replay window, drop only
@@ -3223,11 +3250,20 @@ async fn run_connection_task<W, R>(
                         // we serialise the loop on the prompt's await, the
                         // cancel sits idle in the channel and only goes
                         // out after the turn already finished.
-                        // Drain any lifecycle signals left over from the
-                        // previous prompt before resetting state. Stale
-                        // ToolStarted entries from a prior turn would
-                        // suppress the watchdog on this turn; stale
-                        // TerminalUsage would accelerate it. Drop them.
+                        // Bump the prompt epoch BEFORE issuing the new
+                        // `session/prompt`. Notification-handler tasks
+                        // parked on a full lifecycle channel from the
+                        // previous prompt may still wake and send their
+                        // envelopes; tagged with the old epoch, they
+                        // get discarded in the select arm below
+                        // instead of contaminating this prompt's
+                        // watchdog state. Drain any envelopes already
+                        // sitting in the channel too, to bound the
+                        // number we'd otherwise re-check via the
+                        // discard path. See #1401 post-impl review.
+                        let this_prompt_epoch = current_prompt_epoch
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                            + 1;
                         while lifecycle_signal_rx.try_recv().is_ok() {}
 
                         // Per-prompt silent-orphan state machine. Owned
@@ -3360,14 +3396,29 @@ async fn run_connection_task<W, R>(
                                     }
                                     break;
                                 }
-                                sig = lifecycle_signal_rx.recv() => {
-                                    if let Some(sig) = sig {
-                                        watchdog.apply_signal(
-                                            sig,
-                                            tokio::time::Instant::now(),
-                                            chrono::Utc::now(),
-                                            watchdog_cfg,
-                                        );
+                                env = lifecycle_signal_rx.recv() => {
+                                    if let Some(env) = env {
+                                        if env.epoch != this_prompt_epoch {
+                                            // Stale envelope from a prior
+                                            // prompt (handler was parked on
+                                            // a full channel and only
+                                            // unblocked after the next
+                                            // prompt began). Discard.
+                                            trace!(
+                                                target: "cockpit.acp",
+                                                session = %session_label,
+                                                envelope_epoch = env.epoch,
+                                                current_epoch = this_prompt_epoch,
+                                                "discarding stale lifecycle envelope across prompt boundary"
+                                            );
+                                        } else {
+                                            watchdog.apply_signal(
+                                                env.signal,
+                                                tokio::time::Instant::now(),
+                                                chrono::Utc::now(),
+                                                watchdog_cfg,
+                                            );
+                                        }
                                     }
                                     // None means the notification handler dropped; the
                                     // prompt_fut or cancel_grace arm will end the loop.
