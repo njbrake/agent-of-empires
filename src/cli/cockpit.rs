@@ -191,7 +191,10 @@ struct AgentDoctorEntry {
 /// The doctor's `--fix` path runs `npm install -g <package>` for each
 /// entry whose binary isn't already on PATH.
 const NPM_INSTALLABLE_ACP: &[(&str, &str)] = &[
-    ("claude-agent-acp", "@agentclientprotocol/claude-agent-acp"),
+    (
+        "claude-agent-acp",
+        "@agentclientprotocol/claude-agent-acp@0.37.0",
+    ),
     ("codex-acp", "@zed-industries/codex-acp"),
     ("pi-acp", "pi-acp"),
 ];

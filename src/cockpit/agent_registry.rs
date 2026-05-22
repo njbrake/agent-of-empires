@@ -61,7 +61,7 @@ impl AgentRegistry {
                 command: "claude-agent-acp".into(),
                 args: vec![],
                 description:
-                    "Anthropic Claude via the official ACP adapter (npm i -g @agentclientprotocol/claude-agent-acp)"
+                    "Anthropic Claude via the official ACP adapter (npm i -g @agentclientprotocol/claude-agent-acp@0.37.0)"
                         .into(),
                 env_allowlist: None,
             },
