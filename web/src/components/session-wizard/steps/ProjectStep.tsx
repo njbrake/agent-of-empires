@@ -7,7 +7,41 @@ import { ExtraReposPicker } from "./ExtraReposPicker";
 interface WizardData {
   path: string;
   extraRepoPaths: string[];
+  throwaway: boolean;
   [key: string]: unknown;
+}
+
+/** Toggle switch matching the one used in `SessionStep.tsx`. Local copy
+ *  rather than a shared import because exporting from `SessionStep`
+ *  would force a circular component reference; the visual contract is
+ *  the part that matters and is short. */
+function Toggle({
+  checked,
+  onChange,
+  ariaLabel,
+}: {
+  checked: boolean;
+  onChange: (v: boolean) => void;
+  ariaLabel: string;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={ariaLabel}
+      onClick={() => onChange(!checked)}
+      className={`relative inline-flex h-7 w-12 shrink-0 items-center rounded-full transition-colors duration-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand-600 cursor-pointer ${
+        checked ? "bg-brand-600" : "bg-surface-700"
+      }`}
+    >
+      <span
+        className={`inline-block h-5 w-5 rounded-full bg-white shadow-sm transition-transform duration-200 ${
+          checked ? "translate-x-6" : "translate-x-1"
+        }`}
+      />
+    </button>
+  );
 }
 
 type Tab = "recent" | "browse" | "clone";
@@ -29,6 +63,10 @@ interface RecentProject {
 function collectRecentProjects(sessions: SessionResponse[]): RecentProject[] {
   const map = new Map<string, RecentProject>();
   for (const s of sessions) {
+    // Throwaway sessions live in transient `aoe-throwaway-*` temp dirs
+    // that get deleted with the session. They must not appear in the
+    // Recent list, where they would be re-selectable as a project.
+    if (s.throwaway) continue;
     const path = s.main_repo_path || s.project_path;
     if (!path) continue;
     const existing = map.get(path);
@@ -140,6 +178,44 @@ export function ProjectStep({ data, onChange, initialTab }: Props) {
         Pick a recent project, browse for one, or clone from a URL.
       </p>
 
+      {/* Throwaway-session toggle. Sits above the project-source tabs
+          because it is a mode (skip the path picker entirely) rather
+          than another path source. The reducer enforces mutual
+          exclusion with path/extraRepoPaths/useWorktree; see
+          `wizardReducer.ts`. */}
+      <label
+        className="flex items-center justify-between gap-3 p-3 bg-surface-900 border border-surface-700 rounded-lg cursor-pointer mb-4"
+        onClick={(e) => {
+          // Avoid double-toggle when the user clicks the switch itself:
+          // both the label and the inner button fire onChange otherwise.
+          if ((e.target as HTMLElement).closest('button[role="switch"]')) return;
+          onChange("throwaway", !data.throwaway);
+        }}
+      >
+        <div className="flex-1">
+          <div className="text-sm font-medium text-text-primary">Skip project folder</div>
+          <div className="text-xs text-text-dim mt-0.5 leading-snug">
+            Run the agent in a fresh temporary directory. The folder is removed when you delete the session.
+          </div>
+        </div>
+        <Toggle
+          checked={data.throwaway}
+          onChange={(v) => onChange("throwaway", v)}
+          ariaLabel="Skip project folder"
+        />
+      </label>
+
+      {data.throwaway && (
+        <div className="px-3 py-2.5 bg-surface-900 border border-brand-600/30 rounded-md">
+          <p className="text-[10px] font-mono uppercase tracking-wider text-text-dim mb-1">Throwaway session</p>
+          <p className="text-sm text-text-primary">
+            A fresh <span className="font-mono">aoe-throwaway-&lt;id&gt;</span> directory is created when you launch this session.
+          </p>
+        </div>
+      )}
+
+      {!data.throwaway && (
+      <>
       {/* Tab bar */}
       {!loading && (
         <div className="flex gap-1 mb-4 border-b border-surface-700/30">
@@ -330,6 +406,8 @@ export function ProjectStep({ data, onChange, initialTab }: Props) {
             onChange={(paths) => onChange("extraRepoPaths", paths)}
           />
         </div>
+      )}
+      </>
       )}
     </div>
   );
