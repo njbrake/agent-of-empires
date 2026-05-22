@@ -714,18 +714,37 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
             );
         }
     } else if args.launch {
-        // Start tmux outside the flock (slow), then merge by id under the lock.
-        instance.start_with_size(crate::terminal::get_size())?;
+        // Persist Status::Error + last_error on launch failure rather than
+        // cleanup_partial_session: row is committed; surface as broken.
         let id = instance.id.clone();
-        storage.update(|all_instances, _groups| {
-            if let Some(stored) = all_instances.iter_mut().find(|i| i.id == id) {
-                stored.merge_post_start(&instance);
-            }
-            Ok(())
-        })?;
+        match instance.start_with_size(crate::terminal::get_size()) {
+            Ok(()) => {
+                storage.update(|all_instances, _groups| {
+                    if let Some(stored) = all_instances.iter_mut().find(|i| i.id == id) {
+                        stored.merge_post_start(&instance);
+                    }
+                    Ok(())
+                })?;
 
-        let tmux_session = crate::tmux::Session::new(&instance.id, &instance.title)?;
-        tmux_session.attach()?;
+                let tmux_session = crate::tmux::Session::new(&instance.id, &instance.title)?;
+                tmux_session.attach()?;
+            }
+            Err(e) => {
+                let err_msg = e.to_string();
+                let _ = storage.update(|all_instances, _groups| {
+                    if let Some(stored) = all_instances.iter_mut().find(|i| i.id == id) {
+                        stored.status = crate::session::Status::Error;
+                        stored.last_error = Some(err_msg.clone());
+                    }
+                    Ok(())
+                });
+                eprintln!(
+                    "Warning: launch failed: {}. Retry with: aoe session start {}",
+                    e, final_title
+                );
+                return Err(e);
+            }
+        }
     } else {
         println!();
         println!("Next steps:");
