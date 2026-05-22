@@ -49,22 +49,33 @@ impl ExpectedAgent {
     /// `claude-agent-acp` would land in `Other` and silently bypass the
     /// >=0.37.0 gate.
     pub fn from_command(command: &str) -> Self {
-        let token = command.split_whitespace().next().unwrap_or(command);
-        let basename = token.rsplit(['/', '\\']).next().unwrap_or(token);
-        let stem = basename
-            .strip_suffix(".exe")
-            .or_else(|| basename.strip_suffix(".cmd"))
-            .or_else(|| basename.strip_suffix(".bat"))
-            .unwrap_or(basename);
-        match stem {
-            "claude-agent-acp" => Self::ClaudeAgentAcp,
-            "codex-acp" => Self::CodexAcp,
-            "opencode" => Self::OpenCode,
-            "aoe-agent" => Self::AoeAgent,
-            "gemini" => Self::Gemini,
-            "pi-acp" => Self::PiAcp,
-            _ => Self::Other,
-        }
+        // Scan every whitespace-separated token. The actual binary can
+        // be the first token (`/usr/local/bin/claude-agent-acp`) but
+        // also a later one when a wrapper prefixes the command line
+        // (`bash claude-agent-acp`, `env -u FOO claude-agent-acp`,
+        // `npx claude-agent-acp`, etc.). Match against the first token
+        // that classifies as a known adapter so wrappers don't bypass
+        // the >=0.37.0 gate.
+        command
+            .split_whitespace()
+            .find_map(|token| {
+                let basename = token.rsplit(['/', '\\']).next().unwrap_or(token);
+                let stem = basename
+                    .strip_suffix(".exe")
+                    .or_else(|| basename.strip_suffix(".cmd"))
+                    .or_else(|| basename.strip_suffix(".bat"))
+                    .unwrap_or(basename);
+                match stem {
+                    "claude-agent-acp" => Some(Self::ClaudeAgentAcp),
+                    "codex-acp" => Some(Self::CodexAcp),
+                    "opencode" => Some(Self::OpenCode),
+                    "aoe-agent" => Some(Self::AoeAgent),
+                    "gemini" => Some(Self::Gemini),
+                    "pi-acp" => Some(Self::PiAcp),
+                    _ => None,
+                }
+            })
+            .unwrap_or(Self::Other)
     }
 }
 
@@ -472,7 +483,10 @@ mod tests {
         // string (e.g. `aoe cockpit doctor --json` output, log lines
         // round-tripped through user config). Tolerate the joined form
         // so the gate doesn't silently flip to `Other` and skip the
-        // claude check.
+        // claude check. Wrapper-prefixed commands count too: the
+        // classifier scans every whitespace-separated token so
+        // `bash claude-agent-acp` or `npx claude-agent-acp` is gated
+        // on the wrapped binary, not on the wrapper.
         assert_eq!(
             ExpectedAgent::from_command("claude-agent-acp --some-flag"),
             ExpectedAgent::ClaudeAgentAcp
@@ -481,5 +495,19 @@ mod tests {
             ExpectedAgent::from_command("  /usr/local/bin/claude-agent-acp  "),
             ExpectedAgent::ClaudeAgentAcp
         );
+        assert_eq!(
+            ExpectedAgent::from_command("bash claude-agent-acp"),
+            ExpectedAgent::ClaudeAgentAcp
+        );
+        assert_eq!(
+            ExpectedAgent::from_command("env FOO=bar /usr/local/bin/claude-agent-acp"),
+            ExpectedAgent::ClaudeAgentAcp
+        );
+        // `npx`-style npm-package-spec invocations are out of scope:
+        // npx itself resolves the package and the spawned binary's
+        // argv[0] is `claude-agent-acp`, not `claude-agent-acp@0.37.0`.
+        // The version-suffixed form would only show up if a user wired
+        // it manually into AgentSpec.command, which is not a supported
+        // configuration today.
     }
 }
