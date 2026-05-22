@@ -40,7 +40,8 @@ use super::approvals::{is_destructive, ApprovalDecision, Nonce};
 use super::fs_handler::{self, FsPolicy, SandboxPathMap};
 use super::permissions::build_approval;
 use super::state::{
-    AvailableCommand, CockpitSessionId, DiffPreview, Event, MemoryRecall, ModeInfo, Plan, PlanStep,
+    AvailableCommand, CockpitSessionId, ConfigOptionCategory, ConfigOptionChoice,
+    ConfigOptionDescriptor, DiffPreview, Event, MemoryRecall, ModeInfo, Plan, PlanStep,
     PlanStepStatus, RateLimitInfo, SessionMode, SessionUsage, StartupErrorDetail, ToolCall,
     UsageCost,
 };
@@ -2744,11 +2745,85 @@ fn map_update_to_events(
             );
             vec![Event::AvailableCommandsUpdated { commands }]
         }
+        SessionUpdate::ConfigOptionUpdate(update) => {
+            let options: Vec<ConfigOptionDescriptor> = update
+                .config_options
+                .into_iter()
+                .filter_map(map_acp_config_option)
+                .collect();
+            debug!(
+                target: "cockpit.acp",
+                count = options.len(),
+                "received ConfigOptionUpdate from agent"
+            );
+            vec![Event::ConfigOptionsUpdated { options }]
+        }
         // Variants we don't have a typed mapping for yet pass through as
         // RawAgentUpdate so the UI can render best-effort and we can
         // narrow these as we go.
         other => vec![raw_event(&other)],
     }
+}
+
+/// Build a cockpit `ConfigOptionDescriptor` from an ACP
+/// `SessionConfigOption`. Returns `None` when the option has a kind
+/// the cockpit does not yet render (today everything except `Select`).
+/// See #1403.
+fn map_acp_config_option(
+    option: agent_client_protocol::schema::SessionConfigOption,
+) -> Option<ConfigOptionDescriptor> {
+    use agent_client_protocol::schema::{
+        SessionConfigKind, SessionConfigOptionCategory, SessionConfigSelectOptions,
+    };
+
+    let category = option.category.map(|c| match c {
+        SessionConfigOptionCategory::Mode => ConfigOptionCategory::Mode,
+        SessionConfigOptionCategory::Model => ConfigOptionCategory::Model,
+        SessionConfigOptionCategory::ThoughtLevel => ConfigOptionCategory::ThoughtLevel,
+        SessionConfigOptionCategory::Other(s) => ConfigOptionCategory::Other(s),
+        _ => ConfigOptionCategory::Other(String::new()),
+    });
+
+    // Only `Select` is rendered today; future kinds (boolean toggles
+    // behind `unstable_boolean_config`) skip until the cockpit grows a
+    // matching widget. The schema enum is `#[non_exhaustive]` so a
+    // catch-all is required.
+    let select = match option.kind {
+        SessionConfigKind::Select(s) => s,
+        _ => return None,
+    };
+
+    let choices: Vec<ConfigOptionChoice> = match select.options {
+        SessionConfigSelectOptions::Ungrouped(opts) => opts
+            .into_iter()
+            .map(|o| ConfigOptionChoice {
+                value: o.value.0.to_string(),
+                name: o.name,
+                description: o.description,
+            })
+            .collect(),
+        SessionConfigSelectOptions::Grouped(groups) => groups
+            .into_iter()
+            .flat_map(|g| {
+                g.options.into_iter().map(|o| ConfigOptionChoice {
+                    value: o.value.0.to_string(),
+                    name: o.name,
+                    description: o.description,
+                })
+            })
+            .collect(),
+        // Catch-all for `#[non_exhaustive]` future variants.
+        _ => Vec::new(),
+    };
+
+    Some(ConfigOptionDescriptor {
+        id: option.id.0.to_string(),
+        name: option.name,
+        description: option.description,
+        category: category.unwrap_or(ConfigOptionCategory::Other(String::new())),
+        current_value: select.current_value.0.to_string(),
+        options: choices,
+    })
 }
 
 fn map_plan_status(status: agent_client_protocol::schema::PlanEntryStatus) -> PlanStepStatus {
@@ -6116,6 +6191,71 @@ mod tests {
                 assert!(!commands[1].accepts_input);
             }
             other => panic!("expected AvailableCommandsUpdated, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn map_config_option_update_emits_typed_event_with_categories() {
+        use agent_client_protocol::schema::{
+            ConfigOptionUpdate, SessionConfigKind, SessionConfigOption,
+            SessionConfigOptionCategory, SessionConfigSelect, SessionConfigSelectOption,
+            SessionConfigSelectOptions,
+        };
+        let model_option = SessionConfigOption::new(
+            "model",
+            "Model",
+            SessionConfigKind::Select(SessionConfigSelect::new(
+                "claude-opus-4-7",
+                SessionConfigSelectOptions::Ungrouped(vec![
+                    SessionConfigSelectOption::new("claude-opus-4-7", "Claude Opus 4.7"),
+                    SessionConfigSelectOption::new("claude-sonnet-4-6", "Claude Sonnet 4.6"),
+                ]),
+            )),
+        )
+        .category(SessionConfigOptionCategory::Model);
+        let effort_option = SessionConfigOption::new(
+            "effort",
+            "Reasoning Effort",
+            SessionConfigKind::Select(SessionConfigSelect::new(
+                "default",
+                SessionConfigSelectOptions::Ungrouped(vec![
+                    SessionConfigSelectOption::new("default", "Default"),
+                    SessionConfigSelectOption::new("high", "High"),
+                ]),
+            )),
+        )
+        .category(SessionConfigOptionCategory::ThoughtLevel);
+        let mode_option = SessionConfigOption::new(
+            "mode",
+            "Mode",
+            SessionConfigKind::Select(SessionConfigSelect::new(
+                "default",
+                SessionConfigSelectOptions::Ungrouped(vec![
+                    SessionConfigSelectOption::new("default", "Default"),
+                    SessionConfigSelectOption::new("plan", "Plan"),
+                ]),
+            )),
+        )
+        .category(SessionConfigOptionCategory::Mode);
+        let update = ConfigOptionUpdate::new(vec![model_option, effort_option, mode_option]);
+
+        let events = map_update_to_events(
+            SessionUpdate::ConfigOptionUpdate(update),
+            &agent_profiles::CLAUDE,
+        );
+        assert_eq!(events.len(), 1);
+        match &events[0] {
+            Event::ConfigOptionsUpdated { options } => {
+                assert_eq!(options.len(), 3);
+                assert_eq!(options[0].id, "model");
+                assert_eq!(options[0].category, ConfigOptionCategory::Model);
+                assert_eq!(options[0].current_value, "claude-opus-4-7");
+                assert_eq!(options[0].options.len(), 2);
+                assert_eq!(options[1].category, ConfigOptionCategory::ThoughtLevel);
+                assert_eq!(options[1].current_value, "default");
+                assert_eq!(options[2].category, ConfigOptionCategory::Mode);
+            }
+            other => panic!("expected ConfigOptionsUpdated, got {other:?}"),
         }
     }
 
