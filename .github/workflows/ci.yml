@@ -172,11 +172,15 @@ jobs:
       - uses: nixbuild/nix-quick-install-action@2c9db80fb984ceb1bcaa77cdda3fdf8cfba92035 # v34
         if: steps.changes.outputs.relevant == 'true'
 
-      - name: Build aoe-with-web
+      - name: Build aoe-web-frontend
         if: steps.changes.outputs.relevant == 'true'
+        # Builds only the npm + vite frontend (validates npmDepsHash
+        # as a side effect). Skips the full Rust crate so this job
+        # runs in 1-2 min instead of 20-30 min; Cargo Test + Nix Eval
+        # already cover the Rust side on every PR.
         run: |
           set -euo pipefail
-          nix build --no-link .#packages.x86_64-linux.aoe-with-web
+          nix build --no-link .#packages.x86_64-linux.aoe-web-frontend
 
   website:
     name: Website Build

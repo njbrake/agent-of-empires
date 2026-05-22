@@ -114,6 +114,10 @@
         {
           packages.default = aoe;
           packages.aoe-with-web = aoeWithWeb;
+          # Just the npm + vite build. Exposed so the PR-CI Nix Build
+          # Web job can validate npmDepsHash + frontend build in ~1-2
+          # min instead of rebuilding the full Rust workspace.
+          packages.aoe-web-frontend = webFrontend;
           # Exposed so the nix-npm-hash bots and the local manual
           # update procedure use the same nixpkgs revision as
           # `buildNpmPackage` above.
