@@ -180,6 +180,18 @@ fn test_help_closes_on_q() {
 
 #[test]
 #[serial]
+fn test_help_closes_on_uppercase_q_for_strict_mode() {
+    // Strict mode binds quit to uppercase Q; the help overlay must
+    // accept it too so strict-mode users can dismiss the dialog with
+    // the same key they use to quit.
+    let mut env = create_test_env_empty();
+    env.view.show_help = true;
+    env.view.handle_key(key(KeyCode::Char('Q')), None);
+    assert!(!env.view.show_help);
+}
+
+#[test]
+#[serial]
 fn test_has_dialog_returns_true_for_help() {
     let mut env = create_test_env_empty();
     assert!(!env.view.has_dialog());
@@ -1740,6 +1752,148 @@ fn test_bare_lowercase_o_does_not_cycle_sort_in_strict_mode() {
         env.view.sort_order, initial,
         "bare 'o' in strict mode must NOT cycle sort; expected it to stay at Newest"
     );
+}
+
+#[test]
+#[serial]
+fn test_strict_mode_h_collapses_group() {
+    // Regression guard: the help overlay lists "h/←" for Collapse group in
+    // strict mode. Bare lowercase `h` must walk through the dispatch and
+    // collapse the cursor's group, mirroring `l`/Right for expand. Without
+    // the explicit `Char('h')` arm next to `KeyCode::Left`, `h` would fall
+    // into the strict-mode typing-guard catch-all and the advertised
+    // navigation hotkey would silently open the compose dialog.
+    let mut env = create_test_env_with_groups();
+    env.view.strict_hotkeys = true;
+
+    let group_idx = env
+        .view
+        .flat_items
+        .iter()
+        .position(|item| matches!(item, Item::Group { .. }))
+        .expect("setup should produce a group");
+
+    if let Item::Group { collapsed, .. } = &env.view.flat_items[group_idx] {
+        assert!(!collapsed, "group should start expanded");
+    }
+    env.view.cursor = group_idx;
+    env.view.update_selected();
+
+    env.view.handle_key(key(KeyCode::Char('h')), None);
+
+    if let Item::Group { collapsed, .. } = &env.view.flat_items[group_idx] {
+        assert!(
+            *collapsed,
+            "bare 'h' in strict mode must collapse the group"
+        );
+    }
+    assert!(
+        env.view.pending_paste.is_none(),
+        "bare 'h' in strict mode must not leak into the typing-guard catch-all"
+    );
+}
+
+#[test]
+#[serial]
+fn test_strict_mode_h_still_snoozes_in_non_strict() {
+    // Companion guard for the strict-mode `h` collapse fix: making `h` an
+    // unconditional navigation key would steal the lowercase Snooze binding
+    // in default (non-strict) mode. The earlier `Char('h') if !strict` arm
+    // catches first, so the collapse arm only fires in strict mode.
+    let mut env = create_test_env_with_groups();
+    env.view.strict_hotkeys = false;
+
+    let group_idx = env
+        .view
+        .flat_items
+        .iter()
+        .position(|item| matches!(item, Item::Group { .. }))
+        .expect("setup should produce a group");
+    env.view.cursor = group_idx;
+    env.view.update_selected();
+
+    env.view.handle_key(key(KeyCode::Char('h')), None);
+
+    if let Item::Group { collapsed, .. } = &env.view.flat_items[group_idx] {
+        assert!(
+            !collapsed,
+            "non-strict 'h' must remain bound to snooze, not collapse"
+        );
+    }
+}
+
+#[test]
+#[serial]
+fn test_strict_mode_ctrl_g_toggles_group_by() {
+    // Regression guard: the help overlay lists "Ctrl+G" for Toggle group by
+    // project in strict mode. Previously normalize_strict_key stripped CTRL
+    // and routed the result into the typing-guard catch-all, so the
+    // advertised hotkey was a no-op (the bare 'g' landed in pending_paste).
+    // Ctrl+G must now keep its modifier and toggle group-by, while bare 'g'
+    // continues to fall into the typing-guard catch-all.
+    use crate::session::config::GroupByMode;
+
+    let mut env = create_test_env_with_sessions(3);
+    env.view.strict_hotkeys = true;
+    env.view.group_by = GroupByMode::Manual;
+
+    env.view.handle_key(
+        KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL),
+        None,
+    );
+    assert_eq!(
+        env.view.group_by,
+        GroupByMode::Project,
+        "Ctrl+G in strict mode should toggle group-by"
+    );
+    assert!(
+        env.view.pending_paste.is_none(),
+        "Ctrl+G must not leak into the typing-guard catch-all"
+    );
+
+    env.view.handle_key(key(KeyCode::Char('g')), None);
+    assert_eq!(
+        env.view.group_by,
+        GroupByMode::Project,
+        "bare 'g' in strict mode must NOT toggle group-by (typing-guard contract)"
+    );
+    assert_eq!(
+        env.view.pending_paste.as_deref(),
+        Some("g"),
+        "bare 'g' in strict mode falls through to the typing-guard catch-all"
+    );
+}
+
+#[test]
+#[serial]
+fn test_f5_and_e_both_open_restart_dialog() {
+    // Pin the equivalence: F5 and `e`/`E` all open the restart dialog. The
+    // help overlay collapses them onto one row as "Restart session (also
+    // F5)", which is only honest if both bindings keep hitting the same
+    // dispatch (open_restart_dialog).
+    let mut env = create_test_env_with_sessions(1);
+    env.view.cursor = 0;
+    env.view.update_selected();
+
+    env.view.handle_key(key(KeyCode::F(5)), None);
+    let f5_opened = env.view.restart_dialog.is_some();
+    env.view.restart_dialog = None;
+
+    env.view.strict_hotkeys = false;
+    env.view.handle_key(key(KeyCode::Char('e')), None);
+    let lower_e_opened = env.view.restart_dialog.is_some();
+    env.view.restart_dialog = None;
+
+    env.view.strict_hotkeys = true;
+    env.view.handle_key(key(KeyCode::Char('E')), None);
+    let upper_e_opened = env.view.restart_dialog.is_some();
+
+    assert!(f5_opened, "F5 should open the restart dialog");
+    assert!(
+        lower_e_opened,
+        "non-strict 'e' should open the restart dialog"
+    );
+    assert!(upper_e_opened, "strict 'E' should open the restart dialog");
 }
 
 #[test]
