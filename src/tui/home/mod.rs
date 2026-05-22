@@ -1834,9 +1834,22 @@ impl HomeView {
     }
 
     pub(super) fn build_flat_items(&self) -> Vec<Item> {
-        // Attention sort is a flat priority view: skip groups entirely so
-        // Waiting/Error rows from different groups can interleave by tier
-        // instead of being walled off behind group headers.
+        // Project grouping is honored across every sort order. Combined with
+        // Attention sort, sessions sort by tier within each project and the
+        // project headers float by their top-attention member (driven by
+        // sort_groups + attention_group_key in flatten_tree). Check this
+        // first so Project + Attention doesn't fall through to the flat
+        // Attention branch and lose the project headers.
+        if self.group_by == GroupByMode::Project {
+            return self.build_flat_items_by_project();
+        }
+
+        // Manual grouping + Attention sort is the cross-cutting flat
+        // priority view: skip groups entirely so Waiting/Error rows from
+        // different groups can interleave by tier instead of being walled
+        // off behind group headers. Project grouping above opts into a
+        // different shape on purpose (attention triage within explicit
+        // project boundaries).
         if self.sort_order == SortOrder::Attention {
             let filtered: Vec<Instance> = if let Some(profile) = &self.active_profile {
                 self.instances
@@ -1848,10 +1861,6 @@ impl HomeView {
                 self.instances.clone()
             };
             return flatten_sessions_by_attention(&filtered);
-        }
-
-        if self.group_by == GroupByMode::Project {
-            return self.build_flat_items_by_project();
         }
 
         if let Some(profile) = &self.active_profile {
