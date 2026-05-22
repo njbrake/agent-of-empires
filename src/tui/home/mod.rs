@@ -2302,6 +2302,40 @@ impl HomeView {
         }
     }
 
+    /// Cross-profile move: structurally distinct from `mutate_instance`
+    /// because the row must be tombstoned in the old profile's disk file
+    /// AND marked as TUI-new for the target profile. Without this, save()'s
+    /// per-profile loop misclassifies the row as peer-deleted in the new
+    /// profile and leaves the old profile's disk row, which next reload
+    /// resurrects under the original profile.
+    pub(super) fn move_to_profile(&mut self, id: &str, target: &str, new_group_path: String) {
+        let Some(old_profile) = self.instance_map.get(id).map(|i| i.source_profile.clone()) else {
+            return;
+        };
+        if old_profile == target {
+            self.mutate_instance(id, |inst| inst.group_path = new_group_path);
+            return;
+        }
+
+        self.pending_deletions
+            .entry(old_profile.clone())
+            .or_default()
+            .insert(id.to_string());
+        if let Some(set) = self.pending_added.get_mut(&old_profile) {
+            set.remove(id);
+        }
+        self.pending_added
+            .entry(target.to_string())
+            .or_default()
+            .insert(id.to_string());
+
+        if let Some(inst) = self.instances.iter_mut().find(|i| i.id == id) {
+            inst.group_path = new_group_path;
+            inst.source_profile = target.to_string();
+            self.instance_map.insert(id.to_string(), inst.clone());
+        }
+    }
+
     /// Atomic per-action mutate: in-memory once, disk via
     /// `Instance::merge_user_action_diff` under the flock.
     pub(super) fn apply_user_action<F>(&mut self, id: &str, mutate: F) -> anyhow::Result<()>

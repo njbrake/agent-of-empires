@@ -5349,4 +5349,67 @@ mod save_field_merge {
             "add+remove in same save cycle must not leak the row to disk"
         );
     }
+
+    #[test]
+    #[serial]
+    fn test_move_to_profile_marks_tombstone_and_pending_added() {
+        let (_temp, mut view, id) = boot_view_with_one_session("victim", "/tmp/move");
+        view.storages
+            .insert("target".to_string(), Storage::new("target").unwrap());
+
+        view.move_to_profile(&id, "target", "moved/group".to_string());
+
+        assert!(
+            view.pending_deletions
+                .get("test")
+                .is_some_and(|s| s.contains(&id)),
+            "old profile must have tombstone"
+        );
+        assert!(
+            view.pending_added
+                .get("target")
+                .is_some_and(|s| s.contains(&id)),
+            "new profile must have pending_added entry"
+        );
+        let inst = view.get_instance(&id).unwrap();
+        assert_eq!(inst.source_profile, "target");
+        assert_eq!(inst.group_path, "moved/group");
+    }
+
+    #[test]
+    #[serial]
+    fn test_move_to_profile_save_roundtrip_persists_under_target() {
+        let (_temp, mut view, id) = boot_view_with_one_session("victim", "/tmp/move");
+        view.storages
+            .insert("target".to_string(), Storage::new("target").unwrap());
+
+        view.move_to_profile(&id, "target", String::new());
+        view.save().expect("save must succeed across profiles");
+
+        let old_disk = Storage::new("test").unwrap().load().unwrap();
+        let new_disk = Storage::new("target").unwrap().load().unwrap();
+        assert!(
+            !old_disk.iter().any(|i| i.id == id),
+            "old profile disk must NOT contain the moved row"
+        );
+        assert!(
+            new_disk.iter().any(|i| i.id == id),
+            "new profile disk MUST contain the moved row"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_move_to_profile_same_profile_only_updates_group_path() {
+        let (_temp, mut view, id) = boot_view_with_one_session("victim", "/tmp/move");
+
+        view.move_to_profile(&id, "test", "newgrp".to_string());
+
+        assert!(
+            !view.pending_deletions.contains_key("test")
+                || !view.pending_deletions.get("test").unwrap().contains(&id),
+            "same-profile move must NOT tombstone the row"
+        );
+        assert_eq!(view.get_instance(&id).unwrap().group_path, "newgrp");
+    }
 }

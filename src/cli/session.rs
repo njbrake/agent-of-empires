@@ -285,14 +285,23 @@ async fn archive_session(profile: &str, args: ArchiveArgs) -> Result<()> {
     }
 
     // Phase 3 (locked, fast): set archived_at by id.
-    storage.update(|instances, _groups| {
+    let landed = storage.update(|instances, _groups| {
         if let Some(stored) = instances.iter_mut().find(|i| i.id == id) {
             stored.archive();
+            Ok(true)
+        } else {
+            Ok(false)
         }
-        Ok(())
     })?;
-    println!("Archived: {}", title);
-    Ok(())
+    if landed {
+        println!("Archived: {}", title);
+        Ok(())
+    } else {
+        bail!(
+            "Session {} was removed by another process before archive could land",
+            title
+        );
+    }
 }
 
 async fn unarchive_session(profile: &str, args: SessionIdArgs) -> Result<()> {
@@ -370,18 +379,25 @@ async fn start_session(profile: &str, args: SessionIdArgs) -> Result<()> {
 
     // Phase 3 (locked, fast): merge the post-start instance back by id, so
     // any concurrent mutation to OTHER sessions during phase 2 is preserved.
-    storage.update(|instances, _groups| {
+    let landed = storage.update(|instances, _groups| {
         if let Some(stored) = instances.iter_mut().find(|i| i.id == id) {
             stored.merge_post_start(&working);
+            Ok(true)
         } else {
             tracing::warn!(
                 target: "session.cli",
                 session_id = %id,
                 "session row removed by peer between phase 1 and phase 3 of start; tmux session is now orphan"
             );
+            Ok(false)
         }
-        Ok(())
     })?;
+    if !landed {
+        bail!(
+            "Session {} was removed by another process before start could land; tmux session is now orphan",
+            title
+        );
+    }
 
     println!("✓ Started session: {}", title);
     Ok(())
@@ -442,12 +458,20 @@ async fn stop_session(profile: &str, args: SessionIdArgs) -> Result<()> {
     // Phase 2 (locked): persist Stopped status by id so it survives TUI
     // restarts. Field-level merge preserves any concurrent mutation that
     // landed between phase 1 and phase 2.
-    storage.update(|instances, _groups| {
+    let landed = storage.update(|instances, _groups| {
         if let Some(stored) = instances.iter_mut().find(|i| i.id == session_id) {
             stored.status = crate::session::Status::Stopped;
+            Ok(true)
+        } else {
+            Ok(false)
         }
-        Ok(())
     })?;
+    if !landed {
+        bail!(
+            "Session {} was removed by another process before stop could land",
+            title
+        );
+    }
 
     if had_container {
         println!("✓ Stopped session and container: {}", title);
@@ -555,7 +579,8 @@ async fn restart_all_sessions(profile: &str, parallel: usize) -> Result<()> {
     // sessions during phase 2 (status updates from a parallel daemon
     // poller, sibling CLI invocations, ...) are preserved because the
     // closure receives the latest disk state.
-    storage.update(|instances, _groups| {
+    let orphaned: Vec<String> = storage.update(|instances, _groups| {
+        let mut orphaned = Vec::new();
         for (restarted_inst, stale_sid) in restarted {
             if let Some(stored) = instances.iter_mut().find(|i| i.id == restarted_inst.id) {
                 stored.merge_post_restart(&restarted_inst, stale_sid.as_deref());
@@ -565,10 +590,14 @@ async fn restart_all_sessions(profile: &str, parallel: usize) -> Result<()> {
                     session_id = %restarted_inst.id,
                     "session row removed by peer between phase 1 and phase 3 of restart --all; tmux session is now orphan"
                 );
+                orphaned.push(restarted_inst.title.clone());
             }
         }
-        Ok(())
+        Ok(orphaned)
     })?;
+
+    // Move orphaned titles out of succeeded: tmux ran but no disk row carries the outcome.
+    succeeded.retain(|(title, _)| !orphaned.contains(title));
 
     let stale_count = succeeded.iter().filter(|(_, s)| s.is_some()).count();
     if stale_count == 0 {
@@ -585,6 +614,15 @@ async fn restart_all_sessions(profile: &str, parallel: usize) -> Result<()> {
         match stale {
             Some(sid) => println!("  · {}{}", title, stale_history_suffix(sid)),
             None => println!("  · {}", title),
+        }
+    }
+    if !orphaned.is_empty() {
+        println!(
+            "⚠ {} orphaned (row removed by peer mid-flight; tmux running but unrooted):",
+            orphaned.len()
+        );
+        for title in &orphaned {
+            println!("  · {}", title);
         }
     }
     if !failed.is_empty() {
@@ -678,21 +716,28 @@ async fn restart_session(profile: &str, args: SessionIdArgs) -> Result<()> {
         StartOutcome::Restarted { stale_sid } => Some(stale_sid.as_str()),
         StartOutcome::Resumed | StartOutcome::Fresh => None,
     };
-    storage.update(|instances, _groups| {
+    let landed = storage.update(|instances, _groups| {
         if let Some(stored) = instances.iter_mut().find(|i| i.id == session_id) {
             stored.merge_post_restart(&working, stale_sid);
             if wake_succeeded {
                 stored.touch_last_accessed();
             }
+            Ok(true)
         } else {
             tracing::warn!(
                 target: "session.cli",
                 session_id = %session_id,
                 "session row removed by peer between phase 1 and phase 3 of restart; tmux session is now orphan"
             );
+            Ok(false)
         }
-        Ok(())
     })?;
+    if !landed {
+        bail!(
+            "Session {} was removed by another process before restart could land; tmux session is now orphan",
+            title
+        );
+    }
 
     match outcome {
         StartOutcome::Restarted { stale_sid } => {

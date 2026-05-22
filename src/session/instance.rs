@@ -695,12 +695,14 @@ impl Instance {
         self.snoozed_until = None;
     }
 
-    /// Mutates: `status`, `sandbox_info`. Field set must match what
-    /// `start_with_size_opts` writes; missing fields re-introduce the
-    /// wholesale-replace clobber.
+    /// Mutates: `status`, `sandbox_info`, `last_error`, `last_error_check`.
+    /// The last-error pair is included because the resume-fallback cascade
+    /// clears it on Error -> Starting and the disk row must reflect that.
     pub fn merge_post_start(&mut self, src: &Self) {
         self.status = src.status;
         self.sandbox_info = src.sandbox_info.clone();
+        self.last_error = src.last_error.clone();
+        self.last_error_check = src.last_error_check;
     }
 
     /// Same fields as `merge_post_start`. When `stale_sid` is `Some`, the
@@ -2995,6 +2997,26 @@ mod tests {
             stored.agent_session_id.as_deref(),
             Some("daemon-sid"),
             "peer-written sid must survive merge"
+        );
+    }
+
+    #[test]
+    fn test_merge_post_start_propagates_last_error_clear() {
+        let mut stored = Instance::new("session", "/tmp/test");
+        stored.status = Status::Error;
+        stored.last_error = Some("stale failure from previous run".to_string());
+
+        let mut working = Instance::new("session", "/tmp/test");
+        working.id = stored.id.clone();
+        working.status = Status::Starting;
+        working.last_error = None;
+
+        stored.merge_post_start(&working);
+
+        assert_eq!(stored.status, Status::Starting);
+        assert!(
+            stored.last_error.is_none(),
+            "Error -> Starting transition cleared last_error in working; merge must propagate the clear so disk does not show stale Starting + last_error"
         );
     }
 

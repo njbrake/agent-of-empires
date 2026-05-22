@@ -719,18 +719,25 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
         let id = instance.id.clone();
         match instance.start_with_size(crate::terminal::get_size()) {
             Ok(()) => {
-                storage.update(|all_instances, _groups| {
+                let landed = storage.update(|all_instances, _groups| {
                     if let Some(stored) = all_instances.iter_mut().find(|i| i.id == id) {
                         stored.merge_post_start(&instance);
+                        Ok(true)
                     } else {
                         tracing::warn!(
                             target: "session.cli",
                             session_id = %id,
                             "session row removed by peer between insert and launch-merge; tmux session is now orphan"
                         );
+                        Ok(false)
                     }
-                    Ok(())
                 })?;
+                if !landed {
+                    anyhow::bail!(
+                        "Session {} was removed by another process before launch could land; tmux session is now orphan",
+                        instance.title
+                    );
+                }
 
                 let tmux_session = crate::tmux::Session::new(&instance.id, &instance.title)?;
                 tmux_session.attach()?;
