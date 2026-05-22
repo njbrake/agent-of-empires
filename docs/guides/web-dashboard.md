@@ -230,6 +230,14 @@ aoe serve --daemon
 - **Connected Devices** view in Settings > Security
 - **Push notifications** on Waiting / Idle / Error transitions, with per-session overrides ([guide](push-notifications.md))
 
+### Sidebar sort
+
+By default the sidebar shows your manually-ordered list. Drag a row with a press-and-hold gesture to move it; the new order persists across browsers and devices via `workspace-ordering.json`.
+
+A sort toggle next to the filter button in the sidebar header switches to **Recent activity** mode, which orders workspaces by the most recent of `last_accessed_at`, `idle_entered_at`, and `created_at` across each workspace's sessions, descending. Drag-to-reorder is disabled while Recent activity is selected, because the order is computed; the press-and-hold gesture does nothing in that mode.
+
+The toggle's state is per-browser (localStorage), not synced across devices and not tied to your profile. Toggling back to manual restores the stored manual order and re-enables drag. The multi-repo group stays pinned at the bottom in both modes.
+
 ## Architecture
 
 The server embeds an axum web server that serves a React frontend and provides:
