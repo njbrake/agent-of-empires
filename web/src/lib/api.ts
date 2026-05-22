@@ -353,8 +353,10 @@ export function isDebugBuild(about: ServerAbout | null | undefined): boolean {
   if (!about) return false;
   return about.build_flavor === "debug";
 }
+export type UpdateCheckMode = "auto" | "notify" | "off";
+
 export interface UpdateStatus {
-  check_enabled: boolean;
+  update_check_mode: UpdateCheckMode;
   current_version: string;
   latest_version: string | null;
   update_available: boolean;

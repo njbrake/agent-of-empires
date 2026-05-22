@@ -57,7 +57,7 @@ pub enum FieldKey {
     ThemeColorMode,
     IdleDecayMinutes,
     // Updates
-    CheckEnabled,
+    UpdateCheckMode,
     CheckIntervalHours,
     NotifyInCli,
     WebPollIntervalMinutes,
@@ -157,6 +157,24 @@ pub enum FieldKey {
     LoggingMaxSizeMib,
     LoggingKeepCount,
     LoggingShowSpans,
+}
+
+/// Map `UpdateCheckMode` to the Select index used by the settings TUI.
+/// Order matches the labels in `build_update_fields()`.
+fn update_check_mode_to_index(mode: crate::session::config::UpdateCheckMode) -> usize {
+    match mode {
+        crate::session::config::UpdateCheckMode::Auto => 0,
+        crate::session::config::UpdateCheckMode::Notify => 1,
+        crate::session::config::UpdateCheckMode::Off => 2,
+    }
+}
+
+fn update_check_mode_from_index(idx: usize) -> crate::session::config::UpdateCheckMode {
+    match idx {
+        0 => crate::session::config::UpdateCheckMode::Auto,
+        2 => crate::session::config::UpdateCheckMode::Off,
+        _ => crate::session::config::UpdateCheckMode::Notify,
+    }
 }
 
 /// Resolve a field value from global config and optional profile override.
@@ -873,10 +891,10 @@ fn build_updates_fields(
 ) -> Vec<SettingField> {
     let updates = profile.updates.as_ref();
 
-    let (check_enabled, o1) = resolve_value(
+    let (mode_val, o1) = resolve_value(
         scope,
-        global.updates.check_enabled,
-        updates.and_then(|u| u.check_enabled),
+        global.updates.update_check_mode,
+        updates.and_then(|u| u.update_check_mode),
     );
     let (check_interval, o2) = resolve_value(
         scope,
@@ -894,15 +912,30 @@ fn build_updates_fields(
         updates.and_then(|u| u.web_poll_interval_minutes),
     );
 
+    let mode_options: Vec<String> =
+        vec!["auto".to_string(), "notify".to_string(), "off".to_string()];
+    let mode_index = update_check_mode_to_index(mode_val);
+    let global_mode_index = update_check_mode_to_index(global.updates.update_check_mode);
+
     vec![
         SettingField {
-            key: FieldKey::CheckEnabled,
-            label: "Check for Updates",
-            description: "Automatically check for updates on startup",
-            value: FieldValue::Bool(check_enabled),
+            key: FieldKey::UpdateCheckMode,
+            label: "Update Check Mode",
+            description: "auto = install in background on detection (picked up next launch). \
+                          notify = show banner / CLI notice (default). off = skip every check.",
+            value: FieldValue::Select {
+                selected: mode_index,
+                options: mode_options.clone(),
+            },
             category: SettingsCategory::Updates,
             has_override: o1,
-            inherited_display: inherited_if(o1, FieldValue::Bool(global.updates.check_enabled)),
+            inherited_display: inherited_if(
+                o1,
+                FieldValue::Select {
+                    selected: global_mode_index,
+                    options: mode_options,
+                },
+            ),
         },
         SettingField {
             key: FieldKey::CheckIntervalHours,
@@ -2224,7 +2257,9 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
             config.theme.idle_decay_minutes = *v;
         }
         // Updates
-        (FieldKey::CheckEnabled, FieldValue::Bool(v)) => config.updates.check_enabled = *v,
+        (FieldKey::UpdateCheckMode, FieldValue::Select { selected, .. }) => {
+            config.updates.update_check_mode = update_check_mode_from_index(*selected);
+        }
         (FieldKey::CheckIntervalHours, FieldValue::Number(v)) => {
             config.updates.check_interval_hours = *v
         }
@@ -2556,8 +2591,11 @@ fn apply_field_to_profile(field: &SettingField, _global: &Config, config: &mut P
             t.idle_decay_minutes = Some(*v);
         }
         // Updates
-        (FieldKey::CheckEnabled, FieldValue::Bool(v)) => {
-            set_profile_override(*v, &mut config.updates, |s, val| s.check_enabled = val);
+        (FieldKey::UpdateCheckMode, FieldValue::Select { selected, .. }) => {
+            let mode = update_check_mode_from_index(*selected);
+            set_profile_override(mode, &mut config.updates, |s, val| {
+                s.update_check_mode = val
+            });
         }
         (FieldKey::CheckIntervalHours, FieldValue::Number(v)) => {
             set_profile_override(*v, &mut config.updates, |s, val| {
@@ -2964,6 +3002,7 @@ mod tests {
 
     #[test]
     fn test_profile_field_has_no_override_after_global_change() {
+        use crate::session::config::UpdateCheckMode;
         // Start with default configs
         let mut global = Config::default();
         let profile = ProfileConfig::default();
@@ -2976,17 +3015,17 @@ mod tests {
             &profile,
         );
 
-        let check_enabled_field = fields
+        let mode_field = fields
             .iter()
-            .find(|f| f.key == FieldKey::CheckEnabled)
+            .find(|f| f.key == FieldKey::UpdateCheckMode)
             .unwrap();
         assert!(
-            !check_enabled_field.has_override,
+            !mode_field.has_override,
             "Profile should not show override initially"
         );
 
         // Change global setting
-        global.updates.check_enabled = !global.updates.check_enabled;
+        global.updates.update_check_mode = UpdateCheckMode::Off;
 
         // Rebuild profile fields - should still show no override
         let fields = build_fields_for_category(
@@ -2996,18 +3035,19 @@ mod tests {
             &profile,
         );
 
-        let check_enabled_field = fields
+        let mode_field = fields
             .iter()
-            .find(|f| f.key == FieldKey::CheckEnabled)
+            .find(|f| f.key == FieldKey::UpdateCheckMode)
             .unwrap();
         assert!(
-            !check_enabled_field.has_override,
+            !mode_field.has_override,
             "Profile should NOT show override after global change - it should inherit"
         );
     }
 
     #[test]
     fn test_profile_field_shows_override_after_profile_change() {
+        use crate::session::config::UpdateCheckMode;
         let global = Config::default();
         let mut profile = ProfileConfig::default();
 
@@ -3018,15 +3058,15 @@ mod tests {
             &global,
             &profile,
         );
-        let check_enabled_field = fields
+        let mode_field = fields
             .iter()
-            .find(|f| f.key == FieldKey::CheckEnabled)
+            .find(|f| f.key == FieldKey::UpdateCheckMode)
             .unwrap();
-        assert!(!check_enabled_field.has_override);
+        assert!(!mode_field.has_override);
 
         // Set a profile override
         profile.updates = Some(crate::session::UpdatesConfigOverride {
-            check_enabled: Some(false),
+            update_check_mode: Some(UpdateCheckMode::Off),
             ..Default::default()
         });
 
@@ -3037,12 +3077,12 @@ mod tests {
             &global,
             &profile,
         );
-        let check_enabled_field = fields
+        let mode_field = fields
             .iter()
-            .find(|f| f.key == FieldKey::CheckEnabled)
+            .find(|f| f.key == FieldKey::UpdateCheckMode)
             .unwrap();
         assert!(
-            check_enabled_field.has_override,
+            mode_field.has_override,
             "Profile SHOULD show override after explicit profile change"
         );
     }
@@ -3096,9 +3136,9 @@ mod tests {
         let mut profile = ProfileConfig::default();
 
         // Set a profile override that matches the global value
-        let global_check_enabled = global.updates.check_enabled;
+        let global_mode = global.updates.update_check_mode;
         profile.updates = Some(crate::session::UpdatesConfigOverride {
-            check_enabled: Some(global_check_enabled),
+            update_check_mode: Some(global_mode),
             ..Default::default()
         });
 
@@ -3111,7 +3151,7 @@ mod tests {
         );
         let field = fields
             .iter()
-            .find(|f| f.key == FieldKey::CheckEnabled)
+            .find(|f| f.key == FieldKey::UpdateCheckMode)
             .unwrap();
 
         // Re-apply the field (simulates user saving without changing the value)
@@ -3122,30 +3162,39 @@ mod tests {
             profile
                 .updates
                 .as_ref()
-                .and_then(|u| u.check_enabled)
+                .and_then(|u| u.update_check_mode)
                 .is_some(),
             "Profile override should be preserved even when value matches global"
         );
     }
 
     #[test]
-    fn test_bool_toggle_back_to_global_preserves_override() {
+    fn test_select_toggle_back_to_global_preserves_override() {
+        use crate::session::config::UpdateCheckMode;
         let global = Config::default();
         let mut profile = ProfileConfig::default();
-        let original = global.updates.check_enabled;
+        let original = global.updates.update_check_mode;
 
-        // Toggle to non-global value
+        // Toggle to non-global value (Off when default is Notify)
+        let other = if original == UpdateCheckMode::Off {
+            UpdateCheckMode::Notify
+        } else {
+            UpdateCheckMode::Off
+        };
         profile.updates = Some(crate::session::UpdatesConfigOverride {
-            check_enabled: Some(!original),
+            update_check_mode: Some(other),
             ..Default::default()
         });
 
         // Now toggle back to match global
         let field = SettingField {
-            key: FieldKey::CheckEnabled,
-            label: "Check Enabled",
+            key: FieldKey::UpdateCheckMode,
+            label: "Update Check Mode",
             description: "",
-            value: FieldValue::Bool(original),
+            value: FieldValue::Select {
+                selected: update_check_mode_to_index(original),
+                options: vec!["auto".to_string(), "notify".to_string(), "off".to_string()],
+            },
             category: SettingsCategory::Updates,
             has_override: true,
             inherited_display: None,
@@ -3158,12 +3207,12 @@ mod tests {
             profile
                 .updates
                 .as_ref()
-                .and_then(|u| u.check_enabled)
+                .and_then(|u| u.update_check_mode)
                 .is_some(),
             "Toggling back to match global should preserve the override, not silently clear it"
         );
         assert_eq!(
-            profile.updates.as_ref().unwrap().check_enabled,
+            profile.updates.as_ref().unwrap().update_check_mode,
             Some(original),
             "Override value should match what was set"
         );

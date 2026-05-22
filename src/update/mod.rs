@@ -100,6 +100,16 @@ fn save_cache(cache: &UpdateCache) -> Result<()> {
 pub async fn check_for_update(current_version: &str, force: bool) -> Result<UpdateInfo> {
     let settings = get_update_settings();
 
+    // Mode=off skips network entirely; return a "no update" stub so callers
+    // can keep their unconditional shape without branching on the mode.
+    if !settings.update_check_mode.is_enabled() {
+        return Ok(UpdateInfo {
+            available: false,
+            current_version: current_version.to_string(),
+            latest_version: String::new(),
+        });
+    }
+
     if !force {
         if let Some(cache) = load_cache() {
             let age = chrono::Utc::now() - cache.checked_at;
@@ -281,7 +291,9 @@ pub(crate) fn is_newer_version(latest: &str, current: &str) -> bool {
 
 pub async fn print_update_notice() {
     let settings = get_update_settings();
-    if !settings.check_enabled || !settings.notify_in_cli {
+    // CLI nag fires only when both the global mode allows notifications
+    // and the user has not opted out of CLI nags specifically.
+    if !settings.update_check_mode.notifies() || !settings.notify_in_cli {
         return;
     }
 

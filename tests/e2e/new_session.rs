@@ -87,7 +87,7 @@ fn write_config_with_hooks(h: &TuiTestHarness, hook_cmd: &str) {
 on_create = ["{hook_cmd}"]
 
 [updates]
-check_enabled = false
+update_check_mode = "off"
 
 [app_state]
 has_seen_welcome = true

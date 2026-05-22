@@ -447,7 +447,14 @@ impl HomeView {
 
         // Render dialogs on top
         if self.show_help {
-            HelpOverlay::render(frame, area, theme, self.sort_order, self.strict_hotkeys);
+            HelpOverlay::render(
+                frame,
+                area,
+                theme,
+                self.sort_order,
+                self.strict_hotkeys,
+                &mut self.help_scroll,
+            );
         }
 
         // Each Option<Dialog> field on HomeView gets the same render dispatch:

@@ -467,6 +467,14 @@ pub struct AppStateConfig {
     #[serde(default)]
     pub last_seen_version: Option<String>,
 
+    /// Latest version for which the user dismissed the update banner. The
+    /// banner stays hidden as long as the latest available version equals
+    /// this value; it returns automatically when a newer release ships.
+    /// Cleared by switching `update_check_mode` or upgrading past the
+    /// snoozed version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dismissed_update_version: Option<String>,
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub home_list_width: Option<u16>,
 
@@ -833,10 +841,52 @@ fn default_idle_decay_minutes() -> u64 {
     0
 }
 
+/// Controls how the TUI and CLI surface update availability. See #1140.
+///
+/// `Auto` quietly installs new releases in the background on next launch
+/// after detection (mid-session restart is intentionally out of scope, the
+/// new binary is picked up next time `aoe` starts). `Notify` is the
+/// default: shows the TUI banner and, when `notify_in_cli` is true, the
+/// CLI eprintln nag. `Off` suppresses every check, banner, and fetch.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum UpdateCheckMode {
+    /// Silently install detected updates; user picks them up next launch.
+    Auto,
+    /// Surface the banner / CLI notice (default).
+    #[default]
+    Notify,
+    /// Skip every check, banner, and fetch.
+    Off,
+}
+
+impl UpdateCheckMode {
+    /// True when the runtime should call `check_for_update` at all.
+    /// Both `Auto` and `Notify` need the check to fire; only `Off`
+    /// short-circuits.
+    pub fn is_enabled(self) -> bool {
+        !matches!(self, UpdateCheckMode::Off)
+    }
+
+    /// True when the user should see a TUI banner / CLI notice once a
+    /// newer version is detected.
+    pub fn notifies(self) -> bool {
+        matches!(self, UpdateCheckMode::Notify)
+    }
+
+    /// True when the runtime should kick off a background install on
+    /// detection (no banner; binary picked up next launch).
+    pub fn auto_installs(self) -> bool {
+        matches!(self, UpdateCheckMode::Auto)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UpdatesConfig {
-    #[serde(default = "default_true")]
-    pub check_enabled: bool,
+    /// How updates are surfaced (auto / notify / off). Replaces the
+    /// legacy `check_enabled` boolean (see migration `v009`).
+    #[serde(default)]
+    pub update_check_mode: UpdateCheckMode,
 
     #[serde(default = "default_check_interval")]
     pub check_interval_hours: u64,
@@ -856,7 +906,7 @@ pub struct UpdatesConfig {
 impl Default for UpdatesConfig {
     fn default() -> Self {
         Self {
-            check_enabled: true,
+            update_check_mode: UpdateCheckMode::default(),
             check_interval_hours: 24,
             notify_in_cli: true,
             web_poll_interval_minutes: 60,
@@ -1350,7 +1400,7 @@ mod tests {
         assert_eq!(deserialized.default_profile, "");
         assert!(!config.worktree.enabled);
         assert!(!config.sandbox.enabled_by_default);
-        assert!(config.updates.check_enabled);
+        assert_eq!(config.updates.update_check_mode, UpdateCheckMode::Notify);
     }
 
     #[test]
@@ -1418,7 +1468,7 @@ mod tests {
     #[test]
     fn test_updates_config_default() {
         let updates = UpdatesConfig::default();
-        assert!(updates.check_enabled);
+        assert_eq!(updates.update_check_mode, UpdateCheckMode::Notify);
         assert_eq!(updates.check_interval_hours, 24);
         assert!(updates.notify_in_cli);
     }
@@ -1426,41 +1476,56 @@ mod tests {
     #[test]
     fn test_updates_config_deserialize() {
         let toml = r#"
-            check_enabled = false
+            update_check_mode = "off"
             check_interval_hours = 12
             notify_in_cli = false
         "#;
         let updates: UpdatesConfig = toml::from_str(toml).unwrap();
-        assert!(!updates.check_enabled);
+        assert_eq!(updates.update_check_mode, UpdateCheckMode::Off);
         assert_eq!(updates.check_interval_hours, 12);
         assert!(!updates.notify_in_cli);
     }
 
     #[test]
     fn test_updates_config_partial_deserialize() {
-        let toml = r#"check_enabled = false"#;
+        let toml = r#"update_check_mode = "auto""#;
         let updates: UpdatesConfig = toml::from_str(toml).unwrap();
-        assert!(!updates.check_enabled);
-        // Defaults for other fields
+        assert_eq!(updates.update_check_mode, UpdateCheckMode::Auto);
         assert_eq!(updates.check_interval_hours, 24);
     }
 
-    /// Regression: a previous schema had `auto_update = bool` on
-    /// UpdatesConfig (it was wired through profiles but never read).
-    /// The field is gone now, so old configs that still set it must
-    /// deserialize cleanly with the field silently dropped by serde.
     #[test]
-    fn test_legacy_auto_update_field_is_silently_ignored() {
+    fn test_update_check_mode_helpers() {
+        assert!(UpdateCheckMode::Notify.is_enabled());
+        assert!(UpdateCheckMode::Notify.notifies());
+        assert!(!UpdateCheckMode::Notify.auto_installs());
+
+        assert!(UpdateCheckMode::Auto.is_enabled());
+        assert!(!UpdateCheckMode::Auto.notifies());
+        assert!(UpdateCheckMode::Auto.auto_installs());
+
+        assert!(!UpdateCheckMode::Off.is_enabled());
+        assert!(!UpdateCheckMode::Off.notifies());
+        assert!(!UpdateCheckMode::Off.auto_installs());
+    }
+
+    /// Regression: the previous schema had `check_enabled = bool` and
+    /// `auto_update = bool` on UpdatesConfig. Both fields are gone now;
+    /// the on-disk migration runs at startup, but configs read between
+    /// upgrade and migration must still deserialize cleanly with the
+    /// unknown fields silently dropped by serde.
+    #[test]
+    fn test_legacy_check_enabled_and_auto_update_are_ignored() {
         let old_toml = r#"
-            check_enabled = true
+            check_enabled = false
             auto_update = true
             check_interval_hours = 12
             notify_in_cli = true
         "#;
         let updates: UpdatesConfig =
-            toml::from_str(old_toml).expect("old auto_update field should not error");
+            toml::from_str(old_toml).expect("legacy fields should not error");
         assert_eq!(updates.check_interval_hours, 12);
-        assert!(updates.check_enabled);
+        assert_eq!(updates.update_check_mode, UpdateCheckMode::Notify);
         assert!(updates.notify_in_cli);
     }
 
@@ -1598,6 +1663,7 @@ mod tests {
         let app = AppStateConfig::default();
         assert!(!app.has_seen_welcome);
         assert!(app.last_seen_version.is_none());
+        assert!(app.dismissed_update_version.is_none());
     }
 
     #[test]
@@ -1605,10 +1671,12 @@ mod tests {
         let toml = r#"
             has_seen_welcome = true
             last_seen_version = "1.0.0"
+            dismissed_update_version = "1.0.0"
         "#;
         let app: AppStateConfig = toml::from_str(toml).unwrap();
         assert!(app.has_seen_welcome);
         assert_eq!(app.last_seen_version, Some("1.0.0".to_string()));
+        assert_eq!(app.dismissed_update_version, Some("1.0.0".to_string()));
     }
 
     // Full config serialization roundtrip
@@ -1663,7 +1731,7 @@ mod tests {
             enabled_by_default = true
 
             [updates]
-            check_enabled = true
+            update_check_mode = "notify"
             check_interval_hours = 12
 
             [app_state]
@@ -1676,7 +1744,7 @@ mod tests {
         assert!(config.worktree.enabled);
         assert_eq!(config.worktree.path_template, "../wt/{branch}");
         assert!(config.sandbox.enabled_by_default);
-        assert!(config.updates.check_enabled);
+        assert_eq!(config.updates.update_check_mode, UpdateCheckMode::Notify);
         assert_eq!(config.updates.check_interval_hours, 12);
         assert!(config.app_state.has_seen_welcome);
     }
@@ -1686,7 +1754,7 @@ mod tests {
     fn test_get_update_settings_returns_defaults_when_no_config() {
         // This test doesn't access the filesystem, so it should return defaults
         let settings = UpdatesConfig::default();
-        assert!(settings.check_enabled);
+        assert_eq!(settings.update_check_mode, UpdateCheckMode::Notify);
         assert_eq!(settings.check_interval_hours, 24);
     }
 
