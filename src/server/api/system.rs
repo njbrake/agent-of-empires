@@ -354,6 +354,7 @@ pub async fn list_profiles(State(state): State<Arc<AppState>>) -> Json<Vec<Profi
 pub struct BrowseQuery {
     pub path: String,
     pub limit: Option<usize>,
+    pub filter: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -390,6 +391,7 @@ pub async fn browse_filesystem(
 ) -> impl IntoResponse {
     let result = tokio::task::spawn_blocking(move || {
         let limit = query.limit.unwrap_or(100);
+        let filter = query.filter.map(|f| f.trim().to_lowercase());
         let path = std::path::Path::new(&query.path);
         let canonical = path.canonicalize().map_err(|_| "Path does not exist")?;
 
@@ -416,6 +418,11 @@ pub async fn browse_filesystem(
             let is_dir = entry_path.is_dir();
             if !is_dir {
                 continue;
+            }
+            if let Some(filter) = filter.as_deref() {
+                if !filter.is_empty() && !name.to_lowercase().contains(filter) {
+                    continue;
+                }
             }
             let is_git_repo = entry_path.join(".git").exists();
             entries.push(DirEntry {

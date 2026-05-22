@@ -4,6 +4,7 @@ import { safeGetItem, safeSetItem } from "../lib/safeStorage";
 import type { DirEntry } from "../lib/types";
 
 const LAST_DIR_KEY = "aoe-last-browse-dir";
+const BROWSE_PAGE_SIZE = 100;
 
 function loadLastDir(): string | null {
   return safeGetItem(LAST_DIR_KEY);
@@ -22,28 +23,88 @@ export function DirectoryBrowser({ initialPath, onSelect }: Props) {
   const [currentPath, setCurrentPath] = useState(initialPath || "");
   const [entries, setEntries] = useState<DirEntry[]>([]);
   const [hasMore, setHasMore] = useState(false);
+  const [entryLimit, setEntryLimit] = useState(BROWSE_PAGE_SIZE);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [filter, setFilter] = useState("");
   const initialized = useRef(false);
+  const loadSeq = useRef(0);
+  const loadedFilter = useRef("");
+  const filterDebounceHandle = useRef<number | null>(null);
 
-  const navigate = useCallback(async (path: string): Promise<boolean> => {
-    setLoading(true);
-    setError(null);
-    setFilter("");
-    const resp = await browseFilesystem(path, 100);
-    if (!resp.ok) {
-      setError("Can't access this folder. It may not exist or is outside the home directory.");
-      setLoading(false);
-      return false;
-    }
-    // Success: update state even if empty (empty dir is valid)
-    setEntries(resp.entries);
-    setHasMore(resp.has_more);
-    setCurrentPath(path);
-    setLoading(false);
-    return true;
+  const clearFilterDebounce = useCallback(() => {
+    if (filterDebounceHandle.current == null) return;
+    window.clearTimeout(filterDebounceHandle.current);
+    filterDebounceHandle.current = null;
   }, []);
+
+  const loadPath = useCallback(
+    async (
+      path: string,
+      limit: number,
+      options: { filter?: string; resetFilter?: boolean } = {},
+    ): Promise<boolean> => {
+      const seq = loadSeq.current + 1;
+      loadSeq.current = seq;
+      setLoading(true);
+      setError(null);
+      if (options.resetFilter) {
+        clearFilterDebounce();
+        loadedFilter.current = "";
+        setFilter("");
+      }
+      try {
+        const resp = await browseFilesystem(path, limit, options.filter);
+        if (seq !== loadSeq.current) return false;
+        if (!resp.ok) {
+          setError("Can't access this folder. It may not exist or is outside the home directory.");
+          return false;
+        }
+        // Success: update state even if empty (empty dir is valid)
+        setEntries(resp.entries);
+        setHasMore(resp.has_more);
+        setEntryLimit(limit);
+        setCurrentPath(path);
+        loadedFilter.current = options.filter ?? "";
+        return true;
+      } catch {
+        if (seq === loadSeq.current) {
+          setError("Can't access this folder. It may not exist or is outside the home directory.");
+        }
+        return false;
+      } finally {
+        if (seq === loadSeq.current) setLoading(false);
+      }
+    },
+    [clearFilterDebounce],
+  );
+
+  const navigate = useCallback(
+    async (path: string): Promise<boolean> =>
+      loadPath(path, BROWSE_PAGE_SIZE, { resetFilter: true }),
+    [loadPath],
+  );
+
+  const loadMore = useCallback(() => {
+    if (loading) return;
+    clearFilterDebounce();
+    void loadPath(currentPath, entryLimit + BROWSE_PAGE_SIZE, {
+      filter: filter.trim(),
+    });
+  }, [clearFilterDebounce, currentPath, entryLimit, filter, loadPath, loading]);
+
+  useEffect(() => {
+    if (!currentPath) return;
+    const nextFilter = filter.trim();
+    if (nextFilter === loadedFilter.current) return;
+    clearFilterDebounce();
+    filterDebounceHandle.current = window.setTimeout(() => {
+      filterDebounceHandle.current = null;
+      if (nextFilter === loadedFilter.current) return;
+      void loadPath(currentPath, BROWSE_PAGE_SIZE, { filter: nextFilter });
+    }, 150);
+    return clearFilterDebounce;
+  }, [clearFilterDebounce, currentPath, filter, loadPath]);
 
   // Discover and navigate to a starting dir on mount.
   // Priority: explicit initialPath -> last-used dir from localStorage -> home -> "/".
@@ -51,17 +112,13 @@ export function DirectoryBrowser({ initialPath, onSelect }: Props) {
     if (initialized.current) return;
     initialized.current = true;
 
-    if (initialPath) {
-      navigate(initialPath);
-      return;
-    }
-
-    (async () => {
+    queueMicrotask(async () => {
+      if (initialPath && (await navigate(initialPath))) return;
       const lastDir = loadLastDir();
       if (lastDir && (await navigate(lastDir))) return;
       const home = await getHomePath();
       await navigate(home || "/");
-    })();
+    });
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   const pathSegments = currentPath.split("/").filter(Boolean);
@@ -87,10 +144,6 @@ export function DirectoryBrowser({ initialPath, onSelect }: Props) {
       navigate(entry.path);
     }
   };
-
-  const filtered = filter
-    ? entries.filter((e) => e.name.toLowerCase().includes(filter.toLowerCase()))
-    : entries;
 
   // Breadcrumb truncation for mobile: show first + "..." + last 2
   const renderBreadcrumbs = () => {
@@ -191,7 +244,7 @@ export function DirectoryBrowser({ initialPath, onSelect }: Props) {
             )}
 
             {/* Empty state */}
-            {filtered.length === 0 && (
+            {entries.length === 0 && (
               <div className="px-4 py-6 text-center">
                 <p className="text-sm text-text-dim">
                   {filter ? "No folders match your filter" : "No visible subfolders here"}
@@ -205,7 +258,7 @@ export function DirectoryBrowser({ initialPath, onSelect }: Props) {
             )}
 
             {/* Directory entries */}
-            {filtered.map((entry) => (
+            {entries.map((entry) => (
               <button
                 key={entry.path}
                 onClick={() => handleEntryClick(entry)}
@@ -235,8 +288,18 @@ export function DirectoryBrowser({ initialPath, onSelect }: Props) {
             ))}
 
             {hasMore && (
-              <div className="px-3 py-2 text-center text-xs text-text-dim border-t border-surface-800">
-                Showing first 100 entries. Use the filter to narrow results.
+              <div className="px-3 py-3 text-center border-t border-surface-800">
+                <p className="text-xs text-text-dim mb-2">
+                  Showing first {entries.length} entries.
+                </p>
+                <button
+                  type="button"
+                  onClick={loadMore}
+                  disabled={loading}
+                  className="h-8 px-3 text-xs font-sans text-text-secondary border border-surface-700 rounded-md hover:bg-surface-700/40 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                >
+                  Load {BROWSE_PAGE_SIZE} more
+                </button>
               </div>
             )}
           </>

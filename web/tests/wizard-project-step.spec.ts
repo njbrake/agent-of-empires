@@ -141,6 +141,102 @@ test.describe("Wizard project step (#1219)", () => {
     await expect(page.getByText("/home/user/my-repo", { exact: false })).toBeVisible();
   });
 
+  test("Browse tab can load entries beyond the first page", async ({ page }) => {
+    await mockBaseApis(page);
+    await page.route("**/api/sessions", (r) =>
+      r.fulfill({ json: { sessions: [], workspace_ordering: [] } }),
+    );
+    const entries = Array.from({ length: 125 }, (_, i) => {
+      const n = String(i + 1).padStart(3, "0");
+      return {
+        name: `project-${n}`,
+        path: `/home/user/project-${n}`,
+        is_dir: true,
+        is_git_repo: i === 124,
+      };
+    });
+    await page.route("**/api/filesystem/browse**", (r) => {
+      const limit = Number(new URL(r.request().url()).searchParams.get("limit") ?? "100");
+      r.fulfill({
+        json: {
+          entries: entries.slice(0, limit),
+          has_more: entries.length > limit,
+        },
+      });
+    });
+
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.goto("/");
+    await openWizard(page);
+
+    await expect(page.getByRole("option").filter({ hasText: "project-001" })).toBeVisible();
+    await expect(page.getByRole("option").filter({ hasText: "project-125" })).toHaveCount(0);
+    await expect(page.getByText("Showing first 100 entries.")).toBeVisible();
+
+    await page.getByRole("button", { name: "Load 100 more" }).click();
+
+    const finalEntry = page.getByRole("option").filter({ hasText: "project-125" });
+    await expect(finalEntry).toBeVisible();
+    await expect(page.getByText("Load 100 more")).toHaveCount(0);
+    await finalEntry.click();
+    await expect(page.getByText("Selected project")).toBeVisible();
+    await expect(page.getByText("/home/user/project-125", { exact: false })).toBeVisible();
+  });
+
+  test("Browse tab filters entries beyond the first page on the server", async ({ page }) => {
+    await mockBaseApis(page);
+    await page.route("**/api/sessions", (r) =>
+      r.fulfill({ json: { sessions: [], workspace_ordering: [] } }),
+    );
+    const entries = [
+      ...Array.from({ length: 124 }, (_, i) => {
+        const n = String(i + 1).padStart(3, "0");
+        return {
+          name: `project-${n}`,
+          path: `/home/user/project-${n}`,
+          is_dir: true,
+          is_git_repo: false,
+        };
+      }),
+      {
+        name: "z-project",
+        path: "/home/user/z-project",
+        is_dir: true,
+        is_git_repo: true,
+      },
+    ];
+    await page.route("**/api/filesystem/browse**", (r) => {
+      const params = new URL(r.request().url()).searchParams;
+      const limit = Number(params.get("limit") ?? "100");
+      const filter = params.get("filter")?.toLowerCase() ?? "";
+      const filtered = filter
+        ? entries.filter((e) => e.name.toLowerCase().includes(filter))
+        : entries;
+      r.fulfill({
+        json: {
+          entries: filtered.slice(0, limit),
+          has_more: filtered.length > limit,
+        },
+      });
+    });
+
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.goto("/");
+    await openWizard(page);
+
+    await expect(page.getByRole("option").filter({ hasText: "project-001" })).toBeVisible();
+    await expect(page.getByRole("option").filter({ hasText: "z-project" })).toHaveCount(0);
+
+    await page.getByPlaceholder("Type to filter...").fill("z");
+
+    const zProject = page.getByRole("option").filter({ hasText: "z-project" });
+    await expect(zProject).toBeVisible();
+    await expect(page.getByRole("button", { name: "Load 100 more" })).toHaveCount(0);
+    await zProject.click();
+    await expect(page.getByText("Selected project")).toBeVisible();
+    await expect(page.getByText("/home/user/z-project", { exact: false })).toBeVisible();
+  });
+
   test("Clone tab: clone button disabled until URL non-empty", async ({ page }) => {
     await mockBaseApis(page);
     await page.route("**/api/sessions", (r) =>

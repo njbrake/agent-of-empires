@@ -167,6 +167,7 @@
         "tests/wizard-custom-agent.spec.ts"
       ],
       "components": [
+        "web/src/components/DirectoryBrowser.tsx",
         "web/src/components/session-wizard/SessionWizard.tsx",
         "web/src/components/session-wizard/StepIndicator.tsx",
         "web/src/components/session-wizard/steps/AgentStep.tsx",
