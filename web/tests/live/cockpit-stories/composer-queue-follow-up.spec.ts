@@ -27,11 +27,15 @@ const QUEUE_SCRIPT = {
           content: { type: "text", text: "First turn response." },
         },
         // Long enough that the queued follow-up always lands before
-        // turn 1 ends on slow CI runners. Bumped from 2s after #1383
-        // CI flakes where chunk delivery could spend several seconds
-        // under load and a 2s wait_ms made turn 1 end before the test
-        // had observed the first chunk + clicked Queue.
-        { sessionUpdate: "wait_ms", ms: 10_000 },
+        // turn 1 ends on slow CI runners, but well under any 10s
+        // idle/watchdog window in the cockpit supervisor (see
+        // `RESUME_IDLE_GRACE_DEFAULT` in src/cockpit/acp_client.rs).
+        // Earlier rounds bounced between 600ms (raced on slow CI) and
+        // 10s (hit the idle watchdog and the worker was torn down
+        // before turn 2 could fire). 4s gives the spec ~3.5s of slack
+        // to fill+click after observing the first chunk while keeping
+        // the total turn well clear of any supervisor watchdog.
+        { sessionUpdate: "wait_ms", ms: 4_000 },
       ],
       stopReason: "end_turn",
     },
@@ -83,8 +87,17 @@ base("queued follow-up fires when first turn ends", async ({ page }, testInfo) =
       timeout: 10_000,
     });
 
+    // Wait for the QueueSendButton to actually be present before
+    // typing / clicking. The composer only renders it while
+    // `turnActive=true`; if the worker died or the reducer is still
+    // batching state updates, the SendButton (different aria-label,
+    // "Send message" or "Queue message until session resumes") is
+    // there instead and clicking by Queue's aria-label would block on
+    // a button that never appears.
+    const queueBtn = page.getByRole("button", { name: /Queue follow-up message/i });
+    await expect(queueBtn).toBeVisible({ timeout: 5_000 });
     await composer.fill("second please");
-    await page.getByRole("button", { name: /Queue follow-up message/i }).click();
+    await queueBtn.click();
 
     // Turn 1 wait_ms elapses → end_turn → drain effect fires the
     // queued prompt → turn 2 starts and emits its distinct text.

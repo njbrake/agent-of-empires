@@ -93,8 +93,13 @@ base("comment on a diff hunk persists in the comments banner", async ({ page }, 
     await page.getByRole("button", { name: "Save", exact: true }).click();
 
     // The CommentsBanner / commentsCount surface should reflect one
-    // saved comment.
-    await expect(page.getByText(/1 comment/i)).toBeVisible({
+    // saved comment. ContentSplit renders the right pane twice (desktop
+    // `hidden md:flex` + mobile slide-in `md:hidden fixed`), so two
+    // CommentsBanner copies live in the DOM at all viewports. The
+    // desktop copy is the visible one at default Chromium width;
+    // `.first()` resolves to it deterministically and avoids the strict-
+    // mode multi-match.
+    await expect(page.getByText(/1 comment/i).first()).toBeVisible({
       timeout: 10_000,
     });
   } finally {

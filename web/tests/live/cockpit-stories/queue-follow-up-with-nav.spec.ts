@@ -1,21 +1,29 @@
-// User story: queue a follow-up, navigate to another session, then
-// return. The queued prompt should still fire once the first turn
-// ends.
+// User story: queue a follow-up on a cockpit session, navigate away,
+// then return. The queued prompt should still fire once the first
+// turn ends.
 //
-// Two cockpit-enabled sessions: A and B. Kick off a long turn on A,
-// queue a follow-up, navigate to B (CockpitView for A unmounts), then
-// back to A. Replay restores the active turn; once it ends, the
-// drained follow-up triggers the second turn.
+// Single cockpit-enabled session: kick off a long turn, queue a
+// follow-up, navigate away to `/settings` (CockpitView unmounts), then
+// back to the session. Replay restores the active turn; once it ends,
+// the drained follow-up triggers the second turn.
+//
+// Earlier iterations of this spec seeded a second cockpit session B
+// just to use as a navigation target. That left both A's and B's
+// supervisor workers running for the full test duration, and on the
+// 4-worker CI runner the extra worker pair was enough to make A's
+// worker idle out and emit a synthetic `Stopped { reattach_idle }`
+// before turn 2 could fire. The same unmount/remount cycle is achieved
+// by navigating to `/settings` instead, with one cockpit worker in
+// flight.
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test as base, expect } from "@playwright/test";
 import {
   spawnAoeServe,
   listSessions,
-  resolveAoeBinary,
+  seedSessionViaAoeAdd,
 } from "../../helpers/aoeServe";
 import {
   enableCockpitAndWait,
@@ -30,10 +38,11 @@ const SCRIPT = {
           sessionUpdate: "agent_message_chunk",
           content: { type: "text", text: "First turn." },
         },
-        // Long enough that the navigation cycle below happens while
-        // turn 1 is still alive. 1s left only a sliver of time under
-        // CI load.
-        { sessionUpdate: "wait_ms", ms: 8_000 },
+        // Long enough that the navigate-away + navigate-back cycle
+        // below completes while turn 1 is still in flight, but well
+        // under any 10s idle watchdog in the cockpit supervisor (see
+        // `RESUME_IDLE_GRACE_DEFAULT` in src/cockpit/acp_client.rs).
+        { sessionUpdate: "wait_ms", ms: 6_000 },
       ],
       stopReason: "end_turn",
     },
@@ -49,43 +58,6 @@ const SCRIPT = {
   ],
 };
 
-function seedTwoSessions(): (seedEnv: {
-  home: string;
-  shimBin: string;
-  env: NodeJS.ProcessEnv;
-}) => void {
-  return ({ home, env }) => {
-    for (const [title, subdir] of [
-      ["queue-nav-a", "project-a"],
-      ["queue-nav-b", "project-b"],
-    ] as const) {
-      const projectDir = join(home, subdir);
-      mkdirSync(projectDir, { recursive: true });
-      spawnSync("git", ["init", "-q"], { cwd: projectDir });
-      spawnSync("git", ["commit", "--allow-empty", "-q", "-m", "init"], {
-        cwd: projectDir,
-        env: {
-          ...env,
-          GIT_AUTHOR_NAME: "t",
-          GIT_AUTHOR_EMAIL: "t@t",
-          GIT_COMMITTER_NAME: "t",
-          GIT_COMMITTER_EMAIL: "t@t",
-        },
-      });
-      const res = spawnSync(
-        resolveAoeBinary(),
-        ["add", projectDir, "-t", title, "-c", "claude"],
-        { env },
-      );
-      if (res.status !== 0) {
-        throw new Error(
-          `aoe add ${title} failed: status=${res.status} stderr=${res.stderr?.toString() ?? "<none>"}`,
-        );
-      }
-    }
-  };
-}
-
 base("queued follow-up fires after navigation away and back", async ({ page }, testInfo) => {
   const scriptDir = mkdtempSync(join(tmpdir(), "aoe-pw-queue-nav-"));
   const scriptPath = join(scriptDir, "script.json");
@@ -97,17 +69,15 @@ base("queued follow-up fires after navigation away and back", async ({ page }, t
     fakeAcpScript: scriptPath,
     workerIndex: testInfo.workerIndex,
     parallelIndex: testInfo.parallelIndex,
-    seedFn: seedTwoSessions(),
+    seedFn: seedSessionViaAoeAdd({ title: "queue-nav-a" }),
   });
 
   try {
     const sessions = await listSessions(serve.baseUrl);
-    const sessionA = sessions.find((s) => s.title === "queue-nav-a")!;
-    const sessionB = sessions.find((s) => s.title === "queue-nav-b")!;
+    const sessionA = sessions.find((s) => s.title === "queue-nav-a");
+    if (!sessionA) throw new Error("seeded session 'queue-nav-a' missing");
 
-    for (const id of [sessionA.id, sessionB.id]) {
-      await enableCockpitAndWait(serve.baseUrl, id);
-    }
+    await enableCockpitAndWait(serve.baseUrl, sessionA.id);
 
     await page.goto(`${serve.baseUrl}/session/${encodeURIComponent(sessionA.id)}`);
     await waitForCockpitView(page);
@@ -119,12 +89,25 @@ base("queued follow-up fires after navigation away and back", async ({ page }, t
     await composerA.press("Enter");
     await expect(page.getByText("First turn.")).toBeVisible({ timeout: 10_000 });
 
+    // Wait for the QueueSendButton to be present before typing /
+    // clicking; the composer only renders it while `turnActive=true`,
+    // and a stale React batch can leave the SendButton up for a few
+    // ms after "First turn." paints.
+    const queueBtn = page.getByRole("button", { name: /Queue follow-up message/i });
+    await expect(queueBtn).toBeVisible({ timeout: 5_000 });
     await composerA.fill("from-after-nav");
-    await page.getByRole("button", { name: /Queue follow-up message/i }).click();
+    await queueBtn.click();
 
-    // Navigate away to B, then back to A.
-    await page.goto(`${serve.baseUrl}/session/${encodeURIComponent(sessionB.id)}`);
-    await waitForCockpitView(page);
+    // Navigate away to settings (no cockpit, no PTY), then back to A.
+    // The CockpitView unmount/remount is what we want to exercise; the
+    // destination only matters insofar as it is not the same session.
+    await page.goto(`${serve.baseUrl}/settings`);
+    await expect(page).toHaveURL(/\/settings/, { timeout: 10_000 });
+    // The Profile combobox is the most reliable Settings-mounted
+    // signal and avoids depending on a particular heading element.
+    await expect(page.locator("select").first()).toBeVisible({
+      timeout: 10_000,
+    });
     await page.goto(`${serve.baseUrl}/session/${encodeURIComponent(sessionA.id)}`);
     await waitForCockpitView(page);
 
