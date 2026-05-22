@@ -18,7 +18,9 @@ base("sidebar session row click navigates to the session route", async ({ page }
 
   try {
     const sessions = await listSessions(serve.baseUrl);
-    const sessionId = sessions[0]!.id;
+    const seeded = sessions.find((s) => s.title === "story-row-click");
+    if (!seeded) throw new Error("seeded session 'story-row-click' missing");
+    const sessionId = seeded.id;
 
     await page.goto(serve.baseUrl);
     const row = page

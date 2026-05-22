@@ -18,17 +18,29 @@ base("add a project from the Projects view", async ({ page }, testInfo) => {
     seedFn: ({ home, env }) => {
       projectPath = join(home, "story-projects-add");
       mkdirSync(projectPath, { recursive: true });
-      spawnSync("git", ["init", "-q"], { cwd: projectPath });
-      spawnSync("git", ["commit", "--allow-empty", "-q", "-m", "init"], {
-        cwd: projectPath,
-        env: {
-          ...env,
-          GIT_AUTHOR_NAME: "t",
-          GIT_AUTHOR_EMAIL: "t@t",
-          GIT_COMMITTER_NAME: "t",
-          GIT_COMMITTER_EMAIL: "t@t",
+      const init = spawnSync("git", ["init", "-q"], { cwd: projectPath });
+      if (init.status !== 0) {
+        throw new Error(`git init failed: ${init.stderr?.toString() ?? ""}`);
+      }
+      const commit = spawnSync(
+        "git",
+        ["commit", "--allow-empty", "-q", "-m", "init"],
+        {
+          cwd: projectPath,
+          env: {
+            ...env,
+            GIT_AUTHOR_NAME: "t",
+            GIT_AUTHOR_EMAIL: "t@t",
+            GIT_COMMITTER_NAME: "t",
+            GIT_COMMITTER_EMAIL: "t@t",
+          },
         },
-      });
+      );
+      if (commit.status !== 0) {
+        throw new Error(
+          `git commit failed: ${commit.stderr?.toString() ?? ""}`,
+        );
+      }
     },
   });
 

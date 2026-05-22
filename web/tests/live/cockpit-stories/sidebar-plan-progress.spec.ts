@@ -55,16 +55,26 @@ base("sidebar PlanProgressMini renders the cockpit plan summary", async ({ page 
 
   try {
     const sessions = await listSessions(serve.baseUrl);
-    const sessionId = sessions[0]!.id;
+    const seeded = sessions.find((s) => s.title === "story-sidebar-plan");
+    if (!seeded) throw new Error("seeded session 'story-sidebar-plan' missing");
+    const sessionId = seeded.id;
 
     // Enable cockpit and send a prompt via REST so the plan update
     // lands without needing the cockpit view mounted.
     await enableCockpitAndWait(serve.baseUrl, sessionId);
-    await fetch(`${serve.baseUrl}/api/sessions/${sessionId}/cockpit/prompt`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: "plan it" }),
-    });
+    const promptRes = await fetch(
+      `${serve.baseUrl}/api/sessions/${sessionId}/cockpit/prompt`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: "plan it" }),
+      },
+    );
+    if (!promptRes.ok) {
+      throw new Error(
+        `cockpit prompt POST failed: ${promptRes.status} ${await promptRes.text()}`,
+      );
+    }
 
     await page.goto(serve.baseUrl);
     // Sidebar polls /api/sessions every ~3s; the plan_summary lands

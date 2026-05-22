@@ -24,7 +24,9 @@ base("ModePicker switches the cockpit mode", async ({ page }, testInfo) => {
 
   try {
     const sessions = await listSessions(serve.baseUrl);
-    const sessionId = sessions[0]!.id;
+    const seeded = sessions.find((s) => s.title === "story-mode-picker");
+    if (!seeded) throw new Error("seeded session 'story-mode-picker' missing");
+    const sessionId = seeded.id;
     await enableCockpitAndWait(serve.baseUrl, sessionId);
     // Explicit spawn so the supervisor has an active ACP session
     // attached before setMode dispatches. Without this, /cockpit/mode

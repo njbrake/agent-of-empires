@@ -22,7 +22,9 @@ base("BasePicker opens the branch suggestions listbox", async ({ page }, testInf
 
   try {
     const sessions = await listSessions(serve.baseUrl);
-    const sessionId = sessions[0]!.id;
+    const seeded = sessions.find((s) => s.title === "story-diff-base");
+    if (!seeded) throw new Error("seeded session 'story-diff-base' missing");
+    const sessionId = seeded.id;
     await page.goto(`${serve.baseUrl}/session/${encodeURIComponent(sessionId)}`);
 
     const trigger = page.getByRole("button", {

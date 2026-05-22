@@ -20,7 +20,9 @@ base("mobile toolbar Ctrl+C button sends ETX", async ({ page }, testInfo) => {
 
   try {
     const sessions = await listSessions(serve.baseUrl);
-    const sessionId = sessions[0]!.id;
+    const seeded = sessions.find((s) => s.title === "story-mobile-ctrl-c");
+    if (!seeded) throw new Error("seeded session 'story-mobile-ctrl-c' missing");
+    const sessionId = seeded.id;
 
     await page.addInitScript(() => {
       const w = window as unknown as { __WS_SENT__: string[] };

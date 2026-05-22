@@ -32,6 +32,10 @@ base("sidebar width persists across reload after dragging the handle", async ({ 
     const y = box.y + box.height / 2;
     const targetX = startX + 60;
 
+    const storedBefore = await page.evaluate(() =>
+      localStorage.getItem("aoe-sidebar-width"),
+    );
+
     await page.mouse.move(startX, y);
     await page.mouse.down();
     await page.mouse.move(targetX, y, { steps: 5 });
@@ -43,6 +47,9 @@ base("sidebar width persists across reload after dragging the handle", async ({ 
     expect(storedAfter).not.toBeNull();
     const widthAfter = parseFloat(storedAfter!);
     expect(widthAfter).toBeGreaterThan(0);
+    // Drag must change the persisted width, not just leave the
+    // pre-existing value alone.
+    expect(storedAfter).not.toBe(storedBefore);
 
     await page.reload();
     const storedReloaded = await page.evaluate(() =>

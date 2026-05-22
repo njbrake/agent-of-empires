@@ -24,7 +24,9 @@ base("composer draft survives a full reload", async ({ page }, testInfo) => {
 
   try {
     const sessions = await listSessions(serve.baseUrl);
-    const sessionId = sessions[0]!.id;
+    const seeded = sessions.find((s) => s.title === "story-draft-reload");
+    if (!seeded) throw new Error("seeded session 'story-draft-reload' missing");
+    const sessionId = seeded.id;
 
     await enableCockpitAndWait(serve.baseUrl, sessionId);
 

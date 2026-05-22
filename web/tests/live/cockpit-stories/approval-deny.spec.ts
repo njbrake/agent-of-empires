@@ -55,7 +55,9 @@ base("ApprovalCard Deny resolves and the turn ends", async ({ page }, testInfo) 
 
   try {
     const sessions = await listSessions(serve.baseUrl);
-    const sessionId = sessions[0]!.id;
+    const seeded = sessions.find((s) => s.title === "story-deny");
+    if (!seeded) throw new Error("seeded session 'story-deny' missing");
+    const sessionId = seeded.id;
 
     await enableCockpitAndWait(serve.baseUrl, sessionId);
 

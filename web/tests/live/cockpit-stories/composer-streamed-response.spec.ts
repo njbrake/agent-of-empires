@@ -54,7 +54,9 @@ base("multi-chunk agent response assembles in the transcript", async ({ page }, 
 
   try {
     const sessions = await listSessions(serve.baseUrl);
-    const sessionId = sessions[0]!.id;
+    const seeded = sessions.find((s) => s.title === "story-stream");
+    if (!seeded) throw new Error("seeded session 'story-stream' missing");
+    const sessionId = seeded.id;
 
     await enableCockpitAndWait(serve.baseUrl, sessionId);
 

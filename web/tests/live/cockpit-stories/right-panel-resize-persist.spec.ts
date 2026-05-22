@@ -22,7 +22,9 @@ base("right panel width persists across reload after dragging the handle", async
 
   try {
     const sessions = await listSessions(serve.baseUrl);
-    const sessionId = sessions[0]!.id;
+    const seeded = sessions.find((s) => s.title === "story-right-resize");
+    if (!seeded) throw new Error("seeded session 'story-right-resize' missing");
+    const sessionId = seeded.id;
     await page.goto(`${serve.baseUrl}/session/${encodeURIComponent(sessionId)}`);
 
     const handle = page.locator('[data-testid="content-split-resize-handle"]');
@@ -35,6 +37,10 @@ base("right panel width persists across reload after dragging the handle", async
     const y = box.y + box.height / 2;
     const targetX = startX - 80;
 
+    const storedBefore = await page.evaluate(() =>
+      localStorage.getItem("aoe-split-ratio"),
+    );
+
     await page.mouse.move(startX, y);
     await page.mouse.down();
     await page.mouse.move(targetX, y, { steps: 5 });
@@ -46,6 +52,8 @@ base("right panel width persists across reload after dragging the handle", async
     expect(storedAfter).not.toBeNull();
     const widthAfter = parseInt(storedAfter!, 10);
     expect(widthAfter).toBeGreaterThanOrEqual(280);
+    // Drag must change the persisted ratio.
+    expect(storedAfter).not.toBe(storedBefore);
 
     await page.reload();
     const storedReloaded = await page.evaluate(() =>

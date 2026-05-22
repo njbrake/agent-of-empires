@@ -23,7 +23,9 @@ base("composer toolbar inserts @ and / into the textarea", async ({ page }, test
 
   try {
     const sessions = await listSessions(serve.baseUrl);
-    const sessionId = sessions[0]!.id;
+    const seeded = sessions.find((s) => s.title === "story-composer-toolbar");
+    if (!seeded) throw new Error("seeded session 'story-composer-toolbar' missing");
+    const sessionId = seeded.id;
     await enableCockpitAndWait(serve.baseUrl, sessionId);
 
     await page.goto(`${serve.baseUrl}/session/${encodeURIComponent(sessionId)}`);

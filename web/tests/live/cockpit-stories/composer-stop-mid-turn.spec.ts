@@ -52,7 +52,9 @@ base("Stop button cancels a running turn", async ({ page }, testInfo) => {
 
   try {
     const sessions = await listSessions(serve.baseUrl);
-    const sessionId = sessions[0]!.id;
+    const seeded = sessions.find((s) => s.title === "story-stop");
+    if (!seeded) throw new Error("seeded session 'story-stop' missing");
+    const sessionId = seeded.id;
 
     await enableCockpitAndWait(serve.baseUrl, sessionId);
 

@@ -49,7 +49,9 @@ base("Stop button cancels a turn during a tool call", async ({ page }, testInfo)
 
   try {
     const sessions = await listSessions(serve.baseUrl);
-    const sessionId = sessions[0]!.id;
+    const seeded = sessions.find((s) => s.title === "story-stop-tool");
+    if (!seeded) throw new Error("seeded session 'story-stop-tool' missing");
+    const sessionId = seeded.id;
     await enableCockpitAndWait(serve.baseUrl, sessionId);
 
     await page.goto(`${serve.baseUrl}/session/${encodeURIComponent(sessionId)}`);

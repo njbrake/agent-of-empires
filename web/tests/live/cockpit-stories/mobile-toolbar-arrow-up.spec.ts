@@ -24,7 +24,9 @@ base("mobile toolbar Arrow up sends ANSI up-arrow", async ({ page }, testInfo) =
 
   try {
     const sessions = await listSessions(serve.baseUrl);
-    const sessionId = sessions[0]!.id;
+    const seeded = sessions.find((s) => s.title === "story-mobile-arrow-up");
+    if (!seeded) throw new Error("seeded session 'story-mobile-arrow-up' missing");
+    const sessionId = seeded.id;
 
     await page.addInitScript(() => {
       const w = window as unknown as { __WS_SENT__: string[] };

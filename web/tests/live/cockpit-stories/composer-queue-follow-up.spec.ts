@@ -26,7 +26,9 @@ const QUEUE_SCRIPT = {
           sessionUpdate: "agent_message_chunk",
           content: { type: "text", text: "First turn response." },
         },
-        { sessionUpdate: "wait_ms", ms: 600 },
+        // Long enough that the queued follow-up always lands before
+        // turn 1 ends on slow CI runners.
+        { sessionUpdate: "wait_ms", ms: 2_000 },
       ],
       stopReason: "end_turn",
     },
@@ -58,7 +60,9 @@ base("queued follow-up fires when first turn ends", async ({ page }, testInfo) =
 
   try {
     const sessions = await listSessions(serve.baseUrl);
-    const sessionId = sessions[0]!.id;
+    const seeded = sessions.find((s) => s.title === "story-queue");
+    if (!seeded) throw new Error("seeded session 'story-queue' missing");
+    const sessionId = seeded.id;
 
     await enableCockpitAndWait(serve.baseUrl, sessionId);
 

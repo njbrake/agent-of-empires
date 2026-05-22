@@ -19,7 +19,9 @@ base("mobile toolbar is hidden on a desktop viewport", async ({ page }, testInfo
   try {
     await page.setViewportSize({ width: 1280, height: 720 });
     const sessions = await listSessions(serve.baseUrl);
-    const sessionId = sessions[0]!.id;
+    const seeded = sessions.find((s) => s.title === "story-toolbar-desktop");
+    if (!seeded) throw new Error("seeded session 'story-toolbar-desktop' missing");
+    const sessionId = seeded.id;
 
     await page.goto(`${serve.baseUrl}/session/${encodeURIComponent(sessionId)}`);
     await expect(page).toHaveURL(new RegExp(`/session/${sessionId}`), {

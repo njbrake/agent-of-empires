@@ -14,7 +14,10 @@ import {
   listSessions,
   resolveAoeBinary,
 } from "../../helpers/aoeServe";
-import { waitForCockpitReady, waitForCockpitView } from "../../helpers/cockpit";
+import {
+  enableCockpitAndWait,
+  waitForCockpitView,
+} from "../../helpers/cockpit";
 
 function seedTwoSessions(): (seedEnv: {
   home: string;
@@ -68,10 +71,7 @@ base("composer draft survives a session switch", async ({ page }, testInfo) => {
     const sessionB = sessions.find((s) => s.title === "story-switch-b")!;
 
     for (const id of [sessionA.id, sessionB.id]) {
-      await fetch(`${serve.baseUrl}/api/sessions/${id}/cockpit/enable`, {
-        method: "POST",
-      });
-      await waitForCockpitReady(serve.baseUrl, id);
+      await enableCockpitAndWait(serve.baseUrl, id);
     }
 
     await page.goto(`${serve.baseUrl}/session/${encodeURIComponent(sessionA.id)}`);

@@ -69,14 +69,16 @@ base("comment on a diff hunk persists in the comments banner", async ({ page }, 
 
     // "+" gutter buttons live behind `opacity-0 group-hover:opacity-100`
     // on each diff line, so the click target only paints on hover.
-    // Find the first one by aria-label pattern, scroll it into view,
-    // then dispatch a real click via JS so the visibility gate doesn't
-    // race.
+    // Hover the gutter cell first to reveal the button, then click.
     const addBtn = page.getByRole("button", {
       name: /Add comment on .* line/i,
     }).first();
     await expect(addBtn).toBeAttached({ timeout: 15_000 });
-    await addBtn.evaluate((el) => (el as HTMLButtonElement).click());
+    // Hover the surrounding diff line to trigger group-hover.
+    const lineRow = addBtn.locator("xpath=ancestor::div[contains(@class,'group')][1]");
+    await lineRow.hover();
+    await expect(addBtn).toBeVisible({ timeout: 5_000 });
+    await addBtn.click();
 
     const composer = page.getByPlaceholder(/Leave a comment/i);
     await expect(composer).toBeVisible({ timeout: 5_000 });

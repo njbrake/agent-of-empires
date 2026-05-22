@@ -20,7 +20,9 @@ base("mobile toolbar Tab sends \\t", async ({ page }, testInfo) => {
 
   try {
     const sessions = await listSessions(serve.baseUrl);
-    const sessionId = sessions[0]!.id;
+    const seeded = sessions.find((s) => s.title === "story-mobile-tab");
+    if (!seeded) throw new Error("seeded session 'story-mobile-tab' missing");
+    const sessionId = seeded.id;
 
     await page.addInitScript(() => {
       const w = window as unknown as { __WS_SENT__: string[] };

@@ -58,7 +58,9 @@ base("Stop button cancels a turn during a sub-agent task", async ({ page }, test
 
   try {
     const sessions = await listSessions(serve.baseUrl);
-    const sessionId = sessions[0]!.id;
+    const seeded = sessions.find((s) => s.title === "story-stop-subagent");
+    if (!seeded) throw new Error("seeded session 'story-stop-subagent' missing");
+    const sessionId = seeded.id;
     await enableCockpitAndWait(serve.baseUrl, sessionId);
 
     await page.goto(`${serve.baseUrl}/session/${encodeURIComponent(sessionId)}`);

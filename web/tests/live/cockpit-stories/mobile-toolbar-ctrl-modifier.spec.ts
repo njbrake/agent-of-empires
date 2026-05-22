@@ -25,7 +25,9 @@ base("mobile toolbar Ctrl button latches and unlatches", async ({ page }, testIn
 
   try {
     const sessions = await listSessions(serve.baseUrl);
-    const sessionId = sessions[0]!.id;
+    const seeded = sessions.find((s) => s.title === "story-mobile-ctrl");
+    if (!seeded) throw new Error("seeded session 'story-mobile-ctrl' missing");
+    const sessionId = seeded.id;
 
     await page.goto(`${serve.baseUrl}/session/${encodeURIComponent(sessionId)}`);
 

@@ -24,7 +24,9 @@ base("send message via Enter renders agent response", async ({ page }, testInfo)
 
   try {
     const sessions = await listSessions(serve.baseUrl);
-    const sessionId = sessions[0]!.id;
+    const seeded = sessions.find((s) => s.title === "story-send-enter");
+    if (!seeded) throw new Error("seeded session 'story-send-enter' missing");
+    const sessionId = seeded.id;
 
     await enableCockpitAndWait(serve.baseUrl, sessionId);
 

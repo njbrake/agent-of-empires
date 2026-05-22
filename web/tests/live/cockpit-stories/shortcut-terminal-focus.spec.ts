@@ -23,7 +23,9 @@ base("Cmd/Ctrl+` activates the paired terminal panel", async ({ page }, testInfo
 
   try {
     const sessions = await listSessions(serve.baseUrl);
-    const sessionId = sessions[0]!.id;
+    const seeded = sessions.find((s) => s.title === "story-terminal-focus");
+    if (!seeded) throw new Error("seeded session 'story-terminal-focus' missing");
+    const sessionId = seeded.id;
     await page.goto(`${serve.baseUrl}/session/${encodeURIComponent(sessionId)}`);
 
     const handle = page.locator('[data-testid="content-split-resize-handle"]');

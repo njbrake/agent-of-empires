@@ -60,7 +60,9 @@ base("ApprovalCard Allow resolves and the turn continues", async ({ page }, test
 
   try {
     const sessions = await listSessions(serve.baseUrl);
-    const sessionId = sessions[0]!.id;
+    const seeded = sessions.find((s) => s.title === "story-allow");
+    if (!seeded) throw new Error("seeded session 'story-allow' missing");
+    const sessionId = seeded.id;
 
     await enableCockpitAndWait(serve.baseUrl, sessionId);
 
