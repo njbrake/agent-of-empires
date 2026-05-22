@@ -334,7 +334,11 @@ function writeFakeClaudeShim(binDir: string): void {
   chmodSync(path, 0o755);
 }
 
-function writeFakeAcpShim(binDir: string, fakeAcpScript: string | undefined): void {
+function writeFakeAcpShim(
+  binDir: string,
+  fakeAcpScript: string | undefined,
+  fakeAcpDebugLog: string,
+): void {
   // The cockpit supervisor resolves the agent through `AgentRegistry`
   // (src/cockpit/agent_registry.rs): the `claude` tool key maps to
   // command `claude-agent-acp`, not `claude`. `resolve_agent_command`
@@ -342,11 +346,20 @@ function writeFakeAcpShim(binDir: string, fakeAcpScript: string | undefined): vo
   // entry in the shim dir the supervisor falls through to the real
   // installed adapter, which then surfaces "Authentication required"
   // on the first prompt. Shim every name a cockpit test can land on.
+  //
+  // The shim also re-exports diagnostic env vars (FAKE_ACP_SCRIPT,
+  // FAKE_ACP_DEBUG_LOG) so they reach the node child even when the
+  // daemon -> runner spawn chain does not propagate every env from
+  // the parent (observed in CI: seedEnv vars set on `aoe serve` do
+  // not all reach the runner-spawned fake-ACP child, so relying on
+  // process.env in fakeAcpAgent.mjs alone is unreliable).
   const fakeAgentJs = resolve(__dirname, "fakeAcpAgent.mjs");
-  const scriptLine = fakeAcpScript
-    ? `export FAKE_ACP_SCRIPT=${JSON.stringify(fakeAcpScript)}\n`
-    : "";
-  const script = `#!/bin/bash\n${scriptLine}exec node ${JSON.stringify(fakeAgentJs)} "$@"\n`;
+  const scriptLines: string[] = [];
+  if (fakeAcpScript) {
+    scriptLines.push(`export FAKE_ACP_SCRIPT=${JSON.stringify(fakeAcpScript)}`);
+  }
+  scriptLines.push(`export FAKE_ACP_DEBUG_LOG=${JSON.stringify(fakeAcpDebugLog)}`);
+  const script = `#!/bin/bash\n${scriptLines.join("\n")}\nexec node ${JSON.stringify(fakeAgentJs)} "$@"\n`;
   for (const name of ["claude", "claude-agent-acp", "aoe-agent"]) {
     const path = join(binDir, name);
     writeFileSync(path, script);
@@ -440,8 +453,9 @@ export async function spawnAoeServe(opts: SpawnOptions): Promise<ServeHandle> {
   for (const dir of [xdg, tmp, tmuxTmp, shimBin]) {
     mkdirSync(dir, { recursive: true, mode: 0o700 });
   }
+  const fakeAcpDebugLog = join(home, "fake-acp.log");
   if (opts.cockpit) {
-    writeFakeAcpShim(shimBin, opts.fakeAcpScript);
+    writeFakeAcpShim(shimBin, opts.fakeAcpScript, fakeAcpDebugLog);
   } else {
     writeFakeClaudeShim(shimBin);
   }
@@ -465,19 +479,19 @@ export async function spawnAoeServe(opts: SpawnOptions): Promise<ServeHandle> {
     // not appear within 10s` (deterministic on slower local + CI
     // machines, never on hot caches). Honored only in debug builds.
     AOE_COCKPIT_RUNNER_SOCKET_TIMEOUT_MS: "60000",
-    // Always-on fake-ACP debug log so a "Cockpit worker stopped" mid-
-    // turn (CI flake symptom in #1383) can be diagnosed post-mortem
-    // without re-running. The path lives under the test's HOME so it
-    // gets cleaned up with the rest of the tree on serve.stop().
-    // cockpit.ts#attachServeDiagnostics reads this path on test failure.
-    FAKE_ACP_DEBUG_LOG: join(home, "fake-acp.log"),
+    // FAKE_ACP_DEBUG_LOG is *also* re-exported by the shim itself
+    // (see writeFakeAcpShim) because the daemon -> runner -> node
+    // spawn chain on CI Linux did not propagate this env var from
+    // process.env alone. Keeping it on seedEnv too is harmless and
+    // covers any future caller that bypasses the shim path.
+    FAKE_ACP_DEBUG_LOG: fakeAcpDebugLog,
     // Cockpit supervisor + acp_client at debug so the daemon's
     // debug.log captures the "why" of a mid-turn worker death (reap
-    // reason, drain task exit, EPIPE on stdin/stdout, etc.). The rest
-    // of the tree stays at info to keep the log readable.
-    AOE_LOG_LEVEL:
-      process.env.AOE_LOG_LEVEL ??
-      "info,agent_of_empires::cockpit=debug",
+    // reason, drain task exit, EPIPE on stdin/stdout, etc.). The
+    // tracing macros use a target-style namespace (e.g.
+    // `target: "cockpit.supervisor"`), not the Rust module path, so
+    // the EnvFilter directive must match the target prefix.
+    AOE_LOG_LEVEL: process.env.AOE_LOG_LEVEL ?? "info,cockpit=debug",
   };
 
   if (authMode === "token") {
