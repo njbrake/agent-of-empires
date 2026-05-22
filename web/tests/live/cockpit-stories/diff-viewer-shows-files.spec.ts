@@ -51,7 +51,9 @@ base("diff panel renders the changed file row", async ({ page }, testInfo) => {
 
   try {
     const sessions = await listSessions(serve.baseUrl);
-    const sessionId = sessions[0]!.id;
+    const seeded = sessions.find((s) => s.title === "story-diff-files");
+    if (!seeded) throw new Error("seeded session 'story-diff-files' missing");
+    const sessionId = seeded.id;
 
     await page.goto(`${serve.baseUrl}/session/${encodeURIComponent(sessionId)}`);
     await expect(page).toHaveURL(new RegExp(`/session/${sessionId}`), {

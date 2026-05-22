@@ -60,7 +60,9 @@ base("DeleteSessionDialog can opt into deleting the worktree", async ({ page }, 
 
   try {
     const sessions = await listSessions(serve.baseUrl);
-    const sessionId = sessions[0]!.id;
+    const seeded = sessions.find((s) => s.title === "story-delete-wt");
+    if (!seeded) throw new Error("seeded session 'story-delete-wt' missing");
+    const sessionId = seeded.id;
 
     await page.goto(serve.baseUrl);
     const row = page.locator('[data-testid="sidebar-session-row"]');

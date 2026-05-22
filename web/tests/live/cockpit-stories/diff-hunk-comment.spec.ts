@@ -55,7 +55,9 @@ base("comment on a diff hunk persists in the comments banner", async ({ page }, 
 
   try {
     const sessions = await listSessions(serve.baseUrl);
-    const sessionId = sessions[0]!.id;
+    const seeded = sessions.find((s) => s.title === "story-hunk-comment");
+    if (!seeded) throw new Error("seeded session 'story-hunk-comment' missing");
+    const sessionId = seeded.id;
 
     await enableCockpitAndWait(serve.baseUrl, sessionId);
 

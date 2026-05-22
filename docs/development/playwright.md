@@ -123,7 +123,7 @@ Pattern:
 ```ts
 import { test as base, expect } from "@playwright/test";
 import { spawnAoeServe, listSessions, seedSessionViaAoeAdd } from "../../helpers/aoeServe";
-import { waitForCockpitReady, waitForCockpitView } from "../../helpers/cockpit";
+import { enableCockpitAndWait, waitForCockpitView } from "../../helpers/cockpit";
 
 base("send message via Enter renders agent chunk", async ({ page }, testInfo) => {
   const serve = await spawnAoeServe({
@@ -134,11 +134,11 @@ base("send message via Enter renders agent chunk", async ({ page }, testInfo) =>
     seedFn: seedSessionViaAoeAdd({ title: "story" }),
   });
   try {
-    const [{ id: sessionId }] = await listSessions(serve.baseUrl);
-    await fetch(`${serve.baseUrl}/api/sessions/${sessionId}/cockpit/enable`, {
-      method: "POST",
-    });
-    await waitForCockpitReady(serve.baseUrl, sessionId);
+    const sessions = await listSessions(serve.baseUrl);
+    const seeded = sessions.find((s) => s.title === "story");
+    if (!seeded) throw new Error("seeded session 'story' missing");
+    const sessionId = seeded.id;
+    await enableCockpitAndWait(serve.baseUrl, sessionId);
     await page.goto(`${serve.baseUrl}/session/${sessionId}`);
     await waitForCockpitView(page);
     const composer = page.getByRole("textbox", { name: /Send a message/i });
@@ -151,9 +151,13 @@ base("send message via Enter renders agent chunk", async ({ page }, testInfo) =>
 });
 ```
 
-`waitForCockpitReady` (server handshake) and `waitForCockpitView`
-(React tree mounted) together ensure both sides are ready before any
-click or keystroke.
+`enableCockpitAndWait` posts to `/cockpit/enable`, asserts the response
+was 2xx (so a 4xx/5xx surfaces immediately rather than as a noisy
+readiness timeout), and then waits for the supervisor handshake.
+`waitForCockpitView` waits for the React tree to mount the composer.
+Together they ensure both sides are ready before any click or keystroke.
+Look up the seeded session by `title` rather than `sessions[0]` so the
+spec stays deterministic if seeding adds more rows later.
 
 Custom per-spec scripts go through a temp file (see
 `cockpit-approval.spec.ts` for the canonical setup); the `serveCockpit`
