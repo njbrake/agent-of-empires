@@ -912,6 +912,46 @@ pub async fn cockpit_set_mode(
     }
 }
 
+#[derive(Debug, Deserialize)]
+pub struct SetConfigOptionRequest {
+    pub config_id: String,
+    pub value: String,
+}
+
+/// Set a per-session selector (model, reasoning effort, etc.) via ACP
+/// `session/set_config_option`. The cockpit treats every category
+/// through this one endpoint; rejection surfaces as a non-blocking
+/// `Event::ConfigOptionSwitchFailed` notice on the broadcast bus. See
+/// #1403.
+pub async fn cockpit_set_config_option(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    req: Result<Json<SetConfigOptionRequest>, axum::extract::rejection::JsonRejection>,
+) -> impl IntoResponse {
+    if let Some(resp) = read_only_block(&state) {
+        return resp;
+    }
+    let Json(req) = match req {
+        Ok(j) => j,
+        Err(rej) => return rej.into_response(),
+    };
+    match state
+        .cockpit_supervisor
+        .set_config_option(&id, &req.config_id, &req.value)
+        .await
+    {
+        Ok(()) => StatusCode::ACCEPTED.into_response(),
+        Err(SupervisorError::UnknownSession(_)) => {
+            (StatusCode::NOT_FOUND, "session has no running cockpit").into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("set_config_option failed: {e}"),
+        )
+            .into_response(),
+    }
+}
+
 pub async fn resolve_approval(
     State(state): State<Arc<AppState>>,
     Path((id, nonce_str)): Path<(String, String)>,

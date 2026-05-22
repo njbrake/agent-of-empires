@@ -23,8 +23,9 @@ mod system;
 #[cfg(feature = "serve")]
 pub use cockpit::{
     cockpit_cancel, cockpit_context_primer, cockpit_disable, cockpit_enable, cockpit_files,
-    cockpit_force_end_turn, cockpit_prompt, cockpit_replay, cockpit_set_mode, list_cockpit_agents,
-    resolve_approval, set_cockpit_master, shutdown_cockpit, spawn_cockpit, switch_cockpit_agent,
+    cockpit_force_end_turn, cockpit_prompt, cockpit_replay, cockpit_set_config_option,
+    cockpit_set_mode, list_cockpit_agents, resolve_approval, set_cockpit_master, shutdown_cockpit,
+    spawn_cockpit, switch_cockpit_agent,
 };
 
 #[cfg(feature = "serve")]
@@ -224,6 +225,7 @@ mod tests {
                     "cockpit_enable",
                     "cockpit_disable",
                     "cockpit_set_mode",
+                    "cockpit_set_config_option",
                     "resolve_approval",
                     "set_cockpit_master",
                 ],
@@ -350,6 +352,7 @@ mod tests {
                     "cockpit_enable",
                     "cockpit_disable",
                     "cockpit_set_mode",
+                    "cockpit_set_config_option",
                     "resolve_approval",
                     "set_cockpit_master",
                 ],
