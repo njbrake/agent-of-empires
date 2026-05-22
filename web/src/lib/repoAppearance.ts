@@ -17,45 +17,13 @@ export type RepoAppearanceUpdate = {
 export const REPO_COLOR_OPTIONS: Array<{
   id: RepoColor;
   label: string;
-  swatchClass: string;
-  headerClass: string;
 }> = [
-  {
-    id: "amber",
-    label: "Amber",
-    swatchClass: "bg-amber-500",
-    headerClass: "bg-amber-950/30 hover:bg-amber-900/30",
-  },
-  {
-    id: "teal",
-    label: "Teal",
-    swatchClass: "bg-teal-500",
-    headerClass: "bg-teal-950/30 hover:bg-teal-900/30",
-  },
-  {
-    id: "sky",
-    label: "Sky",
-    swatchClass: "bg-sky-500",
-    headerClass: "bg-sky-950/30 hover:bg-sky-900/30",
-  },
-  {
-    id: "violet",
-    label: "Violet",
-    swatchClass: "bg-violet-500",
-    headerClass: "bg-violet-950/30 hover:bg-violet-900/30",
-  },
-  {
-    id: "rose",
-    label: "Rose",
-    swatchClass: "bg-rose-500",
-    headerClass: "bg-rose-950/30 hover:bg-rose-900/30",
-  },
-  {
-    id: "slate",
-    label: "Slate",
-    swatchClass: "bg-slate-500",
-    headerClass: "bg-slate-700/30 hover:bg-slate-700/40",
-  },
+  { id: "amber", label: "Amber" },
+  { id: "teal", label: "Teal" },
+  { id: "sky", label: "Sky" },
+  { id: "violet", label: "Violet" },
+  { id: "rose", label: "Rose" },
+  { id: "slate", label: "Slate" },
 ];
 
 const validColors = new Set(REPO_COLOR_OPTIONS.map((option) => option.id));

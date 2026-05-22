@@ -179,7 +179,7 @@ test.describe("Sidebar multi-session (#956)", () => {
 
     await projectHeader.click({ button: "right" });
     await page.locator("[data-testid='sidebar-group-color-amber']").click();
-    await expect(projectHeader).toHaveClass(/bg-amber-950\/30/);
+    await expect(projectHeader).toHaveAttribute("style", /color-mix/);
 
     const stored = await page.evaluate(() =>
       window.localStorage.getItem("aoe-repo-appearance-v1"),
@@ -193,6 +193,32 @@ test.describe("Sidebar multi-session (#956)", () => {
       '[data-testid="sidebar-group-header"][data-group-id="/tmp/agent-of-empires"]',
     );
     await expect(restoredHeader.getByText("Client Alpha")).toBeVisible();
-    await expect(restoredHeader).toHaveClass(/bg-amber-950\/30/);
+    await expect(restoredHeader).toHaveAttribute("style", /color-mix/);
+  });
+
+  test("project group appearance menu opens from keyboard", async ({
+    page,
+  }) => {
+    await mockApis(page, [
+      {
+        id: "sess-a",
+        title: "Ethiopians",
+        project_path: "/tmp/agent-of-empires",
+        branch: null,
+      },
+    ]);
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await page.goto("/");
+    await expect(page.locator("header")).toBeVisible();
+
+    const projectHeader = page.locator(
+      '[data-testid="sidebar-group-header"][data-group-id="/tmp/agent-of-empires"]',
+    );
+    await projectHeader.focus();
+    await page.keyboard.press("Shift+F10");
+
+    const menu = page.locator("[data-testid='sidebar-group-context-menu']");
+    await expect(menu).toBeVisible();
+    await expect(menu.locator("[data-testid='sidebar-group-context-menu-rename']")).toBeVisible();
   });
 });

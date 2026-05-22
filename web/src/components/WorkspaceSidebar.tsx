@@ -39,6 +39,7 @@ import { safeGetItem, safeSetItem } from "../lib/safeStorage";
 import {
   REPO_COLOR_OPTIONS,
   type RepoAppearanceUpdate,
+  type RepoColor,
 } from "../lib/repoAppearance";
 import {
   STATUS_DOT_CLASS,
@@ -259,6 +260,27 @@ function useDragSuppressRef(): MutableRefObject<number> {
     throw new Error("DragSuppressContext used outside provider");
   }
   return ref;
+}
+
+const REPO_COLOR_TOKENS: Record<RepoColor, string> = {
+  amber: "--color-status-waiting",
+  teal: "--color-terminal-active",
+  sky: "--color-sandbox",
+  violet: "--color-diff-header",
+  rose: "--color-status-error",
+  slate: "--color-surface-700",
+};
+
+function repoColorStyle(color: RepoColor | null): React.CSSProperties | undefined {
+  if (!color) return undefined;
+  const token = REPO_COLOR_TOKENS[color];
+  return {
+    backgroundColor: `color-mix(in srgb, var(${token}) 14%, transparent)`,
+  };
+}
+
+function repoSwatchStyle(color: RepoColor): React.CSSProperties {
+  return { backgroundColor: `var(${REPO_COLOR_TOKENS[color]})` };
 }
 
 function useSuppressClickAfterDrag(ref: MutableRefObject<number>) {
@@ -757,9 +779,27 @@ const RepoGroupHeader = memo(function RepoGroupHeader({
     STATUS_DOT_CLASS[
       group.status === "active" ? "Running" : "Idle"
     ] ?? "bg-status-idle";
-  const colorClass =
-    REPO_COLOR_OPTIONS.find((option) => option.id === group.color)?.headerClass ??
-    "hover:bg-surface-800/50";
+  const headerStyle = repoColorStyle(group.color);
+  const headerHoverClass = group.color ? "" : "hover:bg-surface-800/50";
+
+  const openMenuAt = useCallback((x: number, y: number) => {
+    closeOtherContextMenus();
+    setContextMenu({ x, y });
+  }, []);
+
+  const handleHeaderKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (
+      e.key !== "Enter" &&
+      e.key !== " " &&
+      e.key !== "ContextMenu" &&
+      !(e.shiftKey && e.key === "F10")
+    ) {
+      return;
+    }
+    e.preventDefault();
+    const rect = e.currentTarget.getBoundingClientRect();
+    openMenuAt(rect.left + 12, rect.bottom + 4);
+  };
 
   useEffect(() => {
     if (renaming) renameRef.current?.select();
@@ -796,9 +836,10 @@ const RepoGroupHeader = memo(function RepoGroupHeader({
       <div
         data-testid="sidebar-group-header"
         data-group-id={group.id}
-        className={`flex items-center gap-2 px-3 py-2 transition-colors duration-75 text-text-secondary ${colorClass} ${
+        className={`flex items-center gap-2 px-3 py-2 transition-colors duration-75 text-text-secondary ${headerHoverClass} ${
           hasActiveChild ? "border-l-2 border-brand-600" : ""
         }`}
+        style={headerStyle}
       >
         <span className={`w-2 h-2 rounded-full shrink-0 ${dotClass}`} />
         <input
@@ -823,14 +864,18 @@ const RepoGroupHeader = memo(function RepoGroupHeader({
       <div
         data-testid="sidebar-group-header"
         data-group-id={group.id}
+        tabIndex={0}
+        aria-haspopup="menu"
+        aria-label={`Project actions for ${group.displayName}`}
         onContextMenu={(e) => {
           e.preventDefault();
-          closeOtherContextMenus();
-          setContextMenu({ x: e.clientX, y: e.clientY });
+          openMenuAt(e.clientX, e.clientY);
         }}
-        className={`flex items-center gap-2 px-3 py-2 transition-colors duration-75 text-text-secondary ${colorClass} ${
+        onKeyDown={handleHeaderKeyDown}
+        className={`flex items-center gap-2 px-3 py-2 transition-colors duration-75 text-text-secondary focus:outline-none focus:ring-2 focus:ring-brand-600 ${headerHoverClass} ${
           hasActiveChild ? "border-l-2 border-brand-600" : ""
         }`}
+        style={headerStyle}
       >
         <span className={`w-2 h-2 rounded-full shrink-0 ${dotClass}`} />
         <button
@@ -912,9 +957,10 @@ const RepoGroupHeader = memo(function RepoGroupHeader({
                 }}
                 data-testid={`sidebar-group-color-${option.id}`}
                 aria-label={`Set ${option.label} background`}
-                className={`h-7 rounded-md border cursor-pointer transition-transform hover:scale-105 ${
+                className={`h-7 rounded-md border cursor-pointer transition-colors ${
                   group.color === option.id ? "border-text-primary" : "border-surface-700"
-                } ${option.swatchClass}`}
+                }`}
+                style={repoSwatchStyle(option.id)}
               />
             ))}
             <button
