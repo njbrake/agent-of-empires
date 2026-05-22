@@ -368,7 +368,7 @@ async fn start_session(profile: &str, args: SessionIdArgs) -> Result<()> {
     // any concurrent mutation to OTHER sessions during phase 2 is preserved.
     storage.update(|instances, _groups| {
         if let Some(stored) = instances.iter_mut().find(|i| i.id == id) {
-            *stored = working;
+            stored.merge_post_start(&working);
         }
         Ok(())
     })?;
@@ -523,11 +523,12 @@ async fn restart_all_sessions(profile: &str, parallel: usize) -> Result<()> {
 
     let mut succeeded: Vec<(String, Option<String>)> = Vec::new();
     let mut failed: Vec<(String, String)> = Vec::new();
-    let mut restarted: Vec<crate::session::Instance> = Vec::new();
+    let mut restarted: Vec<(crate::session::Instance, bool)> = Vec::new();
     while let Some(joined) = join_set.join_next().await {
         let (title, inst_opt, result) = joined.expect("JoinSet shouldn't panic on join itself");
+        let clear_stale_sid = matches!(result, Ok(StartOutcome::Restarted { .. }));
         if let Some(inst) = inst_opt {
-            restarted.push(inst);
+            restarted.push((inst, clear_stale_sid));
         }
         match result {
             Ok(StartOutcome::Restarted { stale_sid }) => succeeded.push((title, Some(stale_sid))),
@@ -542,9 +543,9 @@ async fn restart_all_sessions(profile: &str, parallel: usize) -> Result<()> {
     // poller, sibling CLI invocations, ...) are preserved because the
     // closure receives the latest disk state.
     storage.update(|instances, _groups| {
-        for restarted_inst in restarted {
+        for (restarted_inst, clear_stale_sid) in restarted {
             if let Some(stored) = instances.iter_mut().find(|i| i.id == restarted_inst.id) {
-                *stored = restarted_inst;
+                stored.merge_post_restart(&restarted_inst, clear_stale_sid);
             }
         }
         Ok(())
@@ -630,6 +631,7 @@ async fn restart_session(profile: &str, args: SessionIdArgs) -> Result<()> {
         .map(|c| c.session.restart_wake_message.clone())
         .unwrap_or_else(|_| "wake up: pick up what you were doing".to_string());
 
+    let mut wake_succeeded = false;
     if !wake_msg.is_empty() {
         // Restart re-execs the agent at a blank prompt; nudge it back into
         // its prior task. Poll capture-pane for steady-state output instead
@@ -642,7 +644,7 @@ async fn restart_session(profile: &str, args: SessionIdArgs) -> Result<()> {
             let delay = crate::agents::send_keys_enter_delay(&tool);
             match tmux_session.send_keys_with_delay(&wake_msg, delay) {
                 Ok(()) => {
-                    working.touch_last_accessed();
+                    wake_succeeded = true;
                 }
                 Err(e) => {
                     eprintln!("Warning: failed to send wake-up message: {}", e);
@@ -651,10 +653,15 @@ async fn restart_session(profile: &str, args: SessionIdArgs) -> Result<()> {
         }
     }
 
-    // Phase 3 (locked, fast): merge the post-restart instance back by id.
+    // touch_last_accessed runs on `stored`, not `working`: its fields are
+    // peer-mutable and do not belong in `merge_post_restart`.
+    let clear_stale_sid = matches!(outcome, StartOutcome::Restarted { .. });
     storage.update(|instances, _groups| {
         if let Some(stored) = instances.iter_mut().find(|i| i.id == session_id) {
-            *stored = working;
+            stored.merge_post_restart(&working, clear_stale_sid);
+            if wake_succeeded {
+                stored.touch_last_accessed();
+            }
         }
         Ok(())
     })?;

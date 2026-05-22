@@ -700,10 +700,9 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
         // Start tmux outside the flock (slow), then merge by id under the lock.
         instance.start_with_size(crate::terminal::get_size())?;
         let id = instance.id.clone();
-        let started_inst = instance.clone();
         storage.update(|all_instances, _groups| {
             if let Some(stored) = all_instances.iter_mut().find(|i| i.id == id) {
-                *stored = started_inst.clone();
+                stored.merge_post_start(&instance);
             }
             Ok(())
         })?;
