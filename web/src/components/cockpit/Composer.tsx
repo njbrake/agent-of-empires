@@ -27,6 +27,7 @@ import {
 } from "lucide-react";
 
 import { useFilesIndex, fuzzyFilter } from "./useFilesIndex";
+import { SessionConfigControls } from "./SessionConfigControls";
 import type { CockpitState } from "../../lib/cockpitTypes";
 import { getDraft, setDraft } from "../../lib/cockpitDrafts";
 import { useMobileKeyboard } from "../../hooks/useMobileKeyboard";
@@ -136,6 +137,18 @@ interface Props {
   /** Legacy enum-based mode used as fallback when the agent does not
    *  advertise modes via NewSessionResponse. */
   legacyMode: CockpitState["mode"];
+  /** Per-session selectors advertised by the adapter (model,
+   *  reasoning effort, future categories). Empty when the adapter
+   *  does not emit `ConfigOptionUpdate`. See #1403. */
+  configOptions: CockpitState["configOptions"];
+  /** In-flight config-option click; drives the pending affordance
+   *  on the just-clicked option. */
+  pendingConfigOption: CockpitState["pendingConfigOption"];
+  /** Send `session/set_config_option` for the given pair. */
+  setConfigOption: (
+    configId: string,
+    value: string,
+  ) => void | Promise<void>;
   /** Latest agent-reported context-window usage. Null until the agent
    *  has emitted at least one ACP `UsageUpdate`. */
   sessionUsage: CockpitState["sessionUsage"];
@@ -178,6 +191,9 @@ export function Composer({
   availableModes,
   currentModeId,
   legacyMode,
+  configOptions,
+  pendingConfigOption,
+  setConfigOption,
   sessionUsage,
   availableCommands,
   connected,
@@ -564,6 +580,11 @@ export function Composer({
                   availableModes={availableModes}
                   currentModeId={currentModeId}
                   legacyMode={legacyMode}
+                />
+                <SessionConfigControls
+                  configOptions={configOptions}
+                  pendingConfigOption={pendingConfigOption}
+                  onSetConfigOption={setConfigOption}
                 />
               </div>
 
