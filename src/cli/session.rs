@@ -243,24 +243,30 @@ pub async fn run(profile: &str, command: SessionCommands) -> Result<()> {
     }
 }
 
+/// Locate a session by exact id, id-prefix, or exact title within a loaded
+/// snapshot, returning its full id. Used to resolve the `identifier` CLI arg
+/// to a stable key before the `Storage::update` closure re-loads a fresh
+/// snapshot; the closure then matches on that id, never on a stale index.
+fn resolve_session_id(instances: &[crate::session::Instance], identifier: &str) -> Result<String> {
+    instances
+        .iter()
+        .find(|i| i.id == identifier || i.id.starts_with(identifier) || i.title == identifier)
+        .map(|i| i.id.clone())
+        .ok_or_else(|| anyhow::anyhow!("Session not found: {}", identifier))
+}
+
 async fn favorite_session(profile: &str, args: SessionIdArgs) -> Result<()> {
     let storage = Storage::new(profile)?;
-    let (mut instances, groups) = storage.load_with_groups()?;
+    let id = resolve_session_id(&storage.load()?, &args.identifier)?;
 
-    let idx = instances
-        .iter()
-        .position(|i| {
-            i.id == args.identifier
-                || i.id.starts_with(&args.identifier)
-                || i.title == args.identifier
-        })
-        .ok_or_else(|| anyhow::anyhow!("Session not found: {}", args.identifier))?;
-
-    instances[idx].favorite();
-    let title = instances[idx].title.clone();
-
-    let group_tree = GroupTree::new_with_groups(&instances, &groups);
-    storage.commit(&instances, &group_tree)?;
+    let title = storage.update(move |instances, _groups| {
+        let inst = instances
+            .iter_mut()
+            .find(|i| i.id == id)
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {}", args.identifier))?;
+        inst.favorite();
+        Ok(inst.title.clone())
+    })?;
 
     println!("Favorited: {}", title);
     Ok(())
@@ -268,22 +274,16 @@ async fn favorite_session(profile: &str, args: SessionIdArgs) -> Result<()> {
 
 async fn unfavorite_session(profile: &str, args: SessionIdArgs) -> Result<()> {
     let storage = Storage::new(profile)?;
-    let (mut instances, groups) = storage.load_with_groups()?;
+    let id = resolve_session_id(&storage.load()?, &args.identifier)?;
 
-    let idx = instances
-        .iter()
-        .position(|i| {
-            i.id == args.identifier
-                || i.id.starts_with(&args.identifier)
-                || i.title == args.identifier
-        })
-        .ok_or_else(|| anyhow::anyhow!("Session not found: {}", args.identifier))?;
-
-    instances[idx].unfavorite();
-    let title = instances[idx].title.clone();
-
-    let group_tree = GroupTree::new_with_groups(&instances, &groups);
-    storage.commit(&instances, &group_tree)?;
+    let title = storage.update(move |instances, _groups| {
+        let inst = instances
+            .iter_mut()
+            .find(|i| i.id == id)
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {}", args.identifier))?;
+        inst.unfavorite();
+        Ok(inst.title.clone())
+    })?;
 
     println!("Unfavorited: {}", title);
     Ok(())
@@ -291,27 +291,29 @@ async fn unfavorite_session(profile: &str, args: SessionIdArgs) -> Result<()> {
 
 async fn archive_session(profile: &str, args: ArchiveArgs) -> Result<()> {
     let storage = Storage::new(profile)?;
-    let (mut instances, groups) = storage.load_with_groups()?;
+    let instances = storage.load()?;
 
-    let id = super::resolve_session(&args.identifier, &instances)?
-        .id
-        .clone();
-    let idx = instances
-        .iter()
-        .position(|i| i.id == id)
-        .expect("resolve_session returned an id that is no longer in instances");
+    // Resolve and kill the pane before touching storage: killing the tmux
+    // session is a syscall that does not need the registry, and doing it
+    // outside the `update` closure keeps the lock held only for the brief
+    // load-mutate-write.
+    let resolved = super::resolve_session(&args.identifier, &instances)?;
+    let id = resolved.id.clone();
 
     if !args.no_kill {
-        if let Err(e) = instances[idx].kill() {
+        if let Err(e) = resolved.kill() {
             eprintln!("Warning: failed to kill tmux session: {}", e);
         }
     }
 
-    instances[idx].archive();
-    let title = instances[idx].title.clone();
-
-    let group_tree = GroupTree::new_with_groups(&instances, &groups);
-    storage.commit(&instances, &group_tree)?;
+    let title = storage.update(move |instances, _groups| {
+        let inst = instances
+            .iter_mut()
+            .find(|i| i.id == id)
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {}", args.identifier))?;
+        inst.archive();
+        Ok(inst.title.clone())
+    })?;
 
     println!("Archived: {}", title);
     Ok(())
@@ -319,21 +321,18 @@ async fn archive_session(profile: &str, args: ArchiveArgs) -> Result<()> {
 
 async fn unarchive_session(profile: &str, args: SessionIdArgs) -> Result<()> {
     let storage = Storage::new(profile)?;
-    let (mut instances, groups) = storage.load_with_groups()?;
-
-    let id = super::resolve_session(&args.identifier, &instances)?
+    let id = super::resolve_session(&args.identifier, &storage.load()?)?
         .id
         .clone();
-    let idx = instances
-        .iter()
-        .position(|i| i.id == id)
-        .expect("resolve_session returned an id that is no longer in instances");
 
-    instances[idx].unarchive();
-    let title = instances[idx].title.clone();
-
-    let group_tree = GroupTree::new_with_groups(&instances, &groups);
-    storage.commit(&instances, &group_tree)?;
+    let title = storage.update(move |instances, _groups| {
+        let inst = instances
+            .iter_mut()
+            .find(|i| i.id == id)
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {}", args.identifier))?;
+        inst.unarchive();
+        Ok(inst.title.clone())
+    })?;
 
     println!("Unarchived: {}", title);
     Ok(())
@@ -341,7 +340,6 @@ async fn unarchive_session(profile: &str, args: SessionIdArgs) -> Result<()> {
 
 async fn snooze_session(profile: &str, args: SnoozeArgs) -> Result<()> {
     let storage = Storage::new(profile)?;
-    let (mut instances, groups) = storage.load_with_groups()?;
 
     let config = crate::session::profile_config::resolve_config(profile)?;
 
@@ -355,20 +353,16 @@ async fn snooze_session(profile: &str, args: SnoozeArgs) -> Result<()> {
     crate::session::validate_snooze_duration(raw_minutes).map_err(|e| anyhow::anyhow!("{}", e))?;
     let minutes = raw_minutes as u32;
 
-    let idx = instances
-        .iter()
-        .position(|i| {
-            i.id == args.identifier
-                || i.id.starts_with(&args.identifier)
-                || i.title == args.identifier
-        })
-        .ok_or_else(|| anyhow::anyhow!("Session not found: {}", args.identifier))?;
+    let id = resolve_session_id(&storage.load()?, &args.identifier)?;
 
-    instances[idx].snooze(minutes);
-    let title = instances[idx].title.clone();
-
-    let group_tree = GroupTree::new_with_groups(&instances, &groups);
-    storage.commit(&instances, &group_tree)?;
+    let title = storage.update(move |instances, _groups| {
+        let inst = instances
+            .iter_mut()
+            .find(|i| i.id == id)
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {}", args.identifier))?;
+        inst.snooze(minutes);
+        Ok(inst.title.clone())
+    })?;
 
     println!("Snoozed for {}m: {}", minutes, title);
     Ok(())
@@ -376,22 +370,16 @@ async fn snooze_session(profile: &str, args: SnoozeArgs) -> Result<()> {
 
 async fn unsnooze_session(profile: &str, args: SessionIdArgs) -> Result<()> {
     let storage = Storage::new(profile)?;
-    let (mut instances, groups) = storage.load_with_groups()?;
+    let id = resolve_session_id(&storage.load()?, &args.identifier)?;
 
-    let idx = instances
-        .iter()
-        .position(|i| {
-            i.id == args.identifier
-                || i.id.starts_with(&args.identifier)
-                || i.title == args.identifier
-        })
-        .ok_or_else(|| anyhow::anyhow!("Session not found: {}", args.identifier))?;
-
-    instances[idx].unsnooze();
-    let title = instances[idx].title.clone();
-
-    let group_tree = GroupTree::new_with_groups(&instances, &groups);
-    storage.commit(&instances, &group_tree)?;
+    let title = storage.update(move |instances, _groups| {
+        let inst = instances
+            .iter_mut()
+            .find(|i| i.id == id)
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {}", args.identifier))?;
+        inst.unsnooze();
+        Ok(inst.title.clone())
+    })?;
 
     println!("Woke: {}", title);
     Ok(())
@@ -399,7 +387,7 @@ async fn unsnooze_session(profile: &str, args: SessionIdArgs) -> Result<()> {
 
 async fn start_session(profile: &str, args: SessionIdArgs) -> Result<()> {
     let storage = Storage::new(profile)?;
-    let (mut instances, groups) = storage.load_with_groups()?;
+    let instances = storage.load()?;
 
     let idx = instances
         .iter()
@@ -410,16 +398,25 @@ async fn start_session(profile: &str, args: SessionIdArgs) -> Result<()> {
         })
         .ok_or_else(|| anyhow::anyhow!("Session not found: {}", args.identifier))?;
 
+    // Start the tmux process on a local copy first (the slow, non-storage
+    // work), then persist the started state via `update` so a row another
+    // process added in the meantime is not clobbered.
     // `source_profile` is runtime-only (skip_serializing) so storage-loaded
     // instances always come back blank; rehydrate it from the storage profile
     // so start-time config resolution honors the right profile's overrides.
-    instances[idx].source_profile = profile.to_string();
-    bail_if_cockpit(&instances[idx], "start")?;
-    instances[idx].start_with_size(crate::terminal::get_size())?;
-    let title = instances[idx].title.clone();
+    let mut started = instances[idx].clone();
+    started.source_profile = profile.to_string();
+    bail_if_cockpit(&started, "start")?;
+    started.start_with_size(crate::terminal::get_size())?;
+    let title = started.title.clone();
+    let started_id = started.id.clone();
 
-    let group_tree = GroupTree::new_with_groups(&instances, &groups);
-    storage.commit(&instances, &group_tree)?;
+    storage.update(move |instances, _groups| {
+        if let Some(slot) = instances.iter_mut().find(|i| i.id == started_id) {
+            *slot = started;
+        }
+        Ok(())
+    })?;
 
     println!("✓ Started session: {}", title);
     Ok(())
@@ -455,7 +452,7 @@ fn bail_if_cockpit(_inst: &crate::session::Instance, _verb: &str) -> Result<()> 
 
 async fn stop_session(profile: &str, args: SessionIdArgs) -> Result<()> {
     let storage = Storage::new(profile)?;
-    let (mut instances, groups) = storage.load_with_groups()?;
+    let instances = storage.load()?;
 
     let inst = super::resolve_session(&args.identifier, &instances)?;
     bail_if_cockpit(inst, "stop")?;
@@ -473,14 +470,19 @@ async fn stop_session(profile: &str, args: SessionIdArgs) -> Result<()> {
         return Ok(());
     }
 
+    // Stop the process before touching storage: it is a tmux/container
+    // syscall path independent of the registry.
     inst.stop()?;
 
-    // Persist Stopped status to disk so it survives TUI restarts
-    if let Some(stored) = instances.iter_mut().find(|i| i.id == session_id) {
-        stored.status = crate::session::Status::Stopped;
-    }
-    let group_tree = crate::session::GroupTree::new_with_groups(&instances, &groups);
-    storage.commit(&instances, &group_tree)?;
+    // Persist Stopped status to disk so it survives TUI restarts. `update`
+    // re-loads under the lock and mutates only this row, so a session
+    // another process added during `stop()` is preserved.
+    storage.update(move |instances, _groups| {
+        if let Some(stored) = instances.iter_mut().find(|i| i.id == session_id) {
+            stored.status = crate::session::Status::Stopped;
+        }
+        Ok(())
+    })?;
 
     if had_container {
         println!("✓ Stopped session and container: {}", title);
@@ -503,7 +505,7 @@ async fn restart_session_dispatch(profile: &str, args: RestartArgs) -> Result<()
 
 async fn restart_all_sessions(profile: &str, parallel: usize) -> Result<()> {
     let storage = Storage::new(profile)?;
-    let (mut instances, groups) = storage.load_with_groups()?;
+    let instances = storage.load()?;
 
     let target_ids = pick_targets_for_restart_all(&instances);
     if target_ids.is_empty() {
@@ -516,29 +518,28 @@ async fn restart_all_sessions(profile: &str, parallel: usize) -> Result<()> {
     let parallel = parallel.max(1);
 
     // Clone each target into its worker; we'll write the (mutated) copy back
-    // by index after the worker returns. Workers never touch the shared Vec.
+    // by id after all workers return. Workers never touch the shared Vec.
     // `source_profile` is runtime-only (skip_serializing) so storage-loaded
     // instances always come back blank; rehydrate it from the storage profile
     // so start-time config resolution honors the right profile's overrides
     // (sandbox.environment, on_launch hooks, etc.).
-    let mut targets: Vec<(usize, crate::session::Instance)> = Vec::with_capacity(total);
+    let mut targets: Vec<crate::session::Instance> = Vec::with_capacity(total);
     for id in &target_ids {
-        if let Some(idx) = instances.iter().position(|i| &i.id == id) {
-            let mut clone = instances[idx].clone();
+        if let Some(inst) = instances.iter().find(|i| &i.id == id) {
+            let mut clone = inst.clone();
             clone.source_profile = profile.to_string();
-            targets.push((idx, clone));
+            targets.push(clone);
         }
     }
 
     let semaphore = std::sync::Arc::new(tokio::sync::Semaphore::new(parallel));
     let mut join_set: tokio::task::JoinSet<(
-        usize,
         String,
         Option<crate::session::Instance>,
         Result<StartOutcome>,
     )> = tokio::task::JoinSet::new();
 
-    for (idx, mut inst) in targets {
+    for mut inst in targets {
         let permit_sem = semaphore.clone();
         join_set.spawn(async move {
             let _permit = permit_sem
@@ -552,9 +553,8 @@ async fn restart_all_sessions(profile: &str, parallel: usize) -> Result<()> {
             })
             .await;
             match res {
-                Ok((inst, result)) => (idx, title, Some(inst), result),
+                Ok((inst, result)) => (title, Some(inst), result),
                 Err(join_err) => (
-                    idx,
                     title,
                     None,
                     Err(anyhow::anyhow!("worker panicked: {}", join_err)),
@@ -565,11 +565,15 @@ async fn restart_all_sessions(profile: &str, parallel: usize) -> Result<()> {
 
     let mut succeeded: Vec<(String, Option<String>)> = Vec::new();
     let mut failed: Vec<(String, String)> = Vec::new();
+    // Mutated copies of every session that restarted, keyed by id. After all
+    // the slow restart work finishes, a single `update` writes them back
+    // against a fresh load so a row another process added in the meantime
+    // is not clobbered.
+    let mut restarted: Vec<crate::session::Instance> = Vec::new();
     while let Some(joined) = join_set.join_next().await {
-        let (idx, title, inst_opt, result) =
-            joined.expect("JoinSet shouldn't panic on join itself");
+        let (title, inst_opt, result) = joined.expect("JoinSet shouldn't panic on join itself");
         if let Some(inst) = inst_opt {
-            instances[idx] = inst;
+            restarted.push(inst);
         }
         match result {
             Ok(StartOutcome::Restarted { stale_sid }) => succeeded.push((title, Some(stale_sid))),
@@ -578,8 +582,14 @@ async fn restart_all_sessions(profile: &str, parallel: usize) -> Result<()> {
         }
     }
 
-    let group_tree = GroupTree::new_with_groups(&instances, &groups);
-    storage.commit(&instances, &group_tree)?;
+    storage.update(move |instances, _groups| {
+        for updated in restarted {
+            if let Some(slot) = instances.iter_mut().find(|i| i.id == updated.id) {
+                *slot = updated;
+            }
+        }
+        Ok(())
+    })?;
 
     let stale_count = succeeded.iter().filter(|(_, s)| s.is_some()).count();
     if stale_count == 0 {
@@ -637,7 +647,7 @@ fn pick_targets_for_restart_all(instances: &[crate::session::Instance]) -> Vec<S
 
 async fn restart_session(profile: &str, args: SessionIdArgs) -> Result<()> {
     let storage = Storage::new(profile)?;
-    let (mut instances, groups) = storage.load_with_groups()?;
+    let instances = storage.load()?;
 
     let idx = instances
         .iter()
@@ -648,15 +658,23 @@ async fn restart_session(profile: &str, args: SessionIdArgs) -> Result<()> {
         })
         .ok_or_else(|| anyhow::anyhow!("Session not found: {}", args.identifier))?;
 
+    // All of the restart work below (re-execing the pane, polling
+    // `wait_for_pane_ready` for up to 5s, sending the wake-up keys) is slow
+    // and touches only tmux, not the registry. Do it on a local copy first,
+    // then persist that copy through `update`, which re-loads `sessions.json`
+    // under the cross-process lock. A wholesale `commit` of the snapshot
+    // loaded above would be up to 5s stale and would clobber any row another
+    // process added during the restart, the exact loss this fix targets.
     // `source_profile` is runtime-only (skip_serializing) so storage-loaded
     // instances always come back blank; rehydrate it from the storage profile
     // so restart-time config resolution honors the right profile's overrides.
-    instances[idx].source_profile = profile.to_string();
-    bail_if_cockpit(&instances[idx], "restart")?;
-    let outcome = instances[idx].restart_with_size(crate::terminal::get_size())?;
-    let title = instances[idx].title.clone();
-    let session_id = instances[idx].id.clone();
-    let tool = instances[idx].tool.clone();
+    let mut restarted = instances[idx].clone();
+    restarted.source_profile = profile.to_string();
+    bail_if_cockpit(&restarted, "restart")?;
+    let outcome = restarted.restart_with_size(crate::terminal::get_size())?;
+    let title = restarted.title.clone();
+    let session_id = restarted.id.clone();
+    let tool = restarted.tool.clone();
 
     // Resolve the configured wake message (global default with per-profile
     // override). Empty string is the documented opt-out: the restart still
@@ -677,9 +695,7 @@ async fn restart_session(profile: &str, args: SessionIdArgs) -> Result<()> {
             let delay = crate::agents::send_keys_enter_delay(&tool);
             match tmux_session.send_keys_with_delay(&wake_msg, delay) {
                 Ok(()) => {
-                    if let Some(inst) = instances.iter_mut().find(|i| i.id == session_id) {
-                        inst.touch_last_accessed();
-                    }
+                    restarted.touch_last_accessed();
                 }
                 Err(e) => {
                     eprintln!("Warning: failed to send wake-up message: {}", e);
@@ -688,8 +704,12 @@ async fn restart_session(profile: &str, args: SessionIdArgs) -> Result<()> {
         }
     }
 
-    let group_tree = GroupTree::new_with_groups(&instances, &groups);
-    storage.commit(&instances, &group_tree)?;
+    storage.update(move |instances, _groups| {
+        if let Some(slot) = instances.iter_mut().find(|i| i.id == session_id) {
+            *slot = restarted;
+        }
+        Ok(())
+    })?;
 
     match outcome {
         StartOutcome::Restarted { stale_sid } => {
@@ -902,7 +922,7 @@ async fn rename_session(profile: &str, args: RenameArgs) -> Result<()> {
     }
 
     let storage = Storage::new(profile)?;
-    let (mut instances, groups) = storage.load_with_groups()?;
+    let instances = storage.load()?;
 
     let inst = if let Some(id) = &args.identifier {
         super::resolve_session(id, &instances)?
@@ -933,14 +953,11 @@ async fn rename_session(profile: &str, args: RenameArgs) -> Result<()> {
     let effective_title = args.title.unwrap_or(old_title.clone());
     let effective_title = effective_title.trim().to_string();
 
-    let idx = instances
-        .iter()
-        .position(|i| i.id == id)
-        .ok_or_else(|| anyhow::anyhow!("Session not found"))?;
-
-    // Rename tmux session if title changed
-    if instances[idx].title != effective_title {
-        let tmux_session = crate::tmux::Session::new(&id, &instances[idx].title)?;
+    // Rename the tmux session before touching storage: it is a tmux syscall
+    // independent of the registry, so it runs outside the `update` closure
+    // to keep the cross-process lock held only for the brief write.
+    if old_title != effective_title {
+        let tmux_session = crate::tmux::Session::new(&id, &old_title)?;
         if tmux_session.exists() {
             let new_tmux_name = crate::tmux::Session::generate_name(&id, &effective_title);
             if let Err(e) = tmux_session.rename(&new_tmux_name) {
@@ -951,17 +968,28 @@ async fn rename_session(profile: &str, args: RenameArgs) -> Result<()> {
         }
     }
 
-    instances[idx].title = effective_title.clone();
-
-    if let Some(group) = args.group {
-        instances[idx].group_path = group.trim().to_string();
-    }
-
-    let mut group_tree = GroupTree::new_with_groups(&instances, &groups);
-    if !instances[idx].group_path.is_empty() {
-        group_tree.create_group(&instances[idx].group_path);
-    }
-    storage.commit(&instances, &group_tree)?;
+    // `update` re-loads under the lock and mutates only this row, so a
+    // session another process added meanwhile is preserved.
+    let id_for_save = id.clone();
+    let title_for_save = effective_title.clone();
+    let group_for_save = args.group.clone();
+    storage.update(move |instances, groups| {
+        let inst = instances
+            .iter_mut()
+            .find(|i| i.id == id_for_save)
+            .ok_or_else(|| anyhow::anyhow!("Session not found"))?;
+        inst.title = title_for_save;
+        if let Some(group) = group_for_save {
+            inst.group_path = group.trim().to_string();
+        }
+        if !inst.group_path.is_empty() {
+            let group_path = inst.group_path.clone();
+            let mut group_tree = GroupTree::new_with_groups(instances, groups);
+            group_tree.create_group(&group_path);
+            *groups = group_tree.get_all_groups();
+        }
+        Ok(())
+    })?;
 
     if old_title != effective_title {
         println!("✓ Renamed session: {} → {}", old_title, effective_title);
@@ -1021,16 +1049,7 @@ async fn current_session(args: CurrentArgs) -> Result<()> {
 
 async fn set_session_id(profile: &str, args: SetSessionIdArgs) -> Result<()> {
     let storage = Storage::new(profile)?;
-    let (mut instances, groups) = storage.load_with_groups()?;
-
-    let idx = instances
-        .iter()
-        .position(|i| {
-            i.id == args.identifier
-                || i.id.starts_with(&args.identifier)
-                || i.title == args.identifier
-        })
-        .ok_or_else(|| anyhow::anyhow!("Session not found: {}", args.identifier))?;
+    let id = resolve_session_id(&storage.load()?, &args.identifier)?;
 
     let new_id = if args.session_id.trim().is_empty() {
         None
@@ -1045,17 +1064,20 @@ async fn set_session_id(profile: &str, args: SetSessionIdArgs) -> Result<()> {
         Some(trimmed)
     };
 
-    instances[idx].agent_session_id = new_id.clone();
-    let title = instances[idx].title.clone();
-
-    let group_tree = GroupTree::new_with_groups(&instances, &groups);
-    storage.commit(&instances, &group_tree)?;
+    let new_id_for_save = new_id.clone();
+    let (title, tool) = storage.update(move |instances, _groups| {
+        let inst = instances
+            .iter_mut()
+            .find(|i| i.id == id)
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {}", args.identifier))?;
+        inst.agent_session_id = new_id_for_save;
+        Ok((inst.title.clone(), inst.tool.clone()))
+    })?;
 
     match new_id {
         Some(ref id) => {
             println!("✓ Set session ID for '{}': {}", title, id);
-            let tool = &instances[idx].tool;
-            if let Some(agent) = crate::agents::get_agent(tool) {
+            if let Some(agent) = crate::agents::get_agent(&tool) {
                 if matches!(
                     agent.resume_strategy,
                     crate::agents::ResumeStrategy::Unsupported

@@ -284,7 +284,11 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
     }
 
     let storage = Storage::new(profile)?;
-    let (mut instances, groups) = storage.load_with_groups()?;
+    // This snapshot is read-only: used for parent resolution, title
+    // generation, and the pre-flight duplicate check. The authoritative
+    // write happens later via `storage.update`, which re-loads under the
+    // cross-process lock so a concurrently-added row is never clobbered.
+    let instances = storage.load()?;
 
     // Resolve parent session if specified
     let mut group_path = args.group.clone();
@@ -625,15 +629,38 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
         return Err(e);
     }
 
-    instances.push(instance.clone());
+    // Persist the new row through `update`, which re-loads `sessions.json`
+    // under the cross-process lock. The `instances` snapshot loaded above
+    // may be stale (another `aoe add` could have committed between then
+    // and now); a wholesale `commit` of that snapshot would clobber the
+    // concurrently-added row. The closure re-checks for a duplicate
+    // against the fresh load so a racing identical add still no-ops.
+    let group_path_for_save = instance.group_path.clone();
+    let instance_for_save = instance.clone();
+    let duplicate = storage.update(move |instances, groups| {
+        if is_duplicate_session(
+            instances,
+            &instance_for_save.title,
+            &instance_for_save.project_path,
+        ) {
+            return Ok(true);
+        }
+        instances.push(instance_for_save);
+        if !group_path_for_save.is_empty() {
+            let mut group_tree = GroupTree::new_with_groups(instances, groups);
+            group_tree.create_group(&group_path_for_save);
+            *groups = group_tree.get_all_groups();
+        }
+        Ok(false)
+    })?;
 
-    // Rebuild group tree
-    let mut group_tree = GroupTree::new_with_groups(&instances, &groups);
-    if !instance.group_path.is_empty() {
-        group_tree.create_group(&instance.group_path);
+    if duplicate {
+        println!(
+            "Session already exists with same title and path: {}",
+            final_title
+        );
+        return Ok(());
     }
-
-    storage.commit(&instances, &group_tree)?;
 
     println!("✓ Added session: {}", final_title);
     println!("  Profile: {}", storage.profile());
@@ -683,12 +710,19 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
             );
         }
     } else if args.launch {
-        let idx = instances
-            .iter()
-            .position(|i| i.id == instance.id)
-            .expect("just added instance");
-        instances[idx].start_with_size(crate::terminal::get_size())?;
-        storage.commit(&instances, &group_tree)?;
+        // Start the tmux process on a local copy first (the slow, non-storage
+        // work), then write the started state back through `update` so a
+        // concurrent writer's row added since the `add` commit above is not
+        // clobbered. `start_with_size` mutates status / pid in place.
+        let mut launched = instance.clone();
+        launched.start_with_size(crate::terminal::get_size())?;
+        let launched_id = launched.id.clone();
+        storage.update(move |instances, _groups| {
+            if let Some(slot) = instances.iter_mut().find(|i| i.id == launched_id) {
+                *slot = launched;
+            }
+            Ok(())
+        })?;
 
         let tmux_session = crate::tmux::Session::new(&instance.id, &instance.title)?;
         tmux_session.attach()?;
