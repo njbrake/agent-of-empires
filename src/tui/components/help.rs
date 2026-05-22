@@ -7,7 +7,7 @@ use crate::session::config::SortOrder;
 use crate::tui::styles::Theme;
 
 const DIALOG_WIDTH: u16 = 50;
-const DIALOG_HEIGHT: u16 = 50;
+const DIALOG_HEIGHT: u16 = 51;
 #[cfg(test)]
 const BORDER_HEIGHT: u16 = 2;
 #[cfg(test)]
@@ -56,6 +56,7 @@ fn shortcuts(strict: bool) -> Vec<(&'static str, Vec<(&'static str, &'static str
                     ("C", "Toggle container/host (sandbox)"),
                     ("Ctrl+D", "Diff view (git changes)"),
                     ("< >", "Resize list panel"),
+                    ("I", "Toggle preview info header"),
                     ("O", "Cycle sort forward"),
                     ("Ctrl+O", "Cycle sort backward"),
                     ("Ctrl+G", "Toggle group by project"),
@@ -118,6 +119,7 @@ fn shortcuts(strict: bool) -> Vec<(&'static str, Vec<(&'static str, &'static str
                     ("c", "Toggle container/host (sandbox)"),
                     ("D", "Diff view (git changes)"),
                     ("< >", "Resize list panel"),
+                    ("i", "Toggle preview info header"),
                     ("o", "Cycle sort forward"),
                     ("Ctrl+o", "Cycle sort backward"),
                     ("g", "Toggle group by project"),

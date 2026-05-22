@@ -1745,6 +1745,15 @@ impl HomeView {
             KeyCode::Char('>') => {
                 self.grow_list();
             }
+            // `i`/`I`: toggle the preview info header (profile/tool/path/
+            // status/sandbox/worktree). Persisted across runs. The hint
+            // rendered inside the header advertises this binding.
+            KeyCode::Char('i') if !self.strict_hotkeys => {
+                self.toggle_preview_info();
+            }
+            KeyCode::Char('I') if self.strict_hotkeys => {
+                self.toggle_preview_info();
+            }
             KeyCode::Left => {
                 if let Some(Item::Group {
                     path, collapsed, ..

@@ -473,6 +473,12 @@ pub struct AppStateConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub diff_file_list_width: Option<u16>,
 
+    /// Show the info header (profile/tool/path/status/sandbox/worktree) at
+    /// the top of the home preview pane. Defaults to `true` when absent;
+    /// users hide it with `i` when they want the full pane for live output.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub show_preview_info: Option<bool>,
+
     #[serde(default)]
     pub has_seen_custom_instruction_warning: bool,
 

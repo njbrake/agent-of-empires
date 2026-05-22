@@ -303,6 +303,11 @@ pub struct HomeView {
     // Resizable list column width (percentage-like units)
     pub(super) list_width: u16,
 
+    /// Show the info header (profile/tool/path/status/sandbox/worktree) at
+    /// the top of the preview pane. Toggled with `i` and persisted to
+    /// `app_state.show_preview_info`.
+    pub(super) show_preview_info: bool,
+
     /// Channel that startup-recovery workers send results back on. `None`
     /// when no recovery was attempted at construction (live tmux, daemon
     /// owns recovery, lock contended, or no candidates). Drained on every
@@ -505,6 +510,10 @@ impl HomeView {
                 .as_ref()
                 .and_then(|c| c.app_state.home_list_width)
                 .unwrap_or(35),
+            show_preview_info: user_config
+                .as_ref()
+                .and_then(|c| c.app_state.show_preview_info)
+                .unwrap_or(true),
             recovery_rx: None,
             recovery_lock: None,
             recovery_in_flight: std::collections::HashSet::new(),
@@ -1779,6 +1788,16 @@ impl HomeView {
     fn save_list_width(&self) {
         if let Ok(mut config) = load_config().map(|c| c.unwrap_or_default()) {
             config.app_state.home_list_width = Some(self.list_width);
+            if let Err(e) = save_config(&config) {
+                tracing::warn!(target: "tui.home", "Failed to save config: {e}");
+            }
+        }
+    }
+
+    pub fn toggle_preview_info(&mut self) {
+        self.show_preview_info = !self.show_preview_info;
+        if let Ok(mut config) = load_config().map(|c| c.unwrap_or_default()) {
+            config.app_state.show_preview_info = Some(self.show_preview_info);
             if let Err(e) = save_config(&config) {
                 tracing::warn!(target: "tui.home", "Failed to save config: {e}");
             }
