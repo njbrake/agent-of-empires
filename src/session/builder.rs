@@ -42,6 +42,11 @@ pub struct InstanceParams {
     pub command_override: String,
     /// Additional repository paths for multi-repo workspace mode
     pub extra_repo_paths: Vec<String>,
+    /// Throwaway session: ignore `path`, provision a fresh directory under
+    /// `std::env::temp_dir()`, and persist `instance.throwaway = true` so
+    /// the deletion path removes the directory. Mutually exclusive with
+    /// worktree/workspace and with non-empty `extra_repo_paths`.
+    pub throwaway: bool,
 }
 
 /// Result of building an instance, tracking what was created for cleanup purposes.
@@ -300,6 +305,15 @@ pub fn build_instance(
         bail!("{} does not support worktree mode.", params.tool);
     }
 
+    if params.throwaway {
+        if params.worktree_enabled {
+            bail!("Cannot combine --throwaway with worktree mode");
+        }
+        if !params.extra_repo_paths.is_empty() {
+            bail!("Cannot combine --throwaway with extra repository paths");
+        }
+    }
+
     if params.sandbox {
         let runtime = containers::get_container_runtime();
         if !runtime.is_available() {
@@ -310,19 +324,32 @@ pub fn build_instance(
         }
     }
 
-    let config = super::repo_config::resolve_config_with_repo(
-        profile,
-        std::path::Path::new(&params.path),
-    )
-    .unwrap_or_else(|e| {
-        tracing::warn!(target: "session.create", "Failed to load config, using defaults: {}", e);
-        Config::default()
-    });
+    // Throwaway sessions have no project repo, so config resolution falls
+    // back to global+profile defaults (`Path::new("")` makes
+    // `resolve_config_with_repo` skip the repo-config layer cleanly).
+    let config_path = if params.throwaway {
+        std::path::PathBuf::new()
+    } else {
+        std::path::PathBuf::from(&params.path)
+    };
+    let config =
+        super::repo_config::resolve_config_with_repo(profile, &config_path).unwrap_or_else(|e| {
+            tracing::warn!(target: "session.create", "Failed to load config, using defaults: {}", e);
+            Config::default()
+        });
 
-    let mut final_path = PathBuf::from(&params.path)
-        .canonicalize()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|_| params.path.clone());
+    let mut final_path = if params.throwaway {
+        // Provisioning happens after `Instance::new` so we can use the
+        // generated instance id as the directory's basename suffix. Leave
+        // `final_path` empty for now; the worktree/workspace and
+        // path-existence blocks below are gated on the same flag.
+        String::new()
+    } else {
+        PathBuf::from(&params.path)
+            .canonicalize()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| params.path.clone())
+    };
 
     let mut worktree_info = None;
     let mut created_worktree = None;
@@ -470,18 +497,27 @@ pub fn build_instance(
         }
     }
 
-    // Validate that the final path exists and is a directory.
-    // This catches cases where the user typed a non-existent path in the TUI;
-    // without this check tmux silently falls back to the home directory.
-    let final_path_buf = PathBuf::from(&final_path);
-    if !final_path_buf.exists() {
-        bail!("Project path does not exist: {}", final_path);
-    }
-    if !final_path_buf.is_dir() {
-        bail!("Project path is not a directory: {}", final_path);
+    // For throwaway sessions, `final_path` is intentionally empty here; the
+    // temp directory is provisioned below after `Instance::new` runs (we
+    // need the instance id to name the directory). For all other sessions,
+    // catch the typed-a-bad-path case before tmux silently falls back to
+    // the home directory.
+    if !params.throwaway {
+        let final_path_buf = PathBuf::from(&final_path);
+        if !final_path_buf.exists() {
+            bail!("Project path does not exist: {}", final_path);
+        }
+        if !final_path_buf.is_dir() {
+            bail!("Project path is not a directory: {}", final_path);
+        }
     }
 
     let mut instance = Instance::new(&final_title, &final_path);
+    if params.throwaway {
+        let dir = super::throwaway::provision_throwaway_dir(&instance.id)?;
+        instance.project_path = dir.to_string_lossy().to_string();
+        instance.throwaway = true;
+    }
     instance.group_path = params.group;
     instance.tool = params.tool.clone();
     instance.detect_as = config
@@ -1093,6 +1129,7 @@ mod tests {
             extra_args: String::new(),
             command_override: String::new(),
             extra_repo_paths: Vec::new(),
+            throwaway: false,
         }
     }
 
@@ -1218,6 +1255,62 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("No launch command resolved for custom agent 'whitespace-agent'"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn build_instance_throwaway_provisions_temp_dir() {
+        let temp_home = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", temp_home.path());
+        let app_dir = isolated_app_dir(temp_home.path());
+        std::fs::create_dir_all(&app_dir).unwrap();
+        std::fs::write(app_dir.join("config.toml"), "").unwrap();
+
+        let mut params = custom_agent_params(std::path::Path::new(""), "claude");
+        params.tool = "claude".to_string();
+        params.path = String::new();
+        params.throwaway = true;
+        params.sandbox = false;
+
+        let result = build_instance(params, &[], &[], "default")
+            .expect("throwaway build must succeed without a project path");
+
+        assert!(
+            result.instance.throwaway,
+            "throwaway flag must be persisted on the instance"
+        );
+        let provisioned = std::path::PathBuf::from(&result.instance.project_path);
+        assert!(provisioned.exists());
+        assert!(provisioned.starts_with(std::env::temp_dir()));
+        assert!(super::super::throwaway::is_throwaway_path(&provisioned));
+
+        let _ = std::fs::remove_dir_all(&provisioned);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn build_instance_rejects_throwaway_with_worktree() {
+        let temp_home = tempfile::tempdir().unwrap();
+        std::env::set_var("HOME", temp_home.path());
+        let app_dir = isolated_app_dir(temp_home.path());
+        std::fs::create_dir_all(&app_dir).unwrap();
+        std::fs::write(app_dir.join("config.toml"), "").unwrap();
+
+        let mut params = custom_agent_params(std::path::Path::new(""), "claude");
+        params.tool = "claude".to_string();
+        params.throwaway = true;
+        params.worktree_enabled = true;
+        params.worktree_branch = Some("feat".to_string());
+
+        let err = match build_instance(params, &[], &[], "default") {
+            Ok(_) => panic!("throwaway + worktree must error"),
+            Err(e) => e,
+        };
+        assert!(
+            err.to_string()
+                .contains("Cannot combine --throwaway with worktree mode"),
             "unexpected error: {err}"
         );
     }

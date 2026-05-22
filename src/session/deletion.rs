@@ -311,6 +311,39 @@ pub fn perform_deletion(request: &DeletionRequest) -> DeletionResult {
         }
     }
 
+    // Throwaway directory cleanup. Runs unconditionally for throwaway
+    // sessions regardless of `request.delete_worktree`, since the temp
+    // directory is the entire reason the session has any on-disk state.
+    // Guarded by `is_throwaway_path` to refuse to follow a tampered or
+    // corrupted `project_path` (e.g. JSON edited by hand to claim
+    // `throwaway: true` while pointing at `/etc`).
+    if request.instance.throwaway {
+        let path = PathBuf::from(&request.instance.project_path);
+        if super::throwaway::is_throwaway_path(&path) {
+            tracing::debug!(target: "session.delete", session_id = %request.session_id, stage = "throwaway_remove", "perform_deletion: stage");
+            match std::fs::remove_dir_all(&path) {
+                Ok(()) => messages.push("Throwaway directory removed".to_string()),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    tracing::debug!(target: "session.delete",
+                        session_id = %request.session_id,
+                        path = %path.display(),
+                        "perform_deletion: throwaway dir already gone, treating as success"
+                    );
+                }
+                Err(e) => {
+                    errors.push(format!("Throwaway directory: {}", e));
+                }
+            }
+        } else {
+            tracing::warn!(
+                target: "session.delete",
+                session_id = %request.session_id,
+                path = %path.display(),
+                "throwaway flag set but project_path failed the guard; refusing to remove"
+            );
+        }
+    }
+
     // Stage 6: hook status cleanup
     tracing::debug!(target: "session.delete", session_id = %request.session_id, stage = "hook_status_cleanup", "perform_deletion: stage");
     crate::hooks::cleanup_hook_status_dir(&request.instance.id);
@@ -1054,6 +1087,139 @@ mod tests {
                 "unsandboxed deletion must not emit sandbox preclean stage: stages={:?}",
                 stages
             );
+        }
+    }
+
+    mod throwaway_cleanup {
+        use super::*;
+        use std::fs;
+
+        fn throwaway_instance() -> (Instance, PathBuf) {
+            let id = format!("delete-test-{}", uuid::Uuid::new_v4());
+            let dir = crate::session::throwaway::provision_throwaway_dir(&id)
+                .expect("provision throwaway dir for test");
+            let mut instance = Instance::new("Throwaway", dir.to_str().unwrap());
+            instance.throwaway = true;
+            (instance, dir)
+        }
+
+        #[test]
+        fn throwaway_session_removes_temp_dir() {
+            let (instance, dir) = throwaway_instance();
+            let request = DeletionRequest {
+                session_id: instance.id.clone(),
+                instance,
+                delete_worktree: false,
+                delete_branch: false,
+                delete_sandbox: false,
+                force_delete: false,
+                detach_hooks: true,
+            };
+
+            let result = perform_deletion(&request);
+            assert!(result.success, "deletion errors: {:?}", result.errors);
+            assert!(
+                !dir.exists(),
+                "throwaway directory must be gone after perform_deletion"
+            );
+            assert!(
+                result
+                    .messages
+                    .iter()
+                    .any(|m| m.contains("Throwaway directory removed")),
+                "expected throwaway-removed message, got {:?}",
+                result.messages
+            );
+        }
+
+        #[test]
+        fn throwaway_session_with_missing_dir_still_succeeds() {
+            let (instance, dir) = throwaway_instance();
+            // Simulate the "directory already gone" race (OS-level temp
+            // cleaner ran, user deleted manually, etc.). Deletion must
+            // not fail.
+            fs::remove_dir_all(&dir).unwrap();
+
+            let request = DeletionRequest {
+                session_id: instance.id.clone(),
+                instance,
+                delete_worktree: false,
+                delete_branch: false,
+                delete_sandbox: false,
+                force_delete: false,
+                detach_hooks: true,
+            };
+            let result = perform_deletion(&request);
+            assert!(
+                result.success,
+                "missing throwaway dir must not fail deletion: {:?}",
+                result.errors
+            );
+        }
+
+        #[test]
+        fn tampered_project_path_does_not_get_removed() {
+            // Defense against an edited or corrupted session JSON that
+            // sets `throwaway: true` while pointing project_path at
+            // something the guard would reject. The directory must
+            // survive deletion.
+            let bystander =
+                std::env::temp_dir().join(format!("important-data-{}", uuid::Uuid::new_v4()));
+            fs::create_dir(&bystander).expect("create bystander");
+            fs::write(bystander.join("file.txt"), b"keep me").unwrap();
+
+            let mut instance = Instance::new("Tampered", bystander.to_str().unwrap());
+            instance.throwaway = true;
+
+            let request = DeletionRequest {
+                session_id: instance.id.clone(),
+                instance,
+                delete_worktree: false,
+                delete_branch: false,
+                delete_sandbox: false,
+                force_delete: false,
+                detach_hooks: true,
+            };
+            let _ = perform_deletion(&request);
+
+            assert!(
+                bystander.exists(),
+                "guard must refuse to remove a temp-dir path that lacks the aoe-throwaway- prefix"
+            );
+            assert!(
+                bystander.join("file.txt").exists(),
+                "bystander contents must survive"
+            );
+            let _ = fs::remove_dir_all(&bystander);
+        }
+
+        #[test]
+        fn non_throwaway_session_under_temp_dir_is_untouched() {
+            // A regular session whose project_path happens to be under
+            // temp_dir (e.g. a test fixture) must not be removed.
+            let dir =
+                std::env::temp_dir().join(format!("aoe-non-throwaway-{}", uuid::Uuid::new_v4()));
+            fs::create_dir(&dir).expect("create non-throwaway test dir");
+
+            let instance = Instance::new("Regular", dir.to_str().unwrap());
+            // throwaway is false by default.
+
+            let request = DeletionRequest {
+                session_id: instance.id.clone(),
+                instance,
+                delete_worktree: false,
+                delete_branch: false,
+                delete_sandbox: false,
+                force_delete: false,
+                detach_hooks: true,
+            };
+            let _ = perform_deletion(&request);
+
+            assert!(
+                dir.exists(),
+                "non-throwaway session must never trip the throwaway cleanup branch"
+            );
+            let _ = fs::remove_dir_all(&dir);
         }
     }
 }

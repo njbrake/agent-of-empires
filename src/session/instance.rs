@@ -325,6 +325,13 @@ pub struct Instance {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snoozed_until: Option<DateTime<Utc>>,
 
+    /// Throwaway-session marker. When true, `project_path` points at an
+    /// auto-provisioned directory under `std::env::temp_dir()` (basename
+    /// `aoe-throwaway-<id>`) that the deletion path removes on `aoe rm`.
+    /// Mutually exclusive with worktree/workspace. See `src/session/throwaway.rs`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub throwaway: bool,
+
     // Git worktree integration
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub worktree_info: Option<WorktreeInfo>,
@@ -651,6 +658,7 @@ impl Instance {
             archived_at: None,
             favorited_at: None,
             snoozed_until: None,
+            throwaway: false,
             worktree_info: None,
             workspace_info: None,
             sandbox_info: None,

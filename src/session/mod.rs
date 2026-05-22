@@ -16,6 +16,7 @@ pub(crate) mod recovery;
 pub mod repo_config;
 pub(crate) mod serde_helpers;
 mod storage;
+pub mod throwaway;
 
 pub use crate::sound::{SoundConfig, SoundConfigOverride};
 pub use crate::status_hooks::{StatusHookConfig, StatusHookConfigOverride};
