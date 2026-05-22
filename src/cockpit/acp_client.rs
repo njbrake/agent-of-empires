@@ -22,8 +22,9 @@ use agent_client_protocol::schema::{
     KillTerminalResponse, LoadSessionRequest, NewSessionRequest, PermissionOptionKind,
     PromptRequest, ProtocolVersion, ReadTextFileRequest, ReadTextFileResponse,
     ReleaseTerminalRequest, ReleaseTerminalResponse, RequestPermissionOutcome,
-    RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome, SessionId,
-    SessionNotification, SessionUpdate, SetSessionModeRequest, StopReason, TerminalId,
+    RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome,
+    SessionConfigId, SessionConfigValueId, SessionId, SessionNotification, SessionUpdate,
+    SetSessionConfigOptionRequest, SetSessionModeRequest, StopReason, TerminalId,
     TerminalOutputRequest, TerminalOutputResponse, TextContent, WaitForTerminalExitRequest,
     WaitForTerminalExitResponse, WriteTextFileRequest, WriteTextFileResponse,
 };
@@ -228,6 +229,14 @@ enum ClientCmd {
     Prompt(String),
     Cancel,
     SetMode(String),
+    /// Send `session/set_config_option` for the given (`config_id`,
+    /// `value`) pair. The connection task fires the request detached so
+    /// the cmd_rx loop keeps polling for Cancel during the round-trip.
+    /// See #1403.
+    SetConfigOption {
+        config_id: String,
+        value: String,
+    },
     Shutdown,
 }
 
@@ -1402,6 +1411,22 @@ impl AcpClient {
         let cmd_tx = self.cmd_tx.as_ref().ok_or(AcpError::NotRunning)?;
         cmd_tx
             .send(ClientCmd::SetMode(mode_id.to_string()))
+            .await
+            .map_err(|_| AcpError::AgentExited)
+    }
+
+    /// Set a per-session selector (model, reasoning effort, etc.) via
+    /// ACP `session/set_config_option`. The cockpit treats every
+    /// adapter-advertised category through this one path; specific
+    /// helpers per category would just duplicate the wiring. See
+    /// #1403.
+    pub async fn set_config_option(&self, config_id: &str, value: &str) -> Result<(), AcpError> {
+        let cmd_tx = self.cmd_tx.as_ref().ok_or(AcpError::NotRunning)?;
+        cmd_tx
+            .send(ClientCmd::SetConfigOption {
+                config_id: config_id.to_string(),
+                value: value.to_string(),
+            })
             .await
             .map_err(|_| AcpError::AgentExited)
     }
@@ -3855,6 +3880,42 @@ async fn run_connection_task<W, R>(
                                                 );
                                             }
                                         }
+                                        Some(ClientCmd::SetConfigOption { config_id, value }) => {
+                                            info!(
+                                                target: "cockpit.acp",
+                                                "sending session/set_config_option {config_id}={value} during in-flight prompt"
+                                            );
+                                            let sent = connection.send_request(
+                                                SetSessionConfigOptionRequest::new(
+                                                    acp_session_id.clone(),
+                                                    SessionConfigId::new(config_id.clone()),
+                                                    SessionConfigValueId::new(value.clone()),
+                                                ),
+                                            );
+                                            let tx = event_tx_for_block.clone();
+                                            tokio::spawn(async move {
+                                                if let Err(e) = sent.block_task().await {
+                                                    let reason = format!("{e}");
+                                                    warn!(
+                                                        target: "cockpit.acp",
+                                                        "session/set_config_option failed mid-turn: {reason}"
+                                                    );
+                                                    let _ = tx
+                                                        .send(Event::ConfigOptionSwitchFailed {
+                                                            config_id,
+                                                            value,
+                                                            reason,
+                                                        })
+                                                        .await;
+                                                }
+                                                // On success the adapter
+                                                // emits a ConfigOptionUpdate
+                                                // notification which the
+                                                // ingest path turns into
+                                                // ConfigOptionsUpdated. No
+                                                // synthetic event needed.
+                                            });
+                                        }
                                         Some(ClientCmd::SetMode(mode_id)) => {
                                             info!(
                                                 target: "cockpit.acp",
@@ -4042,6 +4103,34 @@ async fn run_connection_task<W, R>(
                                         .send(Event::ModeSwitchFailed { mode_id, reason })
                                         .await;
                                 }
+                            }
+                        });
+                    }
+                    Some(ClientCmd::SetConfigOption { config_id, value }) => {
+                        info!(
+                            target: "cockpit.acp",
+                            "sending session/set_config_option {config_id}={value}"
+                        );
+                        let sent = connection.send_request(SetSessionConfigOptionRequest::new(
+                            acp_session_id.clone(),
+                            SessionConfigId::new(config_id.clone()),
+                            SessionConfigValueId::new(value.clone()),
+                        ));
+                        let tx = event_tx_for_block.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = sent.block_task().await {
+                                let reason = format!("{e}");
+                                warn!(
+                                    target: "cockpit.acp",
+                                    "session/set_config_option failed: {reason}"
+                                );
+                                let _ = tx
+                                    .send(Event::ConfigOptionSwitchFailed {
+                                        config_id,
+                                        value,
+                                        reason,
+                                    })
+                                    .await;
                             }
                         });
                     }
