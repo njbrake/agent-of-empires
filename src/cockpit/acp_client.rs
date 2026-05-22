@@ -23,9 +23,9 @@ use agent_client_protocol::schema::{
     PromptRequest, ProtocolVersion, ReadTextFileRequest, ReadTextFileResponse,
     ReleaseTerminalRequest, ReleaseTerminalResponse, RequestPermissionOutcome,
     RequestPermissionRequest, RequestPermissionResponse, SelectedPermissionOutcome, SessionId,
-    SessionNotification, SessionUpdate, SetSessionModeRequest, TerminalId, TerminalOutputRequest,
-    TerminalOutputResponse, TextContent, WaitForTerminalExitRequest, WaitForTerminalExitResponse,
-    WriteTextFileRequest, WriteTextFileResponse,
+    SessionNotification, SessionUpdate, SetSessionModeRequest, StopReason, TerminalId,
+    TerminalOutputRequest, TerminalOutputResponse, TextContent, WaitForTerminalExitRequest,
+    WaitForTerminalExitResponse, WriteTextFileRequest, WriteTextFileResponse,
 };
 use agent_client_protocol::{Agent, ByteStreams, Client, ConnectionTo, Responder};
 use thiserror::Error;
@@ -249,7 +249,17 @@ const RESUME_IDLE_GRACE_DEFAULT: std::time::Duration = std::time::Duration::from
 /// long enough for claude-agent-acp to resolve a real cancel through
 /// the SDK message boundary but short enough that a user who clicked
 /// "Force end turn" isn't watching a frozen UI for 30s while the
-/// daemon waits. See #1196.
+/// daemon waits.
+///
+/// claude-agent-acp >=0.37.0 (upstream #694) now resolves cancel by
+/// returning `PromptResponse { stop_reason: StopReason::Cancelled }`
+/// promptly; in that path the watchdog never fires and the terminal
+/// Stopped reason is `cancelled` (set by `prompt_cancelled` in the
+/// prompt loop) instead of `agent_unresponsive`. The 10s watchdog
+/// stays as a transport-wedge defense: native cancel only protects
+/// against the adapter ignoring the signal, not against socket /
+/// stdout / process-level wedges that prevent the PromptResponse from
+/// reaching the daemon at all. See #1196.
 const CANCEL_ESCALATION_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Vendor-agnostic silent-orphan grace fallback used when no config
@@ -3019,6 +3029,19 @@ async fn run_connection_task<W, R>(
                         // follow-up prompt is silently dropped. See #1196.
                         let mut agent_unresponsive = false;
                         let mut rate_limited = false;
+                        // True when the adapter resolves the in-flight
+                        // session/prompt with `StopReason::Cancelled`,
+                        // i.e. the user cancelled and the adapter
+                        // acknowledged cleanly. claude-agent-acp >=0.37.0
+                        // emits this natively per upstream #694; older
+                        // adapters surfaced cancellation as `EndTurn` so
+                        // the cancel-escalation watchdog was aoe's only
+                        // signal. The 10s watchdog still runs as a
+                        // transport-wedge defense; this flag only
+                        // affects the terminal Stopped reason string so
+                        // the reducer can distinguish a user-driven
+                        // stop from a clean turn completion.
+                        let mut prompt_cancelled = false;
                         let mut cancelling = false;
                         let cancel_grace = tokio::time::sleep(CANCEL_ESCALATION_GRACE);
                         tokio::pin!(cancel_grace);
@@ -3027,7 +3050,23 @@ async fn run_connection_task<W, R>(
                             tokio::select! {
                                 res = &mut prompt_fut, if !simulate_orphan => {
                                     match res {
-                                        Ok(_) => {}
+                                        Ok(resp) => {
+                                            // Capture the native stop reason so
+                                            // the terminal emission downstream
+                                            // can distinguish a cancelled turn
+                                            // (StopReason::Cancelled, claude-agent-acp
+                                            // >=0.37.0 per upstream #694) from a
+                                            // clean turn completion. EndTurn /
+                                            // MaxTokens / MaxTurnRequests / Refusal
+                                            // all collapse to `prompt_complete`
+                                            // for compatibility with the existing
+                                            // reducer; we only surface
+                                            // `cancelled` because it has a
+                                            // distinct UI implication.
+                                            if matches!(resp.stop_reason, StopReason::Cancelled) {
+                                                prompt_cancelled = true;
+                                            }
+                                        }
                                         Err(e) => {
                                             // Rate-limit on session/prompt is not
                                             // a worker crash. Emit a typed
@@ -3374,6 +3413,14 @@ async fn run_connection_task<W, R>(
                             "agent_unresponsive"
                         } else if shutdown {
                             "shutdown"
+                        } else if prompt_cancelled {
+                            // The adapter resolved cancel cleanly with
+                            // StopReason::Cancelled (upstream #694). The
+                            // 10s cancel-escalation watchdog never
+                            // promoted this to `agent_unresponsive`, so
+                            // surface the cleanly-cancelled signal
+                            // distinctly from `prompt_complete`.
+                            "cancelled"
                         } else {
                             "prompt_complete"
                         };

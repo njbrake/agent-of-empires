@@ -276,7 +276,13 @@ pub struct CockpitConfig {
     /// `session/cancel` and arms the existing cancel-escalation grace.
     /// Closes the gap where claude-agent-acp finishes streaming but
     /// never sends `PromptResponse` (upstream
-    /// agentclientprotocol/claude-agent-acp#688). Default 120s; raised
+    /// agentclientprotocol/claude-agent-acp#688). Upstream
+    /// agentclientprotocol/claude-agent-acp#706 (shipped in 0.37.0)
+    /// recovers the prompt stream after a failed turn for some cases,
+    /// reducing the false-positive rate, but cannot rescue every wedge
+    /// (transport-level stalls, child process hangs, lost terminal
+    /// frames), so the watchdog stays as the vendor-agnostic floor.
+    /// Default 120s; raised
     /// from 60s in #1360 so async-agent flows (Claude SDK `Agent` tool
     /// with `isAsync: true`) get a longer wait window before the
     /// watchdog cancels them. `0` disables the watchdog. Long-running

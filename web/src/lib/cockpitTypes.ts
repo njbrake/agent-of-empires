@@ -839,11 +839,15 @@ export function applyEvent(
       // Cancel-escalation watchdog in the daemon fired: claude-agent-acp
       // ignored `session/cancel` for the grace window, the supervisor
       // is SIGTERMing the runner and respawning via `session/load` to
-      // preserve transcript continuity. Reuse `workerRestarting`'s
-      // composer-lockdown semantics; the `agentUnresponsive` flag lets
-      // the banner render the specific cause. Cleared on
-      // `AcpSessionAssigned` (respawn finished) or `UserPromptSent`.
-      // See #1196.
+      // preserve transcript continuity. claude-agent-acp >=0.37.0
+      // (upstream #694) returns StopReason::Cancelled natively when it
+      // resolves the cancel; in that path the daemon surfaces
+      // `cancelled` instead and this branch only fires when the adapter
+      // does not respond at all (transport wedge, child hang). Reuse
+      // `workerRestarting`'s composer-lockdown semantics; the
+      // `agentUnresponsive` flag lets the banner render the specific
+      // cause. Cleared on `AcpSessionAssigned` (respawn finished) or
+      // `UserPromptSent`. See #1196.
       next.workerRestarting = true;
       next.workerStopped = false;
       next.agentUnresponsive = true;
