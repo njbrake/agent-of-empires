@@ -127,4 +127,33 @@ export const fixtures = {
     kind: "other",
     args_preview: JSON.stringify({ x: 1 }),
   }),
+  // claude-agent-acp v0.37.0+ session-start memory recall (recall mode).
+  // Adapter sends kind=read with structured _meta.claudeCode payload;
+  // the cockpit serializer surfaces the structured data on
+  // tool.memory_recall so renderToolCard dispatches to MemoryRecallCard.
+  memoryRecallList: makeToolCall({
+    id: "mem-1",
+    name: "Recalled 2 memories",
+    kind: "read",
+    args_preview: "{}",
+    memory_recall: {
+      mode: "recall",
+      paths: [
+        "/Users/test/.claude/projects/foo/memory/user_role.md",
+        "/Users/test/.claude/projects/foo/memory/feedback_no_em_dashes.md",
+      ],
+    },
+  }),
+  // Synthesize mode: adapter packed the summary into ToolCall.content
+  // instead of locations. Renderer shows the body verbatim.
+  memoryRecallSynthesize: makeToolCall({
+    id: "mem-2",
+    name: "Recalled synthesized memory",
+    kind: "read",
+    args_preview: "{}",
+    memory_recall: {
+      mode: "synthesize",
+      synthesized_text: "User is a senior engineer working on agent-of-empires.",
+    },
+  }),
 };

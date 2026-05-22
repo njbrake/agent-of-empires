@@ -786,6 +786,7 @@ mod tests {
             args_preview: "{\"path\":\"x\"}".into(),
             started_at: Utc::now(),
             parent_tool_call_id: None,
+            memory_recall: None,
         };
         s.apply_event(Event::ToolCallStarted {
             tool_call: tc.clone(),

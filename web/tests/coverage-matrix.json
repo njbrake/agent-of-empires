@@ -502,6 +502,13 @@
       "components": ["web/src/components/cockpit/ToolErrorBody.tsx"]
     },
     {
+      "id": "cockpit.startup-error-screen",
+      "kind": "vitest",
+      "risk": "high",
+      "specs": ["src/components/cockpit/__tests__/StartupErrorScreen.test.tsx"],
+      "components": ["web/src/components/cockpit/StartupErrorScreen.tsx"]
+    },
+    {
       "id": "read-only.mode",
       "kind": "live-playwright",
       "risk": "high",

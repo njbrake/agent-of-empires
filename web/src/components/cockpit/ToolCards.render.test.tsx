@@ -13,7 +13,7 @@
 // a plain <pre> and the test doesn't depend on async theme loading.
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render } from "@testing-library/react";
+import { cleanup, fireEvent, render } from "@testing-library/react";
 import type { ReactNode } from "react";
 
 vi.mock("../../lib/highlighter", () => ({
@@ -185,6 +185,40 @@ describe("ToolCards profile-gated dispatch (claude)", () => {
       </Wrap>,
     );
     expect(container.textContent).toContain("checking deploy");
+  });
+});
+
+describe("ToolCards memory_recall (claude-agent-acp v0.37.0)", () => {
+  it("renders recall mode with the loaded memory paths after expansion", () => {
+    const { container, getByRole, getByTestId } = render(
+      <Wrap toolKey="claude">
+        <ToolCard tool={fixtures.memoryRecallList} result={undefined} />
+      </Wrap>,
+    );
+    expect(container.textContent).toContain("Memory recall");
+    expect(container.textContent).toContain("Recalled");
+    expect(container.textContent).toContain("2 memories");
+    // Body renders only after the toggle is clicked (matches the
+    // existing CardChrome pattern). Open it to assert the paths land.
+    fireEvent.click(getByRole("button"));
+    const list = getByTestId("memory-recall-paths");
+    expect(list.textContent).toContain("user_role.md");
+    expect(list.textContent).toContain("feedback_no_em_dashes.md");
+  });
+
+  it("renders synthesize mode with the synthesized text body after expansion", () => {
+    const { container, getByRole, getByTestId } = render(
+      <Wrap toolKey="claude">
+        <ToolCard tool={fixtures.memoryRecallSynthesize} result={undefined} />
+      </Wrap>,
+    );
+    expect(container.textContent).toContain("Memory recall");
+    expect(container.textContent).toContain("Synthesised memory");
+    fireEvent.click(getByRole("button"));
+    const body = getByTestId("memory-recall-synthesized");
+    expect(body.textContent).toContain(
+      "User is a senior engineer working on agent-of-empires.",
+    );
   });
 });
 

@@ -732,6 +732,7 @@ mod tests {
                     args_preview: args.to_string(),
                     started_at: Utc::now(),
                     parent_tool_call_id: None,
+                    memory_recall: None,
                 },
             },
         )
@@ -930,6 +931,7 @@ mod tests {
                             args_preview: "{}".into(),
                             started_at: Utc::now(),
                             parent_tool_call_id: None,
+                            memory_recall: None,
                         },
                         destructive: false,
                         requested_at: Utc::now(),

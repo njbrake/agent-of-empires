@@ -1861,3 +1861,56 @@ describe("CockpitState reducer / silent-orphan watchdog (#1240)", () => {
     expect(state.workerRestarting).toBe(true);
   });
 });
+
+describe("applyEvent / IncompatibleAgent (claude-agent-acp v0.37.0)", () => {
+  it("sets state.incompatibleAgent from the structured detail", () => {
+    const next = applyEvent(emptyCockpitState(), {
+      session_id: "s-1",
+      seq: 1,
+      event: {
+        IncompatibleAgent: {
+          detail: {
+            kind: "incompatible_agent_version",
+            package_name: "@agentclientprotocol/claude-agent-acp",
+            installed: "0.32.0",
+            required: "0.37.0",
+            install_command:
+              "npm install -g @agentclientprotocol/claude-agent-acp@0.37.0",
+          },
+        },
+      },
+    });
+    expect(next.incompatibleAgent).not.toBeNull();
+    expect(next.incompatibleAgent?.kind).toBe("incompatible_agent_version");
+    if (next.incompatibleAgent?.kind === "incompatible_agent_version") {
+      expect(next.incompatibleAgent.installed).toBe("0.32.0");
+      expect(next.incompatibleAgent.required).toBe("0.37.0");
+    }
+  });
+
+  it("clears incompatibleAgent on AcpSessionAssigned (respawn healed)", () => {
+    let state: CockpitState = applyEvent(emptyCockpitState(), {
+      session_id: "s-1",
+      seq: 1,
+      event: {
+        IncompatibleAgent: {
+          detail: {
+            kind: "incompatible_agent_version",
+            package_name: "@agentclientprotocol/claude-agent-acp",
+            installed: "0.32.0",
+            required: "0.37.0",
+            install_command:
+              "npm install -g @agentclientprotocol/claude-agent-acp@0.37.0",
+          },
+        },
+      },
+    });
+    expect(state.incompatibleAgent).not.toBeNull();
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 2,
+      event: { AcpSessionAssigned: { acp_session_id: "acp-1" } },
+    });
+    expect(state.incompatibleAgent).toBeNull();
+  });
+});

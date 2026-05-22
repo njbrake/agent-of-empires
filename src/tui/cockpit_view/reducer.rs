@@ -423,6 +423,7 @@ mod tests {
             args_preview: "ls".into(),
             started_at: Utc::now(),
             parent_tool_call_id: None,
+            memory_recall: None,
         }
     }
 
