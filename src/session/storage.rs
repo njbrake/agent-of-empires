@@ -8,19 +8,18 @@
 //!    threads sharing the same `Storage` profile.
 //! 2. **Cross-process advisory `flock(2)`** on a sidecar lock file
 //!    (`<profile_dir>/.storage.lock` for sessions+groups,
-//!    `<app_dir>/.workspace-ordering.lock` for ordering). Blocking
-//!    `fs2::FileExt::lock_exclusive`; the kernel releases the lock on
+//!    `<app_dir>/.workspace-ordering.lock` for ordering). Polled
+//!    `fs2::FileExt::try_lock_exclusive` with a 50ms backoff so a >1s wait
+//!    can fire a single `tracing::warn`; the kernel releases the lock on
 //!    process exit, including SIGKILL, so a crashed peer cannot wedge other
 //!    aoe processes. Mirrors the pattern already used by `recovery.rs` and
 //!    `logging.rs`.
 //!
-//! Mutators use `update` (load -> mutate -> save under both locks) or
-//! `commit` (locked wholesale write, for callers that already own the
-//! authoritative in-memory state, e.g. the TUI's `HomeView`). The
-//! `save_workspace_ordering` entry point is `pub(crate)` and only consumed
-//! by `update_workspace_ordering` internally; the per-profile `save` /
-//! `save_groups` helpers have been removed entirely. This keeps it
-//! structurally impossible to bypass the locks.
+//! All mutation goes through `update` (load -> mutate -> save under both
+//! locks). `save_workspace_ordering` is `pub(crate)` and only consumed by
+//! `update_workspace_ordering` internally; the per-profile `save` /
+//! `save_groups` helpers were removed entirely. This keeps it structurally
+//! impossible to bypass the locks.
 //!
 //! Lock-ordering rule across the process: `AppState.instances` (tokio RwLock,
 //! server side) is acquired BEFORE `Storage`'s per-profile mutex, never the
@@ -127,21 +126,21 @@ impl Drop for StorageFlock {
     }
 }
 
-/// Acquire the cross-process advisory `flock` on `<dir>/<name>`, blocking
-/// until the lock is granted. Mirrors the open semantics of
-/// `recovery::try_acquire_recovery_lock` (read+write, create, no truncate)
-/// and `logging.rs`'s rotation lock.
+/// Acquire the cross-process advisory `flock` on `<dir>/<name>` by polling
+/// `try_lock_exclusive` every 50ms until it is granted. Open semantics
+/// mirror `recovery::try_acquire_recovery_lock` (read+write, create, no
+/// truncate) and `logging.rs`'s rotation lock.
+///
+/// Polling instead of `lock_exclusive` is deliberate: `fs2` exposes no hook
+/// to instrument a blocking acquire, and we need a single `tracing::warn`
+/// after `FLOCK_WAIT_WARN_AFTER` so a wedged peer is observable in
+/// `aoe logs`. The 50ms cadence is below human perception and far above any
+/// realistic mutator's hold time.
 ///
 /// On Unix the lock file is chmodded to `0o600` so it never widens beyond
-/// the rest of `<app_dir>` regardless of the caller's umask. On a missing
-/// parent directory we propagate the OS error rather than silently
-/// recreating, because every realistic caller has already gone through
-/// `Storage::new -> get_profile_dir` (or `get_app_dir` for ordering).
-///
-/// Blocks indefinitely if a peer holds the lock; emits a single
-/// `tracing::warn` after `FLOCK_WAIT_WARN_AFTER` so a wedged peer is
-/// observable in `aoe logs`. The kernel releases the lock on process exit
-/// (including SIGKILL), so a crashed peer cannot wedge us forever.
+/// the rest of `<app_dir>` regardless of the caller's umask. The kernel
+/// releases the lock on process exit (including SIGKILL), so a crashed peer
+/// cannot wedge us forever.
 fn acquire_storage_flock(dir: &Path, name: &str) -> Result<StorageFlock> {
     fs::create_dir_all(dir)?;
     let path = dir.join(name);
@@ -284,9 +283,8 @@ impl Storage {
     /// sibling files and is tolerated by the loader (`GroupTree` accepts
     /// orphan group rows).
     ///
-    /// This is the only way to mutate persisted session state from any caller
-    /// that does not already own the authoritative in-memory copy. Use `commit`
-    /// when the caller (e.g. TUI `HomeView`) IS that authoritative copy.
+    /// This is the only public mutator entry point; all writes funnel
+    /// through here so both lock layers are always taken.
     pub fn update<F, R>(&self, f: F) -> Result<R>
     where
         F: FnOnce(&mut Vec<Instance>, &mut Vec<Group>) -> Result<R>,
@@ -917,7 +915,7 @@ mod tests {
 
     #[test]
     #[serial]
-    fn test_commit_takes_same_lock_as_update() -> Result<()> {
+    fn test_update_takes_same_lock_across_threads() -> Result<()> {
         use std::sync::Barrier;
         use std::time::{Duration, Instant};
 
