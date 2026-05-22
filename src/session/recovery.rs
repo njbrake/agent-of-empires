@@ -42,7 +42,7 @@
 //! non-interactive and complete in <30s". Hardening is tracked as a follow-up
 //! (graceful timeout + force-kill path on the cascade).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 #[cfg(feature = "serve")]
 use std::sync::Arc;
 #[cfg(feature = "serve")]
@@ -70,7 +70,14 @@ pub struct RecoveryLock {
 /// The lock file lives at `<app_dir>/.recovery.lock`. It is created if
 /// missing and never deleted (the lock is on the file, not its existence).
 pub fn try_acquire_recovery_lock() -> Result<Option<RecoveryLock>> {
-    let path = recovery_lock_path()?;
+    try_acquire_recovery_lock_at(&recovery_lock_path()?)
+}
+
+/// Inner helper that takes the lock-file path directly. Split out so tests
+/// can exercise the flock logic without depending on the env-var-driven
+/// `get_app_dir()` resolution, which races with non-`#[serial]` readers of
+/// `HOME` / `XDG_CONFIG_HOME` elsewhere in the suite.
+fn try_acquire_recovery_lock_at(path: &Path) -> Result<Option<RecoveryLock>> {
     if let Some(parent) = path.parent() {
         // Propagate so an unwritable app dir surfaces here with the real
         // OS error (e.g. EACCES, EROFS) rather than as a confusing
@@ -82,7 +89,7 @@ pub fn try_acquire_recovery_lock() -> Result<Option<RecoveryLock>> {
         .write(true)
         .create(true)
         .truncate(false)
-        .open(&path)?;
+        .open(path)?;
     match file.try_lock_exclusive() {
         Ok(()) => Ok(Some(RecoveryLock { _file: file })),
         Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => Ok(None),
@@ -245,18 +252,6 @@ pub fn run_recovery_for_instance(inst: &mut Instance) -> Result<StartOutcome> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serial_test::serial;
-
-    /// Point `HOME` (and `XDG_CONFIG_HOME` on Linux) at a temp dir so
-    /// `get_app_dir()` resolves into the sandbox instead of touching the
-    /// user's real app dir. Mirrors the helper in `session::tests`.
-    fn isolate_app_dir() -> tempfile::TempDir {
-        let temp_home = tempfile::TempDir::new().unwrap();
-        std::env::set_var("HOME", temp_home.path());
-        #[cfg(target_os = "linux")]
-        std::env::set_var("XDG_CONFIG_HOME", temp_home.path().join(".config"));
-        temp_home
-    }
 
     #[cfg(feature = "serve")]
     #[test]
@@ -352,20 +347,24 @@ mod tests {
     /// the wrapper successfully creates the lock file and acquires/
     /// releases the lock without erroring. The cross-process behavior
     /// is exercised by the e2e suite (TUI + daemon spawned together).
+    ///
+    /// Driven through `try_acquire_recovery_lock_at` rather than the
+    /// public entry point so the lock path is fixed and independent of
+    /// `HOME` / `XDG_CONFIG_HOME`. The public function reads those env
+    /// vars via `dirs::config_dir()`; `getenv` and `setenv` are not
+    /// thread-safe, and non-`#[serial]` HOME readers elsewhere in the
+    /// suite have been observed to race a `set_var` from another test
+    /// and resolve the lock path under the wrong sandbox, surfacing as
+    /// a flaky "re-acquisition after drop" failure on CI.
     #[test]
-    #[serial]
     fn recovery_lock_acquires_and_releases() {
-        // Sandbox HOME/XDG_CONFIG_HOME so this never touches the real
-        // <app_dir>/.recovery.lock, where a concurrent `aoe` / `aoe serve`
-        // would otherwise either fail the test or have its own lock
-        // hijacked. `#[serial]` against the same env-var mutators in the
-        // rest of the suite.
-        let _sandbox = isolate_app_dir();
+        let temp = tempfile::TempDir::new().unwrap();
+        let path = temp.path().join(".recovery.lock");
 
-        let first = try_acquire_recovery_lock().unwrap();
+        let first = try_acquire_recovery_lock_at(&path).unwrap();
         assert!(first.is_some(), "acquisition should succeed");
         drop(first);
-        let second = try_acquire_recovery_lock().unwrap();
+        let second = try_acquire_recovery_lock_at(&path).unwrap();
         assert!(second.is_some(), "re-acquisition after drop should succeed");
     }
 }
