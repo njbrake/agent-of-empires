@@ -77,7 +77,7 @@ base("queued follow-up fires after navigation away and back", async ({ page }, t
     const sessionA = sessions.find((s) => s.title === "queue-nav-a");
     if (!sessionA) throw new Error("seeded session 'queue-nav-a' missing");
 
-    await enableCockpitAndWait(serve.baseUrl, sessionA.id);
+    await enableCockpitAndWait(serve.baseUrl, sessionA.id, 30_000, serve.home);
 
     await page.goto(`${serve.baseUrl}/session/${encodeURIComponent(sessionA.id)}`);
     await waitForCockpitView(page);

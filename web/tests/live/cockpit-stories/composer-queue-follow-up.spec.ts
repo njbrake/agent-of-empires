@@ -71,7 +71,7 @@ base("queued follow-up fires when first turn ends", async ({ page }, testInfo) =
     if (!seeded) throw new Error("seeded session 'story-queue' missing");
     const sessionId = seeded.id;
 
-    await enableCockpitAndWait(serve.baseUrl, sessionId);
+    await enableCockpitAndWait(serve.baseUrl, sessionId, 30_000, serve.home);
 
     await page.goto(`${serve.baseUrl}/session/${encodeURIComponent(sessionId)}`);
     await waitForCockpitView(page);

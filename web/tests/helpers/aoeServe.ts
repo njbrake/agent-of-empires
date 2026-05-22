@@ -23,7 +23,6 @@ import {
   realpathSync,
   rmSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomBytes } from "node:crypto";
@@ -416,8 +415,23 @@ export async function spawnAoeServe(opts: SpawnOptions): Promise<ServeHandle> {
   // and checks `starts_with(dirs::home_dir())`; if HOME is the un-
   // canonicalized form, that check fails on macOS and any browse call
   // against the test's HOME tree returns "outside the home directory".
+  //
+  // Use `/tmp/...` as the base instead of `tmpdir()`. On macOS,
+  // `tmpdir()` resolves to `/private/var/folders/<hash>/T/...` (~95
+  // chars). After we append `/.agent-of-empires-dev/cockpit-workers/
+  // <session_id>.sock` (~60 chars) we blow past the 104-byte
+  // `sun_path` limit on Darwin unix sockets and the runner's
+  // `UnixListener::bind` fails with ENAMETOOLONG. Because the runner
+  // writes its stderr to /dev/null, the failure surfaces as "runner
+  // socket … did not appear within Ns" (the daemon's wait_for_socket
+  // poll never sees a socket appear) instead of a typed bind error.
+  // `/tmp` is a stable, short, world-writable directory on every
+  // supported OS we target; using it caps the path well under
+  // sun_path on Darwin (104) and Linux (108). See macOS sun_path
+  // <sys/un.h>.
+  const shortBase = "/tmp";
   const home = realpathSync(
-    mkdtempSync(join(tmpdir(), `aoe-pw-w${opts.workerIndex}-p${opts.parallelIndex}-`)),
+    mkdtempSync(join(shortBase, `aoe-pw-w${opts.workerIndex}-p${opts.parallelIndex}-`)),
   );
   const xdg = join(home, "config");
   const tmp = join(home, "tmp");
@@ -441,6 +455,16 @@ export async function spawnAoeServe(opts: SpawnOptions): Promise<ServeHandle> {
     TMPDIR: tmp,
     TMUX_TMPDIR: tmuxTmp,
     PATH: `${shimBin}:${process.env.PATH ?? ""}`,
+    // Lift the runner-socket appearance deadline. The `aoe
+    // __cockpit-runner` shim re-execs the debug `aoe` binary, which
+    // under v8 coverage + 3 parallel workers + tmux + a fake-ACP node
+    // subprocess can take >10s to bind its unix listener on a
+    // contended runner. The production 10s default in
+    // `runner_socket_deadline()` covers cold caches; tests need
+    // headroom or `cockpit_enable` fails with `runner socket … did
+    // not appear within 10s` (deterministic on slower local + CI
+    // machines, never on hot caches). Honored only in debug builds.
+    AOE_COCKPIT_RUNNER_SOCKET_TIMEOUT_MS: "60000",
   };
 
   if (authMode === "token") {

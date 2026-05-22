@@ -49,7 +49,7 @@ base("delete a queued follow-up before it fires", async ({ page }, testInfo) => 
     const seeded = sessions.find((s) => s.title === "story-queue-del");
     if (!seeded) throw new Error("seeded session 'story-queue-del' missing");
     const sessionId = seeded.id;
-    await enableCockpitAndWait(serve.baseUrl, sessionId);
+    await enableCockpitAndWait(serve.baseUrl, sessionId, 30_000, serve.home);
 
     await page.goto(`${serve.baseUrl}/session/${encodeURIComponent(sessionId)}`);
     await waitForCockpitView(page);

@@ -1,4 +1,30 @@
 import { expect, type Locator, type Page } from "@playwright/test";
+import { readFileSync, existsSync } from "node:fs";
+import { join } from "node:path";
+
+/** Best-effort read of the per-test debug.log written by `aoe serve`
+ *  and its child runners. Returns the last `tailBytes` chars or null
+ *  if the file can't be read. Used by enableCockpitAndWait to surface
+ *  supervisor + runner logs in test failure messages, since the
+ *  cockpit/enable endpoint returns 200 even when the background spawn
+ *  task wedges or fails. */
+function readDebugLogTail(
+  home: string | undefined,
+  tailBytes = 8_000,
+): string | null {
+  if (!home) return null;
+  const path = join(home, ".agent-of-empires-dev", "debug.log");
+  if (!existsSync(path)) return null;
+  try {
+    const content = readFileSync(path, "utf8");
+    return content.length > tailBytes
+      ? `... (${content.length - tailBytes} bytes elided)\n` +
+          content.slice(-tailBytes)
+      : content;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Wait for the cockpit supervisor to be ready to accept prompts after a
@@ -31,43 +57,127 @@ import { expect, type Locator, type Page } from "@playwright/test";
  * Default timeout is 15s; the local happy-path completes in well under
  * 1s, so 15s only kicks in on contended CI runners.
  */
+async function fetchReplayFrames(
+  baseUrl: string,
+  sessionId: string,
+): Promise<unknown[]> {
+  const replay = await fetch(
+    `${baseUrl}/api/sessions/${sessionId}/cockpit/replay?since=0`,
+  ).then((r) => r.json());
+  if (Array.isArray(replay)) return replay;
+  return (replay?.frames as unknown[]) ?? [];
+}
+
+/** Look for an `AgentStartupError` event in the replay buffer. The
+ *  supervisor publishes this when `cockpit_enable` succeeds but the
+ *  background `supervisor.spawn(...)` task fails (e.g. container ensure
+ *  error, agent process spawn refused, handshake timed out). Phase 1 of
+ *  waitForCockpitReady sees the error frame as "any frame present" and
+ *  resolves, but phase 2 (worker_state === "running") never will.
+ *  Returning the error string here lets the caller throw with the real
+ *  cause instead of timing out on a stale "absent". */
+function findStartupError(frames: unknown[]): string | null {
+  for (const f of frames) {
+    if (typeof f !== "object" || f == null) continue;
+    const event = (f as { event?: unknown }).event;
+    if (event && typeof event === "object" && "AgentStartupError" in event) {
+      const err = (event as { AgentStartupError?: { message?: string } })
+        .AgentStartupError;
+      return err?.message ?? "AgentStartupError (no message)";
+    }
+  }
+  return null;
+}
+
 export async function waitForCockpitReady(
   baseUrl: string,
   sessionId: string,
-  timeoutMs = 15_000,
+  timeoutMs = 30_000,
+  home?: string,
 ): Promise<void> {
-  await expect
-    .poll(
-      async () => {
-        const replay = await fetch(
-          `${baseUrl}/api/sessions/${sessionId}/cockpit/replay?since=0`,
-        ).then((r) => r.json());
-        const frames: unknown[] = Array.isArray(replay)
-          ? replay
-          : (replay.frames ?? []);
-        return frames.length;
+  try {
+    await expect
+      .poll(
+        async () => {
+          const frames = await fetchReplayFrames(baseUrl, sessionId);
+          const startupErr = findStartupError(frames);
+          if (startupErr) {
+            throw new Error(
+              `cockpit_enable spawn failed: ${startupErr} ` +
+                `(frames=${frames.length})`,
+            );
+          }
+          return frames.length;
+        },
+        { timeout: timeoutMs, intervals: [100, 200, 200, 200] },
+      )
+      .toBeGreaterThan(0);
+  } catch (err) {
+    const log = readDebugLogTail(home) ?? "(debug.log unavailable)";
+    throw new Error(
+      `waitForCockpitReady phase 1 (replay frames) failed after ${timeoutMs}ms.\n` +
+        `cockpit/enable returned 200 but no event ever reached the replay buffer, ` +
+        `which means the supervisor.spawn task is wedged.\n` +
+        `Original: ${err instanceof Error ? err.message : String(err)}\n` +
+        `--- debug.log tail ---\n${log}\n--- end debug.log ---`,
+    );
+  }
+  // Phase 2: wait for the supervisor to reach "running". On failure
+  // dump everything we can about the session + replay frames so the
+  // root cause is visible without re-running with debug flags.
+  try {
+    await expect
+      .poll(
+        async () => {
+          const res = await fetch(`${baseUrl}/api/sessions`);
+          if (!res.ok) return "fetch-failed";
+          const body = await res.json();
+          const sessions: Array<{ id: string; cockpit_worker_state?: string }> =
+            Array.isArray(body) ? body : (body.sessions ?? []);
+          const me = sessions.find((s) => s.id === sessionId);
+          const state = me?.cockpit_worker_state ?? "absent";
+          if (state === "absent") {
+            const frames = await fetchReplayFrames(baseUrl, sessionId);
+            const startupErr = findStartupError(frames);
+            if (startupErr) {
+              throw new Error(
+                `cockpit_enable spawn failed: ${startupErr} ` +
+                  `(frames=${frames.length})`,
+              );
+            }
+          }
+          return state;
+        },
+        { timeout: timeoutMs, intervals: [100, 200, 200, 500, 1000] },
+      )
+      .toBe("running");
+  } catch (err) {
+    // Augment the timeout error with the full replay + sessions
+    // snapshot. expect.poll's default message is just the last polled
+    // value, which makes a "stuck absent" indistinguishable from a
+    // misrouted poll. Surface what the server actually said.
+    const frames = await fetchReplayFrames(baseUrl, sessionId).catch(() => []);
+    const sessionsRes = await fetch(`${baseUrl}/api/sessions`).catch(() => null);
+    const sessionsBody = sessionsRes
+      ? await sessionsRes.json().catch(() => null)
+      : null;
+    const summary = JSON.stringify(
+      {
+        sessionId,
+        sessions: sessionsBody,
+        framesCount: frames.length,
+        firstFrames: frames.slice(0, 5),
       },
-      { timeout: timeoutMs, intervals: [100, 200, 200, 200] },
-    )
-    .toBeGreaterThan(0);
-  // Phase 2: wait for worker to reach "running".
-  await expect
-    .poll(
-      async () => {
-        const res = await fetch(`${baseUrl}/api/sessions`);
-        if (!res.ok) return "fetch-failed";
-        const body = await res.json();
-        const sessions: Array<{ id: string; cockpit_worker_state?: string }> = Array.isArray(
-          body,
-        )
-          ? body
-          : (body.sessions ?? []);
-        const me = sessions.find((s) => s.id === sessionId);
-        return me?.cockpit_worker_state ?? "absent";
-      },
-      { timeout: timeoutMs, intervals: [100, 200, 200, 500] },
-    )
-    .toBe("running");
+      null,
+      2,
+    );
+    const log = readDebugLogTail(home) ?? "(debug.log unavailable)";
+    throw new Error(
+      `waitForCockpitReady phase 2 failed: ${err instanceof Error ? err.message : String(err)}\n` +
+        `Diagnostic snapshot:\n${summary}\n` +
+        `--- debug.log tail ---\n${log}\n--- end debug.log ---`,
+    );
+  }
 }
 
 /**
@@ -79,7 +189,8 @@ export async function waitForCockpitReady(
 export async function enableCockpitAndWait(
   baseUrl: string,
   sessionId: string,
-  timeoutMs = 15_000,
+  timeoutMs = 30_000,
+  home?: string,
 ): Promise<void> {
   const res = await fetch(
     `${baseUrl}/api/sessions/${sessionId}/cockpit/enable`,
@@ -90,7 +201,7 @@ export async function enableCockpitAndWait(
       `cockpit enable failed: status=${res.status} body=${await res.text()}`,
     );
   }
-  await waitForCockpitReady(baseUrl, sessionId, timeoutMs);
+  await waitForCockpitReady(baseUrl, sessionId, timeoutMs, home);
 }
 
 /**
