@@ -1414,6 +1414,21 @@ impl<S: BroadcastSink> Supervisor<S> {
         Ok(())
     }
 
+    /// Set a per-session selector via ACP session/set_config_option.
+    /// Delegates to the per-session AcpClient. See #1403.
+    pub async fn set_config_option(
+        &self,
+        session_id: &str,
+        config_id: &str,
+        value: &str,
+    ) -> Result<(), SupervisorError> {
+        self.wait_for_worker(session_id, std::time::Duration::from_secs(10))
+            .await;
+        let client = self.client_for_session(session_id).await?;
+        client.set_config_option(config_id, value).await?;
+        Ok(())
+    }
+
     /// Resolve a pending approval.
     pub async fn resolve_permission(
         &self,
