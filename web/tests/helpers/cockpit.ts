@@ -265,6 +265,36 @@ export async function openSettingsTab(page: Page, label: string): Promise<void> 
 }
 
 /**
+ * Wait for SettingsView's mount-time async chain to settle before
+ * interacting with its inputs. The component renders with seed state
+ * `selectedProfile = "default"` and `settings = null`, then fires
+ * `fetchProfiles()` + `loadSettings()` from a useEffect; when
+ * `fetchProfiles` resolves it may flip `selectedProfile` to the real
+ * default profile (e.g. "main"), which retriggers
+ * `loadSettings(<new profile>)`. A test that calls
+ * `selectOption(...)` between the optimistic local update and the
+ * second `setSettings(...)` from the refire sees its choice
+ * clobbered by the refire and the assertion sticks at the original
+ * value (observed in settings-tmux-* specs on slower CI runners).
+ *
+ * The Profile selector lives in the top-level header inside
+ * SettingsView. Waiting for it to expose a non-empty value means
+ * `fetchProfiles` has resolved, `setSelectedProfile(real)` has
+ * applied, and the subsequent `loadSettings(real)` has had a chance
+ * to populate `settings`. Cheaper than polling `/api/profiles`
+ * directly and avoids depending on an internal "loading" flag.
+ */
+export async function waitForSettingsLoaded(page: Page): Promise<void> {
+  const profileSelect = page.locator("select").first();
+  await expect(profileSelect).toBeVisible({ timeout: 10_000 });
+  await expect
+    .poll(async () => (await profileSelect.inputValue()).length, {
+      timeout: 10_000,
+    })
+    .toBeGreaterThan(0);
+}
+
+/**
  * Attach diagnostic logs (daemon debug.log + fake-acp.log) to the
  * Playwright test report when the test failed. Skips attaching on
  * success to keep the report small.

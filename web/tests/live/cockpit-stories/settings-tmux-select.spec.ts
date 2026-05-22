@@ -3,7 +3,11 @@
 
 import { test as base, expect } from "@playwright/test";
 import { spawnAoeServe } from "../../helpers/aoeServe";
-import { openSettingsTab, settingsSelectByLabel } from "../../helpers/cockpit";
+import {
+  openSettingsTab,
+  settingsSelectByLabel,
+  waitForSettingsLoaded,
+} from "../../helpers/cockpit";
 
 base("tmux status_bar setting select round-trips through the UI", async ({ page }, testInfo) => {
   const serve = await spawnAoeServe({
@@ -14,6 +18,7 @@ base("tmux status_bar setting select round-trips through the UI", async ({ page 
 
   try {
     await page.goto(`${serve.baseUrl}/settings`);
+    await waitForSettingsLoaded(page);
     await openSettingsTab(page, "Tmux");
 
     const statusBar = settingsSelectByLabel(page, "Status bar");
@@ -23,6 +28,7 @@ base("tmux status_bar setting select round-trips through the UI", async ({ page 
     await expect(statusBar).toHaveValue("disabled");
 
     await page.reload();
+    await waitForSettingsLoaded(page);
     await openSettingsTab(page, "Tmux");
     const reloaded = settingsSelectByLabel(page, "Status bar");
     await expect(reloaded).toHaveValue("disabled", { timeout: 10_000 });
