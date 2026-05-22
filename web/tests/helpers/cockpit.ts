@@ -279,7 +279,11 @@ export async function attachServeDiagnostics(
   testInfo: TestInfo,
   serve: { home: string },
 ): Promise<void> {
-  if (testInfo.status === testInfo.expectedStatus) return;
+  // Called from the test body's `finally`, where `testInfo.status` is
+  // still undefined (Playwright sets it after the test function returns
+  // and all hooks run). Use `testInfo.errors.length` as the "did the
+  // test body fail?" signal instead.
+  if (testInfo.errors.length === 0) return;
   // App dir resolution mirrors aoeServe.ts#appDirFor: Linux uses
   // $XDG_CONFIG_HOME (which the harness sets to `${home}/config`),
   // macOS/Windows use `${home}/.agent-of-empires-dev`. Probe both so
