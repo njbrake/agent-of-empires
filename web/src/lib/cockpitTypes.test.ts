@@ -1914,3 +1914,185 @@ describe("applyEvent / IncompatibleAgent (claude-agent-acp v0.37.0)", () => {
     expect(state.incompatibleAgent).toBeNull();
   });
 });
+
+describe("applyEvent / ConfigOptions (#1403)", () => {
+  function sampleOptions() {
+    return [
+      {
+        id: "model",
+        name: "Model",
+        category: "model" as const,
+        current_value: "claude-opus-4-7",
+        options: [
+          { value: "claude-opus-4-7", name: "Claude Opus 4.7" },
+          { value: "claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
+        ],
+      },
+      {
+        id: "effort",
+        name: "Reasoning Effort",
+        category: "thought_level" as const,
+        current_value: "default",
+        options: [
+          { value: "default", name: "Default" },
+          { value: "high", name: "High" },
+        ],
+      },
+    ];
+  }
+
+  it("applies ConfigOptionsUpdated as a full snapshot replacement", () => {
+    let state = applyEvent(emptyCockpitState(), {
+      session_id: "s-1",
+      seq: 1,
+      event: { ConfigOptionsUpdated: { options: sampleOptions() } },
+    });
+    expect(state.configOptions).toHaveLength(2);
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 2,
+      event: {
+        ConfigOptionsUpdated: {
+          options: [
+            {
+              id: "model",
+              name: "Model",
+              category: "model",
+              current_value: "claude-sonnet-4-6",
+              options: [],
+            },
+          ],
+        },
+      },
+    });
+    expect(state.configOptions).toHaveLength(1);
+    expect(state.configOptions[0].current_value).toBe("claude-sonnet-4-6");
+  });
+
+  it("populates configOptionSwitchFailed without mutating configOptions", () => {
+    let state = applyEvent(emptyCockpitState(), {
+      session_id: "s-1",
+      seq: 1,
+      event: { ConfigOptionsUpdated: { options: sampleOptions() } },
+    });
+    const before = state.configOptions;
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 2,
+      event: {
+        ConfigOptionSwitchFailed: {
+          config_id: "model",
+          value: "claude-sonnet-4-6",
+          reason: "rate limited",
+        },
+      },
+    });
+    expect(state.configOptions).toBe(before);
+    expect(state.configOptionSwitchFailed).toEqual({
+      configId: "model",
+      value: "claude-sonnet-4-6",
+      reason: "rate limited",
+      at: expect.any(String),
+    });
+  });
+
+  it("clears pending and auto-dismisses matching failure on confirming snapshot", () => {
+    let state: CockpitState = {
+      ...emptyCockpitState(),
+      pendingConfigOption: { configId: "model", value: "claude-sonnet-4-6" },
+    };
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 1,
+      event: {
+        ConfigOptionSwitchFailed: {
+          config_id: "model",
+          value: "claude-sonnet-4-6",
+          reason: "transient",
+        },
+      },
+    });
+    expect(state.pendingConfigOption).toBeNull();
+    expect(state.configOptionSwitchFailed).not.toBeNull();
+
+    const confirming = sampleOptions();
+    confirming[0].current_value = "claude-sonnet-4-6";
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 2,
+      event: { ConfigOptionsUpdated: { options: confirming } },
+    });
+    expect(state.configOptionSwitchFailed).toBeNull();
+    expect(state.pendingConfigOption).toBeNull();
+  });
+
+  it("preserves a non-matching failure notice across snapshots", () => {
+    let state = applyEvent(emptyCockpitState(), {
+      session_id: "s-1",
+      seq: 1,
+      event: { ConfigOptionsUpdated: { options: sampleOptions() } },
+    });
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 2,
+      event: {
+        ConfigOptionSwitchFailed: {
+          config_id: "model",
+          value: "claude-sonnet-4-6",
+          reason: "transient",
+        },
+      },
+    });
+    // Snapshot still shows opus as current; the failure for the sonnet
+    // switch attempt must survive.
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 3,
+      event: { ConfigOptionsUpdated: { options: sampleOptions() } },
+    });
+    expect(state.configOptionSwitchFailed).not.toBeNull();
+  });
+
+  it("AgentSwitched clears configOptions and the failure notice", () => {
+    let state = applyEvent(emptyCockpitState(), {
+      session_id: "s-1",
+      seq: 1,
+      event: { ConfigOptionsUpdated: { options: sampleOptions() } },
+    });
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 2,
+      event: {
+        ConfigOptionSwitchFailed: {
+          config_id: "effort",
+          value: "high",
+          reason: "unsupported",
+        },
+      },
+    });
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 3,
+      event: {
+        AgentSwitched: { from: "claude", to: "codex", reason: "rate_limit" },
+      },
+    });
+    expect(state.configOptions).toEqual([]);
+    expect(state.configOptionSwitchFailed).toBeNull();
+    expect(state.pendingConfigOption).toBeNull();
+  });
+
+  it("SessionCleared preserves configOptions (adapter capabilities outlive /clear)", () => {
+    let state = applyEvent(emptyCockpitState(), {
+      session_id: "s-1",
+      seq: 1,
+      event: { ConfigOptionsUpdated: { options: sampleOptions() } },
+    });
+    state = applyEvent(state, {
+      session_id: "s-1",
+      seq: 2,
+      event: "SessionCleared",
+    });
+    expect(state.configOptions).toHaveLength(2);
+  });
+});
