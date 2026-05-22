@@ -186,6 +186,62 @@ pub struct AvailableCommand {
     pub accepts_input: bool,
 }
 
+/// Semantic category for an ACP `SessionConfigOption`. Mirrors the
+/// upstream schema's `SessionConfigOptionCategory` so the cockpit UI
+/// can pick the right widget per category (model dropdown, effort
+/// segmented control, etc.) without hardcoding option ids. Unknown
+/// categories fall through to `Other(String)` so the broadcast frame
+/// stays forward-compatible with new adapter categories.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ConfigOptionCategory {
+    Mode,
+    Model,
+    ThoughtLevel,
+    #[serde(untagged)]
+    Other(String),
+}
+
+/// One choice in a `Select`-kind `SessionConfigOption`. `value` is the
+/// token the agent expects back via `session/set_config_option`;
+/// `name` is the user-facing label.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ConfigOptionChoice {
+    pub value: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+/// Cockpit's view of a single ACP `SessionConfigOption`. Built from
+/// `SessionUpdate::ConfigOptionUpdate` notifications; the adapter
+/// resends the full snapshot whenever any selector changes, so the
+/// cockpit treats each `ConfigOptionsUpdated` event as a full
+/// replacement of the previous list.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ConfigOptionDescriptor {
+    pub id: String,
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub category: ConfigOptionCategory,
+    pub current_value: String,
+    pub options: Vec<ConfigOptionChoice>,
+}
+
+/// Carried by `Event::ConfigOptionSwitchFailed` and stored on
+/// `CockpitState.config_option_switch_failed` so the UI can render a
+/// non-blocking notice when the adapter rejects a
+/// `session/set_config_option` call. Auto-clears when a later
+/// `ConfigOptionsUpdated` snapshot reports the originally-requested
+/// value as current, or on `AgentSwitched`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ConfigOptionSwitchFailure {
+    pub config_id: String,
+    pub value: String,
+    pub reason: String,
+}
+
 /// Structured detail about why aoe refused to enter the session after
 /// the ACP `initialize` handshake completed. Distinct from the runtime
 /// `Stopped` taxonomy: a startup error means the session never reached
@@ -260,6 +316,19 @@ pub struct CockpitState {
     /// only carry a free-form message; see `Event::AgentStartupError`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub startup_error: Option<StartupErrorDetail>,
+    /// Full snapshot of the per-session selectors the adapter
+    /// advertises (model, reasoning effort, mode, future categories).
+    /// Mirrors the most recent ACP `ConfigOptionUpdate` notification.
+    /// Empty when the adapter does not advertise any config options
+    /// (older adapters, non-Claude backends). See #1403.
+    #[serde(default)]
+    pub config_options: Vec<ConfigOptionDescriptor>,
+    /// Non-blocking notice for the most recent `session/set_config_option`
+    /// rejection. Cleared automatically by the next snapshot whose
+    /// matching `config_id` carries the originally-requested value, or
+    /// on `AgentSwitched`. Mirrors `ModeSwitchFailed` (#1233).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_option_switch_failed: Option<ConfigOptionSwitchFailure>,
 
     pub last_seq: u64,
     pub updated_at: DateTime<Utc>,
@@ -287,6 +356,8 @@ impl CockpitState {
             available_commands: Vec::new(),
             last_agent_switch: None,
             startup_error: None,
+            config_options: Vec::new(),
+            config_option_switch_failed: None,
             last_seq: 0,
             updated_at: Utc::now(),
         }
@@ -431,6 +502,27 @@ pub enum Event {
     /// changes; e.g. after plugin enable/disable).
     AvailableCommandsUpdated {
         commands: Vec<AvailableCommand>,
+    },
+    /// Full snapshot of the per-session selectors the adapter
+    /// advertises. Comes from ACP `SessionUpdate::ConfigOptionUpdate`
+    /// (stabilised in claude-agent-acp v0.37.0). The adapter resends
+    /// the full set whenever any selector changes; the reducer
+    /// replaces (not merges) the prior `config_options`. Also
+    /// auto-clears `config_option_switch_failed` when the snapshot's
+    /// matching config_id current_value equals the previously-failed
+    /// value. See #1403.
+    ConfigOptionsUpdated {
+        options: Vec<ConfigOptionDescriptor>,
+    },
+    /// `session/set_config_option` round-trip rejected by the adapter.
+    /// UI renders a non-blocking notice and the session keeps whatever
+    /// value the adapter last reported. Mirrors `ModeSwitchFailed`
+    /// (#1233). Auto-dismisses on the next confirming
+    /// `ConfigOptionsUpdated` snapshot or on `AgentSwitched`.
+    ConfigOptionSwitchFailed {
+        config_id: String,
+        value: String,
+        reason: String,
     },
     /// Passthrough for an ACP `session/update` payload that we have not yet
     /// finished mapping to a typed variant. Useful while the cockpit's
@@ -630,6 +722,35 @@ impl CockpitState {
             Event::AvailableCommandsUpdated { commands } => {
                 self.available_commands = commands;
             }
+            Event::ConfigOptionsUpdated { options } => {
+                // Auto-dismiss a stale switch-failed notice when this
+                // snapshot reports the originally-requested value as
+                // current (the user retried and won, or the adapter
+                // applied the value asynchronously). Without this the
+                // notice would linger until the user dismissed it.
+                if let Some(failure) = self.config_option_switch_failed.as_ref() {
+                    let confirmed = options
+                        .iter()
+                        .find(|opt| opt.id == failure.config_id)
+                        .map(|opt| opt.current_value == failure.value)
+                        .unwrap_or(false);
+                    if confirmed {
+                        self.config_option_switch_failed = None;
+                    }
+                }
+                self.config_options = options;
+            }
+            Event::ConfigOptionSwitchFailed {
+                config_id,
+                value,
+                reason,
+            } => {
+                self.config_option_switch_failed = Some(ConfigOptionSwitchFailure {
+                    config_id,
+                    value,
+                    reason,
+                });
+            }
             // The next four variants don't directly mutate persistent
             // CockpitState fields (yet); they bump seq/updated_at so
             // clients see them in the replay buffer and know the session
@@ -704,6 +825,11 @@ impl CockpitState {
                 self.available_commands = Vec::new();
                 self.current_plan = None;
                 self.mode = SessionMode::Default;
+                // Per-adapter selectors (model, effort, etc.) belong
+                // to the previous backend's capability surface; the
+                // new backend will publish its own snapshot.
+                self.config_options = Vec::new();
+                self.config_option_switch_failed = None;
                 self.last_agent_switch = Some(AgentSwitchInfo {
                     from,
                     to,
@@ -841,6 +967,175 @@ mod tests {
         assert_eq!(s.available_commands.len(), 2);
         assert_eq!(s.available_commands[0].name, "review");
         assert!(s.available_commands[0].accepts_input);
+    }
+
+    fn sample_config_options() -> Vec<ConfigOptionDescriptor> {
+        vec![
+            ConfigOptionDescriptor {
+                id: "model".into(),
+                name: "Model".into(),
+                description: None,
+                category: ConfigOptionCategory::Model,
+                current_value: "claude-opus-4-7".into(),
+                options: vec![
+                    ConfigOptionChoice {
+                        value: "claude-opus-4-7".into(),
+                        name: "Claude Opus 4.7".into(),
+                        description: None,
+                    },
+                    ConfigOptionChoice {
+                        value: "claude-sonnet-4-6".into(),
+                        name: "Claude Sonnet 4.6".into(),
+                        description: None,
+                    },
+                ],
+            },
+            ConfigOptionDescriptor {
+                id: "effort".into(),
+                name: "Reasoning Effort".into(),
+                description: None,
+                category: ConfigOptionCategory::ThoughtLevel,
+                current_value: "default".into(),
+                options: vec![
+                    ConfigOptionChoice {
+                        value: "default".into(),
+                        name: "Default".into(),
+                        description: None,
+                    },
+                    ConfigOptionChoice {
+                        value: "high".into(),
+                        name: "High".into(),
+                        description: None,
+                    },
+                ],
+            },
+        ]
+    }
+
+    #[test]
+    fn config_options_updated_replaces_previous_list() {
+        let mut s = fresh_state();
+        assert!(s.config_options.is_empty());
+        s.apply_event(Event::ConfigOptionsUpdated {
+            options: sample_config_options(),
+        })
+        .unwrap();
+        assert_eq!(s.config_options.len(), 2);
+        s.apply_event(Event::ConfigOptionsUpdated {
+            options: vec![ConfigOptionDescriptor {
+                id: "model".into(),
+                name: "Model".into(),
+                description: None,
+                category: ConfigOptionCategory::Model,
+                current_value: "claude-sonnet-4-6".into(),
+                options: Vec::new(),
+            }],
+        })
+        .unwrap();
+        assert_eq!(s.config_options.len(), 1);
+        assert_eq!(s.config_options[0].current_value, "claude-sonnet-4-6");
+    }
+
+    #[test]
+    fn config_option_switch_failed_records_notice_without_mutating_options() {
+        let mut s = fresh_state();
+        s.apply_event(Event::ConfigOptionsUpdated {
+            options: sample_config_options(),
+        })
+        .unwrap();
+        let before = s.config_options.clone();
+        s.apply_event(Event::ConfigOptionSwitchFailed {
+            config_id: "model".into(),
+            value: "claude-sonnet-4-6".into(),
+            reason: "rate limited".into(),
+        })
+        .unwrap();
+        let notice = s
+            .config_option_switch_failed
+            .as_ref()
+            .expect("notice populated");
+        assert_eq!(notice.config_id, "model");
+        assert_eq!(notice.value, "claude-sonnet-4-6");
+        assert_eq!(notice.reason, "rate limited");
+        assert_eq!(s.config_options, before);
+    }
+
+    #[test]
+    fn config_options_updated_clears_matching_failure_notice() {
+        let mut s = fresh_state();
+        s.apply_event(Event::ConfigOptionsUpdated {
+            options: sample_config_options(),
+        })
+        .unwrap();
+        s.apply_event(Event::ConfigOptionSwitchFailed {
+            config_id: "model".into(),
+            value: "claude-sonnet-4-6".into(),
+            reason: "transient".into(),
+        })
+        .unwrap();
+        let mut next = sample_config_options();
+        next[0].current_value = "claude-sonnet-4-6".into();
+        s.apply_event(Event::ConfigOptionsUpdated { options: next })
+            .unwrap();
+        assert!(s.config_option_switch_failed.is_none());
+    }
+
+    #[test]
+    fn config_options_updated_preserves_non_matching_failure_notice() {
+        let mut s = fresh_state();
+        s.apply_event(Event::ConfigOptionsUpdated {
+            options: sample_config_options(),
+        })
+        .unwrap();
+        s.apply_event(Event::ConfigOptionSwitchFailed {
+            config_id: "model".into(),
+            value: "claude-sonnet-4-6".into(),
+            reason: "transient".into(),
+        })
+        .unwrap();
+        // Snapshot still shows opus as current; the failure notice for
+        // a sonnet switch attempt must survive.
+        s.apply_event(Event::ConfigOptionsUpdated {
+            options: sample_config_options(),
+        })
+        .unwrap();
+        assert!(s.config_option_switch_failed.is_some());
+    }
+
+    #[test]
+    fn agent_switched_clears_config_options_and_failure_notice() {
+        let mut s = fresh_state();
+        s.apply_event(Event::ConfigOptionsUpdated {
+            options: sample_config_options(),
+        })
+        .unwrap();
+        s.apply_event(Event::ConfigOptionSwitchFailed {
+            config_id: "effort".into(),
+            value: "high".into(),
+            reason: "unsupported".into(),
+        })
+        .unwrap();
+        s.apply_event(Event::AgentSwitched {
+            from: "claude".into(),
+            to: "codex".into(),
+            reason: "rate_limit".into(),
+        })
+        .unwrap();
+        assert!(s.config_options.is_empty());
+        assert!(s.config_option_switch_failed.is_none());
+    }
+
+    #[test]
+    fn session_cleared_preserves_config_options() {
+        let mut s = fresh_state();
+        s.apply_event(Event::ConfigOptionsUpdated {
+            options: sample_config_options(),
+        })
+        .unwrap();
+        s.apply_event(Event::SessionCleared).unwrap();
+        // Adapter capabilities outlive /clear; the model has forgotten
+        // the conversation but still advertises the same selectors.
+        assert_eq!(s.config_options.len(), 2);
     }
 
     #[test]
