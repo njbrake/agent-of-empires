@@ -44,11 +44,16 @@ base("wizard worktree toggle hides and shows the branch input", async ({ page },
     const branchLabel = page.getByText("Branch / worktree name");
     await expect(branchLabel).toBeVisible({ timeout: 10_000 });
 
-    // Toggle worktree off via the label/click region next to the switch.
-    await page.getByText("Create a worktree").click();
+    // Click the Toggle switch directly (clicking the wrapping label
+    // double-toggles, since both the label and the switch fire onChange).
+    const worktreeRow = page
+      .locator("label")
+      .filter({ hasText: "Create a worktree" });
+    const worktreeSwitch = worktreeRow.locator('button[role="switch"]');
+    await worktreeSwitch.click();
     await expect(branchLabel).toBeHidden({ timeout: 5_000 });
 
-    await page.getByText("Create a worktree").click();
+    await worktreeSwitch.click();
     await expect(branchLabel).toBeVisible({ timeout: 5_000 });
   } finally {
     await serve.stop();

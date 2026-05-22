@@ -38,10 +38,31 @@ base("theme name SelectField round-trips through the UI", async ({ page }, testI
     await themeSelect.selectOption(next!);
     await expect(themeSelect).toHaveValue(next!);
 
+    // The select value flipping is necessary but not sufficient; the
+    // resolved theme must actually paint via
+    // `document.documentElement.dataset.theme` (lib/theme.ts applies it
+    // on theme-picker-changed). Without this, the picker can silently
+    // PATCH without the UI reflecting the new theme.
+    await expect
+      .poll(
+        async () =>
+          await page.evaluate(() => document.documentElement.dataset.theme),
+        { timeout: 10_000 },
+      )
+      .toBe(next);
+
     await page.reload();
     await openSettingsTab(page, "Theme");
     const reloaded = settingsSelectByLabel(page, "Theme");
     await expect(reloaded).toHaveValue(next!, { timeout: 10_000 });
+    // After reload, the bootstrap path should re-apply the same theme.
+    await expect
+      .poll(
+        async () =>
+          await page.evaluate(() => document.documentElement.dataset.theme),
+        { timeout: 10_000 },
+      )
+      .toBe(next);
   } finally {
     await serve.stop();
   }

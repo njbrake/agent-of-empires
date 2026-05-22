@@ -25,7 +25,12 @@ test("theme select round-trips through the UI under passphrase auth", async ({
     page.getByRole("button", { name: "Go to dashboard" }),
   ).toBeVisible({ timeout: 10_000 });
 
-  await page.goto(`${servePassphrase.baseUrl}/settings`);
+  // Drive the in-app sidebar navigation to /settings rather than
+  // page.goto'ing the URL: with passphrase auth, the direct URL load
+  // hits the LoginPage briefly and the SPA can land back on the
+  // dashboard before SettingsView mounts. Clicking the sidebar
+  // affordance keeps the established session cookie + history state.
+  await page.getByRole("button", { name: "Settings" }).click();
   await openSettingsTab(page, "Theme");
 
   const themeSelect = settingsSelectByLabel(page, "Theme");
@@ -49,8 +54,26 @@ test("theme select round-trips through the UI under passphrase auth", async ({
   await themeSelect.selectOption(next!);
   await expect(themeSelect).toHaveValue(next!);
 
+  // Resolved theme must paint via `document.documentElement.dataset.theme`.
+  await expect
+    .poll(
+      async () =>
+        await page.evaluate(() => document.documentElement.dataset.theme),
+      { timeout: 10_000 },
+    )
+    .toBe(next);
+
   await page.reload();
   await openSettingsTab(page, "Theme");
   const reloaded = settingsSelectByLabel(page, "Theme");
   await expect(reloaded).toHaveValue(next!, { timeout: 10_000 });
+  // Bootstrap path must also re-apply the theme after reload under
+  // passphrase auth (cookie must persist + theme path resolves).
+  await expect
+    .poll(
+      async () =>
+        await page.evaluate(() => document.documentElement.dataset.theme),
+      { timeout: 10_000 },
+    )
+    .toBe(next);
 });
