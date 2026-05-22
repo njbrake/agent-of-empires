@@ -1146,3 +1146,107 @@ fn test_cli_add_attaches_to_existing_worktree() {
         Some("feat/existing"),
     );
 }
+
+/// A concurrent `aoe remove` must not lose rows that other processes add
+/// while it runs.
+///
+/// Before Stage 2b, `remove.rs`, `group.rs`, and `worktree.rs` still used
+/// the lossy pattern: `load_with_groups()` -> work -> `commit()`. That load
+/// is unlocked; only the final `commit()` takes the Stage 1 flock. So the
+/// `remove` handler reads its snapshot, then any number of `aoe add`
+/// processes can run a fully locked `Storage::update()` (load fresh,
+/// append, write) before the `remove` handler reaches its `commit()`. That
+/// `commit()` is a wholesale last-writer-wins overwrite of the snapshot the
+/// handler loaded earlier, so every row those adds committed in between is
+/// clobbered. The flock serialises the writes but does nothing for the
+/// staleness of the `remove` handler's snapshot.
+///
+/// This test seeds a victim row, spawns several `aoe add` processes, then
+/// after a short delay spawns one `aoe remove` of the victim. The delay is
+/// tuned so the `remove` handler loads its snapshot before the adds commit
+/// and reaches its own `commit()` after them, the exact interleaving that
+/// loses rows. After all processes exit, the victim must be gone and every
+/// concurrently-added row must survive. Red on the `commit()`-based
+/// `remove` handler (its wholesale write clobbers the racers), green once
+/// it removes the target through `Storage::update()`, which re-loads under
+/// the lock and retains by `Instance.id`.
+#[test]
+#[serial]
+fn test_cli_remove_concurrent_with_add_keeps_all_rows() {
+    let h = TuiTestHarness::new("cli_remove_concurrent");
+    let project = h.project_path();
+    let project_str = project.to_str().unwrap().to_string();
+
+    // Seed the victim row that the concurrent `aoe remove` will delete.
+    let victim = h.run_cli(&["add", &project_str, "-t", "victim-session"]);
+    assert!(
+        victim.status.success(),
+        "seed victim aoe add failed: {}",
+        String::from_utf8_lossy(&victim.stderr)
+    );
+
+    // Several concurrent `aoe add` writers. The race widens with
+    // parallelism, so a handful of overlapping adds reliably bracket the
+    // `remove` handler's load-modify-write window on the pre-Stage-2b
+    // `commit()` path.
+    let worker_count = 6;
+    let titles: Vec<String> = (0..worker_count).map(|i| format!("racer-{i}")).collect();
+
+    // Start the `aoe add` writers first, then spawn `aoe remove` after a
+    // short delay. `aoe add` does heavier pre-write setup than `aoe remove`,
+    // so without the delay the `remove` handler would finish committing
+    // before any add wrote, and there would be no lost update to catch. The
+    // delay lets the adds get close to their commit so the `remove`
+    // handler's snapshot (loaded right after the delay) predates the add
+    // commits while its own `commit()` lands after them. The sleep lives in
+    // the test, never in a handler.
+    let adders: Vec<_> = titles
+        .iter()
+        .map(|title| h.spawn_cli(&["add", &project_str, "-t", title]))
+        .collect();
+    std::thread::sleep(std::time::Duration::from_millis(85));
+    let remover = h.spawn_cli(&["remove", "victim-session"]);
+
+    let remove_out = remover
+        .wait_with_output()
+        .expect("child aoe remove did not run");
+    assert!(
+        remove_out.status.success(),
+        "concurrent aoe remove failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&remove_out.stdout),
+        String::from_utf8_lossy(&remove_out.stderr),
+    );
+
+    for (title, child) in titles.iter().zip(adders) {
+        let out = child.wait_with_output().expect("child aoe add did not run");
+        assert!(
+            out.status.success(),
+            "concurrent aoe add for {title} failed:\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr),
+        );
+    }
+
+    let json = read_sessions_json(&h);
+    let sessions = json.as_array().expect("sessions array");
+    let present: Vec<&str> = sessions
+        .iter()
+        .filter_map(|s| s["title"].as_str())
+        .collect();
+
+    assert!(
+        !present.contains(&"victim-session"),
+        "victim row should have been removed; present: {present:?}"
+    );
+    for title in &titles {
+        assert!(
+            present.contains(&title.as_str()),
+            "concurrent add row {title} was lost (remove handler clobbered it); present: {present:?}"
+        );
+    }
+    assert_eq!(
+        sessions.len(),
+        worker_count,
+        "expected {worker_count} racer rows after the victim removal; present: {present:?}"
+    );
+}
