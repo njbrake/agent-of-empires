@@ -4204,6 +4204,347 @@ mod tests {
         assert!(matches!(event, Event::ThinkingStarted));
     }
 
+    // -------------------------------------------------------------------
+    // SilentOrphanWatchdog: pure-state-machine unit tests
+    //
+    // The watchdog used to live inline in the prompt loop, where the only
+    // way to verify behavior was through real `tokio::time::sleep` and
+    // the integration shim. After #1401 the state machine is a free-
+    // standing struct that takes synthetic `Instant` / `DateTime<Utc>`
+    // inputs, so these tests can step the clock forward in microseconds
+    // without flakiness. The covered shapes deliberately overlap the
+    // production false-positive class so a regression would be caught
+    // before it ever reached the shim.
+    // -------------------------------------------------------------------
+
+    fn watchdog_test_cfg() -> SilentOrphanWatchdogConfig {
+        SilentOrphanWatchdogConfig {
+            base_grace: std::time::Duration::from_secs(120),
+            fast_grace: std::time::Duration::from_secs(20),
+            off_protocol_grace_floor: std::time::Duration::from_secs(30 * 60),
+        }
+    }
+
+    #[tokio::test]
+    async fn watchdog_fires_on_cost_then_silence() {
+        let cfg = watchdog_test_cfg();
+        let t0 = tokio::time::Instant::now();
+        let wall = chrono::Utc::now();
+        let mut w = SilentOrphanWatchdog::new();
+        w.apply_signal(LifecycleSignal::Progress, t0, wall, cfg);
+        w.apply_signal(
+            LifecycleSignal::TerminalUsage,
+            t0 + std::time::Duration::from_secs(1),
+            wall,
+            cfg,
+        );
+        // Fast grace is 20s; 25s after the last progress with cost_seen
+        // and no in-flight work must fire.
+        assert!(w.should_fire(t0 + std::time::Duration::from_secs(25), cfg));
+    }
+
+    #[tokio::test]
+    async fn watchdog_progress_after_terminal_usage_clears_fast_grace() {
+        let cfg = watchdog_test_cfg();
+        let t0 = tokio::time::Instant::now();
+        let wall = chrono::Utc::now();
+        let mut w = SilentOrphanWatchdog::new();
+        w.apply_signal(LifecycleSignal::Progress, t0, wall, cfg);
+        w.apply_signal(
+            LifecycleSignal::TerminalUsage,
+            t0 + std::time::Duration::from_secs(1),
+            wall,
+            cfg,
+        );
+        // A later Progress event must clear cost_seen so the fast grace
+        // no longer applies. The watchdog now waits for the full base
+        // grace (120s) from the latest progress.
+        w.apply_signal(
+            LifecycleSignal::Progress,
+            t0 + std::time::Duration::from_secs(2),
+            wall,
+            cfg,
+        );
+        assert!(!w.should_fire(t0 + std::time::Duration::from_secs(30), cfg));
+        // Still must not fire well past the old fast grace window.
+        assert!(!w.should_fire(t0 + std::time::Duration::from_secs(60), cfg));
+        // And must eventually fire after the full base grace.
+        assert!(w.should_fire(t0 + std::time::Duration::from_secs(125), cfg));
+    }
+
+    #[tokio::test]
+    async fn watchdog_background_command_lifts_grace_above_fast_grace() {
+        let cfg = watchdog_test_cfg();
+        let t0 = tokio::time::Instant::now();
+        let wall = chrono::Utc::now();
+        let mut w = SilentOrphanWatchdog::new();
+        w.apply_signal(LifecycleSignal::Progress, t0, wall, cfg);
+        // Tool started without the background flag.
+        w.apply_signal(
+            LifecycleSignal::ToolStarted {
+                id: "tc-bg-1".into(),
+                is_background_task: false,
+            },
+            t0 + std::time::Duration::from_secs(1),
+            wall,
+            cfg,
+        );
+        // Completion content carries the background marker.
+        w.apply_signal(
+            LifecycleSignal::ToolCompleted {
+                id: "tc-bg-1".into(),
+                off_protocol_work: Some(OffProtocolWorkKind::BackgroundCommand),
+            },
+            t0 + std::time::Duration::from_secs(2),
+            wall,
+            cfg,
+        );
+        w.apply_signal(
+            LifecycleSignal::TerminalUsage,
+            t0 + std::time::Duration::from_secs(3),
+            wall,
+            cfg,
+        );
+        // 60s after last progress: well past fast grace (20s) and past
+        // base grace (120s)? No. Past fast but inside base. Off-protocol
+        // floor lifts grace to 30 min so we must NOT fire here.
+        assert!(!w.should_fire(t0 + std::time::Duration::from_secs(60), cfg));
+        assert!(!w.should_fire(t0 + std::time::Duration::from_secs(60 * 25), cfg));
+        // Past the 30-min floor: watchdog finally recovers.
+        assert!(w.should_fire(t0 + std::time::Duration::from_secs(60 * 35), cfg));
+    }
+
+    #[tokio::test]
+    async fn watchdog_async_agent_lifts_grace_above_fast_grace() {
+        let cfg = watchdog_test_cfg();
+        let t0 = tokio::time::Instant::now();
+        let wall = chrono::Utc::now();
+        let mut w = SilentOrphanWatchdog::new();
+        w.apply_signal(LifecycleSignal::Progress, t0, wall, cfg);
+        w.apply_signal(
+            LifecycleSignal::ToolStarted {
+                id: "tc-async-1".into(),
+                is_background_task: false,
+            },
+            t0 + std::time::Duration::from_secs(1),
+            wall,
+            cfg,
+        );
+        w.apply_signal(
+            LifecycleSignal::ToolCompleted {
+                id: "tc-async-1".into(),
+                off_protocol_work: Some(OffProtocolWorkKind::AsyncAgent),
+            },
+            t0 + std::time::Duration::from_secs(2),
+            wall,
+            cfg,
+        );
+        w.apply_signal(
+            LifecycleSignal::TerminalUsage,
+            t0 + std::time::Duration::from_secs(3),
+            wall,
+            cfg,
+        );
+        assert!(!w.should_fire(t0 + std::time::Duration::from_secs(60), cfg));
+        assert!(!w.should_fire(t0 + std::time::Duration::from_secs(60 * 25), cfg));
+    }
+
+    #[tokio::test]
+    async fn watchdog_background_via_raw_input_lifts_grace_without_content_marker() {
+        // Defense in depth: even if the completion content marker is
+        // missing (SDK string drift, content stripped), the
+        // `is_background_task` flag captured at ToolStarted should
+        // still flip `off_protocol_work_seen`.
+        let cfg = watchdog_test_cfg();
+        let t0 = tokio::time::Instant::now();
+        let wall = chrono::Utc::now();
+        let mut w = SilentOrphanWatchdog::new();
+        w.apply_signal(LifecycleSignal::Progress, t0, wall, cfg);
+        w.apply_signal(
+            LifecycleSignal::ToolStarted {
+                id: "tc-bg-2".into(),
+                is_background_task: true,
+            },
+            t0 + std::time::Duration::from_secs(1),
+            wall,
+            cfg,
+        );
+        w.apply_signal(
+            LifecycleSignal::ToolCompleted {
+                id: "tc-bg-2".into(),
+                off_protocol_work: None,
+            },
+            t0 + std::time::Duration::from_secs(2),
+            wall,
+            cfg,
+        );
+        assert_eq!(
+            w.off_protocol_work_seen(),
+            Some(OffProtocolWorkKind::BackgroundCommand),
+            "raw_input.run_in_background must trip off-protocol suppression alone"
+        );
+        assert!(!w.should_fire(t0 + std::time::Duration::from_secs(60 * 20), cfg));
+    }
+
+    #[tokio::test]
+    async fn watchdog_wakeup_suppresses_until_at_plus_base_grace() {
+        let cfg = watchdog_test_cfg();
+        let t0 = tokio::time::Instant::now();
+        let wall = chrono::Utc::now();
+        let mut w = SilentOrphanWatchdog::new();
+        w.apply_signal(LifecycleSignal::Progress, t0, wall, cfg);
+        // Schedule wakeup 1 second in the future.
+        w.apply_signal(
+            LifecycleSignal::WakeupPending {
+                at: wall + chrono::Duration::seconds(1),
+            },
+            t0 + std::time::Duration::from_secs(1),
+            wall,
+            cfg,
+        );
+        // 1 second after wakeup ARMED (i.e. at the wakeup `at` itself):
+        // suppression must still hold for the tail.
+        assert!(!w.should_fire(t0 + std::time::Duration::from_secs(2), cfg));
+        // 30 seconds after `at`: still inside the 120s base-grace tail.
+        assert!(!w.should_fire(t0 + std::time::Duration::from_secs(30), cfg));
+        // Past `at + base_grace`: watchdog rearms with normal elapsed
+        // semantics; elapsed since last progress (122s) > base_grace
+        // (120s) → fires.
+        assert!(w.should_fire(t0 + std::time::Duration::from_secs(125), cfg));
+    }
+
+    #[tokio::test]
+    async fn watchdog_wakeup_suppression_eventually_expires() {
+        let cfg = watchdog_test_cfg();
+        let t0 = tokio::time::Instant::now();
+        let wall = chrono::Utc::now();
+        let mut w = SilentOrphanWatchdog::new();
+        w.apply_signal(LifecycleSignal::Progress, t0, wall, cfg);
+        w.apply_signal(
+            LifecycleSignal::WakeupPending {
+                at: wall + chrono::Duration::seconds(1),
+            },
+            t0 + std::time::Duration::from_secs(1),
+            wall,
+            cfg,
+        );
+        // Step very far past the deadline; should_fire clears the
+        // deadline as a side effect and rearms the watchdog.
+        assert!(w.should_fire(t0 + std::time::Duration::from_secs(60 * 60), cfg));
+        // A subsequent check at any later time without new progress
+        // must still fire (the deadline was cleared, so suppression
+        // does not re-engage).
+        assert!(w.should_fire(t0 + std::time::Duration::from_secs(60 * 60 + 1), cfg));
+    }
+
+    #[tokio::test]
+    async fn watchdog_later_wakeup_extends_not_shortens_suppression() {
+        let cfg = watchdog_test_cfg();
+        let t0 = tokio::time::Instant::now();
+        let wall = chrono::Utc::now();
+        let mut w = SilentOrphanWatchdog::new();
+        w.apply_signal(LifecycleSignal::Progress, t0, wall, cfg);
+        // First wakeup: 10s out.
+        w.apply_signal(
+            LifecycleSignal::WakeupPending {
+                at: wall + chrono::Duration::seconds(10),
+            },
+            t0 + std::time::Duration::from_secs(1),
+            wall,
+            cfg,
+        );
+        // Second wakeup: 100s out (further). The deadline must extend.
+        w.apply_signal(
+            LifecycleSignal::WakeupPending {
+                at: wall + chrono::Duration::seconds(100),
+            },
+            t0 + std::time::Duration::from_secs(2),
+            wall,
+            cfg,
+        );
+        // At t0 + 50s: the first wakeup's tail (10s + 120s = 130s) is
+        // still alive, AND the second wakeup's tail (100s + 120s =
+        // 220s) is alive. Watchdog must be suppressed by the larger.
+        assert!(!w.should_fire(t0 + std::time::Duration::from_secs(50), cfg));
+        // At t0 + 215s: still inside the second wakeup's tail.
+        assert!(!w.should_fire(t0 + std::time::Duration::from_secs(215), cfg));
+        // At t0 + 225s: past the second wakeup's tail.
+        assert!(w.should_fire(t0 + std::time::Duration::from_secs(225), cfg));
+    }
+
+    #[tokio::test]
+    async fn watchdog_shorter_followup_wakeup_does_not_shorten_suppression() {
+        let cfg = watchdog_test_cfg();
+        let t0 = tokio::time::Instant::now();
+        let wall = chrono::Utc::now();
+        let mut w = SilentOrphanWatchdog::new();
+        w.apply_signal(LifecycleSignal::Progress, t0, wall, cfg);
+        // First wakeup: far in the future.
+        w.apply_signal(
+            LifecycleSignal::WakeupPending {
+                at: wall + chrono::Duration::seconds(100),
+            },
+            t0 + std::time::Duration::from_secs(1),
+            wall,
+            cfg,
+        );
+        // Second wakeup: closer (should NOT shorten suppression).
+        w.apply_signal(
+            LifecycleSignal::WakeupPending {
+                at: wall + chrono::Duration::seconds(10),
+            },
+            t0 + std::time::Duration::from_secs(2),
+            wall,
+            cfg,
+        );
+        // First wakeup's tail still wins.
+        assert!(!w.should_fire(t0 + std::time::Duration::from_secs(50), cfg));
+        assert!(!w.should_fire(t0 + std::time::Duration::from_secs(200), cfg));
+        assert!(w.should_fire(t0 + std::time::Duration::from_secs(225), cfg));
+    }
+
+    #[tokio::test]
+    async fn watchdog_tool_in_flight_suppresses_even_after_terminal_usage() {
+        let cfg = watchdog_test_cfg();
+        let t0 = tokio::time::Instant::now();
+        let wall = chrono::Utc::now();
+        let mut w = SilentOrphanWatchdog::new();
+        w.apply_signal(LifecycleSignal::Progress, t0, wall, cfg);
+        w.apply_signal(
+            LifecycleSignal::ToolStarted {
+                id: "tc-1".into(),
+                is_background_task: false,
+            },
+            t0 + std::time::Duration::from_secs(1),
+            wall,
+            cfg,
+        );
+        w.apply_signal(
+            LifecycleSignal::TerminalUsage,
+            t0 + std::time::Duration::from_secs(2),
+            wall,
+            cfg,
+        );
+        // Tool still in flight: watchdog never fires regardless of grace.
+        assert!(!w.should_fire(t0 + std::time::Duration::from_secs(60 * 60), cfg));
+    }
+
+    #[tokio::test]
+    async fn watchdog_does_not_fire_without_first_progress() {
+        let cfg = watchdog_test_cfg();
+        let t0 = tokio::time::Instant::now();
+        let wall = chrono::Utc::now();
+        let mut w = SilentOrphanWatchdog::new();
+        // No Progress signal ever received: watchdog stays disarmed.
+        w.apply_signal(
+            LifecycleSignal::TerminalUsage,
+            t0 + std::time::Duration::from_secs(1),
+            wall,
+            cfg,
+        );
+        assert!(!w.should_fire(t0 + std::time::Duration::from_secs(60 * 60), cfg));
+    }
+
     #[test]
     fn classify_rate_limit_recognises_data_errorkind() {
         let mut err = agent_client_protocol::Error::internal_error();
@@ -4915,12 +5256,12 @@ mod tests {
 
     #[test]
     fn classify_lifecycle_signal_tool_call_carries_run_in_background_flag() {
-        use agent_client_protocol::schema::{ToolCall, ToolKind};
-        let raw = serde_json::json!({
+        use agent_client_protocol::schema::ToolCall;
+        let mut tc = ToolCall::new("tc-bg-2", "Bash");
+        tc.raw_input = Some(serde_json::json!({
             "command": "npm install",
             "run_in_background": true,
-        });
-        let tc = ToolCall::new("tc-bg-2", "Bash", ToolKind::Execute).raw_input(raw);
+        }));
         match classify_lifecycle_signal(&SessionUpdate::ToolCall(tc)) {
             Some(LifecycleSignal::ToolStarted {
                 id,
@@ -4938,9 +5279,9 @@ mod tests {
 
     #[test]
     fn classify_lifecycle_signal_tool_call_defaults_run_in_background_false() {
-        use agent_client_protocol::schema::{ToolCall, ToolKind};
-        let raw = serde_json::json!({ "command": "ls" });
-        let tc = ToolCall::new("tc-fg-1", "Bash", ToolKind::Execute).raw_input(raw);
+        use agent_client_protocol::schema::ToolCall;
+        let mut tc = ToolCall::new("tc-fg-1", "Bash");
+        tc.raw_input = Some(serde_json::json!({ "command": "ls" }));
         match classify_lifecycle_signal(&SessionUpdate::ToolCall(tc)) {
             Some(LifecycleSignal::ToolStarted {
                 is_background_task, ..
