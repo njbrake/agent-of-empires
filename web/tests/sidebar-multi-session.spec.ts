@@ -134,4 +134,65 @@ test.describe("Sidebar multi-session (#956)", () => {
     await expect(page.getByRole("link", { name: /feature\/a/i })).toBeVisible();
     await expect(page.getByRole("link", { name: /feature\/b/i })).toBeVisible();
   });
+
+  test("project group context menu stores alias and background color", async ({
+    page,
+  }) => {
+    await mockApis(page, [
+      {
+        id: "sess-a",
+        title: "Ethiopians",
+        project_path: "/tmp/agent-of-empires",
+        branch: null,
+      },
+      {
+        id: "sess-b",
+        title: "Celts",
+        project_path: "/tmp/other-repo",
+        branch: null,
+      },
+    ]);
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await page.goto("/");
+    await expect(page.locator("header")).toBeVisible();
+
+    const projectHeader = page.locator(
+      '[data-testid="sidebar-group-header"][data-group-id="/tmp/agent-of-empires"]',
+    );
+    await expect(projectHeader).toBeVisible();
+
+    await projectHeader.click({ button: "right" });
+    const menu = page.locator("[data-testid='sidebar-group-context-menu']");
+    await expect(menu).toBeVisible();
+    await menu.locator("[data-testid='sidebar-group-context-menu-rename']").click();
+
+    const input = page.locator("[data-testid='sidebar-group-rename-input']");
+    await input.fill("Client Alpha");
+    await input.press("Enter");
+    await expect(projectHeader.getByText("Client Alpha")).toBeVisible();
+
+    await page.getByLabel("Filter sessions").click();
+    const filter = page.locator("[data-testid='sidebar-filter-input']");
+    await filter.fill("client alpha");
+    await expect(page.locator("[data-testid='sidebar-group-header']")).toHaveCount(1);
+    await filter.fill("");
+
+    await projectHeader.click({ button: "right" });
+    await page.locator("[data-testid='sidebar-group-color-amber']").click();
+    await expect(projectHeader).toHaveClass(/bg-amber-950\/30/);
+
+    const stored = await page.evaluate(() =>
+      window.localStorage.getItem("aoe-repo-appearance-v1"),
+    );
+    expect(JSON.parse(stored ?? "{}")).toMatchObject({
+      "/tmp/agent-of-empires": { alias: "Client Alpha", color: "amber" },
+    });
+
+    await page.reload();
+    const restoredHeader = page.locator(
+      '[data-testid="sidebar-group-header"][data-group-id="/tmp/agent-of-empires"]',
+    );
+    await expect(restoredHeader.getByText("Client Alpha")).toBeVisible();
+    await expect(restoredHeader).toHaveClass(/bg-amber-950\/30/);
+  });
 });

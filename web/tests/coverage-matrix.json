@@ -208,7 +208,10 @@
       "id": "sidebar.groups",
       "kind": "live-playwright",
       "risk": "medium",
-      "specs": ["tests/live/sidebar-groups.spec.ts"],
+      "specs": [
+        "tests/live/sidebar-groups.spec.ts",
+        "tests/sidebar-multi-session.spec.ts"
+      ],
       "components": ["web/src/components/WorkspaceSidebar.tsx"]
     },
     {

@@ -1,6 +1,12 @@
 import { useCallback, useMemo, useState } from "react";
 import type { Workspace, RepoGroup } from "../lib/types";
 import { safeGetItem, safeRemoveItem, safeSetItem } from "../lib/safeStorage";
+import {
+  applyRepoAppearanceUpdate,
+  loadRepoAppearances,
+  persistRepoAppearances,
+  type RepoAppearanceUpdate,
+} from "../lib/repoAppearance";
 
 const COLLAPSED_KEY_PREFIX = "aoe-repo-collapsed-";
 export const MULTI_REPO_GROUP_ID = "__multi_repo__";
@@ -24,8 +30,10 @@ export function useRepoGroups(
 ): {
   groups: RepoGroup[];
   toggleRepoCollapsed: (repoId: string) => void;
+  updateRepoAppearance: (repoId: string, update: RepoAppearanceUpdate) => void;
 } {
   const [collapsedMap, setCollapsedMap] = useState<Record<string, boolean>>({});
+  const [appearanceMap, setAppearanceMap] = useState(loadRepoAppearances);
 
   const groups = useMemo(() => {
     const rank = new Map(workspaceOrdering.map((id, i) => [id, i] as const));
@@ -53,11 +61,16 @@ export function useRepoGroups(
       const hasActive = sorted.some((ws) => ws.status === "active");
       const collapsed = collapsedMap[repoPath] ?? loadCollapsed(repoPath);
       const remoteOwner = sorted[0]?.sessions[0]?.remote_owner ?? null;
+      const appearance = appearanceMap[repoPath];
+      const defaultDisplayName = repoPath.split("/").pop() ?? repoPath;
 
       repoGroups.push({
         id: repoPath,
         repoPath,
-        displayName: repoPath.split("/").pop() ?? repoPath,
+        displayName: appearance?.alias ?? defaultDisplayName,
+        defaultDisplayName,
+        alias: appearance?.alias ?? null,
+        color: appearance?.color ?? null,
         remoteOwner,
         workspaces: sorted,
         status: hasActive ? "active" : "idle",
@@ -70,10 +83,15 @@ export function useRepoGroups(
       const hasActive = sorted.some((ws) => ws.status === "active");
       const collapsed =
         collapsedMap[MULTI_REPO_GROUP_ID] ?? loadCollapsed(MULTI_REPO_GROUP_ID);
+      const appearance = appearanceMap[MULTI_REPO_GROUP_ID];
+      const defaultDisplayName = "Multi-repo";
       repoGroups.push({
         id: MULTI_REPO_GROUP_ID,
         repoPath: MULTI_REPO_GROUP_ID,
-        displayName: "Multi-repo",
+        displayName: appearance?.alias ?? defaultDisplayName,
+        defaultDisplayName,
+        alias: appearance?.alias ?? null,
+        color: appearance?.color ?? null,
         remoteOwner: null,
         workspaces: sorted,
         status: hasActive ? "active" : "idle",
@@ -91,7 +109,7 @@ export function useRepoGroups(
     });
 
     return repoGroups;
-  }, [workspaces, workspaceOrdering, collapsedMap]);
+  }, [workspaces, workspaceOrdering, collapsedMap, appearanceMap]);
 
   const toggleRepoCollapsed = useCallback((repoId: string) => {
     setCollapsedMap((prev) => {
@@ -106,5 +124,16 @@ export function useRepoGroups(
     });
   }, []);
 
-  return { groups, toggleRepoCollapsed };
+  const updateRepoAppearance = useCallback(
+    (repoId: string, update: RepoAppearanceUpdate) => {
+      setAppearanceMap((prev) => {
+        const next = applyRepoAppearanceUpdate(prev, repoId, update);
+        persistRepoAppearances(next);
+        return next;
+      });
+    },
+    [],
+  );
+
+  return { groups, toggleRepoCollapsed, updateRepoAppearance };
 }

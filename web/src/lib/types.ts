@@ -1,3 +1,5 @@
+import type { RepoColor } from "./repoAppearance";
+
 /** Session data returned by the API */
 export interface SessionResponse {
   id: string;
@@ -209,6 +211,9 @@ export interface RepoGroup {
   id: string;
   repoPath: string;
   displayName: string;
+  defaultDisplayName: string;
+  alias: string | null;
+  color: RepoColor | null;
   remoteOwner: string | null;
   workspaces: Workspace[];
   status: WorkspaceStatus;
