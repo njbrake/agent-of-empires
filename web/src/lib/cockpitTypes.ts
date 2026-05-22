@@ -96,6 +96,42 @@ export interface Approval {
   } | null;
 }
 
+/** Mirror of `StartupErrorDetail` in src/cockpit/state.rs. Serde's
+ *  default for `#[serde(tag = "kind", ...)]` is internal tagging keyed
+ *  on `kind`. Carries the structured remediation data the
+ *  `StartupErrorScreen` renders. */
+export type IncompatibleAgentDetail =
+  | {
+      kind: "incompatible_agent_version";
+      package_name: string;
+      installed: string;
+      required: string;
+      install_command: string;
+    }
+  | {
+      kind: "missing_agent_info";
+      expected_package: string;
+      install_command: string;
+    }
+  | {
+      kind: "mismatched_agent_name";
+      expected: string;
+      received: string;
+      install_command: string;
+    }
+  | {
+      kind: "unparseable_agent_version";
+      package_name: string;
+      raw_version: string;
+      required: string;
+      install_command: string;
+    }
+  | {
+      kind: "unsupported_protocol_version";
+      expected: string;
+      received: string;
+    };
+
 // One variant per Event::* in src/cockpit/state.rs. All variants carry
 // a discriminant key matching the serde representation: serde defaults
 // to externally-tagged JSON for an enum, e.g.
@@ -171,6 +207,7 @@ export type CockpitEvent =
   | { AgentMessageChunk: { text: string } }
   | { Stopped: { reason: string } }
   | { AgentStartupError: { message: string } }
+  | { IncompatibleAgent: { detail: IncompatibleAgentDetail } }
   | { UserPromptSent: { text: string } }
   | { AcpSessionAssigned: { acp_session_id: string } }
   | { SessionContextReset: { reason: string } }
@@ -227,6 +264,16 @@ export interface CockpitState {
   /** Latest agent startup failure message, if any. Cleared when a new
    *  prompt is sent or the worker successfully connects. */
   startupError: string | null;
+  /** Structured detail from the per-adapter compatibility check (see
+   *  `src/cockpit/agent_compat.rs`). When set, the cockpit UI replaces
+   *  its normal session view with a full-region `StartupErrorScreen`
+   *  that renders the exact remediation command. Distinct from
+   *  `startupError` (string) which legacy callers still populate for
+   *  free-form handshake failures; `incompatibleAgent` carries
+   *  installed/required versions + install command in structured form.
+   *  Cleared on a fresh `AcpSessionAssigned` so a respawned worker
+   *  that satisfies the policy unblocks the UI. */
+  incompatibleAgent: IncompatibleAgentDetail | null;
   /** Latest interaction error (failed sendPrompt / resolveApproval /
    *  cancel POST). Surfaces as a dismissible banner so users don't
    *  silently lose actions to a network blip. Cleared on the next
@@ -436,6 +483,7 @@ export function emptyCockpitState(): CockpitState {
     lastSeq: 0,
     lagged: false,
     startupError: null,
+    incompatibleAgent: null,
     lastError: null,
     turnActive: false,
     pendingUserPromptSeq: 0,
@@ -841,6 +889,23 @@ export function applyEvent(
     }
     return next;
   }
+  if ("IncompatibleAgent" in event) {
+    // The cockpit refused to enter the session because the adapter
+    // failed the per-adapter compatibility check (see
+    // src/cockpit/agent_compat.rs). The structured payload powers the
+    // dedicated StartupErrorScreen which short-circuits normal session
+    // rendering. The parallel AgentStartupError event populates
+    // `startupError` so legacy status logic still flips into Error.
+    next.incompatibleAgent = event.IncompatibleAgent.detail;
+    next.inFlightTool = null;
+    next.agentUnresponsive = false;
+    next.lastStoppedSeq = Math.min(
+      next.lastStoppedSeq + 1,
+      next.pendingUserPromptSeq,
+    );
+    next.turnActive = isTurnActive(next);
+    return next;
+  }
   if ("AgentStartupError" in event) {
     next.startupError = event.AgentStartupError.message;
     next.inFlightTool = null;
@@ -953,6 +1018,10 @@ export function applyEvent(
     // its own once the respawn completes the handshake.
     next.startupError = null;
     next.lastError = null;
+    // A fresh agent that passed the compatibility check has come
+    // online; the structured incompatibility banner heals so the
+    // session can resume.
+    next.incompatibleAgent = null;
     // A fresh agent (via POST /cockpit/spawn after `aoe cockpit stop`
     // or via the reconciler's auto-respawn after `aoe cockpit restart`)
     // is online; clear both transient worker banners.
