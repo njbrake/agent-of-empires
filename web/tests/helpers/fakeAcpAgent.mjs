@@ -43,7 +43,41 @@
 // exhausted, subsequent prompts get the default happy-path turn.
 
 import { createInterface } from "node:readline";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, appendFileSync } from "node:fs";
+
+// Silently swallow EPIPE/EBADF on stdout/stderr writes. The fake is a
+// noisy stdout writer (one JSON line per session/update notification);
+// if the supervisor briefly stalls draining the pipe (CI under v8
+// coverage instrumentation has spent ~hundreds of ms behind the
+// runtime worker), a subsequent write can emit EPIPE — without a
+// handler, Node treats that as an uncaught exception and exits the
+// process. The runner sees the child exit, deletes the worker_registry
+// entry, the supervisor's reap pass publishes Stopped {
+// reason: "user_stopped" }, and the UI banners "Cockpit worker
+// stopped" mid-turn. That matched the symptom in #1383 (see Once /
+// upon visible but "a time." never arriving in the composer-streamed
+// trace). Swallowing the error is safe: write failures here mean the
+// peer is gone, and there is no surface in the fake that benefits
+// from observing them.
+const FAKE_DEBUG_PATH = process.env.FAKE_ACP_DEBUG_LOG;
+function fakeDebug(line) {
+  if (!FAKE_DEBUG_PATH) return;
+  try {
+    appendFileSync(FAKE_DEBUG_PATH, `[${Date.now()}] ${line}\n`);
+  } catch {
+    // ignore
+  }
+}
+process.stdout.on("error", (err) => {
+  fakeDebug(`stdout error swallowed: ${err.code ?? err.message}`);
+});
+process.stderr.on("error", () => {});
+process.on("uncaughtException", (err) => {
+  fakeDebug(`uncaughtException: ${err?.stack ?? err}`);
+});
+process.on("unhandledRejection", (reason) => {
+  fakeDebug(`unhandledRejection: ${reason}`);
+});
 
 const DEFAULT_TURN = {
   updates: [
