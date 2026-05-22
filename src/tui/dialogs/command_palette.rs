@@ -227,6 +227,14 @@ pub fn builtin_commands(serve_enabled: bool, strict_hotkeys: bool) -> Vec<Palett
             payload: PaletteAction::Key(key('w')),
         },
         PaletteCommand {
+            id: "toggle-preview-info",
+            title: "Toggle preview info header".to_string(),
+            group: PaletteGroup::Views,
+            keywords: vec!["hide", "show", "info", "header", "preview"],
+            hotkey: hotkey_label("i", "I", strict_hotkeys),
+            payload: PaletteAction::Key(key('i')),
+        },
+        PaletteCommand {
             id: "settings",
             title: "Open settings".to_string(),
             group: PaletteGroup::Settings,

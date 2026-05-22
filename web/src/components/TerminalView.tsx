@@ -20,6 +20,7 @@ import "@xterm/xterm/css/xterm.css";
 
 interface Props {
   session: SessionResponse;
+  active?: boolean;
   /** When false (the default) the switch-to-cockpit pill is hidden
    *  entirely so users with the master switch off aren't tempted
    *  by a button that the server will reject. */
@@ -29,7 +30,11 @@ interface Props {
 const SCROLL_HINT_SEEN_KEY = "aoe-mobile-scroll-hint-seen";
 const SCROLL_HINT_TIMEOUT_MS = 8000;
 
-export function TerminalView({ session, cockpitMasterEnabled = false }: Props) {
+export function TerminalView({
+  session,
+  active = true,
+  cockpitMasterEnabled = false,
+}: Props) {
   const [ensureState, setEnsureState] = useState<"pending" | "ready" | "error">(
     "pending",
   );
@@ -48,8 +53,9 @@ export function TerminalView({ session, cockpitMasterEnabled = false }: Props) {
   } = useTerminal(
     ensureState === "ready" ? session.id : null,
     "ws",
-    true,
+    active,
     session.claude_fullscreen,
+    active,
   );
   const { isMobile, keyboardOpen, keyboardHeight, reservedKeyboardHeight } =
     useMobileKeyboard();
@@ -164,6 +170,10 @@ export function TerminalView({ session, cockpitMasterEnabled = false }: Props) {
     if (ensureState !== "ready") return;
     if (consumePendingTerminalFocus("agent")) focusSelf();
   }, [ensureState, focusSelf]);
+
+  useEffect(() => {
+    if (active && ensureState === "ready") activate();
+  }, [active, ensureState, activate]);
 
   // Auto-keyboard-open on initial connect removed (#1178): the
   // KeyboardFab is always visible and lets the user open the keyboard

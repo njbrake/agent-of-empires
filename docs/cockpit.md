@@ -857,22 +857,43 @@ rate limit, usage updates without cost) explicitly do NOT reset the
 timer, so an adapter that emits periodic ambient state after the
 final transcript event still trips the watchdog.
 
-**Async-agent extension (#1360):** when the Claude SDK launches a
-sub-agent in async mode via the `Agent` tool (SuperPowers-style
-fan-out, `isAsync: true`), the sub-agent runs INSIDE the claude binary
-with no further ACP-layer signaling, so the daemon cannot observe
-progress for the entire wait window. The watchdog detects this from
-the completion text `Async agent launched successfully` on the
-launch's `ToolCallUpdate`, flips a sticky `async_agent_running` flag
-for the rest of the prompt, and promotes the effective grace to at
-least 30 minutes; the async branch also takes precedence over the
-cost-seen fast path (a cost-populated UsageUpdate mid-wait could be
-intermediate billing telemetry rather than turn termination). The
-grace stays finite by design so a real adapter wedge during an async
-wait still recovers, just slower. This is a bandaid until upstream
-`agentclientprotocol/claude-agent-acp#336` forwards the SDK's
-`task_notification` and `task_started` system messages as proper ACP
-SessionUpdates.
+**Off-protocol work suppression (#1360, #1401):** several Claude SDK
+features intentionally make the agent quiet for long stretches, with
+no ACP-layer signaling the daemon can observe. The watchdog detects
+each and lifts the effective grace to `OFF_PROTOCOL_WORK_GRACE_FLOOR`
+(30 minutes) for the rest of the prompt:
+
+- `Agent` tool with `isAsync: true` (#1360). Sub-agent runs INSIDE the
+  claude binary. Detected from the completion text `Async agent
+  launched successfully` on the launch's `ToolCallUpdate`.
+- `Bash` tool with `run_in_background: true` (#1401). The visible
+  ToolCall completes immediately while a real subprocess keeps running
+  off-protocol; the agent polls later via `BashOutput`. Detected from
+  the `raw_input.run_in_background = true` flag at `ToolStarted` time
+  AND from the completion text `Command running in background with
+  ID:` (either signal alone is enough; defense in depth so a single
+  SDK string drift can't reintroduce the false-positive class).
+
+The off-protocol branch takes precedence over the cost-seen fast path
+(a cost-populated UsageUpdate mid-wait could be intermediate billing
+telemetry rather than turn termination). The grace stays finite by
+design so a real adapter wedge during off-protocol work still
+recovers, just slower. The async-agent path is a bandaid until
+upstream `agentclientprotocol/claude-agent-acp#336` forwards the
+SDK's `task_notification` / `task_started` system messages as proper
+ACP SessionUpdates.
+
+**Scheduled wakeup suppression (#1401):** when the agent calls the
+Claude SDK `ScheduleWakeup` tool with `delaySeconds: N`, the daemon
+suppresses the watchdog until `wakeup_at + silent_orphan_grace_secs`,
+computed as a monotonic `Instant` deadline at signal receipt so
+wall-clock jumps don't perturb suppression. Multiple wakeups in the
+same prompt extend (not shorten) the suppression, and the later deadline
+always wins. After the deadline passes the watchdog rearms with its
+normal grace; if the scheduled wake does not produce follow-up
+progress while the prompt loop is alive, the watchdog recovers
+after the tail grace. Daemon crashes during sleep tear down the
+in-memory prompt loop entirely, so the next attach starts fresh.
 
 Set `cockpit.silent_orphan_grace_secs = 0` to disable. Both knobs are
 editable per profile in the TUI Settings (`Cockpit` category) and in

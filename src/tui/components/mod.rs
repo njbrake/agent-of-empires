@@ -14,7 +14,7 @@ pub use cycler::{profile_cycler_spans, tool_cycler_spans};
 pub use dir_picker::{DirPicker, DirPickerResult};
 pub use help::HelpOverlay;
 pub use list_picker::{ListPicker, ListPickerResult};
-pub use preview::Preview;
+pub use preview::{format_scroll_indicator, Preview};
 pub use text_input::{
     longest_common_prefix, render_text_field, render_text_field_with_ghost,
     set_input_cursor_position, set_prefixed_input_cursor_position, GroupGhostCompletion,

@@ -10,7 +10,6 @@ import {
   type MutableRefObject,
 } from "react";
 import { createPortal } from "react-dom";
-import { Link } from "react-router-dom";
 import { Pencil } from "lucide-react";
 import {
   DndContext,
@@ -225,17 +224,6 @@ function formatDurationSecondsShort(seconds: number): string {
   return remM === 0 ? `${h}h` : `${h}h ${remM}m`;
 }
 
-function isPlainLeftClick(event: React.MouseEvent<HTMLAnchorElement>): boolean {
-  return (
-    event.button === 0 &&
-    !event.defaultPrevented &&
-    !event.metaKey &&
-    !event.altKey &&
-    !event.ctrlKey &&
-    !event.shiftKey
-  );
-}
-
 // Wraps a SessionRow with @dnd-kit sortable plumbing. The row itself
 // is the drag handle: a short tap/click navigates as before, but a
 // press-and-hold (sensor delay) lifts the row so the user can reorder.
@@ -266,9 +254,9 @@ function useSuppressClickAfterDrag(ref: MutableRefObject<number>) {
       }
     };
     // The click Chromium dispatches after a drag-release can bypass
-    // React's event delegation and land on the inner Link without
-    // firing any wrapping capture handler. A document-level capture
-    // listener catches it before navigation kicks in.
+    // React's event delegation and land on the inner row without firing
+    // any wrapping capture handler. A document-level capture listener
+    // catches it before row activation kicks in.
     document.addEventListener("click", handler, true);
     return () => document.removeEventListener("click", handler, true);
   }, [ref]);
@@ -367,10 +355,10 @@ const SessionRow = memo(function SessionRow({
     },
     idleDecayWindowMs,
   );
+  const firstSession = workspace.sessions[0];
   const runningSession = workspace.sessions.find((s) =>
     isSessionActive(s, idleDecayWindowMs),
   );
-  const firstSession = workspace.sessions[0];
   const singleSession = workspace.sessions.length === 1;
   const sessionTitle = firstSession?.title.trim() ?? "";
   const branchLabel = workspace.branch ?? null;
@@ -545,23 +533,32 @@ const SessionRow = memo(function SessionRow({
 
   return (
     <>
-      <Link
-        to={sessionPath}
+      <a
+        href={sessionPath}
+        tabIndex={isDeleting ? -1 : undefined}
+        aria-disabled={isDeleting || undefined}
         data-testid="sidebar-session-row"
-        // Anchors are HTML5-draggable by default; the browser would
-        // start its own drag-the-link gesture in parallel with dnd-kit
-        // and finish with a synthetic click that bypassed React's event
-        // delegation, navigating despite our suppression. See #1169.
         draggable={false}
         onClick={(e) => {
+          if (
+            e.button !== 0 ||
+            e.metaKey ||
+            e.ctrlKey ||
+            e.shiftKey ||
+            e.altKey
+          ) {
+            return;
+          }
+          if (isDeleting) {
+            e.preventDefault();
+            return;
+          }
           if (longPressFired.current) {
             e.preventDefault();
             return;
           }
-          if (isPlainLeftClick(e)) {
-            e.preventDefault();
-            onClick();
-          }
+          e.preventDefault();
+          onClick();
         }}
         onContextMenu={handleContextMenu}
         onTouchStart={handleTouchStart}
@@ -667,7 +664,7 @@ const SessionRow = memo(function SessionRow({
             )}
           </div>
         </div>
-      </Link>
+      </a>
       {contextMenu && createPortal(
         <div
           ref={menuRef}
@@ -835,18 +832,28 @@ export function WorkspaceSidebar({
   const [width, setWidth] = useState(loadSavedWidth);
   const [filterOpen, setFilterOpen] = useState(false);
   const [filterQuery, setFilterQuery] = useState("");
+  const [optimisticActive, setOptimisticActive] = useState<{
+    id: string;
+    fromActiveId: string | null;
+  } | null>(null);
   const filterRef = useRef<HTMLInputElement>(null);
   const dragging = useRef(false);
+  // Drop the optimistic hint once the parent's activeId has moved off
+  // fromActiveId. Otherwise a later navigation back to fromActiveId
+  // (e.g. browser back, deep link) would re-engage the stale id and
+  // highlight the wrong row. Adjusting state during render is the
+  // pattern React docs recommend for derived resets like this.
+  if (optimisticActive && optimisticActive.fromActiveId !== activeId) {
+    setOptimisticActive(null);
+  }
+  const displayedActiveId =
+    optimisticActive?.fromActiveId === activeId ? optimisticActive.id : activeId;
 
-  // Whole-row press-and-hold drag. The delay lets a quick click or tap
-  // pass through to the row's navigation link unchanged; only a held
-  // pointer (150ms with <8px movement) flips the row into drag mode.
-  // 150ms is the iOS Reminders/Notes ballpark: long enough to filter
-  // out scroll-flicks and accidental taps, short enough that the lift
-  // feels immediate. Same delay on mouse and touch so the gesture is
-  // identical on desktop and mobile.
+  // Whole-row drag. Desktop uses distance activation so a deliberate
+  // but stationary click still navigates; touch keeps a long-press delay
+  // so scroll-flicks and taps do not reorder rows.
   const sensors = useSensors(
-    useSensor(MouseSensor, { activationConstraint: { delay: 150, tolerance: 8 } }),
+    useSensor(MouseSensor, { activationConstraint: { distance: 8 } }),
     useSensor(TouchSensor, { activationConstraint: { delay: 150, tolerance: 8 } }),
   );
 
@@ -1042,7 +1049,7 @@ export function WorkspaceSidebar({
             {filteredGroups.map((group) => {
               const showExpanded = q ? true : !group.collapsed;
               const hasActiveChild = group.workspaces.some(
-                (ws) => ws.id === activeId,
+                (ws) => ws.id === displayedActiveId,
               );
               return (
                 <div key={group.id}>
@@ -1066,8 +1073,11 @@ export function WorkspaceSidebar({
                         <SortableSessionRow
                           key={ws.id}
                           workspace={ws}
-                          isActive={ws.id === activeId}
-                          onClick={() => onSelect(ws.id)}
+                          isActive={ws.id === displayedActiveId}
+                          onClick={() => {
+                            setOptimisticActive({ id: ws.id, fromActiveId: activeId });
+                            onSelect(ws.id);
+                          }}
                           onDelete={onDeleteSession}
                           readOnly={readOnly}
                         />

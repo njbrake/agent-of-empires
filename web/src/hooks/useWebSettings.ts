@@ -1,5 +1,9 @@
 import { useCallback, useSyncExternalStore } from "react";
 
+import {
+  DEFAULT_PERSISTENT_TERMINALS,
+  normalizePersistentTerminalLimit,
+} from "../lib/persistentTerminals";
 import { safeGetItem, safeSetItem } from "../lib/safeStorage";
 
 const STORAGE_KEY = "aoe-web-settings";
@@ -8,6 +12,8 @@ export interface WebSettings {
   mobileFontSize: number;
   desktopFontSize: number;
   autoOpenKeyboard: boolean;
+  persistentTerminals: boolean;
+  maxPersistentTerminals: number;
   diffViewMode: "flat" | "tree";
   collapsedDiffDirs: string[];
 }
@@ -17,8 +23,24 @@ function getDefaults(): WebSettings {
     mobileFontSize: 8,
     desktopFontSize: 14,
     autoOpenKeyboard: true,
+    persistentTerminals: false,
+    maxPersistentTerminals: DEFAULT_PERSISTENT_TERMINALS,
     diffViewMode: window.innerWidth < 768 ? "flat" : "tree",
     collapsedDiffDirs: [],
+  };
+}
+
+function normalizeSnapshot(settings: WebSettings): WebSettings {
+  const defaults = getDefaults();
+  return {
+    ...settings,
+    persistentTerminals:
+      typeof settings.persistentTerminals === "boolean"
+        ? settings.persistentTerminals
+        : defaults.persistentTerminals,
+    maxPersistentTerminals: normalizePersistentTerminalLimit(
+      settings.maxPersistentTerminals,
+    ),
   };
 }
 
@@ -26,7 +48,7 @@ function getSnapshot(): WebSettings {
   const raw = safeGetItem(STORAGE_KEY);
   if (raw) {
     try {
-      return { ...getDefaults(), ...JSON.parse(raw) };
+      return normalizeSnapshot({ ...getDefaults(), ...JSON.parse(raw) });
     } catch {
       // malformed JSON; fall through to defaults
     }

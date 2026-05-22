@@ -353,8 +353,10 @@ export function isDebugBuild(about: ServerAbout | null | undefined): boolean {
   if (!about) return false;
   return about.build_flavor === "debug";
 }
+export type UpdateCheckMode = "auto" | "notify" | "off";
+
 export interface UpdateStatus {
-  check_enabled: boolean;
+  update_check_mode: UpdateCheckMode;
   current_version: string;
   latest_version: string | null;
   update_available: boolean;
@@ -506,9 +508,11 @@ export async function getHomePath(): Promise<string | null> {
 export async function browseFilesystem(
   path: string,
   limit?: number,
+  filter?: string,
 ): Promise<BrowseResponse & { ok: boolean }> {
   const params = new URLSearchParams({ path });
   if (limit != null) params.set("limit", String(limit));
+  if (filter) params.set("filter", filter);
   const data = await fetchJson<BrowseResponse>(`/api/filesystem/browse?${params}`);
   if (!data) return { entries: [], has_more: false, ok: false };
   return { ...data, ok: true };

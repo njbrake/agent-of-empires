@@ -13,7 +13,9 @@ use super::{
 };
 use crate::session::config::{GroupByMode, SortOrder};
 use crate::session::{Item, Status};
-use crate::tui::components::{set_prefixed_input_cursor_position, HelpOverlay, Preview};
+use crate::tui::components::{
+    format_scroll_indicator, set_prefixed_input_cursor_position, HelpOverlay, Preview,
+};
 use crate::tui::responsive;
 use crate::tui::styles::{has_min_contrast, Theme};
 use crate::update::UpdateInfo;
@@ -447,7 +449,14 @@ impl HomeView {
 
         // Render dialogs on top
         if self.show_help {
-            HelpOverlay::render(frame, area, theme, self.sort_order, self.strict_hotkeys);
+            HelpOverlay::render(
+                frame,
+                area,
+                theme,
+                self.sort_order,
+                self.strict_hotkeys,
+                &mut self.help_scroll,
+            );
         }
 
         // Each Option<Dialog> field on HomeView gets the same render dispatch:
@@ -1344,6 +1353,45 @@ impl HomeView {
             block = block
                 .title(title)
                 .title_style(Style::default().fg(title_color));
+
+            // Advertise the info-header toggle. Only meaningful in Agent view
+            // (Terminal/Tool views have their own minimal header that isn't
+            // bound to `show_preview_info`), and the compact branch above
+            // already owns the title slot.
+            if matches!(self.view_mode, ViewMode::Agent) {
+                let key = if self.strict_hotkeys { "I" } else { "i" };
+                let hint_text = if self.show_preview_info {
+                    format!(" hide info with {key} ")
+                } else {
+                    format!(" show info with {key} ")
+                };
+                let hint_style = Style::default().fg(theme.dimmed).italic();
+
+                // When the info section is hidden, the inner " Output " banner
+                // (which usually carries the scroll indicator) is also gone.
+                // Surface the indicator here so users still see how far back
+                // they've scrolled. With borders::ALL the inner is area - 2;
+                // render_output_cached then drops one more row before painting
+                // (its compact branch uses height-1 for visible_height), so we
+                // match that to keep the count stable as the user scrolls.
+                let scroll_indicator = if !self.show_preview_info {
+                    let inner_height = area.height.saturating_sub(2);
+                    let visible_height = inner_height.saturating_sub(1) as usize;
+                    format_scroll_indicator(
+                        self.preview_cache.captured_lines,
+                        visible_height,
+                        self.preview_scroll_offset,
+                    )
+                } else {
+                    None
+                };
+
+                let mut hint_spans = vec![Span::styled(hint_text, hint_style)];
+                if let Some(ind) = scroll_indicator {
+                    hint_spans.push(Span::styled(ind, hint_style));
+                }
+                block = block.title_top(Line::from(hint_spans).right_aligned());
+            }
         }
 
         let inner = block.inner(area);
@@ -1377,6 +1425,7 @@ impl HomeView {
                                 theme,
                                 self.idle_decay_window,
                                 compact,
+                                self.show_preview_info,
                             );
                         }
                     } else {

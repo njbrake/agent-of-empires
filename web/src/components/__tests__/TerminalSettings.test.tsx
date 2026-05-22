@@ -59,11 +59,36 @@ describe("TerminalSettings localStorage contract", () => {
 
   it("autoOpenKeyboard checkbox writes the boolean flag", () => {
     const { container } = render(<TerminalSettings />);
-    const checkbox = container.querySelector(
+    const checkbox = container.querySelectorAll(
       "input[type=checkbox]",
-    ) as HTMLInputElement;
+    )[0] as HTMLInputElement;
     fireEvent.click(checkbox);
     expect(readStored().autoOpenKeyboard).toBe(false);
+  });
+
+  it("persistent terminals checkbox writes the beta flag", () => {
+    const { container } = render(<TerminalSettings />);
+    const checkbox = container.querySelectorAll(
+      "input[type=checkbox]",
+    )[1] as HTMLInputElement;
+    fireEvent.click(checkbox);
+    expect(readStored().persistentTerminals).toBe(true);
+  });
+
+  it("persistent terminal limit input writes a clamped number", () => {
+    window.localStorage.setItem(
+      KEY,
+      JSON.stringify({ persistentTerminals: true }),
+    );
+    const { container } = render(<TerminalSettings />);
+    const input = container.querySelector(
+      "input[type=number]",
+    ) as HTMLInputElement;
+    fireEvent.change(input, { target: { value: "50" } });
+    expect(readStored().maxPersistentTerminals).toBe(50);
+
+    fireEvent.change(input, { target: { value: "99" } });
+    expect(readStored().maxPersistentTerminals).toBe(50);
   });
 
   it("preserves unrelated keys when persisting an update", () => {
@@ -73,6 +98,8 @@ describe("TerminalSettings localStorage contract", () => {
         mobileFontSize: 8,
         desktopFontSize: 14,
         autoOpenKeyboard: true,
+        persistentTerminals: false,
+        maxPersistentTerminals: 5,
         diffViewMode: "tree",
         collapsedDiffDirs: ["a/b"],
       }),
@@ -87,6 +114,8 @@ describe("TerminalSettings localStorage contract", () => {
       mobileFontSize: 12,
       desktopFontSize: 14,
       autoOpenKeyboard: true,
+      persistentTerminals: false,
+      maxPersistentTerminals: 5,
       diffViewMode: "tree",
       collapsedDiffDirs: ["a/b"],
     });
@@ -99,6 +128,8 @@ describe("TerminalSettings localStorage contract", () => {
         mobileFontSize: 22,
         desktopFontSize: 16,
         autoOpenKeyboard: false,
+        persistentTerminals: true,
+        maxPersistentTerminals: 42,
       }),
     );
     const { container } = render(<TerminalSettings />);
@@ -108,11 +139,51 @@ describe("TerminalSettings localStorage contract", () => {
     const desktopSelect = container.querySelectorAll(
       "select",
     )[1] as HTMLSelectElement;
-    const checkbox = container.querySelector(
-      "input[type=checkbox]",
+    const checkboxes = container.querySelectorAll("input[type=checkbox]");
+    const checkbox = checkboxes[0] as HTMLInputElement;
+    const persistentCheckbox = checkboxes[1] as HTMLInputElement;
+    const persistentLimit = container.querySelector(
+      "input[type=number]",
     ) as HTMLInputElement;
     expect(mobileSelect.value).toBe("22");
     expect(desktopSelect.value).toBe("16");
     expect(checkbox.checked).toBe(false);
+    expect(persistentCheckbox.checked).toBe(true);
+    expect(persistentLimit.value).toBe("42");
+  });
+
+  it("normalizes malformed persistent terminal settings on read", () => {
+    window.localStorage.setItem(
+      KEY,
+      JSON.stringify({
+        persistentTerminals: "yes",
+        maxPersistentTerminals: 1000,
+      }),
+    );
+    const { container } = render(<TerminalSettings />);
+    const checkboxes = container.querySelectorAll("input[type=checkbox]");
+    const persistentCheckbox = checkboxes[1] as HTMLInputElement;
+    const persistentLimit = container.querySelector(
+      "input[type=number]",
+    ) as HTMLInputElement | null;
+
+    expect(persistentCheckbox.checked).toBe(false);
+    expect(persistentLimit).toBeNull();
+  });
+
+  it("clamps a persisted terminal keep-alive limit on read", () => {
+    window.localStorage.setItem(
+      KEY,
+      JSON.stringify({
+        persistentTerminals: true,
+        maxPersistentTerminals: 1000,
+      }),
+    );
+    const { container } = render(<TerminalSettings />);
+    const persistentLimit = container.querySelector(
+      "input[type=number]",
+    ) as HTMLInputElement;
+
+    expect(persistentLimit.value).toBe("50");
   });
 });

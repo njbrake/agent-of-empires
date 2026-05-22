@@ -148,8 +148,13 @@ impl Preview {
         theme: &Theme,
         idle_decay_window: Duration,
         compact: bool,
+        show_info: bool,
     ) {
-        if compact {
+        // When the user has hidden the info header (or the viewport is too
+        // narrow for it), the output gets the whole pane and skips the inner
+        // " Output " banner. The outer block already says "Preview", so an
+        // inner banner would just be redundant chrome.
+        if compact || !show_info {
             Self::render_output_cached(
                 frame,
                 area,
@@ -379,7 +384,7 @@ fn compute_scroll(line_count: usize, visible_height: usize, user_offset: u16) ->
 
 /// Render a tmux-style ` [offset/max] ` indicator when the user has scrolled
 /// back. Returns `None` while live-following or when the content fits in view.
-fn format_scroll_indicator(
+pub fn format_scroll_indicator(
     line_count: usize,
     visible_height: usize,
     user_offset: u16,

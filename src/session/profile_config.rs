@@ -111,7 +111,7 @@ pub struct ThemeConfigOverride {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UpdatesConfigOverride {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub check_enabled: Option<bool>,
+    pub update_check_mode: Option<crate::session::config::UpdateCheckMode>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub check_interval_hours: Option<u64>,
@@ -514,8 +514,8 @@ pub fn merge_configs(mut global: Config, profile: &ProfileConfig) -> Config {
     }
 
     if let Some(ref updates_override) = profile.updates {
-        if let Some(check_enabled) = updates_override.check_enabled {
-            global.updates.check_enabled = check_enabled;
+        if let Some(update_check_mode) = updates_override.update_check_mode {
+            global.updates.update_check_mode = update_check_mode;
         }
         if let Some(check_interval_hours) = updates_override.check_interval_hours {
             global.updates.check_interval_hours = check_interval_hours;
@@ -674,9 +674,10 @@ mod tests {
 
     #[test]
     fn test_profile_config_serialization_partial() {
+        use crate::session::config::UpdateCheckMode;
         let config = ProfileConfig {
             updates: Some(UpdatesConfigOverride {
-                check_enabled: Some(false),
+                update_check_mode: Some(UpdateCheckMode::Off),
                 ..Default::default()
             }),
             ..Default::default()
@@ -684,14 +685,15 @@ mod tests {
 
         let serialized = toml::to_string_pretty(&config).unwrap();
         assert!(serialized.contains("[updates]"));
-        assert!(serialized.contains("check_enabled = false"));
+        assert!(serialized.contains("update_check_mode = \"off\""));
     }
 
     #[test]
     fn test_profile_config_deserialization() {
+        use crate::session::config::UpdateCheckMode;
         let toml = r#"
             [updates]
-            check_enabled = false
+            update_check_mode = "off"
             check_interval_hours = 48
 
             [sandbox]
@@ -701,7 +703,7 @@ mod tests {
         let config: ProfileConfig = toml::from_str(toml).unwrap();
         assert!(config.updates.is_some());
         let updates = config.updates.unwrap();
-        assert_eq!(updates.check_enabled, Some(false));
+        assert_eq!(updates.update_check_mode, Some(UpdateCheckMode::Off));
         assert_eq!(updates.check_interval_hours, Some(48));
 
         assert!(config.sandbox.is_some());
@@ -715,16 +717,20 @@ mod tests {
         let profile = ProfileConfig::default();
         let merged = merge_configs(global.clone(), &profile);
 
-        assert_eq!(merged.updates.check_enabled, global.updates.check_enabled);
+        assert_eq!(
+            merged.updates.update_check_mode,
+            global.updates.update_check_mode
+        );
         assert_eq!(merged.worktree.enabled, global.worktree.enabled);
     }
 
     #[test]
     fn test_merge_configs_with_overrides() {
+        use crate::session::config::UpdateCheckMode;
         let global = Config::default();
         let profile = ProfileConfig {
             updates: Some(UpdatesConfigOverride {
-                check_enabled: Some(false),
+                update_check_mode: Some(UpdateCheckMode::Off),
                 check_interval_hours: Some(48),
                 ..Default::default()
             }),
@@ -737,7 +743,7 @@ mod tests {
 
         let merged = merge_configs(global, &profile);
 
-        assert!(!merged.updates.check_enabled);
+        assert_eq!(merged.updates.update_check_mode, UpdateCheckMode::Off);
         assert_eq!(merged.updates.check_interval_hours, 48);
         // notify_in_cli should retain global default since not overridden
         assert!(merged.updates.notify_in_cli);

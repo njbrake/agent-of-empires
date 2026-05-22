@@ -180,6 +180,18 @@ fn test_help_closes_on_q() {
 
 #[test]
 #[serial]
+fn test_help_closes_on_uppercase_q_for_strict_mode() {
+    // Strict mode binds quit to uppercase Q; the help overlay must
+    // accept it too so strict-mode users can dismiss the dialog with
+    // the same key they use to quit.
+    let mut env = create_test_env_empty();
+    env.view.show_help = true;
+    env.view.handle_key(key(KeyCode::Char('Q')), None);
+    assert!(!env.view.show_help);
+}
+
+#[test]
+#[serial]
 fn test_has_dialog_returns_true_for_help() {
     let mut env = create_test_env_empty();
     assert!(!env.view.has_dialog());
@@ -1740,6 +1752,148 @@ fn test_bare_lowercase_o_does_not_cycle_sort_in_strict_mode() {
         env.view.sort_order, initial,
         "bare 'o' in strict mode must NOT cycle sort; expected it to stay at Newest"
     );
+}
+
+#[test]
+#[serial]
+fn test_strict_mode_h_collapses_group() {
+    // Regression guard: the help overlay lists "h/←" for Collapse group in
+    // strict mode. Bare lowercase `h` must walk through the dispatch and
+    // collapse the cursor's group, mirroring `l`/Right for expand. Without
+    // the explicit `Char('h')` arm next to `KeyCode::Left`, `h` would fall
+    // into the strict-mode typing-guard catch-all and the advertised
+    // navigation hotkey would silently open the compose dialog.
+    let mut env = create_test_env_with_groups();
+    env.view.strict_hotkeys = true;
+
+    let group_idx = env
+        .view
+        .flat_items
+        .iter()
+        .position(|item| matches!(item, Item::Group { .. }))
+        .expect("setup should produce a group");
+
+    if let Item::Group { collapsed, .. } = &env.view.flat_items[group_idx] {
+        assert!(!collapsed, "group should start expanded");
+    }
+    env.view.cursor = group_idx;
+    env.view.update_selected();
+
+    env.view.handle_key(key(KeyCode::Char('h')), None);
+
+    if let Item::Group { collapsed, .. } = &env.view.flat_items[group_idx] {
+        assert!(
+            *collapsed,
+            "bare 'h' in strict mode must collapse the group"
+        );
+    }
+    assert!(
+        env.view.pending_paste.is_none(),
+        "bare 'h' in strict mode must not leak into the typing-guard catch-all"
+    );
+}
+
+#[test]
+#[serial]
+fn test_strict_mode_h_still_snoozes_in_non_strict() {
+    // Companion guard for the strict-mode `h` collapse fix: making `h` an
+    // unconditional navigation key would steal the lowercase Snooze binding
+    // in default (non-strict) mode. The earlier `Char('h') if !strict` arm
+    // catches first, so the collapse arm only fires in strict mode.
+    let mut env = create_test_env_with_groups();
+    env.view.strict_hotkeys = false;
+
+    let group_idx = env
+        .view
+        .flat_items
+        .iter()
+        .position(|item| matches!(item, Item::Group { .. }))
+        .expect("setup should produce a group");
+    env.view.cursor = group_idx;
+    env.view.update_selected();
+
+    env.view.handle_key(key(KeyCode::Char('h')), None);
+
+    if let Item::Group { collapsed, .. } = &env.view.flat_items[group_idx] {
+        assert!(
+            !collapsed,
+            "non-strict 'h' must remain bound to snooze, not collapse"
+        );
+    }
+}
+
+#[test]
+#[serial]
+fn test_strict_mode_ctrl_g_toggles_group_by() {
+    // Regression guard: the help overlay lists "Ctrl+G" for Toggle group by
+    // project in strict mode. Previously normalize_strict_key stripped CTRL
+    // and routed the result into the typing-guard catch-all, so the
+    // advertised hotkey was a no-op (the bare 'g' landed in pending_paste).
+    // Ctrl+G must now keep its modifier and toggle group-by, while bare 'g'
+    // continues to fall into the typing-guard catch-all.
+    use crate::session::config::GroupByMode;
+
+    let mut env = create_test_env_with_sessions(3);
+    env.view.strict_hotkeys = true;
+    env.view.group_by = GroupByMode::Manual;
+
+    env.view.handle_key(
+        KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL),
+        None,
+    );
+    assert_eq!(
+        env.view.group_by,
+        GroupByMode::Project,
+        "Ctrl+G in strict mode should toggle group-by"
+    );
+    assert!(
+        env.view.pending_paste.is_none(),
+        "Ctrl+G must not leak into the typing-guard catch-all"
+    );
+
+    env.view.handle_key(key(KeyCode::Char('g')), None);
+    assert_eq!(
+        env.view.group_by,
+        GroupByMode::Project,
+        "bare 'g' in strict mode must NOT toggle group-by (typing-guard contract)"
+    );
+    assert_eq!(
+        env.view.pending_paste.as_deref(),
+        Some("g"),
+        "bare 'g' in strict mode falls through to the typing-guard catch-all"
+    );
+}
+
+#[test]
+#[serial]
+fn test_f5_and_e_both_open_restart_dialog() {
+    // Pin the equivalence: F5 and `e`/`E` all open the restart dialog. The
+    // help overlay collapses them onto one row as "Restart session (also
+    // F5)", which is only honest if both bindings keep hitting the same
+    // dispatch (open_restart_dialog).
+    let mut env = create_test_env_with_sessions(1);
+    env.view.cursor = 0;
+    env.view.update_selected();
+
+    env.view.handle_key(key(KeyCode::F(5)), None);
+    let f5_opened = env.view.restart_dialog.is_some();
+    env.view.restart_dialog = None;
+
+    env.view.strict_hotkeys = false;
+    env.view.handle_key(key(KeyCode::Char('e')), None);
+    let lower_e_opened = env.view.restart_dialog.is_some();
+    env.view.restart_dialog = None;
+
+    env.view.strict_hotkeys = true;
+    env.view.handle_key(key(KeyCode::Char('E')), None);
+    let upper_e_opened = env.view.restart_dialog.is_some();
+
+    assert!(f5_opened, "F5 should open the restart dialog");
+    assert!(
+        lower_e_opened,
+        "non-strict 'e' should open the restart dialog"
+    );
+    assert!(upper_e_opened, "strict 'E' should open the restart dialog");
 }
 
 #[test]
@@ -3906,6 +4060,285 @@ fn restart_selected_session_debounces_via_cooldown_map() {
     assert_eq!(
         stored, now,
         "cooldown timestamp must not be overwritten on a debounced press"
+    );
+}
+
+/// Build a HomeView seeded with two distinct projects, each containing
+/// sessions with different attention statuses. Helper for the Project +
+/// Attention combination tests below.
+fn create_test_env_two_projects_mixed_attention() -> TestEnv {
+    use crate::session::Status;
+    let temp = TempDir::new().unwrap();
+    setup_test_home(&temp);
+    let storage = Storage::new("test").unwrap();
+
+    let mut alpha_waiting = Instance::new("alpha-waiting", "/repos/alpha");
+    alpha_waiting.status = Status::Waiting;
+    let mut alpha_running = Instance::new("alpha-running", "/repos/alpha");
+    alpha_running.status = Status::Running;
+
+    let mut beta_running = Instance::new("beta-running", "/repos/beta");
+    beta_running.status = Status::Running;
+    let mut beta_error = Instance::new("beta-error", "/repos/beta");
+    beta_error.status = Status::Error;
+
+    let instances = vec![alpha_waiting, alpha_running, beta_running, beta_error];
+    storage
+        .commit(&instances, &GroupTree::new_with_groups(&instances, &[]))
+        .unwrap();
+
+    let tools = AvailableTools::with_tools(&["claude"]);
+    let view = HomeView::new(Some("test".to_string()), tools).unwrap();
+    TestEnv { _temp: temp, view }
+}
+
+/// Project grouping must survive Attention sort. Previously `build_flat_items`
+/// short-circuited on `SortOrder::Attention` before checking `GroupByMode`,
+/// flattening the list and dropping project headers. The headers are the
+/// whole point of project mode; users want attention triage WITHIN their
+/// project boundaries, not a flat firehose across projects.
+#[test]
+#[serial]
+fn project_grouping_survives_attention_sort() {
+    use crate::session::config::{GroupByMode, SortOrder};
+
+    let mut env = create_test_env_two_projects_mixed_attention();
+    env.view.group_by = GroupByMode::Project;
+    env.view.sort_order = SortOrder::Attention;
+    env.view.flat_items = env.view.build_flat_items();
+
+    let group_count = env
+        .view
+        .flat_items
+        .iter()
+        .filter(|i| matches!(i, Item::Group { .. }))
+        .count();
+    assert_eq!(
+        group_count, 2,
+        "Project + Attention must keep both project headers (alpha, beta), \
+         got flat_items: {:?}",
+        env.view.flat_items
+    );
+
+    let group_names: Vec<String> = env
+        .view
+        .flat_items
+        .iter()
+        .filter_map(|i| match i {
+            Item::Group { name, .. } => Some(name.clone()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        group_names.iter().any(|n| n == "alpha") && group_names.iter().any(|n| n == "beta"),
+        "expected alpha and beta project headers, got {group_names:?}"
+    );
+}
+
+/// Within a project group under Attention sort, sessions must order by
+/// attention tier: Waiting (tier 0) above Running (tier 4). Confirms that
+/// the existing `sort_sessions` helper, already reached by the project
+/// flatten path via `flatten_tree`, is doing its job once we stopped
+/// short-circuiting it.
+#[test]
+#[serial]
+fn project_grouping_sorts_sessions_by_attention_within_group() {
+    use crate::session::config::{GroupByMode, SortOrder};
+
+    let mut env = create_test_env_two_projects_mixed_attention();
+    env.view.group_by = GroupByMode::Project;
+    env.view.sort_order = SortOrder::Attention;
+    env.view.flat_items = env.view.build_flat_items();
+
+    let mut current_group: Option<String> = None;
+    let mut alpha_session_order: Vec<String> = Vec::new();
+    for item in &env.view.flat_items {
+        match item {
+            Item::Group { name, .. } => current_group = Some(name.clone()),
+            Item::Session { id, .. } => {
+                if current_group.as_deref() == Some("alpha") {
+                    if let Some(inst) = env.view.instances.iter().find(|i| &i.id == id) {
+                        alpha_session_order.push(inst.title.clone());
+                    }
+                }
+            }
+        }
+    }
+    assert_eq!(
+        alpha_session_order,
+        vec!["alpha-waiting".to_string(), "alpha-running".to_string()],
+        "Waiting session must rank above Running within the alpha group"
+    );
+}
+
+/// The most-attention-urgent project floats to the top. `attention_group_key`
+/// scores groups by their best member's tier; beta has an Error (tier 1)
+/// while alpha's best is Waiting (tier 0), so alpha sorts first. This
+/// confirms that the existing group-sort path is reached for project mode
+/// under Attention sort.
+#[test]
+#[serial]
+fn project_groups_sort_by_top_attention_member() {
+    use crate::session::config::{GroupByMode, SortOrder};
+
+    let mut env = create_test_env_two_projects_mixed_attention();
+    env.view.group_by = GroupByMode::Project;
+    env.view.sort_order = SortOrder::Attention;
+    env.view.flat_items = env.view.build_flat_items();
+
+    let group_order: Vec<String> = env
+        .view
+        .flat_items
+        .iter()
+        .filter_map(|i| match i {
+            Item::Group { name, .. } => Some(name.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        group_order,
+        vec!["alpha".to_string(), "beta".to_string()],
+        "alpha (Waiting=tier 0) must sort above beta (Error=tier 1)"
+    );
+}
+
+/// Pressing `g` to flip `group_by` keeps the cursor on the previously
+/// selected session, even when the list reshapes (Manual flat list →
+/// Project grouped list). Previously `apply_group_by` clamped by index,
+/// which landed the cursor on whatever row slid into the old slot once
+/// project headers got inserted. The fix seeks `selected_session` by id
+/// after the rebuild.
+#[test]
+#[serial]
+fn group_by_toggle_preserves_selected_session() {
+    use crate::session::config::GroupByMode;
+
+    let mut env = create_test_env_two_projects_mixed_attention();
+    env.view.group_by = GroupByMode::Manual;
+    env.view.sort_order = crate::session::config::SortOrder::Newest;
+    env.view.flat_items = env.view.build_flat_items();
+
+    // Pick the last session in the Manual flat list; that's the row whose
+    // index is most likely to be invalidated when project headers get
+    // inserted in front of it.
+    let target_id = env
+        .view
+        .flat_items
+        .iter()
+        .rev()
+        .find_map(|i| match i {
+            Item::Session { id, .. } => Some(id.clone()),
+            _ => None,
+        })
+        .expect("manual flat list should contain at least one session");
+    env.view.select_session_by_id(&target_id);
+    assert_eq!(
+        env.view.selected_session.as_deref(),
+        Some(target_id.as_str())
+    );
+
+    env.view.handle_key(key(KeyCode::Char('g')), None);
+    assert_eq!(env.view.group_by, GroupByMode::Project);
+    assert_eq!(
+        env.view.selected_session.as_deref(),
+        Some(target_id.as_str()),
+        "cursor must stay on the same session after group_by flip"
+    );
+    let cursor_item = env
+        .view
+        .flat_items
+        .get(env.view.cursor)
+        .expect("cursor must point into flat_items");
+    match cursor_item {
+        Item::Session { id, .. } => assert_eq!(id, &target_id),
+        Item::Group { .. } => panic!("cursor landed on a group header, not the session"),
+    }
+}
+
+/// Pressing `o` to flip `sort_order` keeps the cursor on the previously
+/// selected session. Most visible when going Newest → Attention with
+/// Project grouping on, since Attention reorders both groups (by top
+/// member) and sessions within each group, so the target session is very
+/// unlikely to keep its index across the rebuild.
+#[test]
+#[serial]
+fn sort_order_toggle_preserves_selected_session() {
+    use crate::session::config::{GroupByMode, SortOrder};
+
+    let mut env = create_test_env_two_projects_mixed_attention();
+    env.view.group_by = GroupByMode::Project;
+    env.view.sort_order = SortOrder::Newest;
+    env.view.flat_items = env.view.build_flat_items();
+
+    // Pin the Running session inside alpha. Under Attention sort it sinks
+    // below alpha-waiting, so its index will shift on the rebuild.
+    let target_id = env
+        .view
+        .instances
+        .iter()
+        .find(|i| i.title == "alpha-running")
+        .map(|i| i.id.clone())
+        .expect("fixture provides alpha-running");
+    env.view.select_session_by_id(&target_id);
+    assert_eq!(
+        env.view.selected_session.as_deref(),
+        Some(target_id.as_str())
+    );
+
+    env.view.handle_key(key(KeyCode::Char('o')), None);
+    assert_eq!(env.view.sort_order, SortOrder::Attention);
+    assert_eq!(
+        env.view.selected_session.as_deref(),
+        Some(target_id.as_str()),
+        "cursor must stay on the same session after sort_order flip"
+    );
+}
+
+/// `reseat_cursor_after_rebuild` falls back to index clamping when there
+/// is no prior session selection. Guards against the helper accidentally
+/// regressing the empty-or-group-only path, where the original clamp
+/// logic was correct.
+#[test]
+#[serial]
+fn reseat_cursor_clamps_when_no_session_selected() {
+    use crate::session::config::GroupByMode;
+
+    let mut env = create_test_env_two_projects_mixed_attention();
+    env.view.group_by = GroupByMode::Project;
+    env.view.flat_items = env.view.build_flat_items();
+    env.view.selected_session = None;
+    env.view.cursor = env.view.flat_items.len() + 50; // intentionally out of range
+
+    env.view.reseat_cursor_after_rebuild();
+    assert!(
+        env.view.cursor < env.view.flat_items.len(),
+        "cursor must be clamped into the flat_items range"
+    );
+}
+
+/// Manual grouping + Attention sort must still flatten. The cross-cutting
+/// flat priority view is the original Attention design and is the right
+/// behavior when the user has not opted into project grouping. Guards
+/// against an over-eager refactor flipping both modes to grouped.
+#[test]
+#[serial]
+fn manual_grouping_attention_sort_stays_flat() {
+    use crate::session::config::{GroupByMode, SortOrder};
+
+    let mut env = create_test_env_two_projects_mixed_attention();
+    env.view.group_by = GroupByMode::Manual;
+    env.view.sort_order = SortOrder::Attention;
+    env.view.flat_items = env.view.build_flat_items();
+
+    let group_count = env
+        .view
+        .flat_items
+        .iter()
+        .filter(|i| matches!(i, Item::Group { .. }))
+        .count();
+    assert_eq!(
+        group_count, 0,
+        "Manual + Attention should produce a flat list, no group headers"
     );
 }
 

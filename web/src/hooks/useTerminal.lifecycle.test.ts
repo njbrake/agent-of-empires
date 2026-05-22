@@ -297,6 +297,37 @@ describe("useTerminal lifecycle", () => {
     }
   });
 
+  it("claimPrimary=false keeps the socket warm without auto-activating", async () => {
+    const div = document.createElement("div");
+    document.body.appendChild(div);
+    try {
+      renderHook(() => {
+        const term = useTerminal("s-passive", "ws", false, false, false);
+        if (term.containerRef && !term.containerRef.current) {
+          (
+            term.containerRef as unknown as { current: HTMLDivElement | null }
+          ).current = div;
+        }
+        return term;
+      });
+      await flushAsync();
+      const ws = sockets[0]!;
+
+      act(() => {
+        ws.readyState = FakeWebSocket.OPEN;
+        ws.onopen?.(new Event("open"));
+      });
+      await flushAsync();
+
+      const activate = ws.sent.find(
+        (m) => typeof m === "string" && m.includes('"activate"'),
+      );
+      expect(activate).toBeUndefined();
+    } finally {
+      div.remove();
+    }
+  });
+
   it("suppresses tiny resize messages from hidden containers", async () => {
     // Hidden container = no offsetParent + a tiny proposed grid. The
     // hook should never let that bogus measurement reach the server.

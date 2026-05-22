@@ -10,6 +10,7 @@ import { useWorkspaces } from "./hooks/useWorkspaces";
 import { useRepoGroups } from "./hooks/useRepoGroups";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { useResolvedTheme } from "./hooks/useResolvedTheme";
+import { useWebSettings } from "./hooks/useWebSettings";
 import { useDiffFiles } from "./hooks/useDiffFiles";
 import { useDiffComments } from "./hooks/useDiffComments";
 import { SendCommentsDialog } from "./components/diff/comments/SendCommentsDialog";
@@ -41,7 +42,7 @@ import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
 import { DeleteSessionDialog } from "./components/DeleteSessionDialog";
 import { TopBar } from "./components/TopBar";
 import { ContentSplit } from "./components/ContentSplit";
-import { TerminalView } from "./components/TerminalView";
+import { TerminalSessionStack } from "./components/TerminalSessionStack";
 // Lazy-load the cockpit surface so non-cockpit users never download
 // the @assistant-ui/react, shiki, and in-house StringDiff/DiffLine
 // dependency tree. Cuts ~hundreds of KB off the cold-start bundle
@@ -182,6 +183,7 @@ function isInsideEditable(target: EventTarget | null): boolean {
 function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLogout: () => void }) {
   const navigate = useNavigate();
   const idleDecayWindowMs = useIdleDecayWindowMs();
+  const { settings: webSettings } = useWebSettings();
   const sessionMatch = useMatch("/session/:sessionId");
   const settingsRootMatch = useMatch("/settings");
   const settingsTabMatch = useMatch("/settings/:tab");
@@ -717,11 +719,15 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
                     />
                   </Suspense>
                 ) : (
-                  <TerminalView
-                    key={activeSessionId}
-                    session={activeSession}
+                  <TerminalSessionStack
+                    activeSessionId={activeSessionId!}
+                    sessions={sessions.filter((session) => !session.cockpit_mode)}
                     cockpitMasterEnabled={
                       !!serverAbout?.cockpit_master_enabled
+                    }
+                    persistent={webSettings.persistentTerminals}
+                    maxPersistentTerminals={
+                      webSettings.maxPersistentTerminals
                     }
                   />
                 )}

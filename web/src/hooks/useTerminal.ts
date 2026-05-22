@@ -145,8 +145,10 @@ export function useTerminal(
   wsPath: string = "ws",
   autoFocus: boolean = true,
   claudeFullscreen: boolean = false,
+  claimPrimary: boolean = true,
 ) {
   const { settings, update } = useWebSettings();
+  const claimPrimaryRef = useRef(claimPrimary);
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
@@ -200,6 +202,10 @@ export function useTerminal(
     isPrimary: true,
     isInScrollback: false,
   });
+
+  useEffect(() => {
+    claimPrimaryRef.current = claimPrimary;
+  }, [claimPrimary]);
 
   useEffect(() => {
     if (!sessionId || !containerRef.current) return;
@@ -490,10 +496,12 @@ export function useTerminal(
           isPrimary: true,
         }));
         if (autoFocus) term.focus();
-        // Claim primary immediately so this client's resize is applied.
-        // Without this, the first resize lands in "vacant" state (which
-        // works) but a race with focus/visibility events could delay it.
-        ws.send(JSON.stringify({ type: "activate" } as ActivateMessage));
+        // Claim primary immediately for visible terminals so this
+        // client's resize is applied. Hidden persistent terminals keep
+        // their socket warm without stealing primary from the active tab.
+        if (claimPrimaryRef.current) {
+          ws.send(JSON.stringify({ type: "activate" } as ActivateMessage));
+        }
         // Send initial PTY dimensions only if FitAddon has actually
         // measured the container. Reading term.cols/term.rows directly
         // would yield xterm's 80x24 default before fit() runs, and
@@ -1157,6 +1165,7 @@ export function useTerminal(
     // When the user switches to this tab/window, tell the server so it
     // can claim primary and resize the PTY to match this viewport.
     const sendActivate = () => {
+      if (!claimPrimaryRef.current) return;
       const ws = wsRef.current;
       if (ws?.readyState === WebSocket.OPEN) {
         const msg: ActivateMessage = { type: "activate" };

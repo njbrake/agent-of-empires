@@ -174,6 +174,7 @@ pub struct HomeView {
 
     // Dialogs
     pub(super) show_help: bool,
+    pub(super) help_scroll: u16,
     pub(super) new_dialog: Option<NewSessionDialog>,
     pub(super) confirm_dialog: Option<ConfirmDialog>,
     pub(super) unified_delete_dialog: Option<UnifiedDeleteDialog>,
@@ -302,6 +303,11 @@ pub struct HomeView {
 
     // Resizable list column width (percentage-like units)
     pub(super) list_width: u16,
+
+    /// Show the info header (profile/tool/path/status/sandbox/worktree) at
+    /// the top of the preview pane. Toggled with `i` and persisted to
+    /// `app_state.show_preview_info`.
+    pub(super) show_preview_info: bool,
 
     /// Channel that startup-recovery workers send results back on. `None`
     /// when no recovery was attempted at construction (live tmux, daemon
@@ -438,6 +444,7 @@ impl HomeView {
             row_tag_mode: resolved.session.row_tag,
             project_group_collapsed: HashMap::new(),
             show_help: false,
+            help_scroll: 0,
             new_dialog: None,
             confirm_dialog: None,
             unified_delete_dialog: None,
@@ -505,6 +512,10 @@ impl HomeView {
                 .as_ref()
                 .and_then(|c| c.app_state.home_list_width)
                 .unwrap_or(35),
+            show_preview_info: user_config
+                .as_ref()
+                .and_then(|c| c.app_state.show_preview_info)
+                .unwrap_or(true),
             recovery_rx: None,
             recovery_lock: None,
             recovery_in_flight: std::collections::HashSet::new(),
@@ -1785,6 +1796,16 @@ impl HomeView {
         }
     }
 
+    pub fn toggle_preview_info(&mut self) {
+        self.show_preview_info = !self.show_preview_info;
+        if let Ok(mut config) = load_config().map(|c| c.unwrap_or_default()) {
+            config.app_state.show_preview_info = Some(self.show_preview_info);
+            if let Err(e) = save_config(&config) {
+                tracing::warn!(target: "tui.home", "Failed to save config: {e}");
+            }
+        }
+    }
+
     pub fn show_welcome(&mut self) {
         tracing::info!(target: "tui.dialog", dialog = "welcome", "opening");
         self.welcome_dialog = Some(WelcomeDialog::new());
@@ -1832,9 +1853,22 @@ impl HomeView {
     }
 
     pub(super) fn build_flat_items(&self) -> Vec<Item> {
-        // Attention sort is a flat priority view: skip groups entirely so
-        // Waiting/Error rows from different groups can interleave by tier
-        // instead of being walled off behind group headers.
+        // Project grouping is honored across every sort order. Combined with
+        // Attention sort, sessions sort by tier within each project and the
+        // project headers float by their top-attention member (driven by
+        // sort_groups + attention_group_key in flatten_tree). Check this
+        // first so Project + Attention doesn't fall through to the flat
+        // Attention branch and lose the project headers.
+        if self.group_by == GroupByMode::Project {
+            return self.build_flat_items_by_project();
+        }
+
+        // Manual grouping + Attention sort is the cross-cutting flat
+        // priority view: skip groups entirely so Waiting/Error rows from
+        // different groups can interleave by tier instead of being walled
+        // off behind group headers. Project grouping above opts into a
+        // different shape on purpose (attention triage within explicit
+        // project boundaries).
         if self.sort_order == SortOrder::Attention {
             let filtered: Vec<Instance> = if let Some(profile) = &self.active_profile {
                 self.instances
@@ -1846,10 +1880,6 @@ impl HomeView {
                 self.instances.clone()
             };
             return flatten_sessions_by_attention(&filtered);
-        }
-
-        if self.group_by == GroupByMode::Project {
-            return self.build_flat_items_by_project();
         }
 
         if let Some(profile) = &self.active_profile {

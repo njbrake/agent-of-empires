@@ -4,7 +4,7 @@ import { Page } from "@playwright/test";
 const DISMISS_KEY = "aoe-update-dismissed-version";
 
 interface UpdateStatusFixture {
-  check_enabled: boolean;
+  update_check_mode: "auto" | "notify" | "off";
   current_version: string;
   latest_version: string | null;
   update_available: boolean;
@@ -39,10 +39,10 @@ async function mock(page: Page, status: UpdateStatusFixture) {
   );
 }
 
-test.describe("Update banner (#984)", () => {
-  test("renders when update_available is true", async ({ page }) => {
+test.describe("Update banner (#984, #1140)", () => {
+  test("renders when update_available is true and mode is notify", async ({ page }) => {
     await mock(page, {
-      check_enabled: true,
+      update_check_mode: "notify",
       current_version: "0.5.0",
       latest_version: "0.6.0",
       update_available: true,
@@ -63,9 +63,9 @@ test.describe("Update banner (#984)", () => {
     );
   });
 
-  test("hidden when check_enabled is false (server suppresses)", async ({ page }) => {
+  test("hidden when update_check_mode is off (server suppresses)", async ({ page }) => {
     await mock(page, {
-      check_enabled: false,
+      update_check_mode: "off",
       current_version: "0.5.0",
       latest_version: null,
       update_available: false,
@@ -81,9 +81,27 @@ test.describe("Update banner (#984)", () => {
     ).toHaveCount(0);
   });
 
+  test("hidden when update_check_mode is auto (background install)", async ({ page }) => {
+    await mock(page, {
+      update_check_mode: "auto",
+      current_version: "0.5.0",
+      latest_version: "0.6.0",
+      update_available: true,
+      release_url: "https://github.com/njbrake/agent-of-empires/releases/tag/v0.6.0",
+      web_poll_interval_minutes: 60,
+      error: null,
+    });
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await page.goto("/");
+    await expect(page.locator("header")).toBeVisible();
+    await expect(
+      page.getByRole("status", { name: /Update available/i }),
+    ).toHaveCount(0);
+  });
+
   test("hidden when latest matches current (no update)", async ({ page }) => {
     await mock(page, {
-      check_enabled: true,
+      update_check_mode: "notify",
       current_version: "0.6.0",
       latest_version: "0.6.0",
       update_available: false,
@@ -101,7 +119,7 @@ test.describe("Update banner (#984)", () => {
 
   test("dismiss persists per-version across reload", async ({ page }) => {
     await mock(page, {
-      check_enabled: true,
+      update_check_mode: "notify",
       current_version: "0.5.0",
       latest_version: "0.6.0",
       update_available: true,
@@ -128,7 +146,7 @@ test.describe("Update banner (#984)", () => {
 
   test("dismissed version no longer suppresses newer release", async ({ page }) => {
     await mock(page, {
-      check_enabled: true,
+      update_check_mode: "notify",
       current_version: "0.5.0",
       latest_version: "0.7.0",
       update_available: true,
