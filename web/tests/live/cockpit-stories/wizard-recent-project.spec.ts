@@ -32,15 +32,18 @@ base("wizard Recent tab selects a known project", async ({ page }, testInfo) => 
 
     // Recent rows render as <button>s containing the project's
     // directory display name; the seed harness creates the dir under
-    // `<home>/project`.
+    // `<home>/project`. The click sets data.path; advancing to the
+    // next step still requires the Next button.
     const recentRow = page.locator("button").filter({ hasText: "project" }).first();
     await expect(recentRow).toBeVisible({ timeout: 5_000 });
     await recentRow.click();
 
-    // The next step in the wizard is "Choose an agent" (AgentStep
-    // heading) once a project is locked in.
+    await page.getByRole("button", { name: "Next" }).click();
+
+    // Step order: project → session → agent. After a chosen project,
+    // Next lands on the Session step.
     await expect(
-      page.getByRole("heading", { name: /^Choose an agent$|^Agent$/i }),
+      page.getByRole("heading", { name: "Name your session", exact: true }),
     ).toBeVisible({ timeout: 10_000 });
   } finally {
     await serve.stop();

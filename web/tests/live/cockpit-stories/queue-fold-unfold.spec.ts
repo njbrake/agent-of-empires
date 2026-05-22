@@ -53,17 +53,16 @@ base("queued long prompt fold and unfold toggle", async ({ page }, testInfo) => 
     await page.goto(`${serve.baseUrl}/session/${encodeURIComponent(sessionId)}`);
     await waitForCockpitView(page);
 
-    const composer = page.getByRole("textbox", { name: /Send a message/i });
+    const composer = page.getByRole("textbox", {
+      name: /Send a message|Queue a follow-up/i,
+    });
     await composer.fill("kick off");
     await composer.press("Enter");
     await expect(page.getByText("Working on turn 1...")).toBeVisible({
       timeout: 10_000,
     });
 
-    const followUp = page.getByRole("textbox", {
-      name: /Queue a follow-up/i,
-    });
-    await followUp.fill("line 1\nline 2\nline 3 long enough to clamp");
+    await composer.fill("line 1\nline 2\nline 3 long enough to clamp");
     await page.getByRole("button", { name: /Queue follow-up message/i }).click();
 
     const expandButton = page.getByRole("button", {

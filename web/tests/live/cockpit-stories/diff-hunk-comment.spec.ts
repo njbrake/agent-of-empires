@@ -67,13 +67,16 @@ base("comment on a diff hunk persists in the comments banner", async ({ page }, 
     await expect(fileRow).toBeVisible({ timeout: 15_000 });
     await fileRow.click();
 
-    // Hover a diff line so the "+" gutter button reveals; selector
-    // matches the aria-label pattern.
+    // "+" gutter buttons live behind `opacity-0 group-hover:opacity-100`
+    // on each diff line, so the click target only paints on hover.
+    // Find the first one by aria-label pattern, scroll it into view,
+    // then dispatch a real click via JS so the visibility gate doesn't
+    // race.
     const addBtn = page.getByRole("button", {
-      name: /Add comment on .* line 1/,
-    });
-    await expect(addBtn.first()).toBeVisible({ timeout: 15_000 });
-    await addBtn.first().click({ force: true });
+      name: /Add comment on .* line/i,
+    }).first();
+    await expect(addBtn).toBeAttached({ timeout: 15_000 });
+    await addBtn.evaluate((el) => (el as HTMLButtonElement).click());
 
     const composer = page.getByPlaceholder(/Leave a comment/i);
     await expect(composer).toBeVisible({ timeout: 5_000 });

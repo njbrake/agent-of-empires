@@ -58,7 +58,11 @@ base("diff panel renders the changed file row", async ({ page }, testInfo) => {
       timeout: 10_000,
     });
 
-    await expect(page.getByText("story.txt")).toBeVisible({ timeout: 15_000 });
+    // The diff-file row text appears twice in the DOM (file-list + the
+    // viewer header once selected). `.first()` picks the clickable row.
+    await expect(page.getByText("story.txt").first()).toBeVisible({
+      timeout: 15_000,
+    });
   } finally {
     await serve.stop();
   }

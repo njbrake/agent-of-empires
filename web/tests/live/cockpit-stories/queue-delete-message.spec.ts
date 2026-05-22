@@ -52,17 +52,19 @@ base("delete a queued follow-up before it fires", async ({ page }, testInfo) => 
     await page.goto(`${serve.baseUrl}/session/${encodeURIComponent(sessionId)}`);
     await waitForCockpitView(page);
 
-    const composer = page.getByRole("textbox", { name: /Send a message/i });
+    // The composer textarea's accessible name changes with `turnActive`;
+    // use a regex that matches both placeholder variants so the same
+    // locator works idle and mid-turn.
+    const composer = page.getByRole("textbox", {
+      name: /Send a message|Queue a follow-up/i,
+    });
     await composer.fill("kick off");
     await composer.press("Enter");
 
     await expect(page.getByText("Working on turn 1...")).toBeVisible({
       timeout: 10_000,
     });
-    const followUp = page.getByRole("textbox", {
-      name: /Queue a follow-up/i,
-    });
-    await followUp.fill("doomed queued text");
+    await composer.fill("doomed queued text");
     await page.getByRole("button", { name: /Queue follow-up message/i }).click();
 
     const queuedRow = page.getByRole("button", { name: /^doomed queued text$/ });

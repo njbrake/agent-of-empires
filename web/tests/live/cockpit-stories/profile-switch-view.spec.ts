@@ -21,6 +21,7 @@ base("ProfileSelector switches the selected profile", async ({ page }, testInfo)
     await page.goto(`${serve.baseUrl}/settings`);
     const select = page.locator("select").first();
     await expect(select).toBeVisible({ timeout: 10_000 });
+    const initialProfile = await select.inputValue();
 
     await page.getByRole("button", { name: "+ New" }).click();
     await page.getByPlaceholder("Profile name").fill("profile-switch-alt");
@@ -32,8 +33,8 @@ base("ProfileSelector switches the selected profile", async ({ page }, testInfo)
     await select.selectOption("profile-switch-alt");
     await expect(select).toHaveValue("profile-switch-alt");
 
-    await select.selectOption("default");
-    await expect(select).toHaveValue("default");
+    await select.selectOption(initialProfile);
+    await expect(select).toHaveValue(initialProfile);
   } finally {
     await serve.stop();
   }

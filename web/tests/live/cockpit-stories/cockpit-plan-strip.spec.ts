@@ -24,9 +24,9 @@ const PLAN_SCRIPT = {
         {
           sessionUpdate: "plan",
           entries: [
-            { content: "Investigate the bug", status: "in_progress" },
-            { content: "Write a fix", status: "pending" },
-            { content: "Add tests", status: "pending" },
+            { content: "Investigate the bug", status: "in_progress", priority: "high" },
+            { content: "Write a fix", status: "pending", priority: "medium" },
+            { content: "Add tests", status: "pending", priority: "low" },
           ],
         },
         {

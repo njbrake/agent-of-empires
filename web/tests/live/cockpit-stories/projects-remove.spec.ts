@@ -47,7 +47,9 @@ base("remove a project from the Projects view", async ({ page }, testInfo) => {
     page.on("dialog", (d) => void d.accept());
 
     await page.goto(`${serve.baseUrl}/projects`);
-    const row = page.getByText("story-projects-remove");
+    const row = page
+      .getByText("story-projects-remove", { exact: true })
+      .first();
     await expect(row).toBeVisible({ timeout: 10_000 });
 
     await page.getByRole("button", { name: "Remove" }).click();

@@ -3,6 +3,7 @@
 
 import { test as base, expect } from "@playwright/test";
 import { spawnAoeServe } from "../../helpers/aoeServe";
+import { openSettingsTab, settingsSelectByLabel } from "../../helpers/cockpit";
 
 base("logging default-level SelectField round-trips through the UI", async ({ page }, testInfo) => {
   const serve = await spawnAoeServe({
@@ -13,11 +14,9 @@ base("logging default-level SelectField round-trips through the UI", async ({ pa
 
   try {
     await page.goto(`${serve.baseUrl}/settings`);
-    const level = page
-      .locator("div")
-      .filter({ has: page.locator("label", { hasText: "Default level" }) })
-      .locator("select")
-      .first();
+    await openSettingsTab(page, "Logging");
+
+    const level = settingsSelectByLabel(page, "Default level");
     await expect(level).toBeVisible({ timeout: 10_000 });
 
     const options = await level
@@ -31,11 +30,8 @@ base("logging default-level SelectField round-trips through the UI", async ({ pa
     await expect(level).toHaveValue(next!);
 
     await page.reload();
-    const reloaded = page
-      .locator("div")
-      .filter({ has: page.locator("label", { hasText: "Default level" }) })
-      .locator("select")
-      .first();
+    await openSettingsTab(page, "Logging");
+    const reloaded = settingsSelectByLabel(page, "Default level");
     await expect(reloaded).toHaveValue(next!, { timeout: 10_000 });
   } finally {
     await serve.stop();

@@ -42,8 +42,12 @@ base("add a project from the Projects view", async ({ page }, testInfo) => {
     await page.getByPlaceholder("/path/to/repo").fill(projectPath);
     await page.getByRole("button", { name: "Add", exact: true }).click();
 
-    await expect(page.getByText(projectPath)).toBeVisible({ timeout: 5_000 });
-    await expect(page.getByText("story-projects-add")).toBeVisible();
+    await expect(page.getByText(projectPath).first()).toBeVisible({
+      timeout: 5_000,
+    });
+    await expect(
+      page.getByText("story-projects-add", { exact: true }).first(),
+    ).toBeVisible();
   } finally {
     await serve.stop();
   }

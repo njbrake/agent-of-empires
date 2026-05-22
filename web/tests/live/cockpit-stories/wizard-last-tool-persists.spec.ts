@@ -70,7 +70,7 @@ base("wizard remembers the last-picked agent after reload", async ({ page }, tes
     ).toBeVisible({ timeout: 10_000 });
     await page.getByRole("button", { name: "Next" }).click();
     await expect(
-      page.getByRole("heading", { name: /^Choose an agent$|^Agent$/i }),
+      page.getByRole("heading", { name: /Which AI agent/i }),
     ).toBeVisible({ timeout: 10_000 });
     await expect(
       page.getByRole("button", { name: "claude", exact: true }),

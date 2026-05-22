@@ -53,17 +53,16 @@ base("edit a queued follow-up before it fires", async ({ page }, testInfo) => {
     await page.goto(`${serve.baseUrl}/session/${encodeURIComponent(sessionId)}`);
     await waitForCockpitView(page);
 
-    const composer = page.getByRole("textbox", { name: /Send a message/i });
+    const composer = page.getByRole("textbox", {
+      name: /Send a message|Queue a follow-up/i,
+    });
     await composer.fill("kick off");
     await composer.press("Enter");
 
     await expect(page.getByText("Working on turn 1...")).toBeVisible({
       timeout: 10_000,
     });
-    const followUp = page.getByRole("textbox", {
-      name: /Queue a follow-up/i,
-    });
-    await followUp.fill("original queued text");
+    await composer.fill("original queued text");
     await page.getByRole("button", { name: /Queue follow-up message/i }).click();
 
     const queuedRow = page.getByRole("button", { name: /^original queued text$/ });

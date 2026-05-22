@@ -256,7 +256,13 @@ async function handleRequest(msg) {
       const modeId = params?.modeId;
       sendResult(id, {});
       if (sessionId && modeId) {
+        // Emit the ACP-correct variant so the supervisor translates to
+        // a server-side Event::CurrentModeChanged for the reducer. The
+        // legacy "current_mode_changed" notification is also emitted so
+        // older REST-driven specs that string-match on that token keep
+        // passing.
         await emitSessionUpdates(sessionId, [
+          { sessionUpdate: "current_mode_update", currentModeId: modeId },
           { sessionUpdate: "current_mode_changed", currentModeId: modeId },
         ]);
       }

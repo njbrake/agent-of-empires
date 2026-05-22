@@ -3,6 +3,7 @@
 
 import { test as base, expect } from "@playwright/test";
 import { spawnAoeServe } from "../../helpers/aoeServe";
+import { openSettingsTab, settingsSelectByLabel } from "../../helpers/cockpit";
 
 base("tmux mouse SelectField round-trips through the UI", async ({ page }, testInfo) => {
   const serve = await spawnAoeServe({
@@ -13,22 +14,17 @@ base("tmux mouse SelectField round-trips through the UI", async ({ page }, testI
 
   try {
     await page.goto(`${serve.baseUrl}/settings`);
-    const mouse = page
-      .locator("div")
-      .filter({ has: page.locator("label", { hasText: "Mouse support" }) })
-      .locator("select")
-      .first();
+    await openSettingsTab(page, "Tmux");
+
+    const mouse = settingsSelectByLabel(page, "Mouse support");
     await expect(mouse).toBeVisible({ timeout: 10_000 });
 
     await mouse.selectOption("disabled");
     await expect(mouse).toHaveValue("disabled");
 
     await page.reload();
-    const reloaded = page
-      .locator("div")
-      .filter({ has: page.locator("label", { hasText: "Mouse support" }) })
-      .locator("select")
-      .first();
+    await openSettingsTab(page, "Tmux");
+    const reloaded = settingsSelectByLabel(page, "Mouse support");
     await expect(reloaded).toHaveValue("disabled", { timeout: 10_000 });
   } finally {
     await serve.stop();

@@ -17,7 +17,10 @@ import {
   listSessions,
   resolveAoeBinary,
 } from "../../helpers/aoeServe";
-import { waitForCockpitReady, waitForCockpitView } from "../../helpers/cockpit";
+import {
+  enableCockpitAndWait,
+  waitForCockpitView,
+} from "../../helpers/cockpit";
 
 const SCRIPT = {
   turns: [
@@ -103,22 +106,20 @@ base("queued follow-up fires after navigation away and back", async ({ page }, t
     const sessionB = sessions.find((s) => s.title === "queue-nav-b")!;
 
     for (const id of [sessionA.id, sessionB.id]) {
-      await fetch(`${serve.baseUrl}/api/sessions/${id}/cockpit/enable`, {
-        method: "POST",
-      });
-      await waitForCockpitReady(serve.baseUrl, id);
+      await enableCockpitAndWait(serve.baseUrl, id);
     }
 
     await page.goto(`${serve.baseUrl}/session/${encodeURIComponent(sessionA.id)}`);
     await waitForCockpitView(page);
 
-    const composerA = page.getByRole("textbox", { name: /Send a message/i });
+    const composerA = page.getByRole("textbox", {
+      name: /Send a message|Queue a follow-up/i,
+    });
     await composerA.fill("kick off A");
     await composerA.press("Enter");
     await expect(page.getByText("First turn.")).toBeVisible({ timeout: 10_000 });
 
-    const followUp = page.getByRole("textbox", { name: /Queue a follow-up/i });
-    await followUp.fill("from-after-nav");
+    await composerA.fill("from-after-nav");
     await page.getByRole("button", { name: /Queue follow-up message/i }).click();
 
     // Navigate away to B, then back to A.

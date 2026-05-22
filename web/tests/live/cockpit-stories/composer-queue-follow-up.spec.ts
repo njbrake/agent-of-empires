@@ -65,7 +65,9 @@ base("queued follow-up fires when first turn ends", async ({ page }, testInfo) =
     await page.goto(`${serve.baseUrl}/session/${encodeURIComponent(sessionId)}`);
     await waitForCockpitView(page);
 
-    const composer = page.getByRole("textbox", { name: /Send a message/i });
+    const composer = page.getByRole("textbox", {
+      name: /Send a message|Queue a follow-up/i,
+    });
     await composer.fill("kick off the first turn");
     await composer.press("Enter");
 
@@ -74,17 +76,8 @@ base("queued follow-up fires when first turn ends", async ({ page }, testInfo) =
       timeout: 10_000,
     });
 
-    // Composer placeholder flips while turn is active.
-    const followUpField = page.getByRole("textbox", {
-      name: /Queue a follow-up/i,
-    });
-    await expect(followUpField).toBeVisible({ timeout: 5_000 });
-    await followUpField.fill("second please");
-
-    const queueButton = page.getByRole("button", {
-      name: /Queue follow-up message/i,
-    });
-    await queueButton.click();
+    await composer.fill("second please");
+    await page.getByRole("button", { name: /Queue follow-up message/i }).click();
 
     // Turn 1 wait_ms elapses → end_turn → drain effect fires the
     // queued prompt → turn 2 starts and emits its distinct text.

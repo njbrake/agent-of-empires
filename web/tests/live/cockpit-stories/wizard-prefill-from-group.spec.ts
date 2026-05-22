@@ -31,10 +31,10 @@ base("group-level New session prefills the wizard", async ({ page }, testInfo) =
     });
     await newInGroup.click();
 
-    // With a pre-filled path the wizard skips ProjectStep and opens
-    // directly on the Agent step.
+    // With a pre-filled path the wizard skips ProjectStep and opens on
+    // the Session step ("Name your session").
     await expect(
-      page.getByRole("heading", { name: /^Choose an agent$|^Agent$/i }),
+      page.getByRole("heading", { name: "Name your session", exact: true }),
     ).toBeVisible({ timeout: 10_000 });
   } finally {
     await serve.stop();

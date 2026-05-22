@@ -76,9 +76,10 @@ base("DeleteSessionDialog can opt into deleting the worktree", async ({ page }, 
       '[data-testid="delete-session-checkbox-worktree"]',
     );
     await expect(worktreeCheckbox).toBeVisible({ timeout: 5_000 });
-    // The default is opt-in for managed worktrees; verify it's checked
-    // and submit with the worktree-delete intent.
-    await expect(worktreeCheckbox).toBeChecked();
+    // Custom Checkbox component renders as a `<label data-checked="...">`,
+    // not a native input, so toBeChecked() does not apply. The label
+    // attribute is the source of truth.
+    await expect(worktreeCheckbox).toHaveAttribute("data-checked", "true");
 
     const deletePromise = page.waitForResponse(
       (res) =>

@@ -3,6 +3,7 @@
 
 import { test as base, expect } from "@playwright/test";
 import { spawnAoeServe } from "../../helpers/aoeServe";
+import { openSettingsTab } from "../../helpers/cockpit";
 
 base("sound enabled toggle round-trips through the UI", async ({ page }, testInfo) => {
   const serve = await spawnAoeServe({
@@ -13,13 +14,17 @@ base("sound enabled toggle round-trips through the UI", async ({ page }, testInf
 
   try {
     await page.goto(`${serve.baseUrl}/settings`);
+    await openSettingsTab(page, "Sound");
 
-    // ToggleField renders the label in a sibling div, so the role=switch
+    // ToggleField puts label text in a sibling div, so the role=switch
     // button's accessible name does not include "Enabled". Locate the
-    // wrapper by label text, then drill into the switch.
+    // description text and walk up to the wrapper, then grab the
+    // switch button.
     const toggle = page
-      .locator("div.flex.items-center.justify-between")
-      .filter({ hasText: "Play sounds on session status changes" })
+      .getByText("Play sounds on session status changes")
+      .locator(
+        'xpath=ancestor::div[contains(@class, "flex") and contains(@class, "items-center") and contains(@class, "justify-between")][1]',
+      )
       .locator('button[role="switch"]');
     await expect(toggle).toBeVisible({ timeout: 10_000 });
 
@@ -29,9 +34,12 @@ base("sound enabled toggle round-trips through the UI", async ({ page }, testInf
     await expect(toggle).toHaveAttribute("aria-checked", after);
 
     await page.reload();
+    await openSettingsTab(page, "Sound");
     const reloaded = page
-      .locator("div.flex.items-center.justify-between")
-      .filter({ hasText: "Play sounds on session status changes" })
+      .getByText("Play sounds on session status changes")
+      .locator(
+        'xpath=ancestor::div[contains(@class, "flex") and contains(@class, "items-center") and contains(@class, "justify-between")][1]',
+      )
       .locator('button[role="switch"]');
     await expect(reloaded).toHaveAttribute("aria-checked", after, {
       timeout: 10_000,

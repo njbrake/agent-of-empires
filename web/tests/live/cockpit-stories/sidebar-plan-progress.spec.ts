@@ -25,8 +25,8 @@ const PLAN_SCRIPT = {
         {
           sessionUpdate: "plan",
           entries: [
-            { content: "Step alpha", status: "in_progress" },
-            { content: "Step bravo", status: "pending" },
+            { content: "Step alpha", status: "in_progress", priority: "high" },
+            { content: "Step bravo", status: "pending", priority: "medium" },
           ],
         },
         {

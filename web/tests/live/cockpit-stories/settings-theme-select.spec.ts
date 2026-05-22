@@ -6,6 +6,7 @@
 
 import { test as base, expect } from "@playwright/test";
 import { spawnAoeServe } from "../../helpers/aoeServe";
+import { openSettingsTab, settingsSelectByLabel } from "../../helpers/cockpit";
 
 base("theme name SelectField round-trips through the UI", async ({ page }, testInfo) => {
   const serve = await spawnAoeServe({
@@ -16,12 +17,9 @@ base("theme name SelectField round-trips through the UI", async ({ page }, testI
 
   try {
     await page.goto(`${serve.baseUrl}/settings`);
+    await openSettingsTab(page, "Theme");
 
-    const themeSelect = page
-      .locator("div")
-      .filter({ has: page.locator("label", { hasText: /^Theme$/ }) })
-      .locator("select")
-      .first();
+    const themeSelect = settingsSelectByLabel(page, "Theme");
     await expect(themeSelect).toBeVisible({ timeout: 10_000 });
     // Wait for the themes list to populate (initial render is empty).
     await expect
@@ -41,11 +39,8 @@ base("theme name SelectField round-trips through the UI", async ({ page }, testI
     await expect(themeSelect).toHaveValue(next!);
 
     await page.reload();
-    const reloaded = page
-      .locator("div")
-      .filter({ has: page.locator("label", { hasText: /^Theme$/ }) })
-      .locator("select")
-      .first();
+    await openSettingsTab(page, "Theme");
+    const reloaded = settingsSelectByLabel(page, "Theme");
     await expect(reloaded).toHaveValue(next!, { timeout: 10_000 });
   } finally {
     await serve.stop();

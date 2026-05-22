@@ -8,6 +8,7 @@
 
 import { test as base, expect } from "@playwright/test";
 import { spawnAoeServe } from "../../helpers/aoeServe";
+import { openSettingsTab, settingsSelectByLabel } from "../../helpers/cockpit";
 
 base("per-profile settings stay isolated across profile switches", async ({ page }, testInfo) => {
   const serve = await spawnAoeServe({
@@ -20,16 +21,16 @@ base("per-profile settings stay isolated across profile switches", async ({ page
     await page.goto(`${serve.baseUrl}/settings`);
     const profileSelect = page.locator("select").first();
     await expect(profileSelect).toBeVisible({ timeout: 10_000 });
-    await expect(profileSelect).toHaveValue("default");
+    // Default profile name varies by build (`main` on release, `default`
+    // historically). Capture whatever the server resolved on mount.
+    const profileA = await profileSelect.inputValue();
+    expect(profileA.length).toBeGreaterThan(0);
 
-    const statusBar = page
-      .locator("div")
-      .filter({ has: page.locator("label", { hasText: "Status bar" }) })
-      .locator("select")
-      .first();
+    await openSettingsTab(page, "Tmux");
+    const statusBar = settingsSelectByLabel(page, "Status bar");
     await expect(statusBar).toBeVisible({ timeout: 10_000 });
 
-    // Change tmux status_bar on the default profile to "disabled".
+    // Change tmux status_bar on profile A to "disabled".
     await statusBar.selectOption("disabled");
     await expect(statusBar).toHaveValue("disabled");
 
@@ -41,24 +42,17 @@ base("per-profile settings stay isolated across profile switches", async ({ page
       profileSelect.locator("option", { hasText: "isolation-b" }),
     ).toHaveCount(1, { timeout: 5_000 });
     await profileSelect.selectOption("isolation-b");
+    await openSettingsTab(page, "Tmux");
 
     // Profile B starts fresh; tmux status_bar should be the unset
     // default ("auto"), not "disabled".
-    const statusBarB = page
-      .locator("div")
-      .filter({ has: page.locator("label", { hasText: "Status bar" }) })
-      .locator("select")
-      .first();
+    const statusBarB = settingsSelectByLabel(page, "Status bar");
     await expect(statusBarB).toHaveValue("auto", { timeout: 10_000 });
 
-    // Switch back to default; the value we set above must still be
-    // "disabled".
-    await profileSelect.selectOption("default");
-    const statusBarA = page
-      .locator("div")
-      .filter({ has: page.locator("label", { hasText: "Status bar" }) })
-      .locator("select")
-      .first();
+    // Switch back to profile A; the value set above must still hold.
+    await profileSelect.selectOption(profileA);
+    await openSettingsTab(page, "Tmux");
+    const statusBarA = settingsSelectByLabel(page, "Status bar");
     await expect(statusBarA).toHaveValue("disabled", { timeout: 10_000 });
   } finally {
     await serve.stop();
