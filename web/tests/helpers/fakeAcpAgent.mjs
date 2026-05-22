@@ -332,7 +332,43 @@ async function handleRequest(msg) {
     case "session/new":
     case "session/load": {
       const sessionId = params?.sessionId ?? makeSessionId();
-      sendResult(id, { sessionId });
+      // Mirror claude-agent-acp v0.37.0: the initial set of
+      // per-session selectors (model + effort + mode) ships in the
+      // session/new and session/load *response*, not as a subsequent
+      // notification. The cockpit's acp_client reads the response
+      // field and emits Event::ConfigOptionsUpdated. See #1403.
+      const includeConfigOptions =
+        process.env.FAKE_ACP_EMIT_CONFIG_OPTIONS !== "0";
+      const result = { sessionId };
+      if (includeConfigOptions) {
+        result.configOptions = [
+          {
+            id: "model",
+            name: "Model",
+            category: "model",
+            type: "select",
+            currentValue: "claude-opus-4-7",
+            options: [
+              { value: "claude-opus-4-7", name: "Claude Opus 4.7" },
+              { value: "claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
+            ],
+          },
+          {
+            id: "effort",
+            name: "Reasoning Effort",
+            category: "thought_level",
+            type: "select",
+            currentValue: "default",
+            options: [
+              { value: "default", name: "Default" },
+              { value: "low", name: "Low" },
+              { value: "medium", name: "Medium" },
+              { value: "high", name: "High" },
+            ],
+          },
+        ];
+      }
+      sendResult(id, result);
       return;
     }
 
@@ -349,6 +385,51 @@ async function handleRequest(msg) {
         // a server-side Event::CurrentModeChanged for the reducer.
         await emitSessionUpdates(sessionId, [
           { sessionUpdate: "current_mode_update", currentModeId: modeId },
+        ]);
+      }
+      return;
+    }
+
+    case "session/set_config_option": {
+      // Mirrors claude-agent-acp's setSessionConfigOption: accept the
+      // new value, emit a follow-up config_option_update with the
+      // updated currentValue for that option. Tests opt into a
+      // rejected response by setting FAKE_ACP_REJECT_CONFIG_OPTION.
+      // See #1403.
+      const sessionId = params?.sessionId;
+      const configId = params?.configId;
+      const value = params?.value;
+      if (process.env.FAKE_ACP_REJECT_CONFIG_OPTION) {
+        sendError(id, -32000, process.env.FAKE_ACP_REJECT_CONFIG_OPTION);
+        return;
+      }
+      sendResult(id, {});
+      if (sessionId && configId && value) {
+        await emitSessionUpdates(sessionId, [
+          {
+            sessionUpdate: "config_option_update",
+            configOptions: [
+              {
+                id: configId,
+                name: configId === "model" ? "Model" : "Reasoning Effort",
+                category: configId === "model" ? "model" : "thought_level",
+                type: "select",
+                currentValue: value,
+                options:
+                  configId === "model"
+                    ? [
+                        { value: "claude-opus-4-7", name: "Claude Opus 4.7" },
+                        { value: "claude-sonnet-4-6", name: "Claude Sonnet 4.6" },
+                      ]
+                    : [
+                        { value: "default", name: "Default" },
+                        { value: "low", name: "Low" },
+                        { value: "medium", name: "Medium" },
+                        { value: "high", name: "High" },
+                      ],
+              },
+            ],
+          },
         ]);
       }
       return;

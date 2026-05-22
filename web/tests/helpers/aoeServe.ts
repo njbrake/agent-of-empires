@@ -77,6 +77,11 @@ export interface SpawnOptions {
   cockpit?: boolean;
   /** Optional path to a FAKE_ACP_SCRIPT for cockpit tests. */
   fakeAcpScript?: string;
+  /** Extra environment variables exported in the fake-ACP shim. Lets
+   *  cockpit tests toggle behavior on the fake agent (e.g. force a
+   *  rejection of session/set_config_option) without writing a full
+   *  scripted turn file. */
+  extraEnv?: Record<string, string>;
   /**
    * Runs after the isolated $HOME tree is set up and the fake shim is on
    * PATH, but BEFORE `aoe serve` spawns. Use to call `aoe add` so the
@@ -339,6 +344,7 @@ function writeFakeAcpShim(
   binDir: string,
   fakeAcpScript: string | undefined,
   fakeAcpDebugLog: string,
+  extraEnv: Record<string, string> | undefined,
 ): void {
   // The cockpit supervisor resolves the agent through `AgentRegistry`
   // (src/cockpit/agent_registry.rs): the `claude` tool key maps to
@@ -362,6 +368,9 @@ function writeFakeAcpShim(
     scriptLines.push("unset FAKE_ACP_SCRIPT");
   }
   scriptLines.push(`export FAKE_ACP_DEBUG_LOG=${JSON.stringify(fakeAcpDebugLog)}`);
+  for (const [key, value] of Object.entries(extraEnv ?? {})) {
+    scriptLines.push(`export ${key}=${JSON.stringify(value)}`);
+  }
   const script = `#!/bin/bash\n${scriptLines.join("\n")}\nexec node ${JSON.stringify(fakeAgentJs)} "$@"\n`;
   for (const name of ["claude", "claude-agent-acp", "aoe-agent"]) {
     const path = join(binDir, name);
@@ -461,7 +470,7 @@ export async function spawnAoeServe(opts: SpawnOptions): Promise<ServeHandle> {
   }
   const fakeAcpDebugLog = join(home, "fake-acp.log");
   if (opts.cockpit) {
-    writeFakeAcpShim(shimBin, opts.fakeAcpScript, fakeAcpDebugLog);
+    writeFakeAcpShim(shimBin, opts.fakeAcpScript, fakeAcpDebugLog, opts.extraEnv);
   } else {
     writeFakeClaudeShim(shimBin);
   }
