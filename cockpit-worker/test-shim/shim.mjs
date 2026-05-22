@@ -150,6 +150,135 @@ class ShimAgent {
       return { stopReason: "cancelled" };
     }
 
+    // BACKGROUND_BASH_ORPHAN reproduces the #1401 shape: the Claude SDK
+    // `Bash` tool fired with `run_in_background: true`. The visible
+    // ToolCall completes immediately with the marker
+    // "Command running in background with ID: <id>", then the prompt
+    // also receives a cost-populated usage_update (the production
+    // false-positive's trigger). The Rust watchdog must observe the
+    // off-protocol marker and stay suppressed past the fast grace.
+    if (userText.includes("BACKGROUND_BASH_ORPHAN")) {
+      await this.connection.sessionUpdate({
+        sessionId: params.sessionId,
+        update: {
+          sessionUpdate: "tool_call",
+          toolCallId: "tc-bg-orphan-1",
+          title: "Bash",
+          kind: "execute",
+          status: "pending",
+          rawInput: { command: "sleep 600", run_in_background: true },
+        },
+      });
+      await this.connection.sessionUpdate({
+        sessionId: params.sessionId,
+        update: {
+          sessionUpdate: "tool_call_update",
+          toolCallId: "tc-bg-orphan-1",
+          status: "completed",
+          content: [
+            {
+              type: "content",
+              content: {
+                type: "text",
+                text: "Command running in background with ID: btest-orphan-1. Output is being written to: /tmp/x",
+              },
+            },
+          ],
+        },
+      });
+      // Force the daemon down the fast-grace path; if off-protocol
+      // suppression is wired correctly, the watchdog should still
+      // stay quiet for the full test window.
+      await this.connection.sessionUpdate({
+        sessionId: params.sessionId,
+        update: {
+          sessionUpdate: "usage_update",
+          input_tokens: 10,
+          output_tokens: 10,
+          cost: { amount: 0.01, currency: "USD" },
+        },
+      });
+      await new Promise((resolve) => {
+        this._silentOrphanResolve = resolve;
+      });
+      return { stopReason: "cancelled" };
+    }
+
+    // WAKEUP_ORPHAN reproduces the ScheduleWakeup path from #1401: the
+    // agent registers an absolute wake-at, then idles intentionally
+    // waiting for the scheduled prompt to fire. A cost-populated
+    // usage_update follows so the daemon would otherwise switch to the
+    // fast grace; the wakeup suppression must override it until
+    // `at + base_grace` passes.
+    if (userText.includes("WAKEUP_ORPHAN")) {
+      await this.connection.sessionUpdate({
+        sessionId: params.sessionId,
+        update: {
+          sessionUpdate: "tool_call",
+          toolCallId: "tc-wakeup-1",
+          title: "ScheduleWakeup",
+          kind: "other",
+          status: "pending",
+          rawInput: {
+            delaySeconds: 60,
+            reason: "test scheduled wakeup",
+            prompt: "continue",
+          },
+        },
+      });
+      // Real claude-agent-acp lands `raw_input` on an interim
+      // `tool_call_update` BEFORE the final completed frame; the
+      // watchdog now requires this carrier to fire `WakeupPending`
+      // (so a Failed completion doesn't blindly suppress for the
+      // delay window). Mirror the real shape: emit one in-progress
+      // update with raw_input.delaySeconds, then a final completed
+      // update.
+      await this.connection.sessionUpdate({
+        sessionId: params.sessionId,
+        update: {
+          sessionUpdate: "tool_call_update",
+          toolCallId: "tc-wakeup-1",
+          status: "in_progress",
+          title: "ScheduleWakeup",
+          rawInput: {
+            delaySeconds: 60,
+            reason: "test scheduled wakeup",
+            prompt: "continue",
+          },
+        },
+      });
+      await this.connection.sessionUpdate({
+        sessionId: params.sessionId,
+        update: {
+          sessionUpdate: "tool_call_update",
+          toolCallId: "tc-wakeup-1",
+          status: "completed",
+          content: [
+            {
+              type: "content",
+              content: {
+                type: "text",
+                text: "Next wakeup scheduled.",
+              },
+            },
+          ],
+        },
+      });
+      await this.connection.sessionUpdate({
+        sessionId: params.sessionId,
+        update: {
+          sessionUpdate: "usage_update",
+          input_tokens: 10,
+          output_tokens: 10,
+          cost: { amount: 0.01, currency: "USD" },
+        },
+      });
+      await new Promise((resolve) => {
+        this._silentOrphanResolve = resolve;
+      });
+      return { stopReason: "cancelled" };
+    }
+
     // Optional slow path: tests that need to observe mid-turn UI
     // (e.g. the working spinner) include "SLOW" in the prompt so the
     // shim adds a configurable delay between events.
