@@ -485,13 +485,16 @@ export async function spawnAoeServe(opts: SpawnOptions): Promise<ServeHandle> {
     // process.env alone. Keeping it on seedEnv too is harmless and
     // covers any future caller that bypasses the shim path.
     FAKE_ACP_DEBUG_LOG: fakeAcpDebugLog,
-    // Cockpit supervisor + acp_client at debug so the daemon's
-    // debug.log captures the "why" of a mid-turn worker death (reap
-    // reason, drain task exit, EPIPE on stdin/stdout, etc.). The
-    // tracing macros use a target-style namespace (e.g.
-    // `target: "cockpit.supervisor"`), not the Rust module path, so
-    // the EnvFilter directive must match the target prefix.
-    AOE_LOG_LEVEL: process.env.AOE_LOG_LEVEL ?? "info,cockpit=debug",
+    // Force trace-level daemon logging so trace!/debug! events from
+    // cockpit.supervisor / cockpit.acp / cockpit.runner reach
+    // debug.log. AOE_LOG_LEVEL only accepts a single level string
+    // (trace|debug|info|warn|error) — see LogLevel::parse in
+    // src/logging.rs — so a directive like "info,cockpit=debug"
+    // would parse as None and fall back to serve_default (info),
+    // which is what happened on the previous CI run. trace is loud
+    // (~MBs per test) but bounded by attachServeDiagnostics's 64 KB
+    // tail cap on the attached log.
+    AOE_LOG_LEVEL: process.env.AOE_LOG_LEVEL ?? "trace",
   };
 
   if (authMode === "token") {
