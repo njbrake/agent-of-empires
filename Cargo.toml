@@ -136,6 +136,9 @@ getrandom = { version = "0.4", optional = true }
 agent-client-protocol = { version = "0.11", optional = true, features = ["unstable_session_usage"] }
 agent-client-protocol-tokio = { version = "0.11", optional = true }
 
+# Semver parsing for ACP adapter compatibility checks (see src/cockpit/agent_compat.rs).
+semver = { version = "1", optional = true }
+
 # Node tarball download + extraction for the cockpit's bundled-Node
 # fallback. xz2 needs the system liblzma; we use it for tar.xz
 # extraction. The `tar` crate handles the tarball stream. Hex used
@@ -179,6 +182,7 @@ serve = [
     # under src/cockpit/).
     "agent-client-protocol",
     "agent-client-protocol-tokio",
+    "semver",
     "tar",
     "xz2",
     "tokio-tungstenite",

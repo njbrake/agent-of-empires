@@ -1,0 +1,342 @@
+//! Per-adapter compatibility policy for ACP agents.
+//!
+//! aoe spawns several ACP adapters (claude-agent-acp, codex-acp,
+//! opencode, aoe-agent, gemini, pi-acp). Some require a minimum upstream
+//! version because aoe relies on behavior that only landed past a known
+//! release. This module centralizes those rules so `acp_client` has a
+//! single hook to call after `initialize` succeeds, instead of scattering
+//! ad-hoc semver checks at every spawn site.
+//!
+//! Today only `ClaudeAgentAcp` carries a minimum version (>=0.37.0,
+//! required for `memory_recall` tool-call emission, native `cancelled`
+//! stop reason, and several other behaviors aoe builds on). Other agents
+//! get a permissive policy (protocol check only). Long-term aoe should
+//! prefer ACP capability flags over package-version gating; until upstream
+//! exposes those, package versions are the only precise contract.
+//!
+//! Failure mode: missing `agent_info`, missing version, parse failure, or
+//! version below the floor all reject for adapters with a minimum. Other
+//! adapters are passed through. The supervisor's known spawn intent is
+//! the gate, not the self-reported `agent_info.name` on the wire.
+
+use agent_client_protocol::schema::{InitializeResponse, ProtocolVersion};
+
+/// The adapter aoe is trying to launch. Drives which `CompatibilityPolicy`
+/// is applied at initialize-time.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExpectedAgent {
+    ClaudeAgentAcp,
+    CodexAcp,
+    OpenCode,
+    AoeAgent,
+    Gemini,
+    PiAcp,
+    /// Unknown / user-configured agent. Permissive policy.
+    Other,
+}
+
+impl ExpectedAgent {
+    /// Resolve from the binary name as configured in `AgentRegistry`. Maps
+    /// the string the supervisor is about to spawn to the matching policy
+    /// enum so the supervisor can call this once and pass the result down.
+    pub fn from_command(command: &str) -> Self {
+        let bin = command.rsplit('/').next().unwrap_or(command);
+        match bin {
+            "claude-agent-acp" => Self::ClaudeAgentAcp,
+            "codex-acp" => Self::CodexAcp,
+            "opencode" => Self::OpenCode,
+            "aoe-agent" => Self::AoeAgent,
+            "gemini" => Self::Gemini,
+            "pi-acp" => Self::PiAcp,
+            _ => Self::Other,
+        }
+    }
+}
+
+/// What the policy requires from the adapter's `InitializeResponse`.
+struct CompatibilityPolicy {
+    /// If set, the adapter must report this exact `agent_info.name`.
+    expected_name: Option<&'static str>,
+    /// If set, the adapter's `agent_info.version` must parse as semver
+    /// and be at least this value.
+    min_version: Option<semver::Version>,
+    /// The protocol version the client requested. Adapter must match.
+    required_protocol: ProtocolVersion,
+    /// If `true`, missing `agent_info` or empty/unparseable version
+    /// rejects. `false` means we tolerate adapters that don't advertise.
+    fail_on_missing_agent_info: bool,
+}
+
+impl ExpectedAgent {
+    fn policy(self) -> CompatibilityPolicy {
+        match self {
+            Self::ClaudeAgentAcp => CompatibilityPolicy {
+                expected_name: Some("@agentclientprotocol/claude-agent-acp"),
+                min_version: Some(semver::Version::new(0, 37, 0)),
+                required_protocol: ProtocolVersion::V1,
+                fail_on_missing_agent_info: true,
+            },
+            // Other adapters: protocol check only. aoe doesn't yet
+            // depend on a version-gated behavior in any of them.
+            Self::CodexAcp
+            | Self::OpenCode
+            | Self::AoeAgent
+            | Self::Gemini
+            | Self::PiAcp
+            | Self::Other => CompatibilityPolicy {
+                expected_name: None,
+                min_version: None,
+                required_protocol: ProtocolVersion::V1,
+                fail_on_missing_agent_info: false,
+            },
+        }
+    }
+}
+
+/// Reasons aoe refuses to enter a session after a successful `initialize`
+/// handshake. Surfaced to the user via the cockpit StartupErrorScreen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum StartupError {
+    /// Adapter reported a version below the minimum aoe requires.
+    IncompatibleAgentVersion {
+        package_name: String,
+        installed: String,
+        required: String,
+        install_command: String,
+    },
+    /// Adapter passed name/version checks but reported a protocol version
+    /// aoe does not speak.
+    UnsupportedProtocolVersion { expected: String, received: String },
+    /// Adapter omitted `agent_info` (or `agent_info.version`) entirely,
+    /// and the policy for this adapter kind requires it.
+    MissingAgentInfo {
+        expected_package: String,
+        install_command: String,
+    },
+    /// Adapter advertised a different package name than aoe expected for
+    /// this `ExpectedAgent`. Probably a wrapper or stale install.
+    MismatchedAgentName {
+        expected: String,
+        received: String,
+        install_command: String,
+    },
+    /// `agent_info.version` was present but did not parse as semver.
+    UnparseableAgentVersion {
+        package_name: String,
+        raw_version: String,
+        required: String,
+        install_command: String,
+    },
+}
+
+impl StartupError {
+    /// Short, machine-stable identifier used by tests, logs, and the
+    /// frontend reducer's discriminator.
+    pub fn kind(&self) -> &'static str {
+        match self {
+            Self::IncompatibleAgentVersion { .. } => "incompatible_agent_version",
+            Self::UnsupportedProtocolVersion { .. } => "unsupported_protocol_version",
+            Self::MissingAgentInfo { .. } => "missing_agent_info",
+            Self::MismatchedAgentName { .. } => "mismatched_agent_name",
+            Self::UnparseableAgentVersion { .. } => "unparseable_agent_version",
+        }
+    }
+}
+
+/// Validate an `InitializeResponse` against the policy for the adapter
+/// aoe was launching. Returns `Ok(())` on success; `Err(StartupError)`
+/// surfaces a structured failure the supervisor can route into the
+/// startup-error UI path.
+pub fn validate(expected: ExpectedAgent, init: &InitializeResponse) -> Result<(), StartupError> {
+    let policy = expected.policy();
+
+    if init.protocol_version != policy.required_protocol {
+        return Err(StartupError::UnsupportedProtocolVersion {
+            expected: format!("{:?}", policy.required_protocol),
+            received: format!("{:?}", init.protocol_version),
+        });
+    }
+
+    // Fast path for adapters with no name/version requirement.
+    if policy.min_version.is_none() && policy.expected_name.is_none() {
+        return Ok(());
+    }
+
+    let install_command =
+        install_command_for(expected).unwrap_or_else(|| "(see project docs)".to_string());
+
+    let Some(info) = init.agent_info.as_ref() else {
+        if policy.fail_on_missing_agent_info {
+            return Err(StartupError::MissingAgentInfo {
+                expected_package: policy.expected_name.unwrap_or("(unspecified)").to_string(),
+                install_command,
+            });
+        }
+        return Ok(());
+    };
+
+    if let Some(expected_name) = policy.expected_name {
+        if info.name != expected_name {
+            return Err(StartupError::MismatchedAgentName {
+                expected: expected_name.to_string(),
+                received: info.name.clone(),
+                install_command,
+            });
+        }
+    }
+
+    if let Some(min) = policy.min_version {
+        let raw = info.version.trim();
+        if raw.is_empty() {
+            if policy.fail_on_missing_agent_info {
+                return Err(StartupError::MissingAgentInfo {
+                    expected_package: policy
+                        .expected_name
+                        .unwrap_or(info.name.as_str())
+                        .to_string(),
+                    install_command,
+                });
+            }
+            return Ok(());
+        }
+        let parsed = match semver::Version::parse(raw) {
+            Ok(v) => v,
+            Err(_) => {
+                return Err(StartupError::UnparseableAgentVersion {
+                    package_name: info.name.clone(),
+                    raw_version: raw.to_string(),
+                    required: min.to_string(),
+                    install_command,
+                });
+            }
+        };
+        if parsed < min {
+            return Err(StartupError::IncompatibleAgentVersion {
+                package_name: info.name.clone(),
+                installed: parsed.to_string(),
+                required: min.to_string(),
+                install_command,
+            });
+        }
+    }
+
+    Ok(())
+}
+
+/// Lookup table for the install commands surfaced in startup errors.
+/// Kept in sync with `install_hints::install_hint_for` so the error UI
+/// shows the exact command the doctor would run.
+fn install_command_for(expected: ExpectedAgent) -> Option<String> {
+    let bin = match expected {
+        ExpectedAgent::ClaudeAgentAcp => "claude-agent-acp",
+        ExpectedAgent::CodexAcp => "codex-acp",
+        ExpectedAgent::OpenCode => "opencode",
+        ExpectedAgent::AoeAgent => return None,
+        ExpectedAgent::Gemini => "gemini",
+        ExpectedAgent::PiAcp => "pi-acp",
+        ExpectedAgent::Other => return None,
+    };
+    crate::cockpit::install_hints::install_hint_for(bin).map(|s| s.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use agent_client_protocol::schema::Implementation;
+
+    fn make_init(name: &str, version: &str) -> InitializeResponse {
+        InitializeResponse::new(ProtocolVersion::V1).agent_info(Implementation::new(name, version))
+    }
+
+    fn make_init_no_info() -> InitializeResponse {
+        InitializeResponse::new(ProtocolVersion::V1)
+    }
+
+    #[test]
+    fn claude_below_minimum_rejected() {
+        let init = make_init("@agentclientprotocol/claude-agent-acp", "0.32.0");
+        let err = validate(ExpectedAgent::ClaudeAgentAcp, &init).unwrap_err();
+        assert_eq!(err.kind(), "incompatible_agent_version");
+        let StartupError::IncompatibleAgentVersion {
+            installed,
+            required,
+            ..
+        } = err
+        else {
+            panic!()
+        };
+        assert_eq!(installed, "0.32.0");
+        assert_eq!(required, "0.37.0");
+    }
+
+    #[test]
+    fn claude_at_minimum_accepted() {
+        let init = make_init("@agentclientprotocol/claude-agent-acp", "0.37.0");
+        validate(ExpectedAgent::ClaudeAgentAcp, &init).unwrap();
+    }
+
+    #[test]
+    fn claude_above_minimum_accepted() {
+        let init = make_init("@agentclientprotocol/claude-agent-acp", "0.38.1");
+        validate(ExpectedAgent::ClaudeAgentAcp, &init).unwrap();
+    }
+
+    #[test]
+    fn claude_missing_agent_info_rejected() {
+        let init = make_init_no_info();
+        let err = validate(ExpectedAgent::ClaudeAgentAcp, &init).unwrap_err();
+        assert_eq!(err.kind(), "missing_agent_info");
+    }
+
+    #[test]
+    fn claude_empty_version_rejected() {
+        let init = make_init("@agentclientprotocol/claude-agent-acp", "");
+        let err = validate(ExpectedAgent::ClaudeAgentAcp, &init).unwrap_err();
+        assert_eq!(err.kind(), "missing_agent_info");
+    }
+
+    #[test]
+    fn claude_unparseable_version_rejected() {
+        let init = make_init("@agentclientprotocol/claude-agent-acp", "not-semver");
+        let err = validate(ExpectedAgent::ClaudeAgentAcp, &init).unwrap_err();
+        assert_eq!(err.kind(), "unparseable_agent_version");
+    }
+
+    #[test]
+    fn claude_mismatched_name_rejected() {
+        let init = make_init("some-other-package", "0.37.0");
+        let err = validate(ExpectedAgent::ClaudeAgentAcp, &init).unwrap_err();
+        assert_eq!(err.kind(), "mismatched_agent_name");
+    }
+
+    #[test]
+    fn non_claude_permissive_on_missing_info() {
+        let init = make_init_no_info();
+        validate(ExpectedAgent::CodexAcp, &init).unwrap();
+        validate(ExpectedAgent::OpenCode, &init).unwrap();
+        validate(ExpectedAgent::AoeAgent, &init).unwrap();
+        validate(ExpectedAgent::Other, &init).unwrap();
+    }
+
+    #[test]
+    fn non_claude_permissive_on_old_version() {
+        let init = make_init("@zed-industries/codex-acp", "0.0.1");
+        validate(ExpectedAgent::CodexAcp, &init).unwrap();
+    }
+
+    #[test]
+    fn from_command_recognises_path_prefixed_binary() {
+        assert_eq!(
+            ExpectedAgent::from_command("/usr/local/bin/claude-agent-acp"),
+            ExpectedAgent::ClaudeAgentAcp
+        );
+        assert_eq!(
+            ExpectedAgent::from_command("claude-agent-acp"),
+            ExpectedAgent::ClaudeAgentAcp
+        );
+        assert_eq!(
+            ExpectedAgent::from_command("unknown-bin"),
+            ExpectedAgent::Other
+        );
+    }
+}
