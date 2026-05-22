@@ -59,6 +59,7 @@ The format follows [Conventional Commits](https://www.conventionalcommits.org/).
 - **web:** Bump @assistant-ui to pick up tap out-of-bounds fix (#1400) ([`5e001fe`](https://github.com/njbrake/agent-of-empires/commit/5e001fea3075df017b4687b334d0e7e3c3765fcd))
 - Let directory browser load more entries (#1399) ([`14479fa`](https://github.com/njbrake/agent-of-empires/commit/14479fa5e800194f1936e8a16bc882b06a414c47))
 - **cockpit:** Silent-orphan watchdog suppression for background Bash + ScheduleWakeup (#1406) ([`f6d0905`](https://github.com/njbrake/agent-of-empires/commit/f6d09052698db45221998233dc2c78a7a2a68e93))
+- **web/test:** Unmount React trees after each test to stop jsdom-teardown flake (#1416) ([`3b8bbf5`](https://github.com/njbrake/agent-of-empires/commit/3b8bbf56f1292b19223d6cbb414ca56ad5ce7025))
 
 
 ### Features
@@ -87,6 +88,7 @@ The format follows [Conventional Commits](https://www.conventionalcommits.org/).
 - **tui:** Full-screen multi-column help overlay with scroll (#1410) ([`4ceed86`](https://github.com/njbrake/agent-of-empires/commit/4ceed863f11c6ac42ed410f9232e9d89c18a903f))
 - **tui:** Toggle preview info header with i (#1411) ([`1501bf1`](https://github.com/njbrake/agent-of-empires/commit/1501bf1d33b4885712ebb1bb949f4c47f3423f1d))
 - Keep web terminals alive behind beta setting (#1388) ([`87e6b24`](https://github.com/njbrake/agent-of-empires/commit/87e6b24e22d2505a8b30cb424cab78889a2dac05))
+- **ci:** Adopt git-cliff for CHANGELOG.md and release notes ([`5fbf8bd`](https://github.com/njbrake/agent-of-empires/commit/5fbf8bdccf0408827bb5fe51b56243655daa340f))
 
 
 ### Performance

@@ -14,6 +14,13 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
+    # Hoist the version input out of every run: step's shell, so it lands in
+    # the environment via $VERSION instead of expanding inline. Inline
+    # `${{ github.event.inputs.version }}` inside shell bodies is a template
+    # injection foot-gun: validation runs in a shell that itself does the
+    # expansion, so any escape would already have happened.
+    env:
+      VERSION: ${{ github.event.inputs.version }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -30,7 +37,6 @@ jobs:
 
       - name: Validate version format
         run: |
-          VERSION="${{ github.event.inputs.version }}"
           if ! echo "$VERSION" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+(-[a-zA-Z0-9.]+)?$'; then
             echo "::error::Invalid version format: '$VERSION'. Expected semver like 0.13.0"
             exit 1
@@ -38,14 +44,13 @@ jobs:
 
       - name: Check tag does not already exist
         run: |
-          if git rev-parse "v${{ github.event.inputs.version }}" >/dev/null 2>&1; then
-            echo "::error::Tag v${{ github.event.inputs.version }} already exists"
+          if git rev-parse "v$VERSION" >/dev/null 2>&1; then
+            echo "::error::Tag v$VERSION already exists"
             exit 1
           fi
 
       - name: Update Cargo version
         run: |
-          VERSION="${{ github.event.inputs.version }}"
           cargo set-version --package agent-of-empires "$VERSION"
           # Refresh Cargo.lock so the [[package]] entry tracks the new version
           # without requiring a full build.
@@ -55,23 +60,20 @@ jobs:
 
       - name: Update CHANGELOG.md
         run: |
-          VERSION="${{ github.event.inputs.version }}"
-          git cliff --config cliff.toml --tag "v${VERSION}" --output CHANGELOG.md
+          git cliff --config cliff.toml --tag "v$VERSION" --output CHANGELOG.md
           echo "=== CHANGELOG.md head ==="
           head -40 CHANGELOG.md
 
       - name: Commit version bump
         run: |
-          VERSION="${{ github.event.inputs.version }}"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add Cargo.toml Cargo.lock CHANGELOG.md
-          git commit -m "chore: bump version to ${VERSION}"
+          git commit -m "chore: bump version to $VERSION"
 
       - name: Create tag and push
         run: |
-          VERSION="${{ github.event.inputs.version }}"
-          git tag "v${VERSION}"
-          git push origin main "v${VERSION}"
-          echo "Pushed commit and tag v${VERSION}"
+          git tag "v$VERSION"
+          git push origin main "v$VERSION"
+          echo "Pushed commit and tag v$VERSION"
           echo "Release workflow will now trigger automatically."
