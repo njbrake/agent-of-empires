@@ -21,6 +21,19 @@ base("ProfileSelector switches the selected profile", async ({ page }, testInfo)
     await page.goto(`${serve.baseUrl}/settings`);
     const select = page.locator("select").first();
     await expect(select).toBeVisible({ timeout: 10_000 });
+    // SettingsView mounts with selectedProfile="default" then async-
+    // fetches the real profile list and re-derives the selection. If
+    // we read inputValue() before that fetch resolves, we capture ""
+    // (no matching option) or the stale literal "default", and the
+    // later selectOption(initialProfile) hangs 60s on "did not find
+    // some options". Wait for the select to settle on a real option
+    // before capturing the baseline.
+    await expect
+      .poll(async () => (await select.inputValue()).length, {
+        timeout: 10_000,
+      })
+      .toBeGreaterThan(0);
+    await expect(select.locator("option")).not.toHaveCount(0);
     const initialProfile = await select.inputValue();
 
     await page.getByRole("button", { name: "+ New" }).click();
