@@ -73,6 +73,10 @@ jobs:
         run: |
           set -euo pipefail
           NEW_HASH=$(nix run --refresh nixpkgs#prefetch-npm-deps -- pr-head/web/package-lock.json)
+          if ! printf '%s' "$NEW_HASH" | grep -qE '^sha256-[A-Za-z0-9+/]{43}=$'; then
+            echo "::error::prefetch-npm-deps emitted unexpected hash shape: $NEW_HASH"
+            exit 1
+          fi
           CUR_HASH=$(.github/scripts/get-flake-npm-hash.sh pr-head/flake.nix)
           echo "current=$CUR_HASH" >> "$GITHUB_OUTPUT"
           echo "computed=$NEW_HASH" >> "$GITHUB_OUTPUT"
@@ -158,19 +162,18 @@ jobs:
           {
             echo "$MARKER"
             echo
-            echo "The \`Nix Build Web\` check fails because \`flake.nix\`'s \`npmDepsHash\` does not match this PR's \`web/package-lock.json\`. The bot cannot push to fork branches; please apply the one-line fix below."
+            echo "The \`Nix Build Web\` check fails because \`flake.nix\`'s \`npmDepsHash\` does not match this PR's \`web/package-lock.json\`. The bot cannot push to fork branches; please apply the fix below."
             echo
             echo "**Old:** \`${CUR_HASH}\`  "
             echo "**New:** \`${NEW_HASH}\`"
             echo
-            echo "From your PR's checkout:"
+            echo "Update the \`npmDepsHash = \"...\"\` line in \`flake.nix\` to:"
             echo
+            echo '```nix'
+            echo "            npmDepsHash = \"${NEW_HASH}\";"
             echo '```'
-            echo "sed -i -E '/^[[:space:]]*npmDepsHash[[:space:]]*=[[:space:]]*\"sha256-/s|sha256-[^\"]*|${NEW_HASH}|' flake.nix"
-            echo "git add flake.nix"
-            echo "git commit -m 'chore: update Nix npmDepsHash for web dependencies'"
-            echo "git push"
-            echo '```'
+            echo
+            echo "Then \`git add flake.nix && git commit -m 'chore: update Nix npmDepsHash for web dependencies' && git push\`."
           } > /tmp/comment-body.md
 
           if [ -n "$EXISTING" ]; then
