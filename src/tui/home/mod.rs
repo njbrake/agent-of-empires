@@ -174,6 +174,7 @@ pub struct HomeView {
 
     // Dialogs
     pub(super) show_help: bool,
+    pub(super) help_scroll: u16,
     pub(super) new_dialog: Option<NewSessionDialog>,
     pub(super) confirm_dialog: Option<ConfirmDialog>,
     pub(super) unified_delete_dialog: Option<UnifiedDeleteDialog>,
@@ -438,6 +439,7 @@ impl HomeView {
             row_tag_mode: resolved.session.row_tag,
             project_group_collapsed: HashMap::new(),
             show_help: false,
+            help_scroll: 0,
             new_dialog: None,
             confirm_dialog: None,
             unified_delete_dialog: None,
