@@ -266,7 +266,7 @@ fn test_profile_config_isolation() -> Result<()> {
     // Save a profile-specific config override for "custom"
     let custom_config = ProfileConfig {
         updates: Some(UpdatesConfigOverride {
-            check_enabled: Some(false),
+            update_check_mode: Some(agent_of_empires::session::config::UpdateCheckMode::Off),
             ..Default::default()
         }),
         ..Default::default()
@@ -283,9 +283,9 @@ fn test_profile_config_isolation() -> Result<()> {
     // Verify custom profile has its override
     let loaded_custom = load_profile_config("custom")?;
     assert_eq!(
-        loaded_custom.updates.unwrap().check_enabled,
-        Some(false),
-        "Custom profile should have check_enabled = false"
+        loaded_custom.updates.unwrap().update_check_mode,
+        Some(agent_of_empires::session::config::UpdateCheckMode::Off),
+        "Custom profile should have update_check_mode = Off"
     );
 
     Ok(())

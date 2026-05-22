@@ -344,11 +344,32 @@ impl HomeView {
 
         // Handle other dialog input
         if self.show_help {
-            if matches!(
-                key.code,
-                KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q')
-            ) {
-                self.show_help = false;
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q') => {
+                    self.show_help = false;
+                    self.help_scroll = 0;
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.help_scroll = self.help_scroll.saturating_add(1);
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.help_scroll = self.help_scroll.saturating_sub(1);
+                }
+                KeyCode::PageDown | KeyCode::Char(' ') => {
+                    self.help_scroll = self.help_scroll.saturating_add(10);
+                }
+                KeyCode::PageUp => {
+                    self.help_scroll = self.help_scroll.saturating_sub(10);
+                }
+                KeyCode::Home | KeyCode::Char('g') => {
+                    self.help_scroll = 0;
+                }
+                KeyCode::End | KeyCode::Char('G') => {
+                    // u16::MAX overshoots intentionally; HelpOverlay::render
+                    // clamps to the actual max scroll for the current layout.
+                    self.help_scroll = u16::MAX;
+                }
+                _ => {}
             }
             return None;
         }
@@ -867,6 +888,7 @@ impl HomeView {
             }
             KeyCode::Char('?') => {
                 self.show_help = true;
+                self.help_scroll = 0;
             }
             KeyCode::Char('e') if !self.strict_hotkeys => {
                 self.open_restart_dialog();

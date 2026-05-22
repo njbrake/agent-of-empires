@@ -87,7 +87,7 @@ fn test_config_toml_round_trip() -> Result<()> {
 
     let mut config = Config::default();
     config.theme.name = "monokai".to_string();
-    config.updates.check_enabled = false;
+    config.updates.update_check_mode = agent_of_empires::session::config::UpdateCheckMode::Off;
     config.updates.check_interval_hours = 72;
     config.worktree.enabled = true;
     config.worktree.auto_cleanup = false;
@@ -98,7 +98,10 @@ fn test_config_toml_round_trip() -> Result<()> {
     let loaded = Config::load()?;
 
     assert_eq!(loaded.theme.name, "monokai");
-    assert!(!loaded.updates.check_enabled);
+    assert_eq!(
+        loaded.updates.update_check_mode,
+        agent_of_empires::session::config::UpdateCheckMode::Off
+    );
     assert_eq!(loaded.updates.check_interval_hours, 72);
     assert!(loaded.worktree.enabled);
     assert!(!loaded.worktree.auto_cleanup);
@@ -115,7 +118,7 @@ fn test_profile_config_toml_round_trip() -> Result<()> {
 
     let profile = ProfileConfig {
         updates: Some(UpdatesConfigOverride {
-            check_enabled: Some(false),
+            update_check_mode: Some(agent_of_empires::session::config::UpdateCheckMode::Off),
             check_interval_hours: Some(48),
             ..Default::default()
         }),
@@ -135,7 +138,10 @@ fn test_profile_config_toml_round_trip() -> Result<()> {
     let loaded = load_profile_config("default")?;
 
     let updates = loaded.updates.unwrap();
-    assert_eq!(updates.check_enabled, Some(false));
+    assert_eq!(
+        updates.update_check_mode,
+        Some(agent_of_empires::session::config::UpdateCheckMode::Off)
+    );
     assert_eq!(updates.check_interval_hours, Some(48));
 
     let worktree = loaded.worktree.unwrap();

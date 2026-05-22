@@ -205,8 +205,8 @@ pub fn merge_repo_config(mut config: Config, repo: &RepoConfig) -> Config {
     }
 
     if let Some(ref updates_override) = repo.updates {
-        if let Some(check_enabled) = updates_override.check_enabled {
-            config.updates.check_enabled = check_enabled;
+        if let Some(update_check_mode) = updates_override.update_check_mode {
+            config.updates.update_check_mode = update_check_mode;
         }
         if let Some(check_interval_hours) = updates_override.check_interval_hours {
             config.updates.check_interval_hours = check_interval_hours;
@@ -995,7 +995,7 @@ pub const INIT_TEMPLATE: &str = r#"# Agent of Empires - Repository Configuration
 # enabled = true
 
 # [updates]
-# check_enabled = false
+# update_check_mode = "off"
 
 # [tmux]
 # status_bar = "auto"
