@@ -707,6 +707,18 @@ impl Instance {
         }
     }
 
+    /// Splice TUI-mirrored, persisted fields from `src` onto `self`. Used by
+    /// `HomeView::save` under the flock for fields the TUI is the sole disk
+    /// writer of (the daemon's `status_poll_loop` keeps these in memory only).
+    /// User-action fields (archived/favorited/snoozed/title/group_path/...)
+    /// are NOT here; they go through `apply_user_action` per-action so peer
+    /// writers (CLI) cannot be clobbered by a stale TUI snapshot.
+    pub fn merge_from_tui(&mut self, src: &Self) {
+        self.status = src.status;
+        self.last_accessed_at = self.last_accessed_at.max(src.last_accessed_at);
+        self.idle_entered_at = src.idle_entered_at;
+    }
+
     /// Mark the session archived. Archived sessions sink to the bottom of
     /// the Attention sort and render in italic+dim style, but remain
     /// visible. Auto-cleared by the attention-signal hook on Waiting/Error.
@@ -2980,6 +2992,107 @@ mod tests {
             stored.agent_session_id.is_none(),
             "fallback cascade invalidates the sid; peer writes are stale by construction"
         );
+    }
+
+    #[test]
+    fn test_merge_from_tui_copies_status_pipeline() {
+        let mut stored = Instance::new("session", "/tmp/test");
+        stored.status = Status::Idle;
+
+        let mut src = Instance::new("session", "/tmp/test");
+        src.id = stored.id.clone();
+        src.status = Status::Running;
+        src.idle_entered_at = Some(Utc::now());
+
+        stored.merge_from_tui(&src);
+
+        assert_eq!(stored.status, Status::Running);
+        assert_eq!(stored.idle_entered_at, src.idle_entered_at);
+    }
+
+    #[test]
+    fn test_merge_from_tui_takes_max_last_accessed() {
+        let earlier = Utc::now() - chrono::Duration::minutes(5);
+        let later = Utc::now();
+
+        let mut stored = Instance::new("a", "/tmp/a");
+        stored.last_accessed_at = Some(later);
+        let mut src = Instance::new("a", "/tmp/a");
+        src.id = stored.id.clone();
+        src.last_accessed_at = Some(earlier);
+        stored.merge_from_tui(&src);
+        assert_eq!(
+            stored.last_accessed_at,
+            Some(later),
+            "peer's freshest activity timestamp must survive a stale TUI src"
+        );
+
+        let mut stored = Instance::new("b", "/tmp/b");
+        stored.last_accessed_at = Some(earlier);
+        let mut src = Instance::new("b", "/tmp/b");
+        src.id = stored.id.clone();
+        src.last_accessed_at = Some(later);
+        stored.merge_from_tui(&src);
+        assert_eq!(stored.last_accessed_at, Some(later));
+    }
+
+    #[test]
+    fn test_merge_from_tui_does_not_touch_user_action_fields() {
+        let peer_archived = Some(Utc::now());
+        let peer_favorited = Some(Utc::now() - chrono::Duration::minutes(2));
+        let peer_snoozed = Some(Utc::now() + chrono::Duration::minutes(30));
+
+        let mut stored = Instance::new("session", "/tmp/test");
+        stored.archived_at = peer_archived;
+        stored.favorited_at = peer_favorited;
+        stored.snoozed_until = peer_snoozed;
+        stored.title = "peer-renamed".to_string();
+        stored.group_path = "peer/group".to_string();
+        stored.agent_session_id = Some("daemon-sid".to_string());
+        stored.notify_on_waiting = Some(true);
+        stored.base_branch_override = Some("upstream/main".to_string());
+
+        let mut src = Instance::new("session", "/tmp/test");
+        src.id = stored.id.clone();
+        src.archived_at = None;
+        src.favorited_at = None;
+        src.snoozed_until = None;
+        src.title = "tui-stale".to_string();
+        src.group_path = "tui/stale".to_string();
+        src.agent_session_id = Some("tui-stale-sid".to_string());
+        src.notify_on_waiting = Some(false);
+        src.base_branch_override = None;
+
+        stored.merge_from_tui(&src);
+
+        assert_eq!(stored.archived_at, peer_archived);
+        assert_eq!(stored.favorited_at, peer_favorited);
+        assert_eq!(stored.snoozed_until, peer_snoozed);
+        assert_eq!(stored.title, "peer-renamed");
+        assert_eq!(stored.group_path, "peer/group");
+        assert_eq!(stored.agent_session_id.as_deref(), Some("daemon-sid"));
+        assert_eq!(stored.notify_on_waiting, Some(true));
+        assert_eq!(
+            stored.base_branch_override.as_deref(),
+            Some("upstream/main")
+        );
+    }
+
+    #[test]
+    fn test_merge_from_tui_preserves_immutable_identity() {
+        let mut stored = Instance::new("session", "/tmp/test");
+        let immutable_id = stored.id.clone();
+        let immutable_path = stored.project_path.clone();
+        let immutable_created = stored.created_at;
+
+        let mut src = Instance::new("renamed", "/tmp/different");
+        src.id = "different-id".to_string();
+
+        stored.merge_from_tui(&src);
+
+        assert_eq!(stored.id, immutable_id);
+        assert_eq!(stored.project_path, immutable_path);
+        assert_eq!(stored.created_at, immutable_created);
     }
 
     #[test]
