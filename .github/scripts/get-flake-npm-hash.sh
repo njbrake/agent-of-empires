@@ -13,7 +13,7 @@ fi
 
 ANCHOR='^[[:space:]]*npmDepsHash[[:space:]]*=[[:space:]]*"sha256-'
 
-MATCHES=$(grep -cE "$ANCHOR" "$FLAKE")
+MATCHES=$(grep -cE "$ANCHOR" "$FLAKE" || true)
 if [ "$MATCHES" -ne 1 ]; then
   echo "::error::expected exactly 1 npmDepsHash assignment in $FLAKE, found $MATCHES" >&2
   exit 1
