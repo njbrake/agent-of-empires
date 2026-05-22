@@ -114,15 +114,22 @@ fn test_save_leaves_no_debris() -> Result<()> {
         storage.commit(&instances, &GroupTree::new_with_groups(&instances, &[]))?;
     }
 
-    // Atomic write should leave only the persisted JSON files in the profile
-    // dir, no .json.bak from the old code path and no leftover tempfiles.
+    // Atomic write should leave only the persisted JSON files plus the
+    // cross-process flock file in the profile dir, no .json.bak from the old
+    // code path and no leftover tempfiles. `sessions.json.lock` is the
+    // advisory lock guarding concurrent writers; it is created on first write
+    // and intentionally persists (the lock lives on the file, not on its
+    // existence), so it is not debris.
     let profile_dir = agent_of_empires::session::get_profile_dir("default")?;
     let mut entries: Vec<String> = fs::read_dir(&profile_dir)?
         .filter_map(|e| e.ok())
         .map(|e| e.file_name().to_string_lossy().to_string())
         .collect();
     entries.sort();
-    assert_eq!(entries, vec!["groups.json", "sessions.json"]);
+    assert_eq!(
+        entries,
+        vec!["groups.json", "sessions.json", "sessions.json.lock"]
+    );
 
     Ok(())
 }
