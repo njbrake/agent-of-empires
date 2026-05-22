@@ -70,11 +70,12 @@ pub struct App {
     update_rx: Option<tokio::sync::oneshot::Receiver<anyhow::Result<UpdateInfo>>>,
     update_status: Option<UpdateStatus>,
     update_status_rx: Option<tokio::sync::oneshot::Receiver<anyhow::Result<()>>>,
-    /// User dismissed the update bar this session. Resets when the
-    /// process exits; on next launch the startup check runs again and
-    /// the bar reappears if an update is still available. In-memory
-    /// only — no config persistence.
-    update_bar_dismissed: bool,
+    /// Latest version the user dismissed via Ctrl+x. Persisted to
+    /// `app_state.dismissed_update_version` so the snooze survives
+    /// `aoe` restarts (per #1140). The banner stays hidden while the
+    /// fetched latest_version equals this value, and returns
+    /// automatically when a newer release ships.
+    dismissed_update_version: Option<String>,
     /// Held in an Option so `with_raw_mode_disabled` can drop it before
     /// spawning child processes. Crossterm's EventStream runs a background
     /// reader thread on stdin; if it's alive when tmux attach-session starts,
@@ -189,6 +190,8 @@ impl App {
             save_config(&config)?;
         }
 
+        let dismissed_update_version = config.app_state.dismissed_update_version.clone();
+
         Ok(Self {
             home,
             should_quit: false,
@@ -198,7 +201,7 @@ impl App {
             update_rx: None,
             update_status: None,
             update_status_rx: None,
-            update_bar_dismissed: false,
+            dismissed_update_version,
             event_stream: Some(EventStream::new()),
             // Initial state matches whatever `tui::run` did at startup;
             // capture is on by default, off only if AOE_MOUSE_CAPTURE=0.
@@ -409,7 +412,7 @@ impl App {
 
         // Spawn async update check
         let settings = get_update_settings();
-        if settings.check_enabled {
+        if settings.update_check_mode.is_enabled() {
             let (tx, rx) = tokio::sync::oneshot::channel();
             self.update_rx = Some(rx);
             tokio::spawn(async move {
@@ -850,19 +853,102 @@ impl App {
     }
 
     /// Poll for update check result (non-blocking).
-    /// Returns true if an update is available and was just received.
+    /// Returns true if an update is available, was just received, and is
+    /// not snoozed by a prior `dismissed_update_version`.
     fn poll_update_check(&mut self) -> bool {
         let (update_info, update_rx, received) =
             poll_update_receiver(self.update_rx.take(), self.update_info.take());
         self.update_info = update_info;
         self.update_rx = update_rx;
-        // If the user dismissed the bar this session, drop the info so
-        // render() and the `u` hotkey both see None. Reset on next launch.
-        if received && self.update_bar_dismissed {
+
+        if !received {
+            return false;
+        }
+
+        let Some(info) = self.update_info.as_ref() else {
+            return false;
+        };
+
+        // Auto mode: install in the background and suppress the banner.
+        // The new binary is picked up on next launch; we do not restart
+        // the TUI mid-session (avoids racing tmux attaches and partial
+        // writes to the binary while it is running).
+        if crate::session::get_update_settings()
+            .update_check_mode
+            .auto_installs()
+        {
+            self.maybe_kick_off_auto_install(info.latest_version.clone());
             self.update_info = None;
             return false;
         }
-        received
+
+        // Notify mode: honor the per-version snooze. A newer release
+        // clears the snooze automatically because the latest_version
+        // string no longer matches.
+        if self.dismissed_update_version.as_deref() == Some(info.latest_version.as_str()) {
+            self.update_info = None;
+            return false;
+        }
+
+        true
+    }
+
+    /// Kick off a background install when `update_check_mode = "auto"` and a
+    /// new release is detected. Tarball + writable parent is the only safe
+    /// auto path: Homebrew expects the user to run `brew upgrade`, and a
+    /// sudo-required tarball install can't prompt without a TTY. In every
+    /// other case we silently no-op so the user can still run `aoe update`
+    /// manually.
+    fn maybe_kick_off_auto_install(&mut self, version: String) {
+        use crate::update::install::{detect_install_method, perform_update, InstallMethod};
+
+        // Defensive: if a prior auto- or manual update is still running,
+        // do not start a second installer or overwrite `update_status_rx`.
+        // Mirrors the guard in `Action::SpawnUpdate`.
+        if self.update_status_rx.is_some() {
+            tracing::info!(
+                target: "update.auto",
+                "auto mode skipped: update already in progress"
+            );
+            return;
+        }
+
+        let method = match detect_install_method() {
+            Ok(m) => m,
+            Err(e) => {
+                tracing::info!(
+                    target: "update.auto",
+                    error = %e,
+                    "auto mode skipped: install method detection failed"
+                );
+                return;
+            }
+        };
+        let writable = match &method {
+            InstallMethod::Tarball { binary_path } => {
+                crate::update::install::parent_is_writable(binary_path)
+            }
+            _ => false,
+        };
+        if !writable {
+            tracing::info!(
+                target: "update.auto",
+                ?method,
+                "auto mode skipped: install method needs an interactive update"
+            );
+            return;
+        }
+
+        self.update_status = Some(UpdateStatus::transient(format!(
+            "auto-updating to v{version} in background…"
+        )));
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.update_status_rx = Some(rx);
+        let handle = tokio::runtime::Handle::current();
+        std::thread::spawn(move || {
+            let result = handle.block_on(perform_update(&method, &version, None));
+            let _ = tx.send(result);
+        });
     }
 
     /// Poll the in-progress update task for completion.
@@ -957,6 +1043,21 @@ impl App {
     }
 }
 
+/// Persist `app_state.dismissed_update_version` so the snooze (Ctrl+x on the
+/// update banner) survives restarts. Errors are logged but never surfaced,
+/// because losing the snooze is not worth pausing the event loop over.
+fn persist_dismissed_update_version(version: Option<String>) {
+    let mut config = Config::load_or_warn();
+    config.app_state.dismissed_update_version = version;
+    if let Err(e) = save_config(&config) {
+        tracing::warn!(
+            target: "update.snooze",
+            error = %e,
+            "failed to persist dismissed_update_version"
+        );
+    }
+}
+
 /// Polls the update receiver and returns the new state.
 /// Returns (update_info, update_rx, was_update_received).
 fn poll_update_receiver(
@@ -1015,11 +1116,12 @@ impl App {
                 self.should_quit = true;
                 return Ok(());
             }
-            // Ctrl+x dismisses the update bar / status toast for this
-            // session. Gated on something being visible AND no dialog
-            // open so it doesn't fire during dialog input. On next launch
-            // the startup check runs again and the bar reappears if the
-            // update is still available.
+            // Ctrl+x dismisses the update bar / status toast. Gated on
+            // something being visible AND no dialog open so it doesn't fire
+            // during dialog input. The dismissed version is persisted to
+            // `app_state.dismissed_update_version` so the snooze survives
+            // restarts; the banner returns automatically when a newer
+            // release ships (per #1140).
             //
             // No `needs_redraw = true` here: that forces a `terminal.clear()`
             // before the next event arrives, so the whole screen blanks for
@@ -1029,9 +1131,13 @@ impl App {
                 if (self.update_info.is_some() || self.update_status.is_some())
                     && !self.home.has_dialog() =>
             {
+                if let Some(info) = self.update_info.as_ref() {
+                    let v = info.latest_version.clone();
+                    self.dismissed_update_version = Some(v.clone());
+                    persist_dismissed_update_version(Some(v));
+                }
                 self.update_info = None;
                 self.update_status = None;
-                self.update_bar_dismissed = true;
                 return Ok(());
             }
             _ => {}

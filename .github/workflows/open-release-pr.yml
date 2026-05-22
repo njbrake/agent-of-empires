@@ -1,0 +1,194 @@
+name: Open Release PR
+
+# Weekly release-staging PR (#1140). Runs every Wednesday at 09:00 UTC,
+# computes the next-patch version from the latest `v*` tag, bumps
+# `Cargo.toml` + `Cargo.lock`, and opens a PR labeled `release-staging`
+# with a plain newest-first commit list in the body. Merging that PR
+# fires `tag-release-pr.yml`, which tags the merge commit and triggers
+# `release.yml`.
+#
+# A richer conventional-commit changelog is queued for #1387 (git-cliff
+# wiring); until then the dumb dump is enough for maintainer review.
+#
+# The maintainer's only manual step is (optionally) editing the version
+# bump in the PR (patch -> minor/major) before clicking merge.
+
+on:
+  schedule:
+    # Every Wednesday at 09:00 UTC. Cron strings are interpreted in UTC
+    # regardless of repo timezone, so this stays stable across DST shifts.
+    - cron: '0 9 * * 3'
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'Semver bump to stage'
+        required: false
+        default: 'patch'
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  open-release-pr:
+    name: Open weekly release PR
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ secrets.RELEASE_TOKEN }}
+
+      - name: Read current version from Cargo.toml
+        id: current
+        run: |
+          VERSION="$(python3 - <<'PY'
+          import tomllib
+          with open("Cargo.toml", "rb") as f:
+              print(tomllib.load(f)["package"]["version"])
+          PY
+          )"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Compute next version
+        id: next
+        env:
+          BUMP: ${{ github.event.inputs.bump || 'patch' }}
+        run: |
+          set -euo pipefail
+          CURRENT="${{ steps.current.outputs.version }}"
+          BASE="${CURRENT%%-*}"
+          IFS='.' read -r MAJOR MINOR PATCH <<< "$BASE"
+          case "$BUMP" in
+            major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+            minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+            patch|*) PATCH=$((PATCH + 1)) ;;
+          esac
+          NEXT="${MAJOR}.${MINOR}.${PATCH}"
+          echo "version=$NEXT" >> "$GITHUB_OUTPUT"
+          echo "tag=v${NEXT}" >> "$GITHUB_OUTPUT"
+          echo "branch=release-staging/v${NEXT}" >> "$GITHUB_OUTPUT"
+          echo "Bumping ${CURRENT} -> ${NEXT} (${BUMP})"
+
+      - name: Abort if tag already exists
+        run: |
+          TAG="${{ steps.next.outputs.tag }}"
+          if git rev-parse "$TAG" >/dev/null 2>&1; then
+            echo "::error::Tag $TAG already exists; choose a different bump or clean up the existing tag"
+            exit 1
+          fi
+
+      - name: Abort if staging branch already exists upstream
+        run: |
+          BRANCH="${{ steps.next.outputs.branch }}"
+          if git ls-remote --exit-code --heads origin "$BRANCH" >/dev/null 2>&1; then
+            echo "::error::Branch $BRANCH already exists upstream; merge or delete it first"
+            exit 1
+          fi
+
+      - name: Bump Cargo.toml + Cargo.lock
+        run: |
+          VERSION="${{ steps.next.outputs.version }}"
+          # First version = "..." line is the workspace [package] version
+          sed -i '0,/^version = ".*"/s//version = "'"${VERSION}"'"/' Cargo.toml
+          # Cargo.lock: the agent-of-empires entry is always first
+          sed -i '/^name = "agent-of-empires"/{n;s/^version = ".*"/version = "'"${VERSION}"'"/}' Cargo.lock
+          echo "Cargo.toml head:"
+          head -8 Cargo.toml
+          echo "Cargo.lock head:"
+          head -8 Cargo.lock
+
+      - name: Compute changelog since last tag
+        id: changelog
+        run: |
+          set -euo pipefail
+          LAST_TAG="$(git describe --tags --abbrev=0 2>/dev/null || true)"
+          if [ -z "$LAST_TAG" ]; then
+            RANGE=""
+            echo "No prior tag found; listing every commit on main"
+          else
+            RANGE="${LAST_TAG}..HEAD"
+            echo "Comparing $LAST_TAG..HEAD"
+          fi
+
+          # Simple newest-first commit dump. Proper conventional-commit
+          # grouping lands once #1387 wires git-cliff in; until then, a
+          # plain `git log` is honest about what's in the release and
+          # avoids hand-rolled regex parsing that would just get thrown
+          # away.
+          {
+            echo "## Changes since ${LAST_TAG:-the dawn of time}"
+            echo
+            git log ${RANGE} \
+              --no-merges \
+              --pretty=format:'- %s (`%h`, %an, %ad)' \
+              --date=short
+            echo
+          } > /tmp/changelog.md
+
+          echo "Generated changelog:"
+          cat /tmp/changelog.md
+
+      - name: Build PR body
+        id: body
+        run: |
+          VERSION="${{ steps.next.outputs.version }}"
+          CURRENT="${{ steps.current.outputs.version }}"
+          BUMP="${{ github.event.inputs.bump || 'patch' }}"
+          {
+            echo "<!-- release-version: ${VERSION} -->"
+            echo
+            echo "Automated weekly release-staging PR (#1140)."
+            echo
+            echo "**Current:** \`v${CURRENT}\`  "
+            echo "**Proposed:** \`v${VERSION}\` (bump: \`${BUMP}\`)"
+            echo
+            echo "If you want a different semver bump, edit \`Cargo.toml\` + \`Cargo.lock\` on this branch, push the change, and the merge tagger will use whatever version is in \`Cargo.toml\` at merge time. The \`<!-- release-version: ... -->\` marker above is cross-checked by the tagger and must match."
+            echo
+            cat /tmp/changelog.md
+            echo
+            echo "## Maintainer checklist"
+            echo
+            echo "- [ ] Version bump is appropriate for the change set"
+            echo "- [ ] No breaking changes hidden under \`refactor:\` / \`chore:\`"
+            echo "- [ ] CI is green"
+            echo "- [ ] Ready to ship — merge this PR to publish"
+          } > /tmp/pr-body.md
+          # Persist for the gh call
+          echo "path=/tmp/pr-body.md" >> "$GITHUB_OUTPUT"
+
+      - name: Commit and push branch
+        run: |
+          VERSION="${{ steps.next.outputs.version }}"
+          BRANCH="${{ steps.next.outputs.branch }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git add Cargo.toml Cargo.lock
+          git commit -m "chore: release v${VERSION}"
+          git push -u origin "$BRANCH"
+
+      - name: Open PR + label
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+        run: |
+          VERSION="${{ steps.next.outputs.version }}"
+          BRANCH="${{ steps.next.outputs.branch }}"
+          # Create the `release-staging` label if it does not exist yet so
+          # the first run of this workflow on a fresh repo does not fail.
+          gh label create release-staging \
+            --color "d93f0b" \
+            --description "Weekly release-staging PRs auto-tagged on merge (#1140)" \
+            --force >/dev/null 2>&1 || true
+          gh pr create \
+            --base main \
+            --head "$BRANCH" \
+            --title "chore: release v${VERSION}" \
+            --body-file /tmp/pr-body.md \
+            --label release-staging

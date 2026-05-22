@@ -344,11 +344,32 @@ impl HomeView {
 
         // Handle other dialog input
         if self.show_help {
-            if matches!(
-                key.code,
-                KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q')
-            ) {
-                self.show_help = false;
+            match key.code {
+                KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q') | KeyCode::Char('Q') => {
+                    self.show_help = false;
+                    self.help_scroll = 0;
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    self.help_scroll = self.help_scroll.saturating_add(1);
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    self.help_scroll = self.help_scroll.saturating_sub(1);
+                }
+                KeyCode::PageDown | KeyCode::Char(' ') => {
+                    self.help_scroll = self.help_scroll.saturating_add(10);
+                }
+                KeyCode::PageUp => {
+                    self.help_scroll = self.help_scroll.saturating_sub(10);
+                }
+                KeyCode::Home | KeyCode::Char('g') => {
+                    self.help_scroll = 0;
+                }
+                KeyCode::End | KeyCode::Char('G') => {
+                    // u16::MAX overshoots intentionally; HelpOverlay::render
+                    // clamps to the actual max scroll for the current layout.
+                    self.help_scroll = u16::MAX;
+                }
+                _ => {}
             }
             return None;
         }
@@ -749,7 +770,9 @@ impl HomeView {
         //   Shift+letter actions -> pass through unchanged: each has its own
         //     `Char('UPPER') if self.strict_hotkeys` arm in the main match.
         //   Ctrl+letter relocated bindings -> uppercase: Ctrl+T->T, Ctrl+D->D, Ctrl+R->R, Ctrl+P->P, Ctrl+N->N
-        //   Ctrl+G -> g (group toggle was lowercase)
+        //   Ctrl+G, Ctrl+O -> pass through with CTRL intact (the dispatch
+        //     table matches them with their modifier; stripping CTRL would
+        //     collide with the bare-lowercase typing-guard).
         //   Bare lowercase action letters -> blocked (return None)
         let key = if self.strict_hotkeys {
             self.normalize_strict_key(key)
@@ -867,6 +890,7 @@ impl HomeView {
             }
             KeyCode::Char('?') => {
                 self.show_help = true;
+                self.help_scroll = 0;
             }
             KeyCode::Char('e') if !self.strict_hotkeys => {
                 self.open_restart_dialog();
@@ -1745,7 +1769,21 @@ impl HomeView {
             KeyCode::Char('>') => {
                 self.grow_list();
             }
-            KeyCode::Left => {
+            // `i`/`I`: toggle the preview info header (profile/tool/path/
+            // status/sandbox/worktree). Persisted across runs. The hint
+            // rendered on the outer Preview block title advertises this.
+            KeyCode::Char('i') if !self.strict_hotkeys => {
+                self.toggle_preview_info();
+            }
+            KeyCode::Char('I') if self.strict_hotkeys => {
+                self.toggle_preview_info();
+            }
+            // Bare `h` collapses only in strict mode; in non-strict the
+            // earlier `Char('h') if !self.strict_hotkeys` arm catches it
+            // for Snooze, so we'd never reach here. Pairing it with Left
+            // keeps the help overlay's "h/←" claim honest and mirrors the
+            // unconditional `l`/Right binding below.
+            KeyCode::Left | KeyCode::Char('h') => {
                 if let Some(Item::Group {
                     path, collapsed, ..
                 }) = self.flat_items.get(self.cursor)
@@ -2078,14 +2116,37 @@ impl HomeView {
         }
     }
 
+    /// Put the cursor back on `selected_session` after a `flat_items` rebuild
+    /// (sort toggle, group_by toggle). Mode flips reshape the list, especially
+    /// when Attention sort is involved, so index-based clamping lands the
+    /// cursor on whatever happened to slide into the old slot. Seeking by
+    /// session id keeps focus on the row the user was actually looking at.
+    /// Falls back to the legacy clamp when there was no prior selection or
+    /// the session is no longer in the flat list (e.g., collapsed under a
+    /// group header).
+    pub(super) fn reseat_cursor_after_rebuild(&mut self) {
+        if let Some(sid) = self.selected_session.clone() {
+            for (idx, item) in self.flat_items.iter().enumerate() {
+                if let Item::Session { id, .. } = item {
+                    if *id == sid {
+                        self.cursor = idx;
+                        self.update_selected();
+                        return;
+                    }
+                }
+            }
+        }
+        self.cursor = self.cursor.min(self.flat_items.len().saturating_sub(1));
+        self.update_selected();
+    }
+
     fn apply_sort_order(&mut self, new_order: SortOrder) {
         self.sort_order = new_order;
         self.flat_items = self.build_flat_items();
         if self.search_active && !self.search_query.value().is_empty() {
             self.update_search();
         } else {
-            self.cursor = self.cursor.min(self.flat_items.len().saturating_sub(1));
-            self.update_selected();
+            self.reseat_cursor_after_rebuild();
         }
         if let Ok(mut config) = load_config().map(|c| c.unwrap_or_default()) {
             config.app_state.sort_order = Some(self.sort_order);
@@ -2098,8 +2159,7 @@ impl HomeView {
     fn apply_group_by(&mut self, new_mode: GroupByMode) {
         self.group_by = new_mode;
         self.flat_items = self.build_flat_items();
-        self.cursor = self.cursor.min(self.flat_items.len().saturating_sub(1));
-        self.update_selected();
+        self.reseat_cursor_after_rebuild();
         match load_config().map(|c| c.unwrap_or_default()) {
             Ok(mut config) => {
                 config.app_state.group_by = Some(self.group_by);
@@ -2750,11 +2810,12 @@ impl HomeView {
                 KeyCode::Char(c.to_ascii_uppercase()),
                 KeyModifiers::NONE,
             )),
-            // Ctrl+G -> g (toggle group by)
-            KeyCode::Char('g') if ctrl => {
-                Some(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE))
-            }
-            // Ctrl+O stays as-is (cycle sort backward, already handled by its own arm)
+            // Ctrl+G and Ctrl+O stay as-is. The dispatch table already has
+            // strict-mode arms that match `Char('g')`/`Char('o')` *with*
+            // the CTRL modifier; stripping CTRL here would make the
+            // post-normalize key indistinguishable from bare lowercase
+            // input and route Ctrl+G into the typing-guard catch-all.
+            KeyCode::Char('g') if ctrl => Some(key),
             KeyCode::Char('o') if ctrl => Some(key),
             // Shifted action letters pass through unchanged. Each letter has its
             // own `Char('UPPER') if self.strict_hotkeys` arm in the main match.

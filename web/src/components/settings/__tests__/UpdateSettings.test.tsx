@@ -2,6 +2,8 @@
 //
 // Contract test for the UpdateSettings panel. Mirrors the SoundSettings
 // canonical example (see SoundSettings.test.tsx) and is part of #1217.
+// Updated for #1140: `update_check_mode` replaces `check_enabled` and the
+// legacy `auto_update` toggle.
 
 import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render } from "@testing-library/react";
@@ -27,25 +29,37 @@ function commitNumber(input: HTMLInputElement, value: string) {
 }
 
 describe("UpdateSettings contract", () => {
-  it("toggling check_enabled off emits updates.check_enabled=false", () => {
-    const { onSaveField, onUpdate, container } = mount({ check_enabled: true });
-    const toggles = container.querySelectorAll(
-      "button[role=switch]",
-    ) as NodeListOf<HTMLButtonElement>;
-    fireEvent.click(toggles[0]);
-    expect(onSaveField).toHaveBeenCalledWith("updates", "check_enabled", false);
+  it("changing update_check_mode emits updates.update_check_mode", () => {
+    const { onSaveField, onUpdate, container } = mount({
+      update_check_mode: "notify",
+    });
+    const select = container.querySelector("select") as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: "off" } });
+    expect(onSaveField).toHaveBeenCalledWith(
+      "updates",
+      "update_check_mode",
+      "off",
+    );
     expect(onUpdate).toHaveBeenCalledWith({
-      updates: expect.objectContaining({ check_enabled: false }),
+      updates: expect.objectContaining({ update_check_mode: "off" }),
     });
   });
 
-  it("toggling auto_update on emits updates.auto_update=true", () => {
-    const { onSaveField, container } = mount({ auto_update: false });
-    const toggles = container.querySelectorAll(
-      "button[role=switch]",
-    ) as NodeListOf<HTMLButtonElement>;
-    fireEvent.click(toggles[1]);
-    expect(onSaveField).toHaveBeenCalledWith("updates", "auto_update", true);
+  it("defaults the select to notify when update_check_mode is missing", () => {
+    const { container } = mount({});
+    const select = container.querySelector("select") as HTMLSelectElement;
+    expect(select.value).toBe("notify");
+  });
+
+  it("auto mode selectable", () => {
+    const { onSaveField, container } = mount({ update_check_mode: "notify" });
+    const select = container.querySelector("select") as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: "auto" } });
+    expect(onSaveField).toHaveBeenCalledWith(
+      "updates",
+      "update_check_mode",
+      "auto",
+    );
   });
 
   it("check_interval_hours commits a positive value", () => {
@@ -76,10 +90,10 @@ describe("UpdateSettings contract", () => {
 
   it("toggling notify_in_cli off emits updates.notify_in_cli=false", () => {
     const { onSaveField, container } = mount({ notify_in_cli: true });
-    const toggles = container.querySelectorAll(
+    const toggle = container.querySelector(
       "button[role=switch]",
-    ) as NodeListOf<HTMLButtonElement>;
-    fireEvent.click(toggles[2]);
+    ) as HTMLButtonElement;
+    fireEvent.click(toggle);
     expect(onSaveField).toHaveBeenCalledWith(
       "updates",
       "notify_in_cli",
@@ -119,20 +133,16 @@ describe("UpdateSettings contract", () => {
 
   it("onUpdate merges patch into existing updates state", () => {
     const { onUpdate, container } = mount({
-      check_enabled: true,
-      auto_update: false,
+      update_check_mode: "notify",
       check_interval_hours: 24,
       notify_in_cli: true,
       web_poll_interval_minutes: 60,
     });
-    const toggles = container.querySelectorAll(
-      "button[role=switch]",
-    ) as NodeListOf<HTMLButtonElement>;
-    fireEvent.click(toggles[1]); // auto_update -> true
+    const select = container.querySelector("select") as HTMLSelectElement;
+    fireEvent.change(select, { target: { value: "off" } });
     expect(onUpdate).toHaveBeenCalledWith({
       updates: {
-        check_enabled: true,
-        auto_update: true,
+        update_check_mode: "off",
         check_interval_hours: 24,
         notify_in_cli: true,
         web_poll_interval_minutes: 60,

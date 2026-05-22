@@ -165,7 +165,7 @@ impl TuiTestHarness {
         std::fs::create_dir_all(&config_dir).expect("create config dir");
         let config_content = format!(
             r#"[updates]
-check_enabled = false
+update_check_mode = "off"
 
 [app_state]
 has_seen_welcome = true

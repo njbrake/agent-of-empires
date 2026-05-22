@@ -106,7 +106,7 @@ fn test_cli_add_respects_config_extra_args() {
     let config_dir = crate::harness::app_dir_in(h.home_path());
     let config_content = format!(
         r#"[updates]
-check_enabled = false
+update_check_mode = "off"
 
 [app_state]
 has_seen_welcome = true
@@ -146,7 +146,7 @@ fn test_cli_add_respects_config_command_override() {
     let config_dir = crate::harness::app_dir_in(h.home_path());
     let config_content = format!(
         r#"[updates]
-check_enabled = false
+update_check_mode = "off"
 
 [app_state]
 has_seen_welcome = true
@@ -186,7 +186,7 @@ fn test_cli_add_cli_flags_override_config() {
     let config_dir = crate::harness::app_dir_in(h.home_path());
     let config_content = format!(
         r#"[updates]
-check_enabled = false
+update_check_mode = "off"
 
 [app_state]
 has_seen_welcome = true
@@ -241,7 +241,7 @@ fn test_cli_add_respects_default_tool() {
     let config_dir = crate::harness::app_dir_in(h.home_path());
     let config_content = format!(
         r#"[updates]
-check_enabled = false
+update_check_mode = "off"
 
 [app_state]
 has_seen_welcome = true
@@ -284,7 +284,7 @@ fn test_cli_add_cmd_overrides_default_tool() {
     let config_dir = crate::harness::app_dir_in(h.home_path());
     let config_content = format!(
         r#"[updates]
-check_enabled = false
+update_check_mode = "off"
 
 [app_state]
 has_seen_welcome = true
@@ -329,7 +329,7 @@ fn test_cli_add_respects_yolo_mode_default() {
     let config_dir = crate::harness::app_dir_in(h.home_path());
     let config_content = format!(
         r#"[updates]
-check_enabled = false
+update_check_mode = "off"
 
 [app_state]
 has_seen_welcome = true
@@ -415,7 +415,7 @@ fn cli_add_custom_agent_persists_configured_command_extra_args_and_detect_as() {
     let config_dir = crate::harness::app_dir_in(h.home_path());
     let config_content = format!(
         r#"[updates]
-check_enabled = false
+update_check_mode = "off"
 
 [app_state]
 has_seen_welcome = true
@@ -463,7 +463,7 @@ fn cli_add_custom_agent_allows_missing_detect_as_mapping() {
     let config_dir = crate::harness::app_dir_in(h.home_path());
     let config_content = format!(
         r#"[updates]
-check_enabled = false
+update_check_mode = "off"
 
 [app_state]
 has_seen_welcome = true
@@ -500,7 +500,7 @@ fn cli_add_custom_agent_unknown_tool_fails_safely_without_persistence() {
     let config_dir = crate::harness::app_dir_in(h.home_path());
     let config_content = format!(
         r#"[updates]
-check_enabled = false
+update_check_mode = "off"
 
 [app_state]
 has_seen_welcome = true
@@ -548,7 +548,7 @@ fn cli_add_custom_agent_rejects_custom_cmd_override() {
     let config_dir = crate::harness::app_dir_in(h.home_path());
     let config_content = format!(
         r#"[updates]
-check_enabled = false
+update_check_mode = "off"
 
 [app_state]
 has_seen_welcome = true
@@ -584,7 +584,7 @@ fn cli_add_custom_agent_rejects_empty_configured_command() {
     let config_dir = crate::harness::app_dir_in(h.home_path());
     let config_content = format!(
         r#"[updates]
-check_enabled = false
+update_check_mode = "off"
 
 [app_state]
 has_seen_welcome = true
@@ -623,7 +623,7 @@ fn cli_add_custom_agent_rejects_invalid_detect_as_target() {
     let config_dir = crate::harness::app_dir_in(h.home_path());
     let config_content = format!(
         r#"[updates]
-check_enabled = false
+update_check_mode = "off"
 
 [app_state]
 has_seen_welcome = true
@@ -956,7 +956,7 @@ fn test_cli_add_workspace_global_hook_fallback() {
     let config_dir = crate::harness::app_dir_in(h.home_path());
     let config_content = format!(
         r#"[updates]
-check_enabled = false
+update_check_mode = "off"
 
 [app_state]
 has_seen_welcome = true

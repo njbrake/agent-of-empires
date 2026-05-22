@@ -115,7 +115,10 @@
       "kind": "vitest",
       "risk": "medium",
       "specs": ["src/components/__tests__/TerminalSettings.test.tsx"],
-      "components": ["web/src/components/TerminalSettings.tsx"]
+      "components": [
+        "web/src/components/TerminalSettings.tsx",
+        "web/src/components/TerminalSessionStack.tsx"
+      ]
     },
     {
       "id": "app-shell.topbar-dev-badge",
@@ -181,6 +184,7 @@
         "tests/wizard-custom-agent.spec.ts"
       ],
       "components": [
+        "web/src/components/DirectoryBrowser.tsx",
         "web/src/components/session-wizard/SessionWizard.tsx",
         "web/src/components/session-wizard/StepIndicator.tsx",
         "web/src/components/session-wizard/steps/AgentStep.tsx",
@@ -219,6 +223,13 @@
       "kind": "live-playwright",
       "risk": "medium",
       "specs": ["tests/live/workspace-ordering.spec.ts"],
+      "components": ["web/src/components/WorkspaceSidebar.tsx"]
+    },
+    {
+      "id": "sidebar.client-side-navigation",
+      "kind": "mocked-playwright",
+      "risk": "medium",
+      "specs": ["tests/sidebar-multi-session.spec.ts"],
       "components": ["web/src/components/WorkspaceSidebar.tsx"]
     },
     {

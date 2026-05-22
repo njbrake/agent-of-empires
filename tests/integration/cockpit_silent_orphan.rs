@@ -37,6 +37,39 @@ fn node_available() -> bool {
         .unwrap_or(false)
 }
 
+/// RAII helper that snapshots env-var values on construction and
+/// restores them on drop. The watchdog tests are `#[serial]` but the
+/// env mutations leak across test order regardless; the guard keeps
+/// each test hermetic so adding or reordering cases can't break the
+/// next one. See #1401 and CodeRabbit feedback on PR #1364.
+struct EnvGuard {
+    vars: Vec<(&'static str, Option<String>)>,
+}
+
+impl EnvGuard {
+    fn set(pairs: &[(&'static str, &'static str)]) -> Self {
+        let vars: Vec<_> = pairs
+            .iter()
+            .map(|(k, _)| (*k, std::env::var(k).ok()))
+            .collect();
+        for (k, v) in pairs {
+            std::env::set_var(k, v);
+        }
+        Self { vars }
+    }
+}
+
+impl Drop for EnvGuard {
+    fn drop(&mut self) {
+        for (k, old) in self.vars.drain(..) {
+            match old {
+                Some(v) => std::env::set_var(k, v),
+                None => std::env::remove_var(k),
+            }
+        }
+    }
+}
+
 fn shim_path() -> PathBuf {
     let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap();
     PathBuf::from(manifest)
@@ -109,9 +142,11 @@ async fn silent_orphan_fires_on_cost_then_silence() {
     // a cost-populated usage_update before parking. Polling cadence
     // dropped to 50ms so the watchdog evaluation tracks the configured
     // grace closely instead of waiting up to the default 5s tick.
-    std::env::set_var("AOE_SILENT_ORPHAN_GRACE_MS", "5000");
-    std::env::set_var("AOE_SILENT_ORPHAN_FAST_GRACE_MS", "300");
-    std::env::set_var("AOE_SILENT_ORPHAN_CHECK_INTERVAL_MS", "50");
+    let _env = EnvGuard::set(&[
+        ("AOE_SILENT_ORPHAN_GRACE_MS", "5000"),
+        ("AOE_SILENT_ORPHAN_FAST_GRACE_MS", "300"),
+        ("AOE_SILENT_ORPHAN_CHECK_INTERVAL_MS", "50"),
+    ]);
 
     let preseed = "silent-orphan-positive";
     let (socket_path, _tmp) = spawn_shim_socket_bridge_with_preseed(preseed).await;
@@ -160,9 +195,11 @@ async fn silent_orphan_suppressed_during_normal_turn() {
     // the only Stopped we see is prompt_complete, not prompt_orphaned.
     // Tight polling cadence so a regressed grace would fire within the
     // assertion window instead of waiting for the default 5s tick.
-    std::env::set_var("AOE_SILENT_ORPHAN_GRACE_MS", "10000");
-    std::env::set_var("AOE_SILENT_ORPHAN_FAST_GRACE_MS", "10000");
-    std::env::set_var("AOE_SILENT_ORPHAN_CHECK_INTERVAL_MS", "50");
+    let _env = EnvGuard::set(&[
+        ("AOE_SILENT_ORPHAN_GRACE_MS", "10000"),
+        ("AOE_SILENT_ORPHAN_FAST_GRACE_MS", "10000"),
+        ("AOE_SILENT_ORPHAN_CHECK_INTERVAL_MS", "50"),
+    ]);
 
     let preseed = "silent-orphan-negative";
     let (socket_path, _tmp) = spawn_shim_socket_bridge_with_preseed(preseed).await;
@@ -220,9 +257,11 @@ async fn silent_orphan_disabled_by_zero_grace() {
     // because the watchdog hadn't ticked yet. Forcing a 50ms cadence
     // means a wrongly-armed watchdog WOULD fire within the deadline,
     // turning a silent assertion into a real one.
-    std::env::set_var("AOE_SILENT_ORPHAN_GRACE_MS", "0");
-    std::env::set_var("AOE_SILENT_ORPHAN_FAST_GRACE_MS", "200");
-    std::env::set_var("AOE_SILENT_ORPHAN_CHECK_INTERVAL_MS", "50");
+    let _env = EnvGuard::set(&[
+        ("AOE_SILENT_ORPHAN_GRACE_MS", "0"),
+        ("AOE_SILENT_ORPHAN_FAST_GRACE_MS", "200"),
+        ("AOE_SILENT_ORPHAN_CHECK_INTERVAL_MS", "50"),
+    ]);
 
     let preseed = "silent-orphan-disabled";
     let (socket_path, _tmp) = spawn_shim_socket_bridge_with_preseed(preseed).await;
@@ -259,10 +298,10 @@ async fn silent_orphan_disabled_by_zero_grace() {
 
 /// #1360: a `ToolCallUpdate` whose completion content carries the Claude
 /// SDK marker `"Async agent launched successfully"` must flip the prompt
-/// loop's sticky `async_agent_running` flag so the watchdog promotes its
-/// effective grace to at least 30 minutes (capped by `ASYNC_AGENT_GRACE_FLOOR`).
-/// Without the fix, the watchdog would fire ~300ms after the completion;
-/// with it, the test window stays silent.
+/// loop's sticky off-protocol state so the watchdog promotes its effective
+/// grace to at least `OFF_PROTOCOL_WORK_GRACE_FLOOR` (30 minutes). Without
+/// the fix, the watchdog would fire ~300ms after the completion; with it,
+/// the test window stays silent.
 #[tokio::test]
 #[serial]
 async fn silent_orphan_suppressed_during_async_agent_wait() {
@@ -271,22 +310,16 @@ async fn silent_orphan_suppressed_during_async_agent_wait() {
         return;
     }
 
-    // Capture previous env so we restore them after the test. Without this
-    // the three knobs leak into subsequent tests in the same binary and
-    // produce intermittent failures depending on test execution order;
-    // CodeRabbit caught this on PR #1364.
-    let prev_grace = std::env::var("AOE_SILENT_ORPHAN_GRACE_MS").ok();
-    let prev_fast = std::env::var("AOE_SILENT_ORPHAN_FAST_GRACE_MS").ok();
-    let prev_check = std::env::var("AOE_SILENT_ORPHAN_CHECK_INTERVAL_MS").ok();
-
     // Base grace 300ms; if the async detection works, effective grace
-    // jumps to ASYNC_AGENT_GRACE_FLOOR (30 minutes), so a 2s drain must
-    // see no `prompt_orphaned`. The fast grace is set tight so a wrongly
-    // ordered effective_grace branch (cost-seen > async) would still
-    // false-fire and fail the assertion.
-    std::env::set_var("AOE_SILENT_ORPHAN_GRACE_MS", "300");
-    std::env::set_var("AOE_SILENT_ORPHAN_FAST_GRACE_MS", "100");
-    std::env::set_var("AOE_SILENT_ORPHAN_CHECK_INTERVAL_MS", "50");
+    // jumps to OFF_PROTOCOL_WORK_GRACE_FLOOR (30 minutes), so a 2s drain
+    // must see no `prompt_orphaned`. The fast grace is set tight so a
+    // wrongly ordered effective_grace branch (cost-seen > off-protocol)
+    // would still false-fire and fail the assertion.
+    let _env = EnvGuard::set(&[
+        ("AOE_SILENT_ORPHAN_GRACE_MS", "300"),
+        ("AOE_SILENT_ORPHAN_FAST_GRACE_MS", "100"),
+        ("AOE_SILENT_ORPHAN_CHECK_INTERVAL_MS", "50"),
+    ]);
 
     let preseed = "silent-orphan-async-agent";
     let (socket_path, _tmp) = spawn_shim_socket_bridge_with_preseed(preseed).await;
@@ -315,21 +348,120 @@ async fn silent_orphan_suppressed_during_async_agent_wait() {
         drain_for_stopped_reason(&mut client, Instant::now() + Duration::from_secs(2)).await;
     let _ = client.shutdown().await;
 
-    match prev_grace {
-        Some(v) => std::env::set_var("AOE_SILENT_ORPHAN_GRACE_MS", v),
-        None => std::env::remove_var("AOE_SILENT_ORPHAN_GRACE_MS"),
-    }
-    match prev_fast {
-        Some(v) => std::env::set_var("AOE_SILENT_ORPHAN_FAST_GRACE_MS", v),
-        None => std::env::remove_var("AOE_SILENT_ORPHAN_FAST_GRACE_MS"),
-    }
-    match prev_check {
-        Some(v) => std::env::set_var("AOE_SILENT_ORPHAN_CHECK_INTERVAL_MS", v),
-        None => std::env::remove_var("AOE_SILENT_ORPHAN_CHECK_INTERVAL_MS"),
-    }
-
     assert!(
         stopped.is_none(),
         "silent-orphan watchdog must stay suppressed while async-agent is running; saw Stopped reason={stopped:?}"
+    );
+}
+
+/// #1401: a backgrounded Bash launch (`run_in_background: true` plus the
+/// `"Command running in background with ID:"` completion marker) followed
+/// by a cost-populated `usage_update` must NOT trigger the watchdog. This
+/// reproduces the production false-positive shape from session
+/// `65c7bd0f22424242` where npm install / cargo build were backgrounded
+/// and the watchdog killed the legitimate wait via the fast-grace path.
+#[tokio::test]
+#[serial]
+async fn silent_orphan_suppressed_during_background_bash() {
+    if !node_available() || !shim_path().exists() {
+        eprintln!("skipping: node or shim missing");
+        return;
+    }
+
+    // Tight grace and fast grace; if either marker (content text or
+    // raw_input.run_in_background) feeds the off-protocol path, the
+    // watchdog stays armed-but-suppressed and the 2s drain sees no
+    // Stopped. The cost-populated usage_update is sent by the shim
+    // after the background marker so a regression that lets cost_seen
+    // shadow the off-protocol floor would false-fire here.
+    let _env = EnvGuard::set(&[
+        ("AOE_SILENT_ORPHAN_GRACE_MS", "300"),
+        ("AOE_SILENT_ORPHAN_FAST_GRACE_MS", "100"),
+        ("AOE_SILENT_ORPHAN_CHECK_INTERVAL_MS", "50"),
+    ]);
+
+    let preseed = "silent-orphan-background-bash";
+    let (socket_path, _tmp) = spawn_shim_socket_bridge_with_preseed(preseed).await;
+
+    let client = AcpClient::attach(
+        socket_path,
+        std::env::temp_dir(),
+        vec![],
+        preseed.to_string(),
+        false,
+        CockpitSessionId("silent-orphan-background-bash".into()),
+        None,
+        "claude".into(),
+        None,
+    )
+    .await
+    .expect("attach for backgrounded-bash silent-orphan test");
+
+    let mut client = client;
+    client
+        .send_prompt("BACKGROUND_BASH_ORPHAN trigger")
+        .await
+        .expect("send prompt");
+
+    let stopped =
+        drain_for_stopped_reason(&mut client, Instant::now() + Duration::from_secs(2)).await;
+    let _ = client.shutdown().await;
+
+    assert!(
+        stopped.is_none(),
+        "silent-orphan watchdog must stay suppressed while a backgrounded Bash task is running; saw Stopped reason={stopped:?}"
+    );
+}
+
+/// #1401: `ScheduleWakeup` registers an absolute wake timestamp. The
+/// watchdog must suppress firing until `at + base_grace`, not snap-fire
+/// the moment the sleep ends. A cost-populated `usage_update` is sent
+/// after the wakeup tool completes so the test exercises the fast-grace
+/// path; a regression where the wakeup deadline didn't override fast
+/// grace would false-fire inside the 2s drain.
+#[tokio::test]
+#[serial]
+async fn silent_orphan_suppressed_during_scheduled_wakeup() {
+    if !node_available() || !shim_path().exists() {
+        eprintln!("skipping: node or shim missing");
+        return;
+    }
+
+    let _env = EnvGuard::set(&[
+        ("AOE_SILENT_ORPHAN_GRACE_MS", "300"),
+        ("AOE_SILENT_ORPHAN_FAST_GRACE_MS", "100"),
+        ("AOE_SILENT_ORPHAN_CHECK_INTERVAL_MS", "50"),
+    ]);
+
+    let preseed = "silent-orphan-wakeup";
+    let (socket_path, _tmp) = spawn_shim_socket_bridge_with_preseed(preseed).await;
+
+    let client = AcpClient::attach(
+        socket_path,
+        std::env::temp_dir(),
+        vec![],
+        preseed.to_string(),
+        false,
+        CockpitSessionId("silent-orphan-wakeup".into()),
+        None,
+        "claude".into(),
+        None,
+    )
+    .await
+    .expect("attach for wakeup silent-orphan test");
+
+    let mut client = client;
+    client
+        .send_prompt("WAKEUP_ORPHAN trigger")
+        .await
+        .expect("send prompt");
+
+    let stopped =
+        drain_for_stopped_reason(&mut client, Instant::now() + Duration::from_secs(2)).await;
+    let _ = client.shutdown().await;
+
+    assert!(
+        stopped.is_none(),
+        "silent-orphan watchdog must stay suppressed until ScheduleWakeup `at + base_grace`; saw Stopped reason={stopped:?}"
     );
 }

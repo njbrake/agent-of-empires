@@ -270,8 +270,7 @@ context_lines = 3
 
 ```toml
 [updates]
-check_enabled = true
-auto_update = false
+update_check_mode = "notify"
 check_interval_hours = 24
 notify_in_cli = true
 web_poll_interval_minutes = 60
@@ -279,11 +278,20 @@ web_poll_interval_minutes = 60
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `check_enabled` | `true` | Check for new versions; also gates the web dashboard's update banner |
-| `auto_update` | `false` | Automatically install updates |
+| `update_check_mode` | `"notify"` | One of `auto`, `notify`, `off`. See below. |
 | `check_interval_hours` | `24` | Hours between GitHub checks (server-side cache TTL) |
-| `notify_in_cli` | `true` | Show update notifications in CLI output |
+| `notify_in_cli` | `true` | Show the `aoe` CLI eprintln nag when a new version is available; only fires while `update_check_mode = "notify"` |
 | `web_poll_interval_minutes` | `60` | How often the web dashboard re-polls `/api/system/update-status` while open (min 5) |
+
+### `update_check_mode`
+
+- `auto`: when a new release is detected, install it silently in the background using the same tarball install path as `aoe update`. The new binary is picked up on the next launch (no mid-session restart). Only fires when the install location is writable; Homebrew installs fall through to manual `brew upgrade`.
+- `notify` (default): show the TUI banner and, if `notify_in_cli = true`, the CLI eprintln nag. Press `Ctrl+x` on the banner to snooze for the current latest version; the banner returns automatically when a newer release ships.
+- `off`: skip every check, banner, fetch, and dashboard poll. Use this on offline / restricted networks.
+
+The TUI banner snooze is persisted to `app_state.dismissed_update_version`, so dismissing on v1.5.3 keeps the banner hidden across `aoe` restarts until v1.5.4 (or later) ships. See #1140.
+
+Configs written for older `aoe` versions used a `check_enabled` boolean and an orphaned `auto_update` field. Migration `v009` runs once on startup and rewrites `check_enabled = false` to `update_check_mode = "off"`, `check_enabled = true` (or missing) to `"notify"`, and drops `auto_update` entirely.
 
 ## Tools
 
