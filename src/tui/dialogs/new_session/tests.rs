@@ -1228,3 +1228,69 @@ fn test_sandbox_config_mode_enter_on_image_returns_to_main() {
     assert!(matches!(result, DialogResult::Continue));
     assert!(!dialog.sandbox_config_mode);
 }
+
+#[test]
+fn test_throwaway_toggle_with_ctrl_t() {
+    let mut dialog = single_tool_dialog();
+    assert!(!dialog.throwaway);
+
+    dialog.handle_key(ctrl_key(KeyCode::Char('t')));
+    assert!(dialog.throwaway, "Ctrl+T must turn throwaway on");
+
+    dialog.handle_key(ctrl_key(KeyCode::Char('t')));
+    assert!(!dialog.throwaway, "Ctrl+T again must turn it off");
+}
+
+#[test]
+fn test_throwaway_toggle_clears_worktree() {
+    let mut dialog = single_tool_dialog();
+    dialog.worktree_enabled = true;
+
+    dialog.handle_key(ctrl_key(KeyCode::Char('t')));
+    assert!(dialog.throwaway);
+    assert!(
+        !dialog.worktree_enabled,
+        "enabling throwaway must clear the worktree toggle"
+    );
+}
+
+#[test]
+fn test_throwaway_submit_sends_empty_path_and_no_worktree() {
+    let mut dialog = single_tool_dialog();
+    dialog.worktree_enabled = true;
+    dialog.handle_key(ctrl_key(KeyCode::Char('t')));
+    let result = dialog.handle_key(key(KeyCode::Enter));
+    match result {
+        DialogResult::Submit(data) => {
+            assert!(data.throwaway, "data.throwaway must be true");
+            assert_eq!(data.path, "", "throwaway submit must send an empty path");
+            assert!(
+                !data.worktree_enabled,
+                "throwaway submit must force worktree_enabled off"
+            );
+            assert!(
+                data.worktree_branch.is_none(),
+                "throwaway submit must not carry a worktree branch"
+            );
+        }
+        other => panic!("Expected Submit, got {:?}", std::mem::discriminant(&other)),
+    }
+}
+
+#[test]
+fn test_throwaway_skips_path_existence_confirmation() {
+    let mut dialog = single_tool_dialog();
+    // Use a nonexistent path; without throwaway, Enter would open the
+    // "Create dir?" confirmation.
+    dialog.path = Input::new("/does/not/exist/throwaway-test".to_string());
+    dialog.handle_key(ctrl_key(KeyCode::Char('t')));
+    let result = dialog.handle_key(key(KeyCode::Enter));
+    assert!(
+        matches!(result, DialogResult::Submit(_)),
+        "throwaway must skip the path-exists check on Enter"
+    );
+    assert!(
+        dialog.confirm_create_dir.is_none(),
+        "create-dir confirmation must not activate for throwaway sessions"
+    );
+}

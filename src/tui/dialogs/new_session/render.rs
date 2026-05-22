@@ -516,6 +516,19 @@ impl NewSessionDialog {
         let value = self.path.value();
         let mut spans = vec![Span::styled("Path:", label_style), Span::raw(" ")];
 
+        // When throwaway is active the path input is meaningless: the
+        // session lives in a server-provisioned temp dir. Replace the
+        // value with a dim marker so the user does not edit a value
+        // that will be discarded on submit.
+        if self.throwaway {
+            spans.push(Span::styled(
+                "(throwaway directory, Ctrl+T to undo)",
+                Style::default().fg(theme.dimmed),
+            ));
+            frame.render_widget(Paragraph::new(Line::from(spans)), area);
+            return;
+        }
+
         if value.is_empty() && !is_focused {
             if let Some(placeholder_text) = placeholder {
                 spans.push(Span::styled(placeholder_text, value_style));

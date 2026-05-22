@@ -124,6 +124,7 @@ impl CreationPoller {
             extra_args: data.extra_args,
             command_override: data.command_override,
             extra_repo_paths: data.extra_repo_paths,
+            throwaway: data.throwaway,
         };
 
         let build_result =

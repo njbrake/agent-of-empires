@@ -34,6 +34,10 @@ pub(super) const HELP_DIALOG_WIDTH: u16 = 85;
 
 pub(super) const FIELD_HELP: &[FieldHelp] = &[
     FieldHelp {
+        name: "Throwaway",
+        description: "Ctrl+T toggles a temporary working directory (no project path needed)",
+    },
+    FieldHelp {
         name: "Profile",
         description: "Settings profile for session defaults (Left/Right to cycle)",
     },
@@ -103,6 +107,9 @@ pub struct NewSessionData {
     pub extra_args: String,
     /// Command override for the agent binary (replaces the default binary)
     pub command_override: String,
+    /// Throwaway session: provision a fresh temp directory and persist
+    /// `instance.throwaway = true`. Mutually exclusive with worktree mode.
+    pub throwaway: bool,
 }
 
 pub struct NewSessionDialog {
@@ -203,6 +210,11 @@ pub struct NewSessionDialog {
     /// Inline confirmation for creating a non-existent directory.
     /// None = inactive, Some(true) = Yes selected, Some(false) = No selected.
     pub(super) confirm_create_dir: Option<bool>,
+    /// Throwaway-session marker. When true, submission skips the path
+    /// canonicalize/exists checks; the server (or `aoe add` CLI path)
+    /// provisions a fresh temp directory. Toggled with Ctrl+T from
+    /// anywhere in the form. Mutually exclusive with worktree mode.
+    pub(super) throwaway: bool,
 }
 
 /// Shared logic for handling key events in an editable list (env keys or env values).
@@ -455,6 +467,7 @@ impl NewSessionDialog {
             path_ghost: None,
             group_ghost: None,
             confirm_create_dir: None,
+            throwaway: false,
         }
     }
 
@@ -721,6 +734,7 @@ impl NewSessionDialog {
             path_ghost: None,
             group_ghost: None,
             confirm_create_dir: None,
+            throwaway: false,
         }
     }
 
@@ -785,6 +799,7 @@ impl NewSessionDialog {
             path_ghost: None,
             group_ghost: None,
             confirm_create_dir: None,
+            throwaway: false,
         }
     }
 
@@ -873,6 +888,18 @@ impl NewSessionDialog {
                 }
                 DirPickerResult::Continue => {}
             }
+            return DialogResult::Continue;
+        }
+
+        // Ctrl+T toggles the throwaway-session mode from anywhere in the
+        // form. Mutually exclusive with worktrees; turning on throwaway
+        // clears the worktree toggle.
+        if key.code == KeyCode::Char('t') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            self.throwaway = !self.throwaway;
+            if self.throwaway {
+                self.worktree_enabled = false;
+            }
+            self.error_message = None;
             return DialogResult::Continue;
         }
 
@@ -972,11 +999,16 @@ impl NewSessionDialog {
             }
             KeyCode::Enter => {
                 self.error_message = None;
-                let path_str = self.path.value().trim().to_string();
-                let resolved = path_input::expand_tilde(&path_str);
-                if !std::path::Path::new(&resolved).exists() {
-                    self.confirm_create_dir = Some(false);
-                    return DialogResult::Continue;
+                // Throwaway sessions skip the path-existence check: the
+                // server (or `aoe add` CLI) provisions the temp dir on
+                // submit.
+                if !self.throwaway {
+                    let path_str = self.path.value().trim().to_string();
+                    let resolved = path_input::expand_tilde(&path_str);
+                    if !std::path::Path::new(&resolved).exists() {
+                        self.confirm_create_dir = Some(false);
+                        return DialogResult::Continue;
+                    }
                 }
                 self.build_submit_result()
             }
@@ -1617,14 +1649,20 @@ impl NewSessionDialog {
         DialogResult::Submit(NewSessionData {
             profile: self.selected_profile().to_string(),
             title: final_title,
-            path: self.path.value().trim().to_string(),
+            // Throwaway sessions send an empty path; the server / `aoe add`
+            // CLI provisions a fresh temp directory keyed on the instance id.
+            path: if self.throwaway {
+                String::new()
+            } else {
+                self.path.value().trim().to_string()
+            },
             group: self.group.value().trim().to_string(),
             tool: self.available_tools[self.tool_index].clone(),
-            worktree_enabled: self.worktree_enabled,
+            worktree_enabled: !self.throwaway && self.worktree_enabled,
             worktree_branch,
             create_new_branch: self.create_new_branch,
             base_branch,
-            extra_repo_paths: if self.worktree_enabled {
+            extra_repo_paths: if !self.throwaway && self.worktree_enabled {
                 self.workspace_repos.clone()
             } else {
                 Vec::new()
@@ -1639,6 +1677,7 @@ impl NewSessionDialog {
             },
             extra_args: self.extra_args.value().trim().to_string(),
             command_override: self.command_override.value().trim().to_string(),
+            throwaway: self.throwaway,
         })
     }
 
