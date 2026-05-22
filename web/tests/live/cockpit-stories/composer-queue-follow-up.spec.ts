@@ -51,20 +51,7 @@ const QUEUE_SCRIPT = {
   ],
 };
 
-// FIXME (#1383 follow-up): consistently fails on CI under 4-worker
-// contention. After turn 1 ends naturally (stopReason=end_turn), the
-// cockpit supervisor publishes `Stopped { reason: "user_stopped" }`
-// before the client's drain effect can POST the queued follow-up, so
-// turn 2 never fires. The user_stopped event means `reap_user_stopped`
-// observed a registry-gone worker, which means the runner subprocess
-// exited (registry::delete is in runner.rs:284 on agent_child.wait()
-// return). Tightening or loosening wait_ms doesn't change the outcome,
-// and the symmetric Stop tests with the same chunk+wait_ms script
-// pass because they cancel mid-turn and never hit the natural
-// end_turn path. The client-side queue + drain logic is still
-// covered by Vitest; the supervisor side needs to be diagnosed
-// separately before this spec can land green.
-base.fixme("queued follow-up fires when first turn ends", async ({ page }, testInfo) => {
+base("queued follow-up fires when first turn ends", async ({ page }, testInfo) => {
   const scriptDir = mkdtempSync(join(tmpdir(), "aoe-pw-story-queue-"));
   const scriptPath = join(scriptDir, "script.json");
   writeFileSync(scriptPath, JSON.stringify(QUEUE_SCRIPT));
