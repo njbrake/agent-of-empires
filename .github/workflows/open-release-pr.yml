@@ -7,8 +7,13 @@ name: Open Release PR
 # fires `tag-release-pr.yml`, which tags the merge commit and triggers
 # `release.yml`.
 #
-# A richer conventional-commit changelog is queued for #1387 (git-cliff
-# wiring); until then the dumb dump is enough for maintainer review.
+# The user-facing CHANGELOG.md and GitHub Release body are driven by
+# git-cliff (see cliff.toml + release.yml). This workflow folds the
+# regenerated CHANGELOG.md into the same staging commit as the Cargo
+# bump so reviewers see the changelog diff before merging.
+#
+# The plain `git log` dump further down stays as the PR-body summary for
+# maintainer review; #1387 tracks unifying it with the git-cliff render.
 #
 # The maintainer's only manual step is (optionally) editing the version
 # bump in the PR (patch -> minor/major) before clicking merge.
@@ -44,6 +49,11 @@ jobs:
           ref: main
           fetch-depth: 0
           token: ${{ secrets.RELEASE_TOKEN }}
+
+      - name: Install release tools
+        uses: taiki-e/install-action@e0eafa9a0d485c37f97c0f7beb930a58a2facbac # v2.79.4
+        with:
+          tool: cargo-edit,git-cliff
 
       - name: Read current version from Cargo.toml
         id: current
@@ -93,16 +103,25 @@ jobs:
           fi
 
       - name: Bump Cargo.toml + Cargo.lock
+        env:
+          VERSION: ${{ steps.next.outputs.version }}
         run: |
-          VERSION="${{ steps.next.outputs.version }}"
-          # First version = "..." line is the workspace [package] version
-          sed -i '0,/^version = ".*"/s//version = "'"${VERSION}"'"/' Cargo.toml
-          # Cargo.lock: the agent-of-empires entry is always first
-          sed -i '/^name = "agent-of-empires"/{n;s/^version = ".*"/version = "'"${VERSION}"'"/}' Cargo.lock
+          cargo set-version --package agent-of-empires "$VERSION"
+          # Refresh Cargo.lock so the [[package]] entry tracks the new version
+          # without requiring a full build.
+          cargo generate-lockfile --offline 2>/dev/null || cargo generate-lockfile
           echo "Cargo.toml head:"
           head -8 Cargo.toml
           echo "Cargo.lock head:"
           head -8 Cargo.lock
+
+      - name: Update CHANGELOG.md
+        env:
+          VERSION: ${{ steps.next.outputs.version }}
+        run: |
+          git cliff --config cliff.toml --tag "v$VERSION" --output CHANGELOG.md
+          echo "=== CHANGELOG.md head ==="
+          head -40 CHANGELOG.md
 
       - name: Compute changelog since last tag
         id: changelog
@@ -164,14 +183,15 @@ jobs:
           echo "path=/tmp/pr-body.md" >> "$GITHUB_OUTPUT"
 
       - name: Commit and push branch
+        env:
+          VERSION: ${{ steps.next.outputs.version }}
+          BRANCH: ${{ steps.next.outputs.branch }}
         run: |
-          VERSION="${{ steps.next.outputs.version }}"
-          BRANCH="${{ steps.next.outputs.branch }}"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git checkout -b "$BRANCH"
-          git add Cargo.toml Cargo.lock
-          git commit -m "chore: release v${VERSION}"
+          git add Cargo.toml Cargo.lock CHANGELOG.md
+          git commit -m "chore: release v$VERSION"
           git push -u origin "$BRANCH"
 
       - name: Open PR + label

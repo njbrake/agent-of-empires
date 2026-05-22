@@ -28,13 +28,14 @@ The workflow:
 1. Reads the current version from `Cargo.toml`.
 2. Computes the next version based on the bump (defaults to patch).
 3. Refuses to run if the tag or the staging branch already exists.
-4. Bumps `Cargo.toml` + `Cargo.lock` on a new branch `release-staging/vX.Y.Z`.
-5. Dumps every commit since the last `v*` tag (newest first, `--no-merges`, with author + short SHA + date) into the PR body for maintainer review. The shipped `CHANGELOG.md` and GitHub Release body use a separate, prefix-grouped git-cliff render; reusing that same render inside the staging PR body is still queued under #1387.
-6. Opens the PR labeled `release-staging`, with a `<!-- release-version: X.Y.Z -->` marker in the body.
+4. Bumps `Cargo.toml` + `Cargo.lock` on a new branch `release-staging/vX.Y.Z` via `cargo set-version` + `cargo generate-lockfile`.
+5. Regenerates `CHANGELOG.md` via `git cliff --tag vX.Y.Z` and stages it in the same release commit so the staging PR shows the changelog diff for review.
+6. Dumps every commit since the last `v*` tag (newest first, `--no-merges`, with author + short SHA + date) into the PR body as a separate maintainer-review summary. Folding that summary into the same prefix-grouped git-cliff render is queued under #1387.
+7. Opens the PR labeled `release-staging`, with a `<!-- release-version: X.Y.Z -->` marker in the body.
 
 ### Adjusting the bump in-flight
 
-If the auto-staged version is wrong (e.g., the diff contains a breaking change but the workflow picked patch), edit `Cargo.toml` + `Cargo.lock` on the staging branch and update the marker in the PR body to match. The post-merge tagger reads the version from `Cargo.toml` at the merge commit and cross-checks it against the marker; if they disagree the tag step refuses to run.
+If the auto-staged version is wrong (e.g., the diff contains a breaking change but the workflow picked patch), edit `Cargo.toml` + `Cargo.lock` on the staging branch and update the marker in the PR body to match. Re-run `git cliff --config cliff.toml --tag "vX.Y.Z" --output CHANGELOG.md` on the branch so the changelog header reflects the corrected version. The post-merge tagger reads the version from `Cargo.toml` at the merge commit and cross-checks it against the marker; if they disagree the tag step refuses to run.
 
 ## Post-merge tagging
 
