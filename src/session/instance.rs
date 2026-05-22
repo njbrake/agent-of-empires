@@ -529,8 +529,11 @@ fn append_resume_flags(
 /// `Storage::update`'s per-profile lock; cross-process races between TUI
 /// and `aoe serve` remain a known limitation (see #1175).
 ///
-/// Fire-and-forget: errors are logged at error level; the next
-/// `status_poll` tick re-reads the sid from agent state and retries.
+/// Fire-and-forget: errors are logged at error level. The poller dedupes
+/// on its `last_known` and `apply_session_id_updates` dedupes on in-memory
+/// state, so a transient persist failure stays on disk-out-of-sync until
+/// the process restarts (which reloads from disk and re-emits via the
+/// agent's own session log on next start).
 pub(crate) fn persist_session_to_storage(profile: &str, instance_id: &str, session_id: &str) {
     if !is_valid_session_id(session_id) {
         tracing::warn!(target: "session.store",

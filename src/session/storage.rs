@@ -167,12 +167,21 @@ fn acquire_storage_flock(dir: &Path, name: &str) -> Result<StorageFlock> {
                 Ok(()) => {
                     let waited = started.elapsed();
                     if waited >= FLOCK_WAIT_WARN_AFTER {
-                        tracing::info!(
-                            target: "session.store",
-                            ?waited,
-                            path = %path.display(),
-                            "storage flock acquired after wait"
-                        );
+                        if warned {
+                            tracing::info!(
+                                target: "session.store",
+                                ?waited,
+                                path = %path.display(),
+                                "storage flock acquired after wait"
+                            );
+                        } else {
+                            tracing::warn!(
+                                target: "session.store",
+                                ?waited,
+                                path = %path.display(),
+                                "storage flock contended for >1s; another aoe process held it"
+                            );
+                        }
                     }
                     break;
                 }

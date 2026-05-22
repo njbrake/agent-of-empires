@@ -722,6 +722,12 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
                 storage.update(|all_instances, _groups| {
                     if let Some(stored) = all_instances.iter_mut().find(|i| i.id == id) {
                         stored.merge_post_start(&instance);
+                    } else {
+                        tracing::warn!(
+                            target: "session.cli",
+                            session_id = %id,
+                            "session row removed by peer between insert and launch-merge; tmux session is now orphan"
+                        );
                     }
                     Ok(())
                 })?;
@@ -731,13 +737,20 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
             }
             Err(e) => {
                 let err_msg = e.to_string();
-                let _ = storage.update(|all_instances, _groups| {
+                if let Err(rollback_err) = storage.update(|all_instances, _groups| {
                     if let Some(stored) = all_instances.iter_mut().find(|i| i.id == id) {
                         stored.status = crate::session::Status::Error;
                         stored.last_error = Some(err_msg.clone());
                     }
                     Ok(())
-                });
+                }) {
+                    tracing::error!(
+                        target: "session.store",
+                        "Failed to persist Status::Error rollback for {}: {}; row may show stale Starting status",
+                        id,
+                        rollback_err
+                    );
+                }
                 eprintln!(
                     "Warning: launch failed: {}. Retry with: aoe session start {}",
                     e, final_title

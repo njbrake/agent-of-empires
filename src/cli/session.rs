@@ -373,6 +373,12 @@ async fn start_session(profile: &str, args: SessionIdArgs) -> Result<()> {
     storage.update(|instances, _groups| {
         if let Some(stored) = instances.iter_mut().find(|i| i.id == id) {
             stored.merge_post_start(&working);
+        } else {
+            tracing::warn!(
+                target: "session.cli",
+                session_id = %id,
+                "session row removed by peer between phase 1 and phase 3 of start; tmux session is now orphan"
+            );
         }
         Ok(())
     })?;
@@ -553,6 +559,12 @@ async fn restart_all_sessions(profile: &str, parallel: usize) -> Result<()> {
         for (restarted_inst, stale_sid) in restarted {
             if let Some(stored) = instances.iter_mut().find(|i| i.id == restarted_inst.id) {
                 stored.merge_post_restart(&restarted_inst, stale_sid.as_deref());
+            } else {
+                tracing::warn!(
+                    target: "session.cli",
+                    session_id = %restarted_inst.id,
+                    "session row removed by peer between phase 1 and phase 3 of restart --all; tmux session is now orphan"
+                );
             }
         }
         Ok(())
@@ -672,6 +684,12 @@ async fn restart_session(profile: &str, args: SessionIdArgs) -> Result<()> {
             if wake_succeeded {
                 stored.touch_last_accessed();
             }
+        } else {
+            tracing::warn!(
+                target: "session.cli",
+                session_id = %session_id,
+                "session row removed by peer between phase 1 and phase 3 of restart; tmux session is now orphan"
+            );
         }
         Ok(())
     })?;

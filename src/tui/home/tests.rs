@@ -5273,4 +5273,80 @@ mod save_field_merge {
             "peer-written snoozed_until must survive a TUI archive that does not touch the field"
         );
     }
+
+    #[test]
+    #[serial]
+    fn test_save_drops_peer_deleted_row_from_mirror() {
+        let (_temp, mut view, id) = boot_view_with_one_session("victim", "/tmp/peer-rm");
+
+        // Simulate `aoe session remove victim` from another process: peer
+        // deletes the row from disk while TUI still has it in memory.
+        Storage::new("test")
+            .unwrap()
+            .update(|insts, _g| {
+                insts.retain(|i| i.id != id);
+                Ok(())
+            })
+            .unwrap();
+
+        view.save()
+            .expect("save must not error on peer-deleted rows");
+
+        assert!(
+            !view.instances().iter().any(|i| i.id == id),
+            "peer-deleted row must be dropped from in-memory instances"
+        );
+        assert!(
+            view.get_instance(&id).is_none(),
+            "peer-deleted row must be dropped from instance_map"
+        );
+        let disk = Storage::new("test").unwrap().load().unwrap();
+        assert!(
+            !disk.iter().any(|i| i.id == id),
+            "save() must not resurrect the peer-deleted row on disk"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_save_pushes_tui_added_row_to_disk() {
+        let (_temp, mut view, _) = boot_view_with_one_session("seed", "/tmp/seed");
+
+        let mut new_inst = Instance::new("tui-added", "/tmp/added");
+        new_inst.source_profile = "test".to_string();
+        let new_id = new_inst.id.clone();
+        view.add_instance(new_inst);
+
+        view.save().expect("save must persist TUI-added row");
+
+        let disk = Storage::new("test").unwrap().load().unwrap();
+        assert!(
+            disk.iter().any(|i| i.id == new_id),
+            "TUI-added row must be persisted to disk"
+        );
+        assert!(
+            !view.pending_added.contains_key("test"),
+            "pending_added must drain on Ok save"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_save_add_then_remove_in_same_cycle_does_not_persist() {
+        let (_temp, mut view, _) = boot_view_with_one_session("seed", "/tmp/seed");
+
+        let mut new_inst = Instance::new("ephemeral", "/tmp/ephemeral");
+        new_inst.source_profile = "test".to_string();
+        let new_id = new_inst.id.clone();
+        view.add_instance(new_inst);
+        view.remove_instance(&new_id);
+
+        view.save().expect("save must succeed");
+
+        let disk = Storage::new("test").unwrap().load().unwrap();
+        assert!(
+            !disk.iter().any(|i| i.id == new_id),
+            "add+remove in same save cycle must not leak the row to disk"
+        );
+    }
 }

@@ -159,6 +159,12 @@ pub struct HomeView {
     /// Mirrors `pending_deletions` for groups so concurrent peer-added
     /// groups (e.g. `aoe add --group X`) survive the next save.
     pending_group_deletions: HashMap<String, HashSet<String>>,
+    /// Per-profile ids added via `add_instance` since last save. In
+    /// `save()`, only ids present here are pushed when the disk row is
+    /// missing; TUI rows absent from disk AND absent from this set are
+    /// treated as peer-deleted (CLI/`aoe serve`) and dropped from the
+    /// in-memory mirror. Drained on Ok save.
+    pending_added: HashMap<String, HashSet<String>>,
     pub(super) group_trees: HashMap<String, GroupTree>,
     pub(super) flat_items: Vec<Item>,
 
@@ -441,6 +447,7 @@ impl HomeView {
             instance_map,
             pending_deletions: HashMap::new(),
             pending_group_deletions: HashMap::new(),
+            pending_added: HashMap::new(),
             group_trees,
             flat_items: Vec::new(),
             cursor: 0,
@@ -2080,6 +2087,8 @@ impl HomeView {
     }
 
     pub fn save(&mut self) -> anyhow::Result<()> {
+        let mut all_peer_deleted: Vec<String> = Vec::new();
+
         for (profile_name, storage) in &self.storages {
             let tui_rows: Vec<Instance> = self
                 .instances
@@ -2089,6 +2098,11 @@ impl HomeView {
                 .collect();
             let dels: HashSet<String> = self
                 .pending_deletions
+                .get(profile_name)
+                .cloned()
+                .unwrap_or_default();
+            let added: HashSet<String> = self
+                .pending_added
                 .get(profile_name)
                 .cloned()
                 .unwrap_or_default();
@@ -2103,14 +2117,19 @@ impl HomeView {
                 .map(|t| t.get_all_groups())
                 .unwrap_or_default();
 
-            storage.update(|disk_instances, disk_groups| {
+            let peer_deleted: Vec<String> = storage.update(|disk_instances, disk_groups| {
                 disk_instances.retain(|d| !dels.contains(&d.id));
+                let mut peer_deleted: Vec<String> = Vec::new();
                 for tui_inst in &tui_rows {
                     if let Some(disk_inst) = disk_instances.iter_mut().find(|d| d.id == tui_inst.id)
                     {
                         disk_inst.merge_from_tui(tui_inst);
-                    } else {
+                    } else if added.contains(&tui_inst.id) {
                         disk_instances.push(tui_inst.clone());
+                    } else {
+                        // Disk had no row with this id and we did not add it
+                        // this session: a peer (CLI / aoe serve) removed it.
+                        peer_deleted.push(tui_inst.id.clone());
                     }
                 }
                 disk_groups.retain(|g| !group_dels.contains(&g.path));
@@ -2123,11 +2142,33 @@ impl HomeView {
                         disk_groups.push(tui_g.clone());
                     }
                 }
-                Ok(())
+                Ok(peer_deleted)
             })?;
 
             self.pending_deletions.remove(profile_name);
             self.pending_group_deletions.remove(profile_name);
+            self.pending_added.remove(profile_name);
+            all_peer_deleted.extend(peer_deleted);
+        }
+
+        if !all_peer_deleted.is_empty() {
+            let drop: HashSet<&String> = all_peer_deleted.iter().collect();
+            self.instances.retain(|i| !drop.contains(&i.id));
+            for id in &all_peer_deleted {
+                self.instance_map.remove(id);
+            }
+            if self
+                .selected_session
+                .as_ref()
+                .is_some_and(|s| drop.contains(s))
+            {
+                self.selected_session = None;
+            }
+            tracing::info!(
+                target: "tui.home",
+                count = all_peer_deleted.len(),
+                "Dropped peer-deleted rows from TUI mirror"
+            );
         }
         Ok(())
     }
@@ -2193,22 +2234,35 @@ impl HomeView {
     }
 
     /// Centralized instance addition: adds to both the `instances` vec
-    /// and `instance_map` to keep both collections in sync.
+    /// and `instance_map` to keep both collections in sync. Records the
+    /// id in `pending_added` so the next `save` distinguishes TUI-new
+    /// rows from peer-deleted ones (which look identical at the disk
+    /// layer: missing from sessions.json).
     pub(super) fn add_instance(&mut self, instance: Instance) {
+        self.pending_added
+            .entry(instance.source_profile.clone())
+            .or_default()
+            .insert(instance.id.clone());
         self.instance_map
             .insert(instance.id.clone(), instance.clone());
         self.instances.push(instance);
     }
 
     /// Centralized instance removal: removes from both the `instances` vec
-    /// and `instance_map`, and records the id in `pending_deletions` so the
-    /// next `save` propagates the removal under the flock.
+    /// and `instance_map`, records the id in `pending_deletions` so the
+    /// next `save` propagates the removal under the flock, and clears any
+    /// `pending_added` entry so an add+remove in the same save cycle does
+    /// not end up persisted.
     pub(super) fn remove_instance(&mut self, id: &str) {
         if let Some(inst) = self.instance_map.get(id) {
+            let profile = inst.source_profile.clone();
             self.pending_deletions
-                .entry(inst.source_profile.clone())
+                .entry(profile.clone())
                 .or_default()
                 .insert(id.to_string());
+            if let Some(set) = self.pending_added.get_mut(&profile) {
+                set.remove(id);
+            }
         }
         self.instances.retain(|i| i.id != id);
         self.instance_map.remove(id);
