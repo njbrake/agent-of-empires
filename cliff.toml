@@ -1,0 +1,61 @@
+# git-cliff configuration for Agent of Empires.
+#
+# Generates CHANGELOG.md and the GitHub Release body from conventional-commit
+# messages on `main`. Driven by `git cliff` in .github/workflows/{prepare,}release.yml.
+#
+# Visibility policy lives in CONTRIBUTING.md under "Changelog visibility".
+
+[changelog]
+header = """
+# Changelog
+
+All notable changes to Agent of Empires will be documented in this file.
+
+The format follows [Conventional Commits](https://www.conventionalcommits.org/).
+
+"""
+body = """
+{% if version %}\
+## [{{ version | trim_start_matches(pat="v") }}](https://github.com/njbrake/agent-of-empires/releases/tag/{{ version }}) - {{ timestamp | date(format="%Y-%m-%d") }}
+{% else %}\
+## [Unreleased]
+{% endif %}
+
+{% for group, commits in commits | group_by(attribute="group") %}
+### {{ group }}
+
+{% for commit in commits %}\
+- {% if commit.scope %}**{{ commit.scope }}:** {% endif %}{{ commit.message | split(pat="\n") | first | upper_first }} ([`{{ commit.id | truncate(length=7, end="") }}`](https://github.com/njbrake/agent-of-empires/commit/{{ commit.id }}))
+{% endfor %}
+{% endfor %}
+"""
+trim = true
+footer = ""
+
+[git]
+conventional_commits = true
+filter_unconventional = true
+filter_commits = true
+tag_pattern = "v[0-9]*"
+sort_commits = "oldest"
+protect_breaking_commits = true
+
+commit_parsers = [
+  { message = "^feat", group = "Features" },
+  { message = "^fix", group = "Bug Fixes" },
+  { message = "^perf", group = "Performance" },
+  { message = "^security", group = "Security" },
+  { message = "^revert", group = "Reverts" },
+
+  { message = "^chore: bump version", skip = true },
+  { message = "^chore\\(deps\\)", skip = true },
+  { message = "^chore: update Nix npmDepsHash", skip = true },
+
+  { message = "^chore", skip = true },
+  { message = "^build", skip = true },
+  { message = "^ci", skip = true },
+  { message = "^docs", skip = true },
+  { message = "^style", skip = true },
+  { message = "^refactor", skip = true },
+  { message = "^test", skip = true },
+]

@@ -80,6 +80,29 @@ Use conventional commit prefixes:
 
 Example: `feat: add session export command`
 
+### Changelog visibility
+
+`CHANGELOG.md` and the GitHub Release body are generated from conventional commit messages on `main` by [git-cliff](https://git-cliff.org/) (config in [`cliff.toml`](cliff.toml)). Squash-merged PR titles are what gets parsed, so PR titles matter.
+
+User-visible prefixes appear in release notes:
+
+- `feat:` new user-visible behavior
+- `fix:` bug fixes that affect users
+- `perf:` performance improvements
+- `security:` security fixes
+- `revert:` reverts of previously released changes
+
+Routine maintenance is intentionally hidden:
+
+- `chore:`, `chore(deps):`, `chore: update Nix npmDepsHash`
+- `build:`, `ci:`
+- `docs:`, `style:`
+- `refactor:`, `test:`
+
+For web-dashboard changes, scope visibility via the prefix: `feat(web): ...` / `fix(web): ...` show up; `refactor(web):` / `chore(web):` / `test(web):` stay out. Same pattern for `cockpit`, `serve`, `tui`.
+
+`filter_unconventional = true` means PR titles without a recognized prefix are dropped from release notes entirely. If you land a title like "Fix stuff" it will not appear; reword the squash-merge title to `fix: <thing>` before merging.
+
 ## Testing
 
 - Run `cargo test` before submitting PRs

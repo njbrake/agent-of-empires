@@ -19,6 +19,14 @@ jobs:
         with:
           ref: main
           token: ${{ secrets.RELEASE_TOKEN }}
+          # git-cliff walks tag history to render CHANGELOG.md, so we need
+          # the full history, not the default shallow clone.
+          fetch-depth: 0
+
+      - name: Install release tools
+        uses: taiki-e/install-action@e0eafa9a0d485c37f97c0f7beb930a58a2facbac # v2.79.4
+        with:
+          tool: cargo-edit,git-cliff
 
       - name: Validate version format
         run: |
@@ -35,28 +43,29 @@ jobs:
             exit 1
           fi
 
-      - name: Update Cargo.toml version
+      - name: Update Cargo version
         run: |
           VERSION="${{ github.event.inputs.version }}"
-          # Replace the first version = "..." line (the [package] version, not dependencies)
-          sed -i '0,/^version = ".*"/s//version = "'"${VERSION}"'"/' Cargo.toml
-          echo "Cargo.toml updated:"
+          cargo set-version --package agent-of-empires "$VERSION"
+          # Refresh Cargo.lock so the [[package]] entry tracks the new version
+          # without requiring a full build.
+          cargo generate-lockfile --offline 2>/dev/null || cargo generate-lockfile
+          echo "Cargo.toml:"
           grep '^version = ' Cargo.toml | head -1
 
-      - name: Update Cargo.lock version
+      - name: Update CHANGELOG.md
         run: |
           VERSION="${{ github.event.inputs.version }}"
-          # Update the version for the agent-of-empires package (always first in lockfile)
-          sed -i '/^name = "agent-of-empires"/{n;s/^version = ".*"/version = "'"${VERSION}"'"/}' Cargo.lock
-          echo "Cargo.lock updated:"
-          head -8 Cargo.lock
+          git cliff --config cliff.toml --tag "v${VERSION}" --output CHANGELOG.md
+          echo "=== CHANGELOG.md head ==="
+          head -40 CHANGELOG.md
 
       - name: Commit version bump
         run: |
           VERSION="${{ github.event.inputs.version }}"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Cargo.toml Cargo.lock
+          git add Cargo.toml Cargo.lock CHANGELOG.md
           git commit -m "chore: bump version to ${VERSION}"
 
       - name: Create tag and push

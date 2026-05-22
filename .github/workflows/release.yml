@@ -12,6 +12,12 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # Centralizes the "which ref do we operate on" rule so every job's checkout
+  # stays in sync. Without this, workflow_dispatch silently fell back to main:
+  # checkout's default ref ignored the `tag` input, so validation read main's
+  # Cargo.toml and the build packaged main's binary while attaching it to the
+  # requested tag's release.
+  RELEASE_REF: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.tag || github.ref }}
 
 jobs:
   validate:
@@ -19,6 +25,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ env.RELEASE_REF }}
 
       - name: Validate version matches tag
         run: |
@@ -62,6 +70,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ env.RELEASE_REF }}
 
       - name: Setup Node.js
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
@@ -113,6 +123,15 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ env.RELEASE_REF }}
+          # git cliff --current walks tag-to-tag history; needs full clone.
+          fetch-depth: 0
+
+      - name: Install git-cliff
+        uses: taiki-e/install-action@e0eafa9a0d485c37f97c0f7beb930a58a2facbac # v2.79.4
+        with:
+          tool: git-cliff
 
       - name: Download all artifacts
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -136,6 +155,12 @@ jobs:
             echo "version=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
           fi
 
+      - name: Generate release notes
+        run: |
+          git cliff --config cliff.toml --current --strip header > release-notes.md
+          echo "=== release-notes.md ==="
+          cat release-notes.md
+
       - name: Create Release
         uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0
         with:
@@ -143,10 +168,10 @@ jobs:
           name: Agent of Empires ${{ steps.version.outputs.version }}
           draft: false
           prerelease: false
+          body_path: release-notes.md
           files: |
             artifacts/*.tar.gz
             artifacts/*.tar.gz.sha256
-          generate_release_notes: true
 
     outputs:
       version: ${{ steps.version.outputs.version }}
@@ -159,6 +184,8 @@ jobs:
       CLAWHUB_TOKEN: ${{ secrets.CLAWHUB_TOKEN }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ env.RELEASE_REF }}
 
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
         if: env.CLAWHUB_TOKEN != ''
