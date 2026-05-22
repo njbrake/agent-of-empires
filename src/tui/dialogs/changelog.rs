@@ -66,7 +66,6 @@ struct ChangeItem {
     message: String,
     scope: Option<String>,
     pr_number: Option<u32>,
-    breaking: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -224,12 +223,6 @@ fn render_line<'a>(line: &DisplayLine, theme: &Theme, separator_width: usize) ->
         DisplayLine::Item(item) => {
             let mut spans: Vec<Span<'a>> =
                 vec![Span::styled("  • ", Style::default().fg(theme.dimmed))];
-            if item.breaking {
-                spans.push(Span::styled(
-                    "BREAKING ",
-                    Style::default().fg(theme.error).bold(),
-                ));
-            }
             if let Some(scope) = &item.scope {
                 spans.push(Span::styled(
                     format!("{}: ", scope),
@@ -347,11 +340,6 @@ fn parse_release_body(body: &str) -> Vec<(Category, Vec<ChangeItem>)> {
             message,
             scope,
             pr_number,
-            // git-cliff renders BREAKING-flagged commits with `!` already
-            // stripped from the subject, and the template doesn't surface
-            // breakage separately. Until cliff.toml grows a dedicated bold
-            // marker we treat everything as non-breaking.
-            breaking: false,
         };
         by_category
             .entry(category.order())
@@ -541,7 +529,6 @@ mod tests {
                 message: "x".into(),
                 scope: None,
                 pr_number: None,
-                breaking: false,
             }),
         ]);
         for _ in 0..10 {
