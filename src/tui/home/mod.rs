@@ -2183,23 +2183,7 @@ impl HomeView {
         }
 
         if !all_peer_deleted.is_empty() {
-            let drop: HashSet<&String> = all_peer_deleted.iter().collect();
-            self.instances.retain(|i| !drop.contains(&i.id));
-            for id in &all_peer_deleted {
-                self.instance_map.remove(id);
-            }
-            if self
-                .selected_session
-                .as_ref()
-                .is_some_and(|s| drop.contains(s))
-            {
-                self.selected_session = None;
-            }
-            self.rebuild_group_trees();
-            self.flat_items = self.build_flat_items();
-            if self.cursor >= self.flat_items.len() {
-                self.cursor = self.flat_items.len().saturating_sub(1);
-            }
+            self.drop_peer_deleted_rows(&all_peer_deleted);
             tracing::info!(
                 target: "tui.home",
                 count = all_peer_deleted.len(),
@@ -2207,6 +2191,32 @@ impl HomeView {
             );
         }
         Ok(())
+    }
+
+    /// Drop in-memory mirror rows that no longer exist on disk (peer-deleted
+    /// via CLI / aoe serve). Rebuilds derived UI state so callers don't
+    /// render or target removed rows.
+    fn drop_peer_deleted_rows(&mut self, ids: &[String]) {
+        if ids.is_empty() {
+            return;
+        }
+        let drop: HashSet<&String> = ids.iter().collect();
+        self.instances.retain(|i| !drop.contains(&i.id));
+        for id in ids {
+            self.instance_map.remove(id);
+        }
+        if self
+            .selected_session
+            .as_ref()
+            .is_some_and(|s| drop.contains(s))
+        {
+            self.selected_session = None;
+        }
+        self.rebuild_group_trees();
+        self.flat_items = self.build_flat_items();
+        if self.cursor >= self.flat_items.len() {
+            self.cursor = self.flat_items.len().saturating_sub(1);
+        }
     }
 
     /// Rebuild all per-profile GroupTrees from the current instances,
@@ -2407,8 +2417,10 @@ impl HomeView {
             storage.update(|insts, _groups| {
                 if let Some(disk) = insts.iter_mut().find(|i| i.id == id_owned) {
                     disk.merge_user_action_diff(&pre, &post);
+                    Ok(true)
+                } else {
+                    Ok(false)
                 }
-                Ok(())
             })
         } else {
             tracing::warn!(
@@ -2417,15 +2429,28 @@ impl HomeView {
                 id = %id_owned,
                 "apply_user_action: no storage registered for profile; in-memory mutation will not persist"
             );
-            Ok(())
+            Ok(true)
         };
-        if res.is_err() {
-            if let Some(slot) = self.instances.iter_mut().find(|i| i.id == id) {
-                *slot = pre.clone();
+        match res {
+            Ok(true) => Ok(()),
+            Ok(false) => {
+                let added = self
+                    .pending_added
+                    .get(&profile)
+                    .is_some_and(|s| s.contains(id));
+                if !added {
+                    self.drop_peer_deleted_rows(&[id.to_string()]);
+                }
+                Ok(())
             }
-            self.instance_map.insert(id.to_string(), pre);
+            Err(e) => {
+                if let Some(slot) = self.instances.iter_mut().find(|i| i.id == id) {
+                    *slot = pre.clone();
+                }
+                self.instance_map.insert(id.to_string(), pre);
+                Err(e)
+            }
         }
-        res
     }
 
     /// Bulk `apply_user_action`: one `Storage::update` per affected
@@ -2452,6 +2477,7 @@ impl HomeView {
                 .or_default()
                 .push((id.clone(), pre, post));
         }
+        let mut peer_deleted: Vec<String> = Vec::new();
         for (profile, items) in &by_profile {
             let Some(storage) = self.storages.get(profile) else {
                 tracing::warn!(
@@ -2462,22 +2488,34 @@ impl HomeView {
                 );
                 continue;
             };
-            if let Err(e) = storage.update(|insts, _groups| {
+            let added: HashSet<String> =
+                self.pending_added.get(profile).cloned().unwrap_or_default();
+            let res = storage.update(|insts, _groups| {
+                let mut missing: Vec<String> = Vec::new();
                 for (id, pre, post) in items {
                     if let Some(disk) = insts.iter_mut().find(|i| i.id == *id) {
                         disk.merge_user_action_diff(pre, post);
+                    } else if !added.contains(id) {
+                        missing.push(id.clone());
                     }
                 }
-                Ok(())
-            }) {
-                for (id, pre, _post) in items {
-                    if let Some(slot) = self.instances.iter_mut().find(|i| i.id == *id) {
-                        *slot = pre.clone();
+                Ok(missing)
+            });
+            match res {
+                Ok(missing) => peer_deleted.extend(missing),
+                Err(e) => {
+                    for (id, pre, _post) in items {
+                        if let Some(slot) = self.instances.iter_mut().find(|i| i.id == *id) {
+                            *slot = pre.clone();
+                        }
+                        self.instance_map.insert(id.clone(), pre.clone());
                     }
-                    self.instance_map.insert(id.clone(), pre.clone());
+                    return Err(e);
                 }
-                return Err(e);
             }
+        }
+        if !peer_deleted.is_empty() {
+            self.drop_peer_deleted_rows(&peer_deleted);
         }
         Ok(())
     }
