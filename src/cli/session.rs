@@ -277,8 +277,7 @@ async fn archive_session(profile: &str, args: ArchiveArgs) -> Result<()> {
     let title = inst.title.clone();
     let inst = inst.clone();
 
-    // Phase 2 (unlocked): tmux teardown. The closure-as-CPU-only invariant
-    // documented on Storage::update forbids tmux work inside the lock.
+    // Phase 2 (unlocked): tmux work; Storage::update closures must stay CPU-only.
     if !args.no_kill {
         if let Err(e) = inst.kill() {
             eprintln!("Warning: failed to kill tmux session: {}", e);

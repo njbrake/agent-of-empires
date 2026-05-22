@@ -99,14 +99,10 @@ pub fn truncate_id(id: &str, max_len: usize) -> &str {
     }
 }
 
-/// Resolve a CLI identifier inside a `&mut Vec<Instance>` and run `f` on
-/// the matching entry. Designed to be called from inside `Storage::update`'s
-/// closure so the find + mutate happens atomically under both the
-/// in-process mutex and the cross-process flock.
-///
-/// Identifier resolution delegates to `resolve_session` so ambiguous prefix
-/// matches error rather than silently picking the first hit; behaviour is
-/// uniform with the 12+ other CLI mutators that take that path directly.
+/// Resolve `identifier` and run `f` on the matching instance. Designed for
+/// use inside `Storage::update`'s closure: find + mutate is atomic under
+/// both lock layers. Delegates to `resolve_session`, so ambiguous prefixes
+/// error rather than silently picking the first match.
 pub(crate) fn patch_instance<F, R>(instances: &mut [Instance], identifier: &str, f: F) -> Result<R>
 where
     F: FnOnce(&mut Instance) -> Result<R>,

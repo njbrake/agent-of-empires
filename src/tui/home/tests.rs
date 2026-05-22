@@ -5250,8 +5250,6 @@ mod save_field_merge {
     fn test_apply_user_action_preserves_peer_user_action_field() {
         let (_temp, mut view, id) = boot_view_with_one_session("session", "/tmp/race");
 
-        // Peer writes snoozed_until under the flock while the TUI's in-memory
-        // mirror still has snoozed_until = None.
         let peer_storage = Storage::new("test").unwrap();
         peer_storage
             .update(|insts, _| {
@@ -5262,9 +5260,8 @@ mod save_field_merge {
             })
             .unwrap();
 
-        // TUI archives the row. archive() mutates archived_at + favorited_at
-        // only; snoozed_until is in the user-action set but unchanged by this
-        // mutation, so the diff-splice must NOT clobber the peer's value.
+        // archive() touches archived_at + favorited_at only; the peer-set
+        // snoozed_until must NOT be clobbered by the diff-splice.
         view.apply_user_action(&id, |inst| inst.archive())
             .expect("archive must persist");
 

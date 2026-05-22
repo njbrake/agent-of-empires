@@ -529,12 +529,8 @@ fn append_resume_flags(
 /// `Storage::update`'s per-profile lock; cross-process races between TUI
 /// and `aoe serve` remain a known limitation (see #1175).
 ///
-/// Errors are logged at error level and absorbed: this is fire-and-forget
-/// from the caller's perspective, matching the surrounding tick-loop /
-/// pre-launch helpers (`apply_status_updates`, `clear_session_id_on_disk`).
-/// The next `status_poll` tick re-reads the sid from agent state and
-/// re-attempts persistence, so a transient flock contention or disk error
-/// is recovered without caller involvement.
+/// Fire-and-forget: errors are logged at error level; the next
+/// `status_poll` tick re-reads the sid from agent state and retries.
 pub(crate) fn persist_session_to_storage(profile: &str, instance_id: &str, session_id: &str) {
     if !is_valid_session_id(session_id) {
         tracing::warn!(target: "session.store",
@@ -730,23 +726,11 @@ impl Instance {
         self.idle_entered_at = src.idle_entered_at;
     }
 
-    /// Splice only fields that the in-memory mutation actually changed
-    /// onto `self`. `pre` is the in-memory snapshot before the mutation;
-    /// `post` is after. For each TUI-owned user-action field, when
-    /// `pre != post` the field is copied; otherwise the disk row's value
-    /// is preserved, so a peer write that happened between TUI's last
-    /// reload and now survives even when the field is in the user-action
-    /// set (e.g. peer-set `snoozed_until` survives a TUI archive that
-    /// only mutates `archived_at`).
-    ///
-    /// `last_accessed_at` is monotone-max regardless of pre/post equality:
-    /// any TUI tick concurrent with a peer touch always picks the latest.
-    ///
-    /// `source_profile` is intentionally NOT in the diff set: cross-profile
-    /// moves bypass `apply_user_action` entirely (they need to remove from
-    /// profile A's storage and insert into profile B's), so the field can
-    /// never legitimately differ across this call. The debug-assert pins
-    /// the invariant.
+    /// Per-field-conditional splice: copy `post.X` onto `self.X` only when
+    /// `pre.X != post.X`. Peer writes to fields the mutation did not touch
+    /// survive even when the field is in the user-action set.
+    /// `last_accessed_at` is monotone-max (no diff guard).
+    /// `source_profile` is excluded; cross-profile moves bypass this path.
     pub fn merge_user_action_diff(&mut self, pre: &Self, post: &Self) {
         debug_assert_eq!(
             pre.source_profile, post.source_profile,

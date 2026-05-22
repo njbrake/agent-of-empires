@@ -2214,11 +2214,8 @@ impl HomeView {
         self.instance_map.remove(id);
     }
 
-    /// Centralized group deletion: removes from the per-profile `GroupTree`
-    /// and records the path AND all descendant paths in
-    /// `pending_group_deletions` so the next `save` propagates the removal
-    /// under the flock instead of relying on a wholesale-replace (which
-    /// would clobber concurrent peer writes).
+    /// Tombstones `path` and every descendant from the per-profile tree so
+    /// `save()` drops them under the flock instead of wholesale-replacing.
     pub(super) fn delete_group_in_profile(&mut self, profile: &str, path: &str) {
         let prefix = format!("{}/", path);
         let descendants: Vec<String> = self
@@ -2251,14 +2248,8 @@ impl HomeView {
         }
     }
 
-    /// Apply a user-action mutation atomically to the in-memory mirror and
-    /// the on-disk row under the flock. The mutation runs ONCE in memory;
-    /// the disk row is updated via `Instance::merge_user_action_diff` so
-    /// only fields the mutation actually changed are spliced. A peer
-    /// writer's pre-existing value on a field the mutation does NOT
-    /// touch (even if that field is in the user-action set) is preserved.
-    /// Use for dialog changes (archive, favorite, snooze, rename, group,
-    /// base-branch) that `HomeView::save`'s field-merge does not propagate.
+    /// Atomic per-action mutate: in-memory once, disk via
+    /// `Instance::merge_user_action_diff` under the flock.
     pub(super) fn apply_user_action<F>(&mut self, id: &str, mutate: F) -> anyhow::Result<()>
     where
         F: FnOnce(&mut Instance),
@@ -2286,11 +2277,8 @@ impl HomeView {
         Ok(())
     }
 
-    /// Apply `mutate` once per id in memory and fold all disk writes into
-    /// one `Storage::update` per affected profile (single flock cycle per
-    /// profile). Diff-splice semantics match `apply_user_action`. For
-    /// group-scoped operations on N sessions where N per-row flock cycles
-    /// would dominate the wall clock.
+    /// Bulk `apply_user_action`: one `Storage::update` per affected
+    /// profile (single flock cycle), grouping ids by `source_profile`.
     pub(super) fn bulk_apply_user_action<F>(
         &mut self,
         ids: &[String],
