@@ -153,6 +153,13 @@ pub struct HomeView {
     instances: Vec<Instance>,
     instance_map: HashMap<String, Instance>,
     pub(super) group_trees: HashMap<String, GroupTree>,
+    /// Per-profile id-set of the session rows that were on disk the last time
+    /// this `HomeView` loaded that profile (`new` / `reload`). It is the
+    /// "load baseline" for the non-lossy 3-way merge in `save`: a row in the
+    /// baseline but gone from `instances` is an intentional TUI delete, while
+    /// a row on disk but absent from the baseline was added by another process
+    /// after the TUI loaded and must be kept. See `Storage::commit_merged`.
+    pub(super) load_baseline: HashMap<String, HashSet<String>>,
     pub(super) flat_items: Vec<Item>,
 
     // UI state
@@ -359,6 +366,7 @@ impl HomeView {
         let mut storages = HashMap::new();
         let mut all_instances = Vec::new();
         let mut group_trees = HashMap::new();
+        let mut load_baseline: HashMap<String, HashSet<String>> = HashMap::new();
 
         let profile_names = match &active_profile {
             Some(name) => vec![name.clone()],
@@ -371,6 +379,12 @@ impl HomeView {
             for inst in &mut instances {
                 inst.source_profile = profile_name.clone();
             }
+            // Record the load baseline before status carry-over so the merge
+            // in `save` knows exactly which ids this view loaded from disk.
+            load_baseline.insert(
+                profile_name.clone(),
+                instances.iter().map(|i| i.id.clone()).collect(),
+            );
             let tree = GroupTree::new_with_groups(&instances, &groups);
             group_trees.insert(profile_name.clone(), tree);
             all_instances.extend(instances);
@@ -433,6 +447,7 @@ impl HomeView {
             instances: all_instances,
             instance_map,
             group_trees,
+            load_baseline,
             flat_items: Vec::new(),
             cursor: 0,
             selected_session: None,
@@ -652,8 +667,16 @@ impl HomeView {
         }
         self.refresh_status_hook_config_cache();
 
+        let mut next_baseline: HashMap<String, HashSet<String>> = HashMap::new();
         for (profile_name, storage) in &self.storages {
             let (mut instances, groups) = storage.load_with_groups()?;
+            // The on-disk id-set is the load baseline for the next `save`'s
+            // merge. Captured from the raw disk read, before status carry-over
+            // or the Creating-stub re-injection touches `instances`.
+            next_baseline.insert(
+                profile_name.clone(),
+                instances.iter().map(|i| i.id.clone()).collect(),
+            );
             for inst in &mut instances {
                 inst.source_profile = profile_name.clone();
                 if let Some(prev) = self.instance_map.get(&inst.id) {
@@ -701,6 +724,10 @@ impl HomeView {
         // Remove trees for profiles that no longer exist
         let storage_keys: Vec<String> = self.storages.keys().cloned().collect();
         self.group_trees.retain(|k, _| storage_keys.contains(k));
+
+        // Adopt the freshly-captured per-profile load baselines. Profiles that
+        // no longer exist drop out implicitly (they were never inserted).
+        self.load_baseline = next_baseline;
 
         self.instances = all_instances;
 
@@ -2097,7 +2124,20 @@ impl HomeView {
                 .get(profile_name)
                 .cloned()
                 .unwrap_or_else(|| GroupTree::new_with_groups(&profile_instances, &[]));
-            storage.commit(&profile_instances, &tree)?;
+            // Non-lossy commit: `commit_merged` re-reads the on-disk rows under
+            // the cross-process flock and reconciles them against this view's
+            // rows and the load baseline, so a row a peer process (CLI, `aoe
+            // serve` daemon) added after this view last loaded is preserved
+            // instead of being clobbered by a wholesale overwrite. A profile
+            // with no recorded baseline (should not happen post-`reload`)
+            // falls back to an empty set: every on-disk row then looks
+            // peer-added and is kept, which is the safe, non-lossy direction.
+            let baseline = self
+                .load_baseline
+                .get(profile_name)
+                .cloned()
+                .unwrap_or_default();
+            storage.commit_merged(&profile_instances, &tree, &baseline)?;
         }
         Ok(())
     }

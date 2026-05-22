@@ -284,6 +284,86 @@ impl Storage {
         atomic_write(&self.sessions_path, &instances_buf)?;
         Ok(())
     }
+
+    /// Locked, non-lossy commit for the TUI's `HomeView`. Unlike `commit`,
+    /// which overwrites `sessions.json` wholesale from the caller's in-memory
+    /// snapshot, this re-reads the on-disk rows under the flock and reconciles
+    /// them against the caller's rows using a 3-way merge keyed on
+    /// `Instance.id`:
+    ///
+    /// - Row present in `instances` (the TUI's authoritative copy): the TUI's
+    ///   version wins. The TUI owns the rows it displays and edits.
+    /// - Row in `baseline_ids` (what the TUI loaded) but absent from
+    ///   `instances`: the TUI deleted it intentionally; drop it.
+    /// - Row on disk but absent from `baseline_ids`: another process added it
+    ///   after the TUI loaded; keep it.
+    ///
+    /// Net effect: intentional TUI deletes are honoured, while rows a peer
+    /// process (CLI, `aoe serve` daemon) added concurrently are never
+    /// clobbered. The read, merge, and write all happen inside one
+    /// flock-held critical section, so the reconcile cannot race a peer.
+    ///
+    /// `groups.json` is still written wholesale from `group_tree`: groups are
+    /// edited only by the TUI, so they need no merge.
+    pub fn commit_merged(
+        &self,
+        instances: &[Instance],
+        group_tree: &GroupTree,
+        baseline_ids: &std::collections::HashSet<String>,
+    ) -> Result<()> {
+        let _guard = self
+            .save_lock
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        // The flock spans the whole read-merge-write region: a peer process
+        // cannot slip an addition in between our re-read and our write.
+        let _flock = SessionsFileLock::acquire(&self.lock_path)?;
+
+        let on_disk = self.load()?;
+        let merged = merge_instances(instances, &on_disk, baseline_ids);
+
+        let groups = group_tree.get_all_groups();
+        let instances_buf = serde_json::to_vec_pretty(&merged)?;
+        let groups_buf = serde_json::to_vec_pretty(&groups)?;
+        let groups_path = self.sessions_path.with_file_name("groups.json");
+        atomic_write(&groups_path, &groups_buf)?;
+        atomic_write(&self.sessions_path, &instances_buf)?;
+        Ok(())
+    }
+}
+
+/// 3-way merge of session rows keyed on `Instance.id`. See `commit_merged`
+/// for the rules. Pure function so it can be unit-tested without touching the
+/// filesystem.
+///
+/// Result order: the caller's `instances` first (preserving the TUI's display
+/// order), then any concurrently-added on-disk rows appended in their on-disk
+/// order. Appending keeps a peer's addition visible without disturbing the
+/// order the TUI was rendering.
+fn merge_instances(
+    instances: &[Instance],
+    on_disk: &[Instance],
+    baseline_ids: &std::collections::HashSet<String>,
+) -> Vec<Instance> {
+    let tui_ids: std::collections::HashSet<&str> =
+        instances.iter().map(|i| i.id.as_str()).collect();
+
+    let mut merged: Vec<Instance> = instances.to_vec();
+    for row in on_disk {
+        // Already represented by the TUI's authoritative copy: skip the disk
+        // version so the TUI's edits win.
+        if tui_ids.contains(row.id.as_str()) {
+            continue;
+        }
+        // In the baseline but gone from TUI memory: the TUI deleted it. Drop.
+        if baseline_ids.contains(&row.id) {
+            continue;
+        }
+        // On disk, never in the baseline: a peer added it after the TUI
+        // loaded. Keep it.
+        merged.push(row.clone());
+    }
+    merged
 }
 
 // Workspace ordering is stored at the app-data root, not per-profile:
@@ -1196,6 +1276,100 @@ mod tests {
             "lock must be re-acquirable after the guard drops"
         );
         Ok(())
+    }
+
+    #[test]
+    #[serial]
+    fn test_commit_merged_keeps_concurrent_addition_and_honours_tui_delete() -> Result<()> {
+        use std::collections::HashSet;
+
+        let temp = tempdir()?;
+        setup_test_home(temp.path());
+
+        let storage = Storage::new("test-commit-merged")?;
+
+        // The TUI loads two rows: `keep` and `tui-deletes`. This id-set is the
+        // load baseline HomeView records in `reload()`.
+        let keep = Instance::new("keep", "/tmp/keep");
+        let tui_deletes = Instance::new("tui-deletes", "/tmp/tui-deletes");
+        let baseline: Vec<Instance> = vec![keep.clone(), tui_deletes.clone()];
+        let baseline_ids: HashSet<String> = baseline.iter().map(|i| i.id.clone()).collect();
+        storage.commit(&baseline, &GroupTree::new_with_groups(&baseline, &[]))?;
+
+        // A peer process (CLI / daemon) adds a row AFTER the TUI loaded; the
+        // TUI never saw it, so its id is not in the baseline.
+        storage.update(|instances, _| {
+            instances.push(Instance::new("peer-added", "/tmp/peer-added"));
+            Ok(())
+        })?;
+
+        // The TUI's in-memory view: `keep` is still there, `tui-deletes` was
+        // removed by the user. The peer's row is, of course, absent from the
+        // TUI's memory.
+        let tui_memory: Vec<Instance> = vec![keep.clone()];
+
+        storage.commit_merged(
+            &tui_memory,
+            &GroupTree::new_with_groups(&tui_memory, &[]),
+            &baseline_ids,
+        )?;
+
+        let loaded = storage.load()?;
+        let titles: HashSet<String> = loaded.iter().map(|i| i.title.clone()).collect();
+
+        assert!(
+            titles.contains("peer-added"),
+            "concurrently-added row was dropped by the TUI commit; \
+             got {titles:?}"
+        );
+        assert!(
+            titles.contains("keep"),
+            "row the TUI still owns was lost; got {titles:?}"
+        );
+        assert!(
+            !titles.contains("tui-deletes"),
+            "row the TUI intentionally deleted came back; got {titles:?}"
+        );
+        assert_eq!(
+            loaded.len(),
+            2,
+            "expected exactly `keep` + `peer-added`; got {titles:?}"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn test_merge_instances_three_way() {
+        use std::collections::HashSet;
+
+        let keep = Instance::new("keep", "/tmp/keep");
+        let tui_deletes = Instance::new("tui-deletes", "/tmp/tui-deletes");
+        let peer_added = Instance::new("peer-added", "/tmp/peer-added");
+
+        let baseline_ids: HashSet<String> = [keep.id.clone(), tui_deletes.id.clone()]
+            .into_iter()
+            .collect();
+
+        // TUI memory: kept `keep`, dropped `tui-deletes`.
+        let tui_memory = vec![keep.clone()];
+        // Disk after a peer write: all three rows.
+        let on_disk = vec![keep.clone(), tui_deletes.clone(), peer_added.clone()];
+
+        let merged = merge_instances(&tui_memory, &on_disk, &baseline_ids);
+        let ids: HashSet<&str> = merged.iter().map(|i| i.id.as_str()).collect();
+
+        assert!(ids.contains(keep.id.as_str()), "TUI-owned row dropped");
+        assert!(
+            ids.contains(peer_added.id.as_str()),
+            "concurrent peer addition dropped"
+        );
+        assert!(
+            !ids.contains(tui_deletes.id.as_str()),
+            "intentional TUI delete resurrected"
+        );
+        assert_eq!(merged.len(), 2);
+        // TUI display order is preserved: its rows come first.
+        assert_eq!(merged[0].id, keep.id);
     }
 
     #[test]
