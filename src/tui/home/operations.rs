@@ -313,9 +313,9 @@ impl HomeView {
                 })
                 .map(|i| i.id.clone())
                 .collect();
-            for id in &ids_to_clear {
-                self.apply_user_action(id, |inst| inst.group_path = String::new())?;
-            }
+            self.bulk_apply_user_action(&ids_to_clear, |inst| {
+                inst.group_path = String::new();
+            })?;
 
             self.rebuild_group_trees();
             if let Some(profile) = &owning_profile {
@@ -353,13 +353,13 @@ impl HomeView {
                 .map(|i| i.id.clone())
                 .collect();
 
-            for session_id in sessions_to_delete {
-                self.apply_user_action(&session_id, |inst| {
-                    inst.status = Status::Deleting;
-                    inst.group_path = String::new();
-                })?;
+            self.bulk_apply_user_action(&sessions_to_delete, |inst| {
+                inst.status = Status::Deleting;
+                inst.group_path = String::new();
+            })?;
 
-                if let Some(inst) = self.get_instance(&session_id) {
+            for session_id in &sessions_to_delete {
+                if let Some(inst) = self.get_instance(session_id) {
                     let delete_worktree = options.delete_worktrees
                         && (inst
                             .worktree_info

@@ -2286,6 +2286,49 @@ impl HomeView {
         Ok(())
     }
 
+    /// Apply `mutate` once per id in memory and fold all disk writes into
+    /// one `Storage::update` per affected profile (single flock cycle per
+    /// profile). Diff-splice semantics match `apply_user_action`. For
+    /// group-scoped operations on N sessions where N per-row flock cycles
+    /// would dominate the wall clock.
+    pub(super) fn bulk_apply_user_action<F>(
+        &mut self,
+        ids: &[String],
+        mutate: F,
+    ) -> anyhow::Result<()>
+    where
+        F: Fn(&mut Instance),
+    {
+        let mut by_profile: HashMap<String, Vec<(String, Instance, Instance)>> = HashMap::new();
+        for id in ids {
+            let Some(inst) = self.instances.iter_mut().find(|i| i.id == *id) else {
+                continue;
+            };
+            let pre = inst.clone();
+            mutate(inst);
+            let post = inst.clone();
+            self.instance_map.insert(id.clone(), post.clone());
+            by_profile
+                .entry(post.source_profile.clone())
+                .or_default()
+                .push((id.clone(), pre, post));
+        }
+        for (profile, items) in by_profile {
+            let Some(storage) = self.storages.get(&profile) else {
+                continue;
+            };
+            storage.update(|insts, _groups| {
+                for (id, pre, post) in &items {
+                    if let Some(disk) = insts.iter_mut().find(|i| i.id == *id) {
+                        disk.merge_user_action_diff(pre, post);
+                    }
+                }
+                Ok(())
+            })?;
+        }
+        Ok(())
+    }
+
     /// Like `mutate_instance`, but for fallible operations. Clones the entry,
     /// applies `f` to the clone, and writes back to both collections only on
     /// success -- neither collection is modified on error.
