@@ -944,15 +944,10 @@ async fn rename_session(profile: &str, args: RenameArgs) -> Result<()> {
         if let Some(group) = &new_group {
             inst.group_path = group.clone();
         }
-        if !inst.group_path.is_empty() {
+        let group_path = inst.group_path.clone();
+        if !group_path.is_empty() {
             let mut group_tree = GroupTree::new_with_groups(instances, groups);
-            group_tree.create_group(
-                &instances
-                    .iter()
-                    .find(|i| i.id == id)
-                    .expect("just patched")
-                    .group_path,
-            );
+            group_tree.create_group(&group_path);
             *groups = group_tree.get_all_groups();
         }
         Ok(())
