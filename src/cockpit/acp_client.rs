@@ -314,13 +314,15 @@ pub(crate) enum LifecycleSignal {
     /// empty after at least one progress event, the watchdog arms.
     /// `off_protocol_work` is `Some(_)` when the completion content
     /// text carries one of the Claude SDK markers detected by
-    /// `detect_off_protocol_work_completed`. In that case (or when the
-    /// matching `ToolStarted` carried `is_background_task = true`) the
-    /// prompt loop sets its sticky `off_protocol_work_seen` so the
-    /// watchdog extends the grace window. See #1360, #1401, and upstream
+    /// `detect_off_protocol_work_completed`. The matching `ToolStarted`'s
+    /// `is_background_task` flag is only honored when `succeeded == true`
+    /// (the prompt loop branches on this in `apply_signal`); a failed
+    /// background launch must not pin the watchdog open for 30 minutes.
+    /// See #1360, #1401, and upstream
     /// `agentclientprotocol/claude-agent-acp#336`.
     ToolCompleted {
         id: String,
+        succeeded: bool,
         off_protocol_work: Option<OffProtocolWorkKind>,
     },
     /// Cost-populated `UsageUpdate`: claude-agent-acp's "wrap up
@@ -382,15 +384,22 @@ fn classify_lifecycle_signal(
                         detect_off_protocol_work_completed(&update.fields.content);
                     Some(LifecycleSignal::ToolCompleted {
                         id,
+                        succeeded: true,
                         off_protocol_work,
                     })
                 }
                 Some(ToolCallStatus::Failed) => Some(LifecycleSignal::ToolCompleted {
                     id,
+                    succeeded: false,
                     off_protocol_work: None,
                 }),
                 Some(ToolCallStatus::InProgress) => Some(LifecycleSignal::ToolStarted {
                     id,
+                    // `InProgress` updates never carry the original
+                    // `raw_input` so we cannot re-derive the flag here.
+                    // `apply_signal` ORs this with any existing
+                    // metadata so a later `InProgress` cannot
+                    // overwrite a `true` from the original `ToolCall`.
                     is_background_task: false,
                 }),
                 _ => Some(LifecycleSignal::Progress),
@@ -498,11 +507,20 @@ impl SilentOrphanWatchdog {
                 self.saw_first_progress = true;
                 self.last_progress_at = Some(now);
                 self.cost_seen = false;
+                // OR the new flag with any existing metadata. A late
+                // `ToolCallUpdate(InProgress)` lacks `raw_input` and
+                // classifies as `is_background_task = false`; without
+                // the OR it would erase the `true` captured from the
+                // original `ToolCall` and break the raw-input arm of
+                // the defense-in-depth detection. See #1401 review.
                 self.tool_calls_in_flight
-                    .insert(id, ToolMetadata { is_background_task });
+                    .entry(id)
+                    .and_modify(|m| m.is_background_task |= is_background_task)
+                    .or_insert(ToolMetadata { is_background_task });
             }
             LifecycleSignal::ToolCompleted {
                 id,
+                succeeded,
                 off_protocol_work,
             } => {
                 let started_as_background = self
@@ -516,9 +534,14 @@ impl SilentOrphanWatchdog {
                 // Defense in depth: trust either the completion-content
                 // marker OR the original raw_input flag. Either path
                 // alone is enough to mark this prompt as having
-                // off-protocol work pending. See #1401.
+                // off-protocol work pending. The raw-input fallback is
+                // ONLY trusted on successful completion: a Failed
+                // backgrounded Bash means the subprocess never
+                // actually started, so suppressing for 30 minutes
+                // would create a fresh false-positive class. See
+                // #1401 and the post-impl review notes.
                 let kind = off_protocol_work.or({
-                    if started_as_background {
+                    if succeeded && started_as_background {
                         Some(OffProtocolWorkKind::BackgroundCommand)
                     } else {
                         None
@@ -601,7 +624,21 @@ impl SilentOrphanWatchdog {
     }
 }
 
-/// Deliver a lifecycle signal from the notification handler to the
+/// Tagged lifecycle signal carried over the watchdog mpsc. The
+/// `epoch` field is captured at signal-construction time from the
+/// shared `current_prompt_epoch` atomic; the prompt loop discards
+/// envelopes whose epoch doesn't match the prompt currently being
+/// drained. This keeps a notification handler parked on a full
+/// channel from leaking its previous-prompt signal into the next
+/// prompt's watchdog state when it eventually unblocks. See #1401
+/// post-impl review.
+#[derive(Debug, Clone)]
+pub(crate) struct LifecycleEnvelope {
+    pub epoch: u64,
+    pub signal: LifecycleSignal,
+}
+
+/// Deliver a lifecycle envelope from the notification handler to the
 /// prompt loop with the right backpressure policy.
 ///
 /// `Progress` uses `try_send` first to avoid blocking the notification
@@ -616,18 +653,18 @@ impl SilentOrphanWatchdog {
 /// only the next equivalent signal would clear. See #1401 design
 /// rationale.
 async fn send_lifecycle_signal(
-    tx: &mpsc::Sender<LifecycleSignal>,
-    sig: LifecycleSignal,
+    tx: &mpsc::Sender<LifecycleEnvelope>,
+    env: LifecycleEnvelope,
     session_label: &str,
 ) {
-    match sig {
+    match &env.signal {
         LifecycleSignal::Progress => {
-            let sig = match tx.try_send(LifecycleSignal::Progress) {
+            let env = match tx.try_send(env) {
                 Ok(()) => return,
-                Err(mpsc::error::TrySendError::Full(s)) => s,
+                Err(mpsc::error::TrySendError::Full(env)) => env,
                 Err(mpsc::error::TrySendError::Closed(_)) => return,
             };
-            if tx.send(sig).await.is_err() {
+            if tx.send(env).await.is_err() {
                 trace!(
                     target: "cockpit.acp",
                     session = session_label,
@@ -635,8 +672,8 @@ async fn send_lifecycle_signal(
                 );
             }
         }
-        other => {
-            if tx.send(other).await.is_err() {
+        _ => {
+            if tx.send(env).await.is_err() {
                 trace!(
                     target: "cockpit.acp",
                     session = session_label,
@@ -2682,13 +2719,26 @@ async fn run_connection_task<W, R>(
     // classifies each inbound `SessionUpdate` into a `LifecycleSignal`
     // (or `None` for ambient state like mode/available_commands) and
     // sends it over a dedicated mpsc to the prompt loop, which owns the
-    // `Instant` timers and the `HashSet` of in-flight tool ids. Keeping
-    // the timer state inside the prompt loop avoids the cross-task
-    // contention of a shared atomic and scopes liveness cleanly to the
-    // current prompt. See #1240.
-    let (lifecycle_signal_tx, lifecycle_signal_rx) = mpsc::channel::<LifecycleSignal>(128);
+    // `Instant` timers and the in-flight tool map. Keeping the timer
+    // state inside the prompt loop avoids the cross-task contention of
+    // a shared atomic and scopes liveness cleanly to the current
+    // prompt. See #1240.
+    //
+    // Signals are wrapped in `LifecycleEnvelope { epoch, signal }`
+    // tagged with the prompt epoch that was current at signal-
+    // construction time. The prompt loop increments
+    // `current_prompt_epoch` before issuing each `session/prompt` and
+    // discards envelopes whose epoch is not the current one. This
+    // makes the awaited `send` paths safe across prompt boundaries:
+    // a notification handler parked on a full channel from the
+    // previous prompt cannot leak its stale signal into the next
+    // prompt's watchdog state when it eventually wakes up. See #1401
+    // post-impl review.
+    let (lifecycle_signal_tx, lifecycle_signal_rx) = mpsc::channel::<LifecycleEnvelope>(128);
     let lifecycle_signal_tx_for_notif = lifecycle_signal_tx.clone();
     let mut lifecycle_signal_rx = lifecycle_signal_rx;
+    let current_prompt_epoch = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let current_prompt_epoch_for_notif = current_prompt_epoch.clone();
     let res_read = resources.clone();
     let res_write = resources.clone();
     let res_term_create = resources.clone();
@@ -2753,10 +2803,7 @@ async fn run_connection_task<W, R>(
                     };
                     // Compute the event vector first so we can derive a
                     // `WakeupPending` signal from any `Event::WakeupScheduled`
-                    // the same notification produced. The lifecycle channel
-                    // delivery happens after the event channel pushes below
-                    // so a busy event consumer can't reorder watchdog state
-                    // updates relative to user-visible state. See #1401.
+                    // the same notification produced.
                     let mapped_events = map_update_to_events(notification.update, profile);
                     let wakeup_signals: Vec<LifecycleSignal> = if suppressing {
                         Vec::new()
@@ -2771,6 +2818,24 @@ async fn run_connection_task<W, R>(
                             })
                             .collect()
                     };
+                    // Deliver lifecycle signals BEFORE publishing the
+                    // user-visible event vector. The watchdog uses
+                    // ToolStarted / ToolCompleted / WakeupPending /
+                    // TerminalUsage to decide whether to fire; if
+                    // `event_tx.send().await` backpressures (slow web
+                    // consumer, replay drain), the prompt-loop tick
+                    // could otherwise evaluate `should_fire` before
+                    // ever seeing the suppression-bearing signal and
+                    // cancel a legitimate wait. Watchdog correctness
+                    // wins; UI ordering is reconciled by the event
+                    // store's monotonic seq anyway. See #1401 post-
+                    // impl review.
+                    if let Some(sig) = lifecycle_signal {
+                        send_lifecycle_signal(&lifecycle_signal_tx, sig, &session_label).await;
+                    }
+                    for sig in wakeup_signals {
+                        send_lifecycle_signal(&lifecycle_signal_tx, sig, &session_label).await;
+                    }
                     for event in mapped_events {
                         // During the post-load replay window, drop only
                         // events that would reproduce the prior turns'
@@ -2792,12 +2857,6 @@ async fn run_connection_task<W, R>(
                         if event_tx.send(event).await.is_err() {
                             break;
                         }
-                    }
-                    if let Some(sig) = lifecycle_signal {
-                        send_lifecycle_signal(&lifecycle_signal_tx, sig, &session_label).await;
-                    }
-                    for sig in wakeup_signals {
-                        send_lifecycle_signal(&lifecycle_signal_tx, sig, &session_label).await;
                     }
                     Ok(())
                 }
@@ -4293,6 +4352,7 @@ mod tests {
         w.apply_signal(
             LifecycleSignal::ToolCompleted {
                 id: "tc-bg-1".into(),
+                succeeded: true,
                 off_protocol_work: Some(OffProtocolWorkKind::BackgroundCommand),
             },
             t0 + std::time::Duration::from_secs(2),
@@ -4333,6 +4393,7 @@ mod tests {
         w.apply_signal(
             LifecycleSignal::ToolCompleted {
                 id: "tc-async-1".into(),
+                succeeded: true,
                 off_protocol_work: Some(OffProtocolWorkKind::AsyncAgent),
             },
             t0 + std::time::Duration::from_secs(2),
@@ -4372,6 +4433,7 @@ mod tests {
         w.apply_signal(
             LifecycleSignal::ToolCompleted {
                 id: "tc-bg-2".into(),
+                succeeded: true,
                 off_protocol_work: None,
             },
             t0 + std::time::Duration::from_secs(2),
@@ -5168,9 +5230,11 @@ mod tests {
         match classify_lifecycle_signal(&SessionUpdate::ToolCallUpdate(update)) {
             Some(LifecycleSignal::ToolCompleted {
                 id,
+                succeeded,
                 off_protocol_work,
             }) => {
                 assert_eq!(id, "tc-async-1");
+                assert!(succeeded);
                 assert_eq!(off_protocol_work, Some(OffProtocolWorkKind::AsyncAgent));
             }
             other => panic!(
@@ -5193,9 +5257,11 @@ mod tests {
         match classify_lifecycle_signal(&SessionUpdate::ToolCallUpdate(update)) {
             Some(LifecycleSignal::ToolCompleted {
                 id,
+                succeeded,
                 off_protocol_work,
             }) => {
                 assert_eq!(id, "tc-bg-1");
+                assert!(succeeded);
                 assert_eq!(
                     off_protocol_work,
                     Some(OffProtocolWorkKind::BackgroundCommand)
@@ -5221,9 +5287,11 @@ mod tests {
         match classify_lifecycle_signal(&SessionUpdate::ToolCallUpdate(update)) {
             Some(LifecycleSignal::ToolCompleted {
                 id,
+                succeeded,
                 off_protocol_work,
             }) => {
                 assert_eq!(id, "tc-bash-1");
+                assert!(succeeded);
                 assert!(off_protocol_work.is_none());
             }
             other => panic!("expected ToolCompleted {{ off_protocol_work: None }}, got {other:?}"),
@@ -5243,8 +5311,11 @@ mod tests {
         let update = ToolCallUpdate::new("tc-failed-1", fields);
         match classify_lifecycle_signal(&SessionUpdate::ToolCallUpdate(update)) {
             Some(LifecycleSignal::ToolCompleted {
-                off_protocol_work, ..
+                succeeded,
+                off_protocol_work,
+                ..
             }) => {
+                assert!(!succeeded, "Failed updates must mark succeeded=false");
                 assert!(
                     off_protocol_work.is_none(),
                     "Failed updates must not activate off-protocol suppression"
@@ -5252,6 +5323,97 @@ mod tests {
             }
             other => panic!("expected ToolCompleted, got {other:?}"),
         }
+    }
+
+    #[tokio::test]
+    async fn watchdog_failed_background_tool_does_not_suppress() {
+        // Regression for the post-impl review: a backgrounded Bash that
+        // FAILS to launch (e.g., binary not found, raw_input parse
+        // error) must not spuriously enable off-protocol suppression
+        // via the raw_input fallback. The subprocess never actually
+        // started, so the watchdog must keep its base grace.
+        let cfg = watchdog_test_cfg();
+        let t0 = tokio::time::Instant::now();
+        let wall = chrono::Utc::now();
+        let mut w = SilentOrphanWatchdog::new();
+        w.apply_signal(LifecycleSignal::Progress, t0, wall, cfg);
+        w.apply_signal(
+            LifecycleSignal::ToolStarted {
+                id: "tc-bg-fail".into(),
+                is_background_task: true,
+            },
+            t0 + std::time::Duration::from_secs(1),
+            wall,
+            cfg,
+        );
+        w.apply_signal(
+            LifecycleSignal::ToolCompleted {
+                id: "tc-bg-fail".into(),
+                succeeded: false,
+                off_protocol_work: None,
+            },
+            t0 + std::time::Duration::from_secs(2),
+            wall,
+            cfg,
+        );
+        assert!(
+            w.off_protocol_work_seen().is_none(),
+            "Failed background tool must not enable off-protocol suppression",
+        );
+        // Watchdog uses base grace (120s) and fires after it elapses.
+        assert!(w.should_fire(t0 + std::time::Duration::from_secs(125), cfg));
+    }
+
+    #[tokio::test]
+    async fn watchdog_later_in_progress_does_not_clobber_background_flag() {
+        // Regression for the post-impl review: claude-agent-acp emits a
+        // `ToolCall` carrying `raw_input.run_in_background` followed by
+        // a `ToolCallUpdate { status: InProgress }` that lacks raw_input
+        // and classifies as `is_background_task: false`. A blind
+        // `insert` would overwrite the sticky `true` and silently
+        // disable the raw-input arm of the defense-in-depth detection.
+        let cfg = watchdog_test_cfg();
+        let t0 = tokio::time::Instant::now();
+        let wall = chrono::Utc::now();
+        let mut w = SilentOrphanWatchdog::new();
+        w.apply_signal(LifecycleSignal::Progress, t0, wall, cfg);
+        w.apply_signal(
+            LifecycleSignal::ToolStarted {
+                id: "tc-bg-3".into(),
+                is_background_task: true,
+            },
+            t0 + std::time::Duration::from_secs(1),
+            wall,
+            cfg,
+        );
+        // Later InProgress update with the same id but no background flag.
+        w.apply_signal(
+            LifecycleSignal::ToolStarted {
+                id: "tc-bg-3".into(),
+                is_background_task: false,
+            },
+            t0 + std::time::Duration::from_secs(2),
+            wall,
+            cfg,
+        );
+        // Completion without content marker: only the raw-input flag is
+        // available, and it must still be `true` after the InProgress
+        // re-stamp.
+        w.apply_signal(
+            LifecycleSignal::ToolCompleted {
+                id: "tc-bg-3".into(),
+                succeeded: true,
+                off_protocol_work: None,
+            },
+            t0 + std::time::Duration::from_secs(3),
+            wall,
+            cfg,
+        );
+        assert_eq!(
+            w.off_protocol_work_seen(),
+            Some(OffProtocolWorkKind::BackgroundCommand),
+            "background flag must survive an intervening ToolStarted without the flag",
+        );
     }
 
     #[test]

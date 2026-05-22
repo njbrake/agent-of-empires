@@ -868,9 +868,10 @@ computed as a monotonic `Instant` deadline at signal receipt so
 wall-clock jumps don't perturb suppression. Multiple wakeups in the
 same prompt extend (not shorten) the suppression, and the later deadline
 always wins. After the deadline passes the watchdog rearms with its
-normal grace; if the scheduled wake never fires (e.g. daemon crash
-during sleep), recovery still happens, just later than for a regular
-silent wedge.
+normal grace; if the scheduled wake does not produce follow-up
+progress while the prompt loop is alive, the watchdog recovers
+after the tail grace. Daemon crashes during sleep tear down the
+in-memory prompt loop entirely, so the next attach starts fresh.
 
 Set `cockpit.silent_orphan_grace_secs = 0` to disable. Both knobs are
 editable per profile in the TUI Settings (`Cockpit` category) and in
