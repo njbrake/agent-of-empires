@@ -347,24 +347,15 @@ async fn unsnooze_session(profile: &str, args: SessionIdArgs) -> Result<()> {
 async fn start_session(profile: &str, args: SessionIdArgs) -> Result<()> {
     let storage = Storage::new(profile)?;
 
-    // Phase 1 (locked, fast): snapshot the target by identifier, rehydrate
+    // Phase 1 (unlocked): snapshot the target by identifier, rehydrate
     // `source_profile` so config resolution honors the right profile.
     // `source_profile` is runtime-only (skip_serializing) so storage-loaded
     // instances always come back blank.
-    let mut working = storage.update(|instances, _groups| {
-        let idx = instances
-            .iter()
-            .position(|i| {
-                i.id == args.identifier
-                    || i.id.starts_with(&args.identifier)
-                    || i.title == args.identifier
-            })
-            .ok_or_else(|| anyhow::anyhow!("Session not found: {}", args.identifier))?;
-        bail_if_cockpit(&instances[idx], "start")?;
-        let mut clone = instances[idx].clone();
-        clone.source_profile = profile.to_string();
-        Ok(clone)
-    })?;
+    let (instances, _groups) = storage.load_with_groups()?;
+    let inst = super::resolve_session(&args.identifier, &instances)?;
+    bail_if_cockpit(inst, "start")?;
+    let mut working = inst.clone();
+    working.source_profile = profile.to_string();
 
     // Phase 2 (unlocked): tmux work happens outside the cross-process flock
     // so a slow agent startup does not block peer mutators on the same
@@ -616,22 +607,13 @@ fn pick_targets_for_restart_all(instances: &[crate::session::Instance]) -> Vec<S
 async fn restart_session(profile: &str, args: SessionIdArgs) -> Result<()> {
     let storage = Storage::new(profile)?;
 
-    // Phase 1 (locked, fast): snapshot the target by identifier and
+    // Phase 1 (unlocked): snapshot the target by identifier and
     // rehydrate `source_profile` for config resolution.
-    let mut working = storage.update(|instances, _groups| {
-        let idx = instances
-            .iter()
-            .position(|i| {
-                i.id == args.identifier
-                    || i.id.starts_with(&args.identifier)
-                    || i.title == args.identifier
-            })
-            .ok_or_else(|| anyhow::anyhow!("Session not found: {}", args.identifier))?;
-        bail_if_cockpit(&instances[idx], "restart")?;
-        let mut clone = instances[idx].clone();
-        clone.source_profile = profile.to_string();
-        Ok(clone)
-    })?;
+    let (instances, _groups) = storage.load_with_groups()?;
+    let inst = super::resolve_session(&args.identifier, &instances)?;
+    bail_if_cockpit(inst, "restart")?;
+    let mut working = inst.clone();
+    working.source_profile = profile.to_string();
 
     // Phase 2 (unlocked): tmux restart, agent boot, optional wake-up
     // send-keys. Slow; the cross-process flock is not held here so peer
