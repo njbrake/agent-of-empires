@@ -788,6 +788,7 @@ const RepoGroupHeader = memo(function RepoGroupHeader({
   }, []);
 
   const handleHeaderKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.target !== e.currentTarget) return;
     if (
       e.key !== "Enter" &&
       e.key !== " " &&
@@ -957,7 +958,7 @@ const RepoGroupHeader = memo(function RepoGroupHeader({
                 }}
                 data-testid={`sidebar-group-color-${option.id}`}
                 aria-label={`Set ${option.label} background`}
-                className={`h-7 rounded-md border cursor-pointer transition-colors ${
+                className={`h-8 rounded-md border cursor-pointer transition-colors ${
                   group.color === option.id ? "border-text-primary" : "border-surface-700"
                 }`}
                 style={repoSwatchStyle(option.id)}
@@ -971,7 +972,7 @@ const RepoGroupHeader = memo(function RepoGroupHeader({
               }}
               data-testid="sidebar-group-color-clear"
               aria-label="Clear background"
-              className="h-7 rounded-md border border-surface-700 bg-surface-900 text-[10px] font-mono text-text-dim cursor-pointer hover:bg-surface-700/40"
+              className="h-8 rounded-md border border-surface-700 bg-surface-900 text-[10px] font-mono text-text-dim cursor-pointer hover:bg-surface-700/40"
             >
               None
             </button>
