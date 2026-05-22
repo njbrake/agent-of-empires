@@ -11,7 +11,7 @@
 //! initialize once, create one ACP session, then pump commands from an
 //! mpsc channel into ACP requests until shutdown.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Arc;
@@ -257,15 +257,17 @@ const CANCEL_ESCALATION_GRACE: std::time::Duration = std::time::Duration::from_s
 /// agent wait windows. See `silent_orphan_grace()`.
 const SILENT_ORPHAN_GRACE_DEFAULT: std::time::Duration = std::time::Duration::from_secs(120);
 
-/// Minimum effective grace applied when the prompt loop has observed an
-/// async-agent launch (`LifecycleSignal::ToolCompleted { is_async: true }`).
+/// Minimum effective grace applied when the prompt loop has observed
+/// off-protocol work in the current turn: an async-agent launch
+/// (`OffProtocolWorkKind::AsyncAgent`, see #1360) or a backgrounded
+/// Bash launch (`OffProtocolWorkKind::BackgroundCommand`, see #1401).
 /// The watchdog stays armed but uses this as a floor against the
 /// configured base grace, so an operator who deliberately set a higher
 /// `silent_orphan_grace_secs` still wins. Finite by design: if claude-
-/// agent-acp hangs DURING an async wait, the watchdog still recovers
-/// after 30 minutes rather than holding the turn open forever. See
-/// #1360 and upstream agentclientprotocol/claude-agent-acp#336.
-const ASYNC_AGENT_GRACE_FLOOR: std::time::Duration = std::time::Duration::from_secs(30 * 60);
+/// agent-acp hangs DURING the off-protocol wait, the watchdog still
+/// recovers after 30 minutes rather than holding the turn open forever.
+/// See #1360, #1401, and upstream `agentclientprotocol/claude-agent-acp#336`.
+const OFF_PROTOCOL_WORK_GRACE_FLOOR: std::time::Duration = std::time::Duration::from_secs(30 * 60);
 
 /// Accelerated silent-orphan grace fallback used when a cost-populated
 /// `UsageUpdate` notification has arrived for the current prompt. The
@@ -286,30 +288,41 @@ const SILENT_ORPHAN_CHECK_INTERVAL: std::time::Duration = std::time::Duration::f
 /// Classification of an inbound ACP `SessionUpdate` for the silent-
 /// orphan watchdog state machine. Sent from the notification handler
 /// to the prompt loop via a dedicated mpsc; the prompt loop owns the
-/// `Instant`-based timers and the tool-id set, so the handler doesn't
+/// `Instant`-based timers and the tool-id map, so the handler doesn't
 /// need to touch shared atomics on the hot path.
 #[derive(Debug, Clone)]
-enum LifecycleSignal {
+pub(crate) enum LifecycleSignal {
     /// Transcript-producing event that resets the silent-orphan timer:
     /// `AgentMessageChunk`, `AgentThoughtChunk`, `Plan`, or a
     /// non-terminal `ToolCallUpdate` other than `InProgress`.
     Progress,
     /// A new tool call has started (`SessionUpdate::ToolCall`) or
     /// transitioned to `InProgress` (`ToolCallUpdate`). Added to the
-    /// prompt-loop's `tool_calls_in_flight` set; while non-empty, the
+    /// prompt-loop's `tool_calls_in_flight` map; while non-empty, the
     /// watchdog stays suppressed so long-running tools (npm install,
     /// Playwright runs, Task subagents) never false-positive.
-    ToolStarted(String),
+    /// `is_background_task` carries the Claude SDK `run_in_background`
+    /// flag from `raw_input` when available; the prompt loop uses it to
+    /// flip `off_protocol_work_seen` at completion time even if the
+    /// completion content marker is stripped or reshaped. See #1401.
+    ToolStarted {
+        id: String,
+        is_background_task: bool,
+    },
     /// A tool call reached terminal status (`Completed` or `Failed`).
-    /// Removed from `tool_calls_in_flight`; when the set drains to
+    /// Removed from `tool_calls_in_flight`; when the map drains to
     /// empty after at least one progress event, the watchdog arms.
-    /// `is_async` is `true` when the completion content text indicates
-    /// a Claude SDK async-agent launch ("Async agent launched
-    /// successfully ..."); in that case the prompt loop also flips its
-    /// sticky `async_agent_running` flag so the watchdog extends the
-    /// grace window. See #1360 and upstream
-    /// agentclientprotocol/claude-agent-acp#336.
-    ToolCompleted { id: String, is_async: bool },
+    /// `off_protocol_work` is `Some(_)` when the completion content
+    /// text carries one of the Claude SDK markers detected by
+    /// `detect_off_protocol_work_completed`. In that case (or when the
+    /// matching `ToolStarted` carried `is_background_task = true`) the
+    /// prompt loop sets its sticky `off_protocol_work_seen` so the
+    /// watchdog extends the grace window. See #1360, #1401, and upstream
+    /// `agentclientprotocol/claude-agent-acp#336`.
+    ToolCompleted {
+        id: String,
+        off_protocol_work: Option<OffProtocolWorkKind>,
+    },
     /// Cost-populated `UsageUpdate`: claude-agent-acp's "wrap up
     /// accounting" marker. Switches the effective grace from the
     /// vendor-agnostic default to the accelerated value for this
@@ -317,6 +330,12 @@ enum LifecycleSignal {
     /// telemetry, not lifecycle), so the silent-orphan timer keeps
     /// running from the previous progress event.
     TerminalUsage,
+    /// The Claude SDK `ScheduleWakeup` tool registered an absolute wake
+    /// timestamp. Suppresses the watchdog until `at + base_grace`,
+    /// converted to a monotonic `Instant` deadline at signal receipt so
+    /// wall-clock jumps don't perturb the suppression. After the
+    /// deadline the watchdog rearms with its normal grace. See #1401.
+    WakeupPending { at: chrono::DateTime<chrono::Utc> },
 }
 
 /// Classify a `SessionUpdate` into a `LifecycleSignal`, or `None` for
@@ -336,27 +355,44 @@ fn classify_lifecycle_signal(
         | SessionUpdate::AgentThoughtChunk(_)
         | SessionUpdate::Plan(_) => Some(LifecycleSignal::Progress),
         SessionUpdate::ToolCall(tc) => {
-            Some(LifecycleSignal::ToolStarted(tc.tool_call_id.0.to_string()))
+            let is_background_task = tc
+                .raw_input
+                .as_ref()
+                .and_then(|v| v.as_object())
+                .and_then(|obj| obj.get("run_in_background"))
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            Some(LifecycleSignal::ToolStarted {
+                id: tc.tool_call_id.0.to_string(),
+                is_background_task,
+            })
         }
         SessionUpdate::ToolCallUpdate(update) => {
             let id = update.tool_call_id.0.to_string();
             match update.fields.status {
                 Some(ToolCallStatus::Completed) => {
-                    // Only successful completions can mark a real async-agent launch.
-                    // A `Failed` update may carry arbitrary error content that happens
-                    // to mention "Async agent launched successfully" (e.g. as part of
-                    // a stack trace or echoed input), and treating that as an async
-                    // launch would pin `async_agent_running` to true for 30 minutes
-                    // even though no sub-agent is actually running. See CodeRabbit
-                    // feedback on PR #1364.
-                    let is_async = detect_async_agent_launch(&update.fields.content);
-                    Some(LifecycleSignal::ToolCompleted { id, is_async })
+                    // Only successful completions can mark a real off-protocol
+                    // work launch. A `Failed` update may carry arbitrary error
+                    // content that happens to mention one of the SDK markers
+                    // (e.g. as part of a stack trace or echoed input), and
+                    // treating that as off-protocol work would pin the watchdog
+                    // suppression for 30 minutes even though no background work
+                    // is actually running. See CodeRabbit feedback on PR #1364.
+                    let off_protocol_work =
+                        detect_off_protocol_work_completed(&update.fields.content);
+                    Some(LifecycleSignal::ToolCompleted {
+                        id,
+                        off_protocol_work,
+                    })
                 }
                 Some(ToolCallStatus::Failed) => Some(LifecycleSignal::ToolCompleted {
                     id,
-                    is_async: false,
+                    off_protocol_work: None,
                 }),
-                Some(ToolCallStatus::InProgress) => Some(LifecycleSignal::ToolStarted(id)),
+                Some(ToolCallStatus::InProgress) => Some(LifecycleSignal::ToolStarted {
+                    id,
+                    is_background_task: false,
+                }),
                 _ => Some(LifecycleSignal::Progress),
             }
         }
@@ -364,28 +400,285 @@ fn classify_lifecycle_signal(
     }
 }
 
-/// Detect whether a `ToolCallUpdate` completion content array carries the
-/// Claude SDK's "Async agent launched successfully" marker, which fires
-/// when the `Agent` tool is invoked with `isAsync: true`. The sub-agent
-/// then runs INSIDE the claude binary, polled via an internal SDK channel
-/// that is invisible at the ACP layer; the prompt loop uses this signal to
-/// flip its `async_agent_running` flag so the silent-orphan watchdog
-/// extends its grace window for the rest of the turn.
+/// Kind of off-protocol work the daemon has observed during the current
+/// prompt. Both variants flip the silent-orphan watchdog to its
+/// `OFF_PROTOCOL_WORK_GRACE_FLOOR` window so a legitimately quiet turn
+/// doesn't get cancelled. See #1360 (`AsyncAgent`) and #1401
+/// (`BackgroundCommand`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum OffProtocolWorkKind {
+    /// Claude SDK `Agent` tool with `isAsync: true`. Sub-agent runs inside
+    /// the claude binary, polled via an internal SDK channel that is
+    /// invisible at the ACP layer.
+    AsyncAgent,
+    /// Claude SDK `Bash` tool with `run_in_background: true`. The visible
+    /// `ToolCall` completes immediately while the underlying subprocess
+    /// keeps running off-protocol; the agent polls later via `BashOutput`.
+    BackgroundCommand,
+}
+
+/// Per-tool metadata stored in the silent-orphan watchdog's
+/// `tool_calls_in_flight` map. Lets the watchdog remember the original
+/// `run_in_background` flag observed at `ToolStarted` time so the
+/// completion path can flip `off_protocol_work_seen` even if the
+/// completion content marker is missing or reshaped. See #1401.
+#[derive(Debug, Clone, Copy)]
+struct ToolMetadata {
+    is_background_task: bool,
+}
+
+/// Runtime configuration handed to `SilentOrphanWatchdog::should_fire`
+/// and `apply_signal`. Decoupled from `CockpitConfig` and the env-var
+/// overrides so unit tests can drive synthetic graces deterministically
+/// without touching process-global state.
+#[derive(Debug, Clone, Copy)]
+struct SilentOrphanWatchdogConfig {
+    base_grace: std::time::Duration,
+    fast_grace: std::time::Duration,
+    off_protocol_grace_floor: std::time::Duration,
+}
+
+/// Pure state machine for the silent-orphan watchdog. The prompt loop
+/// owns one instance per prompt; the `apply_signal` method consumes
+/// `LifecycleSignal`s from the notification handler and `should_fire`
+/// returns the firing predicate on each polling tick.
 ///
-/// Text detection is intentionally narrow. The prefix is hardcoded in the
-/// Anthropic Claude SDK and is the most stable identifier available short
-/// of upstream agentclientprotocol/claude-agent-acp#336 forwarding the
-/// background task notifications natively. If the prefix ever changes, this
-/// detector returns `false` and the watchdog falls back to the (now 120s)
-/// base grace, which is still survivable for shorter async-agent flows but
-/// will reintroduce false-positives for the long-tail. See #1360.
-fn detect_async_agent_launch(
+/// All wall-clock and monotonic time inputs are injected by the caller
+/// (`now: Instant`, `wall_now: DateTime<Utc>`) so the unit tests can
+/// step the clock forward synthetically. The struct never reaches into
+/// `Instant::now()` or `chrono::Utc::now()` directly.
+///
+/// Invariants:
+///
+/// - `tool_calls_in_flight` non-empty → watchdog is always suppressed.
+/// - `off_protocol_work_seen.is_some()` → effective grace lifts to at
+///   least `off_protocol_grace_floor` for the rest of this prompt.
+/// - `wakeup_suppress_until.is_some()` and `now < deadline` →
+///   suppressed regardless of grace.
+/// - `cost_seen` switches the no-off-protocol case to fast grace; any
+///   subsequent `Progress` / `ToolStarted` / `ToolCompleted` /
+///   `WakeupPending` clears it.
+///
+/// See #1240 (original wedge), #1360 (async-agent floor), and #1401
+/// (backgrounded Bash + ScheduleWakeup).
+#[derive(Debug, Default)]
+struct SilentOrphanWatchdog {
+    saw_first_progress: bool,
+    last_progress_at: Option<tokio::time::Instant>,
+    cost_seen: bool,
+    tool_calls_in_flight: std::collections::HashMap<String, ToolMetadata>,
+    off_protocol_work_seen: Option<OffProtocolWorkKind>,
+    wakeup_suppress_until: Option<tokio::time::Instant>,
+}
+
+impl SilentOrphanWatchdog {
+    fn new() -> Self {
+        Self::default()
+    }
+
+    /// Fold a lifecycle signal into the state machine. Called once per
+    /// signal received from the notification handler's mpsc.
+    fn apply_signal(
+        &mut self,
+        sig: LifecycleSignal,
+        now: tokio::time::Instant,
+        wall_now: chrono::DateTime<chrono::Utc>,
+        cfg: SilentOrphanWatchdogConfig,
+    ) {
+        match sig {
+            LifecycleSignal::Progress => {
+                self.saw_first_progress = true;
+                self.last_progress_at = Some(now);
+                self.cost_seen = false;
+            }
+            LifecycleSignal::ToolStarted {
+                id,
+                is_background_task,
+            } => {
+                self.saw_first_progress = true;
+                self.last_progress_at = Some(now);
+                self.cost_seen = false;
+                self.tool_calls_in_flight
+                    .insert(id, ToolMetadata { is_background_task });
+            }
+            LifecycleSignal::ToolCompleted {
+                id,
+                off_protocol_work,
+            } => {
+                let started_as_background = self
+                    .tool_calls_in_flight
+                    .remove(&id)
+                    .map(|m| m.is_background_task)
+                    .unwrap_or(false);
+                self.saw_first_progress = true;
+                self.last_progress_at = Some(now);
+                self.cost_seen = false;
+                // Defense in depth: trust either the completion-content
+                // marker OR the original raw_input flag. Either path
+                // alone is enough to mark this prompt as having
+                // off-protocol work pending. See #1401.
+                let kind = off_protocol_work.or({
+                    if started_as_background {
+                        Some(OffProtocolWorkKind::BackgroundCommand)
+                    } else {
+                        None
+                    }
+                });
+                if let Some(kind) = kind {
+                    self.off_protocol_work_seen = Some(kind);
+                }
+            }
+            LifecycleSignal::TerminalUsage => {
+                self.cost_seen = true;
+            }
+            LifecycleSignal::WakeupPending { at } => {
+                self.saw_first_progress = true;
+                self.last_progress_at = Some(now);
+                self.cost_seen = false;
+                // Convert the wall-clock `at` to a monotonic `Instant`
+                // deadline now, so wall-clock jumps between signal
+                // receipt and the next firing check can't perturb
+                // suppression. Add the base grace as a tail so the
+                // watchdog doesn't snap-fire the instant the sleep
+                // ends; the agent needs time after `at` to actually
+                // emit the wake's first `UserPromptSent` or other
+                // progress. See #1401.
+                let until_wakeup = at
+                    .signed_duration_since(wall_now)
+                    .to_std()
+                    .unwrap_or(std::time::Duration::ZERO);
+                let deadline = now + until_wakeup + cfg.base_grace;
+                // Multiple wakeups should EXTEND (not shorten)
+                // suppression. The agent may re-issue a longer
+                // ScheduleWakeup mid-turn; only the later deadline
+                // wins.
+                self.wakeup_suppress_until = Some(
+                    self.wakeup_suppress_until
+                        .map_or(deadline, |existing| existing.max(deadline)),
+                );
+            }
+        }
+    }
+
+    fn effective_grace(&self, cfg: SilentOrphanWatchdogConfig) -> std::time::Duration {
+        if self.off_protocol_work_seen.is_some() {
+            cfg.base_grace.max(cfg.off_protocol_grace_floor)
+        } else if self.cost_seen && cfg.fast_grace > std::time::Duration::ZERO {
+            cfg.fast_grace
+        } else {
+            cfg.base_grace
+        }
+    }
+
+    /// Returns `true` iff the watchdog must fire now. Also clears any
+    /// expired `wakeup_suppress_until` deadline as a side effect so
+    /// subsequent ticks don't re-evaluate stale state.
+    fn should_fire(&mut self, now: tokio::time::Instant, cfg: SilentOrphanWatchdogConfig) -> bool {
+        if self
+            .wakeup_suppress_until
+            .is_some_and(|deadline| now >= deadline)
+        {
+            self.wakeup_suppress_until = None;
+        }
+        let wakeup_suppressed = self
+            .wakeup_suppress_until
+            .is_some_and(|deadline| now < deadline);
+        let elapsed = self.last_progress_at.map(|t| now.duration_since(t));
+        self.saw_first_progress
+            && self.tool_calls_in_flight.is_empty()
+            && !wakeup_suppressed
+            && elapsed
+                .map(|d| d >= self.effective_grace(cfg))
+                .unwrap_or(false)
+    }
+
+    fn tool_calls_in_flight_len(&self) -> usize {
+        self.tool_calls_in_flight.len()
+    }
+
+    fn off_protocol_work_seen(&self) -> Option<OffProtocolWorkKind> {
+        self.off_protocol_work_seen
+    }
+}
+
+/// Deliver a lifecycle signal from the notification handler to the
+/// prompt loop with the right backpressure policy.
+///
+/// `Progress` uses `try_send` first to avoid blocking the notification
+/// handler under streaming-chunk bursts; if the channel is full it
+/// falls back to an awaited `send`. The fallback preserves correctness
+/// (a dropped `Progress` after a `TerminalUsage` would leave
+/// `cost_seen = true` with a stale `last_progress_at`, false-firing
+/// the fast-grace path on a healthy turn).
+///
+/// All other lifecycle variants use an awaited `send` directly because
+/// their loss can flip the watchdog into a false-positive state that
+/// only the next equivalent signal would clear. See #1401 design
+/// rationale.
+async fn send_lifecycle_signal(
+    tx: &mpsc::Sender<LifecycleSignal>,
+    sig: LifecycleSignal,
+    session_label: &str,
+) {
+    match sig {
+        LifecycleSignal::Progress => {
+            let sig = match tx.try_send(LifecycleSignal::Progress) {
+                Ok(()) => return,
+                Err(mpsc::error::TrySendError::Full(s)) => s,
+                Err(mpsc::error::TrySendError::Closed(_)) => return,
+            };
+            if tx.send(sig).await.is_err() {
+                trace!(
+                    target: "cockpit.acp",
+                    session = session_label,
+                    "lifecycle channel closed; dropping Progress fallback"
+                );
+            }
+        }
+        other => {
+            if tx.send(other).await.is_err() {
+                trace!(
+                    target: "cockpit.acp",
+                    session = session_label,
+                    "lifecycle channel closed; dropping load-bearing signal"
+                );
+            }
+        }
+    }
+}
+
+/// Detect whether a `ToolCallUpdate` completion content array carries a
+/// Claude SDK marker that the underlying work continues off-protocol after
+/// the visible tool call completes. Two markers today:
+///
+/// - `"Async agent launched successfully"`: the `Agent` tool with
+///   `isAsync: true` spawned a sub-agent polled via an internal SDK
+///   channel (#1360).
+/// - `"Command running in background with ID: "`: the `Bash` tool with
+///   `run_in_background: true` left a subprocess running; the agent will
+///   poll later via `BashOutput` / `KillShell` (#1401).
+///
+/// Text detection is intentionally narrow. Both prefixes are hardcoded in
+/// the Anthropic Claude SDK and are the most stable identifiers available
+/// short of upstream `agentclientprotocol/claude-agent-acp#336` forwarding
+/// the off-protocol notifications natively. If a prefix ever changes,
+/// this detector returns `None` and the watchdog falls back to the base
+/// grace. For backgrounded Bash, the daemon also tracks
+/// `raw_input.run_in_background == true` at `ToolStarted` time as a
+/// defense in depth, so a single broken signal cannot reintroduce the
+/// false-positive class this fix targets.
+fn detect_off_protocol_work_completed(
     content: &Option<Vec<agent_client_protocol::schema::ToolCallContent>>,
-) -> bool {
-    let Some(blocks) = content else {
-        return false;
-    };
-    extract_tool_content_text(blocks).contains("Async agent launched successfully")
+) -> Option<OffProtocolWorkKind> {
+    let blocks = content.as_ref()?;
+    let text = extract_tool_content_text(blocks);
+    if text.contains("Async agent launched successfully") {
+        return Some(OffProtocolWorkKind::AsyncAgent);
+    }
+    if text.contains("Command running in background with ID: ") {
+        return Some(OffProtocolWorkKind::BackgroundCommand);
+    }
+    None
 }
 
 /// Monotonic counter appended to synthetic tool-call IDs so two events
@@ -2458,7 +2751,27 @@ async fn run_connection_task<W, R>(
                     } else {
                         classify_lifecycle_signal(&notification.update)
                     };
-                    for event in map_update_to_events(notification.update, profile) {
+                    // Compute the event vector first so we can derive a
+                    // `WakeupPending` signal from any `Event::WakeupScheduled`
+                    // the same notification produced. The lifecycle channel
+                    // delivery happens after the event channel pushes below
+                    // so a busy event consumer can't reorder watchdog state
+                    // updates relative to user-visible state. See #1401.
+                    let mapped_events = map_update_to_events(notification.update, profile);
+                    let wakeup_signals: Vec<LifecycleSignal> = if suppressing {
+                        Vec::new()
+                    } else {
+                        mapped_events
+                            .iter()
+                            .filter_map(|e| match e {
+                                Event::WakeupScheduled { at, .. } => {
+                                    Some(LifecycleSignal::WakeupPending { at: *at })
+                                }
+                                _ => None,
+                            })
+                            .collect()
+                    };
+                    for event in mapped_events {
                         // During the post-load replay window, drop only
                         // events that would reproduce the prior turns'
                         // visible transcript (assistant chunks, tool
@@ -2481,32 +2794,10 @@ async fn run_connection_task<W, R>(
                         }
                     }
                     if let Some(sig) = lifecycle_signal {
-                        // Non-blocking try_send for ambient signals: if the prompt
-                        // loop is already in the middle of a watchdog escalation the
-                        // channel could backpressure, and dropping a Progress or
-                        // ToolStarted signal is safer than blocking the notification
-                        // handler (the watchdog is itself a recovery mechanism).
-                        //
-                        // Exception: `ToolCompleted { is_async: true }` is load-
-                        // bearing for the #1360 async-agent suppression. If that
-                        // single signal is dropped, `async_agent_running` never
-                        // flips and the watchdog can still cancel a legitimate
-                        // async wait after the base 120s grace. Fall back to an
-                        // awaited send for that variant so we never lose it. See
-                        // CodeRabbit feedback on PR #1364.
-                        let dropped = match sig {
-                            sig @ LifecycleSignal::ToolCompleted { is_async: true, .. } => {
-                                lifecycle_signal_tx.send(sig).await.is_err()
-                            }
-                            sig => lifecycle_signal_tx.try_send(sig).is_err(),
-                        };
-                        if dropped {
-                            trace!(
-                                target: "cockpit.acp",
-                                session = %session_label,
-                                "lifecycle signal channel full or closed; dropping"
-                            );
-                        }
+                        send_lifecycle_signal(&lifecycle_signal_tx, sig, &session_label).await;
+                    }
+                    for sig in wakeup_signals {
+                        send_lifecycle_signal(&lifecycle_signal_tx, sig, &session_label).await;
                     }
                     Ok(())
                 }
@@ -2880,37 +3171,22 @@ async fn run_connection_task<W, R>(
                         // TerminalUsage would accelerate it. Drop them.
                         while lifecycle_signal_rx.try_recv().is_ok() {}
 
-                        // Per-prompt silent-orphan state machine. All
-                        // fields reset each prompt; signals from prior
-                        // prompts are drained above. The watchdog stays
-                        // disarmed until `saw_first_progress` becomes
-                        // true (some progress notification arrived for
-                        // this turn) AND `tool_calls_in_flight` is
-                        // empty (no open tool to legitimately be
-                        // silent for), at which point it counts down
-                        // `effective_grace` from `last_progress_at`.
-                        // `cost_seen` lowers `effective_grace` from
-                        // the vendor-agnostic default to the
-                        // accelerated value when claude-agent-acp's
-                        // "wrap up accounting" marker arrives. See
-                        // #1240.
-                        let mut tool_calls_in_flight: HashSet<String> = HashSet::new();
-                        let mut last_progress_at: Option<tokio::time::Instant> = None;
-                        let mut saw_first_progress = false;
-                        let mut cost_seen = false;
+                        // Per-prompt silent-orphan state machine. Owned
+                        // by the prompt loop, mutated only via
+                        // `apply_signal`, queried only via `should_fire`.
+                        // The watchdog stays disarmed until
+                        // `saw_first_progress` becomes true (some
+                        // progress notification arrived for this turn)
+                        // AND `tool_calls_in_flight` is empty (no open
+                        // tool to legitimately be silent for) AND no
+                        // active `wakeup_suppress_until` deadline. The
+                        // effective grace adapts to off-protocol work
+                        // (async-agent, backgrounded Bash) and the
+                        // cost-populated UsageUpdate "wrap up accounting"
+                        // marker. See #1240, #1360, #1401.
+                        let mut watchdog = SilentOrphanWatchdog::new();
                         let mut orphan_cancel_sent = false;
                         let mut prompt_orphaned = false;
-                        // Sticky for the rest of the prompt: set the first time we see
-                        // `LifecycleSignal::ToolCompleted { is_async: true }`, cleared
-                        // only when the prompt loop exits and the next prompt begins.
-                        // There is no ACP-layer completion signal for async sub-agents
-                        // (the SDK polls them internally; see upstream
-                        // agentclientprotocol/claude-agent-acp#336), so clearing mid-
-                        // turn would be fake precision. While set, the watchdog
-                        // promotes `effective_grace` to at least 30 minutes and
-                        // ignores the cost-seen fast path so legitimate async waits
-                        // do not false-fire. See #1360.
-                        let mut async_agent_running = false;
 
                         let silent_orphan_grace_default =
                             silent_orphan_grace(source_profile.as_deref());
@@ -2919,6 +3195,11 @@ async fn run_connection_task<W, R>(
                         let silent_orphan_enabled =
                             silent_orphan_grace_default > std::time::Duration::ZERO;
                         let silent_orphan_check_period = silent_orphan_check_interval();
+                        let watchdog_cfg = SilentOrphanWatchdogConfig {
+                            base_grace: silent_orphan_grace_default,
+                            fast_grace: silent_orphan_grace_fast,
+                            off_protocol_grace_floor: OFF_PROTOCOL_WORK_GRACE_FLOOR,
+                        };
                         let silent_orphan_check =
                             tokio::time::sleep(silent_orphan_check_period);
                         tokio::pin!(silent_orphan_check);
@@ -3021,111 +3302,29 @@ async fn run_connection_task<W, R>(
                                     break;
                                 }
                                 sig = lifecycle_signal_rx.recv() => {
-                                    match sig {
-                                        Some(LifecycleSignal::Progress) => {
-                                            saw_first_progress = true;
-                                            last_progress_at = Some(tokio::time::Instant::now());
-                                            // A progress event after
-                                            // terminal usage means the
-                                            // turn isn't actually
-                                            // wrapping up; clear the
-                                            // accelerator so the next
-                                            // window uses the full
-                                            // vendor-agnostic grace.
-                                            cost_seen = false;
-                                        }
-                                        Some(LifecycleSignal::ToolStarted(id)) => {
-                                            saw_first_progress = true;
-                                            tool_calls_in_flight.insert(id);
-                                            last_progress_at = Some(tokio::time::Instant::now());
-                                            cost_seen = false;
-                                        }
-                                        Some(LifecycleSignal::ToolCompleted { id, is_async }) => {
-                                            tool_calls_in_flight.remove(&id);
-                                            last_progress_at = Some(tokio::time::Instant::now());
-                                            cost_seen = false;
-                                            if is_async {
-                                                // The visible `Agent` tool call just
-                                                // completed but the actual sub-agent is
-                                                // now running INSIDE the claude binary
-                                                // with no further ACP signaling. Flip
-                                                // the sticky flag so the watchdog
-                                                // extends its grace for the rest of
-                                                // this prompt. Also forces
-                                                // `saw_first_progress = true` because
-                                                // the launch itself counts as progress
-                                                // even on a first-tool-call turn. See
-                                                // #1360.
-                                                async_agent_running = true;
-                                                saw_first_progress = true;
-                                            }
-                                        }
-                                        Some(LifecycleSignal::TerminalUsage) => {
-                                            // Don't touch
-                                            // `last_progress_at`: cost
-                                            // is accounting, not
-                                            // progress. The watchdog
-                                            // measures elapsed time
-                                            // since the last real
-                                            // transcript event; this
-                                            // signal only changes the
-                                            // grace value.
-                                            cost_seen = true;
-                                        }
-                                        None => {
-                                            // sender dropped; ignore
-                                        }
+                                    if let Some(sig) = sig {
+                                        watchdog.apply_signal(
+                                            sig,
+                                            tokio::time::Instant::now(),
+                                            chrono::Utc::now(),
+                                            watchdog_cfg,
+                                        );
                                     }
+                                    // None means the notification handler dropped; the
+                                    // prompt_fut or cancel_grace arm will end the loop.
                                 }
                                 _ = &mut silent_orphan_check,
                                     if silent_orphan_enabled && !orphan_cancel_sent =>
                                 {
                                     let now = tokio::time::Instant::now();
-                                    // When `silent_orphan_fast_grace_secs = 0`
-                                    // the accelerator is disabled even after
-                                    // a cost-populated UsageUpdate; fall back
-                                    // to the default grace instead of an
-                                    // unbounded ZERO duration. See #1240
-                                    // CodeRabbit feedback.
-                                    //
-                                    // The async-agent branch takes precedence over
-                                    // the cost-seen fast path: once
-                                    // `async_agent_running` is set, sub-agents are
-                                    // polling INSIDE the claude binary and silence
-                                    // is expected. A cost-populated UsageUpdate
-                                    // mid-wait could be intermediate billing
-                                    // telemetry rather than turn termination, and
-                                    // collapsing to the 20s fast grace would
-                                    // reintroduce the exact false-positive class
-                                    // this fix targets. `.max(1800s)` lifts the
-                                    // floor to 30 minutes while respecting a higher
-                                    // operator-configured base grace. See #1360.
-                                    let effective_grace = if async_agent_running {
-                                        silent_orphan_grace_default
-                                            .max(ASYNC_AGENT_GRACE_FLOOR)
-                                    } else if cost_seen
-                                        && silent_orphan_grace_fast > std::time::Duration::ZERO
-                                    {
-                                        silent_orphan_grace_fast
-                                    } else {
-                                        silent_orphan_grace_default
-                                    };
-                                    let elapsed = last_progress_at
-                                        .map(|t| now.duration_since(t));
-                                    let should_fire = saw_first_progress
-                                        && tool_calls_in_flight.is_empty()
-                                        && elapsed
-                                            .map(|d| d >= effective_grace)
-                                            .unwrap_or(false);
+                                    let should_fire = watchdog.should_fire(now, watchdog_cfg);
                                     if should_fire {
                                         warn!(
                                             target: "cockpit.acp",
                                             session = %session_label,
-                                            cost_seen,
-                                            async_agent_running,
-                                            in_flight_tools = tool_calls_in_flight.len(),
-                                            grace_secs = effective_grace.as_secs(),
-                                            elapsed_secs = elapsed.map(|d| d.as_secs()).unwrap_or(0),
+                                            off_protocol_work = ?watchdog.off_protocol_work_seen(),
+                                            in_flight_tools = watchdog.tool_calls_in_flight_len(),
+                                            grace_secs = watchdog.effective_grace(watchdog_cfg).as_secs(),
                                             "silent-orphan watchdog fired: no progress past grace and no in-flight tools; sending session/cancel"
                                         );
                                         // Best-effort cancel; reuse
@@ -4572,35 +4771,50 @@ mod tests {
     }
 
     #[test]
-    fn detect_async_agent_launch_matches_sdk_prefix() {
+    fn detect_off_protocol_work_completed_matches_async_agent_prefix() {
         use agent_client_protocol::schema::{Content, ToolCallContent};
         let blocks = vec![ToolCallContent::Content(Content::new(
             "Async agent launched successfully.\nagentId: af2a6a5d46bc21f91 (internal ID)",
         ))];
-        assert!(detect_async_agent_launch(&Some(blocks)));
+        assert_eq!(
+            detect_off_protocol_work_completed(&Some(blocks)),
+            Some(OffProtocolWorkKind::AsyncAgent)
+        );
     }
 
     #[test]
-    fn detect_async_agent_launch_false_on_regular_completion() {
+    fn detect_off_protocol_work_completed_matches_background_command_prefix() {
+        use agent_client_protocol::schema::{Content, ToolCallContent};
+        let blocks = vec![ToolCallContent::Content(Content::new(
+            "Command running in background with ID: bgxe33hwb. Output is being written to: /tmp/x",
+        ))];
+        assert_eq!(
+            detect_off_protocol_work_completed(&Some(blocks)),
+            Some(OffProtocolWorkKind::BackgroundCommand)
+        );
+    }
+
+    #[test]
+    fn detect_off_protocol_work_completed_none_on_regular_completion() {
         use agent_client_protocol::schema::{Content, ToolCallContent};
         let blocks = vec![ToolCallContent::Content(Content::new(
             "abc1234 first commit\nabc1235 second commit",
         ))];
-        assert!(!detect_async_agent_launch(&Some(blocks)));
+        assert!(detect_off_protocol_work_completed(&Some(blocks)).is_none());
     }
 
     #[test]
-    fn detect_async_agent_launch_false_on_none_content() {
-        assert!(!detect_async_agent_launch(&None));
+    fn detect_off_protocol_work_completed_none_on_none_content() {
+        assert!(detect_off_protocol_work_completed(&None).is_none());
     }
 
     #[test]
-    fn detect_async_agent_launch_false_on_empty_content() {
-        assert!(!detect_async_agent_launch(&Some(vec![])));
+    fn detect_off_protocol_work_completed_none_on_empty_content() {
+        assert!(detect_off_protocol_work_completed(&Some(vec![])).is_none());
     }
 
     #[test]
-    fn classify_lifecycle_signal_sets_is_async_on_async_agent_completion() {
+    fn classify_lifecycle_signal_marks_async_agent_completion() {
         use agent_client_protocol::schema::{
             Content, ToolCallContent, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields,
         };
@@ -4611,16 +4825,49 @@ mod tests {
             ))]);
         let update = ToolCallUpdate::new("tc-async-1", fields);
         match classify_lifecycle_signal(&SessionUpdate::ToolCallUpdate(update)) {
-            Some(LifecycleSignal::ToolCompleted { id, is_async }) => {
+            Some(LifecycleSignal::ToolCompleted {
+                id,
+                off_protocol_work,
+            }) => {
                 assert_eq!(id, "tc-async-1");
-                assert!(is_async, "async-launch ToolCallUpdate must set is_async");
+                assert_eq!(off_protocol_work, Some(OffProtocolWorkKind::AsyncAgent));
             }
-            other => panic!("expected ToolCompleted {{ is_async: true }}, got {other:?}"),
+            other => panic!(
+                "expected ToolCompleted {{ off_protocol_work: Some(AsyncAgent) }}, got {other:?}"
+            ),
         }
     }
 
     #[test]
-    fn classify_lifecycle_signal_clears_is_async_on_regular_completion() {
+    fn classify_lifecycle_signal_marks_background_command_completion() {
+        use agent_client_protocol::schema::{
+            Content, ToolCallContent, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields,
+        };
+        let fields = ToolCallUpdateFields::new()
+            .status(ToolCallStatus::Completed)
+            .content(vec![ToolCallContent::Content(Content::new(
+                "Command running in background with ID: bgtest. Output is being written to: /tmp/x",
+            ))]);
+        let update = ToolCallUpdate::new("tc-bg-1", fields);
+        match classify_lifecycle_signal(&SessionUpdate::ToolCallUpdate(update)) {
+            Some(LifecycleSignal::ToolCompleted {
+                id,
+                off_protocol_work,
+            }) => {
+                assert_eq!(id, "tc-bg-1");
+                assert_eq!(
+                    off_protocol_work,
+                    Some(OffProtocolWorkKind::BackgroundCommand)
+                );
+            }
+            other => panic!(
+                "expected ToolCompleted {{ off_protocol_work: Some(BackgroundCommand) }}, got {other:?}"
+            ),
+        }
+    }
+
+    #[test]
+    fn classify_lifecycle_signal_clears_off_protocol_on_regular_completion() {
         use agent_client_protocol::schema::{
             Content, ToolCallContent, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields,
         };
@@ -4631,11 +4878,74 @@ mod tests {
             ))]);
         let update = ToolCallUpdate::new("tc-bash-1", fields);
         match classify_lifecycle_signal(&SessionUpdate::ToolCallUpdate(update)) {
-            Some(LifecycleSignal::ToolCompleted { id, is_async }) => {
+            Some(LifecycleSignal::ToolCompleted {
+                id,
+                off_protocol_work,
+            }) => {
                 assert_eq!(id, "tc-bash-1");
-                assert!(!is_async, "regular ToolCallUpdate must not set is_async");
+                assert!(off_protocol_work.is_none());
             }
-            other => panic!("expected ToolCompleted {{ is_async: false }}, got {other:?}"),
+            other => panic!("expected ToolCompleted {{ off_protocol_work: None }}, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_lifecycle_signal_failed_ignores_off_protocol_marker() {
+        use agent_client_protocol::schema::{
+            Content, ToolCallContent, ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields,
+        };
+        let fields = ToolCallUpdateFields::new()
+            .status(ToolCallStatus::Failed)
+            .content(vec![ToolCallContent::Content(Content::new(
+                "Async agent launched successfully. agentId: not-real",
+            ))]);
+        let update = ToolCallUpdate::new("tc-failed-1", fields);
+        match classify_lifecycle_signal(&SessionUpdate::ToolCallUpdate(update)) {
+            Some(LifecycleSignal::ToolCompleted {
+                off_protocol_work, ..
+            }) => {
+                assert!(
+                    off_protocol_work.is_none(),
+                    "Failed updates must not activate off-protocol suppression"
+                );
+            }
+            other => panic!("expected ToolCompleted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_lifecycle_signal_tool_call_carries_run_in_background_flag() {
+        use agent_client_protocol::schema::{ToolCall, ToolKind};
+        let raw = serde_json::json!({
+            "command": "npm install",
+            "run_in_background": true,
+        });
+        let tc = ToolCall::new("tc-bg-2", "Bash", ToolKind::Execute).raw_input(raw);
+        match classify_lifecycle_signal(&SessionUpdate::ToolCall(tc)) {
+            Some(LifecycleSignal::ToolStarted {
+                id,
+                is_background_task,
+            }) => {
+                assert_eq!(id, "tc-bg-2");
+                assert!(
+                    is_background_task,
+                    "raw_input.run_in_background=true must propagate"
+                );
+            }
+            other => panic!("expected ToolStarted, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_lifecycle_signal_tool_call_defaults_run_in_background_false() {
+        use agent_client_protocol::schema::{ToolCall, ToolKind};
+        let raw = serde_json::json!({ "command": "ls" });
+        let tc = ToolCall::new("tc-fg-1", "Bash", ToolKind::Execute).raw_input(raw);
+        match classify_lifecycle_signal(&SessionUpdate::ToolCall(tc)) {
+            Some(LifecycleSignal::ToolStarted {
+                is_background_task, ..
+            }) => assert!(!is_background_task),
+            other => panic!("expected ToolStarted, got {other:?}"),
         }
     }
 
