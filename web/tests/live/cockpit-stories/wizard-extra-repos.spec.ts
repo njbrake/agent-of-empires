@@ -28,17 +28,13 @@ base("wizard ExtraReposPicker accepts a free-text path", async ({ page }, testIn
       page.getByRole("heading", { name: "Project folder", exact: true }),
     ).toBeVisible({ timeout: 10_000 });
 
-    // Pick a recent project so `data.path` is set; the ExtraReposPicker
-    // only mounts after the path lands.
-    const recentRow = page.locator("button").filter({ hasText: "project" }).first();
+    // Pick a recent project so `data.path` is set; ExtraReposPicker
+    // renders below the recent rows on the same Project step.
+    const recentRow = page
+      .locator("button")
+      .filter({ hasText: "project" })
+      .first();
     await recentRow.click();
-
-    // The wizard auto-advances to AgentStep on path selection; go back
-    // to ProjectStep where ExtraReposPicker is rendered.
-    const backButton = page.getByRole("button", { name: /Back|Previous|^Project$/i });
-    if (await backButton.first().isVisible()) {
-      await backButton.first().click();
-    }
 
     const extra = page.getByPlaceholder("/path/to/another/repo");
     await expect(extra).toBeVisible({ timeout: 10_000 });

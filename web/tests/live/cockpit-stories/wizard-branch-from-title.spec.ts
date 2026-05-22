@@ -6,6 +6,7 @@
 // its display value when the user hasn't typed a branch.
 
 import { test as base, expect } from "@playwright/test";
+import { inputByLabel } from "../../helpers/cockpit";
 import {
   spawnAoeServe,
   seedSessionViaAoeAdd,
@@ -28,11 +29,7 @@ base("wizard derives the branch from the title on the Review step", async ({ pag
       page.getByRole("heading", { name: "Name your session", exact: true }),
     ).toBeVisible({ timeout: 10_000 });
 
-    const titleField = page
-      .locator("div")
-      .filter({ has: page.locator("label", { hasText: "Session title" }) })
-      .locator("input")
-      .first();
+    const titleField = inputByLabel(page, "Session title");
     await titleField.fill("autogen-branch-here");
     await page.getByRole("button", { name: "Next" }).click();
 

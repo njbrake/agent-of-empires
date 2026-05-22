@@ -19,14 +19,10 @@ base("wizard session step records Group", async ({ page }, testInfo) => {
     const groupHeader = page.locator('[data-testid="sidebar-group-header"]').first();
     await groupHeader.getByRole("button", { name: /New session in /i }).click();
 
-    for (let i = 0; i < 4; i++) {
-      const sessionHeading = page.getByRole("heading", { name: "Name your session", exact: true });
-      if (await sessionHeading.isVisible()) break;
-      const next = page.getByRole("button", { name: /^Next$/ });
-      if (await next.isVisible()) await next.click();
-      else break;
-      await page.waitForTimeout(150);
-    }
+    // Prefill.path lands the wizard on the Session step directly.
+    await expect(
+      page.getByRole("heading", { name: "Name your session", exact: true }),
+    ).toBeVisible({ timeout: 15_000 });
 
     const groupField = page.getByPlaceholder(
       "Optional, for organizing related sessions",

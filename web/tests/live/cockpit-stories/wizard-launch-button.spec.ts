@@ -5,6 +5,7 @@
 // many users prefer over the keyboard chord.
 
 import { test as base, expect } from "@playwright/test";
+import { inputByLabel } from "../../helpers/cockpit";
 import {
   spawnAoeServe,
   listSessions,
@@ -27,11 +28,7 @@ base("Launch button on Review step creates the session", async ({ page }, testIn
     await expect(
       page.getByRole("heading", { name: "Name your session", exact: true }),
     ).toBeVisible({ timeout: 10_000 });
-    const titleField = page
-      .locator("div")
-      .filter({ has: page.locator("label", { hasText: "Session title" }) })
-      .locator("input")
-      .first();
+    const titleField = inputByLabel(page, "Session title");
     await titleField.fill("story-launched-button");
     await page.getByRole("button", { name: "Next" }).click();
 

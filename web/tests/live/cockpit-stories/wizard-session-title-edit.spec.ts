@@ -10,6 +10,7 @@ import {
   spawnAoeServe,
   seedSessionViaAoeAdd,
 } from "../../helpers/aoeServe";
+import { inputByLabel } from "../../helpers/cockpit";
 
 base("wizard session step records the title", async ({ page }, testInfo) => {
   const serve = await spawnAoeServe({
@@ -27,20 +28,12 @@ base("wizard session step records the title", async ({ page }, testInfo) => {
     // Agent step renders first since project is preselected. Skip
     // through by clicking Next twice (or until SessionStep mounts).
     // SessionStep's heading is "Name your session".
-    for (let i = 0; i < 4; i++) {
-      const sessionHeading = page.getByRole("heading", { name: "Name your session", exact: true });
-      if (await sessionHeading.isVisible()) break;
-      const next = page.getByRole("button", { name: /^Next$/ });
-      if (await next.isVisible()) await next.click();
-      else break;
-      await page.waitForTimeout(150);
-    }
+    // Prefill.path lands the wizard on the Session step directly.
+    await expect(
+      page.getByRole("heading", { name: "Name your session", exact: true }),
+    ).toBeVisible({ timeout: 15_000 });
 
-    const titleField = page
-      .locator("div")
-      .filter({ has: page.locator("label", { hasText: "Session title" }) })
-      .locator("input")
-      .first();
+    const titleField = inputByLabel(page, "Session title");
     await expect(titleField).toBeVisible({ timeout: 10_000 });
     await titleField.fill("my-session-title");
     await expect(titleField).toHaveValue("my-session-title");

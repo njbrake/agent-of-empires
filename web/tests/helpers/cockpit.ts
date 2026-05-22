@@ -123,3 +123,17 @@ export function settingsNumberInputByLabel(page: Page, labelText: string): Locat
 export async function openSettingsTab(page: Page, label: string): Promise<void> {
   await page.getByRole("button", { name: label, exact: true }).click();
 }
+
+/**
+ * Resolve the first text input that sits in the same wrapper `<div>`
+ * as a `<label>` matching the given text. Works for both the wizard's
+ * SessionStep field layout and FormFields TextField.
+ */
+export function inputByLabel(page: Page, labelText: string): Locator {
+  return page
+    .locator("label")
+    .filter({ hasText: labelText })
+    .locator("xpath=..")
+    .locator('input[type="text"]')
+    .first();
+}

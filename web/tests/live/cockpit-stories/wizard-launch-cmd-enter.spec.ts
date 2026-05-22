@@ -12,6 +12,7 @@ import {
   listSessions,
   seedSessionViaAoeAdd,
 } from "../../helpers/aoeServe";
+import { inputByLabel } from "../../helpers/cockpit";
 
 const MOD = process.platform === "darwin" ? "Meta" : "Control";
 
@@ -35,11 +36,7 @@ base("Cmd/Ctrl+Enter on the Review step creates the session", async ({ page }, t
 
     // Give the session a deterministic title so the new row is easy to
     // pick out of the sidebar afterwards.
-    const titleField = page
-      .locator("div")
-      .filter({ has: page.locator("label", { hasText: "Session title" }) })
-      .locator("input")
-      .first();
+    const titleField = inputByLabel(page, "Session title");
     await titleField.fill("story-launched");
 
     await page.getByRole("button", { name: "Next" }).click();
