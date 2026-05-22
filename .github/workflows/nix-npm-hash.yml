@@ -37,67 +37,25 @@ jobs:
         id: hash
         run: |
           set -euo pipefail
-
-          FAKE="sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
-
-          # flake.nix has `npmDepsHash` mentions in comments too; the
-          # anchor + count assertion ensures CURRENT and the sed-i below
-          # both target exactly the assignment line.
-          MATCHES=$(grep -cE '^[[:space:]]*npmDepsHash[[:space:]]*=[[:space:]]*"sha256-' flake.nix)
-          if [ "$MATCHES" -ne 1 ]; then
-            echo "::error::expected exactly 1 npmDepsHash assignment in flake.nix, found $MATCHES"
-            exit 1
-          fi
-          CURRENT=$(grep -E '^[[:space:]]*npmDepsHash[[:space:]]*=[[:space:]]*"sha256-' flake.nix \
-            | sed 's/.*npmDepsHash[[:space:]]*=[[:space:]]*"\(sha256-[^"]*\)".*/\1/')
-
-          sed -i -E "/^[[:space:]]*npmDepsHash[[:space:]]*=[[:space:]]*\"sha256-/s|sha256-[^\"]*|$FAKE|" flake.nix
-
-          # A `got:` line is the hash-mismatch signal we want; absence of
-          # it with rc != 0 is an unrelated build failure that must be
-          # surfaced rather than swallowed.
-          set +e
-          nix build --no-link --impure \
-            .#packages.x86_64-linux.aoe-with-web 2>&1 \
-            | tee /tmp/nix-build.log
-          NIX_RC=${PIPESTATUS[0]}
-          set -e
-          REAL=$(grep "got:" /tmp/nix-build.log \
-            | sed 's/.*got:[[:space:]]*//' \
-            | tr -d '[:space:]' \
-            | head -n1 || true)
-
-          if [ -z "$REAL" ]; then
-            if [ "$NIX_RC" -ne 0 ]; then
-              echo "::error::nix build failed for a non-hash-mismatch reason (rc=$NIX_RC)"
-              echo "Tail of build log:"
-              tail -n 50 /tmp/nix-build.log || true
-              git checkout -- flake.nix
-              exit 1
-            fi
-            echo "Hash already correct (no got: line and nix build succeeded)."
-            git checkout -- flake.nix
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          if [ "$REAL" = "$CURRENT" ]; then
-            echo "Computed hash matches current flake.nix; nothing to do."
-            git checkout -- flake.nix
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          echo "New hash: $REAL (was: $CURRENT)"
+          # `prefetch-npm-deps` reads the lockfile and fetches each
+          # tarball by SRI integrity only; agrees with `buildNpmPackage`'s
+          # internal hash. Same tool used by the PR auto-fix workflow.
+          NEW_HASH=$(nix run --refresh nixpkgs#prefetch-npm-deps -- web/package-lock.json)
+          CURRENT=$(.github/scripts/get-flake-npm-hash.sh flake.nix)
           echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
-          echo "hash=$REAL" >> "$GITHUB_OUTPUT"
-          echo "changed=true" >> "$GITHUB_OUTPUT"
+          echo "hash=$NEW_HASH" >> "$GITHUB_OUTPUT"
+          if [ "$NEW_HASH" = "$CURRENT" ]; then
+            echo "Computed hash matches current flake.nix; nothing to do."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "New hash: $NEW_HASH (was: $CURRENT)"
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Patch flake.nix with real hash
         if: steps.hash.outputs.changed == 'true'
         run: |
-          REAL="${{ steps.hash.outputs.hash }}"
-          sed -i -E "/^[[:space:]]*npmDepsHash[[:space:]]*=[[:space:]]*\"sha256-/s|sha256-[^\"]*|$REAL|" flake.nix
+          .github/scripts/set-flake-npm-hash.sh flake.nix "${{ steps.hash.outputs.hash }}"
           echo "Updated flake.nix:"
           grep -E '^[[:space:]]*npmDepsHash[[:space:]]*=' flake.nix
 
