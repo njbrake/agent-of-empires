@@ -318,14 +318,12 @@ impl HomeView {
             }
 
             self.rebuild_group_trees();
-            // Delete the group only from the owning profile's tree
             if let Some(profile) = &owning_profile {
-                if let Some(tree) = self.group_trees.get_mut(profile) {
-                    tree.delete_group(&group_path);
-                }
+                self.delete_group_in_profile(profile, &group_path);
             } else {
-                for tree in self.group_trees.values_mut() {
-                    tree.delete_group(&group_path);
+                let profiles: Vec<String> = self.group_trees.keys().cloned().collect();
+                for profile in profiles {
+                    self.delete_group_in_profile(&profile, &group_path);
                 }
             }
             self.save()?;
@@ -396,12 +394,11 @@ impl HomeView {
             }
 
             if let Some(profile) = &owning_profile {
-                if let Some(tree) = self.group_trees.get_mut(profile) {
-                    tree.delete_group(&group_path);
-                }
+                self.delete_group_in_profile(profile, &group_path);
             } else {
-                for tree in self.group_trees.values_mut() {
-                    tree.delete_group(&group_path);
+                let profiles: Vec<String> = self.group_trees.keys().cloned().collect();
+                for profile in profiles {
+                    self.delete_group_in_profile(&profile, &group_path);
                 }
             }
             self.save()?;
@@ -531,12 +528,16 @@ impl HomeView {
         // Rebuild trees from the updated instance list
         self.rebuild_group_trees();
 
-        // Rename the group node in the source tree so the old path is removed
-        // and the new path is established (including all descendant nodes).
+        // Rename moves the node in-tree; tombstone the old path so disk
+        // drops the old row in save()'s per-row group merge.
         if new_path != ctx.old_path {
             if let Some(tree) = self.group_trees.get_mut(&ctx.old_profile) {
                 tree.rename_group(&ctx.old_path, new_path);
             }
+            self.pending_group_deletions
+                .entry(ctx.old_profile.clone())
+                .or_default()
+                .insert(ctx.old_path.clone());
         }
 
         // When moving to a different profile, ensure the new path exists in the target tree

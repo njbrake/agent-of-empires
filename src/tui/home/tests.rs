@@ -5124,6 +5124,29 @@ mod save_field_merge {
 
     #[test]
     #[serial]
+    fn test_save_preserves_peer_added_group() {
+        let (_temp, mut view, _id) = boot_view_with_one_session("a", "/tmp/a");
+
+        let peer_storage = Storage::new("test").unwrap();
+        peer_storage
+            .update(|_insts, groups| {
+                groups.push(crate::session::Group::new("peer-grp", "peer-grp"));
+                Ok(())
+            })
+            .unwrap();
+
+        view.save()
+            .expect("save must not clobber groups the TUI does not know about");
+
+        let reloaded = Storage::new("test").unwrap().load_with_groups().unwrap().1;
+        assert!(
+            reloaded.iter().any(|g| g.path == "peer-grp"),
+            "peer-added group must survive TUI save"
+        );
+    }
+
+    #[test]
+    #[serial]
     fn test_apply_user_action_persists_atomically() {
         let (_temp, mut view, id) = boot_view_with_one_session("session", "/tmp/race");
 

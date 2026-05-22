@@ -155,6 +155,10 @@ pub struct HomeView {
     /// Per-profile tombstones for ids removed since last `save`. Drained
     /// on Ok return so the next save retries on transient failure.
     pending_deletions: HashMap<String, HashSet<String>>,
+    /// Per-profile tombstones for group paths removed since last `save`.
+    /// Mirrors `pending_deletions` for groups so concurrent peer-added
+    /// groups (e.g. `aoe add --group X`) survive the next save.
+    pending_group_deletions: HashMap<String, HashSet<String>>,
     pub(super) group_trees: HashMap<String, GroupTree>,
     pub(super) flat_items: Vec<Item>,
 
@@ -436,6 +440,7 @@ impl HomeView {
             instances: all_instances,
             instance_map,
             pending_deletions: HashMap::new(),
+            pending_group_deletions: HashMap::new(),
             group_trees,
             flat_items: Vec::new(),
             cursor: 0,
@@ -2087,6 +2092,11 @@ impl HomeView {
                 .get(profile_name)
                 .cloned()
                 .unwrap_or_default();
+            let group_dels: HashSet<String> = self
+                .pending_group_deletions
+                .get(profile_name)
+                .cloned()
+                .unwrap_or_default();
             let groups_target = self
                 .group_trees
                 .get(profile_name)
@@ -2103,11 +2113,21 @@ impl HomeView {
                         disk_instances.push(tui_inst.clone());
                     }
                 }
-                *disk_groups = groups_target.clone();
+                disk_groups.retain(|g| !group_dels.contains(&g.path));
+                for tui_g in &groups_target {
+                    if let Some(disk_g) = disk_groups.iter_mut().find(|g| g.path == tui_g.path) {
+                        disk_g.name = tui_g.name.clone();
+                        disk_g.collapsed = tui_g.collapsed;
+                        disk_g.archived_at = tui_g.archived_at;
+                    } else {
+                        disk_groups.push(tui_g.clone());
+                    }
+                }
                 Ok(())
             })?;
 
             self.pending_deletions.remove(profile_name);
+            self.pending_group_deletions.remove(profile_name);
         }
         Ok(())
     }
@@ -2192,6 +2212,33 @@ impl HomeView {
         }
         self.instances.retain(|i| i.id != id);
         self.instance_map.remove(id);
+    }
+
+    /// Centralized group deletion: removes from the per-profile `GroupTree`
+    /// and records the path AND all descendant paths in
+    /// `pending_group_deletions` so the next `save` propagates the removal
+    /// under the flock instead of relying on a wholesale-replace (which
+    /// would clobber concurrent peer writes).
+    pub(super) fn delete_group_in_profile(&mut self, profile: &str, path: &str) {
+        let prefix = format!("{}/", path);
+        let descendants: Vec<String> = self
+            .group_trees
+            .get(profile)
+            .map(|tree| {
+                tree.get_all_groups()
+                    .into_iter()
+                    .filter(|g| g.path == path || g.path.starts_with(&prefix))
+                    .map(|g| g.path)
+                    .collect()
+            })
+            .unwrap_or_else(|| vec![path.to_string()]);
+        if let Some(tree) = self.group_trees.get_mut(profile) {
+            tree.delete_group(path);
+        }
+        self.pending_group_deletions
+            .entry(profile.to_string())
+            .or_default()
+            .extend(descendants);
     }
 
     /// Centralized instance mutation: applies `f` once to the `instances` vec
