@@ -674,13 +674,6 @@
       "components": ["web/src/components/settings/ThemeSettings.tsx"]
     },
     {
-      "id": "story.settings-theme-select-passphrase",
-      "kind": "live-playwright",
-      "risk": "medium",
-      "specs": ["tests/live/cockpit-stories/settings-theme-select-passphrase.spec.ts"],
-      "components": ["web/src/components/settings/ThemeSettings.tsx", "web/src/components/LoginPage.tsx"]
-    },
-    {
       "id": "story.settings-tmux-mouse",
       "kind": "live-playwright",
       "risk": "low",
