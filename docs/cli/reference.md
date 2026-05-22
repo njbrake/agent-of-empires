@@ -130,9 +130,7 @@ Add a new session
 
 ###### **Arguments:**
 
-* `<PATH>` — Project directory (defaults to current directory)
-
-  Default value: `.`
+* `<PATH>` — Project directory (defaults to current directory). Omit when using `--throwaway`
 
 ###### **Options:**
 
@@ -158,6 +156,7 @@ Add a new session
 * `--no-cockpit` — Force terminal/PTY mode for this session, overriding the default-for-claude cockpit setting
 * `--agent <AGENT>` — Pick a specific cockpit agent (e.g., aoe-agent, claude-code). Implies --cockpit
 * `--model <MODEL>` — Override the model used by aoe-agent (e.g., claude-opus-4-7, gpt-5, gemini-2.5-pro). Forwarded to the agent at session start
+* `-T`, `--throwaway` — Create the session in a fresh temporary directory instead of a project path. The directory is removed when the session is deleted. Mutually exclusive with worktree-related flags
 
 
 
