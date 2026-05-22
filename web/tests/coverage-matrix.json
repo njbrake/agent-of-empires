@@ -545,6 +545,24 @@
       "components": []
     },
     {
+      "id": "cockpit.config-pickers",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-config-pickers.spec.ts",
+        "src/components/cockpit/SessionConfigControls.test.tsx",
+        "src/hooks/useCockpit.configOption.test.ts"
+      ],
+      "components": [
+        "web/src/components/cockpit/SessionConfigControls.tsx",
+        "web/src/components/cockpit/Composer.tsx",
+        "web/src/components/cockpit/CockpitView.tsx",
+        "web/src/components/cockpit/CockpitRuntime.tsx",
+        "web/src/hooks/useCockpit.ts",
+        "web/src/lib/cockpitTypes.ts"
+      ]
+    },
+    {
       "id": "cockpit.mode-switch",
       "kind": "live-playwright",
       "risk": "medium",
