@@ -132,7 +132,7 @@ Example: `aoe-sandbox-a1b2c3d4`
 
 Cockpit-mode sessions can run inside the sandbox container. When both are enabled, the cockpit runner wraps the ACP agent in `docker exec`, so the adapter binary must exist inside the container. The published `aoe-sandbox` image bundles the npm-distributed ACP adapters for this:
 
-- `claude-agent-acp` (`@agentclientprotocol/claude-agent-acp@0.37.0`, pinned)
+- `claude-agent-acp` (`@agentclientprotocol/claude-agent-acp@^0.37.0`, floor pin)
 - `codex-acp` (`@zed-industries/codex-acp`)
 - `pi-acp`
 
