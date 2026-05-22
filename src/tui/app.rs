@@ -902,6 +902,17 @@ impl App {
     fn maybe_kick_off_auto_install(&mut self, version: String) {
         use crate::update::install::{detect_install_method, perform_update, InstallMethod};
 
+        // Defensive: if a prior auto- or manual update is still running,
+        // do not start a second installer or overwrite `update_status_rx`.
+        // Mirrors the guard in `Action::SpawnUpdate`.
+        if self.update_status_rx.is_some() {
+            tracing::info!(
+                target: "update.auto",
+                "auto mode skipped: update already in progress"
+            );
+            return;
+        }
+
         let method = match detect_install_method() {
             Ok(m) => m,
             Err(e) => {
