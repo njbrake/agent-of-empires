@@ -40,7 +40,7 @@ think a test isn't warranted, say why so reviewers can sanity-check.
 
 <!-- Check one -->
 - [ ] No AI was used
-- [ ] AI was used (any amount, from light assist to fully generated)
+- [ ] AI was used
 
 <!-- If AI was used, please share details -->
 **AI Model/Tool used:**
