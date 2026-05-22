@@ -207,9 +207,15 @@ impl HomeView {
         if let Some(ref mut diff_view) = self.diff_view {
             let action = diff_view.handle_key(key);
             if let Some((session_id, new_override)) = diff_view.take_pending_override() {
-                self.mutate_instance(&session_id, |inst| {
-                    inst.base_branch_override = new_override;
-                });
+                if let Err(e) = self.apply_user_action(&session_id, |inst| {
+                    inst.base_branch_override = new_override.clone();
+                }) {
+                    tracing::warn!(
+                        target: "tui.home",
+                        "Failed to persist base_branch_override: {}",
+                        e
+                    );
+                }
             }
             match action {
                 DiffAction::Continue => return None,

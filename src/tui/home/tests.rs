@@ -4822,3 +4822,161 @@ mod click_to_select {
         assert_ne!(was_collapsed, now_collapsed, "group collapsed state flips");
     }
 }
+
+mod save_field_merge {
+    use super::*;
+    use chrono::Utc;
+
+    fn boot_view_with_one_session(title: &str, path: &str) -> (TempDir, HomeView, String) {
+        let temp = TempDir::new().unwrap();
+        setup_test_home(&temp);
+        let storage = Storage::new("test").unwrap();
+        let inst = Instance::new(title, path);
+        let id = inst.id.clone();
+        storage
+            .update(|i, g| {
+                i.push(inst.clone());
+                *g = GroupTree::new_with_groups(&[inst], &[]).get_all_groups();
+                Ok(())
+            })
+            .unwrap();
+
+        let tools = AvailableTools::with_tools(&["claude"]);
+        let view = HomeView::new(Some("test".to_string()), tools).unwrap();
+        (temp, view, id)
+    }
+
+    #[test]
+    #[serial]
+    fn test_save_preserves_peer_field_update() {
+        let (_temp, mut view, id) = boot_view_with_one_session("session", "/tmp/race");
+
+        let peer_storage = Storage::new("test").unwrap();
+        let peer_archived_at = Utc::now();
+        peer_storage
+            .update(|insts, _| {
+                if let Some(inst) = insts.iter_mut().find(|i| i.id == id) {
+                    inst.archived_at = Some(peer_archived_at);
+                }
+                Ok(())
+            })
+            .unwrap();
+
+        view.save().expect("save must merge peer-owned field write");
+
+        let reloaded = Storage::new("test").unwrap().load().unwrap();
+        let row = reloaded.iter().find(|i| i.id == id).expect("row present");
+        assert_eq!(
+            row.archived_at,
+            Some(peer_archived_at),
+            "peer's archive must survive a TUI save with stale view"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_save_preserves_peer_added_row() {
+        let (_temp, mut view, _id) = boot_view_with_one_session("a", "/tmp/a");
+
+        let peer_storage = Storage::new("test").unwrap();
+        peer_storage
+            .update(|insts, _| {
+                insts.push(Instance::new("peer-added", "/tmp/peer"));
+                Ok(())
+            })
+            .unwrap();
+
+        view.save()
+            .expect("save must not delete rows the TUI does not know about");
+
+        let reloaded = Storage::new("test").unwrap().load().unwrap();
+        assert!(
+            reloaded.iter().any(|i| i.title == "peer-added"),
+            "peer-added row must survive TUI save"
+        );
+        assert!(
+            reloaded.iter().any(|i| i.title == "a"),
+            "TUI's known row must remain"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_save_drops_explicitly_deleted_row() {
+        let (_temp, mut view, id) = boot_view_with_one_session("victim", "/tmp/victim");
+
+        view.remove_instance(&id);
+        view.save().expect("save must propagate the delete");
+
+        let reloaded = Storage::new("test").unwrap().load().unwrap();
+        assert!(
+            !reloaded.iter().any(|i| i.id == id),
+            "tombstoned row must be removed from disk"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_save_drains_pending_deletions_on_ok() {
+        let (_temp, mut view, id) = boot_view_with_one_session("victim", "/tmp/victim");
+
+        view.remove_instance(&id);
+        assert!(
+            view.pending_deletions
+                .get("test")
+                .is_some_and(|s| s.contains(&id)),
+            "remove_instance must populate pending_deletions"
+        );
+
+        view.save().unwrap();
+
+        assert!(
+            view.pending_deletions.get("test").is_none(),
+            "pending_deletions must drain on Ok save"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_apply_user_action_persists_atomically() {
+        let (_temp, mut view, id) = boot_view_with_one_session("session", "/tmp/race");
+
+        view.apply_user_action(&id, |inst| inst.archive())
+            .expect("apply_user_action must persist");
+
+        let reloaded = Storage::new("test").unwrap().load().unwrap();
+        let row = reloaded.iter().find(|i| i.id == id).expect("row present");
+        assert!(
+            row.archived_at.is_some(),
+            "apply_user_action must persist archived_at to disk"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_apply_user_action_does_not_clobber_peer_field() {
+        let (_temp, mut view, id) = boot_view_with_one_session("session", "/tmp/race");
+
+        let peer_storage = Storage::new("test").unwrap();
+        peer_storage
+            .update(|insts, _| {
+                if let Some(inst) = insts.iter_mut().find(|i| i.id == id) {
+                    inst.notify_on_waiting = Some(true);
+                }
+                Ok(())
+            })
+            .unwrap();
+
+        view.apply_user_action(&id, |inst| inst.archive())
+            .expect("archive must persist");
+
+        let reloaded = Storage::new("test").unwrap().load().unwrap();
+        let row = reloaded.iter().find(|i| i.id == id).expect("row present");
+        assert!(row.archived_at.is_some(), "TUI archive landed");
+        assert_eq!(
+            row.notify_on_waiting,
+            Some(true),
+            "peer's notify_on_waiting must survive an apply_user_action that does not touch it"
+        );
+    }
+}

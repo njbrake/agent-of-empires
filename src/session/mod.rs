@@ -31,6 +31,7 @@ pub use environment::{validate_env_entries, validate_env_entry};
 pub use groups::{
     flatten_sessions_by_attention, flatten_tree, flatten_tree_all_profiles, Group, GroupTree, Item,
 };
+pub(crate) use instance::persist_session_to_storage;
 pub use instance::{
     EnsureReadyError, EnsureReadyOutcome, Instance, SandboxInfo, StartOutcome, Status,
     TerminalInfo, WorkspaceInfo, WorkspaceRepo, WorktreeInfo,

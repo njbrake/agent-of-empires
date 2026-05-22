@@ -314,7 +314,7 @@ impl HomeView {
                 .map(|i| i.id.clone())
                 .collect();
             for id in &ids_to_clear {
-                self.mutate_instance(id, |inst| inst.group_path = String::new());
+                self.apply_user_action(id, |inst| inst.group_path = String::new())?;
             }
 
             self.rebuild_group_trees();
@@ -356,10 +356,10 @@ impl HomeView {
                 .collect();
 
             for session_id in sessions_to_delete {
-                self.mutate_instance(&session_id, |inst| {
+                self.apply_user_action(&session_id, |inst| {
                     inst.status = Status::Deleting;
                     inst.group_path = String::new();
-                });
+                })?;
 
                 if let Some(inst) = self.get_instance(&session_id) {
                     let delete_worktree = options.delete_worktrees
@@ -515,9 +515,9 @@ impl HomeView {
                     inst.source_profile = tp.to_string();
                 });
             } else {
-                self.mutate_instance(id, |inst| {
+                self.apply_user_action(id, |inst| {
                     inst.group_path = new_group_path.clone();
-                });
+                })?;
             }
         }
 
@@ -667,10 +667,10 @@ impl HomeView {
                 }
             }
 
-            self.mutate_instance(&id, |inst| {
+            self.apply_user_action(&id, |inst| {
                 inst.title = effective_title.clone();
                 inst.group_path = effective_group.clone();
-            });
+            })?;
 
             // Rebuild group trees and create group if needed
             self.rebuild_group_trees();
@@ -714,8 +714,7 @@ impl HomeView {
             }
         };
         if is_snoozed {
-            self.mutate_instance(&id, |inst| inst.unsnooze());
-            self.save()?;
+            self.apply_user_action(&id, |inst| inst.unsnooze())?;
             self.flat_items = self.build_flat_items();
             return Ok(Some(format!("Woke: {}", title)));
         }
@@ -735,12 +734,12 @@ impl HomeView {
         id: &str,
         minutes: u32,
     ) -> anyhow::Result<Option<String>> {
-        let mut title = String::new();
-        self.mutate_instance(id, |inst| {
-            inst.snooze(minutes);
-            title = inst.title.clone();
-        });
-        self.save()?;
+        let title = self
+            .instance_map
+            .get(id)
+            .map(|i| i.title.clone())
+            .unwrap_or_default();
+        self.apply_user_action(id, |inst| inst.snooze(minutes))?;
         self.flat_items = self.build_flat_items();
         if self.sort_order == crate::session::config::SortOrder::Attention {
             self.select_top_attention(None);
@@ -771,11 +770,10 @@ impl HomeView {
             None => return Ok(()),
         };
         if is_fav {
-            self.mutate_instance(&id, |inst| inst.unfavorite());
+            self.apply_user_action(&id, |inst| inst.unfavorite())?;
         } else {
-            self.mutate_instance(&id, |inst| inst.favorite());
+            self.apply_user_action(&id, |inst| inst.favorite())?;
         }
-        self.save()?;
         self.flat_items = self.build_flat_items();
         Ok(())
     }
@@ -800,8 +798,7 @@ impl HomeView {
             None => return Ok(()),
         };
         if is_archived {
-            self.mutate_instance(&id, |inst| inst.unarchive());
-            self.save()?;
+            self.apply_user_action(&id, |inst| inst.unarchive())?;
             self.flat_items = self.build_flat_items();
             // Re-seat the cursor on the just-unarchived session. After the
             // flat_items rebuild the row jumps from tier 99 to its real
@@ -820,8 +817,7 @@ impl HomeView {
             }
         }
 
-        self.mutate_instance(&id, |inst| inst.archive());
-        self.save()?;
+        self.apply_user_action(&id, |inst| inst.archive())?;
         self.flat_items = self.build_flat_items();
         if self.sort_order == crate::session::config::SortOrder::Attention {
             self.select_top_attention(None);

@@ -528,7 +528,7 @@ fn append_resume_flags(
 /// thread. Concurrent calls within the same process are serialised via
 /// `Storage::update`'s per-profile lock; cross-process races between TUI
 /// and `aoe serve` remain a known limitation (see #1175).
-fn persist_session_to_storage(profile: &str, instance_id: &str, session_id: &str) {
+pub(crate) fn persist_session_to_storage(profile: &str, instance_id: &str, session_id: &str) {
     if !is_valid_session_id(session_id) {
         tracing::warn!(target: "session.store",
             "Refusing to persist invalid session ID {:?} for {}",

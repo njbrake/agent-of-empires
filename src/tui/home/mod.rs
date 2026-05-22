@@ -152,6 +152,9 @@ pub struct HomeView {
     pub(super) active_profile: Option<String>,
     instances: Vec<Instance>,
     instance_map: HashMap<String, Instance>,
+    /// Per-profile tombstones for ids removed since last `save`. Drained
+    /// on Ok return so the next save retries on transient failure.
+    pending_deletions: HashMap<String, HashSet<String>>,
     pub(super) group_trees: HashMap<String, GroupTree>,
     pub(super) flat_items: Vec<Item>,
 
@@ -432,6 +435,7 @@ impl HomeView {
             active_profile,
             instances: all_instances,
             instance_map,
+            pending_deletions: HashMap::new(),
             group_trees,
             flat_items: Vec::new(),
             cursor: 0,
@@ -988,27 +992,14 @@ impl HomeView {
         }
 
         if !updates.is_empty() {
-            let prev: Vec<(String, Option<String>)> = updates
-                .iter()
-                .filter_map(|(id, _)| {
-                    self.get_instance(id)
-                        .map(|inst| (id.clone(), inst.agent_session_id.clone()))
-                })
-                .collect();
-
             for (id, session_id) in &updates {
                 self.mutate_instance(id, |inst| {
                     inst.agent_session_id = Some(session_id.clone());
                 });
-            }
-            if let Err(e) = self.save() {
-                tracing::error!(target: "tui.home", "Failed to save after session ID update: {}", e);
-                for (id, old_val) in &prev {
-                    self.mutate_instance(id, |inst| {
-                        inst.agent_session_id = old_val.clone();
-                    });
+                let profile = self.instance_map.get(id).map(|i| i.source_profile.clone());
+                if let Some(profile) = profile {
+                    crate::session::persist_session_to_storage(&profile, id, session_id);
                 }
-                return false;
             }
         }
         !updates.is_empty()
@@ -2083,21 +2074,40 @@ impl HomeView {
         stale_sid
     }
 
-    pub fn save(&self) -> anyhow::Result<()> {
+    pub fn save(&mut self) -> anyhow::Result<()> {
         for (profile_name, storage) in &self.storages {
-            let profile_instances: Vec<Instance> = self
+            let tui_rows: Vec<Instance> = self
                 .instances
                 .iter()
                 .filter(|i| i.source_profile == *profile_name)
                 .cloned()
                 .collect();
-            // Each profile has its own GroupTree with correct collapsed state
-            let tree = self
-                .group_trees
+            let dels: HashSet<String> = self
+                .pending_deletions
                 .get(profile_name)
                 .cloned()
-                .unwrap_or_else(|| GroupTree::new_with_groups(&profile_instances, &[]));
-            storage.commit(&profile_instances, &tree)?;
+                .unwrap_or_default();
+            let groups_target = self
+                .group_trees
+                .get(profile_name)
+                .map(|t| t.get_all_groups())
+                .unwrap_or_default();
+
+            storage.update(|disk_instances, disk_groups| {
+                disk_instances.retain(|d| !dels.contains(&d.id));
+                for tui_inst in &tui_rows {
+                    if let Some(disk_inst) = disk_instances.iter_mut().find(|d| d.id == tui_inst.id)
+                    {
+                        disk_inst.merge_from_tui(tui_inst);
+                    } else {
+                        disk_instances.push(tui_inst.clone());
+                    }
+                }
+                *disk_groups = groups_target.clone();
+                Ok(())
+            })?;
+
+            self.pending_deletions.remove(profile_name);
         }
         Ok(())
     }
@@ -2171,8 +2181,15 @@ impl HomeView {
     }
 
     /// Centralized instance removal: removes from both the `instances` vec
-    /// and `instance_map` to keep both collections in sync.
+    /// and `instance_map`, and records the id in `pending_deletions` so the
+    /// next `save` propagates the removal under the flock.
     pub(super) fn remove_instance(&mut self, id: &str) {
+        if let Some(inst) = self.instance_map.get(id) {
+            self.pending_deletions
+                .entry(inst.source_profile.clone())
+                .or_default()
+                .insert(id.to_string());
+        }
         self.instances.retain(|i| i.id != id);
         self.instance_map.remove(id);
     }
@@ -2185,6 +2202,35 @@ impl HomeView {
             f(inst);
             self.instance_map.insert(id.to_string(), inst.clone());
         }
+    }
+
+    /// Apply a user-action mutation atomically to the in-memory mirror and
+    /// the on-disk row under the flock. `mutate` runs twice (memory + disk
+    /// closure) so peer writes to OTHER fields on the same row survive.
+    /// Use for dialog changes (archive, favorite, snooze, rename, group)
+    /// that `HomeView::save`'s field-merge does not propagate.
+    pub(super) fn apply_user_action<F>(&mut self, id: &str, mutate: F) -> anyhow::Result<()>
+    where
+        F: Fn(&mut Instance),
+    {
+        let profile = match self.instance_map.get(id) {
+            Some(inst) => inst.source_profile.clone(),
+            None => return Ok(()),
+        };
+        if let Some(inst) = self.instances.iter_mut().find(|i| i.id == id) {
+            mutate(inst);
+            self.instance_map.insert(id.to_string(), inst.clone());
+        }
+        let id_owned = id.to_string();
+        if let Some(storage) = self.storages.get(&profile) {
+            storage.update(|insts, _groups| {
+                if let Some(inst) = insts.iter_mut().find(|i| i.id == id_owned) {
+                    mutate(inst);
+                }
+                Ok(())
+            })?;
+        }
+        Ok(())
     }
 
     /// Like `mutate_instance`, but for fallible operations. Clones the entry,
