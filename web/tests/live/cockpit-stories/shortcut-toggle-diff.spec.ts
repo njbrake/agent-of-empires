@@ -37,6 +37,13 @@ base("D key toggles the diff panel", async ({ page }, testInfo) => {
     await page.keyboard.press("Shift+D");
     await expect(handle).toBeHidden({ timeout: 5_000 });
 
+    // Collapsing the diff panel re-layouts the content split, which
+    // can shift focus back into the terminal pane. Without re-blurring,
+    // the second Shift+D reaches the terminal's textbox (becoming a
+    // literal "D" keystroke into the PTY) instead of toggling the
+    // shortcut.
+    await page.locator("body").click({ position: { x: 5, y: 5 } });
+
     await page.keyboard.press("Shift+D");
     await expect(handle).toBeVisible({ timeout: 5_000 });
   } finally {
