@@ -2107,14 +2107,37 @@ impl HomeView {
         }
     }
 
+    /// Put the cursor back on `selected_session` after a `flat_items` rebuild
+    /// (sort toggle, group_by toggle). Mode flips reshape the list, especially
+    /// when Attention sort is involved, so index-based clamping lands the
+    /// cursor on whatever happened to slide into the old slot. Seeking by
+    /// session id keeps focus on the row the user was actually looking at.
+    /// Falls back to the legacy clamp when there was no prior selection or
+    /// the session is no longer in the flat list (e.g., collapsed under a
+    /// group header).
+    pub(super) fn reseat_cursor_after_rebuild(&mut self) {
+        if let Some(sid) = self.selected_session.clone() {
+            for (idx, item) in self.flat_items.iter().enumerate() {
+                if let Item::Session { id, .. } = item {
+                    if *id == sid {
+                        self.cursor = idx;
+                        self.update_selected();
+                        return;
+                    }
+                }
+            }
+        }
+        self.cursor = self.cursor.min(self.flat_items.len().saturating_sub(1));
+        self.update_selected();
+    }
+
     fn apply_sort_order(&mut self, new_order: SortOrder) {
         self.sort_order = new_order;
         self.flat_items = self.build_flat_items();
         if self.search_active && !self.search_query.value().is_empty() {
             self.update_search();
         } else {
-            self.cursor = self.cursor.min(self.flat_items.len().saturating_sub(1));
-            self.update_selected();
+            self.reseat_cursor_after_rebuild();
         }
         if let Ok(mut config) = load_config().map(|c| c.unwrap_or_default()) {
             config.app_state.sort_order = Some(self.sort_order);
@@ -2127,8 +2150,7 @@ impl HomeView {
     fn apply_group_by(&mut self, new_mode: GroupByMode) {
         self.group_by = new_mode;
         self.flat_items = self.build_flat_items();
-        self.cursor = self.cursor.min(self.flat_items.len().saturating_sub(1));
-        self.update_selected();
+        self.reseat_cursor_after_rebuild();
         match load_config().map(|c| c.unwrap_or_default()) {
             Ok(mut config) => {
                 config.app_state.group_by = Some(self.group_by);

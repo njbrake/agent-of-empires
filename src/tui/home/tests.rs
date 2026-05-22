@@ -4202,6 +4202,120 @@ fn project_groups_sort_by_top_attention_member() {
     );
 }
 
+/// Pressing `g` to flip `group_by` keeps the cursor on the previously
+/// selected session, even when the list reshapes (Manual flat list →
+/// Project grouped list). Previously `apply_group_by` clamped by index,
+/// which landed the cursor on whatever row slid into the old slot once
+/// project headers got inserted. The fix seeks `selected_session` by id
+/// after the rebuild.
+#[test]
+#[serial]
+fn group_by_toggle_preserves_selected_session() {
+    use crate::session::config::GroupByMode;
+
+    let mut env = create_test_env_two_projects_mixed_attention();
+    env.view.group_by = GroupByMode::Manual;
+    env.view.sort_order = crate::session::config::SortOrder::Newest;
+    env.view.flat_items = env.view.build_flat_items();
+
+    // Pick the last session in the Manual flat list; that's the row whose
+    // index is most likely to be invalidated when project headers get
+    // inserted in front of it.
+    let target_id = env
+        .view
+        .flat_items
+        .iter()
+        .rev()
+        .find_map(|i| match i {
+            Item::Session { id, .. } => Some(id.clone()),
+            _ => None,
+        })
+        .expect("manual flat list should contain at least one session");
+    env.view.select_session_by_id(&target_id);
+    assert_eq!(
+        env.view.selected_session.as_deref(),
+        Some(target_id.as_str())
+    );
+
+    env.view.handle_key(key(KeyCode::Char('g')), None);
+    assert_eq!(env.view.group_by, GroupByMode::Project);
+    assert_eq!(
+        env.view.selected_session.as_deref(),
+        Some(target_id.as_str()),
+        "cursor must stay on the same session after group_by flip"
+    );
+    let cursor_item = env
+        .view
+        .flat_items
+        .get(env.view.cursor)
+        .expect("cursor must point into flat_items");
+    match cursor_item {
+        Item::Session { id, .. } => assert_eq!(id, &target_id),
+        Item::Group { .. } => panic!("cursor landed on a group header, not the session"),
+    }
+}
+
+/// Pressing `o` to flip `sort_order` keeps the cursor on the previously
+/// selected session. Most visible when going Newest → Attention with
+/// Project grouping on, since Attention reorders both groups (by top
+/// member) and sessions within each group, so the target session is very
+/// unlikely to keep its index across the rebuild.
+#[test]
+#[serial]
+fn sort_order_toggle_preserves_selected_session() {
+    use crate::session::config::{GroupByMode, SortOrder};
+
+    let mut env = create_test_env_two_projects_mixed_attention();
+    env.view.group_by = GroupByMode::Project;
+    env.view.sort_order = SortOrder::Newest;
+    env.view.flat_items = env.view.build_flat_items();
+
+    // Pin the Running session inside alpha. Under Attention sort it sinks
+    // below alpha-waiting, so its index will shift on the rebuild.
+    let target_id = env
+        .view
+        .instances
+        .iter()
+        .find(|i| i.title == "alpha-running")
+        .map(|i| i.id.clone())
+        .expect("fixture provides alpha-running");
+    env.view.select_session_by_id(&target_id);
+    assert_eq!(
+        env.view.selected_session.as_deref(),
+        Some(target_id.as_str())
+    );
+
+    env.view.handle_key(key(KeyCode::Char('o')), None);
+    assert_eq!(env.view.sort_order, SortOrder::Attention);
+    assert_eq!(
+        env.view.selected_session.as_deref(),
+        Some(target_id.as_str()),
+        "cursor must stay on the same session after sort_order flip"
+    );
+}
+
+/// `reseat_cursor_after_rebuild` falls back to index clamping when there
+/// is no prior session selection. Guards against the helper accidentally
+/// regressing the empty-or-group-only path, where the original clamp
+/// logic was correct.
+#[test]
+#[serial]
+fn reseat_cursor_clamps_when_no_session_selected() {
+    use crate::session::config::GroupByMode;
+
+    let mut env = create_test_env_two_projects_mixed_attention();
+    env.view.group_by = GroupByMode::Project;
+    env.view.flat_items = env.view.build_flat_items();
+    env.view.selected_session = None;
+    env.view.cursor = env.view.flat_items.len() + 50; // intentionally out of range
+
+    env.view.reseat_cursor_after_rebuild();
+    assert!(
+        env.view.cursor < env.view.flat_items.len(),
+        "cursor must be clamped into the flat_items range"
+    );
+}
+
 /// Manual grouping + Attention sort must still flatten. The cross-cutting
 /// flat priority view is the original Attention design and is the right
 /// behavior when the user has not opted into project grouping. Guards
