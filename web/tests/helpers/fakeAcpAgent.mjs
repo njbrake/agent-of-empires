@@ -14,8 +14,12 @@
 //                          `session/request_permission` JSON-RPC
 //                          REQUEST; the fake awaits the client's
 //                          response before continuing the turn.
-//   session/setMode     -> emit current_mode_changed
-//   session/cancel      -> emit stopped { stopReason: "cancelled" }
+//   session/set_mode    -> emit current_mode_update (also accepts the
+//                          legacy camelCase `session/setMode`)
+//   session/cancel      -> notification (no response); sets a per-
+//                          session cancel flag that the in-flight
+//                          session/prompt loop polls so the prompt
+//                          returns with stopReason "cancelled"
 //
 // Script source:
 //

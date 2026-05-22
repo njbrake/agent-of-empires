@@ -46,14 +46,25 @@ base("right panel width persists across reload after dragging the handle", async
     await page.mouse.move(targetX, y, { steps: 5 });
     await page.mouse.up();
 
+    // ContentSplit writes "aoe-split-ratio" inside a React functional
+    // updater during the mouseup handler, so the localStorage write
+    // can be batched a tick after page.mouse.up() returns. Poll until
+    // we see a value that differs from the pre-drag snapshot rather
+    // than reading once and racing the batch.
+    await expect
+      .poll(
+        async () =>
+          await page.evaluate(() => localStorage.getItem("aoe-split-ratio")),
+        { timeout: 5_000, intervals: [50, 100, 200, 200] },
+      )
+      .not.toBe(storedBefore);
+
     const storedAfter = await page.evaluate(() =>
       localStorage.getItem("aoe-split-ratio"),
     );
     expect(storedAfter).not.toBeNull();
     const widthAfter = parseInt(storedAfter!, 10);
     expect(widthAfter).toBeGreaterThanOrEqual(280);
-    // Drag must change the persisted ratio.
-    expect(storedAfter).not.toBe(storedBefore);
 
     await page.reload();
     const storedReloaded = await page.evaluate(() =>

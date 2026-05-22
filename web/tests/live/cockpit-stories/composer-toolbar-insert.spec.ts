@@ -10,7 +10,7 @@ import {
   listSessions,
   seedSessionViaAoeAdd,
 } from "../../helpers/aoeServe";
-import { waitForCockpitView , enableCockpitAndWait } from "../../helpers/cockpit";
+import { waitForCockpitView, enableCockpitAndWait } from "../../helpers/cockpit";
 
 base("composer toolbar inserts @ and / into the textarea", async ({ page }, testInfo) => {
   const serve = await spawnAoeServe({

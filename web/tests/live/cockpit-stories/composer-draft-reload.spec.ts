@@ -11,7 +11,7 @@ import {
   listSessions,
   seedSessionViaAoeAdd,
 } from "../../helpers/aoeServe";
-import { waitForCockpitView , enableCockpitAndWait } from "../../helpers/cockpit";
+import { waitForCockpitView, enableCockpitAndWait } from "../../helpers/cockpit";
 
 base("composer draft survives a full reload", async ({ page }, testInfo) => {
   const serve = await spawnAoeServe({

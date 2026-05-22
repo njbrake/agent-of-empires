@@ -14,7 +14,7 @@ import {
   listSessions,
   resolveAoeBinary,
 } from "../../helpers/aoeServe";
-import { waitForCockpitView , enableCockpitAndWait } from "../../helpers/cockpit";
+import { waitForCockpitView, enableCockpitAndWait } from "../../helpers/cockpit";
 
 base("comment on a diff hunk persists in the comments banner", async ({ page }, testInfo) => {
   const serve = await spawnAoeServe({

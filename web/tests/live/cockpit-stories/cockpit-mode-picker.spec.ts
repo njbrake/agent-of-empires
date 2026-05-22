@@ -2,7 +2,7 @@
 //
 // ModePicker (Composer.tsx) renders a chip showing the active mode
 // and opens a menu on click; selecting an entry POSTs /cockpit/mode
-// and the fake-ACP emits current_mode_changed, which the cockpit
+// and the fake-ACP emits current_mode_update, which the cockpit
 // reducer applies to flip the chip label.
 
 import { test as base, expect } from "@playwright/test";
@@ -11,7 +11,7 @@ import {
   listSessions,
   seedSessionViaAoeAdd,
 } from "../../helpers/aoeServe";
-import { waitForCockpitView , enableCockpitAndWait } from "../../helpers/cockpit";
+import { waitForCockpitView, enableCockpitAndWait } from "../../helpers/cockpit";
 
 base("ModePicker switches the cockpit mode", async ({ page }, testInfo) => {
   const serve = await spawnAoeServe({
@@ -62,7 +62,7 @@ base("ModePicker switches the cockpit mode", async ({ page }, testInfo) => {
     await expect(planMenuItem).toBeVisible({ timeout: 5_000 });
     await planMenuItem.click();
 
-    // The fake-ACP emits current_mode_changed on session/setMode; the
+    // The fake-ACP emits current_mode_update on session/set_mode; the
     // reducer applies that and the trigger label flips.
     await expect(trigger).toContainText(/Plan/i, { timeout: 10_000 });
   } finally {

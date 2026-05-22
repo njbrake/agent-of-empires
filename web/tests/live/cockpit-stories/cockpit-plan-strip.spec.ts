@@ -15,7 +15,7 @@ import {
   listSessions,
   seedSessionViaAoeAdd,
 } from "../../helpers/aoeServe";
-import { waitForCockpitView , enableCockpitAndWait } from "../../helpers/cockpit";
+import { waitForCockpitView, enableCockpitAndWait } from "../../helpers/cockpit";
 
 const PLAN_SCRIPT = {
   turns: [

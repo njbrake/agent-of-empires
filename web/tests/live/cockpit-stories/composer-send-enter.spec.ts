@@ -11,7 +11,7 @@ import {
   listSessions,
   seedSessionViaAoeAdd,
 } from "../../helpers/aoeServe";
-import { waitForCockpitView , enableCockpitAndWait } from "../../helpers/cockpit";
+import { waitForCockpitView, enableCockpitAndWait } from "../../helpers/cockpit";
 
 base("send message via Enter renders agent response", async ({ page }, testInfo) => {
   const serve = await spawnAoeServe({
