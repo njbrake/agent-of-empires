@@ -1,10 +1,10 @@
 // User story: launch a session via the wizard, pressing Cmd/Ctrl+Enter
 // on the Review step.
 //
-// Opens the wizard from the group-level New session button so the
-// project path is preselected. Walks through Session → Agent (picks
-// claude) → Review, then presses the chord. /api/sessions returns 201
-// and a new sidebar row appears.
+// Group-level New session sets skipToReview, so the wizard opens
+// directly on the Review step with prefilled values. Inline-edit the
+// title via Review's EditableRow, then press the chord; /api/sessions
+// returns 201 and a new sidebar row appears.
 
 import { test as base, expect } from "@playwright/test";
 import {
@@ -12,7 +12,6 @@ import {
   listSessions,
   seedSessionViaAoeAdd,
 } from "../../helpers/aoeServe";
-import { inputByLabel } from "../../helpers/cockpit";
 
 const MOD = process.platform === "darwin" ? "Meta" : "Control";
 
@@ -29,29 +28,17 @@ base("Cmd/Ctrl+Enter on the Review step creates the session", async ({ page }, t
     const groupHeader = page.locator('[data-testid="sidebar-group-header"]').first();
     await groupHeader.getByRole("button", { name: /New session in /i }).click();
 
-    // Wizard opens at the Session step (prefill.path advances to step 1).
-    await expect(
-      page.getByRole("heading", { name: "Name your session", exact: true }),
-    ).toBeVisible({ timeout: 10_000 });
-
-    // Give the session a deterministic title so the new row is easy to
-    // pick out of the sidebar afterwards.
-    const titleField = inputByLabel(page, "Session title");
-    await titleField.fill("story-launched");
-
-    await page.getByRole("button", { name: "Next" }).click();
-
-    // Agent step: pick claude.
-    await expect(
-      page.getByRole("heading", { name: /Which AI agent/i }),
-    ).toBeVisible({ timeout: 10_000 });
-    await page.getByRole("button", { name: "claude", exact: true }).click();
-    await page.getByRole("button", { name: "Next" }).click();
-
-    // Review step.
+    // skipToReview opens the wizard on Review & Launch.
     await expect(
       page.getByRole("heading", { name: /Review & Launch/i }),
     ).toBeVisible({ timeout: 10_000 });
+
+    // Inline-edit the title via Review's EditableRow so the new row is
+    // easy to pick out of the sidebar afterwards.
+    await page.getByRole("button", { name: /^Title/i }).click();
+    const titleInput = page.locator('input[placeholder="Auto-generated"]').first();
+    await titleInput.fill("story-launched");
+    await titleInput.blur();
 
     const before = await listSessions(serve.baseUrl);
     await page.keyboard.press(`${MOD}+Enter`);

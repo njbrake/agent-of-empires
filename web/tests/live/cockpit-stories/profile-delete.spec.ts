@@ -29,7 +29,9 @@ base("delete a profile via ProfileSelector", async ({ page }, testInfo) => {
     ).toHaveCount(1, { timeout: 5_000 });
 
     await select.selectOption("delete-me");
-    await page.getByRole("button", { name: "Delete" }).click();
+    // Use title="Delete profile" to disambiguate from any other Delete
+    // affordance and ensure we click the ProfileSelector Delete button.
+    await page.getByTitle("Delete profile").click();
 
     await expect(
       select.locator("option", { hasText: "delete-me" }),

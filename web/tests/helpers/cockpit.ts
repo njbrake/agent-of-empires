@@ -125,6 +125,18 @@ export async function openSettingsTab(page: Page, label: string): Promise<void> 
 }
 
 /**
+ * Locator scoped to the active SessionWizard dialog. The wizard renders
+ * a fixed-position overlay that visually covers the sidebar; without
+ * this scope, `getByRole`/`getByText` queries can match background
+ * sidebar / topbar elements behind the overlay.
+ */
+export function wizardScope(page: Page): Locator {
+  return page.locator(
+    'div.fixed.inset-0.z-50:has(h1:has-text("New session"))',
+  );
+}
+
+/**
  * Resolve the first text input that sits in the same wrapper `<div>`
  * as a `<label>` matching the given text. Works for both the wizard's
  * SessionStep field layout and FormFields TextField.

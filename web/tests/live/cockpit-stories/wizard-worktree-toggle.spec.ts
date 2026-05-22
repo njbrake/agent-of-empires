@@ -20,10 +20,23 @@ base("wizard worktree toggle hides and shows the branch input", async ({ page },
 
   try {
     await page.goto(serve.baseUrl);
-    const groupHeader = page.locator('[data-testid="sidebar-group-header"]').first();
-    await groupHeader.getByRole("button", { name: /New session in /i }).click();
+    // Use the global New session button (no prefill) so the wizard
+    // opens on ProjectStep; group-level prefill skips to Review where
+    // the worktree toggle is not rendered.
+    await page
+      .getByRole("button", { name: "New session", exact: true })
+      .first()
+      .click();
+    const wizard = page.locator(
+      'div.fixed.inset-0.z-50:has(h1:has-text("New session"))',
+    );
+    await wizard
+      .locator("button")
+      .filter({ hasText: "project" })
+      .first()
+      .click();
+    await page.getByRole("button", { name: "Next" }).click();
 
-    // Prefill.path lands the wizard on the Session step directly.
     await expect(
       page.getByRole("heading", { name: "Name your session", exact: true }),
     ).toBeVisible({ timeout: 15_000 });

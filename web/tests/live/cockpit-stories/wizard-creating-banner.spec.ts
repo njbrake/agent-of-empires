@@ -35,17 +35,8 @@ base("Creating session banner appears while POST is in flight", async ({ page },
     const groupHeader = page.locator('[data-testid="sidebar-group-header"]').first();
     await groupHeader.getByRole("button", { name: /New session in /i }).click();
 
-    await expect(
-      page.getByRole("heading", { name: "Name your session", exact: true }),
-    ).toBeVisible({ timeout: 10_000 });
-    await page.getByRole("button", { name: "Next" }).click();
-
-    await expect(
-      page.getByRole("heading", { name: /Which AI agent/i }),
-    ).toBeVisible({ timeout: 10_000 });
-    await page.getByRole("button", { name: "claude", exact: true }).click();
-    await page.getByRole("button", { name: "Next" }).click();
-
+    // skipToReview lands the wizard on the Review step with prefilled
+    // values; click Launch directly.
     await expect(
       page.getByRole("heading", { name: /Review & Launch/i }),
     ).toBeVisible({ timeout: 10_000 });

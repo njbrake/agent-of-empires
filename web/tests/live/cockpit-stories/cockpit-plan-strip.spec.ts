@@ -66,11 +66,12 @@ base("plan session update renders in PlanStrip", async ({ page }, testInfo) => {
     await composer.press("Enter");
 
     // PlanStrip shows the current step (first in-progress entry).
-    await expect(page.getByText("Investigate the bug")).toBeVisible({
-      timeout: 15_000,
-    });
-    // Progress label "1/3" matches one in-progress + two pending = 0
-    // completed; PlanStrip prints completed/total.
+    // The same title also appears in the expanded list below, so use
+    // `.first()` to scope to the header.
+    await expect(
+      page.getByText("Investigate the bug").first(),
+    ).toBeVisible({ timeout: 15_000 });
+    // Progress label "0/3": zero done, three total.
     await expect(page.getByText("0/3")).toBeVisible({ timeout: 15_000 });
   } finally {
     await serve.stop();

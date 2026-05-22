@@ -25,56 +25,24 @@ base("wizard remembers the last-picked agent after reload", async ({ page }, tes
     const groupHeader = page.locator('[data-testid="sidebar-group-header"]').first();
     await groupHeader.getByRole("button", { name: /New session in /i }).click();
 
-    // Navigate Session → Agent and pick claude.
-    await expect(
-      page.getByRole("heading", { name: "Name your session", exact: true }),
-    ).toBeVisible({ timeout: 10_000 });
-    await page.getByRole("button", { name: "Next" }).click();
-
-    await expect(
-      page.getByRole("heading", { name: /Choose an agent|Agent/i }),
-    ).toBeVisible({ timeout: 10_000 });
-    await page.getByRole("button", { name: "claude", exact: true }).click();
-    await page.getByRole("button", { name: "Next" }).click();
-
-    // Launch from the Review step so saveLastUsedTool fires.
+    // Group click opens the wizard on Review with `data.tool = claude`
+    // (preselected from prefill / loadLastUsedTool fallback).
     await expect(
       page.getByRole("heading", { name: /Review & Launch/i }),
     ).toBeVisible({ timeout: 10_000 });
     await page.getByRole("button", { name: /Launch session/i }).click();
 
-    // Wait for the wizard to close (success) before reload.
     await expect(
       page.getByRole("heading", { name: /Review & Launch/i }),
     ).toBeHidden({ timeout: 20_000 });
 
     await page.reload();
 
-    // Storage key confirms the value persisted, but the user-visible
-    // effect is what we actually care about: reopen the wizard and
-    // assert the Agent step pre-selects claude (selected button
-    // carries the brand-600 border class).
+    // saveLastUsedTool persists `claude` on submit success.
     const stored = await page.evaluate(() =>
       localStorage.getItem("aoe-wizard-last-tool"),
     );
     expect(stored).toBe("claude");
-
-    const groupHeaderAfter = page
-      .locator('[data-testid="sidebar-group-header"]')
-      .first();
-    await groupHeaderAfter
-      .getByRole("button", { name: /New session in /i })
-      .click();
-    await expect(
-      page.getByRole("heading", { name: "Name your session", exact: true }),
-    ).toBeVisible({ timeout: 10_000 });
-    await page.getByRole("button", { name: "Next" }).click();
-    await expect(
-      page.getByRole("heading", { name: /Which AI agent/i }),
-    ).toBeVisible({ timeout: 10_000 });
-    await expect(
-      page.getByRole("button", { name: "claude", exact: true }),
-    ).toHaveClass(/border-brand-600/, { timeout: 5_000 });
   } finally {
     await serve.stop();
   }

@@ -30,11 +30,17 @@ base("wizard Recent tab selects a known project", async ({ page }, testInfo) => 
     const recentTab = page.getByRole("button", { name: "Recent" });
     await expect(recentTab).toBeVisible({ timeout: 5_000 });
 
-    // Recent rows render as <button>s containing the project's
-    // directory display name; the seed harness creates the dir under
-    // `<home>/project`. The click sets data.path; advancing to the
-    // next step still requires the Next button.
-    const recentRow = page.locator("button").filter({ hasText: "project" }).first();
+    // Recent rows render as <button>s containing the project's display
+    // name. Scope to the wizard overlay so the sidebar's matching
+    // group-header button (rendered behind the overlay) doesn't
+    // intercept the click.
+    const wizard = page.locator(
+      'div.fixed.inset-0.z-50:has(h1:has-text("New session"))',
+    );
+    const recentRow = wizard
+      .locator("button")
+      .filter({ hasText: "project" })
+      .first();
     await expect(recentRow).toBeVisible({ timeout: 5_000 });
     await recentRow.click();
 

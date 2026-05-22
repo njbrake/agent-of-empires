@@ -26,6 +26,20 @@ base("ModePicker switches the cockpit mode", async ({ page }, testInfo) => {
     const sessions = await listSessions(serve.baseUrl);
     const sessionId = sessions[0]!.id;
     await enableCockpitAndWait(serve.baseUrl, sessionId);
+    // Explicit spawn so the supervisor has an active ACP session
+    // attached before setMode dispatches. Without this, /cockpit/mode
+    // can race the implicit spawn from enable and fail silently.
+    const spawnRes = await fetch(
+      `${serve.baseUrl}/api/sessions/${sessionId}/cockpit/spawn`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ agent: "claude" }),
+      },
+    );
+    if (![200, 202, 409].includes(spawnRes.status)) {
+      throw new Error(`cockpit spawn failed: ${spawnRes.status}`);
+    }
 
     await page.goto(`${serve.baseUrl}/session/${encodeURIComponent(sessionId)}`);
     await waitForCockpitView(page);

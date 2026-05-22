@@ -5,7 +5,6 @@
 // many users prefer over the keyboard chord.
 
 import { test as base, expect } from "@playwright/test";
-import { inputByLabel } from "../../helpers/cockpit";
 import {
   spawnAoeServe,
   listSessions,
@@ -26,21 +25,14 @@ base("Launch button on Review step creates the session", async ({ page }, testIn
     await groupHeader.getByRole("button", { name: /New session in /i }).click();
 
     await expect(
-      page.getByRole("heading", { name: "Name your session", exact: true }),
-    ).toBeVisible({ timeout: 10_000 });
-    const titleField = inputByLabel(page, "Session title");
-    await titleField.fill("story-launched-button");
-    await page.getByRole("button", { name: "Next" }).click();
-
-    await expect(
-      page.getByRole("heading", { name: /Which AI agent/i }),
-    ).toBeVisible({ timeout: 10_000 });
-    await page.getByRole("button", { name: "claude", exact: true }).click();
-    await page.getByRole("button", { name: "Next" }).click();
-
-    await expect(
       page.getByRole("heading", { name: /Review & Launch/i }),
     ).toBeVisible({ timeout: 10_000 });
+
+    // Edit the title inline so the new row is easy to find in the sidebar.
+    await page.getByRole("button", { name: /^Title/i }).click();
+    const titleInput = page.locator('input[placeholder="Auto-generated"]').first();
+    await titleInput.fill("story-launched-button");
+    await titleInput.blur();
 
     const before = await listSessions(serve.baseUrl);
     await page.getByRole("button", { name: /Launch session/i }).click();

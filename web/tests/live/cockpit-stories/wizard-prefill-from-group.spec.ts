@@ -31,10 +31,10 @@ base("group-level New session prefills the wizard", async ({ page }, testInfo) =
     });
     await newInGroup.click();
 
-    // With a pre-filled path the wizard skips ProjectStep and opens on
-    // the Session step ("Name your session").
+    // skipToReview lands the wizard directly on the Review & Launch
+    // step with the prefill values populated.
     await expect(
-      page.getByRole("heading", { name: "Name your session", exact: true }),
+      page.getByRole("heading", { name: /Review & Launch/i }),
     ).toBeVisible({ timeout: 10_000 });
   } finally {
     await serve.stop();
