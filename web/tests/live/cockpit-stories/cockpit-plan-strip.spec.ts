@@ -73,8 +73,11 @@ base("plan session update renders in PlanStrip", async ({ page }, testInfo) => {
     await expect(
       page.getByText("Investigate the bug").first(),
     ).toBeVisible({ timeout: 15_000 });
-    // Progress label "0/3": zero done, three total.
-    await expect(page.getByText("0/3")).toBeVisible({ timeout: 15_000 });
+    // Progress label "0/3": zero done, three total. Sidebar session
+    // row also renders the same "0/3" counter, so `.first()` scopes
+    // to the cockpit PlanStrip (which mounts before the sidebar one
+    // updates).
+    await expect(page.getByText("0/3").first()).toBeVisible({ timeout: 15_000 });
   } finally {
     await serve.stop();
     rmSync(scriptDir, { recursive: true, force: true });

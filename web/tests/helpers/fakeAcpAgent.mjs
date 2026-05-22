@@ -157,8 +157,15 @@ const DEFAULT_PERMISSION_OPTIONS = [
   { optionId: "reject-always", name: "Reject always", kind: "reject_always" },
 ];
 
+// Per-session cancel flags. session/cancel is a notification (no id);
+// the in-flight session/prompt loop polls this flag at each step and
+// short-circuits when set so the prompt returns with stopReason
+// "cancelled" instead of running the rest of the scripted updates.
+const cancelFlags = new Map();
+
 async function emitSessionUpdates(sessionId, updates) {
   for (const u of updates) {
+    if (cancelFlags.get(sessionId)) return;
     if (u && u.sessionUpdate === "wait_ms") {
       // Story-spec helper: pause emission inside a turn so the UI
       // observes the turn as active long enough to click Stop, queue a
@@ -168,7 +175,17 @@ async function emitSessionUpdates(sessionId, updates) {
       // mask bad fixture data. Cap at 60s so a typo can't hang CI.
       const raw = typeof u.ms === "number" && Number.isFinite(u.ms) ? u.ms : 200;
       const ms = Math.min(60_000, Math.max(0, Math.floor(raw)));
-      await new Promise((resolve) => setTimeout(resolve, ms));
+      // Sleep in 50ms slices so a cancel notification arriving during
+      // a long wait_ms doesn't have to wait for the full duration
+      // before the cancel flag is observed.
+      const sliceMs = 50;
+      let remaining = ms;
+      while (remaining > 0) {
+        if (cancelFlags.get(sessionId)) return;
+        const slice = Math.min(sliceMs, remaining);
+        await new Promise((resolve) => setTimeout(resolve, slice));
+        remaining -= slice;
+      }
       continue;
     }
     if (u && u.sessionUpdate === "permission_request") {
@@ -272,24 +289,19 @@ async function handleRequest(msg) {
       return;
     }
 
-    case "session/cancel": {
-      const sessionId = params?.sessionId;
-      sendResult(id, {});
-      if (sessionId) {
-        await emitSessionUpdates(sessionId, [
-          { sessionUpdate: "stopped", stopReason: "cancelled" },
-        ]);
-      }
-      return;
-    }
-
     case "session/prompt": {
       const sessionId = params?.sessionId;
       const turn = nextTurn();
+      // Reset any prior cancel flag so this turn starts clean.
+      if (sessionId) cancelFlags.set(sessionId, false);
       if (sessionId) {
         await emitSessionUpdates(sessionId, turn.updates);
       }
-      sendResult(id, { stopReason: turn.stopReason ?? "end_turn" });
+      const wasCancelled = sessionId ? cancelFlags.get(sessionId) : false;
+      if (sessionId) cancelFlags.set(sessionId, false);
+      sendResult(id, {
+        stopReason: wasCancelled ? "cancelled" : (turn.stopReason ?? "end_turn"),
+      });
       return;
     }
 
@@ -322,12 +334,20 @@ async function main() {
       // session/request_permission). Resolve the awaiting Promise.
       resolveOutbound(msg);
     } else if (msg.method) {
-      // Notification from client (e.g. fs/* response). We don't model
-      // delegated FS/terminal call results; tests that need them script
-      // their turns to avoid triggering tool calls.
-      process.stderr.write(
-        `[fakeAcpAgent] received notification: ${msg.method}\n`,
-      );
+      // Notification from client. session/cancel is the one we model:
+      // per ACP spec it's a notification (no id), and the in-flight
+      // session/prompt MUST be aborted with stopReason="cancelled".
+      // Other notifications (fs/* responses, etc) are ignored; tests
+      // that need them script their turns to avoid triggering tool
+      // calls.
+      if (msg.method === "session/cancel") {
+        const sid = msg.params?.sessionId;
+        if (sid) cancelFlags.set(sid, true);
+      } else {
+        process.stderr.write(
+          `[fakeAcpAgent] received notification: ${msg.method}\n`,
+        );
+      }
     }
   });
 
