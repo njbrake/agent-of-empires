@@ -33,12 +33,20 @@ base("Cmd/Ctrl+` activates the paired terminal panel", async ({ page }, testInfo
 
     // The paired terminal panel mounts inside the right pane and is
     // tagged with data-term="paired"; clicking Cmd/Ctrl+` should
-    // surface it as the active focus owner.
+    // surface it as the active focus owner. Wait for both terminal
+    // PTY WebSockets (main session + paired right-pane) to be `open`
+    // before pressing the chord; while either side shows the
+    // `Reconnecting…` banner, the keyboard handler races the WS open
+    // and focus never lands on the connecting terminal.
+    const paired = page.locator('[data-term="paired"]').first();
+    await expect(paired).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByText(/Reconnecting/i)).toBeHidden({
+      timeout: 15_000,
+    });
+
     await page.locator("body").click({ position: { x: 5, y: 5 } });
     await page.keyboard.press(`${MOD}+Backquote`);
 
-    const paired = page.locator('[data-term="paired"]').first();
-    await expect(paired).toBeVisible({ timeout: 10_000 });
     // Visibility alone can pass even if the chord no-ops because the
     // right pane is already mounted. Confirm focus actually lives
     // inside the paired panel after the chord; that's the real signal.
