@@ -1067,3 +1067,104 @@ fn test_cli_add_attaches_to_existing_worktree() {
         Some("feat/existing"),
     );
 }
+
+#[test]
+#[serial]
+fn test_cli_add_throwaway_provisions_temp_dir() {
+    let h = TuiTestHarness::new("cli_add_throwaway");
+
+    let add_output = h.run_cli(&["add", "--throwaway", "-t", "QuickThrowaway"]);
+    assert!(
+        add_output.status.success(),
+        "aoe add --throwaway failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&add_output.stdout),
+        String::from_utf8_lossy(&add_output.stderr),
+    );
+    let stdout = String::from_utf8_lossy(&add_output.stdout);
+    assert!(
+        stdout.contains("Throwaway: yes"),
+        "expected 'Throwaway: yes' summary line; got:\n{}",
+        stdout
+    );
+
+    let json = read_sessions_json(&h);
+    let sessions = json.as_array().expect("sessions array");
+    let session = sessions
+        .iter()
+        .find(|s| s["title"].as_str() == Some("QuickThrowaway"))
+        .expect("QuickThrowaway must exist");
+    assert_eq!(session["throwaway"].as_bool(), Some(true));
+    let project_path = session["project_path"]
+        .as_str()
+        .expect("project_path must be a string");
+    let path = Path::new(project_path);
+    assert!(path.exists(), "throwaway dir must exist: {}", project_path);
+    assert!(
+        path.starts_with(std::env::temp_dir()),
+        "throwaway dir must live under temp_dir(): {}",
+        project_path
+    );
+    assert!(
+        path.file_name()
+            .and_then(|n| n.to_str())
+            .is_some_and(|n| n.starts_with("aoe-throwaway-")),
+        "throwaway dir basename must use the aoe-throwaway- prefix: {}",
+        project_path
+    );
+
+    // Capture path before rm so we can assert cleanup.
+    let captured = path.to_path_buf();
+
+    let rm_output = h.run_cli(&["rm", "QuickThrowaway"]);
+    assert!(
+        rm_output.status.success(),
+        "aoe rm failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&rm_output.stdout),
+        String::from_utf8_lossy(&rm_output.stderr),
+    );
+    assert!(
+        !captured.exists(),
+        "throwaway dir must be removed after aoe rm: {}",
+        captured.display(),
+    );
+}
+
+#[test]
+#[serial]
+fn test_cli_add_throwaway_rejects_explicit_path() {
+    let h = TuiTestHarness::new("cli_add_throwaway_path");
+    let project = h.project_path();
+
+    let output = h.run_cli(&["add", project.to_str().unwrap(), "--throwaway"]);
+    assert!(
+        !output.status.success(),
+        "aoe add <path> --throwaway must error"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Cannot specify a project path with --throwaway"),
+        "unexpected error output:\n{}",
+        stderr,
+    );
+}
+
+#[test]
+#[serial]
+fn test_cli_add_throwaway_conflicts_with_worktree_flag() {
+    let h = TuiTestHarness::new("cli_add_throwaway_worktree");
+
+    let output = h.run_cli(&["add", "--throwaway", "-w", "feat/x"]);
+    assert!(
+        !output.status.success(),
+        "aoe add --throwaway -w must error at clap layer"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // clap's mutex error wording mentions one of the two flag names.
+    assert!(
+        stderr.contains("--throwaway")
+            || stderr.contains("--worktree")
+            || stderr.contains("cannot be used"),
+        "unexpected error output:\n{}",
+        stderr,
+    );
+}

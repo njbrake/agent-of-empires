@@ -11,9 +11,9 @@ use crate::session::{civilizations, GroupTree, Instance, SandboxInfo, Storage};
 
 #[derive(Args)]
 pub struct AddArgs {
-    /// Project directory (defaults to current directory)
-    #[arg(default_value = ".")]
-    path: PathBuf,
+    /// Project directory (defaults to current directory). Omit when
+    /// using `--throwaway`.
+    path: Option<PathBuf>,
 
     /// Session title (defaults to folder name)
     #[arg(short = 't', long)]
@@ -117,22 +117,55 @@ pub struct AddArgs {
     #[cfg(feature = "serve")]
     #[arg(long = "model")]
     model: Option<String>,
+
+    /// Create the session in a fresh temporary directory instead of a
+    /// project path. The directory is removed when the session is deleted.
+    /// Mutually exclusive with worktree-related flags.
+    #[arg(
+        short = 'T',
+        long = "throwaway",
+        conflicts_with_all = [
+            "worktree_branch",
+            "create_branch",
+            "base_branch",
+            "extra_repos",
+            "projects",
+            "no_submodules",
+        ]
+    )]
+    throwaway: bool,
 }
 
 #[tracing::instrument(target = "cli.add", skip_all, fields(profile = %profile))]
 pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
-    let mut path = if args.path.as_os_str() == "." {
-        std::env::current_dir()?
+    // Throwaway sessions have no project path; the temp dir is provisioned
+    // below once we know the instance id. Reject an explicitly-passed path
+    // loudly so `aoe add /some/repo --throwaway` does not silently drop the
+    // path arg.
+    if args.throwaway && args.path.is_some() {
+        bail!(
+            "Cannot specify a project path with --throwaway\nTip: drop the path argument, the session runs in a fresh temp directory"
+        );
+    }
+
+    let mut path = if args.throwaway {
+        // Placeholder; the real path is set after `Instance::new` runs and
+        // `throwaway::provision_throwaway_dir` returns a fresh temp dir.
+        PathBuf::new()
     } else {
-        if !args.path.exists() {
-            bail!("Path does not exist: {}", args.path.display());
+        let raw = args.path.clone().unwrap_or_else(|| PathBuf::from("."));
+        if raw.as_os_str() == "." {
+            std::env::current_dir()?
+        } else {
+            if !raw.exists() {
+                bail!("Path does not exist: {}", raw.display());
+            }
+            raw.canonicalize()
+                .with_context(|| format!("Failed to resolve path: {}", raw.display()))?
         }
-        args.path
-            .canonicalize()
-            .with_context(|| format!("Failed to resolve path: {}", args.path.display()))?
     };
 
-    if !path.is_dir() {
+    if !args.throwaway && !path.is_dir() {
         bail!("Path is not a directory: {}", path.display());
     }
 
@@ -316,6 +349,7 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
                 worktree_info_opt.as_ref(),
                 workspace_info_opt.as_ref(),
                 args.create_branch,
+                None,
             );
             return Ok(());
         }
@@ -332,6 +366,7 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
                 worktree_info_opt.as_ref(),
                 workspace_info_opt.as_ref(),
                 args.create_branch,
+                None,
             );
             return Ok(());
         }
@@ -343,6 +378,16 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
 
     let mut instance = Instance::new(&final_title, path.to_str().unwrap_or(""));
     instance.source_profile = profile.to_string();
+
+    // Throwaway sessions: provision a fresh temp directory keyed on the
+    // freshly-generated instance id. The session layer owns the naming
+    // contract (`aoe-throwaway-<id>`) and the deletion guard.
+    if args.throwaway {
+        let dir = crate::session::throwaway::provision_throwaway_dir(&instance.id)?;
+        path = dir;
+        instance.project_path = path.to_string_lossy().to_string();
+        instance.throwaway = true;
+    }
 
     if let Some(group) = &group_path {
         instance.group_path = group.trim().to_string();
@@ -620,6 +665,11 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
             instance.worktree_info.as_ref(),
             instance.workspace_info.as_ref(),
             args.create_branch,
+            if instance.throwaway {
+                Some(std::path::Path::new(&instance.project_path))
+            } else {
+                None
+            },
         );
         return Err(e);
     }
@@ -652,6 +702,11 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
                 instance.worktree_info.as_ref(),
                 instance.workspace_info.as_ref(),
                 args.create_branch,
+                if instance.throwaway {
+                    Some(std::path::Path::new(&instance.project_path))
+                } else {
+                    None
+                },
             );
             return Ok(());
         }
@@ -661,6 +716,11 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
                 instance.worktree_info.as_ref(),
                 instance.workspace_info.as_ref(),
                 args.create_branch,
+                if instance.throwaway {
+                    Some(std::path::Path::new(&instance.project_path))
+                } else {
+                    None
+                },
             );
             return Err(e);
         }
@@ -679,6 +739,9 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
     }
     if instance.sandbox_info.is_some() {
         println!("  Sandbox: enabled");
+    }
+    if instance.throwaway {
+        println!("  Throwaway: yes");
     }
     if instance.yolo_mode {
         println!("  YOLO:    enabled");
@@ -778,6 +841,7 @@ fn cleanup_partial_session(
     worktree_info: Option<&crate::session::WorktreeInfo>,
     workspace_info: Option<&crate::session::WorkspaceInfo>,
     created_branch: bool,
+    throwaway_dir: Option<&std::path::Path>,
 ) {
     if let Some(wt) = worktree_info {
         if wt.managed_by_aoe {
@@ -801,6 +865,14 @@ fn cleanup_partial_session(
             }
         }
         let _ = std::fs::remove_dir_all(&ws.workspace_dir);
+    }
+    // Remove the throwaway directory provisioned earlier in this run.
+    // Guarded by `is_throwaway_path` (same check the deletion path uses),
+    // so a tampered or unexpected `project_path` is a no-op.
+    if let Some(throwaway) = throwaway_dir {
+        if crate::session::throwaway::is_throwaway_path(throwaway) {
+            let _ = std::fs::remove_dir_all(throwaway);
+        }
     }
 }
 
