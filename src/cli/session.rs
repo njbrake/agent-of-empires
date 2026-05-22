@@ -600,8 +600,7 @@ async fn restart_all_sessions(profile: &str, parallel: usize) -> Result<()> {
         Ok(orphaned)
     })?;
 
-    // Filter by id, not title: two distinct sessions can share a title on
-    // different paths (is_duplicate_session blocks only same-title-same-path).
+    // Sessions can share a title across paths; orphan filter keys on id.
     let orphaned_ids: HashSet<&String> = orphaned.iter().map(|(id, _)| id).collect();
     succeeded.retain(|(id, _, _)| !orphaned_ids.contains(id));
 

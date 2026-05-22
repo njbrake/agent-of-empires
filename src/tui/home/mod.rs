@@ -683,9 +683,8 @@ impl HomeView {
                     // freshness state when the user toggles a setting
                     // that triggers a reload mid-window.
                     inst.idle_entered_at = prev.idle_entered_at;
-                    // agent_session_id NOT carried: writers persist synchronously
-                    // through Storage::update before reload runs, so disk is
-                    // authoritative; carrying memory would resurrect a peer-cleared sid.
+                    // agent_session_id is disk-authoritative; writers persist
+                    // synchronously through Storage::update before reload runs.
                     // Carry the resume-fallback exclusion set across
                     // reloads. Without this, a stale sid that the cascade
                     // just cleared would be re-imported on the next 5s reload
@@ -1034,6 +1033,12 @@ impl HomeView {
                         );
                     }
                 } else {
+                    tracing::warn!(
+                        target: "tui.home",
+                        profile = %profile,
+                        count = items.len(),
+                        "apply_session_id_updates: no storage registered for profile; falling back to per-id persist (N flock cycles)"
+                    );
                     for (id, session_id) in &items {
                         crate::session::persist_session_to_storage(&profile, id, session_id);
                     }
@@ -2398,6 +2403,13 @@ impl HomeView {
                 }
                 Ok(())
             })?;
+        } else {
+            tracing::warn!(
+                target: "tui.home",
+                profile = %profile,
+                id = %id_owned,
+                "apply_user_action: no storage registered for profile; in-memory mutation will not persist"
+            );
         }
         Ok(())
     }

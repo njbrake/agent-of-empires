@@ -720,8 +720,11 @@ impl Instance {
     }
 
     /// Splice TUI-mirrored, persisted fields from `src` onto `self`. Used by
-    /// `HomeView::save` under the flock for fields the TUI is the sole disk
-    /// writer of (the daemon's `status_poll_loop` keeps these in memory only).
+    /// `HomeView::save` for fields the TUI is the canonical disk writer of
+    /// (the daemon's `status_poll_loop` keeps these in memory only). The
+    /// server's `send_message` respawn briefly writes `status` via
+    /// `apply_post_restart_sync`; the resulting transient mis-paint
+    /// converges on the next `status_poll` tick.
     /// User-action fields (archived/favorited/snoozed/title/group_path/...)
     /// are NOT here; they go through `apply_user_action` per-action so peer
     /// writers (CLI) cannot be clobbered by a stale TUI snapshot.
@@ -769,7 +772,8 @@ impl Instance {
 
         let archived_changed = pre.archived_at != post.archived_at;
         let favorited_changed = pre.favorited_at != post.favorited_at;
-        // Read self (post-merge) to catch both TUI-side and peer-side touches.
+        // Touch is an event invariant: any advance of last_accessed_at
+        // (TUI-side or peer-side) dethrones a concurrent archive.
         let touched = self.last_accessed_at > pre.last_accessed_at;
 
         // archive(): archived=Some => favorited=None
@@ -781,8 +785,7 @@ impl Instance {
             self.archived_at = None;
             self.snoozed_until = None;
         }
-        // touch_last_accessed(): clears archived + snoozed. Runs LAST so a
-        // fresh touch beats a concurrent archive (user rule: messaging unarchives).
+        // touch_last_accessed(): clears archived + snoozed.
         if touched {
             self.archived_at = None;
             self.snoozed_until = None;
@@ -3188,6 +3191,24 @@ mod tests {
             disk.archived_at.is_some(),
             "post.favorited_at == None; favorite-invariant rule must NOT fire"
         );
+    }
+
+    #[test]
+    fn test_merge_diff_uses_self_not_post_for_touch_detection() {
+        let mut pre = Instance::new("s", "/tmp/x");
+        pre.last_accessed_at = Some(Utc::now() - chrono::Duration::seconds(60));
+        pre.archived_at = Some(Utc::now() - chrono::Duration::seconds(120));
+
+        let mut post = pre.clone();
+        post.title = "renamed".into();
+
+        let mut disk = pre.clone();
+        disk.touch_last_accessed();
+
+        disk.merge_user_action_diff(&pre, &post);
+
+        assert_eq!(disk.title, "renamed");
+        assert!(disk.archived_at.is_none());
     }
 
     #[test]

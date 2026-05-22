@@ -21,13 +21,16 @@
 //! `save_groups` helpers were removed entirely. This keeps it structurally
 //! impossible to bypass the locks.
 //!
-//! Lock-ordering rule across the process: `AppState.instances` (tokio RwLock,
-//! server side) is acquired BEFORE `Storage`'s per-profile mutex, never the
-//! reverse; the cross-process `flock` is acquired AFTER the in-process mutex
-//! and released BEFORE it (RAII drop order). The closure passed to `update`
-//! is `FnOnce(...) -> Result<R>` and cannot await, so `std::sync::Mutex` is
-//! safe across the body even on the tokio runtime: server callers wrap
-//! `update` in `tokio::task::spawn_blocking`, which is the existing pattern.
+//! Lock-ordering rule across the process: server callers MUST drop
+//! `AppState.instances` (tokio RwLock) before acquiring `Storage`'s
+//! per-profile mutex via `tokio::task::spawn_blocking(... storage.update)`.
+//! The flock can park on a wedged peer for arbitrary time; holding the
+//! tokio RwLock across the wait would block every other reader/writer of
+//! `AppState.instances` and park the worker thread. The cross-process
+//! `flock` is acquired AFTER the in-process mutex and released BEFORE it
+//! (RAII drop order). The closure passed to `update` is
+//! `FnOnce(...) -> Result<R>` and cannot await, so `std::sync::Mutex` is
+//! safe across the body even on the tokio runtime.
 //!
 //! Closures must remain CPU/memory only (no network, no user input, no tmux
 //! work). A closure that hangs holds both layers indefinitely and blocks
