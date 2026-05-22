@@ -315,6 +315,7 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
                 &path,
                 worktree_info_opt.as_ref(),
                 workspace_info_opt.as_ref(),
+                args.create_branch,
             );
             return Ok(());
         }
@@ -330,6 +331,7 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
                 &path,
                 worktree_info_opt.as_ref(),
                 workspace_info_opt.as_ref(),
+                args.create_branch,
             );
             return Ok(());
         }
@@ -617,6 +619,7 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
             &path,
             instance.worktree_info.as_ref(),
             instance.workspace_info.as_ref(),
+            args.create_branch,
         );
         return Err(e);
     }
@@ -645,6 +648,7 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
             &path,
             instance.worktree_info.as_ref(),
             instance.workspace_info.as_ref(),
+            args.create_branch,
         );
         return Err(e);
     }
@@ -723,11 +727,15 @@ fn cleanup_partial_session(
     path: &std::path::Path,
     worktree_info: Option<&crate::session::WorktreeInfo>,
     workspace_info: Option<&crate::session::WorkspaceInfo>,
+    created_branch: bool,
 ) {
     if let Some(wt) = worktree_info {
         if wt.managed_by_aoe {
             if let Ok(git_wt) = crate::git::GitWorktree::new(PathBuf::from(&wt.main_repo_path)) {
                 let _ = git_wt.remove_worktree(path, false);
+                if created_branch {
+                    let _ = git_wt.delete_branch(&wt.branch);
+                }
             }
         }
     }
