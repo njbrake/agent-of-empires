@@ -2572,40 +2572,20 @@ impl Instance {
             );
             shell_check
         };
-        self.status = match detected {
-            Status::Idle if self.has_command_override() => {
-                // Custom commands run agents through wrapper scripts that appear
-                // as shell processes to tmux. Only declare Error when the pane is
-                // actually dead; don't use is_shell_stale() since the shell IS
-                // the expected wrapper process.
-                if is_dead {
-                    Status::Error
-                } else {
-                    Status::Unknown
-                }
-            }
-            Status::Idle if is_dead => Status::Error,
-            Status::Idle if is_shell_stale() => {
-                // A shell is the foreground process but the pane is alive.
-                // Check captured pane content: if it contains the agent's
-                // UI the agent is still alive; only declare Error when the
-                // content looks like a bare shell prompt.
-                if pane_has_agent_content(&pane_content, &self.tool) {
-                    tracing::trace!(target: "session.store",
-                        "status '{}': shell stale but pane has agent content, staying Idle",
-                        self.title,
-                    );
-                    Status::Idle
-                } else {
-                    tracing::trace!(target: "session.store",
-                        "status '{}': shell stale, no agent content, setting Error",
-                        self.title,
-                    );
-                    Status::Error
-                }
-            }
-            other => other,
+        let has_command_override = self.has_command_override();
+        let shell_stale = if detected == Status::Idle && !has_command_override && !is_dead {
+            is_shell_stale()
+        } else {
+            false
         };
+        self.status = resolve_detected_status(
+            detected,
+            is_dead,
+            shell_stale,
+            has_command_override,
+            &pane_content,
+            &self.tool,
+        );
 
         tracing::trace!(target: "session.store", "status '{}': final={:?}", self.title, self.status);
 
@@ -2770,6 +2750,51 @@ fn prepend_exports(exports: &[String], wrapped: String) -> String {
     }
 }
 
+fn resolve_detected_status(
+    detected: Status,
+    is_dead: bool,
+    is_shell_stale: bool,
+    has_command_override: bool,
+    pane_content: &str,
+    tool: &str,
+) -> Status {
+    match detected {
+        Status::Idle if has_command_override => {
+            // Custom commands run agents through wrapper scripts that appear
+            // as shell processes to tmux. Only declare Error when the pane is
+            // actually dead; don't use shell-stale since the shell IS the
+            // expected wrapper process.
+            if is_dead {
+                Status::Error
+            } else {
+                Status::Unknown
+            }
+        }
+        Status::Idle if is_dead => Status::Error,
+        Status::Idle if is_shell_stale => resolve_shell_stale_status(pane_content, tool),
+        other => other,
+    }
+}
+
+fn resolve_shell_stale_status(pane_content: &str, tool: &str) -> Status {
+    if pane_has_agent_content(pane_content, tool) {
+        Status::Idle
+    } else if pane_looks_like_bare_shell_prompt(pane_content) {
+        Status::Error
+    } else {
+        Status::Unknown
+    }
+}
+
+fn pane_looks_like_bare_shell_prompt(raw_content: &str) -> bool {
+    let clean = crate::tmux::utils::strip_ansi(raw_content);
+    let Some(last) = clean.lines().rev().find(|l| !l.trim().is_empty()) else {
+        return false;
+    };
+    let last = last.trim();
+    last.ends_with('$') || last.ends_with('#') || last.ends_with('%') || last.ends_with('\u{276f}')
+}
+
 /// Check whether captured pane content indicates a living agent rather than
 /// a bare shell prompt. Used to prevent `is_shell_stale()` from producing
 /// false `Error` status when the agent binary is a shell wrapper or spawns
@@ -2782,15 +2807,10 @@ fn pane_has_agent_content(raw_content: &str, tool: &str) -> bool {
         return false;
     }
 
-    // If the last visible line looks like a shell prompt, the agent
-    // likely exited and the shell took over. This catches servers with
-    // verbose MOTD that would otherwise exceed the line-count threshold.
-    let last = non_empty.last().unwrap().trim();
-    if last.ends_with('$')
-        || last.ends_with('#')
-        || last.ends_with('%')
-        || last.ends_with('\u{276f}')
-    {
+    // If the last visible line looks like a shell prompt, the agent likely
+    // exited and the shell took over. This catches servers with verbose MOTD
+    // that would otherwise exceed the line-count threshold.
+    if pane_looks_like_bare_shell_prompt(raw_content) {
         return false;
     }
 
@@ -2803,11 +2823,17 @@ fn pane_has_agent_content(raw_content: &str, tool: &str) -> bool {
 
     // Use word-boundary matching so short names like "pi" don't produce
     // false positives inside words like "api" or "pipeline".
-    let tool_lower = tool.to_lowercase();
+    let mut tool_names = vec![tool.to_lowercase()];
+    if let Some(agent) = crate::agents::get_agent(tool) {
+        let binary = agent.binary.to_lowercase();
+        if !tool_names.contains(&binary) {
+            tool_names.push(binary);
+        }
+    }
     let lower = clean.to_lowercase();
     if lower
         .split(|c: char| !c.is_alphanumeric() && c != '-' && c != '_')
-        .any(|word| word == tool_lower)
+        .any(|word| tool_names.iter().any(|name| word == name))
     {
         return true;
     }
@@ -4304,6 +4330,69 @@ mod tests {
     }
 
     #[test]
+    fn test_resolve_detected_status_shell_stale_agent_content_stays_idle() {
+        let content = "ctrl+p commands \u{2022} OpenCode 1.3.13+650d0db";
+        assert_eq!(
+            resolve_detected_status(Status::Idle, false, true, false, content, "opencode"),
+            Status::Idle
+        );
+    }
+
+    #[test]
+    fn test_resolve_detected_status_shell_stale_bare_prompt_is_error() {
+        assert_eq!(
+            resolve_detected_status(
+                Status::Idle,
+                false,
+                true,
+                false,
+                "Welcome\nuser@host:~$ ",
+                "opencode",
+            ),
+            Status::Error
+        );
+    }
+
+    #[test]
+    fn test_resolve_detected_status_shell_stale_unclear_is_unknown() {
+        assert_eq!(
+            resolve_detected_status(
+                Status::Idle,
+                false,
+                true,
+                false,
+                "Restoring previous session...",
+                "opencode",
+            ),
+            Status::Unknown
+        );
+        assert_eq!(
+            resolve_detected_status(Status::Idle, false, true, false, "", "opencode"),
+            Status::Unknown
+        );
+    }
+
+    #[test]
+    fn test_resolve_detected_status_keeps_hard_failures_as_error() {
+        assert_eq!(
+            resolve_detected_status(Status::Idle, true, false, false, "", "opencode"),
+            Status::Error
+        );
+        assert_eq!(
+            resolve_detected_status(Status::Idle, true, true, true, "", "opencode"),
+            Status::Error
+        );
+    }
+
+    #[test]
+    fn test_resolve_detected_status_live_command_override_is_unknown() {
+        assert_eq!(
+            resolve_detected_status(Status::Idle, false, true, true, "$ ", "opencode"),
+            Status::Unknown
+        );
+    }
+
+    #[test]
     fn test_pane_has_agent_content_agent_ui() {
         let opencode_idle = "ctrl+p commands \u{2022} OpenCode 1.3.13+650d0db";
         assert!(pane_has_agent_content(opencode_idle, "opencode"));
@@ -4360,6 +4449,11 @@ mod tests {
 
         // Longer names like "opencode" should still match.
         assert!(pane_has_agent_content("OpenCode v1.0", "opencode"));
+    }
+
+    #[test]
+    fn test_pane_has_agent_content_matches_agent_binary_alias() {
+        assert!(pane_has_agent_content("agy ready", "antigravity"));
     }
 
     mod kill_terminal_if_dead {
