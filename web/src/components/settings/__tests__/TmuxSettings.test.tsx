@@ -22,6 +22,16 @@ function mount(initial: Record<string, unknown> = {}) {
 }
 
 describe("TmuxSettings contract", () => {
+  it("explains that font size is controlled outside tmux", () => {
+    const { container } = mount({});
+
+    expect(container.textContent).toContain(
+      "tmux itself does not control font size",
+    );
+    expect(container.textContent).toContain("Terminal settings");
+    expect(container.textContent).toContain("terminal app");
+  });
+
   it("status_bar select emits tmux.status_bar with the new mode", () => {
     const { onSaveField, container } = mount({
       status_bar: "auto",

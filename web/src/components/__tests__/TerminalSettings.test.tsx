@@ -21,6 +21,17 @@ beforeEach(() => {
 });
 
 describe("TerminalSettings localStorage contract", () => {
+  it("labels font-size controls as applying to web tmux sessions", () => {
+    const { getByText } = render(<TerminalSettings />);
+
+    expect(
+      getByText(/web terminal sessions on mobile devices, including tmux-backed sessions/i),
+    ).toBeTruthy();
+    expect(
+      getByText(/web terminal sessions on desktop, including tmux-backed sessions/i),
+    ).toBeTruthy();
+  });
+
   it("mobile font slider writes mobileFontSize into aoe-web-settings", () => {
     const { container } = render(<TerminalSettings />);
     const slider = container.querySelectorAll(

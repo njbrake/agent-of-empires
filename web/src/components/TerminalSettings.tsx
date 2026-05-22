@@ -51,8 +51,9 @@ export function TerminalSettings() {
             </select>
           </div>
           <p className="text-[11px] text-text-muted mt-1">
-            Font size for the terminal on mobile devices. Pinch the terminal
-            with two fingers to zoom; the new size is saved here.
+            Font size for web terminal sessions on mobile devices, including
+            tmux-backed sessions. Pinch the terminal with two fingers to zoom;
+            the new size is saved here.
           </p>
         </div>
 
@@ -87,8 +88,9 @@ export function TerminalSettings() {
             </select>
           </div>
           <p className="text-[11px] text-text-muted mt-1">
-            Font size for the terminal on desktop. Hold Ctrl and scroll over the
-            terminal (or pinch on a trackpad) to zoom; the new size is saved here.
+            Font size for web terminal sessions on desktop, including
+            tmux-backed sessions. Hold Ctrl and scroll over the terminal (or
+            pinch on a trackpad) to zoom; the new size is saved here.
           </p>
         </div>
 

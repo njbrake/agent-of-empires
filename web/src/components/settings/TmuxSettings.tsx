@@ -24,6 +24,8 @@ export function TmuxSettings({ settings, onSaveField, onUpdate }: Props) {
     <div className="space-y-4">
       <p className="text-xs text-text-dim">
         These settings apply to the TUI (local tmux sessions), not the web dashboard.
+        tmux itself does not control font size; web session font size is in
+        Terminal settings, and local TUI font size comes from your terminal app.
       </p>
       <SelectField
         label="Status bar"
