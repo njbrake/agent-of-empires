@@ -1,27 +1,34 @@
-//! Session storage - JSON file persistence with in-process per-profile locking.
+//! Session storage - JSON file persistence with two-tier write locking.
 //!
 //! `Storage` serialises read-modify-write cycles inside the same process via a
 //! per-profile mutex (one `Arc<Mutex<()>>` per profile name, registered process-
-//! wide). Mutators use `update` (load -> mutate -> save under the lock) or
-//! `commit` (locked wholesale write, for callers that already own the
-//! authoritative in-memory state, e.g. the TUI's `HomeView`). The
-//! `save_workspace_ordering` entry point is `pub(crate)` and only consumed
-//! by `update_workspace_ordering` internally; the per-profile `save` /
-//! `save_groups` helpers have been removed entirely. This keeps it
+//! wide), and across separate OS processes via a blocking exclusive `flock(2)`
+//! on a per-profile `sessions.json.lock` file. Mutators use `update` (load ->
+//! mutate -> save under both locks) or `commit` (locked wholesale write, for
+//! callers that already own the authoritative in-memory state, e.g. the TUI's
+//! `HomeView`). The `save_workspace_ordering` entry point is `pub(crate)` and
+//! only consumed by `update_workspace_ordering` internally; the per-profile
+//! `save` / `save_groups` helpers have been removed entirely. This keeps it
 //! structurally impossible to bypass the lock.
 //!
-//! Lock-ordering rule across the process: `AppState.instances` (tokio RwLock,
-//! server side) is acquired BEFORE `Storage`'s per-profile mutex, never the
-//! reverse. The closure passed to `update` is `FnOnce(...) -> Result<R>` and
-//! cannot await, so `std::sync::Mutex` is safe across the body even on the
-//! tokio runtime: server callers wrap `update` in `tokio::task::spawn_blocking`,
-//! which is the existing pattern.
+//! The cross-process `flock` is required because the TUI (`aoe`), the CLI, and
+//! the `aoe serve` daemon are three separate processes that all mutate the
+//! same profile's `sessions.json`; the in-process mutex alone is invisible to
+//! peers, so their load-modify-write cycles would interleave and clobber rows
+//! (last-writer-wins). The `flock` mirrors the approach in
+//! `recovery::RecoveryLock` and is held for the entire load-modify-write
+//! region of both `update` and `commit`.
 //!
-//! Cross-process races (the TUI and `aoe serve` mutating the same profile
-//! concurrently) are explicitly out of scope here; a future advisory `flock`
-//! would close them.
+//! Lock-ordering rule across the process: `AppState.instances` (tokio RwLock,
+//! server side) is acquired BEFORE `Storage`'s per-profile mutex, which is
+//! acquired before the `flock`; never the reverse. The closure passed to
+//! `update` is `FnOnce(...) -> Result<R>` and cannot await, so
+//! `std::sync::Mutex` is safe across the body even on the tokio runtime:
+//! server callers wrap `update` in `tokio::task::spawn_blocking`, which is the
+//! existing pattern.
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
+use fs2::FileExt;
 use std::collections::HashMap;
 use std::fs;
 use std::io::Write as _;
@@ -77,9 +84,53 @@ fn workspace_ordering_lock() -> &'static Mutex<()> {
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
+/// Cross-process advisory lock guarding a profile's `sessions.json` (and the
+/// sibling `groups.json` it is written with).
+///
+/// The in-process `save_lock` mutex only serialises writers inside one OS
+/// process; the TUI, the CLI, and the `aoe serve` daemon are three separate
+/// processes that all mutate the same profile's files, so without an OS-level
+/// lock their load-modify-write cycles interleave and rows get clobbered
+/// (last-writer-wins). This guard takes a blocking exclusive `flock(2)` on a
+/// dedicated `sessions.json.lock` file next to the data, held for the whole
+/// load-modify-write region and released when the guard drops. It mirrors the
+/// `flock` approach already used by `recovery::RecoveryLock`.
+///
+/// The lock is on a separate `.lock` file rather than on `sessions.json`
+/// itself because `atomic_write` replaces `sessions.json` via `rename(2)`; a
+/// lock held on the old inode would not cover the new one.
+struct SessionsFileLock {
+    _file: fs::File,
+}
+
+impl SessionsFileLock {
+    /// Acquire the exclusive cross-process lock, blocking until no other
+    /// process holds it. The lock file is created if missing and never
+    /// deleted (the lock lives on the open file description, not on the
+    /// file's existence).
+    fn acquire(lock_path: &Path) -> Result<Self> {
+        if let Some(parent) = lock_path.parent() {
+            // Surface an unwritable profile dir here with the real OS error
+            // rather than as a confusing ENOENT from the open() below.
+            fs::create_dir_all(parent)?;
+        }
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(lock_path)
+            .with_context(|| format!("opening sessions lock file {}", lock_path.display()))?;
+        file.lock_exclusive()
+            .with_context(|| format!("acquiring sessions lock {}", lock_path.display()))?;
+        Ok(Self { _file: file })
+    }
+}
+
 pub struct Storage {
     profile: String,
     sessions_path: PathBuf,
+    lock_path: PathBuf,
     save_lock: Arc<Mutex<()>>,
 }
 
@@ -106,11 +157,13 @@ impl Storage {
 
         let profile_dir = get_profile_dir(&profile_name)?;
         let sessions_path = profile_dir.join("sessions.json");
+        let lock_path = profile_dir.join("sessions.json.lock");
         let save_lock = save_lock_for(&profile_name);
 
         Ok(Self {
             profile: profile_name,
             sessions_path,
+            lock_path,
             save_lock,
         })
     }
@@ -177,6 +230,10 @@ impl Storage {
             .save_lock
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        // Cross-process exclusion: the in-process mutex above only covers this
+        // OS process; the TUI, CLI, and daemon are separate processes writing
+        // the same files. The flock spans the whole load-modify-write region.
+        let _flock = SessionsFileLock::acquire(&self.lock_path)?;
         let (mut instances, mut groups) = self.load_with_groups()?;
         let groups_before = groups.clone();
         let result = f(&mut instances, &mut groups)?;
@@ -216,6 +273,9 @@ impl Storage {
             .save_lock
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        // See `update`: the flock serialises this wholesale write against
+        // mutators running in other OS processes for the same profile.
+        let _flock = SessionsFileLock::acquire(&self.lock_path)?;
         let groups = group_tree.get_all_groups();
         let instances_buf = serde_json::to_vec_pretty(instances)?;
         let groups_buf = serde_json::to_vec_pretty(&groups)?;
@@ -436,7 +496,13 @@ mod tests {
             .collect();
         entries.sort();
 
-        assert_eq!(entries, vec!["groups.json", "sessions.json"]);
+        // `sessions.json.lock` is the cross-process flock file; it is created
+        // on first write and intentionally persists (the lock lives on the
+        // file, not on its existence). It is not temp-file debris.
+        assert_eq!(
+            entries,
+            vec!["groups.json", "sessions.json", "sessions.json.lock"]
+        );
         Ok(())
     }
 
@@ -990,6 +1056,144 @@ mod tests {
         assert_ne!(
             groups_mtime_before, groups_mtime_after,
             "groups.json should be rewritten when closure mutates groups"
+        );
+        Ok(())
+    }
+
+    /// Worker side of `test_update_serializes_concurrent_writers_cross_process`.
+    ///
+    /// This is not a real test: it runs as a no-op unless the parent test has
+    /// set `AOE_FLOCK_XPROC_CHILD`, in which case it re-enters as a child
+    /// process and performs exactly one `update()`. The parent re-invokes the
+    /// test binary with `--exact` targeting this function so that each child
+    /// is a genuinely separate OS process (the only thing that exercises the
+    /// cross-process `flock`; threads in one process all share a single flock
+    /// holder and would pass even on the broken code).
+    ///
+    /// Coordinates arrive via env vars:
+    /// - `AOE_FLOCK_XPROC_CHILD`: the row title/id this child should add.
+    /// - `HOME` / `XDG_CONFIG_HOME`: the shared temp app dir.
+    /// - `AOE_FLOCK_XPROC_BARRIER`: a file both children poll so their
+    ///   `update()` calls overlap rather than running sequentially.
+    #[test]
+    fn xproc_writer_child() {
+        let Ok(row) = std::env::var("AOE_FLOCK_XPROC_CHILD") else {
+            return; // ran as an ordinary unit test; nothing to do.
+        };
+        let barrier = std::env::var("AOE_FLOCK_XPROC_BARRIER")
+            .expect("barrier path must be set for the child");
+
+        // Announce arrival, then wait until both children have announced so
+        // their load-modify-write windows overlap.
+        fs::write(format!("{barrier}.{row}"), b"ready").unwrap();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            let a = Path::new(&format!("{barrier}.a")).exists();
+            let b = Path::new(&format!("{barrier}.b")).exists();
+            if a && b {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "child timed out waiting for peer"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+
+        let storage = Storage::new("xproc-profile").expect("storage");
+        storage
+            .update(|instances, _groups| {
+                instances.push(Instance::new(&row, &format!("/tmp/{row}")));
+                Ok(())
+            })
+            .expect("child update");
+    }
+
+    #[test]
+    #[serial]
+    fn test_update_serializes_concurrent_writers_cross_process() -> Result<()> {
+        let temp = tempdir()?;
+        setup_test_home(temp.path());
+
+        // Seed an empty sessions.json so both children load-modify-write a
+        // file that already exists.
+        let storage = Storage::new("xproc-profile")?;
+        storage.commit(&[], &GroupTree::new_with_groups(&[], &[]))?;
+
+        let barrier = temp.path().join("xproc-barrier");
+        let exe = std::env::current_exe()?;
+
+        let spawn_child = |row: &str| -> std::process::Child {
+            let mut cmd = std::process::Command::new(&exe);
+            cmd.args([
+                "--exact",
+                "session::storage::tests::xproc_writer_child",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env("AOE_FLOCK_XPROC_CHILD", row)
+            .env("AOE_FLOCK_XPROC_BARRIER", &barrier)
+            .env("HOME", temp.path());
+            #[cfg(target_os = "linux")]
+            cmd.env("XDG_CONFIG_HOME", temp.path().join(".config"));
+            cmd.stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null());
+            cmd.spawn().expect("spawn child")
+        };
+
+        let child_a = spawn_child("a");
+        let child_b = spawn_child("b");
+
+        for (label, mut child) in [("a", child_a), ("b", child_b)] {
+            let status = child.wait()?;
+            assert!(status.success(), "child {label} exited with {status}");
+        }
+
+        let loaded = storage.load()?;
+        let mut titles: Vec<_> = loaded.iter().map(|i| i.title.clone()).collect();
+        titles.sort();
+        assert_eq!(
+            titles,
+            vec!["a".to_string(), "b".to_string()],
+            "cross-process writers lost a row: last-writer-wins clobbered the other"
+        );
+        Ok(())
+    }
+
+    #[test]
+    #[serial]
+    fn test_file_lock_excludes_concurrent_holder() -> Result<()> {
+        // Focused check on the lock primitive: while one guard is held, a
+        // non-blocking acquisition of the same lock file fails with
+        // `WouldBlock`, and a blocking acquisition succeeds once the first
+        // guard drops.
+        use fs2::FileExt;
+
+        let temp = tempdir()?;
+        let lock_path = temp.path().join("primitive.lock");
+
+        let guard = SessionsFileLock::acquire(&lock_path)?;
+
+        let probe = fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(&lock_path)?;
+        let contended = probe.try_lock_exclusive();
+        assert!(
+            matches!(&contended, Err(e) if e.kind() == std::io::ErrorKind::WouldBlock),
+            "second holder must be blocked while the first guard is alive, got {contended:?}"
+        );
+
+        drop(guard);
+
+        // After the guard drops the lock is free; a fresh blocking acquire
+        // returns immediately.
+        let reacquired = SessionsFileLock::acquire(&lock_path);
+        assert!(
+            reacquired.is_ok(),
+            "lock must be re-acquirable after the guard drops"
         );
         Ok(())
     }
