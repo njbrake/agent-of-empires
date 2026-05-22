@@ -14,7 +14,11 @@ import {
   listSessions,
   seedSessionViaAoeAdd,
 } from "../../helpers/aoeServe";
-import { waitForCockpitView, enableCockpitAndWait } from "../../helpers/cockpit";
+import {
+  waitForCockpitView,
+  enableCockpitAndWait,
+  attachServeDiagnostics,
+} from "../../helpers/cockpit";
 
 const SCRIPT = {
   turns: [
@@ -32,6 +36,7 @@ const SCRIPT = {
 };
 
 base("edit a queued follow-up before it fires", async ({ page }, testInfo) => {
+  let serveHandle: { home: string } | undefined;
   const scriptDir = mkdtempSync(join(tmpdir(), "aoe-pw-story-queue-edit-"));
   const scriptPath = join(scriptDir, "script.json");
   writeFileSync(scriptPath, JSON.stringify(SCRIPT));
@@ -44,6 +49,7 @@ base("edit a queued follow-up before it fires", async ({ page }, testInfo) => {
     parallelIndex: testInfo.parallelIndex,
     seedFn: seedSessionViaAoeAdd({ title: "story-queue-edit" }),
   });
+  serveHandle = serve;
 
   try {
     const sessions = await listSessions(serve.baseUrl);
@@ -86,6 +92,7 @@ base("edit a queued follow-up before it fires", async ({ page }, testInfo) => {
       page.getByRole("button", { name: /^original queued text$/ }),
     ).toHaveCount(0);
   } finally {
+    if (serveHandle) await attachServeDiagnostics(testInfo, serveHandle);
     await serve.stop();
     rmSync(scriptDir, { recursive: true, force: true });
   }

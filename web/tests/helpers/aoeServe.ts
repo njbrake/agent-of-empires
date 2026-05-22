@@ -465,6 +465,19 @@ export async function spawnAoeServe(opts: SpawnOptions): Promise<ServeHandle> {
     // not appear within 10s` (deterministic on slower local + CI
     // machines, never on hot caches). Honored only in debug builds.
     AOE_COCKPIT_RUNNER_SOCKET_TIMEOUT_MS: "60000",
+    // Always-on fake-ACP debug log so a "Cockpit worker stopped" mid-
+    // turn (CI flake symptom in #1383) can be diagnosed post-mortem
+    // without re-running. The path lives under the test's HOME so it
+    // gets cleaned up with the rest of the tree on serve.stop().
+    // cockpit.ts#attachServeDiagnostics reads this path on test failure.
+    FAKE_ACP_DEBUG_LOG: join(home, "fake-acp.log"),
+    // Cockpit supervisor + acp_client at debug so the daemon's
+    // debug.log captures the "why" of a mid-turn worker death (reap
+    // reason, drain task exit, EPIPE on stdin/stdout, etc.). The rest
+    // of the tree stays at info to keep the log readable.
+    AOE_LOG_LEVEL:
+      process.env.AOE_LOG_LEVEL ??
+      "info,agent_of_empires::cockpit=debug",
   };
 
   if (authMode === "token") {

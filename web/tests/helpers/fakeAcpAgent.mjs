@@ -82,6 +82,24 @@ process.on("uncaughtException", (err) => {
 process.on("unhandledRejection", (reason) => {
   fakeDebug(`unhandledRejection: ${reason}`);
 });
+process.on("exit", (code) => {
+  fakeDebug(`process.exit code=${code}`);
+});
+process.on("SIGTERM", () => {
+  fakeDebug("SIGTERM received, exiting 0");
+  process.exit(0);
+});
+process.on("SIGINT", () => {
+  fakeDebug("SIGINT received, exiting 0");
+  process.exit(0);
+});
+process.on("SIGPIPE", () => {
+  fakeDebug("SIGPIPE received (ignored)");
+});
+process.on("SIGHUP", () => {
+  fakeDebug("SIGHUP received (ignored)");
+});
+fakeDebug(`fake-acp starting pid=${process.pid} argv=${JSON.stringify(process.argv)}`);
 
 const DEFAULT_TURN = {
   updates: [
@@ -286,6 +304,7 @@ const INITIALIZE_RESULT = {
 
 async function handleRequest(msg) {
   const { id, method, params } = msg;
+  fakeDebug(`handleRequest method=${method} id=${id}`);
   if (process.env.FAKE_ACP_DEBUG) {
     try {
       const { appendFileSync } = await import("node:fs");
@@ -349,7 +368,11 @@ async function handleRequest(msg) {
 }
 
 async function main() {
+  fakeDebug("main() entry");
   const rl = createInterface({ input: process.stdin });
+  process.stdin.on("end", () => fakeDebug("stdin end"));
+  process.stdin.on("close", () => fakeDebug("stdin close"));
+  process.stdin.on("error", (err) => fakeDebug(`stdin error: ${err.code ?? err.message}`));
   rl.on("line", async (line) => {
     const trimmed = line.trim();
     if (!trimmed) return;
@@ -390,11 +413,9 @@ async function main() {
   });
 
   rl.on("close", () => {
+    fakeDebug("readline close, exiting 0");
     process.exit(0);
   });
-
-  process.on("SIGTERM", () => process.exit(0));
-  process.on("SIGINT", () => process.exit(0));
 }
 
 main().catch((err) => {

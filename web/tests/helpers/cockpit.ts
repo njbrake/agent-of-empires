@@ -1,4 +1,4 @@
-import { expect, type Locator, type Page } from "@playwright/test";
+import { expect, type Locator, type Page, type TestInfo } from "@playwright/test";
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 
@@ -262,6 +262,72 @@ export function settingsNumberInputByLabel(page: Page, labelText: string): Locat
 /** Click a top-level SettingsView tab by its visible label. */
 export async function openSettingsTab(page: Page, label: string): Promise<void> {
   await page.getByRole("button", { name: label, exact: true }).click();
+}
+
+/**
+ * Attach diagnostic logs (daemon debug.log + fake-acp.log) to the
+ * Playwright test report when the test failed. Skips attaching on
+ * success to keep the report small.
+ *
+ * Call in the spec's `finally` block, BEFORE `serve.stop()` so the
+ * isolated $HOME tree still exists. The "Cockpit worker stopped"
+ * banner that ate #1383 round 4 is a downstream symptom; the actual
+ * cause (fake-ACP EPIPE, runner SIGTERM, daemon reap, etc.) shows
+ * up in those two logs but vanishes with the home dir.
+ */
+export async function attachServeDiagnostics(
+  testInfo: TestInfo,
+  serve: { home: string },
+): Promise<void> {
+  if (testInfo.status === testInfo.expectedStatus) return;
+  // App dir resolution mirrors aoeServe.ts#appDirFor: Linux uses
+  // $XDG_CONFIG_HOME (which the harness sets to `${home}/config`),
+  // macOS/Windows use `${home}/.agent-of-empires-dev`. Probe both so
+  // the diagnostic works on either runner OS without plumbing the
+  // platform through.
+  const candidates = [
+    join(serve.home, "config", "agent-of-empires-dev", "debug.log"),
+    join(serve.home, ".agent-of-empires-dev", "debug.log"),
+  ];
+  const debugLog = candidates.find((p) => existsSync(p));
+  if (debugLog) {
+    try {
+      const content = readFileSync(debugLog, "utf8");
+      const tail =
+        content.length > 64_000
+          ? `... (${content.length - 64_000} bytes elided)\n` +
+            content.slice(-64_000)
+          : content;
+      await testInfo.attach("debug.log", { body: tail, contentType: "text/plain" });
+    } catch (e) {
+      await testInfo.attach("debug.log.read-error", {
+        body: String(e),
+        contentType: "text/plain",
+      });
+    }
+  } else {
+    await testInfo.attach("debug.log.missing", {
+      body: `tried: ${candidates.join("\n       ")}`,
+      contentType: "text/plain",
+    });
+  }
+  const fakeLog = join(serve.home, "fake-acp.log");
+  if (existsSync(fakeLog)) {
+    try {
+      const content = readFileSync(fakeLog, "utf8");
+      await testInfo.attach("fake-acp.log", { body: content, contentType: "text/plain" });
+    } catch (e) {
+      await testInfo.attach("fake-acp.log.read-error", {
+        body: String(e),
+        contentType: "text/plain",
+      });
+    }
+  } else {
+    await testInfo.attach("fake-acp.log.missing", {
+      body: `expected at ${fakeLog}`,
+      contentType: "text/plain",
+    });
+  }
 }
 
 /**

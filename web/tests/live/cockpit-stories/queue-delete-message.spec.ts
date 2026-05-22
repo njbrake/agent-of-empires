@@ -13,7 +13,11 @@ import {
   listSessions,
   seedSessionViaAoeAdd,
 } from "../../helpers/aoeServe";
-import { waitForCockpitView, enableCockpitAndWait } from "../../helpers/cockpit";
+import {
+  waitForCockpitView,
+  enableCockpitAndWait,
+  attachServeDiagnostics,
+} from "../../helpers/cockpit";
 
 const SCRIPT = {
   turns: [
@@ -31,6 +35,7 @@ const SCRIPT = {
 };
 
 base("delete a queued follow-up before it fires", async ({ page }, testInfo) => {
+  let serveHandle: { home: string } | undefined;
   const scriptDir = mkdtempSync(join(tmpdir(), "aoe-pw-story-queue-del-"));
   const scriptPath = join(scriptDir, "script.json");
   writeFileSync(scriptPath, JSON.stringify(SCRIPT));
@@ -43,6 +48,7 @@ base("delete a queued follow-up before it fires", async ({ page }, testInfo) => 
     parallelIndex: testInfo.parallelIndex,
     seedFn: seedSessionViaAoeAdd({ title: "story-queue-del" }),
   });
+  serveHandle = serve;
 
   try {
     const sessions = await listSessions(serve.baseUrl);
@@ -75,6 +81,7 @@ base("delete a queued follow-up before it fires", async ({ page }, testInfo) => 
     await page.getByTitle("Drop this queued message").click();
     await expect(queuedRow).toHaveCount(0, { timeout: 5_000 });
   } finally {
+    if (serveHandle) await attachServeDiagnostics(testInfo, serveHandle);
     await serve.stop();
     rmSync(scriptDir, { recursive: true, force: true });
   }

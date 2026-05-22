@@ -14,7 +14,11 @@ import {
   listSessions,
   seedSessionViaAoeAdd,
 } from "../../helpers/aoeServe";
-import { waitForCockpitView, enableCockpitAndWait } from "../../helpers/cockpit";
+import {
+  waitForCockpitView,
+  enableCockpitAndWait,
+  attachServeDiagnostics,
+} from "../../helpers/cockpit";
 
 const SCRIPT = {
   turns: [
@@ -32,6 +36,7 @@ const SCRIPT = {
 };
 
 base("queued long prompt fold and unfold toggle", async ({ page }, testInfo) => {
+  let serveHandle: { home: string } | undefined;
   const scriptDir = mkdtempSync(join(tmpdir(), "aoe-pw-story-queue-fold-"));
   const scriptPath = join(scriptDir, "script.json");
   writeFileSync(scriptPath, JSON.stringify(SCRIPT));
@@ -44,6 +49,7 @@ base("queued long prompt fold and unfold toggle", async ({ page }, testInfo) => 
     parallelIndex: testInfo.parallelIndex,
     seedFn: seedSessionViaAoeAdd({ title: "story-queue-fold" }),
   });
+  serveHandle = serve;
 
   try {
     const sessions = await listSessions(serve.baseUrl);
@@ -78,6 +84,7 @@ base("queued long prompt fold and unfold toggle", async ({ page }, testInfo) => 
     });
     await expect(collapseButton).toBeVisible({ timeout: 5_000 });
   } finally {
+    if (serveHandle) await attachServeDiagnostics(testInfo, serveHandle);
     await serve.stop();
     rmSync(scriptDir, { recursive: true, force: true });
   }

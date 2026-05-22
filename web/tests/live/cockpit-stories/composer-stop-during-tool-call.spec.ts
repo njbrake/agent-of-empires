@@ -13,7 +13,11 @@ import {
   listSessions,
   seedSessionViaAoeAdd,
 } from "../../helpers/aoeServe";
-import { waitForCockpitView, enableCockpitAndWait } from "../../helpers/cockpit";
+import {
+  waitForCockpitView,
+  enableCockpitAndWait,
+  attachServeDiagnostics,
+} from "../../helpers/cockpit";
 
 const SCRIPT = {
   turns: [
@@ -34,6 +38,7 @@ const SCRIPT = {
 };
 
 base("Stop button cancels a turn during a tool call", async ({ page }, testInfo) => {
+  let serveHandle: { home: string } | undefined;
   const scriptDir = mkdtempSync(join(tmpdir(), "aoe-pw-stop-tool-"));
   const scriptPath = join(scriptDir, "script.json");
   writeFileSync(scriptPath, JSON.stringify(SCRIPT));
@@ -46,6 +51,7 @@ base("Stop button cancels a turn during a tool call", async ({ page }, testInfo)
     parallelIndex: testInfo.parallelIndex,
     seedFn: seedSessionViaAoeAdd({ title: "story-stop-tool" }),
   });
+  serveHandle = serve;
 
   try {
     const sessions = await listSessions(serve.baseUrl);
@@ -70,6 +76,7 @@ base("Stop button cancels a turn during a tool call", async ({ page }, testInfo)
     ).toBeVisible({ timeout: 10_000 });
     await expect(stopButton).toBeHidden({ timeout: 10_000 });
   } finally {
+    if (serveHandle) await attachServeDiagnostics(testInfo, serveHandle);
     await serve.stop();
     rmSync(scriptDir, { recursive: true, force: true });
   }

@@ -16,7 +16,11 @@ import {
   listSessions,
   seedSessionViaAoeAdd,
 } from "../../helpers/aoeServe";
-import { waitForCockpitView, enableCockpitAndWait } from "../../helpers/cockpit";
+import {
+  waitForCockpitView,
+  enableCockpitAndWait,
+  attachServeDiagnostics,
+} from "../../helpers/cockpit";
 
 const QUEUE_SCRIPT = {
   turns: [
@@ -52,6 +56,9 @@ const QUEUE_SCRIPT = {
 };
 
 base("queued follow-up fires when first turn ends", async ({ page }, testInfo) => {
+  // Hoisted so the `finally` block can attach diagnostics even if
+  // spawnAoeServe itself throws.
+  let serveHandle: { home: string } | undefined;
   const scriptDir = mkdtempSync(join(tmpdir(), "aoe-pw-story-queue-"));
   const scriptPath = join(scriptDir, "script.json");
   writeFileSync(scriptPath, JSON.stringify(QUEUE_SCRIPT));
@@ -64,6 +71,7 @@ base("queued follow-up fires when first turn ends", async ({ page }, testInfo) =
     parallelIndex: testInfo.parallelIndex,
     seedFn: seedSessionViaAoeAdd({ title: "story-queue" }),
   });
+  serveHandle = serve;
 
   try {
     const sessions = await listSessions(serve.baseUrl);
@@ -105,6 +113,7 @@ base("queued follow-up fires when first turn ends", async ({ page }, testInfo) =
       timeout: 15_000,
     });
   } finally {
+    if (serveHandle) await attachServeDiagnostics(testInfo, serveHandle);
     await serve.stop();
     rmSync(scriptDir, { recursive: true, force: true });
   }

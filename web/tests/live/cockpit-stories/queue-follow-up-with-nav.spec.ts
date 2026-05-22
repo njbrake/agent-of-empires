@@ -28,6 +28,7 @@ import {
 import {
   enableCockpitAndWait,
   waitForCockpitView,
+  attachServeDiagnostics,
 } from "../../helpers/cockpit";
 
 const SCRIPT = {
@@ -59,6 +60,7 @@ const SCRIPT = {
 };
 
 base("queued follow-up fires after navigation away and back", async ({ page }, testInfo) => {
+  let serveHandle: { home: string } | undefined;
   const scriptDir = mkdtempSync(join(tmpdir(), "aoe-pw-queue-nav-"));
   const scriptPath = join(scriptDir, "script.json");
   writeFileSync(scriptPath, JSON.stringify(SCRIPT));
@@ -71,6 +73,7 @@ base("queued follow-up fires after navigation away and back", async ({ page }, t
     parallelIndex: testInfo.parallelIndex,
     seedFn: seedSessionViaAoeAdd({ title: "queue-nav-a" }),
   });
+  serveHandle = serve;
 
   try {
     const sessions = await listSessions(serve.baseUrl);
@@ -117,6 +120,7 @@ base("queued follow-up fires after navigation away and back", async ({ page }, t
       timeout: 20_000,
     });
   } finally {
+    if (serveHandle) await attachServeDiagnostics(testInfo, serveHandle);
     await serve.stop();
     rmSync(scriptDir, { recursive: true, force: true });
   }
