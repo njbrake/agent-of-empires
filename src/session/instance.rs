@@ -723,22 +723,50 @@ impl Instance {
         self.idle_entered_at = src.idle_entered_at;
     }
 
-    /// Splice user-action fields from `src` onto `self`. Dual of
-    /// `merge_from_tui` for fields the TUI mutates per dialog action
-    /// (archive, favorite, snooze, rename, group move, base-branch
-    /// override). Called from `HomeView::apply_user_action`'s
-    /// `Storage::update` closure: the in-memory mirror has already run the
-    /// mutation once; this copies the resulting field values onto the
-    /// freshly-loaded disk row, so peer writes to OTHER fields survive.
-    pub fn merge_post_user_action(&mut self, src: &Self) {
-        self.title = src.title.clone();
-        self.group_path = src.group_path.clone();
-        self.archived_at = src.archived_at;
-        self.favorited_at = src.favorited_at;
-        self.snoozed_until = src.snoozed_until;
-        self.base_branch_override = src.base_branch_override.clone();
-        self.status = src.status;
-        self.last_accessed_at = self.last_accessed_at.max(src.last_accessed_at);
+    /// Splice only fields that the in-memory mutation actually changed
+    /// onto `self`. `pre` is the in-memory snapshot before the mutation;
+    /// `post` is after. For each TUI-owned user-action field, when
+    /// `pre != post` the field is copied; otherwise the disk row's value
+    /// is preserved, so a peer write that happened between TUI's last
+    /// reload and now survives even when the field is in the user-action
+    /// set (e.g. peer-set `snoozed_until` survives a TUI archive that
+    /// only mutates `archived_at`).
+    ///
+    /// `last_accessed_at` is monotone-max regardless of pre/post equality:
+    /// any TUI tick concurrent with a peer touch always picks the latest.
+    ///
+    /// `source_profile` is intentionally NOT in the diff set: cross-profile
+    /// moves bypass `apply_user_action` entirely (they need to remove from
+    /// profile A's storage and insert into profile B's), so the field can
+    /// never legitimately differ across this call. The debug-assert pins
+    /// the invariant.
+    pub fn merge_user_action_diff(&mut self, pre: &Self, post: &Self) {
+        debug_assert_eq!(
+            pre.source_profile, post.source_profile,
+            "apply_user_action must not change source_profile; cross-profile moves go through mutate_instance"
+        );
+        if pre.title != post.title {
+            self.title = post.title.clone();
+        }
+        if pre.group_path != post.group_path {
+            self.group_path = post.group_path.clone();
+        }
+        if pre.archived_at != post.archived_at {
+            self.archived_at = post.archived_at;
+        }
+        if pre.favorited_at != post.favorited_at {
+            self.favorited_at = post.favorited_at;
+        }
+        if pre.snoozed_until != post.snoozed_until {
+            self.snoozed_until = post.snoozed_until;
+        }
+        if pre.base_branch_override != post.base_branch_override {
+            self.base_branch_override = post.base_branch_override.clone();
+        }
+        if pre.status != post.status {
+            self.status = post.status;
+        }
+        self.last_accessed_at = self.last_accessed_at.max(post.last_accessed_at);
     }
 
     /// Mark the session archived. Archived sessions sink to the bottom of

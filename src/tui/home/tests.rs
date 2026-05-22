@@ -3119,6 +3119,36 @@ fn test_rename_selected_group_with_children() {
         .find(|i| i.title == "child-session")
         .unwrap();
     assert_eq!(child.group_path, "projects/frontend");
+
+    // Disk-state regression check: the rename must drop both old_path
+    // and its descendant rows, leaving only the renamed paths on disk.
+    let disk_groups: Vec<String> = storage
+        .load_with_groups()
+        .unwrap()
+        .1
+        .into_iter()
+        .map(|g| g.path)
+        .collect();
+    assert!(
+        !disk_groups.contains(&"work".to_string()),
+        "old parent path must not survive on disk: {:?}",
+        disk_groups
+    );
+    assert!(
+        !disk_groups.contains(&"work/frontend".to_string()),
+        "old descendant path must not survive on disk: {:?}",
+        disk_groups
+    );
+    assert!(
+        disk_groups.contains(&"projects".to_string()),
+        "renamed parent must be on disk: {:?}",
+        disk_groups
+    );
+    assert!(
+        disk_groups.contains(&"projects/frontend".to_string()),
+        "renamed descendant must be on disk: {:?}",
+        disk_groups
+    );
 }
 
 #[test]
@@ -5212,6 +5242,38 @@ mod save_field_merge {
         assert_eq!(
             mem_ts, disk_ts,
             "single Utc::now() snapshot, no microsecond drift between memory and disk"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn test_apply_user_action_preserves_peer_user_action_field() {
+        let (_temp, mut view, id) = boot_view_with_one_session("session", "/tmp/race");
+
+        // Peer writes snoozed_until under the flock while the TUI's in-memory
+        // mirror still has snoozed_until = None.
+        let peer_storage = Storage::new("test").unwrap();
+        peer_storage
+            .update(|insts, _| {
+                if let Some(inst) = insts.iter_mut().find(|i| i.id == id) {
+                    inst.snooze(30);
+                }
+                Ok(())
+            })
+            .unwrap();
+
+        // TUI archives the row. archive() mutates archived_at + favorited_at
+        // only; snoozed_until is in the user-action set but unchanged by this
+        // mutation, so the diff-splice must NOT clobber the peer's value.
+        view.apply_user_action(&id, |inst| inst.archive())
+            .expect("archive must persist");
+
+        let reloaded = Storage::new("test").unwrap().load().unwrap();
+        let row = reloaded.iter().find(|i| i.id == id).expect("row present");
+        assert!(row.archived_at.is_some(), "TUI archive landed");
+        assert!(
+            row.snoozed_until.is_some(),
+            "peer-written snoozed_until must survive a TUI archive that does not touch the field"
         );
     }
 }

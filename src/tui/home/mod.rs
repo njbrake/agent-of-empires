@@ -2253,11 +2253,12 @@ impl HomeView {
 
     /// Apply a user-action mutation atomically to the in-memory mirror and
     /// the on-disk row under the flock. The mutation runs ONCE in memory;
-    /// the resulting snapshot is spliced onto the disk row via
-    /// `Instance::merge_post_user_action`, which preserves peer-written
-    /// fields the TUI does not own. Use for dialog changes (archive,
-    /// favorite, snooze, rename, group, base-branch) that
-    /// `HomeView::save`'s field-merge does not propagate.
+    /// the disk row is updated via `Instance::merge_user_action_diff` so
+    /// only fields the mutation actually changed are spliced. A peer
+    /// writer's pre-existing value on a field the mutation does NOT
+    /// touch (even if that field is in the user-action set) is preserved.
+    /// Use for dialog changes (archive, favorite, snooze, rename, group,
+    /// base-branch) that `HomeView::save`'s field-merge does not propagate.
     pub(super) fn apply_user_action<F>(&mut self, id: &str, mutate: F) -> anyhow::Result<()>
     where
         F: FnOnce(&mut Instance),
@@ -2268,15 +2269,16 @@ impl HomeView {
         let Some(in_mem) = self.instances.iter_mut().find(|i| i.id == id) else {
             return Ok(());
         };
+        let pre = in_mem.clone();
         mutate(in_mem);
-        let snapshot = in_mem.clone();
-        self.instance_map.insert(id.to_string(), snapshot.clone());
+        let post = in_mem.clone();
+        self.instance_map.insert(id.to_string(), post.clone());
 
         let id_owned = id.to_string();
         if let Some(storage) = self.storages.get(&profile) {
             storage.update(|insts, _groups| {
                 if let Some(disk) = insts.iter_mut().find(|i| i.id == id_owned) {
-                    disk.merge_post_user_action(&snapshot);
+                    disk.merge_user_action_diff(&pre, &post);
                 }
                 Ok(())
             })?;

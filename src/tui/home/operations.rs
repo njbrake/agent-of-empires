@@ -525,11 +525,29 @@ impl HomeView {
             }
         }
 
+        // Capture old_path and its descendants from the pre-rebuild tree:
+        // rebuild_group_trees below derives groups from instance.group_path,
+        // which the loop above already migrated, so the old paths are about
+        // to disappear from the in-memory tree.
+        let stale_paths: Vec<String> = if new_path != ctx.old_path {
+            let prefix = format!("{}/", ctx.old_path);
+            self.group_trees
+                .get(&ctx.old_profile)
+                .map(|tree| {
+                    tree.get_all_groups()
+                        .into_iter()
+                        .map(|g| g.path)
+                        .filter(|p| p == &ctx.old_path || p.starts_with(&prefix))
+                        .collect()
+                })
+                .unwrap_or_else(|| vec![ctx.old_path.clone()])
+        } else {
+            Vec::new()
+        };
+
         // Rebuild trees from the updated instance list
         self.rebuild_group_trees();
 
-        // Rename moves the node in-tree; tombstone the old path so disk
-        // drops the old row in save()'s per-row group merge.
         if new_path != ctx.old_path {
             if let Some(tree) = self.group_trees.get_mut(&ctx.old_profile) {
                 tree.rename_group(&ctx.old_path, new_path);
@@ -537,7 +555,7 @@ impl HomeView {
             self.pending_group_deletions
                 .entry(ctx.old_profile.clone())
                 .or_default()
-                .insert(ctx.old_path.clone());
+                .extend(stale_paths);
         }
 
         // When moving to a different profile, ensure the new path exists in the target tree
