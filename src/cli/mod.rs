@@ -99,23 +99,24 @@ pub fn truncate_id(id: &str, max_len: usize) -> &str {
     }
 }
 
-/// Resolve a CLI identifier inside a `&mut Vec<Instance>` and run `f` against
+/// Resolve a CLI identifier inside a `&mut Vec<Instance>` and run `f` on
 /// the matching entry. Designed to be called from inside `Storage::update`'s
-/// closure so the find + mutate happens atomically under both the in-process
-/// mutex and the cross-process flock.
+/// closure so the find + mutate happens atomically under both the
+/// in-process mutex and the cross-process flock.
 ///
-/// Identifier resolution is first-match-wins (exact id, then id prefix, then
-/// title), preserving the historical CLI behaviour. Use `resolve_session` for
-/// the stricter resolver that errors on ambiguous prefixes.
+/// Identifier resolution delegates to `resolve_session` so ambiguous prefix
+/// matches error rather than silently picking the first hit; behaviour is
+/// uniform with the 12+ other CLI mutators that take that path directly.
 pub(crate) fn patch_instance<F, R>(instances: &mut [Instance], identifier: &str, f: F) -> Result<R>
 where
     F: FnOnce(&mut Instance) -> Result<R>,
 {
-    let idx = instances
-        .iter()
-        .position(|i| i.id == identifier || i.id.starts_with(identifier) || i.title == identifier)
-        .ok_or_else(|| anyhow::anyhow!("Session not found: {}", identifier))?;
-    f(&mut instances[idx])
+    let id = resolve_session(identifier, instances)?.id.clone();
+    let inst = instances
+        .iter_mut()
+        .find(|i| i.id == id)
+        .expect("resolve_session returned an id that is no longer in instances");
+    f(inst)
 }
 
 #[cfg(test)]
@@ -150,5 +151,50 @@ mod tests {
     fn truncate_id_zero_max_returns_empty() {
         assert_eq!(truncate_id("abc", 0), "");
         assert_eq!(truncate_id("café", 0), "");
+    }
+
+    #[test]
+    fn patch_instance_exact_id_resolves_unambiguously() {
+        let mut v = vec![
+            Instance::new("first", "/tmp/a"),
+            Instance::new("second", "/tmp/b"),
+        ];
+        let target_id = v[1].id.clone();
+        patch_instance(&mut v, &target_id, |i| {
+            i.title = "hit".to_string();
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(v[1].title, "hit");
+        assert_eq!(v[0].title, "first");
+    }
+
+    #[test]
+    fn patch_instance_rejects_ambiguous_prefix() {
+        let mut v = vec![
+            Instance::new("first", "/tmp/a"),
+            Instance::new("second", "/tmp/b"),
+        ];
+        v[0].id = "abcdef-1".to_string();
+        v[1].id = "abcdef-2".to_string();
+        let err = patch_instance(&mut v, "abcdef", |_| Ok(())).unwrap_err();
+        assert!(
+            err.to_string().contains("Ambiguous"),
+            "expected ambiguity error, got: {err}"
+        );
+    }
+
+    #[test]
+    fn patch_instance_resolves_by_title() {
+        let mut v = vec![
+            Instance::new("alpha", "/tmp/a"),
+            Instance::new("beta", "/tmp/b"),
+        ];
+        patch_instance(&mut v, "beta", |i| {
+            i.title = "renamed".to_string();
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(v[1].title, "renamed");
     }
 }
