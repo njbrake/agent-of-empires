@@ -130,12 +130,15 @@ jobs:
     name: Nix Build Web
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: read
     # Catches npmDepsHash desync at PR time even if the nix-npm-hash bot
     # is offline. Path-gated so Rust-only PRs keep fast feedback.
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Detect relevant changes
         id: changes
@@ -149,10 +152,11 @@ jobs:
             BASE="origin/$BASE_REF"
           else
             # `github.event.before` is the SHA before the push, which
-            # covers multi-commit pushes correctly. Falls back to HEAD~1
-            # for the initial-push edge case where `before` is all zeros.
+            # covers multi-commit pushes correctly. Falls back to the
+            # empty tree on the initial-push edge case (`before` is all
+            # zeros, no `HEAD~1` exists yet) so the diff still resolves.
             if [ -z "$EVENT_BEFORE" ] || [ "$EVENT_BEFORE" = "0000000000000000000000000000000000000000" ]; then
-              BASE="HEAD~1"
+              BASE=$(git hash-object -t tree /dev/null)
             else
               BASE="$EVENT_BEFORE"
             fi

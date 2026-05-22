@@ -72,7 +72,7 @@ jobs:
         id: hash
         run: |
           set -euo pipefail
-          NEW_HASH=$(nix run --refresh .#prefetch-npm-deps -- pr-head/web/package-lock.json)
+          NEW_HASH=$(nix run .#prefetch-npm-deps -- pr-head/web/package-lock.json)
           if ! printf '%s' "$NEW_HASH" | grep -qE '^sha256-[A-Za-z0-9+/]{43}=$'; then
             echo "::error::prefetch-npm-deps emitted unexpected hash shape: $NEW_HASH"
             exit 1

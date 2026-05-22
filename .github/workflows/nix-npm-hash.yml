@@ -27,8 +27,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          # GITHUB_TOKEN cannot be used here, see header for the GH013 reason.
-          token: ${{ secrets.RELEASE_TOKEN }}
+          persist-credentials: false
 
       - uses: nixbuild/nix-quick-install-action@2c9db80fb984ceb1bcaa77cdda3fdf8cfba92035 # v34
 
@@ -38,7 +37,7 @@ jobs:
           set -euo pipefail
           # `prefetch-npm-deps` from this flake (same nixpkgs as `buildNpmPackage`)
           # so the bot's hash and the cachix build cannot drift.
-          NEW_HASH=$(nix run --refresh .#prefetch-npm-deps -- web/package-lock.json)
+          NEW_HASH=$(nix run .#prefetch-npm-deps -- web/package-lock.json)
           CURRENT=$(.github/scripts/get-flake-npm-hash.sh flake.nix)
           echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
           echo "hash=$NEW_HASH" >> "$GITHUB_OUTPUT"
@@ -61,8 +60,12 @@ jobs:
 
       - name: Reset bot branch on top of latest main
         if: steps.hash.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          BASE_REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
+          REMOTE="https://x-access-token:${GH_TOKEN}@github.com/${BASE_REPO}.git"
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git checkout -B chore/nix-npm-hash-update
@@ -70,10 +73,10 @@ jobs:
           git commit -m "chore: update Nix npmDepsHash for web dependencies"
           # Fetch the bot branch first so --force-with-lease has a remote
           # tracking ref to anchor on; otherwise it fails with "stale info".
-          git fetch origin chore/nix-npm-hash-update || true
+          git fetch "$REMOTE" chore/nix-npm-hash-update:refs/remotes/origin/chore/nix-npm-hash-update || true
           # --force-with-lease guards only the narrow fetch -> push window.
           # The branch is bot-owned (always reset from main); manual edits are not preserved.
-          git push --force-with-lease origin chore/nix-npm-hash-update
+          git push --force-with-lease "$REMOTE" HEAD:chore/nix-npm-hash-update
 
       - name: Open or refresh PR with auto-merge
         if: steps.hash.outputs.changed == 'true'
