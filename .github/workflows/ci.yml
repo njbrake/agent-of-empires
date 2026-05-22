@@ -126,6 +126,62 @@ jobs:
           echo ""
           echo "=== All evaluations passed ==="
 
+  nix-build-web:
+    name: Nix Build Web
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    # Catches npmDepsHash desync at PR time even if the nix-npm-hash bot
+    # is offline. Path-gated so Rust-only PRs keep fast feedback.
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Detect relevant changes
+        id: changes
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          EVENT_BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            BASE="origin/$BASE_REF"
+          else
+            # `github.event.before` is the SHA before the push, which
+            # covers multi-commit pushes correctly. Falls back to the
+            # empty tree on the initial-push edge case (`before` is all
+            # zeros, no `HEAD~1` exists yet) so the diff still resolves.
+            if [ -z "$EVENT_BEFORE" ] || [ "$EVENT_BEFORE" = "0000000000000000000000000000000000000000" ]; then
+              BASE=$(git hash-object -t tree /dev/null)
+            else
+              BASE="$EVENT_BEFORE"
+            fi
+          fi
+          if git diff --name-only "$BASE"...HEAD \
+            | grep -E '^(web/package-lock\.json|flake\.nix|flake\.lock)$' \
+            >/dev/null; then
+            echo "relevant=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "relevant=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: nixbuild/nix-quick-install-action@2c9db80fb984ceb1bcaa77cdda3fdf8cfba92035 # v34
+        if: steps.changes.outputs.relevant == 'true'
+
+      - name: Build aoe-web-frontend
+        if: steps.changes.outputs.relevant == 'true'
+        # Builds only the npm + vite frontend (validates npmDepsHash
+        # as a side effect). Skips the full Rust crate so this job
+        # runs in 1-2 min instead of 20-30 min; Cargo Test + Nix Eval
+        # already cover the Rust side on every PR.
+        run: |
+          set -euo pipefail
+          nix build --no-link .#packages.x86_64-linux.aoe-web-frontend
+
   website:
     name: Website Build
     runs-on: ubuntu-latest

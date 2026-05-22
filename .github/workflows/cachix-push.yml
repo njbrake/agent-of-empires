@@ -18,24 +18,13 @@ on:
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'build.rs'
-      # web/** is intentionally excluded: web/package-lock.json changes
-      # trigger the "Update Nix npm Hash" workflow, which updates the
-      # npmDepsHash in flake.nix. Building here before that hash is
-      # committed races and fails with ENOTCACHED. The workflow_run
-      # trigger below chains the cachix build after the hash update.
-  workflow_run:
-    workflows: ["Update Nix npm Hash"]
-    branches: [main]
-    types: [completed]
+      # web/** is excluded: lockfile bumps land on main via the
+      # nix-npm-hash bot's PR which bumps flake.nix in the same commit.
   workflow_dispatch:
 
 jobs:
   cachix:
     name: Build and push (${{ matrix.os }})
-    # Skip when triggered by a failed hash-update run.
-    if: >-
-      github.event_name != 'workflow_run' ||
-      github.event.workflow_run.conclusion == 'success'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
