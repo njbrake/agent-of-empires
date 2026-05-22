@@ -704,16 +704,34 @@ async fn send_lifecycle_signal(
 /// `raw_input.run_in_background == true` at `ToolStarted` time as a
 /// defense in depth, so a single broken signal cannot reintroduce the
 /// false-positive class this fix targets.
+///
+/// Match anchors at the start of a text block (or any line within it)
+/// rather than substring `contains`. The SDK emits these markers as the
+/// FIRST line of the completion content; user output from a regular
+/// `Bash` that happens to print `Command running in background with
+/// ID: ...` would otherwise trip the watchdog to its 30-minute floor.
+/// See CodeRabbit review on PR #1406.
 fn detect_off_protocol_work_completed(
     content: &Option<Vec<agent_client_protocol::schema::ToolCallContent>>,
 ) -> Option<OffProtocolWorkKind> {
+    use agent_client_protocol::schema::ToolCallContent;
     let blocks = content.as_ref()?;
-    let text = extract_tool_content_text(blocks);
-    if text.contains("Async agent launched successfully") {
-        return Some(OffProtocolWorkKind::AsyncAgent);
-    }
-    if text.contains("Command running in background with ID: ") {
-        return Some(OffProtocolWorkKind::BackgroundCommand);
+    for block in blocks {
+        let ToolCallContent::Content(c) = block else {
+            continue;
+        };
+        let ContentBlock::Text(t) = &c.content else {
+            continue;
+        };
+        for line in t.text.lines() {
+            let trimmed = line.trim_start();
+            if trimmed.starts_with("Async agent launched successfully") {
+                return Some(OffProtocolWorkKind::AsyncAgent);
+            }
+            if trimmed.starts_with("Command running in background with ID: ") {
+                return Some(OffProtocolWorkKind::BackgroundCommand);
+            }
+        }
     }
     None
 }
@@ -2188,6 +2206,51 @@ fn wakeup_event_from_raw(raw_input: &serde_json::Value) -> Option<Event> {
     Some(Event::WakeupScheduled { at, reason })
 }
 
+/// Derive a `LifecycleSignal::WakeupPending` from a `SessionUpdate`.
+///
+/// The watchdog must not suppress on every `Event::WakeupScheduled`:
+/// the initial `ToolCall` frame is emitted eagerly before the tool is
+/// known to have succeeded, and a later `Failed` status means no
+/// wakeup was ever registered. Either case would let a real adapter
+/// wedge masquerade as a pending wake and pin the prompt open for
+/// `delay + base_grace`.
+///
+/// Gate: source must be a `ToolCallUpdate` whose status is NOT
+/// `Failed` (Completed or InProgress are both acceptable; real
+/// `claude-agent-acp` lands the raw_input on an interim
+/// `ToolCallUpdate` before the final `Completed` arrives, and the
+/// Completed update often strips `raw_input`, so requiring strictly
+/// `Completed` would miss the wakeup in production). The title
+/// must be `ScheduleWakeup` and `raw_input.delaySeconds` must
+/// parse.
+///
+/// UI emit of `Event::WakeupScheduled` keeps its current best-effort
+/// behavior so the sidebar countdown lights up immediately. See
+/// CodeRabbit review on PR #1406.
+fn wakeup_lifecycle_signal_from_update(
+    update: &agent_client_protocol::schema::SessionUpdate,
+    profile: &agent_profiles::AgentProfile,
+) -> Option<LifecycleSignal> {
+    use agent_client_protocol::schema::{SessionUpdate, ToolCallStatus};
+    if !profile.supports_wakeup_tools {
+        return None;
+    }
+    let SessionUpdate::ToolCallUpdate(u) = update else {
+        return None;
+    };
+    if matches!(u.fields.status, Some(ToolCallStatus::Failed)) {
+        return None;
+    }
+    if u.fields.title.as_deref() != Some("ScheduleWakeup") {
+        return None;
+    }
+    let raw = u.fields.raw_input.as_ref()?;
+    match wakeup_event_from_raw(raw)? {
+        Event::WakeupScheduled { at, .. } => Some(LifecycleSignal::WakeupPending { at }),
+        _ => None,
+    }
+}
+
 /// Parse Claude's ExitPlanMode tool input into a structured `Plan`.
 /// Claude ships the plan markdown in `raw_input.plan`; we extract its
 /// bullet- or number-prefixed lines as `PlanStep`s with status=Pending,
@@ -2812,23 +2875,22 @@ async fn run_connection_task<W, R>(
                     } else {
                         classify_lifecycle_signal(&notification.update)
                     };
-                    // Compute the event vector first so we can derive a
-                    // `WakeupPending` signal from any `Event::WakeupScheduled`
-                    // the same notification produced.
-                    let mapped_events = map_update_to_events(notification.update, profile);
-                    let wakeup_signals: Vec<LifecycleSignal> = if suppressing {
-                        Vec::new()
+                    // Derive `WakeupPending` directly from the source
+                    // update so it only fires on a successful
+                    // `ToolCallUpdate { status: Completed, title:
+                    // ScheduleWakeup }`. Scanning `mapped_events` for
+                    // `Event::WakeupScheduled` instead would let the
+                    // initial `ToolCall` frame (tool not yet completed)
+                    // and any in-progress / failed completion trip
+                    // suppression for `delay + base_grace`, masking a
+                    // real adapter wedge. See CodeRabbit review on
+                    // PR #1406.
+                    let wakeup_signal = if suppressing {
+                        None
                     } else {
-                        mapped_events
-                            .iter()
-                            .filter_map(|e| match e {
-                                Event::WakeupScheduled { at, .. } => {
-                                    Some(LifecycleSignal::WakeupPending { at: *at })
-                                }
-                                _ => None,
-                            })
-                            .collect()
+                        wakeup_lifecycle_signal_from_update(&notification.update, profile)
                     };
+                    let mapped_events = map_update_to_events(notification.update, profile);
                     // Deliver lifecycle signals BEFORE publishing the
                     // user-visible event vector. The watchdog uses
                     // ToolStarted / ToolCompleted / WakeupPending /
@@ -2852,7 +2914,7 @@ async fn run_connection_task<W, R>(
                         )
                         .await;
                     }
-                    for sig in wakeup_signals {
+                    if let Some(sig) = wakeup_signal {
                         send_lifecycle_signal(
                             &lifecycle_signal_tx,
                             LifecycleEnvelope {
@@ -5265,6 +5327,109 @@ mod tests {
     #[test]
     fn detect_off_protocol_work_completed_none_on_empty_content() {
         assert!(detect_off_protocol_work_completed(&Some(vec![])).is_none());
+    }
+
+    #[test]
+    fn detect_off_protocol_work_completed_ignores_echoed_marker_mid_line() {
+        // CodeRabbit regression on PR #1406: a regular foreground Bash that
+        // prints the SDK marker substring as part of its output (e.g.
+        // an echo or grep that includes the phrase) must NOT trip
+        // off-protocol suppression. Match anchors at the start of a
+        // line, not anywhere in the content.
+        use agent_client_protocol::schema::{Content, ToolCallContent};
+        let blocks = vec![ToolCallContent::Content(Content::new(
+            "user typed: Command running in background with ID: pretend\nbye",
+        ))];
+        assert!(detect_off_protocol_work_completed(&Some(blocks)).is_none());
+
+        let blocks2 = vec![ToolCallContent::Content(Content::new(
+            "log line: Async agent launched successfully but actually not",
+        ))];
+        assert!(detect_off_protocol_work_completed(&Some(blocks2)).is_none());
+    }
+
+    #[test]
+    fn detect_off_protocol_work_completed_matches_marker_on_indented_line() {
+        // The marker may not be the first character of the block;
+        // a leading newline or whitespace must not break detection
+        // as long as the marker starts the (trimmed) line.
+        use agent_client_protocol::schema::{Content, ToolCallContent};
+        let blocks = vec![ToolCallContent::Content(Content::new(
+            "\n  Command running in background with ID: btest. log: /tmp/x",
+        ))];
+        assert_eq!(
+            detect_off_protocol_work_completed(&Some(blocks)),
+            Some(OffProtocolWorkKind::BackgroundCommand)
+        );
+    }
+
+    #[test]
+    fn wakeup_lifecycle_signal_from_completed_tool_call_update() {
+        use agent_client_protocol::schema::{ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields};
+        let fields = ToolCallUpdateFields::new()
+            .status(ToolCallStatus::Completed)
+            .title("ScheduleWakeup".to_string())
+            .raw_input(serde_json::json!({ "delaySeconds": 60 }));
+        let update = ToolCallUpdate::new("tc-wake-1", fields);
+        let sig = wakeup_lifecycle_signal_from_update(
+            &SessionUpdate::ToolCallUpdate(update),
+            &agent_profiles::CLAUDE,
+        );
+        assert!(matches!(sig, Some(LifecycleSignal::WakeupPending { .. })));
+    }
+
+    #[test]
+    fn wakeup_lifecycle_signal_none_on_initial_tool_call() {
+        // The initial `ToolCall` frame is NOT yet a completion; the
+        // tool could still fail. Watchdog suppression must wait until
+        // a successful ToolCallUpdate { Completed }. See CodeRabbit
+        // review on PR #1406.
+        use agent_client_protocol::schema::ToolCall;
+        let mut tc = ToolCall::new("tc-wake-2", "ScheduleWakeup");
+        tc.raw_input = Some(serde_json::json!({ "delaySeconds": 60 }));
+        let sig = wakeup_lifecycle_signal_from_update(
+            &SessionUpdate::ToolCall(tc),
+            &agent_profiles::CLAUDE,
+        );
+        assert!(sig.is_none());
+    }
+
+    #[test]
+    fn wakeup_lifecycle_signal_none_on_failed_completion() {
+        // A failed ScheduleWakeup means no wakeup was actually
+        // registered; suppressing for `delay + base_grace` would
+        // hide a real adapter wedge.
+        use agent_client_protocol::schema::{ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields};
+        let fields = ToolCallUpdateFields::new()
+            .status(ToolCallStatus::Failed)
+            .title("ScheduleWakeup".to_string())
+            .raw_input(serde_json::json!({ "delaySeconds": 60 }));
+        let update = ToolCallUpdate::new("tc-wake-3", fields);
+        let sig = wakeup_lifecycle_signal_from_update(
+            &SessionUpdate::ToolCallUpdate(update),
+            &agent_profiles::CLAUDE,
+        );
+        assert!(sig.is_none());
+    }
+
+    #[test]
+    fn wakeup_lifecycle_signal_fires_on_in_progress_with_raw_input() {
+        // Real `claude-agent-acp` typically populates `raw_input` on an
+        // interim `ToolCallUpdate { status: InProgress }` and strips
+        // it from the final `Completed` frame. Requiring strictly
+        // Completed status would lose the wakeup; we gate only on
+        // not-Failed.
+        use agent_client_protocol::schema::{ToolCallStatus, ToolCallUpdate, ToolCallUpdateFields};
+        let fields = ToolCallUpdateFields::new()
+            .status(ToolCallStatus::InProgress)
+            .title("ScheduleWakeup".to_string())
+            .raw_input(serde_json::json!({ "delaySeconds": 60 }));
+        let update = ToolCallUpdate::new("tc-wake-4", fields);
+        let sig = wakeup_lifecycle_signal_from_update(
+            &SessionUpdate::ToolCallUpdate(update),
+            &agent_profiles::CLAUDE,
+        );
+        assert!(matches!(sig, Some(LifecycleSignal::WakeupPending { .. })));
     }
 
     #[test]

@@ -226,6 +226,27 @@ class ShimAgent {
           },
         },
       });
+      // Real claude-agent-acp lands `raw_input` on an interim
+      // `tool_call_update` BEFORE the final completed frame; the
+      // watchdog now requires this carrier to fire `WakeupPending`
+      // (so a Failed completion doesn't blindly suppress for the
+      // delay window). Mirror the real shape: emit one in-progress
+      // update with raw_input.delaySeconds, then a final completed
+      // update.
+      await this.connection.sessionUpdate({
+        sessionId: params.sessionId,
+        update: {
+          sessionUpdate: "tool_call_update",
+          toolCallId: "tc-wakeup-1",
+          status: "in_progress",
+          title: "ScheduleWakeup",
+          rawInput: {
+            delaySeconds: 60,
+            reason: "test scheduled wakeup",
+            prompt: "continue",
+          },
+        },
+      });
       await this.connection.sessionUpdate({
         sessionId: params.sessionId,
         update: {
