@@ -41,6 +41,85 @@ fn test_cli_add_and_list() {
     );
 }
 
+/// Concurrent `aoe add` processes must not lose rows.
+///
+/// Before Stage 2, every `aoe add` handler did `load_with_groups()` ->
+/// append -> `Storage::commit()`, a wholesale last-writer-wins overwrite.
+/// Two `aoe add` processes whose load-modify-write windows overlap each
+/// load the same baseline, append their own distinct row, and the second
+/// `commit()` clobbers the first writer's row. The Stage 1 flock alone
+/// does not fix this: it only serialises the writes, the snapshot each
+/// process holds is still stale.
+///
+/// This test seeds one session, then spawns several `aoe add` processes
+/// at once. After they all exit, every seeded and added row must be
+/// present. Red on `commit()`-based handlers, green once they use
+/// `Storage::update()`, which re-loads a fresh snapshot under the lock.
+#[test]
+#[serial]
+fn test_cli_add_concurrent_processes_keep_all_rows() {
+    let h = TuiTestHarness::new("cli_add_concurrent");
+    let project = h.project_path();
+    let project_str = project.to_str().unwrap().to_string();
+
+    // Seed a baseline row so every concurrent `add` loads a non-empty
+    // sessions.json. Without a seed, the very first writer also creates
+    // the file, which slightly narrows the race; the seed makes the
+    // lost-update window deterministic.
+    let seed = h.run_cli(&["add", &project_str, "-t", "seed-session"]);
+    assert!(
+        seed.status.success(),
+        "seed aoe add failed: {}",
+        String::from_utf8_lossy(&seed.stderr)
+    );
+
+    // Several concurrent writers. The race widens with parallelism, so a
+    // handful of overlapping processes reliably drops a row on the
+    // pre-Stage-2 `commit()` path.
+    let worker_count = 6;
+    let titles: Vec<String> = (0..worker_count)
+        .map(|i| format!("concurrent-{i}"))
+        .collect();
+
+    let children: Vec<_> = titles
+        .iter()
+        .map(|title| h.spawn_cli(&["add", &project_str, "-t", title]))
+        .collect();
+
+    for (title, child) in titles.iter().zip(children) {
+        let out = child.wait_with_output().expect("child aoe add did not run");
+        assert!(
+            out.status.success(),
+            "concurrent aoe add for {title} failed:\nstdout: {}\nstderr: {}",
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr),
+        );
+    }
+
+    let json = read_sessions_json(&h);
+    let sessions = json.as_array().expect("sessions array");
+    let present: Vec<&str> = sessions
+        .iter()
+        .filter_map(|s| s["title"].as_str())
+        .collect();
+
+    assert!(
+        present.contains(&"seed-session"),
+        "seed row was clobbered by a concurrent add; present: {present:?}"
+    );
+    for title in &titles {
+        assert!(
+            present.contains(&title.as_str()),
+            "concurrent add row {title} was lost (last-writer-wins clobber); present: {present:?}"
+        );
+    }
+    assert_eq!(
+        sessions.len(),
+        worker_count + 1,
+        "expected seed + {worker_count} concurrent rows; present: {present:?}"
+    );
+}
+
 /// Regression test for #848: `aoe add` "Next steps" hint should reference
 /// the actual binary name (`aoe`), not the long project name.
 #[test]

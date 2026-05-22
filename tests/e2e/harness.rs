@@ -420,6 +420,25 @@ last_seen_version = "{}"
             .expect("failed to run aoe CLI")
     }
 
+    /// Spawn an `aoe` CLI subcommand without waiting for it to exit, returning
+    /// the `Child` handle. Unlike `run_cli` (which blocks on `.output()`), this
+    /// lets a test launch several `aoe` processes that overlap in time, the
+    /// only way to exercise the cross-process write path from outside the
+    /// crate. Shares the same isolated `HOME` / `PATH` as `run_cli`.
+    pub fn spawn_cli(&self, args: &[&str]) -> std::process::Child {
+        Command::new(&self.binary_path)
+            .args(args)
+            .env("HOME", self.home_dir.path())
+            .env("XDG_CONFIG_HOME", self.home_dir.path().join(".config"))
+            .env("PATH", self.env_path())
+            .env_remove("AGENT_OF_EMPIRES_DEBUG")
+            .env_remove("AOE_LOG_LEVEL")
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .expect("failed to spawn aoe CLI")
+    }
+
     /// Path to the isolated home directory for custom test setup.
     pub fn home_path(&self) -> &Path {
         self.home_dir.path()
