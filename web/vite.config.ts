@@ -37,6 +37,7 @@ export default defineConfig({
   test: {
     include: ["src/**/*.{test,spec}.{ts,tsx}"],
     exclude: ["tests/**", "node_modules/**", "dist/**"],
+    setupFiles: ["./src/test-setup.ts"],
     coverage: {
       provider: "v8",
       reporter: ["text", "json", "html", "lcov"],
@@ -45,6 +46,7 @@ export default defineConfig({
       exclude: [
         "src/**/*.d.ts",
         "src/main.tsx",
+        "src/test-setup.ts",
         "src/**/__tests__/**",
         "src/**/*.test.{ts,tsx}",
       ],
