@@ -13,9 +13,20 @@ import { expect, type Locator, type Page } from "@playwright/test";
  * `cockpit-spawn-prompt.spec.ts` used to do this with a hardcoded
  * `setTimeout(2_000)` that proved tight under CI load).
  *
- * This helper polls the disk-backed replay endpoint until any frame
- * appears, indicating the supervisor finished its handshake and is
- * emitting events. After this resolves, sending a prompt is safe.
+ * Two-phase wait:
+ *   1. Poll `/cockpit/replay` until any frame appears (proves the
+ *      worker process is up and the supervisor finished `initialize`).
+ *   2. Poll `/api/sessions` until the seeded session reports
+ *      `cockpit_worker_state === "running"` (proves the ACP
+ *      `session/new` handshake completed and the supervisor is ready
+ *      to forward prompts).
+ *
+ * Without phase 2 the React client receives `cockpit_worker_state ===
+ * "resuming"` from the initial `/api/sessions` fetch on navigation,
+ * the `useCockpit` drain effect parks the prompt, and the test races
+ * the next REST poll cycle (a few seconds at best, indefinitely under
+ * CI load) before "Send a message" Enter actually reaches the
+ * supervisor.
  *
  * Default timeout is 15s; the local happy-path completes in well under
  * 1s, so 15s only kicks in on contended CI runners.
@@ -39,6 +50,24 @@ export async function waitForCockpitReady(
       { timeout: timeoutMs, intervals: [100, 200, 200, 200] },
     )
     .toBeGreaterThan(0);
+  // Phase 2: wait for worker to reach "running".
+  await expect
+    .poll(
+      async () => {
+        const res = await fetch(`${baseUrl}/api/sessions`);
+        if (!res.ok) return "fetch-failed";
+        const body = await res.json();
+        const sessions: Array<{ id: string; cockpit_worker_state?: string }> = Array.isArray(
+          body,
+        )
+          ? body
+          : (body.sessions ?? []);
+        const me = sessions.find((s) => s.id === sessionId);
+        return me?.cockpit_worker_state ?? "absent";
+      },
+      { timeout: timeoutMs, intervals: [100, 200, 200, 500] },
+    )
+    .toBe("running");
 }
 
 /**

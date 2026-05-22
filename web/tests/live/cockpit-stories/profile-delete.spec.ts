@@ -29,9 +29,14 @@ base("delete a profile via ProfileSelector", async ({ page }, testInfo) => {
     ).toHaveCount(1, { timeout: 5_000 });
 
     await select.selectOption("delete-me");
+    await expect(select).toHaveValue("delete-me");
     // Use title="Delete profile" to disambiguate from any other Delete
     // affordance and ensure we click the ProfileSelector Delete button.
-    await page.getByTitle("Delete profile").click();
+    // Delete is conditionally rendered only when selectedProfile is not
+    // the default profile, so wait for it explicitly before clicking.
+    const deleteBtn = page.getByTitle("Delete profile");
+    await expect(deleteBtn).toBeVisible({ timeout: 5_000 });
+    await deleteBtn.click();
 
     await expect(
       select.locator("option", { hasText: "delete-me" }),

@@ -38,9 +38,10 @@ base("wizard remembers the last-picked agent after reload", async ({ page }, tes
 
     await page.reload();
 
-    // saveLastUsedTool persists `claude` on submit success.
+    // saveLastUsedTool persists `claude` on submit success. The key is
+    // `aoe-cockpit-last-tool` (LAST_USED_TOOL_KEY in SessionWizard.tsx).
     const stored = await page.evaluate(() =>
-      localStorage.getItem("aoe-wizard-last-tool"),
+      localStorage.getItem("aoe-cockpit-last-tool"),
     );
     expect(stored).toBe("claude");
   } finally {

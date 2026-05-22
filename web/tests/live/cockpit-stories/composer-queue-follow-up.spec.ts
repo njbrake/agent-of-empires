@@ -27,8 +27,11 @@ const QUEUE_SCRIPT = {
           content: { type: "text", text: "First turn response." },
         },
         // Long enough that the queued follow-up always lands before
-        // turn 1 ends on slow CI runners.
-        { sessionUpdate: "wait_ms", ms: 2_000 },
+        // turn 1 ends on slow CI runners. Bumped from 2s after #1383
+        // CI flakes where chunk delivery could spend several seconds
+        // under load and a 2s wait_ms made turn 1 end before the test
+        // had observed the first chunk + clicked Queue.
+        { sessionUpdate: "wait_ms", ms: 10_000 },
       ],
       stopReason: "end_turn",
     },

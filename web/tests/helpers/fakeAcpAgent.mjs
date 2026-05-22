@@ -193,9 +193,12 @@ async function emitSessionUpdates(sessionId, updates) {
       continue;
     }
     sendNotification("session/update", { sessionId, update: u });
-    // Tiny tick between updates so the cockpit reducer can apply each
-    // event in order rather than batching them.
-    await new Promise((resolve) => setTimeout(resolve, 1));
+    // Inter-update tick so the cockpit reducer can apply each event in
+    // order rather than batching them. Bumped from 1ms to 5ms after
+    // CI flakes (#1383): under 6-worker contention on the 4-core CI
+    // runner, a 1ms tick didn't survive the event-loop pressure and
+    // some specs lost the first chunk before the React reducer ran.
+    await new Promise((resolve) => setTimeout(resolve, 5));
   }
 }
 
@@ -251,19 +254,19 @@ async function handleRequest(msg) {
       return;
     }
 
-    case "session/setMode": {
+    case "session/setMode":
+    case "session/set_mode": {
+      // ACP wire method name is `session/set_mode` (snake_case) per
+      // agent-client-protocol-schema. Accept both spellings so a future
+      // rename doesn't silently regress this fake.
       const sessionId = params?.sessionId;
       const modeId = params?.modeId;
       sendResult(id, {});
       if (sessionId && modeId) {
         // Emit the ACP-correct variant so the supervisor translates to
-        // a server-side Event::CurrentModeChanged for the reducer. The
-        // legacy "current_mode_changed" notification is also emitted so
-        // older REST-driven specs that string-match on that token keep
-        // passing.
+        // a server-side Event::CurrentModeChanged for the reducer.
         await emitSessionUpdates(sessionId, [
           { sessionUpdate: "current_mode_update", currentModeId: modeId },
-          { sessionUpdate: "current_mode_changed", currentModeId: modeId },
         ]);
       }
       return;

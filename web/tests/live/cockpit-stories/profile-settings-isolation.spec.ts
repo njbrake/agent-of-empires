@@ -22,9 +22,14 @@ base("per-profile settings stay isolated across profile switches", async ({ page
     const profileSelect = page.locator("select").first();
     await expect(profileSelect).toBeVisible({ timeout: 10_000 });
     // Default profile name varies by build (`main` on release, `default`
-    // historically). Capture whatever the server resolved on mount.
+    // historically). ProfileSelect renders before its initial fetch
+    // resolves, so inputValue is "" briefly; poll until populated.
+    await expect
+      .poll(async () => (await profileSelect.inputValue()).length, {
+        timeout: 10_000,
+      })
+      .toBeGreaterThan(0);
     const profileA = await profileSelect.inputValue();
-    expect(profileA.length).toBeGreaterThan(0);
 
     await openSettingsTab(page, "Tmux");
     const statusBar = settingsSelectByLabel(page, "Status bar");

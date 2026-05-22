@@ -25,7 +25,11 @@ const STOP_SCRIPT = {
           sessionUpdate: "agent_message_chunk",
           content: { type: "text", text: "Thinking..." },
         },
-        { sessionUpdate: "wait_ms", ms: 5_000 },
+        // 30s holds the turn open longer than the test will ever wait
+        // for either assertion, so the Stop affordance stays mounted
+        // even on heavily loaded CI runners where the "Thinking..."
+        // chunk and the click can be tens of seconds apart.
+        { sessionUpdate: "wait_ms", ms: 30_000 },
         {
           sessionUpdate: "agent_message_chunk",
           content: { type: "text", text: "Should never appear." },

@@ -19,14 +19,16 @@ export default defineConfig({
   // Live specs do real I/O (cargo binary spawn, tmux, fetch). Give them more
   // headroom than the mocked suite's 30s.
   timeout: 60_000,
-  // Six workers on the 4-core GitHub runner. Each worker spawns its
+  // Four workers on the 4-core GitHub runner. Cockpit-story specs that
+  // drive a fake-ACP subprocess + tmux + React WS are CPU-bound around
+  // the per-update reducer apply; six workers tripped CI flakes where
+  // the first agent_message_chunk never reached the cockpit reducer
+  // before the spec timed out (#1383). Each worker still spawns its
   // own `aoe serve` against an isolated HOME / TMUX_TMPDIR with a
   // (workerIndex, parallelIndex)-derived port, so workers don't
-  // collide. The live suite is I/O-bound (tmux / fetch round-trips),
-  // so over-subscribing CPU is fine and keeps the job under the 6-minute
-  // wall-time budget as cockpit-stories/ grows.
+  // collide on port or filesystem.
   fullyParallel: true,
-  workers: 6,
+  workers: 4,
   // No retries: a flaky live spec doubles CI wall time on every flake.
   // Better to surface the flake and fix it (or quarantine via test.skip
   // until fixed) than to mask it with a retry budget.

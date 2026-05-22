@@ -70,6 +70,9 @@ base("comment on a diff hunk persists in the comments banner", async ({ page }, 
     // "+" gutter buttons live behind `opacity-0 group-hover:opacity-100`
     // on each diff line, so the click target only paints on hover.
     // Hover the gutter cell first to reveal the button, then click.
+    // CommentForm uses a two-click range-selection model: first click
+    // sets rangeStart, second click on the same line resolves a single-
+    // line range and mounts the draft form.
     const addBtn = page.getByRole("button", {
       name: /Add comment on .* line/i,
     }).first();
@@ -78,7 +81,9 @@ base("comment on a diff hunk persists in the comments banner", async ({ page }, 
     const lineRow = addBtn.locator("xpath=ancestor::div[contains(@class,'group')][1]");
     await lineRow.hover();
     await expect(addBtn).toBeVisible({ timeout: 5_000 });
-    await addBtn.click();
+    await addBtn.click(); // sets rangeStart
+    await lineRow.hover(); // re-trigger group-hover after click
+    await addBtn.click(); // resolves single-line range -> draft form mounts
 
     const composer = page.getByPlaceholder(/Leave a comment/i);
     await expect(composer).toBeVisible({ timeout: 5_000 });
