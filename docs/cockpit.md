@@ -849,7 +849,7 @@ each and lifts the effective grace to `OFF_PROTOCOL_WORK_GRACE_FLOOR`
   off-protocol; the agent polls later via `BashOutput`. Detected from
   the `raw_input.run_in_background = true` flag at `ToolStarted` time
   AND from the completion text `Command running in background with
-  ID:` (either signal alone is enough — defense in depth so a single
+  ID:` (either signal alone is enough; defense in depth so a single
   SDK string drift can't reintroduce the false-positive class).
 
 The off-protocol branch takes precedence over the cost-seen fast path
@@ -866,7 +866,7 @@ Claude SDK `ScheduleWakeup` tool with `delaySeconds: N`, the daemon
 suppresses the watchdog until `wakeup_at + silent_orphan_grace_secs`,
 computed as a monotonic `Instant` deadline at signal receipt so
 wall-clock jumps don't perturb suppression. Multiple wakeups in the
-same prompt extend (not shorten) the suppression — the later deadline
+same prompt extend (not shorten) the suppression, and the later deadline
 always wins. After the deadline passes the watchdog rearms with its
 normal grace; if the scheduled wake never fires (e.g. daemon crash
 during sleep), recovery still happens, just later than for a regular
