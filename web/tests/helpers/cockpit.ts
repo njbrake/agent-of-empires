@@ -279,11 +279,14 @@ export async function attachServeDiagnostics(
   testInfo: TestInfo,
   serve: { home: string },
 ): Promise<void> {
-  // Called from the test body's `finally`, where `testInfo.status` is
-  // still undefined (Playwright sets it after the test function returns
-  // and all hooks run). Use `testInfo.errors.length` as the "did the
-  // test body fail?" signal instead.
-  if (testInfo.errors.length === 0) return;
+  // Always attach. Both `testInfo.status` and `testInfo.errors` are
+  // populated only AFTER the test function returns and all hooks run;
+  // they are empty/undefined when called from the test body's
+  // `finally`. The cost of always attaching (~few KB on success) is
+  // worth the certainty that diagnostics actually fire on failure.
+  // Playwright's HTML reporter inlines attachments on failed tests
+  // and elides them on passes anyway, so the report size impact is
+  // bounded.
   // App dir resolution mirrors aoeServe.ts#appDirFor: Linux uses
   // $XDG_CONFIG_HOME (which the harness sets to `${home}/config`),
   // macOS/Windows use `${home}/.agent-of-empires-dev`. Probe both so
