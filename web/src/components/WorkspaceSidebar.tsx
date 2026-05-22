@@ -838,6 +838,14 @@ export function WorkspaceSidebar({
   } | null>(null);
   const filterRef = useRef<HTMLInputElement>(null);
   const dragging = useRef(false);
+  // Drop the optimistic hint once the parent's activeId has moved off
+  // fromActiveId. Otherwise a later navigation back to fromActiveId
+  // (e.g. browser back, deep link) would re-engage the stale id and
+  // highlight the wrong row. Adjusting state during render is the
+  // pattern React docs recommend for derived resets like this.
+  if (optimisticActive && optimisticActive.fromActiveId !== activeId) {
+    setOptimisticActive(null);
+  }
   const displayedActiveId =
     optimisticActive?.fromActiveId === activeId ? optimisticActive.id : activeId;
 
