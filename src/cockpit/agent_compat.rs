@@ -21,6 +21,8 @@
 
 use agent_client_protocol::schema::{InitializeResponse, ProtocolVersion};
 
+use super::state::StartupErrorDetail;
+
 /// The adapter aoe is trying to launch. Drives which `CompatibilityPolicy`
 /// is applied at initialize-time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -139,6 +141,98 @@ impl StartupError {
             Self::MissingAgentInfo { .. } => "missing_agent_info",
             Self::MismatchedAgentName { .. } => "mismatched_agent_name",
             Self::UnparseableAgentVersion { .. } => "unparseable_agent_version",
+        }
+    }
+
+    /// User-facing one-liner suitable for the legacy
+    /// `AgentStartupError { message }` event channel. Lets the existing
+    /// status-derivation paths flip the session into Error state without
+    /// having to teach every consumer about the structured variant.
+    pub fn user_message(&self) -> String {
+        match self {
+            Self::IncompatibleAgentVersion {
+                package_name,
+                installed,
+                required,
+                install_command,
+            } => format!(
+                "{package_name} {installed} installed; aoe requires >={required}. Run: {install_command}",
+            ),
+            Self::MissingAgentInfo {
+                expected_package,
+                install_command,
+            } => format!(
+                "Adapter did not report its package version. aoe requires {expected_package} >=0.37.0. Run: {install_command}",
+            ),
+            Self::MismatchedAgentName {
+                expected,
+                received,
+                install_command,
+            } => format!(
+                "Adapter reported package name `{received}` but aoe expected `{expected}`. Run: {install_command}",
+            ),
+            Self::UnparseableAgentVersion {
+                package_name,
+                raw_version,
+                required,
+                install_command,
+            } => format!(
+                "{package_name} reported version `{raw_version}` which is not valid semver. aoe requires >={required}. Run: {install_command}",
+            ),
+            Self::UnsupportedProtocolVersion { expected, received } => format!(
+                "Adapter speaks ACP protocol {received}; aoe requires {expected}.",
+            ),
+        }
+    }
+}
+
+impl From<&StartupError> for StartupErrorDetail {
+    fn from(err: &StartupError) -> Self {
+        match err {
+            StartupError::IncompatibleAgentVersion {
+                package_name,
+                installed,
+                required,
+                install_command,
+            } => StartupErrorDetail::IncompatibleAgentVersion {
+                package_name: package_name.clone(),
+                installed: installed.clone(),
+                required: required.clone(),
+                install_command: install_command.clone(),
+            },
+            StartupError::MissingAgentInfo {
+                expected_package,
+                install_command,
+            } => StartupErrorDetail::MissingAgentInfo {
+                expected_package: expected_package.clone(),
+                install_command: install_command.clone(),
+            },
+            StartupError::MismatchedAgentName {
+                expected,
+                received,
+                install_command,
+            } => StartupErrorDetail::MismatchedAgentName {
+                expected: expected.clone(),
+                received: received.clone(),
+                install_command: install_command.clone(),
+            },
+            StartupError::UnparseableAgentVersion {
+                package_name,
+                raw_version,
+                required,
+                install_command,
+            } => StartupErrorDetail::UnparseableAgentVersion {
+                package_name: package_name.clone(),
+                raw_version: raw_version.clone(),
+                required: required.clone(),
+                install_command: install_command.clone(),
+            },
+            StartupError::UnsupportedProtocolVersion { expected, received } => {
+                StartupErrorDetail::UnsupportedProtocolVersion {
+                    expected: expected.clone(),
+                    received: received.clone(),
+                }
+            }
         }
     }
 }

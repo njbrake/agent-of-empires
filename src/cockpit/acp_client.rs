@@ -33,6 +33,7 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio_util::compat::{TokioAsyncReadCompatExt, TokioAsyncWriteCompatExt};
 use tracing::{debug, error, info, trace, warn};
 
+use super::agent_compat::{self, ExpectedAgent};
 use super::agent_profiles;
 use super::agent_registry::AgentSpec;
 use super::approvals::{is_destructive, ApprovalDecision, Nonce};
@@ -40,7 +41,8 @@ use super::fs_handler::{self, FsPolicy, SandboxPathMap};
 use super::permissions::build_approval;
 use super::state::{
     AvailableCommand, CockpitSessionId, DiffPreview, Event, ModeInfo, Plan, PlanStep,
-    PlanStepStatus, RateLimitInfo, SessionMode, SessionUsage, ToolCall, UsageCost,
+    PlanStepStatus, RateLimitInfo, SessionMode, SessionUsage, StartupErrorDetail, ToolCall,
+    UsageCost,
 };
 use super::terminal_handler::TerminalManager;
 use crate::session::SandboxInfo;
@@ -760,6 +762,7 @@ impl AcpClient {
         let session_label = session_id.0.clone();
         let child_for_task = child.clone();
         let pending_for_task = pending_responders.clone();
+        let expected_agent = ExpectedAgent::from_command(&install_binary);
 
         // Allowed fs roots: cwd + any explicit additional directories.
         let mut roots = vec![cwd.clone()];
@@ -794,6 +797,7 @@ impl AcpClient {
             mode,
             Some(ready_tx),
             profile,
+            expected_agent,
             source_profile,
         ));
 
@@ -858,6 +862,7 @@ impl AcpClient {
 
         let session_label = session_id.0.clone();
         let pending_for_task = pending_responders.clone();
+        let expected_agent = ExpectedAgent::from_command(&install_binary);
 
         let (ready_tx, ready_rx) = oneshot::channel::<Result<(), AcpError>>();
 
@@ -874,6 +879,7 @@ impl AcpClient {
             mode,
             Some(ready_tx),
             profile,
+            expected_agent,
             source_profile,
         ));
 
@@ -2369,6 +2375,7 @@ async fn run_connection_task<W, R>(
     mode: ConnectMode,
     ready_tx: Option<oneshot::Sender<Result<(), AcpError>>>,
     profile: &'static agent_profiles::AgentProfile,
+    expected_agent: ExpectedAgent,
     source_profile: Option<String>,
 ) where
     W: futures_util::AsyncWrite + Send + 'static,
@@ -2607,6 +2614,39 @@ async fn run_connection_task<W, R>(
                 )
                 .block_task()
                 .await?;
+
+            // Per-adapter compatibility check (see src/cockpit/agent_compat.rs).
+            // Currently only gates claude-agent-acp at >=0.37.0; other
+            // adapters pass through. On rejection: emit a structured
+            // IncompatibleAgent event for the dedicated startup-error UI,
+            // plus a parallel AgentStartupError message so the legacy
+            // status-derivation paths still flip the session into Error
+            // state. Then signal ready_tx with the failure so the
+            // supervisor surfaces a typed error to the caller and kills
+            // the child (handled by the outer Drop path).
+            if let Err(err) = agent_compat::validate(expected_agent, &init) {
+                let user_message = err.user_message();
+                warn!(
+                    target: "cockpit.acp",
+                    session = %session_label,
+                    kind = err.kind(),
+                    message = %user_message,
+                    "agent compatibility check failed; refusing to enter session"
+                );
+                let detail = StartupErrorDetail::from(&err);
+                let _ = event_tx_for_block
+                    .send(Event::IncompatibleAgent { detail })
+                    .await;
+                let _ = event_tx_for_block
+                    .send(Event::AgentStartupError {
+                        message: user_message.clone(),
+                    })
+                    .await;
+                if let Some(tx) = ready_for_block.lock().await.take() {
+                    let _ = tx.send(Err(AcpError::Spawn(user_message)));
+                }
+                return Ok(());
+            }
 
             let load_session_capable = init.agent_capabilities.load_session;
             // Snapshot the watchdog-arming flag before `mode` is moved

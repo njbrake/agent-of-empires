@@ -160,6 +160,43 @@ pub struct AvailableCommand {
     pub accepts_input: bool,
 }
 
+/// Structured detail about why aoe refused to enter the session after
+/// the ACP `initialize` handshake completed. Distinct from the runtime
+/// `Stopped` taxonomy: a startup error means the session never reached
+/// the Running state. The cockpit UI short-circuits its normal render
+/// when this field is populated and shows a dedicated screen with the
+/// exact remediation command. Populated by the per-adapter compatibility
+/// check (see `src/cockpit/agent_compat.rs`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum StartupErrorDetail {
+    IncompatibleAgentVersion {
+        package_name: String,
+        installed: String,
+        required: String,
+        install_command: String,
+    },
+    MissingAgentInfo {
+        expected_package: String,
+        install_command: String,
+    },
+    MismatchedAgentName {
+        expected: String,
+        received: String,
+        install_command: String,
+    },
+    UnparseableAgentVersion {
+        package_name: String,
+        raw_version: String,
+        required: String,
+        install_command: String,
+    },
+    UnsupportedProtocolVersion {
+        expected: String,
+        received: String,
+    },
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CockpitState {
     pub session_id: CockpitSessionId,
@@ -190,6 +227,13 @@ pub struct CockpitState {
     /// until the session has ever moved backends. See #1282.
     #[serde(default)]
     pub last_agent_switch: Option<AgentSwitchInfo>,
+    /// Structured startup error from the per-adapter compatibility
+    /// check. When `Some`, the cockpit UI replaces its normal session
+    /// view with a dedicated remediation screen. `None` for healthy
+    /// sessions and for legacy `AgentStartupError` failures (those
+    /// only carry a free-form message; see `Event::AgentStartupError`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub startup_error: Option<StartupErrorDetail>,
 
     pub last_seq: u64,
     pub updated_at: DateTime<Utc>,
@@ -216,6 +260,7 @@ impl CockpitState {
             usage: None,
             available_commands: Vec::new(),
             last_agent_switch: None,
+            startup_error: None,
             last_seq: 0,
             updated_at: Utc::now(),
         }
@@ -384,6 +429,17 @@ pub enum Event {
     /// an empty conversation.
     AgentStartupError {
         message: String,
+    },
+    /// The ACP `initialize` handshake completed but the adapter failed
+    /// the per-adapter compatibility policy. Structured payload so the
+    /// cockpit UI can render an actionable remediation screen with the
+    /// exact install command. Emitted by the connection task right
+    /// before it closes; the connection drops, the child is killed, and
+    /// a parallel `AgentStartupError { message }` is published so legacy
+    /// status-derivation paths still flip the session into Error state.
+    /// See `src/cockpit/agent_compat.rs`.
+    IncompatibleAgent {
+        detail: StartupErrorDetail,
     },
     /// Echo of a user-submitted prompt. Published synchronously by the
     /// `POST /cockpit/prompt` handler before the text is forwarded to
@@ -556,6 +612,9 @@ impl CockpitState {
             Event::AgentMessageChunk { .. } => {}
             Event::Stopped { .. } => {}
             Event::AgentStartupError { .. } => {}
+            Event::IncompatibleAgent { detail } => {
+                self.startup_error = Some(detail);
+            }
             Event::UserPromptSent { .. } => {}
             Event::AcpSessionAssigned { .. } => {}
             Event::SessionContextReset { .. } => {

@@ -827,6 +827,7 @@ fn event_kind(event: &crate::cockpit::Event) -> &'static str {
         Event::AgentMessageChunk { .. } => "agent_message_chunk",
         Event::Stopped { .. } => "stopped",
         Event::AgentStartupError { .. } => "agent_startup_error",
+        Event::IncompatibleAgent { .. } => "incompatible_agent",
         Event::UserPromptSent { .. } => "user_prompt_sent",
         Event::AcpSessionAssigned { .. } => "acp_session_assigned",
         Event::SessionContextReset { .. } => "session_context_reset",

@@ -319,6 +319,12 @@ impl CockpitTranscript {
                     text: format!("agent startup failed: {message}"),
                 });
             }
+            Event::IncompatibleAgent { .. } => {
+                // Structured detail for the web cockpit's StartupErrorScreen.
+                // The TUI mirrors the textual signal via the parallel
+                // AgentStartupError event the connection task emits, so the
+                // reducer has nothing to do here.
+            }
             Event::SessionContextReset { reason } => {
                 self.flush_pending_chunk();
                 self.context_primer_pending = true;
