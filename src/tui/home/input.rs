@@ -345,7 +345,7 @@ impl HomeView {
         // Handle other dialog input
         if self.show_help {
             match key.code {
-                KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q') => {
+                KeyCode::Esc | KeyCode::Char('?') | KeyCode::Char('q') | KeyCode::Char('Q') => {
                     self.show_help = false;
                     self.help_scroll = 0;
                 }

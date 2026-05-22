@@ -180,6 +180,18 @@ fn test_help_closes_on_q() {
 
 #[test]
 #[serial]
+fn test_help_closes_on_uppercase_q_for_strict_mode() {
+    // Strict mode binds quit to uppercase Q; the help overlay must
+    // accept it too so strict-mode users can dismiss the dialog with
+    // the same key they use to quit.
+    let mut env = create_test_env_empty();
+    env.view.show_help = true;
+    env.view.handle_key(key(KeyCode::Char('Q')), None);
+    assert!(!env.view.show_help);
+}
+
+#[test]
+#[serial]
 fn test_has_dialog_returns_true_for_help() {
     let mut env = create_test_env_empty();
     assert!(!env.view.has_dialog());
