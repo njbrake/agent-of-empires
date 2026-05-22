@@ -162,10 +162,28 @@ jobs:
           fi
 
       - name: Generate release notes
+        env:
+          # git-cliff hits the GitHub API to resolve commit -> PR -> author
+          # for the "by @user in #N" lines and the "New Contributors" section.
+          # Without a token the calls are unauthenticated and rate-limited to
+          # 60/hr, which silently strips attribution when a release has many
+          # commits.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          git cliff --config cliff.toml --current --strip header > release-notes.md
+          git cliff --config cliff.toml --current --strip header > release-notes.md 2> cliff-stderr.log
           echo "=== release-notes.md ==="
           cat release-notes.md
+          echo "=== cliff stderr ==="
+          cat cliff-stderr.log
+          # Belt-and-braces: cliff.toml already routes unmatched commits to
+          # the "Other" group via a catch-all parser. If git-cliff still
+          # flags a parse-error skip, something fell through the safety net
+          # (regex change, parser-order regression, etc.) and we want the
+          # release to fail loudly rather than silently lose commits.
+          if grep -q "skipped due to parse error" cliff-stderr.log; then
+            echo "::error::git-cliff skipped commits due to parse errors. Either fix the offending commit messages or extend cliff.toml's catch-all parser."
+            exit 1
+          fi
 
       - name: Create Release
         uses: softprops/action-gh-release@b4309332981a82ec1c5618f44dd2e27cc8bfbfda # v3.0.0

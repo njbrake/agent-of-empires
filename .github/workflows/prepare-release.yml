@@ -59,10 +59,24 @@ jobs:
           grep '^version = ' Cargo.toml | head -1
 
       - name: Update CHANGELOG.md
+        env:
+          # See release.yml for context: git-cliff needs an auth token to
+          # resolve PR + author metadata, otherwise contributor attribution
+          # silently drops on large releases.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          git cliff --config cliff.toml --tag "v$VERSION" --output CHANGELOG.md
+          git cliff --config cliff.toml --tag "v$VERSION" --output CHANGELOG.md 2> cliff-stderr.log
           echo "=== CHANGELOG.md head ==="
           head -40 CHANGELOG.md
+          echo "=== cliff stderr ==="
+          cat cliff-stderr.log
+          # Mirror the release.yml guard. cliff.toml's catch-all parser
+          # routes unmatched commits to "Other"; if git-cliff still skips
+          # any due to parse errors, fail the release prep.
+          if grep -q "skipped due to parse error" cliff-stderr.log; then
+            echo "::error::git-cliff skipped commits due to parse errors. Either fix the offending commit messages or extend cliff.toml's catch-all parser."
+            exit 1
+          fi
 
       - name: Commit version bump
         run: |
