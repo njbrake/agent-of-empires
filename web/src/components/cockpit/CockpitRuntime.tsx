@@ -83,6 +83,8 @@ export interface CockpitContext {
   clearQueue: () => void;
   dismissRejectedPrompt: (id: string) => void;
   dismissModeSwitchFailed: () => void;
+  setConfigOption: (configId: string, value: string) => Promise<void>;
+  dismissConfigOptionSwitchFailed: () => void;
 }
 
 /**
@@ -157,6 +159,8 @@ export function CockpitRuntime({
         clearQueue: cockpit.clearQueue,
         dismissRejectedPrompt: cockpit.dismissRejectedPrompt,
         dismissModeSwitchFailed: cockpit.dismissModeSwitchFailed,
+        setConfigOption: cockpit.setConfigOption,
+        dismissConfigOptionSwitchFailed: cockpit.dismissConfigOptionSwitchFailed,
       })}
     </AssistantRuntimeProvider>
   );
