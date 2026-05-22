@@ -52,8 +52,10 @@ jobs:
 
       - name: Patch flake.nix with real hash
         if: steps.hash.outputs.changed == 'true'
+        env:
+          NEW_HASH: ${{ steps.hash.outputs.hash }}
         run: |
-          .github/scripts/set-flake-npm-hash.sh flake.nix "${{ steps.hash.outputs.hash }}"
+          .github/scripts/set-flake-npm-hash.sh flake.nix "$NEW_HASH"
           echo "Updated flake.nix:"
           grep -E '^[[:space:]]*npmDepsHash[[:space:]]*=' flake.nix
 
