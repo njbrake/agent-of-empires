@@ -59,6 +59,17 @@ pub enum AcpError {
     /// adapter" copy. See issue #1089.
     #[error("project path no longer exists: {path}")]
     ProjectPathMissing { path: PathBuf },
+    /// The ACP `initialize` handshake completed but the adapter failed
+    /// the per-adapter compatibility policy (see
+    /// `src/cockpit/agent_compat.rs`). Carries the structured detail so
+    /// the supervisor can publish a matching `Event::IncompatibleAgent`
+    /// through the broadcast sink (the in-process event_tx the failed
+    /// `AcpClient::spawn` opened is never delivered, so the structured
+    /// payload has to ride out of band on the typed error). The payload
+    /// is boxed to keep `AcpError` small on the Ok hot path (clippy's
+    /// `result_large_err`).
+    #[error("incompatible agent: {0}")]
+    IncompatibleAgent(Box<IncompatibleAgentError>),
     #[error("transport error: {0}")]
     Transport(String),
     #[error("protocol violation: {0}")]
@@ -71,6 +82,23 @@ pub enum AcpError {
     UnknownNonce,
     #[error("agent did not offer a {0:?} option")]
     NoMatchingOption(ApprovalDecision),
+}
+
+/// Boxed payload for `AcpError::IncompatibleAgent`. Carries the
+/// structured `StartupErrorDetail` plus a pre-formatted free-form
+/// summary the supervisor mirrors into the legacy
+/// `Event::AgentStartupError { message }` channel for status-derivation
+/// callers that don't yet read the structured detail.
+#[derive(Debug)]
+pub struct IncompatibleAgentError {
+    pub detail: super::state::StartupErrorDetail,
+    pub message: String,
+}
+
+impl std::fmt::Display for IncompatibleAgentError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
 }
 
 impl AcpError {
@@ -945,10 +973,19 @@ impl AcpClient {
             in_flight_turn,
         };
         let profile = agent_profiles::resolve(&agent_key);
-        // Resume path has no install hint to surface: the agent is
-        // already running. Pass an empty string; the install hint is
-        // only consulted on handshake-failure timeouts, which the resume
-        // path treats as a different fault.
+        // Resolve the binary name from the registry so the resume path
+        // still routes through the per-adapter compatibility gate
+        // (`agent_compat::ExpectedAgent::from_command`). Reattaching to
+        // a stale claude-agent-acp@0.32.0 worker that survived an aoe
+        // serve restart should re-trigger the >=0.37.0 check, not
+        // silently skip it just because the resume path has no install
+        // hint to surface. Empty fallback only when the agent key is
+        // not in the registry (an unknown user-configured agent);
+        // policy maps that to Other anyway.
+        let install_binary = super::AgentRegistry::with_defaults()
+            .get(&agent_key)
+            .map(|spec| spec.command.clone())
+            .unwrap_or_default();
         Self::connect_via_socket(
             socket_path,
             cwd,
@@ -962,7 +999,7 @@ impl AcpClient {
             event_rx,
             sandbox,
             profile,
-            String::new(),
+            install_binary,
             source_profile,
         )
         .await
@@ -2681,13 +2718,18 @@ async fn run_connection_task<W, R>(
 
             // Per-adapter compatibility check (see src/cockpit/agent_compat.rs).
             // Currently only gates claude-agent-acp at >=0.37.0; other
-            // adapters pass through. On rejection: emit a structured
-            // IncompatibleAgent event for the dedicated startup-error UI,
-            // plus a parallel AgentStartupError message so the legacy
-            // status-derivation paths still flip the session into Error
-            // state. Then signal ready_tx with the failure so the
-            // supervisor surfaces a typed error to the caller and kills
-            // the child (handled by the outer Drop path).
+            // adapters pass through. On rejection: route the structured
+            // detail through the typed `AcpError::IncompatibleAgent`
+            // variant on ready_tx so the supervisor sees it on the
+            // spawn-failure path. The supervisor mirrors the detail into
+            // `Event::IncompatibleAgent` + `Event::AgentStartupError`
+            // through the broadcast sink (the in-process `event_tx`
+            // here is dropped on the floor when spawn() returns Err, so
+            // any events emitted from this closure would never reach the
+            // reducer). The supervisor also terminates the detached
+            // runner; we close the connection cleanly via `return Ok(())`
+            // so the outer cleanup at line ~3500 doesn't double-emit an
+            // AgentStartupError on top of the structured one.
             if let Err(err) = agent_compat::validate(expected_agent, &init) {
                 let user_message = err.user_message();
                 warn!(
@@ -2698,16 +2740,13 @@ async fn run_connection_task<W, R>(
                     "agent compatibility check failed; refusing to enter session"
                 );
                 let detail = StartupErrorDetail::from(&err);
-                let _ = event_tx_for_block
-                    .send(Event::IncompatibleAgent { detail })
-                    .await;
-                let _ = event_tx_for_block
-                    .send(Event::AgentStartupError {
-                        message: user_message.clone(),
-                    })
-                    .await;
                 if let Some(tx) = ready_for_block.lock().await.take() {
-                    let _ = tx.send(Err(AcpError::Spawn(user_message)));
+                    let _ = tx.send(Err(AcpError::IncompatibleAgent(Box::new(
+                        IncompatibleAgentError {
+                            detail,
+                            message: user_message,
+                        },
+                    ))));
                 }
                 return Ok(());
             }

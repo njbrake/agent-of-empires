@@ -41,9 +41,22 @@ impl ExpectedAgent {
     /// Resolve from the binary name as configured in `AgentRegistry`. Maps
     /// the string the supervisor is about to spawn to the matching policy
     /// enum so the supervisor can call this once and pass the result down.
+    ///
+    /// Robust to surface variations seen in the wild: a wrapper command
+    /// string ("bash claude-agent-acp"), POSIX or Windows path
+    /// separators, and the `.exe` / `.cmd` suffixes Windows shims add.
+    /// Without this normalization a wrapped or Windows-installed
+    /// `claude-agent-acp` would land in `Other` and silently bypass the
+    /// >=0.37.0 gate.
     pub fn from_command(command: &str) -> Self {
-        let bin = command.rsplit('/').next().unwrap_or(command);
-        match bin {
+        let token = command.split_whitespace().next().unwrap_or(command);
+        let basename = token.rsplit(['/', '\\']).next().unwrap_or(token);
+        let stem = basename
+            .strip_suffix(".exe")
+            .or_else(|| basename.strip_suffix(".cmd"))
+            .or_else(|| basename.strip_suffix(".bat"))
+            .unwrap_or(basename);
+        match stem {
             "claude-agent-acp" => Self::ClaudeAgentAcp,
             "codex-acp" => Self::CodexAcp,
             "opencode" => Self::OpenCode,
@@ -431,6 +444,42 @@ mod tests {
         assert_eq!(
             ExpectedAgent::from_command("unknown-bin"),
             ExpectedAgent::Other
+        );
+    }
+
+    #[test]
+    fn from_command_handles_windows_paths_and_extensions() {
+        assert_eq!(
+            ExpectedAgent::from_command(
+                "C:\\Users\\u\\AppData\\Roaming\\npm\\claude-agent-acp.cmd"
+            ),
+            ExpectedAgent::ClaudeAgentAcp
+        );
+        assert_eq!(
+            ExpectedAgent::from_command("claude-agent-acp.exe"),
+            ExpectedAgent::ClaudeAgentAcp
+        );
+        assert_eq!(
+            ExpectedAgent::from_command("D:\\bin\\claude-agent-acp.bat"),
+            ExpectedAgent::ClaudeAgentAcp
+        );
+    }
+
+    #[test]
+    fn from_command_handles_wrapper_token_prefix() {
+        // `AgentRegistry` exposes `command` plus a separate `args`
+        // vector, but defensive code paths sometimes hand us the joined
+        // string (e.g. `aoe cockpit doctor --json` output, log lines
+        // round-tripped through user config). Tolerate the joined form
+        // so the gate doesn't silently flip to `Other` and skip the
+        // claude check.
+        assert_eq!(
+            ExpectedAgent::from_command("claude-agent-acp --some-flag"),
+            ExpectedAgent::ClaudeAgentAcp
+        );
+        assert_eq!(
+            ExpectedAgent::from_command("  /usr/local/bin/claude-agent-acp  "),
+            ExpectedAgent::ClaudeAgentAcp
         );
     }
 }

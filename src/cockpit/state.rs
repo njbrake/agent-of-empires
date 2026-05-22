@@ -642,7 +642,14 @@ impl CockpitState {
                 self.startup_error = Some(detail);
             }
             Event::UserPromptSent { .. } => {}
-            Event::AcpSessionAssigned { .. } => {}
+            Event::AcpSessionAssigned { .. } => {
+                // A fresh agent that passed the compatibility check
+                // has come online; heal any sticky startup error so a
+                // post-upgrade respawn unblocks the UI without a hard
+                // reload. Mirrors the frontend reducer's
+                // `incompatibleAgent = null` clear on the same event.
+                self.startup_error = None;
+            }
             Event::SessionContextReset { .. } => {
                 // Agent's stored context is gone; clear the cached
                 // usage snapshot so the composer footer doesn't keep

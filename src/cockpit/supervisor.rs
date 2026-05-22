@@ -429,6 +429,40 @@ impl<S: BroadcastSink> Supervisor<S> {
             .publish(session_id, seq, &Event::AgentStartupError { message });
     }
 
+    /// Mirror an `AcpError::IncompatibleAgent` onto the broadcast sink
+    /// and tear down the detached runner. Called from every spawn-
+    /// failure site so the structured detail reaches the reducer (the
+    /// in-process event_tx on the failed AcpClient never delivers) and
+    /// socket-mode workers don't survive a compatibility rejection. On
+    /// non-compat errors this is a no-op.
+    fn publish_compat_rejection(&self, session_id: &str, err: &AcpError) {
+        let AcpError::IncompatibleAgent(payload) = err else {
+            return;
+        };
+        let detail_seq = next_seq(&self.next_seqs, session_id);
+        self.sink.publish(
+            session_id,
+            detail_seq,
+            &Event::IncompatibleAgent {
+                detail: payload.detail.clone(),
+            },
+        );
+        let msg_seq = next_seq(&self.next_seqs, session_id);
+        self.sink.publish(
+            session_id,
+            msg_seq,
+            &Event::AgentStartupError {
+                message: payload.message.clone(),
+            },
+        );
+        // SIGTERM the detached runner so a stale claude-agent-acp@0.32.0
+        // child doesn't keep the worker socket alive. `terminate_runner_for_session`
+        // also deletes the registry entry so a retry via the API doesn't
+        // hit AlreadyRunning. Idempotent: it's a no-op if the registry
+        // entry is missing or the PID is dead. No-op on non-unix.
+        terminate_runner_for_session(session_id);
+    }
+
     /// Publish a synthetic `AgentSwitched` event after a successful
     /// `/cockpit/switch-agent` operation. Carries the prior and new
     /// agent registry keys plus the reason (e.g. `"rate_limited"`).
@@ -762,7 +796,13 @@ impl<S: BroadcastSink> Supervisor<S> {
         );
 
         let cockpit_session_id = CockpitSessionId(session_id.clone());
-        let mut client = AcpClient::spawn(config.clone(), cockpit_session_id.clone()).await?;
+        let mut client = match AcpClient::spawn(config.clone(), cockpit_session_id.clone()).await {
+            Ok(c) => c,
+            Err(err) => {
+                self.publish_compat_rejection(&session_id, &err);
+                return Err(SupervisorError::Acp(err));
+            }
+        };
 
         // First spawn for this agent succeeded; record it in
         // `warmed_up_agents` so subsequent concurrent callers skip the
@@ -1167,14 +1207,42 @@ impl<S: BroadcastSink> Supervisor<S> {
                                     session = %session_id,
                                     "respawn failed: {e}"
                                 );
-                                let seq = next_seq(&next_seqs, &session_id);
-                                sink.publish(
-                                    &session_id,
-                                    seq,
-                                    &Event::AgentStartupError {
-                                        message: format!("ACP agent respawn failed: {e}"),
-                                    },
-                                );
+                                // If the respawn was rejected by the
+                                // compatibility check (e.g. operator
+                                // downgraded the adapter under us), surface
+                                // the structured detail so the UI lands on
+                                // the StartupErrorScreen instead of the
+                                // generic red banner. Then tear down the
+                                // stale runner before dropping the worker
+                                // entry.
+                                if let AcpError::IncompatibleAgent(payload) = &e {
+                                    let seq = next_seq(&next_seqs, &session_id);
+                                    sink.publish(
+                                        &session_id,
+                                        seq,
+                                        &Event::IncompatibleAgent {
+                                            detail: payload.detail.clone(),
+                                        },
+                                    );
+                                    let seq = next_seq(&next_seqs, &session_id);
+                                    sink.publish(
+                                        &session_id,
+                                        seq,
+                                        &Event::AgentStartupError {
+                                            message: payload.message.clone(),
+                                        },
+                                    );
+                                    terminate_runner_for_session(&session_id);
+                                } else {
+                                    let seq = next_seq(&next_seqs, &session_id);
+                                    sink.publish(
+                                        &session_id,
+                                        seq,
+                                        &Event::AgentStartupError {
+                                            message: format!("ACP agent respawn failed: {e}"),
+                                        },
+                                    );
+                                }
                                 // Drop the dead WorkerHandle so the user can
                                 // retry via POST /api/sessions/:id/cockpit/spawn
                                 // without hitting AlreadyRunning. Without this

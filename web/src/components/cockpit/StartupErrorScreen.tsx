@@ -21,23 +21,23 @@ export function StartupErrorScreen({ detail }: Props) {
       role="alert"
       aria-live="assertive"
       data-testid="startup-error-screen"
-      className="flex h-full flex-1 items-center justify-center bg-rose-950/30 px-4 py-12"
+      className="flex h-full flex-1 items-center justify-center bg-surface-900 px-4 py-12"
     >
-      <div className="w-full max-w-xl rounded-lg border border-rose-900/60 bg-rose-950/60 p-6 text-rose-100 shadow-lg">
-        <div className="text-xs font-semibold uppercase tracking-wide text-rose-300/80">
+      <div className="w-full max-w-xl rounded-lg border border-status-error/60 bg-surface-850 p-6 text-text-primary shadow-lg">
+        <div className="text-[11px] font-semibold uppercase tracking-wide text-status-error">
           Adapter compatibility check failed
         </div>
-        <h2 className="mt-2 text-lg font-semibold text-rose-50">{heading}</h2>
-        <p className="mt-3 text-sm text-rose-100/90">{summary}</p>
+        <h2 className="mt-2 text-lg font-semibold text-text-primary">{heading}</h2>
+        <p className="mt-3 text-sm text-text-secondary">{summary}</p>
 
         {installCommand && (
           <div className="mt-4">
-            <div className="text-xs font-medium uppercase tracking-wide text-rose-300/80">
+            <div className="text-[11px] font-medium uppercase tracking-wide text-text-dim">
               Run this, then restart the session
             </div>
             <pre
               data-testid="startup-error-install-command"
-              className="mt-1 overflow-x-auto rounded-md border border-rose-900/60 bg-rose-900/40 p-2 text-xs text-rose-50"
+              className="mt-1 overflow-x-auto rounded-md border border-surface-700 bg-surface-950 p-2 font-mono text-[12px] text-text-primary"
             >
               {installCommand}
             </pre>
@@ -46,12 +46,13 @@ export function StartupErrorScreen({ detail }: Props) {
 
         <DetailRows detail={detail} />
 
-        <div className="mt-4 text-xs text-rose-200/80">
+        <div className="mt-4 text-xs text-text-dim">
           The session is paused until the adapter satisfies the required
           version. Once you have run the command above, restart{" "}
-          <code className="rounded bg-rose-900/60 px-1">aoe serve</code> (or
-          spawn a fresh cockpit session) and the check re-runs at the next
-          ACP <code className="rounded bg-rose-900/60 px-1">initialize</code>{" "}
+          <code className="rounded bg-surface-950 px-1 font-mono text-[12px]">aoe serve</code>{" "}
+          (or spawn a fresh cockpit session) and the check re-runs at the next
+          ACP{" "}
+          <code className="rounded bg-surface-950 px-1 font-mono text-[12px]">initialize</code>{" "}
           handshake.
         </div>
       </div>
@@ -127,11 +128,11 @@ function DetailRows({ detail }: { detail: IncompatibleAgentDetail }) {
       break;
   }
   return (
-    <dl className="mt-4 grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 text-xs text-rose-100/90">
+    <dl className="mt-4 grid grid-cols-[max-content_1fr] gap-x-3 gap-y-1 font-mono text-[11px] text-text-secondary">
       {rows.map(([label, value]) => (
         <div key={label} className="contents">
-          <dt className="font-medium text-rose-200/80">{label}</dt>
-          <dd className="break-all font-mono">{value}</dd>
+          <dt className="font-medium text-text-dim">{label}</dt>
+          <dd className="break-all">{value}</dd>
         </div>
       ))}
     </dl>
