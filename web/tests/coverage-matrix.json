@@ -346,6 +346,27 @@
       ]
     },
     {
+      "id": "sidebar.sort-pure",
+      "kind": "vitest",
+      "risk": "medium",
+      "specs": ["src/lib/__tests__/sidebarSort.test.ts"],
+      "components": []
+    },
+    {
+      "id": "sidebar.sort-toggle-ui",
+      "kind": "mocked-playwright",
+      "risk": "high",
+      "specs": ["tests/sidebar-sort-mode.spec.ts"],
+      "components": ["web/src/components/WorkspaceSidebar.tsx"]
+    },
+    {
+      "id": "sidebar.sort-live",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": ["tests/live/sidebar-sort-mode.spec.ts"],
+      "components": ["web/src/components/WorkspaceSidebar.tsx"]
+    },
+    {
       "id": "session.lifecycle",
       "kind": "live-playwright",
       "risk": "high",
