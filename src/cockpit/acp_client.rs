@@ -5468,6 +5468,22 @@ mod tests {
     }
 
     #[test]
+    fn lifecycle_envelope_round_trips_epoch_and_signal() {
+        // Smoke test that `LifecycleEnvelope` carries both fields as
+        // expected: the prompt-loop discard path keys off `epoch`
+        // mismatch, so a regression that loses or zeroes the field
+        // would silently break cross-prompt stale-signal protection.
+        let env = LifecycleEnvelope {
+            epoch: 42,
+            signal: LifecycleSignal::WakeupPending {
+                at: chrono::Utc::now(),
+            },
+        };
+        assert_eq!(env.epoch, 42);
+        assert!(matches!(env.signal, LifecycleSignal::WakeupPending { .. }));
+    }
+
+    #[test]
     fn classify_lifecycle_signal_tool_call_carries_run_in_background_flag() {
         use agent_client_protocol::schema::ToolCall;
         let mut tc = ToolCall::new("tc-bg-2", "Bash");
