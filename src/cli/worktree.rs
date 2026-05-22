@@ -154,7 +154,7 @@ async fn show_info(profile: &str, identifier: &str) -> Result<()> {
 
 async fn cleanup_orphaned(profile: &str, force: bool) -> Result<()> {
     let storage = Storage::new(profile)?;
-    let (instances, groups) = storage.load_with_groups()?;
+    let instances = storage.load()?;
 
     let mut orphaned_sessions = Vec::new();
     let mut orphaned_worktrees = Vec::new();
@@ -259,11 +259,20 @@ async fn cleanup_orphaned(profile: &str, force: bool) -> Result<()> {
 
     // Remove orphaned sessions
     if !orphaned_sessions.is_empty() {
-        let mut new_instances = instances.clone();
-        new_instances.retain(|inst| !orphaned_sessions.iter().any(|orphan| orphan.id == inst.id));
-
-        let group_tree = crate::session::GroupTree::new_with_groups(&new_instances, &groups);
-        storage.commit(&new_instances, &group_tree)?;
+        // Persist through `update`, which re-loads `sessions.json` under the
+        // cross-process lock and retains by `Instance.id`. The orphaned set
+        // was computed from an earlier load; a wholesale `commit` of that
+        // snapshot would clobber a row another process added in the
+        // meantime. Retaining by id removes only the orphans and leaves any
+        // concurrently-added row intact.
+        let orphan_ids: Vec<String> = orphaned_sessions
+            .iter()
+            .map(|inst| inst.id.clone())
+            .collect();
+        storage.update(move |instances, _groups| {
+            instances.retain(|inst| !orphan_ids.contains(&inst.id));
+            Ok(())
+        })?;
 
         removed_count += orphaned_sessions.len();
         println!("✓ Removed {} orphaned sessions", orphaned_sessions.len());

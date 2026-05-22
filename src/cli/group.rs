@@ -127,7 +127,6 @@ async fn list_groups(profile: &str, args: GroupListArgs) -> Result<()> {
 
 async fn create_group(profile: &str, args: GroupCreateArgs) -> Result<()> {
     let storage = Storage::new(profile)?;
-    let (instances, groups) = storage.load_with_groups()?;
 
     let name = args.name.trim();
     let group_path = if let Some(parent) = &args.parent {
@@ -136,14 +135,20 @@ async fn create_group(profile: &str, args: GroupCreateArgs) -> Result<()> {
         name.to_string()
     };
 
-    let mut group_tree = GroupTree::new_with_groups(&instances, &groups);
-
-    if group_tree.group_exists(&group_path) {
-        bail!("Group already exists: {}", group_path);
-    }
-
-    group_tree.create_group(&group_path);
-    storage.commit(&instances, &group_tree)?;
+    // Persist through `update`, which re-loads under the cross-process lock.
+    // The existence check runs against that fresh snapshot, not a stale one,
+    // and the closure only adds the new group, so a concurrently-added group
+    // or session row is never clobbered.
+    let group_path_for_save = group_path.clone();
+    storage.update(move |instances, groups| {
+        let mut group_tree = GroupTree::new_with_groups(instances, groups);
+        if group_tree.group_exists(&group_path_for_save) {
+            bail!("Group already exists: {}", group_path_for_save);
+        }
+        group_tree.create_group(&group_path_for_save);
+        *groups = group_tree.get_all_groups();
+        Ok(())
+    })?;
 
     println!("✓ Created group: {}", group_path);
 
@@ -152,43 +157,53 @@ async fn create_group(profile: &str, args: GroupCreateArgs) -> Result<()> {
 
 async fn delete_group(profile: &str, args: GroupDeleteArgs) -> Result<()> {
     let storage = Storage::new(profile)?;
-    let (mut instances, groups) = storage.load_with_groups()?;
 
-    let mut group_tree = GroupTree::new_with_groups(&instances, &groups);
+    let name = args.name.trim().to_string();
+    let force = args.force;
 
-    let name = args.name.trim();
-    if !group_tree.group_exists(name) {
-        bail!("Group not found: {}", name);
-    }
+    // Persist through `update`: the existence check, the session count, and
+    // the deletion all run against a fresh snapshot loaded under the
+    // cross-process lock. The closure mutates only the target group and its
+    // sessions, so a row another process added concurrently is preserved.
+    // The count is returned so the post-update messages stay accurate.
+    let name_for_save = name.clone();
+    let session_count = storage.update(move |instances, groups| {
+        let mut group_tree = GroupTree::new_with_groups(instances, groups);
 
-    // Check for sessions in this group
-    let session_count = instances
-        .iter()
-        .filter(|i| i.group_path == name || i.group_path.starts_with(&format!("{}/", name)))
-        .count();
-
-    if session_count > 0 {
-        if !args.force {
-            bail!(
-                "Group '{}' contains {} sessions. Use --force to move them to default group.",
-                name,
-                session_count
-            );
+        if !group_tree.group_exists(&name_for_save) {
+            bail!("Group not found: {}", name_for_save);
         }
 
-        // Move sessions to default group
-        for inst in &mut instances {
-            if inst.group_path == name || inst.group_path.starts_with(&format!("{}/", name)) {
-                inst.group_path = String::new();
+        let prefix = format!("{}/", name_for_save);
+        let session_count = instances
+            .iter()
+            .filter(|i| i.group_path == name_for_save || i.group_path.starts_with(&prefix))
+            .count();
+
+        if session_count > 0 {
+            if !force {
+                bail!(
+                    "Group '{}' contains {} sessions. Use --force to move them to default group.",
+                    name_for_save,
+                    session_count
+                );
+            }
+
+            // Move sessions to default group
+            for inst in instances.iter_mut() {
+                if inst.group_path == name_for_save || inst.group_path.starts_with(&prefix) {
+                    inst.group_path = String::new();
+                }
             }
         }
-    }
 
-    group_tree.delete_group(name);
-    storage.commit(&instances, &group_tree)?;
+        group_tree.delete_group(&name_for_save);
+        *groups = group_tree.get_all_groups();
+        Ok(session_count)
+    })?;
 
     println!("✓ Deleted group: {}", name);
-    if args.force && session_count > 0 {
+    if force && session_count > 0 {
         println!("  Moved {} sessions to default group", session_count);
     }
 
@@ -197,24 +212,37 @@ async fn delete_group(profile: &str, args: GroupDeleteArgs) -> Result<()> {
 
 async fn move_session(profile: &str, args: GroupMoveArgs) -> Result<()> {
     let storage = Storage::new(profile)?;
-    let (mut instances, groups) = storage.load_with_groups()?;
 
-    let identifier = args.identifier.trim();
-    let inst = instances
-        .iter_mut()
-        .find(|i| i.id == identifier || i.id.starts_with(identifier) || i.title == identifier)
-        .ok_or_else(|| anyhow::anyhow!("Session not found: {}", identifier))?;
+    let identifier = args.identifier.trim().to_string();
+    let group = args.group.trim().to_string();
 
-    let group = args.group.trim();
-    let old_group = inst.group_path.clone();
-    inst.group_path = group.to_string();
+    // Persist through `update`: the session lookup and the group reassignment
+    // both run against a fresh snapshot loaded under the cross-process lock.
+    // The closure touches only the target row's `group_path` and adds the
+    // destination group, so a concurrently-added row is never clobbered. The
+    // previous group is returned so the post-update message stays accurate.
+    let identifier_for_save = identifier.clone();
+    let group_for_save = group.clone();
+    let old_group = storage.update(move |instances, groups| {
+        let inst = instances
+            .iter_mut()
+            .find(|i| {
+                i.id == identifier_for_save
+                    || i.id.starts_with(&identifier_for_save)
+                    || i.title == identifier_for_save
+            })
+            .ok_or_else(|| anyhow::anyhow!("Session not found: {}", identifier_for_save))?;
 
-    let mut group_tree = GroupTree::new_with_groups(&instances, &groups);
-    if !group.is_empty() {
-        group_tree.create_group(group);
-    }
+        let old_group = inst.group_path.clone();
+        inst.group_path = group_for_save.clone();
 
-    storage.commit(&instances, &group_tree)?;
+        if !group_for_save.is_empty() {
+            let mut group_tree = GroupTree::new_with_groups(instances, groups);
+            group_tree.create_group(&group_for_save);
+            *groups = group_tree.get_all_groups();
+        }
+        Ok(old_group)
+    })?;
 
     if old_group.is_empty() {
         println!("✓ Moved session to group: {}", group);
