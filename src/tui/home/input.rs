@@ -749,7 +749,9 @@ impl HomeView {
         //   Shift+letter actions -> pass through unchanged: each has its own
         //     `Char('UPPER') if self.strict_hotkeys` arm in the main match.
         //   Ctrl+letter relocated bindings -> uppercase: Ctrl+T->T, Ctrl+D->D, Ctrl+R->R, Ctrl+P->P, Ctrl+N->N
-        //   Ctrl+G -> g (group toggle was lowercase)
+        //   Ctrl+G, Ctrl+O -> pass through with CTRL intact (the dispatch
+        //     table matches them with their modifier; stripping CTRL would
+        //     collide with the bare-lowercase typing-guard).
         //   Bare lowercase action letters -> blocked (return None)
         let key = if self.strict_hotkeys {
             self.normalize_strict_key(key)
@@ -1745,7 +1747,12 @@ impl HomeView {
             KeyCode::Char('>') => {
                 self.grow_list();
             }
-            KeyCode::Left => {
+            // Bare `h` collapses only in strict mode; in non-strict the
+            // earlier `Char('h') if !self.strict_hotkeys` arm catches it
+            // for Snooze, so we'd never reach here. Pairing it with Left
+            // keeps the help overlay's "h/←" claim honest and mirrors the
+            // unconditional `l`/Right binding below.
+            KeyCode::Left | KeyCode::Char('h') => {
                 if let Some(Item::Group {
                     path, collapsed, ..
                 }) = self.flat_items.get(self.cursor)
@@ -2750,11 +2757,12 @@ impl HomeView {
                 KeyCode::Char(c.to_ascii_uppercase()),
                 KeyModifiers::NONE,
             )),
-            // Ctrl+G -> g (toggle group by)
-            KeyCode::Char('g') if ctrl => {
-                Some(KeyEvent::new(KeyCode::Char('g'), KeyModifiers::NONE))
-            }
-            // Ctrl+O stays as-is (cycle sort backward, already handled by its own arm)
+            // Ctrl+G and Ctrl+O stay as-is. The dispatch table already has
+            // strict-mode arms that match `Char('g')`/`Char('o')` *with*
+            // the CTRL modifier; stripping CTRL here would make the
+            // post-normalize key indistinguishable from bare lowercase
+            // input and route Ctrl+G into the typing-guard catch-all.
+            KeyCode::Char('g') if ctrl => Some(key),
             KeyCode::Char('o') if ctrl => Some(key),
             // Shifted action letters pass through unchanged. Each letter has its
             // own `Char('UPPER') if self.strict_hotkeys` arm in the main match.

@@ -45,8 +45,7 @@ fn shortcuts(strict: bool) -> Vec<(&'static str, Vec<(&'static str, &'static str
                     ("M", "Send message to agent"),
                     ("F", "Toggle favorite"),
                     ("H", "Snooze (toggle)"),
-                    ("E", "Restart session"),
-                    ("F5", "Restart session"),
+                    ("E", "Restart session (also F5)"),
                 ],
             ),
             (
@@ -107,8 +106,7 @@ fn shortcuts(strict: bool) -> Vec<(&'static str, Vec<(&'static str, &'static str
                     ("m", "Send message to agent"),
                     ("f", "Toggle favorite"),
                     ("h", "Snooze (toggle)"),
-                    ("e", "Restart session"),
-                    ("F5", "Restart session"),
+                    ("e", "Restart session (also F5)"),
                 ],
             ),
             (
