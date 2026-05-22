@@ -1747,7 +1747,7 @@ impl HomeView {
             }
             // `i`/`I`: toggle the preview info header (profile/tool/path/
             // status/sandbox/worktree). Persisted across runs. The hint
-            // rendered inside the header advertises this binding.
+            // rendered on the outer Preview block title advertises this.
             KeyCode::Char('i') if !self.strict_hotkeys => {
                 self.toggle_preview_info();
             }
