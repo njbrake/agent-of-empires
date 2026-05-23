@@ -19,17 +19,34 @@ base("remove a project from the Projects view", async ({ page }, testInfo) => {
     seedFn: ({ home, env }) => {
       projectPath = join(home, "story-projects-remove");
       mkdirSync(projectPath, { recursive: true });
-      spawnSync("git", ["init", "-q"], { cwd: projectPath });
-      spawnSync("git", ["commit", "--allow-empty", "-q", "-m", "init"], {
+      const initRes = spawnSync("git", ["init", "-q"], {
         cwd: projectPath,
-        env: {
-          ...env,
-          GIT_AUTHOR_NAME: "t",
-          GIT_AUTHOR_EMAIL: "t@t",
-          GIT_COMMITTER_NAME: "t",
-          GIT_COMMITTER_EMAIL: "t@t",
-        },
+        env,
       });
+      if (initRes.status !== 0) {
+        throw new Error(
+          `git init failed: status=${initRes.status} stderr=${initRes.stderr?.toString() ?? "<none>"}`,
+        );
+      }
+      const commitRes = spawnSync(
+        "git",
+        ["commit", "--allow-empty", "-q", "-m", "init"],
+        {
+          cwd: projectPath,
+          env: {
+            ...env,
+            GIT_AUTHOR_NAME: "t",
+            GIT_AUTHOR_EMAIL: "t@t",
+            GIT_COMMITTER_NAME: "t",
+            GIT_COMMITTER_EMAIL: "t@t",
+          },
+        },
+      );
+      if (commitRes.status !== 0) {
+        throw new Error(
+          `git commit failed: status=${commitRes.status} stderr=${commitRes.stderr?.toString() ?? "<none>"}`,
+        );
+      }
       const res = spawnSync(
         resolveAoeBinary(),
         ["project", "add", projectPath],
@@ -47,12 +64,16 @@ base("remove a project from the Projects view", async ({ page }, testInfo) => {
     page.on("dialog", (d) => void d.accept());
 
     await page.goto(`${serve.baseUrl}/projects`);
+    // Scope to the row container so the Remove click targets the row
+    // we seeded, not the first Remove on the page (which could belong
+    // to another project if other tests / fixtures add rows later).
     const row = page
-      .getByText("story-projects-remove", { exact: true })
+      .locator("li, tr, [data-testid='project-row']")
+      .filter({ hasText: "story-projects-remove" })
       .first();
     await expect(row).toBeVisible({ timeout: 10_000 });
 
-    await page.getByRole("button", { name: "Remove" }).click();
+    await row.getByRole("button", { name: "Remove" }).click();
     await expect(row).toHaveCount(0, { timeout: 5_000 });
   } finally {
     await serve.stop();
