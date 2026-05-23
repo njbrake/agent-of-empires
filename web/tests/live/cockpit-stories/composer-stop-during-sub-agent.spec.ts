@@ -47,16 +47,18 @@ base("Stop button cancels a turn during a sub-agent task", async ({ page }, test
   const scriptPath = join(scriptDir, "script.json");
   writeFileSync(scriptPath, JSON.stringify(SCRIPT));
 
-  const serve = await spawnAoeServe({
-    authMode: "none",
-    cockpit: true,
-    fakeAcpScript: scriptPath,
-    workerIndex: testInfo.workerIndex,
-    parallelIndex: testInfo.parallelIndex,
-    seedFn: seedSessionViaAoeAdd({ title: "story-stop-subagent" }),
-  });
+  let serve: Awaited<ReturnType<typeof spawnAoeServe>> | undefined;
 
   try {
+    serve = await spawnAoeServe({
+      authMode: "none",
+      cockpit: true,
+      fakeAcpScript: scriptPath,
+      workerIndex: testInfo.workerIndex,
+      parallelIndex: testInfo.parallelIndex,
+      seedFn: seedSessionViaAoeAdd({ title: "story-stop-subagent" }),
+    });
+
     const sessions = await listSessions(serve.baseUrl);
     const seeded = sessions.find((s) => s.title === "story-stop-subagent");
     if (!seeded) throw new Error("seeded session 'story-stop-subagent' missing");
@@ -79,7 +81,10 @@ base("Stop button cancels a turn during a sub-agent task", async ({ page }, test
     ).toBeVisible({ timeout: 10_000 });
     await expect(stopButton).toBeHidden({ timeout: 10_000 });
   } finally {
-    await serve.stop();
-    rmSync(scriptDir, { recursive: true, force: true });
+    try {
+      if (serve) await serve.stop();
+    } finally {
+      rmSync(scriptDir, { recursive: true, force: true });
+    }
   }
 });

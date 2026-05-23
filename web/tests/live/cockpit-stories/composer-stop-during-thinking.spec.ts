@@ -37,16 +37,18 @@ base("Stop button cancels a thinking turn", async ({ page }, testInfo) => {
   const scriptPath = join(scriptDir, "script.json");
   writeFileSync(scriptPath, JSON.stringify(SCRIPT));
 
-  const serve = await spawnAoeServe({
-    authMode: "none",
-    cockpit: true,
-    fakeAcpScript: scriptPath,
-    workerIndex: testInfo.workerIndex,
-    parallelIndex: testInfo.parallelIndex,
-    seedFn: seedSessionViaAoeAdd({ title: "story-stop-thinking" }),
-  });
+  let serve: Awaited<ReturnType<typeof spawnAoeServe>> | undefined;
 
   try {
+    serve = await spawnAoeServe({
+      authMode: "none",
+      cockpit: true,
+      fakeAcpScript: scriptPath,
+      workerIndex: testInfo.workerIndex,
+      parallelIndex: testInfo.parallelIndex,
+      seedFn: seedSessionViaAoeAdd({ title: "story-stop-thinking" }),
+    });
+
     const sessions = await listSessions(serve.baseUrl);
     const seeded = sessions.find((s) => s.title === "story-stop-thinking");
     if (!seeded) throw new Error("seeded session 'story-stop-thinking' missing");
@@ -69,7 +71,10 @@ base("Stop button cancels a thinking turn", async ({ page }, testInfo) => {
     ).toBeVisible({ timeout: 10_000 });
     await expect(stopButton).toBeHidden({ timeout: 10_000 });
   } finally {
-    await serve.stop();
-    rmSync(scriptDir, { recursive: true, force: true });
+    try {
+      if (serve) await serve.stop();
+    } finally {
+      rmSync(scriptDir, { recursive: true, force: true });
+    }
   }
 });

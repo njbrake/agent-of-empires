@@ -45,16 +45,18 @@ base("Stop button cancels a running turn", async ({ page }, testInfo) => {
   const scriptPath = join(scriptDir, "script.json");
   writeFileSync(scriptPath, JSON.stringify(STOP_SCRIPT));
 
-  const serve = await spawnAoeServe({
-    authMode: "none",
-    cockpit: true,
-    fakeAcpScript: scriptPath,
-    workerIndex: testInfo.workerIndex,
-    parallelIndex: testInfo.parallelIndex,
-    seedFn: seedSessionViaAoeAdd({ title: "story-stop" }),
-  });
+  let serve: Awaited<ReturnType<typeof spawnAoeServe>> | undefined;
 
   try {
+    serve = await spawnAoeServe({
+      authMode: "none",
+      cockpit: true,
+      fakeAcpScript: scriptPath,
+      workerIndex: testInfo.workerIndex,
+      parallelIndex: testInfo.parallelIndex,
+      seedFn: seedSessionViaAoeAdd({ title: "story-stop" }),
+    });
+
     const sessions = await listSessions(serve.baseUrl);
     const seeded = sessions.find((s) => s.title === "story-stop");
     if (!seeded) throw new Error("seeded session 'story-stop' missing");
@@ -88,7 +90,10 @@ base("Stop button cancels a running turn", async ({ page }, testInfo) => {
     // production server's cancel semantics are exercised by the
     // REST-level cockpit-cancel spec.
   } finally {
-    await serve.stop();
-    rmSync(scriptDir, { recursive: true, force: true });
+    try {
+      if (serve) await serve.stop();
+    } finally {
+      rmSync(scriptDir, { recursive: true, force: true });
+    }
   }
 });
