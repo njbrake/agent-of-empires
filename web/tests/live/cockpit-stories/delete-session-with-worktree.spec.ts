@@ -85,7 +85,12 @@ base("DeleteSessionDialog can opt into deleting the worktree", async ({ page }, 
     // Custom Checkbox component renders as a `<label data-checked="...">`,
     // not a native input, so toBeChecked() does not apply. The label
     // attribute is the source of truth.
+    // Worktree defaults to true via cleanupDefaults; branch defaults
+    // to false. The user story is "opt into deleting BOTH", so click
+    // the branch checkbox to flip it on before submit.
     await expect(worktreeCheckbox).toHaveAttribute("data-checked", "true");
+    await expect(branchCheckbox).toHaveAttribute("data-checked", "false");
+    await branchCheckbox.click();
     await expect(branchCheckbox).toHaveAttribute("data-checked", "true");
 
     const deletePromise = page.waitForResponse(
