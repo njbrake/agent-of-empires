@@ -40,9 +40,13 @@ jobs:
             // Escape hatch for trusted internal automation: the
             // nix-npm-hash bot (`.github/workflows/nix-npm-hash.yml`)
             // emits a body with only `## Checklist` plus a
-            // `<!-- nix-npm-hash: -->` marker. Accept that shape so
-            // the bot's PRs are not auto-flagged + auto-closed.
+            // `<!-- nix-npm-hash: -->` marker. Gate this on actor
+            // login = github-actions[bot] so a human PR cannot opt
+            // out of template enforcement by dropping the marker
+            // into its body.
+            const actor = context.payload.pull_request.user?.login;
             const isNixNpmHashBotPr =
+              actor === 'github-actions[bot]' &&
               body.includes('<!-- nix-npm-hash:') &&
               body.includes('## Checklist');
 
