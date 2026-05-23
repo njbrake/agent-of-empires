@@ -812,6 +812,24 @@ fn resolved_cockpit_config(profile: Option<&str>) -> Option<crate::session::conf
     }
 }
 
+/// Deadline for the runner unix socket to appear after spawning the
+/// `aoe __cockpit-runner` shim. 10s is enough in production, but a
+/// debug-build cold-start under heavy CI load (v8 coverage + multiple
+/// parallel `aoe serve` binaries + a runner subprocess that re-execs
+/// the same debug binary) can blow past it deterministically. Honors
+/// `AOE_COCKPIT_RUNNER_SOCKET_TIMEOUT_MS` in debug builds so the
+/// Playwright harness can lift it; release builds keep the original
+/// 10s ceiling.
+fn runner_socket_deadline() -> std::time::Duration {
+    #[cfg(debug_assertions)]
+    if let Ok(raw) = std::env::var("AOE_COCKPIT_RUNNER_SOCKET_TIMEOUT_MS") {
+        if let Ok(ms) = raw.parse::<u64>() {
+            return std::time::Duration::from_millis(ms);
+        }
+    }
+    std::time::Duration::from_secs(10)
+}
+
 /// Read the silent-orphan watchdog grace for the given source profile.
 /// In debug builds, honors `AOE_SILENT_ORPHAN_GRACE_MS` so the
 /// integration test can drive a sub-second cadence without making
@@ -1225,7 +1243,7 @@ impl AcpClient {
         // binds before it spawns the agent so this is usually fast (a
         // few ms) but bound the wait so a wedged runner returns a typed
         // error instead of parking the supervisor.
-        let stream = wait_for_socket(&socket_path, std::time::Duration::from_secs(10)).await?;
+        let stream = wait_for_socket(&socket_path, runner_socket_deadline()).await?;
         let (read_half, write_half) = stream.into_split();
         let transport = ByteStreams::new(write_half.compat_write(), read_half.compat());
 
@@ -1869,6 +1887,18 @@ fn apply_env_filter(cmd: &mut std::process::Command, config: &SpawnConfig) {
     const ALWAYS_FORWARD: &[&str] = &[
         "PATH",
         "HOME",
+        // XDG_CONFIG_HOME drives `get_app_dir()` on Linux (see
+        // src/session/mod.rs). Without forwarding, the runner falls
+        // back to `$HOME/.config/agent-of-empires[-dev]`, which
+        // diverges from the daemon when the operator (or live test
+        // harness) has set XDG_CONFIG_HOME to a non-default value.
+        // The runner then writes its WorkerRecord to a path the
+        // daemon never reads, the daemon's `reap_user_stopped`
+        // observes the registry as missing on the next tick, emits
+        // `Stopped { user_stopped }`, and respawns — turning a fine
+        // worker into a respawn loop. See #1383 (CI Linux live
+        // specs under an isolated $XDG_CONFIG_HOME).
+        "XDG_CONFIG_HOME",
         "LANG",
         "LC_ALL",
         "TERM",
