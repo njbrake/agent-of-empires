@@ -771,6 +771,201 @@
         "web/src/components/SettingsView.tsx",
         "web/src/components/settings/ProfileSelector.tsx"
       ]
+    },
+    {
+      "id": "story.shortcut-palette",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/shortcut-palette.spec.ts"
+      ],
+      "components": [
+        "web/src/components/command-palette/CommandPalette.tsx",
+        "web/src/hooks/useKeyboardShortcuts.ts"
+      ]
+    },
+    {
+      "id": "story.shortcut-toggle-sidebar",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/shortcut-toggle-sidebar.spec.ts"
+      ],
+      "components": [
+        "web/src/components/WorkspaceSidebar.tsx",
+        "web/src/hooks/useKeyboardShortcuts.ts"
+      ]
+    },
+    {
+      "id": "story.shortcut-help-key",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": [
+        "tests/live/cockpit-stories/shortcut-help-key.spec.ts"
+      ],
+      "components": [
+        "web/src/components/HelpOverlay.tsx",
+        "web/src/hooks/useKeyboardShortcuts.ts"
+      ]
+    },
+    {
+      "id": "story.shortcut-settings-key",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": [
+        "tests/live/cockpit-stories/shortcut-settings-key.spec.ts"
+      ],
+      "components": [
+        "web/src/hooks/useKeyboardShortcuts.ts"
+      ]
+    },
+    {
+      "id": "story.shortcut-new-session-key",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": [
+        "tests/live/cockpit-stories/shortcut-new-session-key.spec.ts"
+      ],
+      "components": [
+        "web/src/components/session-wizard/SessionWizard.tsx",
+        "web/src/hooks/useKeyboardShortcuts.ts"
+      ]
+    },
+    {
+      "id": "story.shortcut-toggle-diff",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": [
+        "tests/live/cockpit-stories/shortcut-toggle-diff.spec.ts"
+      ],
+      "components": [
+        "web/src/components/ContentSplit.tsx",
+        "web/src/hooks/useKeyboardShortcuts.ts"
+      ]
+    },
+    {
+      "id": "story.shortcut-escape-closes-palette",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": [
+        "tests/live/cockpit-stories/shortcut-escape-closes-palette.spec.ts"
+      ],
+      "components": [
+        "web/src/components/command-palette/CommandPalette.tsx",
+        "web/src/hooks/useKeyboardShortcuts.ts"
+      ]
+    },
+    {
+      "id": "story.sidebar-filter",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": [
+        "tests/live/cockpit-stories/sidebar-filter.spec.ts"
+      ],
+      "components": [
+        "web/src/components/WorkspaceSidebar.tsx"
+      ]
+    },
+    {
+      "id": "story.sidebar-fold-group",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": [
+        "tests/live/cockpit-stories/sidebar-fold-group.spec.ts"
+      ],
+      "components": [
+        "web/src/components/WorkspaceSidebar.tsx"
+      ]
+    },
+    {
+      "id": "story.sidebar-topbar-toggle",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": [
+        "tests/live/cockpit-stories/sidebar-topbar-toggle.spec.ts"
+      ],
+      "components": [
+        "web/src/components/TopBar.tsx"
+      ]
+    },
+    {
+      "id": "story.shortcut-toggle-right-panel",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": [
+        "tests/live/cockpit-stories/shortcut-toggle-right-panel.spec.ts"
+      ],
+      "components": [
+        "web/src/components/ContentSplit.tsx",
+        "web/src/hooks/useKeyboardShortcuts.ts"
+      ]
+    },
+    {
+      "id": "story.palette-session-switch",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/palette-session-switch.spec.ts"
+      ],
+      "components": [
+        "web/src/components/command-palette/CommandPalette.tsx",
+        "web/src/hooks/useCommandActions.ts"
+      ]
+    },
+    {
+      "id": "story.sidebar-resize-persist",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/sidebar-resize-persist.spec.ts"
+      ],
+      "components": [
+        "web/src/components/WorkspaceSidebar.tsx"
+      ]
+    },
+    {
+      "id": "story.topbar-go-to-dashboard",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": [
+        "tests/live/cockpit-stories/topbar-go-to-dashboard.spec.ts"
+      ],
+      "components": [
+        "web/src/components/TopBar.tsx"
+      ]
+    },
+    {
+      "id": "story.shortcut-terminal-focus",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": [
+        "tests/live/cockpit-stories/shortcut-terminal-focus.spec.ts"
+      ],
+      "components": [
+        "web/src/hooks/useKeyboardShortcuts.ts"
+      ]
+    },
+    {
+      "id": "story.sidebar-row-click-navigate",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/sidebar-row-click-navigate.spec.ts"
+      ],
+      "components": [
+        "web/src/components/WorkspaceSidebar.tsx"
+      ]
+    },
+    {
+      "id": "story.sidebar-plan-progress",
+      "kind": "live-playwright",
+      "risk": "high",
+      "specs": [
+        "tests/live/cockpit-stories/sidebar-plan-progress.spec.ts"
+      ],
+      "components": [
+        "web/src/components/WorkspaceSidebar.tsx"
+      ]
     }
   ]
 }
