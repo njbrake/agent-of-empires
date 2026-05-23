@@ -76,11 +76,19 @@ process.stdout.on("error", (err) => {
   fakeDebug(`stdout error swallowed: ${err.code ?? err.message}`);
 });
 process.stderr.on("error", () => {});
+// Log the failure cause to fake-acp.log so post-mortems can see why
+// the agent died, then crash-fast. Default Node behavior on
+// uncaughtException is exit(1); merely registering a listener
+// suppresses that, which lets a real bug keep the fake agent
+// half-alive and surface as a confusing supervisor timeout downstream
+// instead of the actual stack trace.
 process.on("uncaughtException", (err) => {
   fakeDebug(`uncaughtException: ${err?.stack ?? err}`);
+  process.exit(1);
 });
 process.on("unhandledRejection", (reason) => {
   fakeDebug(`unhandledRejection: ${reason}`);
+  process.exit(1);
 });
 process.on("exit", (code) => {
   fakeDebug(`process.exit code=${code}`);
