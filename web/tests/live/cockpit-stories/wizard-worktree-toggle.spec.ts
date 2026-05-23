@@ -9,6 +9,7 @@ import {
   spawnAoeServe,
   seedSessionViaAoeAdd,
 } from "../../helpers/aoeServe";
+import { wizardScope } from "../../helpers/cockpit";
 
 base("wizard worktree toggle hides and shows the branch input", async ({ page }, testInfo) => {
   const serve = await spawnAoeServe({
@@ -27,15 +28,13 @@ base("wizard worktree toggle hides and shows the branch input", async ({ page },
       .getByRole("button", { name: "New session", exact: true })
       .first()
       .click();
-    const wizard = page.locator(
-      'div.fixed.inset-0.z-50:has(h1:has-text("New session"))',
-    );
+    const wizard = wizardScope(page);
     await wizard
       .locator("button")
       .filter({ hasText: "project" })
       .first()
       .click();
-    await page.getByRole("button", { name: "Next" }).click();
+    await wizard.getByRole("button", { name: "Next" }).click();
 
     await expect(
       page.getByRole("heading", { name: "Name your session", exact: true }),
