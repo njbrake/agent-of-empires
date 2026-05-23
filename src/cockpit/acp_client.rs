@@ -1986,6 +1986,11 @@ fn spawn_subprocess(config: &SpawnConfig) -> Result<tokio::process::Child, AcpEr
     let always_forward = [
         "PATH",
         "HOME",
+        // Mirror the runner-mode ALWAYS_FORWARD: XDG_CONFIG_HOME drives
+        // `get_app_dir()` on Linux, so the stdio agent must see the
+        // same value the daemon resolved against (otherwise a custom
+        // XDG_CONFIG_HOME diverges between daemon and agent).
+        "XDG_CONFIG_HOME",
         "LANG",
         "LC_ALL",
         "TERM",
