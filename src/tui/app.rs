@@ -626,15 +626,44 @@ impl App {
                             // a bool. The single-click selection always
                             // mutates `cursor` so we redraw unconditionally
                             // before dispatching the action.
+                            //
+                            // Priority order for `Down(Left)`:
+                            //   1. modal dialog click (e.g. delete Yes/No)
+                            //   2. divider drag-start (between list/preview)
+                            //   3. preview-pane click (open Send Message)
+                            //   4. list row click (existing select/activate)
+                            // Earlier branches short-circuit so a click on
+                            // the divider never opens a dialog, and a
+                            // click on the preview never selects a row.
                             let click_action = if matches!(
                                 mouse.kind,
                                 MouseEventKind::Down(MouseButton::Left)
-                            ) && hit_list
-                            {
-                                let action =
-                                    self.home.handle_click(mouse.column, mouse.row);
-                                self.draw(terminal)?;
-                                action
+                            ) {
+                                if self.home.handle_dialog_click(mouse.column, mouse.row)
+                                {
+                                    self.sync_mouse_capture(terminal)?;
+                                    self.draw(terminal)?;
+                                    None
+                                } else if self
+                                    .home
+                                    .handle_drag_start(mouse.column, mouse.row)
+                                {
+                                    None
+                                } else if hit_preview {
+                                    if self.home.handle_preview_click() {
+                                        self.sync_mouse_capture(terminal)?;
+                                        self.draw(terminal)?;
+                                    }
+                                    None
+                                } else if hit_list {
+                                    let action = self
+                                        .home
+                                        .handle_click(mouse.column, mouse.row);
+                                    self.draw(terminal)?;
+                                    action
+                                } else {
+                                    None
+                                }
                             } else {
                                 None
                             };
@@ -644,6 +673,15 @@ impl App {
                                 }
                                 MouseEventKind::ScrollDown if hit_scroll_target => {
                                     self.home.handle_scroll_down(mouse.column, mouse.row)
+                                }
+                                // Drag(Left) without a matching drag_state
+                                // is a no-op inside the handler; we don't
+                                // need a separate guard here.
+                                MouseEventKind::Drag(MouseButton::Left) => {
+                                    self.home.handle_drag_move(mouse.column)
+                                }
+                                MouseEventKind::Up(MouseButton::Left) => {
+                                    self.home.handle_drag_end()
                                 }
                                 // Moved events are dispatched unconditionally
                                 // (no `hit_list` guard) so the handler can

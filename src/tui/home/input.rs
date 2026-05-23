@@ -5,7 +5,7 @@ use ratatui::prelude::Position;
 use tui_input::backend::crossterm::EventHandler;
 use tui_input::Input;
 
-use super::{HomeView, TerminalMode, ViewMode};
+use super::{DragKind, HomeView, TerminalMode, ViewMode};
 use crate::session::config::{load_config, save_config, GroupByMode, SortOrder};
 use crate::session::{list_profiles, repo_config, resolve_config_or_warn, Item, Status};
 use crate::tui::app::Action;
@@ -19,6 +19,7 @@ use crate::tui::dialogs::{
     SendMessageDialog, UnifiedDeleteDialog,
 };
 use crate::tui::diff::{DiffAction, DiffView};
+use crate::tui::responsive;
 use crate::tui::settings::{SettingsAction, SettingsView};
 
 /// Maximum gap between two left-clicks on the same row that still
@@ -130,6 +131,155 @@ impl HomeView {
 
     pub fn hit_list(&self, col: u16, row: u16) -> bool {
         self.list_area.contains(Position::from((col, row)))
+    }
+
+    /// True when `(col, row)` lands on the side-by-side list/preview
+    /// divider. The divider is the preview's left border column (one
+    /// past `list_area.right()` is exclusive, so this *is* a valid hit
+    /// target that hit_list / hit_preview both miss by design). Returns
+    /// `false` in stacked mode, in the diff/settings/serve takeover
+    /// views (which clear `divider_col`), and while any modal dialog is
+    /// open — a dialog over the divider should swallow stray clicks
+    /// rather than start a hidden drag.
+    pub fn hit_divider(&self, col: u16, row: u16) -> bool {
+        if self.has_dialog() {
+            return false;
+        }
+        let Some(div_col) = self.divider_col else {
+            return false;
+        };
+        if col != div_col {
+            return false;
+        }
+        let list_y = self.list_area.y;
+        let list_bottom = self.list_area.bottom();
+        row >= list_y && row < list_bottom
+    }
+
+    /// Begin a drag if `(col, row)` is on the divider. Records the start
+    /// column and the current requested `list_width` so subsequent
+    /// `Drag` events can compute deltas without re-reading the divider's
+    /// (possibly clamped) position. Returns true when a drag actually
+    /// started, so the caller can mark the event handled and skip the
+    /// row-click path.
+    pub fn handle_drag_start(&mut self, col: u16, row: u16) -> bool {
+        if !self.hit_divider(col, row) {
+            return false;
+        }
+        self.drag_state = Some(DragKind::ListDivider {
+            start_col: col,
+            start_width: self.list_width,
+        });
+        true
+    }
+
+    /// Apply a drag-in-progress event. For the list divider, recompute
+    /// the requested width from `(start_width + delta)` and clamp to
+    /// `[10, main_area_width - PREVIEW_MIN_WIDTH]` so the preview keeps
+    /// its usability floor and the value never wraps `u16`. Returns true
+    /// when `list_width` actually changed (so the caller redraws). The
+    /// drag does NOT persist on every tick; `handle_drag_end` saves once
+    /// on release.
+    pub fn handle_drag_move(&mut self, col: u16) -> bool {
+        let Some(DragKind::ListDivider {
+            start_col,
+            start_width,
+        }) = self.drag_state
+        else {
+            return false;
+        };
+        // i32 arithmetic so a leftward drag past the start column doesn't
+        // underflow u16 before the clamp.
+        let delta = col as i32 - start_col as i32;
+        let proposed = start_width as i32 + delta;
+
+        // Clamp ceiling tracks the live viewport width; if the user
+        // resized the terminal mid-drag, the new width is honored. The
+        // floor of 10 matches the keyboard `<` shrink limit.
+        let ceiling = self
+            .main_area_width
+            .saturating_sub(responsive::PREVIEW_MIN_WIDTH);
+        let max_width = ceiling.max(10);
+        let clamped = proposed.clamp(10, max_width as i32) as u16;
+
+        if clamped == self.list_width {
+            return false;
+        }
+        self.list_width = clamped;
+        true
+    }
+
+    /// End any active drag. For the list divider, persist the final
+    /// `list_width` to config so the new layout survives a restart.
+    /// Returns true when a drag was actually in progress, so the caller
+    /// can avoid a spurious redraw on every `Up(Left)` that wasn't part
+    /// of a drag.
+    pub fn handle_drag_end(&mut self) -> bool {
+        let Some(state) = self.drag_state.take() else {
+            return false;
+        };
+        match state {
+            DragKind::ListDivider { .. } => {
+                self.save_list_width();
+            }
+        }
+        true
+    }
+
+    /// Route a left-click into whichever modal dialog supports mouse
+    /// input. Returns true when the click was consumed (the dialog
+    /// either acted on it or absorbed it as a no-op inside its bounds),
+    /// in which case the caller must NOT fall through to divider /
+    /// preview / list handlers. The `&` in the return is enough for the
+    /// caller to redraw.
+    ///
+    /// Only the destructive delete dialog wires Yes/No clicks today;
+    /// the existing modals continue to swallow mouse events implicitly
+    /// via `has_dialog()` gates in the other handlers.
+    pub fn handle_dialog_click(&mut self, col: u16, row: u16) -> bool {
+        if let Some(dialog) = &mut self.unified_delete_dialog {
+            if let Some(result) = dialog.handle_click(col, row) {
+                match result {
+                    DialogResult::Continue => {}
+                    DialogResult::Cancel => {
+                        self.unified_delete_dialog = None;
+                    }
+                    DialogResult::Submit(options) => {
+                        self.unified_delete_dialog = None;
+                        if let Err(e) = self.delete_selected(&options) {
+                            tracing::error!(target: "tui.input", "Failed to delete session: {}", e);
+                        }
+                    }
+                }
+                return true;
+            }
+            // Click landed inside the dialog area but missed both
+            // buttons (e.g. on a checkbox or the title): swallow it so
+            // the underlying list doesn't shift selection out from
+            // under the modal.
+            return true;
+        }
+        // Other dialogs also need to swallow clicks while open — the
+        // existing `has_dialog()` gates inside list / preview / divider
+        // handlers already do this, so no extra work here.
+        false
+    }
+
+    /// Route a left-click that landed inside the preview pane. Opens
+    /// the Send Message dialog targeting the currently-selected running
+    /// session. No-op (returns false) when there's no valid target —
+    /// `open_send_message_dialog` already gates on `resolve_paste_target`,
+    /// so an empty list, a non-running selection, or a group-row
+    /// selection silently does nothing instead of opening an empty
+    /// dialog. The bool return tells the caller whether dialog state
+    /// changed so it can redraw + re-sync mouse capture.
+    pub fn handle_preview_click(&mut self) -> bool {
+        if self.has_dialog() {
+            return false;
+        }
+        let had_dialog = self.send_message_dialog.is_some();
+        self.open_send_message_dialog();
+        self.send_message_dialog.is_some() != had_dialog
     }
 
     pub fn handle_key(

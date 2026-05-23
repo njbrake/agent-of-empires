@@ -57,6 +57,18 @@ fn project_group_name(inst: &Instance) -> String {
         })
 }
 
+/// Kinds of in-progress mouse drags. Today only the list/preview divider
+/// is draggable; the enum keeps future drag targets (diff split, group
+/// reorder) from churning the `Option<...>` shape on `HomeView`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum DragKind {
+    /// Resizing the side-by-side list/preview divider. `start_col` is the
+    /// column where the user pressed; `start_width` is the requested
+    /// `list_width` at that moment. The new requested width is
+    /// `start_width + (current_col - start_col)`, clamped on apply.
+    ListDivider { start_col: u16, start_width: u16 },
+}
+
 pub(super) struct GroupRenameContext {
     pub(super) old_path: String,
     pub(super) old_profile: String,
@@ -317,6 +329,21 @@ pub struct HomeView {
     // Resizable list column width (percentage-like units)
     pub(super) list_width: u16,
 
+    /// Visible column of the list/preview divider in side-by-side mode,
+    /// `None` in stacked layout or while the diff view is open. Set in
+    /// `render()` after the layout split; read by mouse handlers to
+    /// hit-test divider clicks and clamp drag updates.
+    pub(super) divider_col: Option<u16>,
+    /// Width of the main horizontal area (list + preview) captured at the
+    /// last render. Used as the clamp ceiling when a divider drag updates
+    /// `list_width`, so the new width can't push the preview below
+    /// `PREVIEW_MIN_WIDTH`.
+    pub(super) main_area_width: u16,
+    /// Active mouse-drag state, `None` when no button is held. Set on
+    /// `Down(Left)` over a draggable target (the list/preview divider
+    /// today), updated on each `Drag(Left)`, cleared on `Up(Left)`.
+    pub(super) drag_state: Option<DragKind>,
+
     /// Show the info header (profile/tool/path/status/sandbox/worktree) at
     /// the top of the preview pane. Toggled with `i` and persisted to
     /// `app_state.show_preview_info`.
@@ -528,6 +555,9 @@ impl HomeView {
                 .as_ref()
                 .and_then(|c| c.app_state.home_list_width)
                 .unwrap_or(35),
+            divider_col: None,
+            main_area_width: 0,
+            drag_state: None,
             show_preview_info: user_config
                 .as_ref()
                 .and_then(|c| c.app_state.show_preview_info)

@@ -355,6 +355,8 @@ impl HomeView {
     ) {
         // Settings view takes over the whole screen
         if let Some(ref mut settings) = self.settings_view {
+            self.divider_col = None;
+            self.main_area_width = 0;
             settings.render(frame, area, theme);
             // Render unsaved changes confirmation dialog over settings
             if self.settings_close_confirm {
@@ -374,6 +376,12 @@ impl HomeView {
             // Compute diff for selected file if not cached
             let _ = diff.get_current_diff();
 
+            // No list/preview divider exists while the diff takeover owns
+            // the screen; clear it so a stale value from the previous frame
+            // can't hit-test as draggable.
+            self.divider_col = None;
+            self.main_area_width = 0;
+
             diff.render(frame, area, theme);
             return;
         }
@@ -381,6 +389,8 @@ impl HomeView {
         // Serve view takes over the whole screen
         #[cfg(feature = "serve")]
         if let Some(ref serve) = self.serve_view {
+            self.divider_col = None;
+            self.main_area_width = 0;
             serve.render(frame, area, theme);
             return;
         }
@@ -410,6 +420,7 @@ impl HomeView {
         // ~45 cols (with default list_width 35), too cramped for output;
         // stacking gives the preview the full width.
         let available_width = main_chunks[0].width;
+        self.main_area_width = available_width;
         if available_width < responsive::STACKED_BREAKPOINT {
             let main_height = main_chunks[0].height;
             let list_height = responsive::stacked_list_height(main_height);
@@ -420,6 +431,10 @@ impl HomeView {
                     Constraint::Min(responsive::STACKED_PREVIEW_MIN),
                 ])
                 .split(main_chunks[0]);
+
+            // Stacked layout has no vertical divider; only the side-by-side
+            // path exposes the resize-by-drag affordance.
+            self.divider_col = None;
 
             self.render_list(frame, chunks[0], theme);
             self.render_preview(frame, chunks[1], theme);
@@ -437,6 +452,12 @@ impl HomeView {
                     Constraint::Min(responsive::PREVIEW_MIN_WIDTH),
                 ])
                 .split(main_chunks[0]);
+
+            // Layout chunks are contiguous, so chunks[1].x is the first
+            // column of the preview block — i.e., the visible left border
+            // that the user perceives as the divider. Hit-test uses the
+            // list's y-range (matches preview's y-range in side-by-side).
+            self.divider_col = Some(chunks[1].x);
 
             self.render_list(frame, chunks[0], theme);
             self.render_preview(frame, chunks[1], theme);
@@ -464,10 +485,15 @@ impl HomeView {
         // the list of active dialog types in one place — adding a new dialog
         // means adding one line here, not stamping out another five-line
         // if-let block.
+        // `&mut self.$field` so dialogs whose `render` captures screen
+        // rects on the struct (currently `unified_delete_dialog` for
+        // clickable Yes/No buttons) can mutate self. Dialogs with
+        // `&self` render methods still work — Rust auto-derefs the
+        // mutable borrow.
         macro_rules! render_dialogs {
             ($($field:ident),* $(,)?) => {
                 $(
-                    if let Some(dialog) = &self.$field {
+                    if let Some(dialog) = &mut self.$field {
                         dialog.render(frame, area, theme);
                     }
                 )*
