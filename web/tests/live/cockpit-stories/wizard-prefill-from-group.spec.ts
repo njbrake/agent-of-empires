@@ -36,6 +36,14 @@ base("group-level New session prefills the wizard", async ({ page }, testInfo) =
     await expect(
       page.getByRole("heading", { name: /Review & Launch/i }),
     ).toBeVisible({ timeout: 10_000 });
+
+    // The "Project" row should render the seeded repo path
+    // (`${home}/project`, per seedSessionViaAoeAdd). Asserting on
+    // skipToReview alone is not enough; the user story is that the
+    // clicked group's repo flows through wizardPrefill into the
+    // Review step's rendered DOM.
+    const projectRow = page.locator("button", { hasText: "Project" }).first();
+    await expect(projectRow).toContainText("/project", { timeout: 5_000 });
   } finally {
     await serve.stop();
   }
