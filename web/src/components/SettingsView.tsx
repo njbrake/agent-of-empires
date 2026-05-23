@@ -168,6 +168,7 @@ export function SettingsView({
 
   const sendSave = useCallback(
     async (section: string, data: Record<string, unknown>) => {
+      if (!selectedProfile) return;
       setSaving(true);
       setSaveError(null);
       const ok = await updateProfileSettings(selectedProfile, { [section]: data });
