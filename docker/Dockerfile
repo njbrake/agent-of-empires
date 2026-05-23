@@ -1,7 +1,7 @@
 # aoe-sandbox: Docker image for Agent of Empires sandbox sessions
 # This image provides Claude Code, OpenCode, Mistral Vibe, Hermes, Codex CLI, Gemini CLI, Antigravity CLI, Cursor CLI, Copilot CLI, Pi, Kiro CLI, and Qwen Code in an isolated environment
 
-FROM ubuntu:24.04
+FROM ubuntu:26.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 
