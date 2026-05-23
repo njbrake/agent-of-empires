@@ -247,12 +247,44 @@ pub async fn run(profile: &str, command: SessionCommands) -> Result<()> {
 /// snapshot, returning its full id. Used to resolve the `identifier` CLI arg
 /// to a stable key before the `Storage::update` closure re-loads a fresh
 /// snapshot; the closure then matches on that id, never on a stale index.
+///
+/// Mirrors the disambiguation rules of `crate::cli::resolve_session`: exact
+/// id wins (unique by construction), an ambiguous id-prefix fails loudly
+/// rather than silently mutating the first match, exact title is a fallback.
+/// A too-short prefix on a mutating command (archive, snooze, restart, ...)
+/// must not silently act on the wrong session.
 fn resolve_session_id(instances: &[crate::session::Instance], identifier: &str) -> Result<String> {
-    instances
+    if let Some(inst) = instances.iter().find(|i| i.id == identifier) {
+        return Ok(inst.id.clone());
+    }
+
+    let prefix_matches: Vec<&crate::session::Instance> = instances
         .iter()
-        .find(|i| i.id == identifier || i.id.starts_with(identifier) || i.title == identifier)
-        .map(|i| i.id.clone())
-        .ok_or_else(|| anyhow::anyhow!("Session not found: {}", identifier))
+        .filter(|i| i.id.starts_with(identifier))
+        .collect();
+    match prefix_matches.len() {
+        0 => {}
+        1 => return Ok(prefix_matches[0].id.clone()),
+        _ => {
+            let mut candidates: Vec<String> = prefix_matches
+                .iter()
+                .map(|i| format!("  {} ({})", i.id, i.title))
+                .collect();
+            candidates.sort();
+            anyhow::bail!(
+                "Ambiguous session identifier {:?} matches {} sessions:\n{}\nUse a longer prefix or the full ID.",
+                identifier,
+                prefix_matches.len(),
+                candidates.join("\n")
+            );
+        }
+    }
+
+    if let Some(inst) = instances.iter().find(|i| i.title == identifier) {
+        return Ok(inst.id.clone());
+    }
+
+    anyhow::bail!("Session not found: {}", identifier)
 }
 
 async fn favorite_session(profile: &str, args: SessionIdArgs) -> Result<()> {
