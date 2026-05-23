@@ -31,17 +31,34 @@ function seedTwoSessions(): (seedEnv: {
     ] as const) {
       const projectDir = join(home, subdir);
       mkdirSync(projectDir, { recursive: true });
-      spawnSync("git", ["init", "-q"], { cwd: projectDir });
-      spawnSync("git", ["commit", "--allow-empty", "-q", "-m", "init"], {
+      const initRes = spawnSync("git", ["init", "-q"], {
         cwd: projectDir,
-        env: {
-          ...env,
-          GIT_AUTHOR_NAME: "t",
-          GIT_AUTHOR_EMAIL: "t@t",
-          GIT_COMMITTER_NAME: "t",
-          GIT_COMMITTER_EMAIL: "t@t",
-        },
+        env,
       });
+      if (initRes.status !== 0) {
+        throw new Error(
+          `git init failed for ${title}: status=${initRes.status} stderr=${initRes.stderr?.toString() ?? "<none>"}`,
+        );
+      }
+      const commitRes = spawnSync(
+        "git",
+        ["commit", "--allow-empty", "-q", "-m", "init"],
+        {
+          cwd: projectDir,
+          env: {
+            ...env,
+            GIT_AUTHOR_NAME: "t",
+            GIT_AUTHOR_EMAIL: "t@t",
+            GIT_COMMITTER_NAME: "t",
+            GIT_COMMITTER_EMAIL: "t@t",
+          },
+        },
+      );
+      if (commitRes.status !== 0) {
+        throw new Error(
+          `git commit failed for ${title}: status=${commitRes.status} stderr=${commitRes.stderr?.toString() ?? "<none>"}`,
+        );
+      }
       const res = spawnSync(
         resolveAoeBinary(),
         ["add", projectDir, "-t", title, "-c", "claude"],
