@@ -3,7 +3,11 @@
 
 import { test as base, expect } from "@playwright/test";
 import { spawnAoeServe } from "../../helpers/aoeServe";
-import { openSettingsTab, settingsNumberInputByLabel } from "../../helpers/cockpit";
+import {
+  openSettingsTab,
+  settingsNumberInputByLabel,
+  waitForSettingsLoaded,
+} from "../../helpers/cockpit";
 
 base("update check-interval NumberField round-trips through the UI", async ({ page }, testInfo) => {
   const serve = await spawnAoeServe({
@@ -14,6 +18,7 @@ base("update check-interval NumberField round-trips through the UI", async ({ pa
 
   try {
     await page.goto(`${serve.baseUrl}/settings`);
+    await waitForSettingsLoaded(page);
     await openSettingsTab(page, "Updates");
 
     const input = settingsNumberInputByLabel(page, "Check interval (hours)");
@@ -23,6 +28,7 @@ base("update check-interval NumberField round-trips through the UI", async ({ pa
     await input.press("Enter");
 
     await page.reload();
+    await waitForSettingsLoaded(page);
     await openSettingsTab(page, "Updates");
     const reloaded = settingsNumberInputByLabel(page, "Check interval (hours)");
     await expect(reloaded).toHaveValue("12", { timeout: 10_000 });
