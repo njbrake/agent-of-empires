@@ -55,12 +55,19 @@ export function repoGroupLastActivityMs(
 }
 
 /** Stable, deterministic comparator. Activity descending, tie-break by id
- *  ascending so equal timestamps never flake the render order. */
+ *  ascending so equal timestamps never flake the render order. The two
+ *  activity keys are compared with `<` / `>` rather than subtraction
+ *  because workspaces with no usable timestamp return
+ *  `Number.NEGATIVE_INFINITY`; `-Infinity - -Infinity` is `NaN`, which
+ *  `Array.prototype.sort` treats like `0` (equal) and would silently skip
+ *  the id tie-break, leaving ordering at the mercy of input order. */
 export function compareWorkspacesByLastActivityDesc(
   a: Workspace,
   b: Workspace,
 ): number {
-  const diff = workspaceLastActivityMs(b) - workspaceLastActivityMs(a);
-  if (diff !== 0) return diff;
+  const aMs = workspaceLastActivityMs(a);
+  const bMs = workspaceLastActivityMs(b);
+  if (aMs < bMs) return 1;
+  if (aMs > bMs) return -1;
   return a.id.localeCompare(b.id);
 }
