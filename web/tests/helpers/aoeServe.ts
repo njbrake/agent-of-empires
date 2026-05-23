@@ -23,6 +23,7 @@ import {
   realpathSync,
   rmSync,
 } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomBytes } from "node:crypto";
@@ -444,7 +445,10 @@ export async function spawnAoeServe(opts: SpawnOptions): Promise<ServeHandle> {
   // supported OS we target; using it caps the path well under
   // sun_path on Darwin (104) and Linux (108). See macOS sun_path
   // <sys/un.h>.
-  const shortBase = "/tmp";
+  // Windows has no `/tmp`; fall back to `tmpdir()` there. `sun_path`
+  // is a POSIX-only limit, so the Darwin short-path workaround does
+  // not apply to win32 either.
+  const shortBase = process.platform === "win32" ? tmpdir() : "/tmp";
   const home = realpathSync(
     mkdtempSync(join(shortBase, `aoe-pw-w${opts.workerIndex}-p${opts.parallelIndex}-`)),
   );
