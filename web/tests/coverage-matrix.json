@@ -1506,6 +1506,185 @@
         "web/src/components/cockpit/Composer.tsx",
         "web/src/components/cockpit/ToolCards.tsx"
       ]
+    },
+    {
+      "id": "story.wizard-open-close",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": [
+        "tests/live/cockpit-stories/wizard-open-close.spec.ts"
+      ],
+      "components": [
+        "web/src/components/session-wizard/SessionWizard.tsx"
+      ]
+    },
+    {
+      "id": "story.wizard-tabs-visible",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": [
+        "tests/live/cockpit-stories/wizard-tabs-visible.spec.ts"
+      ],
+      "components": [
+        "web/src/components/session-wizard/steps/ProjectStep.tsx"
+      ]
+    },
+    {
+      "id": "story.wizard-clone-url-input",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": [
+        "tests/live/cockpit-stories/wizard-clone-url-input.spec.ts"
+      ],
+      "components": [
+        "web/src/components/session-wizard/steps/ProjectStep.tsx"
+      ]
+    },
+    {
+      "id": "story.wizard-browse-disk",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": [
+        "tests/live/cockpit-stories/wizard-browse-disk.spec.ts"
+      ],
+      "components": [
+        "web/src/components/DirectoryBrowser.tsx"
+      ]
+    },
+    {
+      "id": "story.wizard-recent-project",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/wizard-recent-project.spec.ts"
+      ],
+      "components": [
+        "web/src/components/session-wizard/steps/ProjectStep.tsx"
+      ]
+    },
+    {
+      "id": "story.wizard-close-via-escape",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": [
+        "tests/live/cockpit-stories/wizard-close-via-escape.spec.ts"
+      ],
+      "components": [
+        "web/src/components/session-wizard/SessionWizard.tsx"
+      ]
+    },
+    {
+      "id": "story.wizard-prefill-from-group",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/wizard-prefill-from-group.spec.ts"
+      ],
+      "components": [
+        "web/src/components/session-wizard/SessionWizard.tsx",
+        "web/src/components/WorkspaceSidebar.tsx"
+      ]
+    },
+    {
+      "id": "story.wizard-session-title-edit",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/wizard-session-title-edit.spec.ts"
+      ],
+      "components": [
+        "web/src/components/session-wizard/steps/SessionStep.tsx"
+      ]
+    },
+    {
+      "id": "story.wizard-worktree-toggle",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/wizard-worktree-toggle.spec.ts"
+      ],
+      "components": [
+        "web/src/components/session-wizard/steps/SessionStep.tsx"
+      ]
+    },
+    {
+      "id": "story.wizard-group-field",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": [
+        "tests/live/cockpit-stories/wizard-group-field.spec.ts"
+      ],
+      "components": [
+        "web/src/components/session-wizard/steps/SessionStep.tsx"
+      ]
+    },
+    {
+      "id": "story.wizard-extra-repos",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/wizard-extra-repos.spec.ts"
+      ],
+      "components": [
+        "web/src/components/session-wizard/steps/ExtraReposPicker.tsx"
+      ]
+    },
+    {
+      "id": "story.wizard-launch-cmd-enter",
+      "kind": "live-playwright",
+      "risk": "high",
+      "specs": [
+        "tests/live/cockpit-stories/wizard-launch-cmd-enter.spec.ts"
+      ],
+      "components": [
+        "web/src/components/session-wizard/SessionWizard.tsx",
+        "web/src/components/session-wizard/steps/ReviewStep.tsx"
+      ]
+    },
+    {
+      "id": "story.wizard-creating-banner",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/wizard-creating-banner.spec.ts"
+      ],
+      "components": [
+        "web/src/components/session-wizard/steps/ReviewStep.tsx"
+      ]
+    },
+    {
+      "id": "story.wizard-last-tool-persists",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": [
+        "tests/live/cockpit-stories/wizard-last-tool-persists.spec.ts"
+      ],
+      "components": [
+        "web/src/components/session-wizard/SessionWizard.tsx"
+      ]
+    },
+    {
+      "id": "story.wizard-launch-button",
+      "kind": "live-playwright",
+      "risk": "high",
+      "specs": [
+        "tests/live/cockpit-stories/wizard-launch-button.spec.ts"
+      ],
+      "components": [
+        "web/src/components/session-wizard/steps/ReviewStep.tsx"
+      ]
+    },
+    {
+      "id": "story.wizard-branch-from-title",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/wizard-branch-from-title.spec.ts"
+      ],
+      "components": [
+        "web/src/components/session-wizard/sessionNames.ts",
+        "web/src/components/session-wizard/steps/ReviewStep.tsx"
+      ]
     }
   ]
 }
