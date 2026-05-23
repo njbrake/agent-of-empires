@@ -331,6 +331,7 @@ pub fn build_instance(
     let mut warnings: Vec<String> = Vec::new();
     let final_title = resolve_title(
         &params.title,
+        &final_path,
         params.worktree_branch.as_deref(),
         params.worktree_enabled,
         existing_titles,
@@ -602,27 +603,98 @@ pub fn cleanup_instance(
     let _ = instance.kill();
 }
 
-/// Resolve the session title: use the provided title, then an explicit worktree
-/// branch name, then fall back to a random civilization name.
+/// Resolve the session title. Precedence when no explicit title is provided:
+/// 1. Worktree branch name (when worktree mode is enabled).
+/// 2. A label derived from `project_path` ("leaf" when the project sits at the
+///    top of a known dev container like `~/GitProjects`, or "container - leaf"
+///    when it's a sub-directory of that top-level repo).
+/// 3. A random civilization name.
 pub(crate) fn resolve_title(
     title: &str,
+    project_path: &str,
     worktree_branch: Option<&str>,
     worktree_enabled: bool,
     existing_titles: &[&str],
 ) -> String {
-    if title.is_empty() {
-        if worktree_enabled {
-            if let Some(branch) = worktree_branch.filter(|b| !b.trim().is_empty()) {
-                branch.trim().to_string()
-            } else {
-                civilizations::generate_random_title(existing_titles)
-            }
-        } else {
-            civilizations::generate_random_title(existing_titles)
-        }
-    } else {
-        title.to_string()
+    if !title.is_empty() {
+        return title.to_string();
     }
+    if worktree_enabled {
+        if let Some(branch) = worktree_branch.filter(|b| !b.trim().is_empty()) {
+            return branch.trim().to_string();
+        }
+    }
+    if let Some(derived) = derive_title_from_path(project_path) {
+        return derived;
+    }
+    civilizations::generate_random_title(existing_titles)
+}
+
+/// Known parent directories that typically hold a developer's repositories.
+/// Used to anchor the "top-level project folder" when deriving a default
+/// session title from the project path.
+const DEV_CONTAINERS: &[&str] = &[
+    "GitProjects",
+    "Projects",
+    "projects",
+    "Code",
+    "code",
+    "dev",
+    "src",
+    "workspace",
+    "Workspaces",
+    "repos",
+    "Repos",
+];
+
+/// Derive a default title from the project path.
+///
+/// Walks the path looking for a "dev container" segment (e.g. `GitProjects`).
+/// The segment immediately after the container is treated as the project
+/// root. If the project path *is* the project root, the returned title is
+/// just the root's basename (e.g. `per-dev`). If the project path lives
+/// inside the project root, the title combines both names with a hyphen
+/// separator (e.g. `per-dev - agent-of-empires`).
+///
+/// Returns `None` when the path doesn't sit beneath any known container,
+/// so the caller can fall back to a random title.
+fn derive_title_from_path(project_path: &str) -> Option<String> {
+    if project_path.is_empty() {
+        return None;
+    }
+    let raw = std::path::Path::new(project_path);
+    let canon = raw.canonicalize().unwrap_or_else(|_| raw.to_path_buf());
+    let names: Vec<String> = canon
+        .components()
+        .filter_map(|c| match c {
+            std::path::Component::Normal(s) => Some(s.to_string_lossy().to_string()),
+            _ => None,
+        })
+        .collect();
+    // Use the deepest container match so nested `~/projects/foo/src/...` still
+    // anchors on `src` (the closest one to the leaf).
+    let container_idx = names.iter().rposition(|seg| {
+        DEV_CONTAINERS
+            .iter()
+            .any(|c| seg.eq_ignore_ascii_case(c) || seg == c)
+    })?;
+    let root_idx = container_idx + 1;
+    let leaf_idx = names.len().checked_sub(1)?;
+    if root_idx > leaf_idx {
+        return None;
+    }
+    let root_name = &names[root_idx];
+    if root_name.is_empty() {
+        return None;
+    }
+    if root_idx == leaf_idx {
+        return Some(root_name.clone());
+    }
+    let leaf_name = &names[leaf_idx];
+    if leaf_name.is_empty() {
+        return Some(root_name.clone());
+    }
+    Some(format!("{root_name} - {leaf_name}"))
 }
 
 /// Origin of an effective worktree branch name. The builder uses this to decide
@@ -796,13 +868,13 @@ mod tests {
 
     #[test]
     fn test_empty_title_with_worktree_uses_branch_name() {
-        let title = resolve_title("", Some("feature-auth"), true, &[]);
+        let title = resolve_title("", "", Some("feature-auth"), true, &[]);
         assert_eq!(title, "feature-auth");
     }
 
     #[test]
     fn test_empty_title_without_worktree_uses_civilization() {
-        let title = resolve_title("", None, false, &[]);
+        let title = resolve_title("", "", None, false, &[]);
         assert!(
             civilizations::CIVILIZATIONS.contains(&title.as_str()),
             "Expected a civilization name, got: {}",
@@ -812,14 +884,77 @@ mod tests {
 
     #[test]
     fn test_provided_title_with_worktree_keeps_title() {
-        let title = resolve_title("My Session", Some("feature-auth"), true, &[]);
+        let title = resolve_title("My Session", "", Some("feature-auth"), true, &[]);
         assert_eq!(title, "My Session");
     }
 
     #[test]
     fn test_provided_title_without_worktree_keeps_title() {
-        let title = resolve_title("Custom Name", None, false, &[]);
+        let title = resolve_title("Custom Name", "", None, false, &[]);
         assert_eq!(title, "Custom Name");
+    }
+
+    #[test]
+    fn test_derive_title_at_top_of_container() {
+        // `per-dev` sits directly under `GitProjects`.
+        let derived = derive_title_from_path("/Users/alice/GitProjects/per-dev").expect("derived");
+        assert_eq!(derived, "per-dev");
+    }
+
+    #[test]
+    fn test_derive_title_in_subdir_of_container() {
+        // A repo nested two levels deep under `per-dev` should surface as
+        // `per-dev - agent-of-empires`.
+        let derived =
+            derive_title_from_path("/Users/alice/GitProjects/per-dev/forks/agent-of-empires")
+                .expect("derived");
+        assert_eq!(derived, "per-dev - agent-of-empires");
+    }
+
+    #[test]
+    fn test_derive_title_with_case_insensitive_container() {
+        // `Projects` (capital P) is in the canonical list, but the matcher
+        // should also accept other casings since users vary.
+        let derived = derive_title_from_path("/home/bob/projects/widgets").expect("derived");
+        assert_eq!(derived, "widgets");
+    }
+
+    #[test]
+    fn test_derive_title_outside_known_container_returns_none() {
+        assert_eq!(
+            derive_title_from_path("/var/log/something"),
+            None,
+            "Paths outside known containers should fall back to random"
+        );
+    }
+
+    #[test]
+    fn test_derive_title_uses_deepest_container_match() {
+        // When the path crosses two known containers, anchor on the deepest
+        // one so the result is the nearest project-root segment.
+        let derived =
+            derive_title_from_path("/home/alice/projects/monorepo/src/server").expect("derived");
+        assert_eq!(derived, "server");
+    }
+
+    #[test]
+    fn test_resolve_title_uses_path_derivation_when_no_branch() {
+        let title = resolve_title("", "/Users/alice/GitProjects/per-dev", None, false, &[]);
+        assert_eq!(title, "per-dev");
+    }
+
+    #[test]
+    fn test_worktree_branch_beats_path_derivation() {
+        // Branch name wins when worktree is enabled, even if path would derive
+        // a perfectly good title.
+        let title = resolve_title(
+            "",
+            "/Users/alice/GitProjects/per-dev",
+            Some("feature-x"),
+            true,
+            &[],
+        );
+        assert_eq!(title, "feature-x");
     }
 
     #[test]

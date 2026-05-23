@@ -1383,6 +1383,7 @@ impl HomeView {
                 .collect();
             data.title = crate::session::builder::resolve_title(
                 &data.title,
+                &data.path,
                 data.worktree_branch.as_deref(),
                 data.worktree_enabled,
                 &existing_titles,
