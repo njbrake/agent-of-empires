@@ -2790,6 +2790,26 @@ fn map_update_to_events(
     }
 }
 
+/// Map a snapshot of ACP `SessionConfigOption`s (typically pulled
+/// from `NewSessionResponse.config_options` or
+/// `LoadSessionResponse.config_options`) into one
+/// `Event::ConfigOptionsUpdated`. Returns `None` when the snapshot is
+/// absent or empty so callers can skip the emit. See #1403.
+fn config_options_event(
+    options: Option<Vec<agent_client_protocol::schema::SessionConfigOption>>,
+) -> Option<Event> {
+    let raw = options?;
+    if raw.is_empty() {
+        return None;
+    }
+    let mapped: Vec<ConfigOptionDescriptor> =
+        raw.into_iter().filter_map(map_acp_config_option).collect();
+    if mapped.is_empty() {
+        return None;
+    }
+    Some(Event::ConfigOptionsUpdated { options: mapped })
+}
+
 /// Build a cockpit `ConfigOptionDescriptor` from an ACP
 /// `SessionConfigOption`. Returns `None` when the option has a kind
 /// the cockpit does not yet render (today everything except `Select`).
@@ -3420,7 +3440,7 @@ async fn run_connection_task<W, R>(
                             suppress_for_block.store(true, Ordering::Relaxed);
                             let req = LoadSessionRequest::new(stored.clone(), cwd.clone());
                             match connection.send_request(req).block_task().await {
-                                Ok(_resp) => {
+                                Ok(resp) => {
                                     info!(
                                         target: "cockpit.acp",
                                         session = %session_label,
@@ -3439,6 +3459,15 @@ async fn run_connection_task<W, R>(
                                             acp_session_id: stored.clone(),
                                         })
                                         .await;
+                                    // Per ACP schema 0.12, LoadSessionResponse
+                                    // carries config_options. Surface them so
+                                    // the cockpit picker hydrates on resume
+                                    // without waiting for a notification. See
+                                    // #1403.
+                                    if let Some(event) = config_options_event(resp.config_options)
+                                    {
+                                        let _ = event_tx_for_block.send(event).await;
+                                    }
                                     acp_session_id = Some(SessionId::from(stored));
                                 }
                                 Err(e) => {
@@ -3500,6 +3529,17 @@ async fn run_connection_task<W, R>(
                                     modes: infos,
                                 })
                                 .await;
+                        }
+
+                        // Per ACP schema 0.12, NewSessionResponse carries
+                        // config_options (claude-agent-acp v0.37.0 emits the
+                        // initial model + effort + mode set here, not as a
+                        // subsequent notification). Surface them so the
+                        // cockpit pickers render immediately. See #1403.
+                        if let Some(event) =
+                            config_options_event(new_session.config_options.clone())
+                        {
+                            let _ = event_tx_for_block.send(event).await;
                         }
 
                         // Tell the server-side listener so it can persist the
