@@ -61,21 +61,22 @@ const SCRIPT = {
 
 base("queued follow-up fires after navigation away and back", async ({ page }, testInfo) => {
   let serveHandle: { home: string } | undefined;
+  let serve: Awaited<ReturnType<typeof spawnAoeServe>> | undefined;
   const scriptDir = mkdtempSync(join(tmpdir(), "aoe-pw-queue-nav-"));
   const scriptPath = join(scriptDir, "script.json");
   writeFileSync(scriptPath, JSON.stringify(SCRIPT));
 
-  const serve = await spawnAoeServe({
-    authMode: "none",
-    cockpit: true,
-    fakeAcpScript: scriptPath,
-    workerIndex: testInfo.workerIndex,
-    parallelIndex: testInfo.parallelIndex,
-    seedFn: seedSessionViaAoeAdd({ title: "queue-nav-a" }),
-  });
-  serveHandle = serve;
-
   try {
+    serve = await spawnAoeServe({
+      authMode: "none",
+      cockpit: true,
+      fakeAcpScript: scriptPath,
+      workerIndex: testInfo.workerIndex,
+      parallelIndex: testInfo.parallelIndex,
+      seedFn: seedSessionViaAoeAdd({ title: "queue-nav-a" }),
+    });
+    serveHandle = serve;
+
     const sessions = await listSessions(serve.baseUrl);
     const sessionA = sessions.find((s) => s.title === "queue-nav-a");
     if (!sessionA) throw new Error("seeded session 'queue-nav-a' missing");
@@ -120,8 +121,15 @@ base("queued follow-up fires after navigation away and back", async ({ page }, t
       timeout: 20_000,
     });
   } finally {
-    if (serveHandle) await attachServeDiagnostics(testInfo, serveHandle);
-    await serve.stop();
-    rmSync(scriptDir, { recursive: true, force: true });
+    try {
+      if (serveHandle) await attachServeDiagnostics(testInfo, serveHandle);
+    } catch {
+      // best-effort diagnostics; do not block cleanup
+    }
+    try {
+      if (serve) await serve.stop();
+    } finally {
+      rmSync(scriptDir, { recursive: true, force: true });
+    }
   }
 });

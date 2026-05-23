@@ -59,21 +59,22 @@ base("queued follow-up fires when first turn ends", async ({ page }, testInfo) =
   // Hoisted so the `finally` block can attach diagnostics even if
   // spawnAoeServe itself throws.
   let serveHandle: { home: string } | undefined;
+  let serve: Awaited<ReturnType<typeof spawnAoeServe>> | undefined;
   const scriptDir = mkdtempSync(join(tmpdir(), "aoe-pw-story-queue-"));
   const scriptPath = join(scriptDir, "script.json");
   writeFileSync(scriptPath, JSON.stringify(QUEUE_SCRIPT));
 
-  const serve = await spawnAoeServe({
-    authMode: "none",
-    cockpit: true,
-    fakeAcpScript: scriptPath,
-    workerIndex: testInfo.workerIndex,
-    parallelIndex: testInfo.parallelIndex,
-    seedFn: seedSessionViaAoeAdd({ title: "story-queue" }),
-  });
-  serveHandle = serve;
-
   try {
+    serve = await spawnAoeServe({
+      authMode: "none",
+      cockpit: true,
+      fakeAcpScript: scriptPath,
+      workerIndex: testInfo.workerIndex,
+      parallelIndex: testInfo.parallelIndex,
+      seedFn: seedSessionViaAoeAdd({ title: "story-queue" }),
+    });
+    serveHandle = serve;
+
     const sessions = await listSessions(serve.baseUrl);
     const seeded = sessions.find((s) => s.title === "story-queue");
     if (!seeded) throw new Error("seeded session 'story-queue' missing");
@@ -113,8 +114,15 @@ base("queued follow-up fires when first turn ends", async ({ page }, testInfo) =
       timeout: 15_000,
     });
   } finally {
-    if (serveHandle) await attachServeDiagnostics(testInfo, serveHandle);
-    await serve.stop();
-    rmSync(scriptDir, { recursive: true, force: true });
+    try {
+      if (serveHandle) await attachServeDiagnostics(testInfo, serveHandle);
+    } catch {
+      // best-effort diagnostics; do not block cleanup
+    }
+    try {
+      if (serve) await serve.stop();
+    } finally {
+      rmSync(scriptDir, { recursive: true, force: true });
+    }
   }
 });

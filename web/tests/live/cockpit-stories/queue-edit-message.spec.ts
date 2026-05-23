@@ -37,21 +37,22 @@ const SCRIPT = {
 
 base("edit a queued follow-up before it fires", async ({ page }, testInfo) => {
   let serveHandle: { home: string } | undefined;
+  let serve: Awaited<ReturnType<typeof spawnAoeServe>> | undefined;
   const scriptDir = mkdtempSync(join(tmpdir(), "aoe-pw-story-queue-edit-"));
   const scriptPath = join(scriptDir, "script.json");
   writeFileSync(scriptPath, JSON.stringify(SCRIPT));
 
-  const serve = await spawnAoeServe({
-    authMode: "none",
-    cockpit: true,
-    fakeAcpScript: scriptPath,
-    workerIndex: testInfo.workerIndex,
-    parallelIndex: testInfo.parallelIndex,
-    seedFn: seedSessionViaAoeAdd({ title: "story-queue-edit" }),
-  });
-  serveHandle = serve;
-
   try {
+    serve = await spawnAoeServe({
+      authMode: "none",
+      cockpit: true,
+      fakeAcpScript: scriptPath,
+      workerIndex: testInfo.workerIndex,
+      parallelIndex: testInfo.parallelIndex,
+      seedFn: seedSessionViaAoeAdd({ title: "story-queue-edit" }),
+    });
+    serveHandle = serve;
+
     const sessions = await listSessions(serve.baseUrl);
     const seeded = sessions.find((s) => s.title === "story-queue-edit");
     if (!seeded) throw new Error("seeded session 'story-queue-edit' missing");
@@ -92,8 +93,15 @@ base("edit a queued follow-up before it fires", async ({ page }, testInfo) => {
       page.getByRole("button", { name: /^original queued text$/ }),
     ).toHaveCount(0);
   } finally {
-    if (serveHandle) await attachServeDiagnostics(testInfo, serveHandle);
-    await serve.stop();
-    rmSync(scriptDir, { recursive: true, force: true });
+    try {
+      if (serveHandle) await attachServeDiagnostics(testInfo, serveHandle);
+    } catch {
+      // best-effort diagnostics; do not block cleanup
+    }
+    try {
+      if (serve) await serve.stop();
+    } finally {
+      rmSync(scriptDir, { recursive: true, force: true });
+    }
   }
 });
