@@ -36,21 +36,22 @@ const SCRIPT = {
 
 base("delete a queued follow-up before it fires", async ({ page }, testInfo) => {
   let serveHandle: { home: string } | undefined;
+  let serve: Awaited<ReturnType<typeof spawnAoeServe>> | undefined;
   const scriptDir = mkdtempSync(join(tmpdir(), "aoe-pw-story-queue-del-"));
   const scriptPath = join(scriptDir, "script.json");
   writeFileSync(scriptPath, JSON.stringify(SCRIPT));
 
-  const serve = await spawnAoeServe({
-    authMode: "none",
-    cockpit: true,
-    fakeAcpScript: scriptPath,
-    workerIndex: testInfo.workerIndex,
-    parallelIndex: testInfo.parallelIndex,
-    seedFn: seedSessionViaAoeAdd({ title: "story-queue-del" }),
-  });
-  serveHandle = serve;
-
   try {
+    serve = await spawnAoeServe({
+      authMode: "none",
+      cockpit: true,
+      fakeAcpScript: scriptPath,
+      workerIndex: testInfo.workerIndex,
+      parallelIndex: testInfo.parallelIndex,
+      seedFn: seedSessionViaAoeAdd({ title: "story-queue-del" }),
+    });
+    serveHandle = serve;
+
     const sessions = await listSessions(serve.baseUrl);
     const seeded = sessions.find((s) => s.title === "story-queue-del");
     if (!seeded) throw new Error("seeded session 'story-queue-del' missing");
@@ -81,8 +82,15 @@ base("delete a queued follow-up before it fires", async ({ page }, testInfo) => 
     await page.getByTitle("Drop this queued message").click();
     await expect(queuedRow).toHaveCount(0, { timeout: 5_000 });
   } finally {
-    if (serveHandle) await attachServeDiagnostics(testInfo, serveHandle);
-    await serve.stop();
-    rmSync(scriptDir, { recursive: true, force: true });
+    try {
+      if (serveHandle) await attachServeDiagnostics(testInfo, serveHandle);
+    } catch {
+      // best-effort diagnostics; do not block cleanup
+    }
+    try {
+      if (serve) await serve.stop();
+    } finally {
+      rmSync(scriptDir, { recursive: true, force: true });
+    }
   }
 });

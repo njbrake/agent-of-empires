@@ -37,21 +37,22 @@ const SCRIPT = {
 
 base("queued long prompt fold and unfold toggle", async ({ page }, testInfo) => {
   let serveHandle: { home: string } | undefined;
+  let serve: Awaited<ReturnType<typeof spawnAoeServe>> | undefined;
   const scriptDir = mkdtempSync(join(tmpdir(), "aoe-pw-story-queue-fold-"));
   const scriptPath = join(scriptDir, "script.json");
   writeFileSync(scriptPath, JSON.stringify(SCRIPT));
 
-  const serve = await spawnAoeServe({
-    authMode: "none",
-    cockpit: true,
-    fakeAcpScript: scriptPath,
-    workerIndex: testInfo.workerIndex,
-    parallelIndex: testInfo.parallelIndex,
-    seedFn: seedSessionViaAoeAdd({ title: "story-queue-fold" }),
-  });
-  serveHandle = serve;
-
   try {
+    serve = await spawnAoeServe({
+      authMode: "none",
+      cockpit: true,
+      fakeAcpScript: scriptPath,
+      workerIndex: testInfo.workerIndex,
+      parallelIndex: testInfo.parallelIndex,
+      seedFn: seedSessionViaAoeAdd({ title: "story-queue-fold" }),
+    });
+    serveHandle = serve;
+
     const sessions = await listSessions(serve.baseUrl);
     const seeded = sessions.find((s) => s.title === "story-queue-fold");
     if (!seeded) throw new Error("seeded session 'story-queue-fold' missing");
@@ -84,8 +85,15 @@ base("queued long prompt fold and unfold toggle", async ({ page }, testInfo) => 
     });
     await expect(collapseButton).toBeVisible({ timeout: 5_000 });
   } finally {
-    if (serveHandle) await attachServeDiagnostics(testInfo, serveHandle);
-    await serve.stop();
-    rmSync(scriptDir, { recursive: true, force: true });
+    try {
+      if (serveHandle) await attachServeDiagnostics(testInfo, serveHandle);
+    } catch {
+      // best-effort diagnostics; do not block cleanup
+    }
+    try {
+      if (serve) await serve.stop();
+    } finally {
+      rmSync(scriptDir, { recursive: true, force: true });
+    }
   }
 });
