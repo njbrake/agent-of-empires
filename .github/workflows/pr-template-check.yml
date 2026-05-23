@@ -32,9 +32,21 @@ jobs:
             // submitting", which was removed from the template in
             // #1421 but left in this workflow, so every subsequent PR
             // was flagged.
-            const hasChecklist = body.includes('## Checklist') &&
-                                 body.includes('## Test Coverage Analysis') &&
-                                 body.includes('## AI Usage');
+            const hasAllTemplateSections =
+              body.includes('## Checklist') &&
+              body.includes('## Test Coverage Analysis') &&
+              body.includes('## AI Usage');
+
+            // Escape hatch for trusted internal automation: the
+            // nix-npm-hash bot (`.github/workflows/nix-npm-hash.yml`)
+            // emits a body with only `## Checklist` plus a
+            // `<!-- nix-npm-hash: -->` marker. Accept that shape so
+            // the bot's PRs are not auto-flagged + auto-closed.
+            const isNixNpmHashBotPr =
+              body.includes('<!-- nix-npm-hash:') &&
+              body.includes('## Checklist');
+
+            const hasChecklist = hasAllTemplateSections || isNixNpmHashBotPr;
 
             const prNumber = context.payload.pull_request.number;
             const labelName = 'missing-template';
