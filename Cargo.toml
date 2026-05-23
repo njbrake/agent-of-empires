@@ -16,7 +16,7 @@ categories = ["command-line-utilities", "development-tools"]
 [dependencies]
 # CLI
 clap = { version = "4.6", features = ["derive", "env"] }
-clap_complete = "4.5"
+clap_complete = "4.6"
 
 # TUI
 ratatui = { version = "0.30", features = ["crossterm"] }
