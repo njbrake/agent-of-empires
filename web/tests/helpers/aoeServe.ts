@@ -357,6 +357,8 @@ function writeFakeAcpShim(
   const scriptLines: string[] = [];
   if (fakeAcpScript) {
     scriptLines.push(`export FAKE_ACP_SCRIPT=${JSON.stringify(fakeAcpScript)}`);
+  } else {
+    scriptLines.push("unset FAKE_ACP_SCRIPT");
   }
   scriptLines.push(`export FAKE_ACP_DEBUG_LOG=${JSON.stringify(fakeAcpDebugLog)}`);
   const script = `#!/bin/bash\n${scriptLines.join("\n")}\nexec node ${JSON.stringify(fakeAgentJs)} "$@"\n`;
