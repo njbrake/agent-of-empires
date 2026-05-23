@@ -171,8 +171,16 @@ async fn silent_orphan_fires_on_cost_then_silence() {
         .await
         .expect("send prompt");
 
+    // 15s budget rather than 5s: the watchdog fires at FAST_GRACE (300ms)
+    // after the cost-populated usage_update on the happy path, but
+    // ubuntu-latest under full cargo-test load occasionally schedules the
+    // shim's prompt body or the daemon's lifecycle signal pump late
+    // enough that the cancel + prompt_fut resolve + Stopped emission
+    // chain slips past a tight 5s drain. The watchdog itself is unchanged;
+    // this is a CI-scheduling headroom bump. A regression where the
+    // watchdog never fires would still fail (drain returns None).
     let stopped =
-        drain_for_stopped_reason(&mut client, Instant::now() + Duration::from_secs(5)).await;
+        drain_for_stopped_reason(&mut client, Instant::now() + Duration::from_secs(15)).await;
     let _ = client.shutdown().await;
 
     assert_eq!(
