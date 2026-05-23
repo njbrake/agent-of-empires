@@ -160,8 +160,9 @@ Look up the seeded session by `title` rather than `sessions[0]` so the
 spec stays deterministic if seeding adds more rows later.
 
 Custom per-spec scripts go through a temp file (see
-`cockpit-approval.spec.ts` for the canonical setup); the `serveCockpit`
-fixture is for stories happy with the default chunk-then-stop script.
+`cockpit-stories/approval-allow.spec.ts` or `cockpit-approval.spec.ts`
+for the canonical setup); the `serveCockpit` fixture is for stories
+happy with the default chunk-then-stop script.
 
 ## Coverage matrix
 

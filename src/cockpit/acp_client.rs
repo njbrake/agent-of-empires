@@ -824,7 +824,12 @@ fn runner_socket_deadline() -> std::time::Duration {
     #[cfg(debug_assertions)]
     if let Ok(raw) = std::env::var("AOE_COCKPIT_RUNNER_SOCKET_TIMEOUT_MS") {
         if let Ok(ms) = raw.parse::<u64>() {
-            return std::time::Duration::from_millis(ms);
+            // Clamp to a floor of 100ms so a typo like
+            // `AOE_COCKPIT_RUNNER_SOCKET_TIMEOUT_MS=0` does not make
+            // wait_for_socket fail immediately and surface as a
+            // mysterious "runner socket did not appear" without ever
+            // polling.
+            return std::time::Duration::from_millis(ms.max(100));
         }
     }
     std::time::Duration::from_secs(10)
