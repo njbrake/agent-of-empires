@@ -77,11 +77,16 @@ base("DeleteSessionDialog can opt into deleting the worktree", async ({ page }, 
     const worktreeCheckbox = page.locator(
       '[data-testid="delete-session-checkbox-worktree"]',
     );
+    const branchCheckbox = page.locator(
+      '[data-testid="delete-session-checkbox-branch"]',
+    );
     await expect(worktreeCheckbox).toBeVisible({ timeout: 5_000 });
+    await expect(branchCheckbox).toBeVisible({ timeout: 5_000 });
     // Custom Checkbox component renders as a `<label data-checked="...">`,
     // not a native input, so toBeChecked() does not apply. The label
     // attribute is the source of truth.
     await expect(worktreeCheckbox).toHaveAttribute("data-checked", "true");
+    await expect(branchCheckbox).toHaveAttribute("data-checked", "true");
 
     const deletePromise = page.waitForResponse(
       (res) =>
@@ -91,7 +96,9 @@ base("DeleteSessionDialog can opt into deleting the worktree", async ({ page }, 
     await dialog.getByRole("button", { name: /^Delete$/ }).click();
     const response = await deletePromise;
     expect(response.ok()).toBeTruthy();
-    expect(response.request().postDataJSON().delete_worktree).toBe(true);
+    const payload = response.request().postDataJSON();
+    expect(payload.delete_worktree).toBe(true);
+    expect(payload.delete_branch).toBe(true);
 
     await expect(row).toHaveCount(0, { timeout: 10_000 });
   } finally {
