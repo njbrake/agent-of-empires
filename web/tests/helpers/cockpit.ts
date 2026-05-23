@@ -293,7 +293,7 @@ export async function openSettingsTab(page: Page, label: string): Promise<void> 
  * directly and avoids depending on an internal "loading" flag.
  */
 export async function waitForSettingsLoaded(page: Page): Promise<void> {
-  const profileSelect = page.locator("select").first();
+  const profileSelect = settingsSelectByLabel(page, "Profile");
   await expect(profileSelect).toBeVisible({ timeout: 10_000 });
   await expect
     .poll(async () => (await profileSelect.inputValue()).length, {

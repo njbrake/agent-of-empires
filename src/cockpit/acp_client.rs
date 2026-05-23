@@ -1900,7 +1900,7 @@ fn apply_env_filter(cmd: &mut std::process::Command, config: &SpawnConfig) {
         // The runner then writes its WorkerRecord to a path the
         // daemon never reads, the daemon's `reap_user_stopped`
         // observes the registry as missing on the next tick, emits
-        // `Stopped { user_stopped }`, and respawns — turning a fine
+        // `Stopped { user_stopped }`, and respawns, turning a fine
         // worker into a respawn loop. See #1383 (CI Linux live
         // specs under an isolated $XDG_CONFIG_HOME).
         "XDG_CONFIG_HOME",

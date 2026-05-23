@@ -492,7 +492,7 @@ export async function spawnAoeServe(opts: SpawnOptions): Promise<ServeHandle> {
     // covers any future caller that bypasses the shim path.
     FAKE_ACP_DEBUG_LOG: fakeAcpDebugLog,
     // Daemon log level. AOE_LOG_LEVEL only accepts a single level
-    // string (trace|debug|info|warn|error) — see LogLevel::parse in
+    // string (trace|debug|info|warn|error); see LogLevel::parse in
     // src/logging.rs. The default `info` is sufficient for the
     // post-mortem attachments; `trace` was used briefly to diagnose
     // the XDG_CONFIG_HOME bug but adds enough I/O pressure on CI to

@@ -128,8 +128,8 @@ export function SettingsView({
   // fetchSettings("default") against a profile that may not exist.
   // Once fetchProfiles resolves the seed flips to the real default
   // profile (e.g. "main") and a single loadSettings fires. The
-  // previous "default" seed caused two fetchSettings calls — one for
-  // the placeholder and one for the resolved name — and the second
+  // previous "default" seed caused two fetchSettings calls (one for
+  // the placeholder and one for the resolved name), and the second
   // setSettings could race ahead of an optimistic user edit and
   // clobber it. See #1383 (profile-settings-isolation / settings-
   // tmux-* flakes).

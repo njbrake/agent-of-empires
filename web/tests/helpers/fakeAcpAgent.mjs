@@ -53,7 +53,7 @@ import { readFileSync, existsSync, appendFileSync } from "node:fs";
 // noisy stdout writer (one JSON line per session/update notification);
 // if the supervisor briefly stalls draining the pipe (CI under v8
 // coverage instrumentation has spent ~hundreds of ms behind the
-// runtime worker), a subsequent write can emit EPIPE — without a
+// runtime worker), a subsequent write can emit EPIPE; without a
 // handler, Node treats that as an uncaught exception and exits the
 // process. The runner sees the child exit, deletes the worker_registry
 // entry, the supervisor's reap pass publishes Stopped {

@@ -8,7 +8,11 @@
 
 import { test as base, expect } from "@playwright/test";
 import { spawnAoeServe } from "../../helpers/aoeServe";
-import { openSettingsTab, settingsSelectByLabel } from "../../helpers/cockpit";
+import {
+  openSettingsTab,
+  settingsSelectByLabel,
+  waitForSettingsLoaded,
+} from "../../helpers/cockpit";
 
 base("per-profile settings stay isolated across profile switches", async ({ page }, testInfo) => {
   const serve = await spawnAoeServe({
@@ -19,16 +23,8 @@ base("per-profile settings stay isolated across profile switches", async ({ page
 
   try {
     await page.goto(`${serve.baseUrl}/settings`);
-    const profileSelect = page.locator("select").first();
-    await expect(profileSelect).toBeVisible({ timeout: 10_000 });
-    // Default profile name varies by build (`main` on release, `default`
-    // historically). ProfileSelect renders before its initial fetch
-    // resolves, so inputValue is "" briefly; poll until populated.
-    await expect
-      .poll(async () => (await profileSelect.inputValue()).length, {
-        timeout: 10_000,
-      })
-      .toBeGreaterThan(0);
+    await waitForSettingsLoaded(page);
+    const profileSelect = settingsSelectByLabel(page, "Profile");
     const profileA = await profileSelect.inputValue();
 
     await openSettingsTab(page, "Tmux");
