@@ -220,13 +220,32 @@ pub(crate) fn compute_row_tag(
             // for `feature/foo` style names), truncated to 8 chars so the
             // tag stays narrow.
             let last = w.branch.rsplit('/').next().unwrap_or("");
-            let trimmed: String = last.chars().take(8).collect();
+            let trimmed: String = last.chars().take(ROW_TAG_BRANCH_MAX).collect();
             if trimmed.is_empty() {
                 Option::<String>::None
             } else {
                 Some(trimmed)
             }
         }),
+    }
+}
+
+/// Per-mode max content width for the row tag, in chars. Used by the row
+/// renderer to right-pad the tag to a stable column so the activity
+/// column doesn't reflow as tag widths vary across rows (`[fb]` vs `[def]`
+/// vs `[forit]`). Mirrors the natural cap each branch of `compute_row_tag`
+/// already enforces, so padding never truncates.
+const ROW_TAG_PROFILE_MAX: usize = 4;
+const ROW_TAG_SANDBOX_MAX: usize = 2;
+const ROW_TAG_BRANCH_MAX: usize = 8;
+
+pub(crate) fn row_tag_max_width(mode: crate::session::config::RowTagMode) -> usize {
+    use crate::session::config::RowTagMode;
+    match mode {
+        RowTagMode::None => 0,
+        RowTagMode::Auto | RowTagMode::Profile => ROW_TAG_PROFILE_MAX,
+        RowTagMode::Sandbox => ROW_TAG_SANDBOX_MAX,
+        RowTagMode::Branch => ROW_TAG_BRANCH_MAX,
     }
 }
 
@@ -1020,8 +1039,19 @@ impl HomeView {
                 if let Some(tag) =
                     compute_row_tag(inst, self.row_tag_mode, self.active_profile.is_none())
                 {
+                    // Pad to the mode's max content width so the bracket
+                    // span is fixed-width across rows. Without this, a
+                    // 2-char code (`fb`) and a 3-char code (`def`) produce
+                    // bracket spans 1 cell apart, which shifts where the
+                    // activity column lands per row (the trailing pad
+                    // absorbs the difference, but the absorbed width comes
+                    // off the user-visible whitespace and reads as a
+                    // jittery activity column when rows are scanned
+                    // vertically). compute_row_tag already caps content
+                    // at the same max, so padding is non-truncating.
+                    let max_width = row_tag_max_width(self.row_tag_mode);
                     line_spans.push(Span::styled(
-                        format!("  [{}]", tag),
+                        format!("  [{:<width$}]", tag, width = max_width),
                         Style::default().fg(theme.dimmed),
                     ));
                 }
@@ -2124,6 +2154,20 @@ mod tests {
         // unconditional render path.
         // prefix(20) + slot(6) + badge(12) + margin(1) = 39 > 35.
         assert_eq!(activity_column_padding(20, 35, 12), None);
+    }
+
+    #[test]
+    fn row_tag_max_width_matches_compute_row_tag_caps() {
+        use crate::session::config::RowTagMode;
+        // Each branch of compute_row_tag enforces its own max — the
+        // helper must agree so the padded bracket never truncates.
+        assert_eq!(row_tag_max_width(RowTagMode::None), 0);
+        assert_eq!(row_tag_max_width(RowTagMode::Auto), 4);
+        assert_eq!(row_tag_max_width(RowTagMode::Profile), 4);
+        assert_eq!(row_tag_max_width(RowTagMode::Sandbox), 2);
+        assert_eq!(row_tag_max_width(RowTagMode::Branch), 8);
+        // profile_short_code's documented cap.
+        assert!(profile_short_code("forit-backup-extra").len() <= ROW_TAG_PROFILE_MAX);
     }
 
     #[test]
