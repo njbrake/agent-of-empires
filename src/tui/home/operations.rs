@@ -193,6 +193,23 @@ impl HomeView {
                     self.storages
                         .insert(target_profile.to_string(), Storage::new(target_profile)?);
                 }
+                // Seed the per-profile GroupTree alongside the Storage. Without
+                // this, `rebuild_group_trees()` below iterates only the already-
+                // known profile trees and the freshly-moved row ends up in
+                // `self.instances` with no tree to render under. In tree-based
+                // build_flat_items branches (manual grouping + non-Attention
+                // sort, or single-profile filtered view targeting the new
+                // profile) the row then silently disappears, and even in
+                // Attention sort the next reload re-seeds the tree from the
+                // pristine on-disk state — masking the bug as flaky. Seed
+                // here so the new profile is a first-class entry in every
+                // structure before the rebuild walks them.
+                if !self.group_trees.contains_key(target_profile) {
+                    self.group_trees.insert(
+                        target_profile.to_string(),
+                        GroupTree::new_with_groups(&[], &[]),
+                    );
+                }
                 self.mutate_instance(&id, |inst| {
                     inst.source_profile = target_profile.to_string();
                 });
