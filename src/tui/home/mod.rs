@@ -2202,6 +2202,28 @@ impl HomeView {
         }
     }
 
+    /// Drop `group_path` from `profile`'s tree when no remaining session in
+    /// that profile sits at the path or anywhere underneath it. Used after a
+    /// session moves to a different profile: without this, the source
+    /// profile keeps an empty group header that renders alongside the
+    /// target profile's new copy of the same group, reading as a duplicate.
+    pub(super) fn prune_empty_group(&mut self, profile: &str, group_path: &str) {
+        if group_path.is_empty() {
+            return;
+        }
+        let prefix = format!("{}/", group_path);
+        let still_used = self.instances.iter().any(|i| {
+            i.source_profile == profile
+                && (i.group_path == group_path || i.group_path.starts_with(&prefix))
+        });
+        if still_used {
+            return;
+        }
+        if let Some(tree) = self.group_trees.get_mut(profile) {
+            tree.delete_group(group_path);
+        }
+    }
+
     /// Determine which profile the item at the given cursor position belongs to.
     pub(super) fn profile_for_cursor(&self, cursor: usize) -> Option<String> {
         if let Some(profile) = &self.active_profile {
