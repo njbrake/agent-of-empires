@@ -160,6 +160,11 @@ pub struct HomeView {
     /// a row on disk but absent from the baseline was added by another process
     /// after the TUI loaded and must be kept. See `Storage::commit_merged`.
     pub(super) load_baseline: HashMap<String, HashSet<String>>,
+    /// Per-profile group-path-set, the group-tree mirror of `load_baseline`.
+    /// Same role: a path here that is gone from the view's group tree is an
+    /// intentional TUI delete, while a path on disk that is not here is a
+    /// peer-created group that must be kept. See `Storage::commit_merged`.
+    pub(super) load_baseline_groups: HashMap<String, HashSet<String>>,
     pub(super) flat_items: Vec<Item>,
 
     // UI state
@@ -367,6 +372,7 @@ impl HomeView {
         let mut all_instances = Vec::new();
         let mut group_trees = HashMap::new();
         let mut load_baseline: HashMap<String, HashSet<String>> = HashMap::new();
+        let mut load_baseline_groups: HashMap<String, HashSet<String>> = HashMap::new();
 
         let profile_names = match &active_profile {
             Some(name) => vec![name.clone()],
@@ -380,10 +386,15 @@ impl HomeView {
                 inst.source_profile = profile_name.clone();
             }
             // Record the load baseline before status carry-over so the merge
-            // in `save` knows exactly which ids this view loaded from disk.
+            // in `save` knows exactly which ids/group-paths this view loaded
+            // from disk.
             load_baseline.insert(
                 profile_name.clone(),
                 instances.iter().map(|i| i.id.clone()).collect(),
+            );
+            load_baseline_groups.insert(
+                profile_name.clone(),
+                groups.iter().map(|g| g.path.clone()).collect(),
             );
             let tree = GroupTree::new_with_groups(&instances, &groups);
             group_trees.insert(profile_name.clone(), tree);
@@ -448,6 +459,7 @@ impl HomeView {
             instance_map,
             group_trees,
             load_baseline,
+            load_baseline_groups,
             flat_items: Vec::new(),
             cursor: 0,
             selected_session: None,
@@ -668,14 +680,20 @@ impl HomeView {
         self.refresh_status_hook_config_cache();
 
         let mut next_baseline: HashMap<String, HashSet<String>> = HashMap::new();
+        let mut next_baseline_groups: HashMap<String, HashSet<String>> = HashMap::new();
         for (profile_name, storage) in &self.storages {
             let (mut instances, groups) = storage.load_with_groups()?;
-            // The on-disk id-set is the load baseline for the next `save`'s
-            // merge. Captured from the raw disk read, before status carry-over
-            // or the Creating-stub re-injection touches `instances`.
+            // The on-disk id-set + group-path-set are the load baselines for
+            // the next `save`'s merge. Captured from the raw disk read,
+            // before status carry-over or the Creating-stub re-injection
+            // touches `instances`.
             next_baseline.insert(
                 profile_name.clone(),
                 instances.iter().map(|i| i.id.clone()).collect(),
+            );
+            next_baseline_groups.insert(
+                profile_name.clone(),
+                groups.iter().map(|g| g.path.clone()).collect(),
             );
             for inst in &mut instances {
                 inst.source_profile = profile_name.clone();
@@ -728,6 +746,7 @@ impl HomeView {
         // Adopt the freshly-captured per-profile load baselines. Profiles that
         // no longer exist drop out implicitly (they were never inserted).
         self.load_baseline = next_baseline;
+        self.load_baseline_groups = next_baseline_groups;
 
         self.instances = all_instances;
 
@@ -2110,7 +2129,9 @@ impl HomeView {
         stale_sid
     }
 
-    pub fn save(&self) -> anyhow::Result<()> {
+    pub fn save(&mut self) -> anyhow::Result<()> {
+        let mut next_baseline = self.load_baseline.clone();
+        let mut next_baseline_groups = self.load_baseline_groups.clone();
         for (profile_name, storage) in &self.storages {
             let profile_instances: Vec<Instance> = self
                 .instances
@@ -2137,8 +2158,31 @@ impl HomeView {
                 .get(profile_name)
                 .cloned()
                 .unwrap_or_default();
-            storage.commit_merged(&profile_instances, &tree, &baseline)?;
+            let baseline_groups = self
+                .load_baseline_groups
+                .get(profile_name)
+                .cloned()
+                .unwrap_or_default();
+            storage.commit_merged(&profile_instances, &tree, &baseline, &baseline_groups)?;
+            // Promote the just-saved set into the next baseline so a row
+            // this view created and then deleted (in the same load cycle)
+            // is treated as a TUI delete on the next save, not as a
+            // peer-added row that gets resurrected. (CodeRabbit feedback on
+            // PR #1437.)
+            next_baseline.insert(
+                profile_name.clone(),
+                profile_instances.iter().map(|i| i.id.clone()).collect(),
+            );
+            next_baseline_groups.insert(
+                profile_name.clone(),
+                tree.get_all_groups()
+                    .iter()
+                    .map(|g| g.path.clone())
+                    .collect(),
+            );
         }
+        self.load_baseline = next_baseline;
+        self.load_baseline_groups = next_baseline_groups;
         Ok(())
     }
 

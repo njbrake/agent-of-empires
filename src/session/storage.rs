@@ -303,13 +303,22 @@ impl Storage {
     /// clobbered. The read, merge, and write all happen inside one
     /// flock-held critical section, so the reconcile cannot race a peer.
     ///
-    /// `groups.json` is still written wholesale from `group_tree`: groups are
-    /// edited only by the TUI, so they need no merge.
+    /// `groups.json` is merged with the same 3-way strategy as
+    /// `sessions.json`, keyed on `Group.path`: TUI-owned groups win for
+    /// paths it carries, baseline-but-absent groups are dropped (TUI
+    /// delete), and on-disk-only groups are appended (peer addition,
+    /// e.g. a `aoe group create` from the CLI between this view's load
+    /// and save). `baseline_group_paths` is the set of group paths this
+    /// view loaded from disk — same role `baseline_ids` plays for
+    /// instances. (CodeRabbit feedback on PR #1437: a wholesale
+    /// groups.json write would clobber a CLI-created group that landed
+    /// between the TUI's load and save.)
     pub fn commit_merged(
         &self,
         instances: &[Instance],
         group_tree: &GroupTree,
         baseline_ids: &std::collections::HashSet<String>,
+        baseline_group_paths: &std::collections::HashSet<String>,
     ) -> Result<()> {
         let _guard = self
             .save_lock
@@ -322,10 +331,25 @@ impl Storage {
         let on_disk = self.load()?;
         let merged = merge_instances(instances, &on_disk, baseline_ids);
 
-        let groups = group_tree.get_all_groups();
+        let groups_path = self.sessions_path.with_file_name("groups.json");
+        let on_disk_groups: Vec<Group> = if groups_path.exists() {
+            let content = fs::read_to_string(&groups_path)?;
+            if content.trim().is_empty() {
+                Vec::new()
+            } else {
+                serde_json::from_str(&content)?
+            }
+        } else {
+            Vec::new()
+        };
+        let groups = merge_groups(
+            &group_tree.get_all_groups(),
+            &on_disk_groups,
+            baseline_group_paths,
+        );
+
         let instances_buf = serde_json::to_vec_pretty(&merged)?;
         let groups_buf = serde_json::to_vec_pretty(&groups)?;
-        let groups_path = self.sessions_path.with_file_name("groups.json");
         atomic_write(&groups_path, &groups_buf)?;
         atomic_write(&self.sessions_path, &instances_buf)?;
         Ok(())
@@ -362,6 +386,31 @@ fn merge_instances(
         // On disk, never in the baseline: a peer added it after the TUI
         // loaded. Keep it.
         merged.push(row.clone());
+    }
+    merged
+}
+
+/// 3-way merge of groups keyed on `Group.path`. Mirror of `merge_instances`
+/// for groups.json: TUI-owned groups win, baseline-but-absent groups are
+/// dropped (TUI delete), on-disk-only groups are appended (peer addition).
+/// Pure function so it can be unit-tested without touching the filesystem.
+fn merge_groups(
+    groups: &[Group],
+    on_disk: &[Group],
+    baseline_paths: &std::collections::HashSet<String>,
+) -> Vec<Group> {
+    let tui_paths: std::collections::HashSet<&str> =
+        groups.iter().map(|g| g.path.as_str()).collect();
+
+    let mut merged: Vec<Group> = groups.to_vec();
+    for g in on_disk {
+        if tui_paths.contains(g.path.as_str()) {
+            continue;
+        }
+        if baseline_paths.contains(&g.path) {
+            continue;
+        }
+        merged.push(g.clone());
     }
     merged
 }
@@ -1312,6 +1361,7 @@ mod tests {
             &tui_memory,
             &GroupTree::new_with_groups(&tui_memory, &[]),
             &baseline_ids,
+            &HashSet::new(),
         )?;
 
         let loaded = storage.load()?;
