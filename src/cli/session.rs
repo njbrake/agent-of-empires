@@ -413,7 +413,7 @@ async fn start_session(profile: &str, args: SessionIdArgs) -> Result<()> {
 
     storage.update(move |instances, _groups| {
         if let Some(slot) = instances.iter_mut().find(|i| i.id == started_id) {
-            *slot = started;
+            slot.adopt_lifecycle_from(&started);
         }
         Ok(())
     })?;
@@ -572,20 +572,32 @@ async fn restart_all_sessions(profile: &str, parallel: usize) -> Result<()> {
     let mut restarted: Vec<crate::session::Instance> = Vec::new();
     while let Some(joined) = join_set.join_next().await {
         let (title, inst_opt, result) = joined.expect("JoinSet shouldn't panic on join itself");
-        if let Some(inst) = inst_opt {
-            restarted.push(inst);
-        }
+        // Only persist workers whose restart actually succeeded. A failed
+        // worker's `inst` still carries the mutations made before the
+        // failure point; writing those back to sessions.json would leave
+        // disk reflecting a partial restart for a session that never
+        // came up. (CodeRabbit feedback on PR #1436.)
         match result {
-            Ok(StartOutcome::Restarted { stale_sid }) => succeeded.push((title, Some(stale_sid))),
-            Ok(StartOutcome::Resumed | StartOutcome::Fresh) => succeeded.push((title, None)),
+            Ok(StartOutcome::Restarted { stale_sid }) => {
+                if let Some(inst) = inst_opt {
+                    restarted.push(inst);
+                }
+                succeeded.push((title, Some(stale_sid)));
+            }
+            Ok(StartOutcome::Resumed | StartOutcome::Fresh) => {
+                if let Some(inst) = inst_opt {
+                    restarted.push(inst);
+                }
+                succeeded.push((title, None));
+            }
             Err(e) => failed.push((title, e.to_string())),
         }
     }
 
     storage.update(move |instances, _groups| {
-        for updated in restarted {
+        for updated in &restarted {
             if let Some(slot) = instances.iter_mut().find(|i| i.id == updated.id) {
-                *slot = updated;
+                slot.adopt_lifecycle_from(updated);
             }
         }
         Ok(())
@@ -706,7 +718,7 @@ async fn restart_session(profile: &str, args: SessionIdArgs) -> Result<()> {
 
     storage.update(move |instances, _groups| {
         if let Some(slot) = instances.iter_mut().find(|i| i.id == session_id) {
-            *slot = restarted;
+            slot.adopt_lifecycle_from(&restarted);
         }
         Ok(())
     })?;

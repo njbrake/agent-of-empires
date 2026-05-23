@@ -689,6 +689,27 @@ impl Instance {
         self.snoozed_until = None;
     }
 
+    /// Copy the start/stop/restart lifecycle fields from `src` onto `self`,
+    /// preserving user-metadata fields (favorited_at, archived_at,
+    /// snoozed_until, title, group_path, base_branch_override, notify_on_*,
+    /// ...). Used by CLI start/restart handlers inside the
+    /// `Storage::update()` closure to apply the result of slow tmux work
+    /// (which ran on a pre-lock clone) onto a freshly-loaded snapshot
+    /// without clobbering concurrent user edits to the same row.
+    ///
+    /// Addresses CodeRabbit feedback on PR #1435/#1436: a wholesale
+    /// `*slot = local_clone` would revert any field a concurrent
+    /// `favorite`/`set-session-id`/`set-base` (etc.) writer touched
+    /// between the pre-lock clone and the update() lock acquisition,
+    /// defeating the very lost-write fix `Storage::update()` is meant to
+    /// provide.
+    pub fn adopt_lifecycle_from(&mut self, src: &Instance) {
+        self.status = src.status;
+        self.last_accessed_at = src.last_accessed_at;
+        self.idle_entered_at = src.idle_entered_at;
+        self.agent_session_id = src.agent_session_id.clone();
+    }
+
     /// Mark the session archived. Archived sessions sink to the bottom of
     /// the Attention sort and render in italic+dim style, but remain
     /// visible. Auto-cleared by the attention-signal hook on Waiting/Error.
