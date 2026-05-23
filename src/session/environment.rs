@@ -401,6 +401,31 @@ pub(crate) fn collect_environment(
         }
     }
 
+    // Git's safe-directory check fails when the container user (root) does not
+    // match the file owner (host UID 1000, shown as "ubuntu" inside the
+    // aoe-dev-sandbox image). Bind-mounted repos trigger:
+    //   fatal: detected dubious ownership in repository at '...'
+    // We inject safe.directory=* via Git's env-var config API (Git 2.31+),
+    // which overrides the check without modifying any files.
+    if seen_keys.insert("GIT_CONFIG_COUNT".to_string()) {
+        result.push(EnvEntry::Literal {
+            key: "GIT_CONFIG_COUNT".to_string(),
+            value: "1".to_string(),
+        });
+    }
+    if seen_keys.insert("GIT_CONFIG_KEY_0".to_string()) {
+        result.push(EnvEntry::Literal {
+            key: "GIT_CONFIG_KEY_0".to_string(),
+            value: "safe.directory".to_string(),
+        });
+    }
+    if seen_keys.insert("GIT_CONFIG_VALUE_0".to_string()) {
+        result.push(EnvEntry::Literal {
+            key: "GIT_CONFIG_VALUE_0".to_string(),
+            value: "*".to_string(),
+        });
+    }
+
     for entry in entries {
         if let Some((key, value)) = entry.split_once('=') {
             if seen_keys.insert(key.to_string()) {
@@ -882,6 +907,33 @@ environment = ["GH_TOKEN=write_token"]
         let entry = find_entry(&result, "MY_KEY").expect("MY_KEY not found");
         assert_eq!(entry.value(), "my_value");
         assert!(matches!(entry, EnvEntry::Literal { .. }));
+    }
+
+    #[test]
+    fn test_collect_environment_includes_git_safe_directory() {
+        let config = SandboxConfig::default();
+        let info = SandboxInfo {
+            enabled: true,
+            container_id: None,
+            image: "test".to_string(),
+            container_name: "test".to_string(),
+            extra_env: None,
+            custom_instruction: None,
+        };
+
+        let result = collect_environment(&config, &info);
+        let count = find_entry(&result, "GIT_CONFIG_COUNT").expect("GIT_CONFIG_COUNT not found");
+        assert_eq!(count.value(), "1");
+        assert!(matches!(count, EnvEntry::Literal { .. }));
+
+        let key = find_entry(&result, "GIT_CONFIG_KEY_0").expect("GIT_CONFIG_KEY_0 not found");
+        assert_eq!(key.value(), "safe.directory");
+        assert!(matches!(key, EnvEntry::Literal { .. }));
+
+        let value =
+            find_entry(&result, "GIT_CONFIG_VALUE_0").expect("GIT_CONFIG_VALUE_0 not found");
+        assert_eq!(value.value(), "*");
+        assert!(matches!(value, EnvEntry::Literal { .. }));
     }
 
     #[test]
