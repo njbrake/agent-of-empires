@@ -550,6 +550,7 @@
       "risk": "medium",
       "specs": [
         "tests/live/cockpit-config-pickers.spec.ts",
+        "tests/live/cockpit-config-pickers-ui.spec.ts",
         "src/components/cockpit/SessionConfigControls.test.tsx",
         "src/hooks/useCockpit.configOption.test.ts"
       ],
