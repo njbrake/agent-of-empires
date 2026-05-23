@@ -142,6 +142,23 @@ describe("compareWorkspacesByLastActivityDesc", () => {
     const list = [wsB, wsA, wsC].sort(compareWorkspacesByLastActivityDesc);
     expect(list.map((w) => w.id)).toEqual(["a", "b", "c"]);
   });
+
+  it("breaks ties by id when both sides have no usable timestamp", () => {
+    // Both workspaces return NEGATIVE_INFINITY from
+    // workspaceLastActivityMs. Subtracting two -Infinity values yields
+    // NaN, which Array.sort treats like equality and skips the
+    // tie-break, so this case would silently flake without the
+    // explicit `<` / `>` comparison in the comparator.
+    const bad = {
+      created_at: "bad",
+      idle_entered_at: null,
+      last_accessed_at: null,
+    };
+    const wsB = workspace("b", [session({ id: "sb", ...bad })]);
+    const wsA = workspace("a", [session({ id: "sa", ...bad })]);
+    const list = [wsB, wsA].sort(compareWorkspacesByLastActivityDesc);
+    expect(list.map((w) => w.id)).toEqual(["a", "b"]);
+  });
 });
 
 describe("repoGroupLastActivityMs", () => {
