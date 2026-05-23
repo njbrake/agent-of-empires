@@ -4558,6 +4558,120 @@ fn manual_grouping_attention_sort_stays_flat() {
     );
 }
 
+/// `prune_empty_group` is the post-move cleanup that drops the source
+/// profile's now-empty copy of a group after a session moves to a
+/// different profile. Without it, both profiles end up with the same
+/// group name in unified view, the source one empty and the target one
+/// populated, which reads as a duplicate group header.
+#[test]
+#[serial]
+fn prune_empty_group_drops_source_when_no_session_remains() {
+    let temp = TempDir::new().unwrap();
+    setup_test_home(&temp);
+    let _ = Storage::new("alpha").unwrap();
+    let _ = Storage::new("beta").unwrap();
+    let tools = AvailableTools::with_tools(&["claude"]);
+    let mut view = HomeView::new(None, tools).unwrap();
+
+    // Pre-state: alpha has one session in group "work", beta is empty.
+    let mut moved = Instance::new("moved", "/tmp/moved");
+    moved.source_profile = "alpha".to_string();
+    moved.group_path = "work".to_string();
+    view.instances = vec![moved];
+    view.group_trees.clear();
+    view.group_trees.insert(
+        "alpha".to_string(),
+        GroupTree::new_with_groups(&view.instances, &[]),
+    );
+    view.group_trees
+        .insert("beta".to_string(), GroupTree::new_with_groups(&[], &[]));
+    assert!(view.group_trees["alpha"].group_exists("work"));
+
+    // Simulate the move: re-tag source_profile, then prune the now-empty
+    // source group.
+    view.instances[0].source_profile = "beta".to_string();
+    view.prune_empty_group("alpha", "work");
+
+    assert!(
+        !view.group_trees["alpha"].group_exists("work"),
+        "alpha should no longer own the now-empty 'work' group after the move"
+    );
+}
+
+/// Prune must NOT drop the source group when the source profile still
+/// has other sessions sitting at the same path (or nested under it).
+/// Two sessions, only one moved → source profile keeps the group.
+#[test]
+#[serial]
+fn prune_empty_group_keeps_source_when_sibling_session_remains() {
+    let temp = TempDir::new().unwrap();
+    setup_test_home(&temp);
+    let _ = Storage::new("alpha").unwrap();
+    let _ = Storage::new("beta").unwrap();
+    let tools = AvailableTools::with_tools(&["claude"]);
+    let mut view = HomeView::new(None, tools).unwrap();
+
+    let mut moved = Instance::new("moved", "/tmp/moved");
+    moved.source_profile = "alpha".to_string();
+    moved.group_path = "work".to_string();
+    let mut sibling = Instance::new("sibling", "/tmp/sibling");
+    sibling.source_profile = "alpha".to_string();
+    sibling.group_path = "work".to_string();
+    view.instances = vec![moved, sibling];
+    view.group_trees.clear();
+    view.group_trees.insert(
+        "alpha".to_string(),
+        GroupTree::new_with_groups(&view.instances, &[]),
+    );
+    view.group_trees
+        .insert("beta".to_string(), GroupTree::new_with_groups(&[], &[]));
+
+    view.instances[0].source_profile = "beta".to_string();
+    view.prune_empty_group("alpha", "work");
+
+    assert!(
+        view.group_trees["alpha"].group_exists("work"),
+        "alpha must keep 'work' because the sibling session still lives there"
+    );
+}
+
+/// Prune must also keep the source group when a session sits in a
+/// *descendant* path. Only the leaf moved out; the parent still has
+/// rows under it.
+#[test]
+#[serial]
+fn prune_empty_group_keeps_source_when_descendant_session_remains() {
+    let temp = TempDir::new().unwrap();
+    setup_test_home(&temp);
+    let _ = Storage::new("alpha").unwrap();
+    let _ = Storage::new("beta").unwrap();
+    let tools = AvailableTools::with_tools(&["claude"]);
+    let mut view = HomeView::new(None, tools).unwrap();
+
+    let mut moved = Instance::new("moved", "/tmp/moved");
+    moved.source_profile = "alpha".to_string();
+    moved.group_path = "work".to_string();
+    let mut nested = Instance::new("nested", "/tmp/nested");
+    nested.source_profile = "alpha".to_string();
+    nested.group_path = "work/frontend".to_string();
+    view.instances = vec![moved, nested];
+    view.group_trees.clear();
+    view.group_trees.insert(
+        "alpha".to_string(),
+        GroupTree::new_with_groups(&view.instances, &[]),
+    );
+    view.group_trees
+        .insert("beta".to_string(), GroupTree::new_with_groups(&[], &[]));
+
+    view.instances[0].source_profile = "beta".to_string();
+    view.prune_empty_group("alpha", "work");
+
+    assert!(
+        view.group_trees["alpha"].group_exists("work"),
+        "alpha must keep 'work' because the nested session still lives under it"
+    );
+}
+
 mod scroll_pane_isolation {
     //! Wheel events are confined to whichever pane the mouse is over.
     //! In particular, a wheel over the preview pane never moves the list
