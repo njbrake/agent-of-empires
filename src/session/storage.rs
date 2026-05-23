@@ -1144,8 +1144,19 @@ mod tests {
         let child_a = spawn_child("a");
         let child_b = spawn_child("b");
 
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
         for (label, mut child) in [("a", child_a), ("b", child_b)] {
-            let status = child.wait()?;
+            let status = loop {
+                if let Some(s) = child.try_wait()? {
+                    break s;
+                }
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!("child {label} did not exit within 15s — wedged after barrier");
+                }
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            };
             assert!(status.success(), "child {label} exited with {status}");
         }
 
