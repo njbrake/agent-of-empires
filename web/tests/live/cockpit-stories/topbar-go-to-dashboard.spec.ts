@@ -25,13 +25,15 @@ base("topbar Go to dashboard returns to /", async ({ page }, testInfo) => {
     if (!seeded) throw new Error("seeded session 'story-go-dashboard' missing");
     const sessionId = seeded.id;
 
-    await page.goto(`${serve.baseUrl}/session/${encodeURIComponent(sessionId)}`);
-    await expect(page).toHaveURL(new RegExp(`/session/${sessionId}`), {
-      timeout: 10_000,
-    });
+    const sessionUrl = new URL(
+      `/session/${encodeURIComponent(sessionId)}`,
+      serve.baseUrl,
+    ).toString();
+    await page.goto(sessionUrl);
+    await expect(page).toHaveURL(sessionUrl, { timeout: 10_000 });
 
     await page.getByRole("button", { name: "Go to dashboard" }).click();
-    await expect(page).toHaveURL(new RegExp(`${serve.baseUrl}/?$`), {
+    await expect(page).toHaveURL(new URL("/", serve.baseUrl).toString(), {
       timeout: 5_000,
     });
   } finally {
