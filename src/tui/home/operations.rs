@@ -193,6 +193,12 @@ impl HomeView {
                     self.storages
                         .insert(target_profile.to_string(), Storage::new(target_profile)?);
                 }
+                if !self.group_trees.contains_key(target_profile) {
+                    self.group_trees.insert(
+                        target_profile.to_string(),
+                        GroupTree::new_with_groups(&[], &[]),
+                    );
+                }
                 let group_path = self
                     .get_instance(&id)
                     .map(|i| i.group_path.clone())
