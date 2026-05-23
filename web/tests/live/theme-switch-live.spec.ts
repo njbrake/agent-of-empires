@@ -11,11 +11,22 @@ import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
-const AOE_BINARY = resolve(process.cwd(), "..", "target", "debug", "aoe");
-const HAS_BINARY = existsSync(AOE_BINARY);
+// Matches liveGlobalSetup's resolution: env override, then release, then
+// debug. Local dev typically only has the debug binary; CI sets
+// AOE_E2E_BINARY to a release build.
+function resolveAoeBinary(): string | null {
+  const fromEnv = process.env.AOE_E2E_BINARY;
+  if (fromEnv && existsSync(fromEnv)) return fromEnv;
+  const release = resolve(process.cwd(), "..", "target", "release", "aoe");
+  if (existsSync(release)) return release;
+  const debug = resolve(process.cwd(), "..", "target", "debug", "aoe");
+  if (existsSync(debug)) return debug;
+  return null;
+}
 
-const HARNESS_PORT = Number(process.env.AOE_LIVE_TEST_PORT ?? 18099);
-const HARNESS_BASE = `http://127.0.0.1:${HARNESS_PORT}`;
+const AOE_BINARY = resolveAoeBinary();
+const HAS_BINARY = AOE_BINARY !== null;
+
 // Builtin pinned to a value that visibly differs from Empire so the
 // dashboard repaint is observable.
 const SWITCH_TO = "dracula";
@@ -23,11 +34,14 @@ const SWITCH_TO = "dracula";
 interface Daemon {
   proc: ChildProcess;
   home: string;
+  base: string;
   cleanup: () => void;
 }
 
-async function startServer(): Promise<Daemon> {
+async function startServer(port: number): Promise<Daemon> {
+  if (!AOE_BINARY) throw new Error("aoe binary not resolved");
   const home = mkdtempSync(join(tmpdir(), "aoe-theme-e2e-"));
+  const base = `http://127.0.0.1:${port}`;
   // Foreground (no daemonize), no auth, no tunnel; keeps Ctrl-C
   // semantics on Playwright shutdown.
   const proc = spawn(
@@ -36,7 +50,7 @@ async function startServer(): Promise<Daemon> {
       "serve",
       "--no-auth",
       "--port",
-      String(HARNESS_PORT),
+      String(port),
       "--host",
       "127.0.0.1",
     ],
@@ -58,7 +72,7 @@ async function startServer(): Promise<Daemon> {
   const deadline = Date.now() + 20_000;
   while (Date.now() < deadline) {
     try {
-      const res = await fetch(`${HARNESS_BASE}/api/themes`);
+      const res = await fetch(`${base}/api/themes`);
       if (res.ok) break;
     } catch {
       // socket not up yet
@@ -73,6 +87,7 @@ async function startServer(): Promise<Daemon> {
   return {
     proc,
     home,
+    base,
     cleanup: () => {
       try {
         proc.kill("SIGTERM");
@@ -101,13 +116,20 @@ test.describe("Live aoe serve theme switching (#1189)", () => {
   // binary skip these instead of failing the rest of the suite.
   test.skip(
     !HAS_BINARY,
-    `${AOE_BINARY} missing; run \`cargo build --features serve\` first`,
+    "aoe binary missing; run `cargo build --features serve` first",
   );
 
   let daemon: Daemon;
 
-  test.beforeAll(async () => {
-    daemon = await startServer();
+  test.beforeAll(async ({}, workerInfo) => {
+    // Worker-indexed port so parallel live workers don't collide.
+    // Base 18099 keeps it away from aoeServe.ts's range (which uses
+    // workerIndex around 28000+).
+    const envPort = process.env.AOE_LIVE_TEST_PORT;
+    const port = envPort
+      ? Number(envPort)
+      : 18099 + workerInfo.workerIndex;
+    daemon = await startServer(port);
   });
 
   test.afterAll(() => {
@@ -121,7 +143,7 @@ test.describe("Live aoe serve theme switching (#1189)", () => {
     const ctrl = new AbortController();
     const watchdog = setTimeout(() => ctrl.abort(), 2_000);
     try {
-      const res = await fetch(`${HARNESS_BASE}/api/themes/${SWITCH_TO}`, {
+      const res = await fetch(`${daemon.base}/api/themes/${SWITCH_TO}`, {
         signal: ctrl.signal,
       });
       expect(res.ok).toBe(true);
@@ -150,7 +172,7 @@ test.describe("Live aoe serve theme switching (#1189)", () => {
       const ctrl = new AbortController();
       const watchdog = setTimeout(() => ctrl.abort(), 2_000);
       try {
-        const res = await fetch(`${HARNESS_BASE}/api/themes/${name}`, {
+        const res = await fetch(`${daemon.base}/api/themes/${name}`, {
           signal: ctrl.signal,
         });
         expect(res.ok, `${name} did not return`).toBe(true);
@@ -166,7 +188,7 @@ test.describe("Live aoe serve theme switching (#1189)", () => {
   test("dashboard chrome repaints when theme switches via API", async ({
     page,
   }) => {
-    await page.goto(`${HARNESS_BASE}/`);
+    await page.goto(`${daemon.base}/`);
     // Wait for the React-side fetch of /api/theme/current to land
     // and seed --color-surface-900 with the active palette.
     await expect
@@ -183,7 +205,7 @@ test.describe("Live aoe serve theme switching (#1189)", () => {
     // endpoint the picker uses, then firing the same event the
     // ThemeSettings.tsx save() handler dispatches.
     const patch = await page.request.patch(
-      `${HARNESS_BASE}/api/profiles/default/settings`,
+      `${daemon.base}/api/profiles/default/settings`,
       {
         data: { theme: { name: SWITCH_TO } },
       },
