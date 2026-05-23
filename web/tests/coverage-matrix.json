@@ -966,6 +966,175 @@
       "components": [
         "web/src/components/WorkspaceSidebar.tsx"
       ]
+    },
+    {
+      "id": "cockpit.story.approval-allow",
+      "kind": "live-playwright",
+      "risk": "high",
+      "specs": [
+        "tests/live/cockpit-stories/approval-allow.spec.ts"
+      ],
+      "components": [
+        "web/src/components/cockpit/ApprovalCard.tsx"
+      ]
+    },
+    {
+      "id": "cockpit.story.approval-deny",
+      "kind": "live-playwright",
+      "risk": "high",
+      "specs": [
+        "tests/live/cockpit-stories/approval-deny.spec.ts"
+      ],
+      "components": [
+        "web/src/components/cockpit/ApprovalCard.tsx"
+      ]
+    },
+    {
+      "id": "cockpit.story.mode-picker",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/cockpit-mode-picker.spec.ts"
+      ],
+      "components": [
+        "web/src/components/cockpit/Composer.tsx"
+      ]
+    },
+    {
+      "id": "story.diff-base-picker",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/diff-base-picker.spec.ts"
+      ],
+      "components": [
+        "web/src/components/diff/DiffFileList.tsx"
+      ]
+    },
+    {
+      "id": "story.delete-session-with-worktree",
+      "kind": "live-playwright",
+      "risk": "high",
+      "specs": [
+        "tests/live/cockpit-stories/delete-session-with-worktree.spec.ts"
+      ],
+      "components": [
+        "web/src/components/DeleteSessionDialog.tsx"
+      ]
+    },
+    {
+      "id": "story.delete-active-session",
+      "kind": "live-playwright",
+      "risk": "high",
+      "specs": [
+        "tests/live/cockpit-stories/delete-active-session.spec.ts"
+      ],
+      "components": [
+        "web/src/components/DeleteSessionDialog.tsx",
+        "web/src/components/WorkspaceSidebar.tsx"
+      ]
+    },
+    {
+      "id": "story.mobile-toolbar-arrow-up",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/mobile-toolbar-arrow-up.spec.ts"
+      ],
+      "components": [
+        "web/src/components/MobileTerminalToolbar.tsx"
+      ]
+    },
+    {
+      "id": "story.mobile-toolbar-tab",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/mobile-toolbar-tab.spec.ts"
+      ],
+      "components": [
+        "web/src/components/MobileTerminalToolbar.tsx"
+      ]
+    },
+    {
+      "id": "story.mobile-toolbar-escape",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/mobile-toolbar-escape.spec.ts"
+      ],
+      "components": [
+        "web/src/components/MobileTerminalToolbar.tsx"
+      ]
+    },
+    {
+      "id": "story.mobile-toolbar-ctrl-modifier",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": [
+        "tests/live/cockpit-stories/mobile-toolbar-ctrl-modifier.spec.ts"
+      ],
+      "components": [
+        "web/src/components/MobileTerminalToolbar.tsx"
+      ]
+    },
+    {
+      "id": "story.mobile-toolbar-ctrl-c",
+      "kind": "live-playwright",
+      "risk": "high",
+      "specs": [
+        "tests/live/cockpit-stories/mobile-toolbar-ctrl-c.spec.ts"
+      ],
+      "components": [
+        "web/src/components/MobileTerminalToolbar.tsx"
+      ]
+    },
+    {
+      "id": "story.mobile-toolbar-hidden-on-desktop",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": [
+        "tests/live/cockpit-stories/mobile-toolbar-hidden-on-desktop.spec.ts"
+      ],
+      "components": [
+        "web/src/components/MobileTerminalToolbar.tsx"
+      ]
+    },
+    {
+      "id": "cockpit.story.plan-strip",
+      "kind": "live-playwright",
+      "risk": "high",
+      "specs": [
+        "tests/live/cockpit-stories/cockpit-plan-strip.spec.ts"
+      ],
+      "components": [
+        "web/src/components/cockpit/CockpitView.tsx"
+      ]
+    },
+    {
+      "id": "story.diff-viewer-shows-files",
+      "kind": "live-playwright",
+      "risk": "high",
+      "specs": [
+        "tests/live/cockpit-stories/diff-viewer-shows-files.spec.ts"
+      ],
+      "components": [
+        "web/src/components/diff/DiffFileList.tsx"
+      ]
+    },
+    {
+      "id": "story.diff-hunk-comment",
+      "kind": "live-playwright",
+      "risk": "high",
+      "specs": [
+        "tests/live/cockpit-stories/diff-hunk-comment.spec.ts"
+      ],
+      "components": [
+        "web/src/components/diff/DiffFileViewer.tsx",
+        "web/src/components/diff/DiffLine.tsx",
+        "web/src/components/diff/comments/CommentForm.tsx",
+        "web/src/components/diff/comments/CommentsBanner.tsx"
+      ]
     }
   ]
 }
