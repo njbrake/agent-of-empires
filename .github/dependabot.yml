@@ -1,37 +1,191 @@
 version: 2
 updates:
+  # cargo
   - package-ecosystem: "cargo"
     directory: "/"
     schedule:
       interval: "weekly"
-    cooldown: # applies only to version-updates (not security-updates)
-      default-days: 7
-      semver-minor-days: 14 # wait 14 days before applying minor updates
-      semver-major-days: 28
-  - package-ecosystem: "docker"
-    directory: "docker"
-    schedule:
-      interval: "weekly"
-    cooldown:
-      default-days: 7
-  - package-ecosystem: "github-actions"
-    directory: "/"
-    schedule:
-      interval: "weekly"
-    cooldown:
-      default-days: 7
-  - package-ecosystem: "npm"
-    directory: "website"
-    schedule:
-      interval: "monthly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "rust"
+    commit-message:
+      prefix: "chore"
+      include: "scope"
     cooldown:
       default-days: 7
       semver-minor-days: 14
       semver-major-days: 28
     groups:
-      website-deps:
-        patterns:
-          - "*"
+      cargo-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  # docker
+  - package-ecosystem: "docker"
+    directory: "docker"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 3
+    labels:
+      - "dependencies"
+      - "docker"
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    cooldown:
+      default-days: 7
+      semver-minor-days: 14
+      semver-major-days: 28
+
+  # github-actions
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 5
+    labels:
+      - "dependencies"
+      - "github-actions"
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    cooldown:
+      default-days: 7
+      semver-minor-days: 14
+      semver-major-days: 28
+    groups:
+      actions-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  # npm: web
+  - package-ecosystem: "npm"
+    directory: "web"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "javascript"
+      - "web"
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    cooldown:
+      default-days: 7
+      semver-minor-days: 14
+      semver-major-days: 28
+    groups:
+      web-minor-patch:
+        patterns: ["*"]
+        exclude-patterns:
+          - "react"
+          - "react-dom"
+          - "tailwindcss"
+        update-types: ["minor", "patch"]
+    ignore:
+      - dependency-name: "react"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "react-dom"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "tailwindcss"
+        update-types: ["version-update:semver-major"]
+
+  # npm: cockpit-worker/aoe-agent
+  - package-ecosystem: "npm"
+    directory: "cockpit-worker/aoe-agent"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 10
+    labels:
+      - "dependencies"
+      - "javascript"
+      - "cockpit"
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    cooldown:
+      default-days: 7
+      semver-minor-days: 14
+      semver-major-days: 28
+    groups:
+      ai-sdk:
+        patterns: ["@ai-sdk/*", "ai"]
+        update-types: ["minor", "patch"]
+      acp:
+        patterns: ["@agentclientprotocol/*"]
+        update-types: ["minor", "patch"]
+      aoe-agent-other-minor-patch:
+        patterns: ["*"]
+        exclude-patterns:
+          - "@ai-sdk/*"
+          - "ai"
+          - "@agentclientprotocol/*"
+        update-types: ["minor", "patch"]
+
+  # npm: cockpit-worker/test-shim
+  - package-ecosystem: "npm"
+    directory: "cockpit-worker/test-shim"
+    schedule:
+      interval: "monthly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 3
+    labels:
+      - "dependencies"
+      - "javascript"
+      - "test"
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    cooldown:
+      default-days: 7
+      semver-minor-days: 14
+      semver-major-days: 28
+
+  # npm: website
+  - package-ecosystem: "npm"
+    directory: "website"
+    schedule:
+      interval: "monthly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Etc/UTC"
+    open-pull-requests-limit: 3
+    labels:
+      - "dependencies"
+      - "javascript"
+      - "website"
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    cooldown:
+      default-days: 7
+      semver-minor-days: 14
+      semver-major-days: 28
+    groups:
+      website-minor-patch:
+        patterns: ["*"]
+        exclude-patterns:
+          - "tailwindcss"
+        update-types: ["minor", "patch"]
     ignore:
       - dependency-name: "tailwindcss"
         update-types: ["version-update:semver-major"]
