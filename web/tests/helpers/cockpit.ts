@@ -13,8 +13,16 @@ function readDebugLogTail(
   tailBytes = 8_000,
 ): string | null {
   if (!home) return null;
-  const path = join(home, ".agent-of-empires-dev", "debug.log");
-  if (!existsSync(path)) return null;
+  // Linux: debug.log lives under $XDG_CONFIG_HOME (the harness sets
+  // this to `${home}/config`). macOS/Windows: under
+  // `${home}/.agent-of-empires-dev`. Probe both so the tail surfaces
+  // on whichever OS the test is running.
+  const candidates = [
+    join(home, "config", "agent-of-empires-dev", "debug.log"),
+    join(home, ".agent-of-empires-dev", "debug.log"),
+  ];
+  const path = candidates.find((p) => existsSync(p));
+  if (!path) return null;
   try {
     const content = readFileSync(path, "utf8");
     return content.length > tailBytes
