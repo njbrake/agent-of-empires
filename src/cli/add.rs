@@ -603,29 +603,7 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
     })();
 
     if let Err(e) = hook_result {
-        // Clean up worktree if we created one
-        if let Some(ref wt_info) = instance.worktree_info {
-            if wt_info.managed_by_aoe {
-                if let Ok(git_wt) =
-                    crate::git::GitWorktree::new(std::path::PathBuf::from(&wt_info.main_repo_path))
-                {
-                    let _ = git_wt.remove_worktree(&path, false);
-                }
-            }
-        }
-        // Clean up workspace worktrees if we created them
-        if let Some(ref ws_info) = instance.workspace_info {
-            for repo in &ws_info.repos {
-                if repo.managed_by_aoe {
-                    let wt_path = PathBuf::from(&repo.worktree_path);
-                    let main_repo = PathBuf::from(&repo.main_repo_path);
-                    if let Ok(git_wt) = crate::git::GitWorktree::new(main_repo) {
-                        let _ = git_wt.remove_worktree(&wt_path, false);
-                    }
-                }
-            }
-            let _ = std::fs::remove_dir_all(&ws_info.workspace_dir);
-        }
+        cleanup_partial_create(&instance, &path);
         return Err(e);
     }
 
@@ -655,6 +633,12 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
     })?;
 
     if duplicate {
+        // Race-loser path: another `aoe add` with the same (title, path)
+        // committed first while we were creating worktrees / running
+        // on_create hooks. Roll back our side effects so we don't leave
+        // an orphan worktree or workspace dir behind with no session row
+        // to own it. (CodeRabbit feedback on PR #1436.)
+        cleanup_partial_create(&instance, &path);
         println!(
             "Session already exists with same title and path: {}",
             final_title
@@ -719,7 +703,7 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
         let launched_id = launched.id.clone();
         storage.update(move |instances, _groups| {
             if let Some(slot) = instances.iter_mut().find(|i| i.id == launched_id) {
-                *slot = launched;
+                slot.adopt_lifecycle_from(&launched);
             }
             Ok(())
         })?;
@@ -861,4 +845,35 @@ fn resolve_named_tool(tool: &str, config: &crate::session::Config) -> Result<Nam
         "Unknown tool: {name}\nSupported built-in and configured custom agents: {}",
         safe_names.join(", ")
     )
+}
+
+/// Best-effort cleanup of side effects from a partial `aoe add` that
+/// can't go forward: either an `on_create` hook errored, or the closure
+/// re-check inside `Storage::update` discovered a concurrently-created
+/// duplicate row and we now have a worktree / workspace dir but no
+/// session row to own it. Errors here are ignored — the caller has
+/// already decided to give up on this add, and leaving a stray dir is
+/// preferable to a hard error mid-rollback.
+fn cleanup_partial_create(instance: &Instance, path: &std::path::Path) {
+    if let Some(ref wt_info) = instance.worktree_info {
+        if wt_info.managed_by_aoe {
+            if let Ok(git_wt) =
+                crate::git::GitWorktree::new(std::path::PathBuf::from(&wt_info.main_repo_path))
+            {
+                let _ = git_wt.remove_worktree(path, false);
+            }
+        }
+    }
+    if let Some(ref ws_info) = instance.workspace_info {
+        for repo in &ws_info.repos {
+            if repo.managed_by_aoe {
+                let wt_path = PathBuf::from(&repo.worktree_path);
+                let main_repo = PathBuf::from(&repo.main_repo_path);
+                if let Ok(git_wt) = crate::git::GitWorktree::new(main_repo) {
+                    let _ = git_wt.remove_worktree(&wt_path, false);
+                }
+            }
+        }
+        let _ = std::fs::remove_dir_all(&ws_info.workspace_dir);
+    }
 }
