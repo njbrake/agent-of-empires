@@ -966,6 +966,178 @@
       "components": [
         "web/src/components/WorkspaceSidebar.tsx"
       ]
+    },
+    {
+      "id": "cockpit.story.composer-send-enter",
+      "kind": "live-playwright",
+      "risk": "high",
+      "specs": [
+        "tests/live/cockpit-stories/composer-send-enter.spec.ts"
+      ],
+      "components": [
+        "web/src/components/cockpit/CockpitView.tsx",
+        "web/src/components/cockpit/Composer.tsx"
+      ]
+    },
+    {
+      "id": "cockpit.story.composer-mobile-enter-newline",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/composer-mobile-enter-newline.spec.ts"
+      ],
+      "components": [
+        "web/src/components/cockpit/Composer.tsx"
+      ]
+    },
+    {
+      "id": "cockpit.story.composer-streamed-response",
+      "kind": "live-playwright",
+      "risk": "high",
+      "specs": [
+        "tests/live/cockpit-stories/composer-streamed-response.spec.ts"
+      ],
+      "components": [
+        "web/src/components/cockpit/CockpitView.tsx",
+        "web/src/components/cockpit/Markdown.tsx"
+      ]
+    },
+    {
+      "id": "cockpit.story.composer-stop-mid-turn",
+      "kind": "live-playwright",
+      "risk": "high",
+      "specs": [
+        "tests/live/cockpit-stories/composer-stop-mid-turn.spec.ts"
+      ],
+      "components": [
+        "web/src/components/cockpit/Composer.tsx"
+      ]
+    },
+    {
+      "id": "cockpit.story.composer-queue-follow-up",
+      "kind": "live-playwright",
+      "risk": "high",
+      "specs": [
+        "tests/live/cockpit-stories/composer-queue-follow-up.spec.ts"
+      ],
+      "components": [
+        "web/src/components/cockpit/Composer.tsx"
+      ]
+    },
+    {
+      "id": "cockpit.story.composer-draft-reload",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/composer-draft-reload.spec.ts"
+      ],
+      "components": [
+        "web/src/components/cockpit/Composer.tsx",
+        "web/src/lib/cockpitDrafts.ts"
+      ]
+    },
+    {
+      "id": "cockpit.story.composer-draft-session-switch",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/composer-draft-session-switch.spec.ts"
+      ],
+      "components": [
+        "web/src/components/cockpit/Composer.tsx",
+        "web/src/lib/cockpitDrafts.ts"
+      ]
+    },
+    {
+      "id": "cockpit.story.queue-edit-message",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/queue-edit-message.spec.ts"
+      ],
+      "components": [
+        "web/src/components/cockpit/CockpitView.tsx"
+      ]
+    },
+    {
+      "id": "cockpit.story.queue-delete-message",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/queue-delete-message.spec.ts"
+      ],
+      "components": [
+        "web/src/components/cockpit/CockpitView.tsx"
+      ]
+    },
+    {
+      "id": "cockpit.story.composer-toolbar-insert",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": [
+        "tests/live/cockpit-stories/composer-toolbar-insert.spec.ts"
+      ],
+      "components": [
+        "web/src/components/cockpit/Composer.tsx"
+      ]
+    },
+    {
+      "id": "cockpit.story.queue-fold-unfold",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": [
+        "tests/live/cockpit-stories/queue-fold-unfold.spec.ts"
+      ],
+      "components": [
+        "web/src/components/cockpit/CockpitView.tsx"
+      ]
+    },
+    {
+      "id": "cockpit.story.stop-during-thinking",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/composer-stop-during-thinking.spec.ts"
+      ],
+      "components": [
+        "web/src/components/cockpit/Composer.tsx"
+      ]
+    },
+    {
+      "id": "cockpit.story.stop-during-tool-call",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/composer-stop-during-tool-call.spec.ts"
+      ],
+      "components": [
+        "web/src/components/cockpit/Composer.tsx",
+        "web/src/components/cockpit/ToolCards.tsx"
+      ]
+    },
+    {
+      "id": "cockpit.story.queue-follow-up-with-nav",
+      "kind": "live-playwright",
+      "risk": "high",
+      "specs": [
+        "tests/live/cockpit-stories/queue-follow-up-with-nav.spec.ts"
+      ],
+      "components": [
+        "web/src/components/cockpit/Composer.tsx",
+        "web/src/hooks/useCockpit.ts"
+      ]
+    },
+    {
+      "id": "cockpit.story.stop-during-sub-agent",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/composer-stop-during-sub-agent.spec.ts"
+      ],
+      "components": [
+        "web/src/components/cockpit/Composer.tsx",
+        "web/src/components/cockpit/ToolCards.tsx"
+      ]
     }
   ]
 }
