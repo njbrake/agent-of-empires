@@ -43,16 +43,18 @@ base("multi-chunk agent response assembles in the transcript", async ({ page }, 
   const scriptPath = join(scriptDir, "script.json");
   writeFileSync(scriptPath, JSON.stringify(STREAM_SCRIPT));
 
-  const serve = await spawnAoeServe({
-    authMode: "none",
-    cockpit: true,
-    fakeAcpScript: scriptPath,
-    workerIndex: testInfo.workerIndex,
-    parallelIndex: testInfo.parallelIndex,
-    seedFn: seedSessionViaAoeAdd({ title: "story-stream" }),
-  });
+  let serve: Awaited<ReturnType<typeof spawnAoeServe>> | undefined;
 
   try {
+    serve = await spawnAoeServe({
+      authMode: "none",
+      cockpit: true,
+      fakeAcpScript: scriptPath,
+      workerIndex: testInfo.workerIndex,
+      parallelIndex: testInfo.parallelIndex,
+      seedFn: seedSessionViaAoeAdd({ title: "story-stream" }),
+    });
+
     const sessions = await listSessions(serve.baseUrl);
     const seeded = sessions.find((s) => s.title === "story-stream");
     if (!seeded) throw new Error("seeded session 'story-stream' missing");
@@ -71,7 +73,10 @@ base("multi-chunk agent response assembles in the transcript", async ({ page }, 
       timeout: 10_000,
     });
   } finally {
-    await serve.stop();
-    rmSync(scriptDir, { recursive: true, force: true });
+    try {
+      if (serve) await serve.stop();
+    } finally {
+      rmSync(scriptDir, { recursive: true, force: true });
+    }
   }
 });
