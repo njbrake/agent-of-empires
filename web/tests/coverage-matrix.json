@@ -966,6 +966,194 @@
       "components": [
         "web/src/components/WorkspaceSidebar.tsx"
       ]
+    },
+    {
+      "id": "cockpit.story.substrate-switch-to-cockpit",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/substrate-switch-to-cockpit.spec.ts"
+      ],
+      "components": [
+        "web/src/components/cockpit/SwitchSubstrateAction.tsx"
+      ]
+    },
+    {
+      "id": "story.auth-sign-out",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/auth-sign-out.spec.ts"
+      ],
+      "components": [
+        "web/src/components/OverflowMenu.tsx",
+        "web/src/components/TopBar.tsx"
+      ]
+    },
+    {
+      "id": "story.modal-about",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": [
+        "tests/live/cockpit-stories/modal-about.spec.ts"
+      ],
+      "components": [
+        "web/src/components/AboutModal.tsx"
+      ]
+    },
+    {
+      "id": "story.modal-help",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": [
+        "tests/live/cockpit-stories/modal-help.spec.ts"
+      ],
+      "components": [
+        "web/src/components/HelpOverlay.tsx"
+      ]
+    },
+    {
+      "id": "story.projects-open",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": [
+        "tests/live/cockpit-stories/projects-open.spec.ts"
+      ],
+      "components": [
+        "web/src/components/ProjectsView.tsx"
+      ]
+    },
+    {
+      "id": "story.profile-create",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/profile-create.spec.ts"
+      ],
+      "components": [
+        "web/src/components/settings/ProfileSelector.tsx"
+      ]
+    },
+    {
+      "id": "story.profile-rename",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/profile-rename.spec.ts"
+      ],
+      "components": [
+        "web/src/components/settings/ProfileSelector.tsx"
+      ]
+    },
+    {
+      "id": "story.projects-add",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/projects-add.spec.ts"
+      ],
+      "components": [
+        "web/src/components/ProjectsView.tsx"
+      ]
+    },
+    {
+      "id": "story.projects-remove",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/projects-remove.spec.ts"
+      ],
+      "components": [
+        "web/src/components/ProjectsView.tsx"
+      ]
+    },
+    {
+      "id": "story.right-panel-resize-persist",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/right-panel-resize-persist.spec.ts"
+      ],
+      "components": [
+        "web/src/components/ContentSplit.tsx"
+      ]
+    },
+    {
+      "id": "story.settings-theme-select",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/settings-theme-select.spec.ts"
+      ],
+      "components": [
+        "web/src/components/settings/ThemeSettings.tsx"
+      ]
+    },
+    {
+      "id": "story.settings-logging-level",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/settings-logging-level.spec.ts"
+      ],
+      "components": [
+        "web/src/components/settings/LoggingSettings.tsx"
+      ]
+    },
+    {
+      "id": "story.settings-update-interval",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": [
+        "tests/live/cockpit-stories/settings-update-interval.spec.ts"
+      ],
+      "components": [
+        "web/src/components/settings/UpdateSettings.tsx"
+      ]
+    },
+    {
+      "id": "story.settings-sound-toggle",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": [
+        "tests/live/cockpit-stories/settings-sound-toggle.spec.ts"
+      ],
+      "components": [
+        "web/src/components/settings/SoundSettings.tsx"
+      ]
+    },
+    {
+      "id": "story.profile-delete",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/profile-delete.spec.ts"
+      ],
+      "components": [
+        "web/src/components/settings/ProfileSelector.tsx"
+      ]
+    },
+    {
+      "id": "story.profile-switch-view",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/live/cockpit-stories/profile-switch-view.spec.ts"
+      ],
+      "components": [
+        "web/src/components/settings/ProfileSelector.tsx"
+      ]
+    },
+    {
+      "id": "story.modal-about-escape",
+      "kind": "live-playwright",
+      "risk": "low",
+      "specs": [
+        "tests/live/cockpit-stories/modal-about-escape.spec.ts"
+      ],
+      "components": [
+        "web/src/components/AboutModal.tsx"
+      ]
     }
   ]
 }
