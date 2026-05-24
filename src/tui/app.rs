@@ -18,6 +18,12 @@ use crate::session::{get_update_settings, save_config, Config};
 use crate::tmux::AvailableTools;
 use crate::update::{check_for_update, UpdateInfo};
 
+/// Minimum elapsed time between considering periodic update re-checks.
+/// The main loop runs at ~20Hz; gating on this gap keeps the per-iteration
+/// `get_update_settings()` config read off the hot path while still
+/// re-evaluating well under any realistic `check_interval_hours` setting.
+const UPDATE_CHECK_THROTTLE_GAP: Duration = Duration::from_secs(60);
+
 /// Inter-key timeout for the paste-burst detector. After any printable Char
 /// or Enter, the event loop polls for the next event with this timeout; if
 /// another burst-candidate arrives before the deadline, it joins the burst.
@@ -410,34 +416,11 @@ impl App {
         // Refresh tmux session cache
         crate::tmux::refresh_session_cache();
 
-        // Spawn async update check
+        // Spawn async update check at startup. The periodic re-check below
+        // covers long-running sessions (#1471).
         let settings = get_update_settings();
         if settings.update_check_mode.is_enabled() {
-            let (tx, rx) = tokio::sync::oneshot::channel();
-            self.update_rx = Some(rx);
-            tokio::spawn(async move {
-                let version = env!("CARGO_PKG_VERSION");
-                let mut result = check_for_update(version, false).await;
-                // For Homebrew installs, suppress the "update available"
-                // ribbon until the formula has caught up to the GitHub
-                // release. Otherwise users see the prompt, press 'u', and
-                // hit a no-op `brew upgrade` while the formula lags. The
-                // brew probes are sync; offload to keep the runtime free.
-                if let Ok(info) = &mut result {
-                    if info.available {
-                        let target = info.latest_version.clone();
-                        let actionable = tokio::task::spawn_blocking(move || {
-                            crate::update::install::install_method_supports_target(&target)
-                        })
-                        .await
-                        .unwrap_or(true);
-                        if !actionable {
-                            info.available = false;
-                        }
-                    }
-                }
-                let _ = tx.send(result);
-            });
+            self.spawn_update_check();
         }
 
         // SIGHUP/SIGTERM futures so we exit cleanly when the terminal
@@ -464,6 +447,12 @@ impl App {
         let mut last_disk_refresh = std::time::Instant::now();
         let mut last_spinner_redraw = std::time::Instant::now();
         let mut last_heartbeat = std::time::Instant::now();
+        // Tracks when the most recent update check started, so the periodic
+        // re-check in the loop body honors `check_interval_hours` (#1471).
+        // Initialized to the moment startup spawn fired (or "now" when the
+        // startup check was disabled) so the first periodic tick is one full
+        // interval away rather than firing immediately.
+        let mut last_update_check = std::time::Instant::now();
         const STATUS_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
         const DISK_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
         // Fastest spinner (breathe) changes every 180ms; 120ms ensures smooth animation
@@ -794,6 +783,26 @@ impl App {
                 last_heartbeat = std::time::Instant::now();
             }
 
+            // Periodic update re-check (#1471). The startup spawn only fires
+            // once per process; long-running TUI sessions would otherwise
+            // silently miss releases that ship after the user attached. The
+            // throttle gap keeps the per-iteration `get_update_settings()`
+            // config-file read off the 20Hz hot path.
+            if last_update_check.elapsed() >= UPDATE_CHECK_THROTTLE_GAP {
+                let settings = get_update_settings();
+                let interval =
+                    Duration::from_secs(settings.check_interval_hours.saturating_mul(3600));
+                if should_spawn_periodic_update_check(
+                    last_update_check.elapsed(),
+                    interval,
+                    self.update_rx.is_some(),
+                    settings.update_check_mode.is_enabled(),
+                ) {
+                    self.spawn_update_check();
+                    last_update_check = std::time::Instant::now();
+                }
+            }
+
             // Animated spinners (rattles) need periodic redraws, but only at
             // the spinner frame rate to avoid unnecessary widget tree rebuilds
             if last_spinner_redraw.elapsed() >= SPINNER_REDRAW_INTERVAL
@@ -850,6 +859,39 @@ impl App {
                 "slow frame",
             );
         }
+    }
+
+    /// Spawn an async update check, mirroring the brew-formula-lag
+    /// suppression done at startup. Stores the receiver on `self.update_rx`
+    /// so the main loop's `poll_update_check` picks up the result. Callers
+    /// are responsible for gating on `update_check_mode.is_enabled()` and
+    /// avoiding duplicate in-flight checks via `self.update_rx.is_none()`.
+    fn spawn_update_check(&mut self) {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        self.update_rx = Some(rx);
+        tokio::spawn(async move {
+            let version = env!("CARGO_PKG_VERSION");
+            let mut result = check_for_update(version, false).await;
+            // For Homebrew installs, suppress the "update available" banner
+            // until the formula has caught up to the GitHub release.
+            // Otherwise users see the prompt, press 'u', and hit a no-op
+            // `brew upgrade` while the formula lags. The brew probes are
+            // sync; offload to keep the runtime free.
+            if let Ok(info) = &mut result {
+                if info.available {
+                    let target = info.latest_version.clone();
+                    let actionable = tokio::task::spawn_blocking(move || {
+                        crate::update::install::install_method_supports_target(&target)
+                    })
+                    .await
+                    .unwrap_or(true);
+                    if !actionable {
+                        info.available = false;
+                    }
+                }
+            }
+            let _ = tx.send(result);
+        });
     }
 
     /// Poll for update check result (non-blocking).
@@ -1056,6 +1098,20 @@ fn persist_dismissed_update_version(version: Option<String>) {
             "failed to persist dismissed_update_version"
         );
     }
+}
+
+/// Decide whether the main loop should spawn a fresh periodic update check.
+/// Pulled out as a pure function so the throttle/in-flight/mode guards are
+/// testable without driving the tokio runtime, the config file, or the
+/// network. `elapsed` is time since the last check started; `interval` is
+/// `settings.check_interval_hours` converted to `Duration`.
+fn should_spawn_periodic_update_check(
+    elapsed: Duration,
+    interval: Duration,
+    rx_in_flight: bool,
+    mode_enabled: bool,
+) -> bool {
+    !rx_in_flight && mode_enabled && elapsed >= interval
 }
 
 /// Polls the update receiver and returns the new state.
@@ -1747,6 +1803,68 @@ mod tests {
         assert!(info.is_none());
         // Receiver should be put back for next poll
         assert!(rx_out.is_some());
+    }
+
+    #[test]
+    fn periodic_recheck_fires_after_interval_elapses() {
+        // The dominant bug (#1471): the original code spawned the update check
+        // only once at startup. After the configured interval has passed in a
+        // long-running TUI, the loop must spawn a fresh check.
+        let interval = Duration::from_secs(24 * 3600);
+        assert!(should_spawn_periodic_update_check(
+            interval + Duration::from_secs(1),
+            interval,
+            false,
+            true,
+        ));
+    }
+
+    #[test]
+    fn periodic_recheck_holds_within_interval() {
+        let interval = Duration::from_secs(24 * 3600);
+        assert!(!should_spawn_periodic_update_check(
+            interval - Duration::from_secs(1),
+            interval,
+            false,
+            true,
+        ));
+    }
+
+    #[test]
+    fn periodic_recheck_skips_when_in_flight() {
+        // Don't queue a second check while one is already running; the existing
+        // one will deliver its result on the oneshot channel and the next tick
+        // after that can fire normally.
+        let interval = Duration::from_secs(24 * 3600);
+        assert!(!should_spawn_periodic_update_check(
+            interval + Duration::from_secs(1),
+            interval,
+            true,
+            true,
+        ));
+    }
+
+    #[test]
+    fn periodic_recheck_skips_when_mode_disabled() {
+        // update_check_mode = "off" should suppress both startup and periodic
+        // checks. Mirror the gate at startup.
+        let interval = Duration::from_secs(24 * 3600);
+        assert!(!should_spawn_periodic_update_check(
+            interval + Duration::from_secs(1),
+            interval,
+            false,
+            false,
+        ));
+    }
+
+    #[test]
+    fn periodic_recheck_fires_at_interval_boundary() {
+        // `>=`, not `>`. A user with `check_interval_hours = 1` should get the
+        // tick at the 1-hour mark, not 1h + epsilon.
+        let interval = Duration::from_secs(3600);
+        assert!(should_spawn_periodic_update_check(
+            interval, interval, false, true,
+        ));
     }
 
     #[test]

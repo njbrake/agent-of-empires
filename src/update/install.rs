@@ -465,7 +465,18 @@ pub fn install_method_supports_target(target_version: &str) -> bool {
         return true;
     }
     match brew_available_version() {
-        Some(v) => !is_newer_version(target_version, &v),
+        Some(v) => {
+            let supported = !is_newer_version(target_version, &v);
+            if !supported {
+                tracing::info!(
+                    target: "update.suppress",
+                    brew_version = %v,
+                    target_version = %target_version,
+                    "suppressing update banner: Homebrew formula lags GitHub release"
+                );
+            }
+            supported
+        }
         None => true,
     }
 }
