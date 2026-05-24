@@ -8,8 +8,7 @@ use tempfile::TempDir;
 
 /// Path to the Node ACP test shim used by cockpit_* integration tests.
 pub fn shim_path() -> PathBuf {
-    let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap();
-    PathBuf::from(manifest)
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("cockpit-worker")
         .join("test-shim")
         .join("shim.mjs")
