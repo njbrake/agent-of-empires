@@ -2799,11 +2799,22 @@ impl HomeView {
     }
 
     /// Returns `Some(reason)` if the live-send target has drifted out
-    /// from under us between entry and now: instance deleted, instance
-    /// title renamed (which changes the tmux session name), or the
-    /// generated name no longer matches what the worker was spawned
-    /// with. The caller uses the message verbatim in the info dialog,
-    /// so phrase it as a user-facing sentence.
+    /// from under us between entry and now. Three drift modes:
+    /// - Instance row deleted (peer / web cockpit / another aoe killed
+    ///   it).
+    /// - Title renamed (which regenerates the tmux session name; the
+    ///   worker is now targeting a stale name).
+    /// - tmux session itself is gone (`tmux kill-session`, server
+    ///   restart) even though our instance row says otherwise. We use
+    ///   the existing `session_exists_from_cache` lookup so this costs
+    ///   a hashmap probe per keystroke (the status poller refreshes
+    ///   the cache every 500ms anyway). If the cache has no entry
+    ///   (`None`, e.g. before first refresh) we don't claim drift; the
+    ///   instance + name checks above are still the load-bearing
+    ///   safety net.
+    ///
+    /// The caller uses the message verbatim in the info dialog, so
+    /// phrase it as a user-facing sentence.
     fn live_send_drift_reason(&self, state: &live_send::LiveSendState) -> Option<&'static str> {
         let Some(inst) = self.get_instance(&state.session_id) else {
             return Some("Session was deleted while live mode was active.");
@@ -2811,6 +2822,9 @@ impl HomeView {
         let current_name = crate::tmux::Session::generate_name(&inst.id, &inst.title);
         if current_name != state.tmux_name {
             return Some("Session was renamed while live mode was active.");
+        }
+        if crate::tmux::session_exists_from_cache(&state.tmux_name) == Some(false) {
+            return Some("tmux pane went away while live mode was active.");
         }
         None
     }
