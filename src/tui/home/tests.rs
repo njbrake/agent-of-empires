@@ -5230,7 +5230,7 @@ mod live_send_mode {
     //! Live-send wiring at the home view level. Translation correctness
     //! is covered by unit tests in src/tui/home/live_send.rs. Here we
     //! verify the integration points: keys are captured while live mode
-    //! is active, Ctrl+q clears the state, the per-keystroke liveness
+    //! is active, Ctrl+] clears the state, the per-keystroke liveness
     //! check auto-exits on drift, and the predicate plumbing treats
     //! live mode like a modal capture so the rest of the TUI suspends
     //! underneath it.
@@ -5275,13 +5275,13 @@ mod live_send_mode {
 
     #[test]
     #[serial]
-    fn ctrl_q_exits_live_mode() {
+    fn ctrl_right_bracket_exits_live_mode() {
         let mut env = create_test_env_with_sessions(1);
         install_live_for_first_session(&mut env);
         assert!(env.view.live_send.is_some());
 
         env.view.handle_key(
-            KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL),
+            KeyEvent::new(KeyCode::Char(']'), KeyModifiers::CONTROL),
             None,
         );
 
@@ -5290,14 +5290,14 @@ mod live_send_mode {
 
     #[test]
     #[serial]
-    fn ctrl_q_exits_even_when_session_has_drifted() {
-        // Ctrl+q is the safety chord: it must always exit cleanly,
+    fn ctrl_right_bracket_exits_even_when_session_has_drifted() {
+        // Ctrl+] is the safety chord: it must always exit cleanly,
         // even if the underlying session went away (so the user can
         // recover from a stuck live mode without an extra dialog).
         let mut env = create_test_env_empty();
         install_live_orphan(&mut env);
         env.view.handle_key(
-            KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL),
+            KeyEvent::new(KeyCode::Char(']'), KeyModifiers::CONTROL),
             None,
         );
         assert!(env.view.live_send.is_none());
@@ -5318,7 +5318,7 @@ mod live_send_mode {
             .view
             .handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE), None);
         assert!(action.is_none());
-        // Still in live mode; only Ctrl+q exits.
+        // Still in live mode; only Ctrl+] exits.
         assert!(env.view.live_send.is_some());
     }
 

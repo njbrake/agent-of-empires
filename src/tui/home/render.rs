@@ -426,7 +426,7 @@ impl HomeView {
 
         // Layout: optional live-send header at top + main area + status bar
         // + optional update bar at bottom. The live-send header makes the
-        // exit chord (Ctrl+Q) unmissable from the top of the screen;
+        // exit chord (Ctrl+]) unmissable from the top of the screen;
         // mirroring it in the status bar covers the bottom-of-screen gaze.
         // The update bar surfaces both persistent update-available banners
         // (update_info) and transient toasts (update_status); we need a row
@@ -1755,7 +1755,7 @@ impl HomeView {
     /// gaze direction.
     ///
     /// On narrow terminals the title is truncated with an ellipsis so
-    /// the `Ctrl+Q` hint stays visible. The fixed parts (chip prefix +
+    /// the `Ctrl+]` hint stays visible. The fixed parts (chip prefix +
     /// exit chord + suffix) are reserved first; whatever's left goes to
     /// the title.
     fn render_live_header(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
@@ -1769,7 +1769,7 @@ impl HomeView {
         };
 
         let chip = " \u{25CF} LIVE SEND \u{2192} ";
-        let chord = "Ctrl+Q";
+        let chord = "Ctrl+]";
         let suffix = " to exit live mode ";
         let separator = "  "; // between title and chord
 
@@ -1826,7 +1826,7 @@ impl HomeView {
                 state.title.as_str()
             };
             let chip = " \u{25CF} LIVE \u{2192} ";
-            let chord = "Ctrl+Q";
+            let chord = "Ctrl+]";
             let suffix = " to exit ";
             // Spaces between chip→title and title→chord. Title gets the
             // budget after the fixed pieces; reserved last so the exit
