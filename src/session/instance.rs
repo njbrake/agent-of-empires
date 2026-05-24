@@ -2689,17 +2689,21 @@ fn format_env_var_prefix(key: &str, value: &str, cmd: &str) -> String {
 
 /// Prepend agent-specific environment overrides to a launch command.
 ///
-/// Antigravity inherits the parent tmux env, which can carry `NO_COLOR=1` and
-/// silently disable its terminal palette even though the web renderer handles
-/// ANSI fine. Unsetting `NO_COLOR` and forcing `FORCE_COLOR=1` /
+/// Some terminal agents inherit the parent tmux env, which can carry
+/// `NO_COLOR=1` and silently disable their terminal palettes even though the
+/// web renderer handles ANSI fine. Unsetting `NO_COLOR` and forcing
+/// `TERM=xterm-256color`, `FORCE_COLOR=1`, and
 /// `COLORTERM=truecolor` at launch keeps color on without leaking the override
 /// to other agents.
 fn apply_agent_launch_env(cmd: &mut String, agent: Option<&'static crate::agents::AgentDef>) {
-    if !matches!(agent.map(|a| a.name), Some("antigravity")) {
+    if !matches!(agent.map(|a| a.name), Some("antigravity" | "codex")) {
         return;
     }
 
-    *cmd = format!("env -u NO_COLOR FORCE_COLOR=1 COLORTERM=truecolor {}", cmd);
+    *cmd = format!(
+        "env -u NO_COLOR TERM=xterm-256color FORCE_COLOR=1 COLORTERM=truecolor {}",
+        cmd
+    );
 }
 
 /// Wrap a command to disable Ctrl-Z (SIGTSTP) suspension.
@@ -4291,6 +4295,7 @@ mod tests {
         let cmd_str = cmd.unwrap();
 
         assert!(cmd_str.contains("env -u NO_COLOR"));
+        assert!(cmd_str.contains("TERM=xterm-256color"));
         assert!(cmd_str.contains("FORCE_COLOR=1"));
         assert!(cmd_str.contains("COLORTERM=truecolor"));
         assert!(cmd_str.contains("agy"));
@@ -4305,19 +4310,35 @@ mod tests {
         let cmd_str = cmd.unwrap();
 
         assert!(cmd_str.contains("env -u NO_COLOR"));
+        assert!(cmd_str.contains("TERM=xterm-256color"));
         assert!(cmd_str.contains("FORCE_COLOR=1"));
         assert!(cmd_str.contains("COLORTERM=truecolor"));
         assert!(cmd_str.contains("agy --some-flag"));
     }
 
     #[test]
-    fn test_build_host_command_color_env_is_antigravity_only() {
+    fn test_build_host_command_codex_forces_color() {
         let mut inst = Instance::new("test", "/tmp/test");
         inst.tool = "codex".to_string();
         let cmd = inst.build_host_command(crate::agents::get_agent("codex"), &None);
         let cmd_str = cmd.unwrap();
 
+        assert!(cmd_str.contains("env -u NO_COLOR"));
+        assert!(cmd_str.contains("TERM=xterm-256color"));
+        assert!(cmd_str.contains("FORCE_COLOR=1"));
+        assert!(cmd_str.contains("COLORTERM=truecolor"));
+        assert!(cmd_str.contains("codex"));
+    }
+
+    #[test]
+    fn test_build_host_command_color_env_is_limited_to_color_sensitive_agents() {
+        let mut inst = Instance::new("test", "/tmp/test");
+        inst.tool = "cursor".to_string();
+        let cmd = inst.build_host_command(crate::agents::get_agent("cursor"), &None);
+        let cmd_str = cmd.unwrap();
+
         assert!(!cmd_str.contains("env -u NO_COLOR"));
+        assert!(!cmd_str.contains("TERM=xterm-256color"));
         assert!(!cmd_str.contains("FORCE_COLOR=1"));
         assert!(!cmd_str.contains("COLORTERM=truecolor"));
     }
