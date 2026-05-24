@@ -47,6 +47,44 @@ const twarn = (...args: unknown[]) => {
   console.warn("[terminal.ws]", ...args);
 };
 
+async function copyText(text: string): Promise<boolean> {
+  if (!text) return false;
+  if (window.isSecureContext && navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch (err) {
+      twarn("clipboard.writeText failed", err);
+      return false;
+    }
+  }
+
+  const textarea = document.createElement("textarea");
+  textarea.value = text;
+  textarea.setAttribute("readonly", "true");
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  textarea.style.top = "0";
+  document.body.appendChild(textarea);
+  textarea.select();
+  let copied = false;
+  try {
+    copied = document.execCommand("copy");
+  } catch (err) {
+    twarn("execCommand copy failed", err);
+  } finally {
+    textarea.remove();
+  }
+  return copied;
+}
+
+function setClipboardEventText(event: ClipboardEvent, text: string): boolean {
+  if (!text || !event.clipboardData) return false;
+  event.clipboardData.setData("text/plain", text);
+  event.preventDefault();
+  return true;
+}
+
 // Exponential backoff: 1s, 2s, 4s, 8s, 16s, 30s, 30s (cap). Seven attempts
 // cover typical tunnel restarts and transient WiFi drops without flooding
 // the server or burning the user's battery on a truly dead backend.
@@ -258,6 +296,41 @@ export function useTerminal(
     term.loadAddon(new WebLinksAddon());
 
     term.open(termEl);
+
+    const getCopySelection = () =>
+      term.getSelection() || window.getSelection()?.toString() || "";
+    const copyTerminalSelection = () => {
+      const selection = getCopySelection();
+      if (!selection) return false;
+      try {
+        if (document.execCommand("copy")) return true;
+      } catch (err) {
+        twarn("execCommand copy failed", err);
+      }
+      void copyText(selection);
+      return true;
+    };
+    const onCopy = (event: ClipboardEvent) => {
+      const selection = getCopySelection();
+      setClipboardEventText(event, selection);
+    };
+    termEl.addEventListener("copy", onCopy);
+
+    term.attachCustomKeyEventHandler((event: KeyboardEvent) => {
+      if (event.type !== "keydown") return true;
+      const isCopy =
+        !event.altKey &&
+        !event.shiftKey &&
+        (event.ctrlKey || event.metaKey) &&
+        event.code === "KeyC";
+      if (!isCopy || !getCopySelection()) return true;
+
+      copyTerminalSelection();
+
+      event.preventDefault();
+      event.stopPropagation();
+      return false;
+    });
 
     // GPU renderer. Loaded after .open() per the addon's contract. Falls
     // back to the DOM renderer silently on machines where the context is
@@ -1227,6 +1300,7 @@ export function useTerminal(
       window.removeEventListener("focus", onWindowFocus);
       window.removeEventListener("online", onOnline);
       window.removeEventListener("pageshow", onPageShow);
+      termEl.removeEventListener("copy", onCopy);
       viewport.removeEventListener("touchstart", onTouchStart, touchOpts);
       viewport.removeEventListener("touchmove", onTouchMove, touchOpts);
       viewport.removeEventListener("touchend", onTouchEnd, touchOpts);
@@ -1293,7 +1367,7 @@ export function useTerminal(
     }
   }, [state.isInScrollback]);
 
-  const manualReconnect = () => {
+  const manualReconnect = useCallback(() => {
     const ws = wsRef.current;
     tdbg("manualReconnect()", {
       readyState: ws?.readyState,
@@ -1327,8 +1401,11 @@ export function useTerminal(
     } else {
       ws.close();
     }
-  };
-  manualReconnectRef.current = manualReconnect;
+  }, []);
+
+  useEffect(() => {
+    manualReconnectRef.current = manualReconnect;
+  }, [manualReconnect]);
 
   const sendData = useCallback((data: string) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
