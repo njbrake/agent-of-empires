@@ -302,7 +302,7 @@ impl HomeView {
         // Live-send capture wins over every other key handler. While
         // `live_send` is `Some` the home view is acting as a thin relay
         // to the target pane; dialog hotkeys, search, and list navigation
-        // all suspend until the user exits with Ctrl+].
+        // all suspend until the user exits with Ctrl+q.
         if self.live_send.is_some() {
             self.handle_live_send_key(key);
             return None;

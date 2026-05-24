@@ -2208,7 +2208,17 @@ impl HomeView {
         };
         let inst = match self.get_instance(session_id) {
             Some(inst) => inst.clone(),
-            None => return Err(()),
+            None => {
+                // Defensive: ensure_pane_ready succeeded but the
+                // instance is gone (deleted by a peer process between
+                // those two calls). Without a dialog the user would
+                // press Tab and see nothing happen, with no clue why.
+                self.info_dialog = Some(InfoDialog::new(
+                    "Live send failed",
+                    "Session disappeared before live mode could start.",
+                ));
+                return Err(());
+            }
         };
         // Resolve the tmux session name up front so the worker thread
         // can reconstruct a Session without re-touching HomeView. If we
