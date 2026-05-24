@@ -2744,6 +2744,13 @@ impl HomeView {
         if matches!(inst.status, Status::Creating | Status::Deleting) {
             return None;
         }
+        // Cockpit-mode sessions are not tmux-backed (HomeView's attach
+        // path special-cases them away from tmux). Live-send has no
+        // target in that mode, so silently no-op rather than enqueue
+        // an Action::EnterLiveSend that would fail downstream.
+        if inst.is_cockpit_mode() {
+            return None;
+        }
         Some(Action::EnterLiveSend(id))
     }
 

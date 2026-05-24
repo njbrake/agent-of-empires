@@ -5404,6 +5404,21 @@ mod live_send_mode {
         let mut env = create_test_env_with_sessions(1);
         env.view.cursor = 0;
         env.view.update_selected();
+        // Pin the status explicitly so this regression guard doesn't
+        // rely on the implicit Instance::new default surviving future
+        // refactors. A real stopped session is what we're modeling.
+        let id = env
+            .view
+            .flat_items
+            .iter()
+            .find_map(|item| match item {
+                crate::session::Item::Session { id, .. } => Some(id.clone()),
+                _ => None,
+            })
+            .expect("test env has one session");
+        env.view.mutate_instance(&id, |inst| {
+            inst.status = crate::session::Status::Stopped;
+        });
         let action = env
             .view
             .handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), None);
@@ -5412,6 +5427,41 @@ mod live_send_mode {
             "Tab on a stopped session should emit Action::EnterLiveSend, got {:?}",
             action
         );
+    }
+
+    /// Cockpit-mode is a `serve` feature; the `cockpit_mode` field on
+    /// Instance only exists when that feature is compiled in. Without
+    /// it, `is_cockpit_mode()` is hard-coded to false and the gate is
+    /// a no-op, so there's nothing meaningful to verify in the default
+    /// build.
+    #[cfg(feature = "serve")]
+    #[test]
+    #[serial]
+    fn tab_does_not_start_live_send_for_cockpit_session() {
+        // Cockpit sessions are not tmux-backed, so live-send has no
+        // valid target. Tab must silently no-op rather than enqueue
+        // an Action::EnterLiveSend that would fail downstream.
+        let mut env = create_test_env_with_sessions(1);
+        env.view.cursor = 0;
+        env.view.update_selected();
+        let id = env
+            .view
+            .flat_items
+            .iter()
+            .find_map(|item| match item {
+                crate::session::Item::Session { id, .. } => Some(id.clone()),
+                _ => None,
+            })
+            .expect("test env has one session");
+        env.view.mutate_instance(&id, |inst| {
+            inst.status = crate::session::Status::Stopped;
+            inst.cockpit_mode = true;
+        });
+        let action = env
+            .view
+            .handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), None);
+        assert!(action.is_none(), "expected no action, got {:?}", action);
+        assert!(env.view.live_send.is_none());
     }
 }
 

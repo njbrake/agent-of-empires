@@ -61,9 +61,6 @@ fn compose_list_title(
 /// requested scroll.
 const CAPTURE_BUFFER: u16 = 20;
 
-/// Number of pane lines to capture for the preview, accounting for the user's
-/// scrollback offset. A small buffer is added so moderate scrolls don't force a
-/// fresh capture on every wheel tick.
 /// Trim `text` to fit within `max_width` display cells, appending '…'
 /// if anything was dropped. Used by the live-send banners so a long
 /// session title never pushes the exit-chord hint off-screen on a
@@ -93,6 +90,9 @@ fn truncate_to_width(text: &str, max_width: usize) -> String {
     out
 }
 
+/// Number of pane lines to capture for the preview, accounting for the user's
+/// scrollback offset. A small buffer is added so moderate scrolls don't force a
+/// fresh capture on every wheel tick.
 fn capture_lines_for(height: u16, scroll_offset: u16) -> usize {
     height
         .saturating_add(scroll_offset)
