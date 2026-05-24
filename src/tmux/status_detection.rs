@@ -830,11 +830,89 @@ pub fn detect_droid_status(raw_content: &str) -> Status {
     Status::Idle
 }
 
-/// Hermes status is detected via shell-script hooks (YAML-based) registered
-/// in `~/.hermes/config.yaml`, not tmux pane parsing. This stub exists so
-/// the agent registry has a valid function pointer; it only runs as a
-/// fallback when the hook hasn't written a status file yet.
-pub fn detect_hermes_status(_content: &str) -> Status {
+/// Hermes (NousResearch) status detection via tmux pane parsing.
+/// Used as a fallback when the YAML hook system hasn't written a status file yet.
+/// Detects spinner faces (◜ ◠ ✧), tool execution prefix (┊), thinking verbs,
+/// dangerous-command approval prompt, and input prompt (❯ / ⚡).
+pub fn detect_hermes_status(raw_content: &str) -> Status {
+    let content = raw_content.to_lowercase();
+    let lines: Vec<&str> = content.lines().collect();
+    let non_empty_lines: Vec<&str> = lines
+        .iter()
+        .filter(|l| !l.trim().is_empty())
+        .copied()
+        .collect();
+
+    let last_lines: String = non_empty_lines
+        .iter()
+        .rev()
+        .take(30)
+        .rev()
+        .copied()
+        .collect::<Vec<&str>>()
+        .join("\n");
+
+    // Hermes spinner faces animate during LLM calls; only present while active
+    // (unicode, unaffected by to_lowercase).
+    const HERMES_SPINNERS: &[&str] = &["◜", "◠", "✧"];
+    if lines
+        .iter()
+        .any(|line| HERMES_SPINNERS.iter().any(|s| line.contains(s)))
+    {
+        return Status::Running;
+    }
+
+    // Input prompt ❯ (default skin) or ⚡ (cyberpunk skin) in the last few
+    // lines means the agent finished its turn. Check before scrollback
+    // activity words to avoid false-positive Running from a previous turn.
+    for line in non_empty_lines.iter().rev().take(5) {
+        let clean = strip_ansi(line).trim().to_string();
+        if clean == "❯" || clean.starts_with("❯ ") || clean == "⚡" || clean.starts_with("⚡ ")
+        {
+            return Status::Waiting;
+        }
+    }
+
+    // Active tool execution lines are prefixed with ┊; check recent lines only
+    // to avoid triggering on scrollback from a completed turn.
+    if non_empty_lines
+        .iter()
+        .rev()
+        .take(10)
+        .any(|l| l.contains("┊"))
+    {
+        return Status::Running;
+    }
+
+    // Thinking verbs from built-in and community Hermes skins.
+    let activity_indicators = [
+        "pondering",
+        "contemplating",
+        "forging",
+        "plotting",
+        "jacking in",
+        "decrypting",
+        "uploading",
+        "processing",
+        "analyzing",
+        "computing",
+        "evaluating",
+        "ctrl+c to interrupt",
+    ];
+    for indicator in &activity_indicators {
+        if last_lines.contains(indicator) {
+            return Status::Running;
+        }
+    }
+
+    // Dangerous-command approval prompt.
+    if contains_approval_prompt(
+        &last_lines,
+        &["choice [o/s/a/d]:", "[o]nce", "dangerous command"],
+    ) {
+        return Status::Waiting;
+    }
+
     Status::Idle
 }
 
@@ -2069,9 +2147,88 @@ run this command? (y/n)
     }
 
     #[test]
-    fn test_detect_hermes_status_is_stub() {
-        // Hermes uses hook-based detection; the stub always returns Idle
+    fn test_detect_hermes_status_running_on_spinner() {
+        assert_eq!(
+            detect_hermes_status("◜ (｡•́︿•̀｡) pondering... (1.2s)"),
+            Status::Running
+        );
+        assert_eq!(
+            detect_hermes_status("◠ (⊙_⊙) contemplating... (2.4s)"),
+            Status::Running
+        );
+        assert_eq!(
+            detect_hermes_status("✧٩(ˊᗜˋ*)و✧ got it! (3.1s)"),
+            Status::Running
+        );
+    }
+
+    #[test]
+    fn test_detect_hermes_status_running_on_tool_execution() {
+        assert_eq!(
+            detect_hermes_status("┊ 💻 terminal 'ls -la' (0.3s)"),
+            Status::Running
+        );
+        assert_eq!(
+            detect_hermes_status("┊ 🔍 web_search (1.2s)"),
+            Status::Running
+        );
+    }
+
+    #[test]
+    fn test_detect_hermes_status_running_on_thinking_verbs() {
+        assert_eq!(
+            detect_hermes_status("pondering the question"),
+            Status::Running
+        );
+        assert_eq!(
+            detect_hermes_status("analyzing the codebase"),
+            Status::Running
+        );
+        assert_eq!(detect_hermes_status("computing result"), Status::Running);
+        assert_eq!(
+            detect_hermes_status("processing request\nctrl+c to interrupt"),
+            Status::Running
+        );
+    }
+
+    #[test]
+    fn test_detect_hermes_status_waiting_on_approval() {
+        assert_eq!(
+            detect_hermes_status(
+                "⚠️  DANGEROUS COMMAND: rm -rf /tmp\n[o]nce  |  [s]ession  |  [a]lways  |  [d]eny\nChoice [o/s/a/D]:"
+            ),
+            Status::Waiting
+        );
+        assert_eq!(
+            detect_hermes_status("dangerous command detected\nproceed?"),
+            Status::Waiting
+        );
+    }
+
+    #[test]
+    fn test_detect_hermes_status_waiting_on_input_prompt() {
+        assert_eq!(detect_hermes_status("some output\n❯"), Status::Waiting);
+        assert_eq!(detect_hermes_status("some output\n❯ "), Status::Waiting);
+        assert_eq!(detect_hermes_status("some output\n⚡"), Status::Waiting);
+    }
+
+    #[test]
+    fn test_detect_hermes_status_prompt_overrides_scrollback() {
+        // If the input prompt is visible, don't mis-detect Running from old scrollback.
+        assert_eq!(
+            detect_hermes_status("pondering the question\ntask complete\n❯"),
+            Status::Waiting
+        );
+    }
+
+    #[test]
+    fn test_detect_hermes_status_idle_on_plain_text() {
         assert_eq!(detect_hermes_status("anything"), Status::Idle);
+        assert_eq!(detect_hermes_status(""), Status::Idle);
+        assert_eq!(
+            detect_hermes_status("task completed successfully"),
+            Status::Idle
+        );
     }
 
     #[test]
