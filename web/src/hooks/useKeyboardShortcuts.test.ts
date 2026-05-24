@@ -36,6 +36,8 @@ function makeActions() {
     onToggleSidebar: vi.fn(),
     onToggleRightPanel: vi.fn(),
     onToggleTerminalFocus: vi.fn(),
+    onPreviousProject: vi.fn(),
+    onNextProject: vi.fn(),
   };
 }
 
@@ -81,6 +83,29 @@ describe("useKeyboardShortcuts", () => {
 
     expect(actions.onToggleRightPanel).toHaveBeenCalledTimes(1);
     expect(actions.onToggleSidebar).not.toHaveBeenCalled();
+  });
+
+  it("routes Ctrl+H and Ctrl+L to project navigation actions", () => {
+    const actions = makeActions();
+    renderHook(() => useKeyboardShortcuts(() => actions));
+
+    dispatch(document.body, { key: "h", code: "KeyH", ctrlKey: true });
+    dispatch(document.body, { key: "l", code: "KeyL", ctrlKey: true });
+
+    expect(actions.onPreviousProject).toHaveBeenCalledTimes(1);
+    expect(actions.onNextProject).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not steal Ctrl+H from regular text inputs", () => {
+    const actions = makeActions();
+    renderHook(() => useKeyboardShortcuts(() => actions));
+    const input = document.createElement("input");
+    document.body.appendChild(input);
+
+    dispatch(input, { key: "h", code: "KeyH", ctrlKey: true });
+
+    expect(actions.onPreviousProject).not.toHaveBeenCalled();
+    input.remove();
   });
 
   it("detaches the listener on unmount", () => {

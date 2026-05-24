@@ -337,4 +337,52 @@ test.describe("Sidebar multi-session (#956)", () => {
     await expect(menu).toBeVisible();
     await expect(menu.locator("[data-testid='sidebar-group-context-menu-rename']")).toBeVisible();
   });
+
+  test("project strip is opt-in and supports Ctrl+H/Ctrl+L navigation", async ({
+    page,
+  }) => {
+    await mockApis(page, [
+      {
+        id: "sess-a",
+        title: "Ethiopians",
+        project_path: "/tmp/alpha",
+        branch: null,
+      },
+      {
+        id: "sess-b",
+        title: "Celts",
+        project_path: "/tmp/beta",
+        branch: null,
+      },
+    ]);
+    await page.setViewportSize({ width: 1280, height: 720 });
+
+    await page.goto("/session/sess-a");
+    await expect(page.locator("header")).toBeVisible();
+    await expect(page.locator("[data-testid='project-strip']")).toHaveCount(0);
+
+    await page.evaluate(() => {
+      window.localStorage.setItem(
+        "aoe-web-settings",
+        JSON.stringify({ projectStrip: true }),
+      );
+    });
+    await page.reload();
+    const strip = page.locator("[data-testid='project-strip']");
+    await expect(strip).toBeVisible();
+    await expect(strip.getByRole("tab", { name: /alpha/i })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+
+    await page.keyboard.press("Control+L");
+    await expect(page).toHaveURL(/\/session\/sess-b$/);
+    await expect(strip.getByRole("tab", { name: /beta/i })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+
+    await page.keyboard.press("Control+H");
+    await expect(page).toHaveURL(/\/session\/sess-a$/);
+  });
 });

@@ -12,6 +12,7 @@ export interface WebSettings {
   mobileFontSize: number;
   desktopFontSize: number;
   autoOpenKeyboard: boolean;
+  projectStrip: boolean;
   persistentTerminals: boolean;
   maxPersistentTerminals: number;
   diffViewMode: "flat" | "tree";
@@ -23,6 +24,7 @@ function getDefaults(): WebSettings {
     mobileFontSize: 8,
     desktopFontSize: 14,
     autoOpenKeyboard: true,
+    projectStrip: false,
     persistentTerminals: false,
     maxPersistentTerminals: DEFAULT_PERSISTENT_TERMINALS,
     diffViewMode: window.innerWidth < 768 ? "flat" : "tree",
@@ -38,6 +40,10 @@ function normalizeSnapshot(settings: WebSettings): WebSettings {
       typeof settings.persistentTerminals === "boolean"
         ? settings.persistentTerminals
         : defaults.persistentTerminals,
+    projectStrip:
+      typeof settings.projectStrip === "boolean"
+        ? settings.projectStrip
+        : defaults.projectStrip,
     maxPersistentTerminals: normalizePersistentTerminalLimit(
       settings.maxPersistentTerminals,
     ),

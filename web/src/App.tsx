@@ -41,6 +41,7 @@ import {
 import { WorkspaceSidebar } from "./components/WorkspaceSidebar";
 import { DeleteSessionDialog } from "./components/DeleteSessionDialog";
 import { TopBar } from "./components/TopBar";
+import { ProjectStrip } from "./components/ProjectStrip";
 import { ContentSplit } from "./components/ContentSplit";
 import { TerminalSessionStack } from "./components/TerminalSessionStack";
 // Lazy-load the cockpit surface so non-cockpit users never download
@@ -336,39 +337,64 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
     setSelectedFile(null);
   }, [activeSessionId]);
 
-  const focusKeyboardProxy = () => {
+  const focusKeyboardProxy = useCallback(() => {
     if (window.innerWidth < 768 && navigator.maxTouchPoints > 0) {
       keyboardProxyRef.current?.focus();
     }
-  };
+  }, []);
 
-  const handleSelectSession = useCallback((sessionId: string) => {
-    const ws = workspaces.find((w) => w.sessions.some((s) => s.id === sessionId));
-    if (ws) {
-      navigate(`/session/${encodeURIComponent(sessionId)}`);
-      focusKeyboardProxy();
-      if (window.innerWidth < 768) setSidebarOpen(false);
-    }
-  }, [navigate, workspaces]);
-
-  const handleSelectWorkspace = (workspaceId: string) => {
-    const ws = workspaces.find((w) => w.id === workspaceId);
-    if (ws) {
-      const running = ws.sessions.find((s) =>
-        isSessionActive(s, idleDecayWindowMs),
+  const handleSelectSession = useCallback(
+    (sessionId: string) => {
+      const ws = workspaces.find((w) =>
+        w.sessions.some((s) => s.id === sessionId),
       );
-      const picked = running?.id ?? ws.sessions[0]?.id ?? null;
-      if (picked) {
-        navigate(`/session/${encodeURIComponent(picked)}`);
-      } else {
-        navigate("/");
+      if (ws) {
+        navigate(`/session/${encodeURIComponent(sessionId)}`);
+        focusKeyboardProxy();
+        if (window.innerWidth < 768) setSidebarOpen(false);
       }
-    }
-    focusKeyboardProxy();
-    if (window.innerWidth < 768) {
-      setSidebarOpen(false);
-    }
-  };
+    },
+    [focusKeyboardProxy, navigate, workspaces],
+  );
+
+  const handleSelectWorkspace = useCallback(
+    (workspaceId: string) => {
+      const ws = workspaces.find((w) => w.id === workspaceId);
+      if (ws) {
+        const running = ws.sessions.find((s) =>
+          isSessionActive(s, idleDecayWindowMs),
+        );
+        const picked = running?.id ?? ws.sessions[0]?.id ?? null;
+        if (picked) {
+          navigate(`/session/${encodeURIComponent(picked)}`);
+        } else {
+          navigate("/");
+        }
+      }
+      focusKeyboardProxy();
+      if (window.innerWidth < 768) {
+        setSidebarOpen(false);
+      }
+    },
+    [focusKeyboardProxy, idleDecayWindowMs, navigate, workspaces],
+  );
+
+  const handleProjectStripStep = useCallback(
+    (direction: -1 | 1) => {
+      const selectableGroups = groups.filter((g) => g.workspaces.length > 0);
+      if (selectableGroups.length === 0) return;
+      const activeIndex = selectableGroups.findIndex((group) =>
+        group.workspaces.some((w) => w.id === activeWorkspace?.id),
+      );
+      const currentIndex = activeIndex >= 0 ? activeIndex : 0;
+      const nextIndex =
+        (currentIndex + direction + selectableGroups.length) %
+        selectableGroups.length;
+      const nextWorkspace = selectableGroups[nextIndex]?.workspaces[0];
+      if (nextWorkspace) handleSelectWorkspace(nextWorkspace.id);
+    },
+    [activeWorkspace?.id, groups, handleSelectWorkspace],
+  );
 
   // In-app toast forwarded from the service worker sets this event when
   // the user taps it; navigate to the session that triggered the push.
@@ -620,6 +646,12 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
         onToggleSidebar: () => setSidebarOpen((o) => !o),
         onToggleRightPanel: () => setDiffCollapsed((c) => !c),
         onToggleTerminalFocus: handleToggleTerminalFocus,
+        onPreviousProject: webSettings.projectStrip
+          ? () => handleProjectStripStep(-1)
+          : undefined,
+        onNextProject: webSettings.projectStrip
+          ? () => handleProjectStripStep(1)
+          : undefined,
       }),
       [
         toggleDiff,
@@ -630,6 +662,8 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
         navigate,
         handleToggleTerminalFocus,
         serverAbout,
+        webSettings.projectStrip,
+        handleProjectStripStep,
       ],
     ),
   );
@@ -859,6 +893,14 @@ function AppContent({ loginRequired, onLogout }: { loginRequired: boolean; onLog
         isDevBuild={isDebugBuild(serverAbout)}
         onGoDashboard={handleGoDashboard}
       />
+
+      {webSettings.projectStrip && !showSettings && !showProjects && (
+        <ProjectStrip
+          groups={groups}
+          activeWorkspaceId={activeWorkspace?.id ?? null}
+          onSelectWorkspace={handleSelectWorkspace}
+        />
+      )}
 
       <DisconnectBanner />
       <UpdateBanner />

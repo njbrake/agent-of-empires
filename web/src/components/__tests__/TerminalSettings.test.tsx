@@ -81,9 +81,18 @@ describe("TerminalSettings localStorage contract", () => {
     const { container } = render(<TerminalSettings />);
     const checkbox = container.querySelectorAll(
       "input[type=checkbox]",
-    )[1] as HTMLInputElement;
+    )[2] as HTMLInputElement;
     fireEvent.click(checkbox);
     expect(readStored().persistentTerminals).toBe(true);
+  });
+
+  it("project strip checkbox writes the beta flag", () => {
+    const { container } = render(<TerminalSettings />);
+    const checkbox = container.querySelectorAll(
+      "input[type=checkbox]",
+    )[1] as HTMLInputElement;
+    fireEvent.click(checkbox);
+    expect(readStored().projectStrip).toBe(true);
   });
 
   it("persistent terminal limit input writes a clamped number", () => {
@@ -109,6 +118,7 @@ describe("TerminalSettings localStorage contract", () => {
         mobileFontSize: 8,
         desktopFontSize: 14,
         autoOpenKeyboard: true,
+        projectStrip: false,
         persistentTerminals: false,
         maxPersistentTerminals: 5,
         diffViewMode: "tree",
@@ -125,6 +135,7 @@ describe("TerminalSettings localStorage contract", () => {
       mobileFontSize: 12,
       desktopFontSize: 14,
       autoOpenKeyboard: true,
+      projectStrip: false,
       persistentTerminals: false,
       maxPersistentTerminals: 5,
       diffViewMode: "tree",
@@ -139,6 +150,7 @@ describe("TerminalSettings localStorage contract", () => {
         mobileFontSize: 22,
         desktopFontSize: 16,
         autoOpenKeyboard: false,
+        projectStrip: true,
         persistentTerminals: true,
         maxPersistentTerminals: 42,
       }),
@@ -152,13 +164,15 @@ describe("TerminalSettings localStorage contract", () => {
     )[1] as HTMLSelectElement;
     const checkboxes = container.querySelectorAll("input[type=checkbox]");
     const checkbox = checkboxes[0] as HTMLInputElement;
-    const persistentCheckbox = checkboxes[1] as HTMLInputElement;
+    const projectStripCheckbox = checkboxes[1] as HTMLInputElement;
+    const persistentCheckbox = checkboxes[2] as HTMLInputElement;
     const persistentLimit = container.querySelector(
       "input[type=number]",
     ) as HTMLInputElement;
     expect(mobileSelect.value).toBe("22");
     expect(desktopSelect.value).toBe("16");
     expect(checkbox.checked).toBe(false);
+    expect(projectStripCheckbox.checked).toBe(true);
     expect(persistentCheckbox.checked).toBe(true);
     expect(persistentLimit.value).toBe("42");
   });
@@ -173,7 +187,7 @@ describe("TerminalSettings localStorage contract", () => {
     );
     const { container } = render(<TerminalSettings />);
     const checkboxes = container.querySelectorAll("input[type=checkbox]");
-    const persistentCheckbox = checkboxes[1] as HTMLInputElement;
+    const persistentCheckbox = checkboxes[2] as HTMLInputElement;
     const persistentLimit = container.querySelector(
       "input[type=number]",
     ) as HTMLInputElement | null;

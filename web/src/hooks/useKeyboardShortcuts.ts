@@ -14,6 +14,8 @@ interface ShortcutActions {
   onToggleSidebar: () => void;
   onToggleRightPanel: () => void;
   onToggleTerminalFocus: () => void;
+  onPreviousProject?: () => void;
+  onNextProject?: () => void;
 }
 
 /**
@@ -30,6 +32,7 @@ export function useKeyboardShortcuts(getActions: () => ShortcutActions) {
         (target.tagName === "INPUT" ||
           target.tagName === "TEXTAREA" ||
           target.isContentEditable);
+      const isTerminalInput = !!target?.closest(".xterm");
 
       const actions = getActions();
       const mod = IS_MAC ? e.metaKey : e.metaKey || e.ctrlKey;
@@ -51,6 +54,24 @@ export function useKeyboardShortcuts(getActions: () => ShortcutActions) {
         e.preventDefault();
         actions.onToggleTerminalFocus();
         return;
+      }
+
+      if (
+        e.ctrlKey &&
+        !e.metaKey &&
+        !e.shiftKey &&
+        !e.altKey &&
+        (e.code === "KeyH" || e.code === "KeyL") &&
+        (!isInput || isTerminalInput)
+      ) {
+        const action =
+          e.code === "KeyH" ? actions.onPreviousProject : actions.onNextProject;
+        if (action) {
+          e.preventDefault();
+          e.stopPropagation();
+          action();
+          return;
+        }
       }
 
       // Use e.code for B shortcuts because Option+B on Mac produces "∫"

@@ -1,0 +1,107 @@
+// @vitest-environment jsdom
+
+import { describe, expect, it, vi } from "vitest";
+import { fireEvent, render } from "@testing-library/react";
+import { ProjectStrip } from "../ProjectStrip";
+import type { RepoGroup, SessionResponse } from "../../lib/types";
+
+function session(
+  id: string,
+  projectPath: string,
+  status: SessionResponse["status"] = "Idle",
+): SessionResponse {
+  return {
+    id,
+    title: id,
+    project_path: projectPath,
+    group_path: projectPath,
+    tool: "claude",
+    status,
+    yolo_mode: false,
+    created_at: "2026-05-25T00:00:00Z",
+    last_accessed_at: null,
+    idle_entered_at: null,
+    last_error: null,
+    branch: null,
+    main_repo_path: null,
+    is_sandboxed: false,
+    favorited: false,
+    has_managed_worktree: false,
+    has_terminal: true,
+    profile: "default",
+    cleanup_defaults: {
+      delete_worktree: false,
+      delete_branch: false,
+      delete_sandbox: false,
+    },
+    remote_owner: null,
+    notify_on_waiting: null,
+    notify_on_idle: null,
+    notify_on_error: null,
+    workspace_repos: [],
+    claude_fullscreen: false,
+  };
+}
+
+function group(name: string, path: string, status: SessionResponse["status"]): RepoGroup {
+  const s = session(`${name}-session`, path, status);
+  return {
+    id: path,
+    repoPath: path,
+    displayName: name,
+    defaultDisplayName: name,
+    alias: null,
+    color: null,
+    remoteOwner: null,
+    status: status === "Running" ? "active" : "idle",
+    collapsed: false,
+    workspaces: [
+      {
+        id: `${name}-workspace`,
+        branch: null,
+        projectPath: path,
+        displayName: name,
+        agents: ["claude"],
+        primaryAgent: "claude",
+        status: status === "Running" ? "active" : "idle",
+        sessions: [s],
+      },
+    ],
+  };
+}
+
+describe("ProjectStrip", () => {
+  it("renders project tabs and selects the first workspace in the group", () => {
+    const onSelectWorkspace = vi.fn();
+    const { getByRole } = render(
+      <ProjectStrip
+        groups={[
+          group("Alpha", "/tmp/alpha", "Running"),
+          group("Beta", "/tmp/beta", "Idle"),
+        ]}
+        activeWorkspaceId="Alpha-workspace"
+        onSelectWorkspace={onSelectWorkspace}
+      />,
+    );
+
+    const beta = getByRole("tab", { name: /Beta/i });
+    expect(beta.getAttribute("aria-selected")).toBe("false");
+
+    fireEvent.click(beta);
+    expect(onSelectWorkspace).toHaveBeenCalledWith("Beta-workspace");
+  });
+
+  it("marks the active project tab", () => {
+    const { getByRole } = render(
+      <ProjectStrip
+        groups={[group("Alpha", "/tmp/alpha", "Running")]}
+        activeWorkspaceId="Alpha-workspace"
+        onSelectWorkspace={vi.fn()}
+      />,
+    );
+
+    expect(
+      getByRole("tab", { name: /Alpha/i }).getAttribute("aria-selected"),
+    ).toBe("true");
+  });
+});

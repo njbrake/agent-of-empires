@@ -117,6 +117,29 @@ export function TerminalSettings() {
         </div>
 
         <div>
+          <label className="flex items-center justify-between gap-3 cursor-pointer">
+            <div>
+              <div className="text-[13px] text-text-secondary">
+                Project strip{" "}
+                <span className="font-mono text-[11px] text-text-muted">
+                  (Beta)
+                </span>
+              </div>
+              <p className="text-[11px] text-text-muted mt-1">
+                Show a zellij-style project switcher above the workspace. When
+                enabled, Ctrl+H and Ctrl+L move across projects.
+              </p>
+            </div>
+            <input
+              type="checkbox"
+              checked={settings.projectStrip}
+              onChange={(e) => update({ projectStrip: e.target.checked })}
+              className="accent-brand-600 w-4 h-4 shrink-0"
+            />
+          </label>
+        </div>
+
+        <div>
           <div className="space-y-3">
             <label className="flex items-center justify-between gap-3 cursor-pointer">
               <div>

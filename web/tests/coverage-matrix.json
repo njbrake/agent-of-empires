@@ -326,6 +326,20 @@
       ]
     },
     {
+      "id": "project-strip.navigation",
+      "kind": "mocked-playwright",
+      "risk": "medium",
+      "specs": [
+        "tests/sidebar-multi-session.spec.ts",
+        "src/components/__tests__/ProjectStrip.test.tsx",
+        "src/hooks/useKeyboardShortcuts.test.ts"
+      ],
+      "components": [
+        "web/src/components/ProjectStrip.tsx",
+        "web/src/hooks/useKeyboardShortcuts.ts"
+      ]
+    },
+    {
       "id": "sidebar.favorite-indicator",
       "kind": "deferred",
       "issue": "https://github.com/njbrake/agent-of-empires/issues/986",
