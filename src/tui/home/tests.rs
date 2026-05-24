@@ -5226,6 +5226,96 @@ mod preview_click {
     }
 }
 
+mod live_send_mode {
+    //! Live-send wiring at the home view level. Translation correctness
+    //! is covered by unit tests in src/tui/home/live_send.rs. Here we
+    //! verify the integration points: keys are captured while live mode
+    //! is active, Ctrl+] clears the state, and the predicate plumbing
+    //! treats live mode like a modal capture so the rest of the TUI
+    //! suspends underneath it.
+
+    use super::*;
+    use crate::tui::home::LiveSendState;
+
+    fn install_live(env: &mut TestEnv) {
+        env.view.live_send = Some(LiveSendState {
+            session_id: "fake-id".to_string(),
+            title: "fake-title".to_string(),
+        });
+    }
+
+    #[test]
+    #[serial]
+    fn ctrl_q_exits_live_mode() {
+        let mut env = create_test_env_empty();
+        install_live(&mut env);
+        assert!(env.view.live_send.is_some());
+
+        env.view.handle_key(
+            KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL),
+            None,
+        );
+
+        assert!(env.view.live_send.is_none());
+    }
+
+    #[test]
+    #[serial]
+    fn arbitrary_key_in_live_mode_does_not_emit_action() {
+        // Live-send swallows the key (forwards it to tmux). The tmux
+        // call will quietly fail because the fake session does not
+        // exist, but the home view must NOT bubble an Action::* out
+        // (otherwise the action would race with the live state).
+        let mut env = create_test_env_empty();
+        install_live(&mut env);
+        let action = env
+            .view
+            .handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE), None);
+        assert!(action.is_none());
+        // Still in live mode; only Ctrl+] exits.
+        assert!(env.view.live_send.is_some());
+    }
+
+    #[test]
+    #[serial]
+    fn live_mode_makes_has_dialog_true() {
+        // Every dialog-gating predicate that already inspects has_dialog()
+        // (mouse swallow, list nav suspend, palette skip) inherits live
+        // mode for free via this single addition.
+        let mut env = create_test_env_empty();
+        assert!(!env.view.has_dialog());
+        install_live(&mut env);
+        assert!(env.view.has_dialog());
+    }
+
+    #[test]
+    #[serial]
+    fn live_mode_enables_paste_burst() {
+        // wants_paste_burst is what tells the runtime to batch a stream
+        // of Char events into a single Paste event when bracketed-paste
+        // markers are missing (mosh, some SSH wrappers). Live mode wants
+        // batching so a paste streams as one tmux call.
+        let mut env = create_test_env_empty();
+        install_live(&mut env);
+        assert!(env.view.wants_paste_burst());
+    }
+
+    #[test]
+    #[serial]
+    fn tab_does_not_start_live_send_without_runnable_selection() {
+        // resolve_paste_target rejects empty list, group rows, and
+        // non-running sessions, so plain Tab must silently no-op rather
+        // than crashing or trapping the user in a live mode targeting
+        // nothing.
+        let mut env = create_test_env_empty();
+        let action = env
+            .view
+            .handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), None);
+        assert!(action.is_none());
+        assert!(env.view.live_send.is_none());
+    }
+}
+
 mod save_field_merge {
     use super::*;
     use chrono::Utc;

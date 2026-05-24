@@ -1433,6 +1433,33 @@ impl App {
                     }
                 }
             }
+            Action::EnterLiveSend(id) => {
+                // Same revive flow as SendMessage so cold-start (Docker,
+                // agent splash) gives the user "Reviving..." feedback.
+                // After the pane is ready, install the live-send state on
+                // HomeView so the next key event routes through the live
+                // handler instead of the normal action dispatch.
+                self.home
+                    .set_instance_status(&id, crate::session::Status::Starting);
+                self.update_status = Some(UpdateStatus::transient("Reviving session...".into()));
+                self.draw(terminal)?;
+                let outcome = self.home.enter_live_send(&id);
+                match outcome {
+                    Ok(Some(sid)) => {
+                        self.update_status = Some(UpdateStatus::transient(format!(
+                            "Resume failed for sid {sid}; live-send sent to a fresh pane (history not loaded)"
+                        )));
+                    }
+                    Ok(None) => {
+                        self.update_status = None;
+                    }
+                    Err(()) => {
+                        // enter_live_send already surfaced the failure via
+                        // info_dialog; just clear the transient toast.
+                        self.update_status = None;
+                    }
+                }
+            }
             Action::AttachToolSession(id, tool_name) => {
                 self.attach_tool_session(&id, &tool_name, terminal)?;
             }
@@ -1833,6 +1860,11 @@ pub enum Action {
     /// can render a "Reviving..." status before the potentially-slow
     /// ensure_pane_ready call.
     SendMessage(String, String),
+    /// Enter live-send mode on a session. Same revive-and-stage pattern
+    /// as `SendMessage`: the deferred action lets the app loop render the
+    /// "Reviving..." toast before `ensure_pane_ready` runs, then the home
+    /// view flips into the live-send capture state for subsequent keys.
+    EnterLiveSend(String),
     /// Attach to a tool session (lazygit, yazi, etc.) for the given agent
     /// session. The tool_name indexes into Config.tools.
     AttachToolSession(String, String),

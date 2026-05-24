@@ -1,0 +1,514 @@
+//! Live-send mode: a "feels-attached" alternative to the compose dialog.
+//!
+//! When a user presses `Tab` on a runnable session, the home view installs
+//! a `LiveSendState` and routes every subsequent key event through this
+//! module's translator. Each translation produces a `tmux send-keys` call
+//! against the target pane: plain characters go literally, every other
+//! key (arrows, Esc, Tab, modifier combos) goes by tmux key name with
+//! `C-` / `M-` prefixes. The user exits with `Ctrl+Q`.
+//!
+//! Exit chord trade-off: `Ctrl+Q` is memorable ("Q for quit") and works
+//! over Mosh/SSH where Alt combos and Ctrl+] often don't. The cost is
+//! that vim/emacs `C-q` quoted-insert can't be sent through live mode;
+//! anyone needing that flow should use the compose dialog or attach
+//! directly with `a`.
+//!
+//! Trade-offs vs. a compose dialog:
+//! - No echo, no inline editing, no review step. The preview pane is the
+//!   only feedback channel; users who need multi-line composition or want
+//!   to proofread voice/dictation should use the compose dialog on `M`.
+//! - One tmux process per keystroke. Acceptable on local machines; visibly
+//!   laggy over Docker / mosh on slow links. Bracketed paste shortcuts the
+//!   per-char cost by routing the whole chunk through `send_literal_no_enter`
+//!   in a single call.
+
+use std::sync::mpsc::{channel, Sender};
+
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+/// Lives on `HomeView::live_send` while the mode is active. Carries just
+/// enough state for the banner to render and for the exit handler to
+/// confirm the right pane was targeted.
+#[derive(Debug, Clone)]
+pub struct LiveSendState {
+    pub session_id: String,
+    pub title: String,
+}
+
+/// One coalesced unit of work the worker hands to tmux. `Literal` runs
+/// fold together; named keys and resizes break the run because their
+/// order vs. surrounding text matters (an Up arrow between "ab" and
+/// "cd" must arrive between, not after; a resize that lands before
+/// keystrokes makes the agent render those keystrokes at the new
+/// geometry).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TmuxAction {
+    Literal(String),
+    Named(String),
+    Resize { cols: u16, rows: u16 },
+}
+
+/// Fold a batch of `WorkerMsg`s into the smallest sequence of
+/// `TmuxAction`s that preserves the original ordering. Consecutive
+/// `Send(Literal)` values merge into one payload (single
+/// `tmux send-keys` call); a `Send(Named)` or `Resize` flushes the
+/// current literal run and goes out on its own. Pure function so tests
+/// can verify ordering without spawning a worker thread.
+pub fn coalesce(batch: Vec<WorkerMsg>) -> Vec<TmuxAction> {
+    let mut out: Vec<TmuxAction> = Vec::new();
+    let mut run = String::new();
+    let flush = |out: &mut Vec<TmuxAction>, run: &mut String| {
+        if !run.is_empty() {
+            out.push(TmuxAction::Literal(std::mem::take(run)));
+        }
+    };
+    for msg in batch {
+        match msg {
+            WorkerMsg::Send(TmuxKey::Literal(s)) => run.push_str(&s),
+            WorkerMsg::Send(TmuxKey::Named(name)) => {
+                flush(&mut out, &mut run);
+                out.push(TmuxAction::Named(name));
+            }
+            WorkerMsg::Resize { cols, rows } => {
+                flush(&mut out, &mut run);
+                out.push(TmuxAction::Resize { cols, rows });
+            }
+        }
+    }
+    flush(&mut out, &mut run);
+    out
+}
+
+/// One unit of work the worker can be asked to perform. Resizes don't
+/// coalesce with keys because they're sticky pane-level changes; a
+/// burst of keystrokes that brackets a resize must arrive on either
+/// side of the geometry change, not be reordered after it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorkerMsg {
+    Send(TmuxKey),
+    Resize { cols: u16, rows: u16 },
+}
+
+/// Background dispatcher: owns a tmux `Session` and drains a channel of
+/// `WorkerMsg`s, calling `coalesce_batch` to compress runs of literal
+/// keys into single `send-keys` invocations. Spawned on
+/// `enter_live_send` and dropped when the user exits live mode;
+/// dropping closes the channel, which makes the worker thread's `recv`
+/// return `Err` and exit on the next iteration. We deliberately do not
+/// `join` because the worker is idempotent and harmless if it survives
+/// a brief moment past the UI thread that owned it (e.g., the user
+/// toggles live mode rapidly).
+pub struct LiveSendWorker {
+    tx: Sender<WorkerMsg>,
+}
+
+impl LiveSendWorker {
+    pub fn spawn(session_name: String) -> Self {
+        let (tx, rx) = channel::<WorkerMsg>();
+        std::thread::spawn(move || {
+            let session = crate::tmux::Session::from_name(&session_name);
+            // Block until the first message, then drain anything else
+            // that piled up during the previous flush. This is enough
+            // to coalesce paste-bursts and held-key autorepeat without
+            // adding any extra sleep that would inflate single-key
+            // latency.
+            while let Ok(first) = rx.recv() {
+                let mut batch = vec![first];
+                while let Ok(msg) = rx.try_recv() {
+                    batch.push(msg);
+                }
+                dispatch_batch(&session, batch);
+            }
+        });
+        Self { tx }
+    }
+
+    /// Enqueue a translated key for dispatch. Returns immediately; the
+    /// fork+exec for `tmux send-keys` happens on the worker thread, so
+    /// the UI never blocks on tmux latency.
+    pub fn send(&self, key: TmuxKey) {
+        // Channel send only fails if the worker thread panicked. Drop
+        // silently rather than spam logs: the user's next exit attempt
+        // (Ctrl+q) will clear the dead worker and we'll spawn a fresh
+        // one on the next live-send entry.
+        let _ = self.tx.send(WorkerMsg::Send(key));
+    }
+
+    /// Enqueue a tmux pane resize. The geometry change is serialized
+    /// with surrounding keystrokes so that keys typed before the
+    /// resize arrive in the old size and keys after arrive in the new
+    /// size (matters when an agent uses cursor-position escapes).
+    pub fn resize(&self, cols: u16, rows: u16) {
+        let _ = self.tx.send(WorkerMsg::Resize { cols, rows });
+    }
+}
+
+/// Walk one drained batch and execute it against `session`. Uses
+/// `coalesce` so literal-key runs collapse into a single `send-keys`
+/// call; named keys and resizes dispatch individually. Tests verify
+/// the ordering via `coalesce` directly without needing a real session.
+fn dispatch_batch(session: &crate::tmux::Session, batch: Vec<WorkerMsg>) {
+    for action in coalesce(batch) {
+        let result = match action {
+            TmuxAction::Literal(s) => session.send_literal_no_enter(&s),
+            TmuxAction::Named(name) => session.send_named_key(&name),
+            TmuxAction::Resize { cols, rows } => session.resize(cols, rows),
+        };
+        if let Err(e) = result {
+            tracing::warn!("live-send worker: tmux op failed: {}", e);
+        }
+    }
+}
+
+/// What the translator says to do with one incoming key event.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LiveDispatch {
+    /// User pressed the exit chord; the caller should clear `live_send`.
+    Exit,
+    /// Forward the keystroke to tmux in the requested form.
+    Send(TmuxKey),
+    /// Key has no meaningful tmux mapping (Null, CapsLock, media keys, …).
+    /// Caller should drop it silently rather than echo it elsewhere.
+    Ignore,
+}
+
+/// How the translator wants the keystroke delivered. `Literal` payloads
+/// go through `tmux send-keys -l --`, named keys through `tmux send-keys`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TmuxKey {
+    Literal(String),
+    Named(String),
+}
+
+/// Map one crossterm `KeyEvent` onto a `LiveDispatch`.
+///
+/// Conventions:
+/// - `Ctrl+q` (lowercase only) is Exit. Shift is not accepted: if the
+///   user holds shift the chord becomes `C-q` (often `C-Q` from some
+///   terminals), and that falls through to the named-key path so the
+///   user can still send Ctrl+Shift+q to the agent if they want.
+/// - Plain printable chars (`KeyCode::Char` with no Ctrl/Alt) go literal
+///   so the user's case and punctuation are preserved verbatim. The shift
+///   modifier is implicit in the char itself, so we don't add `S-`.
+/// - Ctrl/Alt + a char folds the char to lowercase and emits a tmux name
+///   like `C-a`, `M-x`, `C-M-x`. Lowercase because tmux's chord names
+///   are case-insensitive for letters and `C-a` is the conventional form.
+/// - All other keys (arrows, function keys, etc.) emit their tmux name
+///   with whatever prefixes apply.
+pub fn translate(key: KeyEvent) -> LiveDispatch {
+    let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+    let alt = key.modifiers.contains(KeyModifiers::ALT);
+
+    // Bare Ctrl+q only. Holding Shift or Alt converts the chord to a
+    // send-through (Ctrl+Shift+q, Ctrl+Alt+q) so the user can still
+    // deliver those combinations to the agent.
+    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+    if ctrl && !shift && !alt && matches!(key.code, KeyCode::Char('q')) {
+        return LiveDispatch::Exit;
+    }
+
+    let prefix = match (ctrl, alt) {
+        (true, true) => "C-M-",
+        (true, false) => "C-",
+        (false, true) => "M-",
+        (false, false) => "",
+    };
+    let named = |name: &str| LiveDispatch::Send(TmuxKey::Named(format!("{prefix}{name}")));
+
+    match key.code {
+        KeyCode::Char(c) => {
+            if ctrl || alt {
+                let lower = c.to_ascii_lowercase().to_string();
+                LiveDispatch::Send(TmuxKey::Named(format!("{prefix}{lower}")))
+            } else {
+                LiveDispatch::Send(TmuxKey::Literal(c.to_string()))
+            }
+        }
+        KeyCode::Up => named("Up"),
+        KeyCode::Down => named("Down"),
+        KeyCode::Left => named("Left"),
+        KeyCode::Right => named("Right"),
+        KeyCode::Enter => named("Enter"),
+        KeyCode::Esc => named("Escape"),
+        KeyCode::Tab => named("Tab"),
+        KeyCode::BackTab => named("BTab"),
+        KeyCode::Backspace => named("BSpace"),
+        KeyCode::Delete => named("DC"),
+        KeyCode::Insert => named("IC"),
+        KeyCode::Home => named("Home"),
+        KeyCode::End => named("End"),
+        KeyCode::PageUp => named("PPage"),
+        KeyCode::PageDown => named("NPage"),
+        KeyCode::F(n) => named(&format!("F{n}")),
+        _ => LiveDispatch::Ignore,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn k(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+    fn k_mod(code: KeyCode, modifiers: KeyModifiers) -> KeyEvent {
+        KeyEvent::new(code, modifiers)
+    }
+
+    fn assert_literal(d: LiveDispatch, expected: &str) {
+        match d {
+            LiveDispatch::Send(TmuxKey::Literal(s)) => assert_eq!(s, expected),
+            other => panic!("expected Literal({expected}), got {other:?}"),
+        }
+    }
+    fn assert_named(d: LiveDispatch, expected: &str) {
+        match d {
+            LiveDispatch::Send(TmuxKey::Named(s)) => assert_eq!(s, expected),
+            other => panic!("expected Named({expected}), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ctrl_q_exits() {
+        assert_eq!(
+            translate(k_mod(KeyCode::Char('q'), KeyModifiers::CONTROL)),
+            LiveDispatch::Exit
+        );
+    }
+
+    #[test]
+    fn ctrl_shift_q_does_not_exit() {
+        // Only bare Ctrl+q exits. Shift held means the user actually
+        // wants to send a `C-q` chord through to the agent (e.g.,
+        // vim's quoted-insert), so this must fall through to a Named
+        // dispatch, not be eaten as an exit.
+        let d = translate(k_mod(
+            KeyCode::Char('Q'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        ));
+        assert_ne!(d, LiveDispatch::Exit);
+        // Crossterm hands us `Char('Q')` here; the translator folds to
+        // lowercase before emitting the tmux name, so the agent
+        // receives `C-q` which is what they would press for vim.
+        assert_named(d, "C-q");
+    }
+
+    #[test]
+    fn plain_letters_go_literal_preserving_case() {
+        assert_literal(translate(k(KeyCode::Char('a'))), "a");
+        assert_literal(translate(k(KeyCode::Char('Z'))), "Z");
+        assert_literal(translate(k(KeyCode::Char('!'))), "!");
+        assert_literal(translate(k(KeyCode::Char(' '))), " ");
+    }
+
+    #[test]
+    fn ctrl_letter_folds_lowercase_to_named() {
+        assert_named(
+            translate(k_mod(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+            "C-c",
+        );
+        assert_named(
+            translate(k_mod(KeyCode::Char('A'), KeyModifiers::CONTROL)),
+            "C-a",
+        );
+    }
+
+    #[test]
+    fn alt_letter_folds_to_named() {
+        assert_named(
+            translate(k_mod(KeyCode::Char('x'), KeyModifiers::ALT)),
+            "M-x",
+        );
+    }
+
+    #[test]
+    fn ctrl_alt_combo() {
+        assert_named(
+            translate(k_mod(
+                KeyCode::Char('q'),
+                KeyModifiers::CONTROL | KeyModifiers::ALT,
+            )),
+            "C-M-q",
+        );
+    }
+
+    #[test]
+    fn arrow_keys() {
+        assert_named(translate(k(KeyCode::Up)), "Up");
+        assert_named(translate(k(KeyCode::Down)), "Down");
+        assert_named(translate(k(KeyCode::Left)), "Left");
+        assert_named(translate(k(KeyCode::Right)), "Right");
+    }
+
+    #[test]
+    fn ctrl_arrow_chord() {
+        assert_named(translate(k_mod(KeyCode::Up, KeyModifiers::CONTROL)), "C-Up");
+    }
+
+    #[test]
+    fn navigation_named_keys() {
+        assert_named(translate(k(KeyCode::Esc)), "Escape");
+        assert_named(translate(k(KeyCode::Enter)), "Enter");
+        assert_named(translate(k(KeyCode::Tab)), "Tab");
+        assert_named(translate(k(KeyCode::BackTab)), "BTab");
+        assert_named(translate(k(KeyCode::Backspace)), "BSpace");
+        assert_named(translate(k(KeyCode::Delete)), "DC");
+        assert_named(translate(k(KeyCode::Insert)), "IC");
+        assert_named(translate(k(KeyCode::Home)), "Home");
+        assert_named(translate(k(KeyCode::End)), "End");
+        assert_named(translate(k(KeyCode::PageUp)), "PPage");
+        assert_named(translate(k(KeyCode::PageDown)), "NPage");
+    }
+
+    #[test]
+    fn function_keys() {
+        assert_named(translate(k(KeyCode::F(1))), "F1");
+        assert_named(translate(k(KeyCode::F(12))), "F12");
+        assert_named(
+            translate(k_mod(KeyCode::F(5), KeyModifiers::CONTROL)),
+            "C-F5",
+        );
+    }
+
+    fn snd_lit(s: &str) -> WorkerMsg {
+        WorkerMsg::Send(TmuxKey::Literal(s.into()))
+    }
+    fn snd_named(s: &str) -> WorkerMsg {
+        WorkerMsg::Send(TmuxKey::Named(s.into()))
+    }
+
+    #[test]
+    fn coalesce_empty_batch_is_empty() {
+        assert_eq!(coalesce(vec![]), vec![]);
+    }
+
+    #[test]
+    fn coalesce_single_literal_passes_through() {
+        assert_eq!(
+            coalesce(vec![snd_lit("a")]),
+            vec![TmuxAction::Literal("a".into())]
+        );
+    }
+
+    #[test]
+    fn coalesce_single_named_passes_through() {
+        assert_eq!(
+            coalesce(vec![snd_named("Escape")]),
+            vec![TmuxAction::Named("Escape".into())]
+        );
+    }
+
+    #[test]
+    fn coalesce_run_of_literals_merges_into_one_call() {
+        // The whole point of coalescing: typing "hello" should be a
+        // single tmux send-keys call, not five.
+        let out = coalesce(vec![
+            snd_lit("h"),
+            snd_lit("e"),
+            snd_lit("l"),
+            snd_lit("l"),
+            snd_lit("o"),
+        ]);
+        assert_eq!(out, vec![TmuxAction::Literal("hello".into())]);
+    }
+
+    #[test]
+    fn coalesce_named_breaks_the_run() {
+        // An Up arrow in the middle of typing must arrive in order,
+        // not after the surrounding text. Coalescing splits the run at
+        // the named key.
+        let out = coalesce(vec![
+            snd_lit("a"),
+            snd_lit("b"),
+            snd_named("Up"),
+            snd_lit("c"),
+            snd_lit("d"),
+        ]);
+        assert_eq!(
+            out,
+            vec![
+                TmuxAction::Literal("ab".into()),
+                TmuxAction::Named("Up".into()),
+                TmuxAction::Literal("cd".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn coalesce_back_to_back_named_keys() {
+        // Two named keys in a row (e.g., Up Up) stay as two separate
+        // dispatches; tmux send-keys won't accept them as one literal.
+        let out = coalesce(vec![snd_named("Up"), snd_named("Up")]);
+        assert_eq!(
+            out,
+            vec![
+                TmuxAction::Named("Up".into()),
+                TmuxAction::Named("Up".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn coalesce_trailing_literal_is_flushed() {
+        // Regression guard for the obvious off-by-one: the final
+        // unflushed literal run must escape the loop.
+        let out = coalesce(vec![snd_named("Tab"), snd_lit("x"), snd_lit("y")]);
+        assert_eq!(
+            out,
+            vec![
+                TmuxAction::Named("Tab".into()),
+                TmuxAction::Literal("xy".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn coalesce_resize_breaks_literal_run() {
+        // A pane resize sandwiched between keystrokes must dispatch in
+        // order so the agent renders the trailing keys at the new
+        // geometry (relevant for any agent using cursor-position
+        // escapes or column-aware wrapping).
+        let out = coalesce(vec![
+            snd_lit("a"),
+            snd_lit("b"),
+            WorkerMsg::Resize {
+                cols: 100,
+                rows: 40,
+            },
+            snd_lit("c"),
+        ]);
+        assert_eq!(
+            out,
+            vec![
+                TmuxAction::Literal("ab".into()),
+                TmuxAction::Resize {
+                    cols: 100,
+                    rows: 40
+                },
+                TmuxAction::Literal("c".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn unhandled_keys_are_ignored() {
+        assert_eq!(translate(k(KeyCode::Null)), LiveDispatch::Ignore);
+        assert_eq!(translate(k(KeyCode::CapsLock)), LiveDispatch::Ignore);
+    }
+
+    #[test]
+    fn plain_q_is_literal_not_exit() {
+        // Without Ctrl, `q` is just a letter the user wants to send.
+        assert_literal(translate(k(KeyCode::Char('q'))), "q");
+        assert_literal(translate(k(KeyCode::Char('Q'))), "Q");
+    }
+
+    #[test]
+    fn alt_q_is_named_not_exit() {
+        // Only Ctrl+Q exits. Alt+Q is a normal modifier chord.
+        assert_named(
+            translate(k_mod(KeyCode::Char('q'), KeyModifiers::ALT)),
+            "M-q",
+        );
+    }
+}

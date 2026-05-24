@@ -1,11 +1,14 @@
 //! Home view - main session list and navigation
 
 mod input;
+mod live_send;
 mod operations;
 mod render;
 
 #[cfg(test)]
 mod tests;
+
+pub use live_send::LiveSendState;
 
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
@@ -230,6 +233,23 @@ pub struct HomeView {
     pub(super) send_message_dialog: Option<super::dialogs::SendMessageDialog>,
     /// Session to receive the message from the send dialog
     pub(super) pending_send_session: Option<String>,
+    /// Live-send mode: when `Some`, every key event in the home view is
+    /// translated to a tmux send-keys call against this session's pane
+    /// until the user presses the exit chord (Ctrl+q). Set by `Tab` (in
+    /// both modes) and by the palette entry; cleared by the exit chord
+    /// inside the live handler.
+    pub(super) live_send: Option<LiveSendState>,
+    /// Background dispatcher created alongside `live_send`. Owns the
+    /// tmux Session and a worker thread that drains a channel of
+    /// translated keystrokes, coalescing runs of literals into single
+    /// `tmux send-keys` calls so the UI thread never blocks on fork
+    /// latency. Dropping (set to None when live mode exits) closes the
+    /// channel and the worker thread exits cleanly on its own.
+    pub(super) live_send_worker: Option<live_send::LiveSendWorker>,
+    /// Last (cols, rows) we asked the worker to resize the pane to in
+    /// the current live-send session. Used to dedup the resize messages
+    /// fired from the preview refresh path; cleared on live-send exit.
+    pub(super) live_send_last_resize: Option<(u16, u16)>,
     /// Pasted text captured at the home view that we couldn't immediately
     /// route (no session selected, cursor on a group header, etc.). Drained
     /// into the next compose dialog the user opens, so voice/dictation never
@@ -513,6 +533,9 @@ impl HomeView {
             update_confirm_dialog: None,
             send_message_dialog: None,
             pending_send_session: None,
+            live_send: None,
+            live_send_worker: None,
+            live_send_last_resize: None,
             pending_paste: None,
             pending_attach_after_warning: None,
             pending_stop_session: None,
@@ -1789,7 +1812,8 @@ impl HomeView {
         #[cfg(not(feature = "serve"))]
         let serve_open = false;
 
-        self.show_help
+        self.live_send.is_some()
+            || self.show_help
             || self.search_active
             || self.new_dialog.is_some()
             || self.confirm_dialog.is_some()
@@ -1835,7 +1859,12 @@ impl HomeView {
         if !self.has_dialog() {
             return true;
         }
-        self.rename_dialog.is_some()
+        // Live-send mode is also paste-aware: handle_paste forwards the
+        // chunk straight to the pane via send_literal_no_enter, which is
+        // strictly faster and safer than letting the chars fan out as
+        // individual KeyEvents and stream per-char tmux calls.
+        self.live_send.is_some()
+            || self.rename_dialog.is_some()
             || self.send_message_dialog.is_some()
             || self.new_dialog.is_some()
             || self.settings_view.is_some()
@@ -2145,6 +2174,71 @@ impl HomeView {
             self.selected_session = None;
         }
         stale_sid
+    }
+
+    /// Stage live-send mode against `session_id`. Mirrors
+    /// `execute_send_message`'s revive cascade so a cold-start (Docker
+    /// pull, agent splash) is handled before the user starts typing,
+    /// then installs `live_send` state so subsequent keystrokes are
+    /// captured by `handle_live_send_key`.
+    ///
+    /// Returns `Ok(Some(stale_sid))` when the resume-fallback cascade
+    /// fired during respawn, `Ok(None)` on a clean ready, and `Err(())`
+    /// if the pane could not be readied (`info_dialog` is set with the
+    /// underlying error so the caller only has to clear its toast).
+    pub fn enter_live_send(&mut self, session_id: &str) -> Result<Option<String>, ()> {
+        let outcome = self.try_mutate_instance_writeback_on_err(session_id, |inst| {
+            inst.ensure_pane_ready().map_err(Into::into)
+        });
+        let stale_sid = match outcome {
+            Ok(Some(EnsureReadyOutcome::Respawned {
+                stale_sid: Some(sid),
+            }))
+            | Ok(Some(EnsureReadyOutcome::Started {
+                stale_sid: Some(sid),
+            })) => Some(sid),
+            Ok(_) => None,
+            Err(err) => {
+                self.info_dialog = Some(InfoDialog::new(
+                    "Live send failed",
+                    &format!("Cannot prepare session: {}", err),
+                ));
+                return Err(());
+            }
+        };
+        let inst = match self.get_instance(session_id) {
+            Some(inst) => inst.clone(),
+            None => return Err(()),
+        };
+        // Resolve the tmux session name up front so the worker thread
+        // can reconstruct a Session without re-touching HomeView. If we
+        // can't even build the Session here, surface the error before
+        // installing live state.
+        let tmux_session = match crate::tmux::Session::new(&inst.id, &inst.title) {
+            Ok(s) => s,
+            Err(e) => {
+                self.info_dialog = Some(InfoDialog::new(
+                    "Live send failed",
+                    &format!("Cannot resolve tmux session: {}", e),
+                ));
+                return Err(());
+            }
+        };
+        self.live_send = Some(LiveSendState {
+            session_id: inst.id.clone(),
+            title: inst.title.clone(),
+        });
+        self.live_send_worker = Some(live_send::LiveSendWorker::spawn(
+            tmux_session.name().to_string(),
+        ));
+        // Force the preview-refresh path to issue a resize on the
+        // first draw inside live mode (it dedups against
+        // live_send_last_resize), so the agent's render matches the
+        // preview pane's actual dimensions instead of whatever the
+        // session was last sized to.
+        self.live_send_last_resize = None;
+        self.stamp_last_accessed(session_id);
+        Ok(stale_sid)
     }
 
     pub fn save(&mut self) -> anyhow::Result<()> {

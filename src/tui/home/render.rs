@@ -395,34 +395,51 @@ impl HomeView {
             return;
         }
 
-        // Layout: main area + status bar + optional update bar at bottom.
+        // Layout: optional live-send header at top + main area + status bar
+        // + optional update bar at bottom. The live-send header makes the
+        // exit chord (Ctrl+Q) unmissable from the top of the screen;
+        // mirroring it in the status bar covers the bottom-of-screen gaze.
         // The update bar surfaces both persistent update-available banners
         // (update_info) and transient toasts (update_status); we need a row
         // for it whenever either is present, otherwise toasts fired without
         // a pending update would never reach the screen.
         let has_update_bar = update_info.is_some() || update_status.is_some();
-        let constraints = if has_update_bar {
-            vec![
-                Constraint::Min(0),
-                Constraint::Length(1),
-                Constraint::Length(1),
-            ]
-        } else {
-            vec![Constraint::Min(0), Constraint::Length(1)]
-        };
+        let has_live_header = self.live_send.is_some();
+        let mut constraints: Vec<Constraint> = Vec::with_capacity(4);
+        if has_live_header {
+            constraints.push(Constraint::Length(1));
+        }
+        constraints.push(Constraint::Min(0));
+        constraints.push(Constraint::Length(1));
+        if has_update_bar {
+            constraints.push(Constraint::Length(1));
+        }
         let main_chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints(constraints)
             .split(area);
+        // Slice indices shift when the live header is present. Resolve
+        // them once so the rest of this function reads naturally.
+        let header_idx = if has_live_header { Some(0) } else { None };
+        let body_idx = if has_live_header { 1 } else { 0 };
+        let status_idx = body_idx + 1;
+        let update_idx = if has_update_bar {
+            Some(status_idx + 1)
+        } else {
+            None
+        };
+        if let Some(idx) = header_idx {
+            self.render_live_header(frame, main_chunks[idx], theme);
+        }
 
         // Below STACKED_BREAKPOINT (80 cols), put the list above the preview
         // instead of side-by-side. At 80 cols a side-by-side preview is only
         // ~45 cols (with default list_width 35), too cramped for output;
         // stacking gives the preview the full width.
-        let available_width = main_chunks[0].width;
+        let available_width = main_chunks[body_idx].width;
         self.main_area_width = available_width;
         if available_width < responsive::STACKED_BREAKPOINT {
-            let main_height = main_chunks[0].height;
+            let main_height = main_chunks[body_idx].height;
             let list_height = responsive::stacked_list_height(main_height);
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
@@ -430,7 +447,7 @@ impl HomeView {
                     Constraint::Length(list_height),
                     Constraint::Min(responsive::STACKED_PREVIEW_MIN),
                 ])
-                .split(main_chunks[0]);
+                .split(main_chunks[body_idx]);
 
             // Stacked layout has no vertical divider; only the side-by-side
             // path exposes the resize-by-drag affordance.
@@ -451,7 +468,7 @@ impl HomeView {
                     Constraint::Length(effective_list_width),
                     Constraint::Min(responsive::PREVIEW_MIN_WIDTH),
                 ])
-                .split(main_chunks[0]);
+                .split(main_chunks[body_idx]);
 
             // Layout chunks are contiguous, so chunks[1].x is the first
             // column of the preview block, i.e. the visible left border
@@ -462,10 +479,10 @@ impl HomeView {
             self.render_list(frame, chunks[0], theme);
             self.render_preview(frame, chunks[1], theme);
         }
-        self.render_status_bar(frame, main_chunks[1], theme);
+        self.render_status_bar(frame, main_chunks[status_idx], theme);
 
-        if has_update_bar {
-            self.render_update_bar(frame, main_chunks[2], theme, update_info, update_status);
+        if let Some(idx) = update_idx {
+            self.render_update_bar(frame, main_chunks[idx], theme, update_info, update_status);
         }
 
         // Render dialogs on top
@@ -1137,7 +1154,37 @@ impl HomeView {
 
     /// Refresh preview cache if needed (session changed, dimensions changed, or timer expired)
     fn refresh_preview_cache_if_needed(&mut self, width: u16, height: u16) {
-        const PREVIEW_REFRESH_MS: u128 = 250; // Refresh preview 4x/second max
+        // 250ms (4 Hz) is the steady-state cadence, enough to surface
+        // status changes without forking tmux on every loop tick. While
+        // the user is in live-send mode they're watching the preview
+        // for feedback on each keystroke, so drop to 50ms (20 Hz,
+        // matching the app loop's refresh_interval) so typed input
+        // shows up the next time the loop ticks rather than a beat
+        // later.
+        const PREVIEW_REFRESH_MS_IDLE: u128 = 250;
+        const PREVIEW_REFRESH_MS_LIVE: u128 = 50;
+        let in_live = self.live_send.is_some();
+        let refresh_ms = if in_live {
+            PREVIEW_REFRESH_MS_LIVE
+        } else {
+            PREVIEW_REFRESH_MS_IDLE
+        };
+
+        // While in live-send mode, keep the tmux pane geometry in sync
+        // with the preview's actual cell dimensions so the agent
+        // renders directly into the visible area (no wrap, no cropped
+        // UI). Deduped against live_send_last_resize so we only fire
+        // when the user first enters live mode or the preview pane is
+        // resized (terminal resize, divider drag, layout flip).
+        if in_live && width > 0 && height > 0 {
+            let next = (width, height);
+            if self.live_send_last_resize != Some(next) {
+                if let Some(worker) = &self.live_send_worker {
+                    worker.resize(width, height);
+                }
+                self.live_send_last_resize = Some(next);
+            }
+        }
 
         let scroll_offset = self.preview_scroll_offset;
         let session_changed = match &self.selected_session {
@@ -1145,8 +1192,7 @@ impl HomeView {
             None => false,
         };
         let dims_changed = self.preview_cache.dimensions != (width, height);
-        let timer_expired =
-            self.preview_cache.last_refresh.elapsed().as_millis() > PREVIEW_REFRESH_MS;
+        let timer_expired = self.preview_cache.last_refresh.elapsed().as_millis() > refresh_ms;
         // Only re-capture for scroll when the cached window can no longer
         // cover the requested offset. Wheel ticks inside the BUFFER headroom
         // re-render from the existing content without forking tmux.
@@ -1673,7 +1719,81 @@ impl HomeView {
         }
     }
 
+    /// Top-of-screen live-send banner. Painted as a reversed-color chip
+    /// that fills the row width so it reads as a mode indicator rather
+    /// than floating chrome. The status bar gets a more compact mirror
+    /// of the same content so the exit chord is visible from either
+    /// gaze direction.
+    fn render_live_header(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        let Some(state) = &self.live_send else {
+            return;
+        };
+        let title = if state.title.is_empty() {
+            "session".to_string()
+        } else {
+            state.title.clone()
+        };
+        let chip_style = Style::default()
+            .fg(theme.background)
+            .bg(theme.running)
+            .bold();
+        let title_style = Style::default().fg(theme.background).bg(theme.running);
+        let exit_style = Style::default()
+            .fg(theme.background)
+            .bg(theme.running)
+            .bold();
+        let mut spans: Vec<Span<'static>> = vec![
+            Span::styled(" \u{25CF} LIVE SEND \u{2192} ", chip_style),
+            Span::styled(format!("{}  ", title), title_style),
+            Span::styled("Ctrl+Q", exit_style),
+            Span::styled(" to exit live mode ", title_style),
+        ];
+        // Pad the remainder of the row with the same bg color so the
+        // banner reads as a continuous strip rather than a floating chip.
+        let used: usize = spans
+            .iter()
+            .map(|s| unicode_width::UnicodeWidthStr::width(s.content.as_ref()))
+            .sum();
+        let pad = (area.width as usize).saturating_sub(used);
+        if pad > 0 {
+            spans.push(Span::styled(
+                " ".repeat(pad),
+                Style::default().bg(theme.running),
+            ));
+        }
+        frame.render_widget(Paragraph::new(Line::from(spans)), area);
+    }
+
     fn render_status_bar(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
+        // Live-send banner takes over the status bar so the user has an
+        // always-visible reminder that keystrokes are being relayed to the
+        // pane (and how to get out). Distinct color + bold so it can't be
+        // confused with the regular footer. The render_live_header
+        // counterpart paints the top of the screen with the same intent.
+        if let Some(state) = &self.live_send {
+            let title = if state.title.is_empty() {
+                "session".to_string()
+            } else {
+                state.title.clone()
+            };
+            let line = Line::from(vec![
+                Span::styled(
+                    " \u{25CF} LIVE \u{2192} ",
+                    Style::default()
+                        .fg(theme.background)
+                        .bg(theme.running)
+                        .bold(),
+                ),
+                Span::raw(" "),
+                Span::styled(title, Style::default().fg(theme.text).bold()),
+                Span::raw("  "),
+                Span::styled("Ctrl+Q", Style::default().fg(theme.accent).bold()),
+                Span::styled(" to exit ", Style::default().fg(theme.dimmed)),
+            ]);
+            frame.render_widget(Paragraph::new(line), area);
+            return;
+        }
+
         let key_style = Style::default().fg(theme.accent).bold();
         let desc_style = Style::default().fg(theme.dimmed);
         let sep_style = Style::default().fg(theme.border);

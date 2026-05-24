@@ -5,7 +5,7 @@ use ratatui::prelude::Position;
 use tui_input::backend::crossterm::EventHandler;
 use tui_input::Input;
 
-use super::{DragKind, HomeView, TerminalMode, ViewMode};
+use super::{live_send, DragKind, HomeView, TerminalMode, ViewMode};
 use crate::session::config::{load_config, save_config, GroupByMode, SortOrder};
 use crate::session::{list_profiles, repo_config, resolve_config_or_warn, Item, Status};
 use crate::tui::app::Action;
@@ -299,6 +299,15 @@ impl HomeView {
         key: KeyEvent,
         update_info: Option<&crate::update::UpdateInfo>,
     ) -> Option<Action> {
+        // Live-send capture wins over every other key handler. While
+        // `live_send` is `Some` the home view is acting as a thin relay
+        // to the target pane; dialog hotkeys, search, and list navigation
+        // all suspend until the user exits with Ctrl+].
+        if self.live_send.is_some() {
+            self.handle_live_send_key(key);
+            return None;
+        }
+
         // Handle unsaved changes confirmation for settings (shown over settings view)
         if self.settings_close_confirm {
             if let Some(dialog) = &mut self.confirm_dialog {
@@ -1856,6 +1865,18 @@ impl HomeView {
             KeyCode::Char('M') if self.strict_hotkeys => {
                 self.open_send_message_dialog();
             }
+            // Tab enters live-send mode on the selected running session.
+            // Free at the home-view top level (settings/cockpit/dialogs
+            // own their own Tab handlers), and the entry-vs-send
+            // distinction is unambiguous: this branch only fires when
+            // `live_send` is None, because the live-send capture at the
+            // top of `handle_key` short-circuits otherwise. While in
+            // live mode Tab is sent verbatim to the agent.
+            KeyCode::Tab => {
+                if let Some(action) = self.start_live_send() {
+                    return Some(action);
+                }
+            }
             KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.apply_sort_order(self.sort_order.cycle_reverse());
             }
@@ -2128,6 +2149,7 @@ impl HomeView {
                 self.tool_preview_cache = super::PreviewCache::default();
                 None
             }
+            PaletteAction::EnterLiveSend => self.start_live_send(),
         }
     }
 
@@ -2606,12 +2628,26 @@ impl HomeView {
 
     /// Route a bracketed paste event to the active text input dialog.
     ///
-    /// Active text-input dialogs (rename / send_message / new) win first so
-    /// multi-line voice/dictation lands in the dialog the user is actively
-    /// typing into. The settings view is checked last; its paste handler
-    /// strips newlines (settings/input.rs handle_paste sanitizes), which
-    /// would destroy multi-line dictation if we checked it first.
+    /// Live-send mode wins above every dialog: a paste while the user is
+    /// "attached" should stream straight to the agent's pane, not buffer
+    /// in a dialog the user isn't even looking at. Text-input dialogs
+    /// (rename / send_message / new) come next so multi-line dictation
+    /// lands in whichever dialog the user is actively typing into. The
+    /// settings view is checked last; its paste handler strips newlines,
+    /// which would destroy multi-line dictation if we checked it first.
     pub fn handle_paste(&mut self, text: &str) {
+        if let Some(state) = self.live_send.clone() {
+            if let Some(worker) = &self.live_send_worker {
+                // One Literal carries the whole pasted chunk so the worker
+                // dispatches it in a single tmux call. Routing through the
+                // worker (rather than calling tmux inline) keeps the paste
+                // ordered correctly against any in-flight keystrokes
+                // queued from the same event loop tick.
+                worker.send(live_send::TmuxKey::Literal(text.to_string()));
+            }
+            self.stamp_last_accessed(&state.session_id);
+            return;
+        }
         if let Some(ref mut dialog) = self.rename_dialog {
             dialog.handle_paste(text);
             return;
@@ -2690,6 +2726,45 @@ impl HomeView {
             profiles,
             tools,
         ));
+    }
+
+    /// Attempt to enter live-send mode against the currently-selected
+    /// running session. Resolves via `resolve_paste_target` so group
+    /// rows, empty lists, and non-running selections silently no-op.
+    /// Returns the deferred `Action::EnterLiveSend` so the app loop can
+    /// render the "Reviving..." toast before `ensure_pane_ready` runs;
+    /// the home view's `live_send` state is set later by
+    /// `enter_live_send` once the pane is confirmed ready.
+    pub(super) fn start_live_send(&mut self) -> Option<Action> {
+        let (id, _title) = self.resolve_paste_target()?;
+        Some(Action::EnterLiveSend(id))
+    }
+
+    /// Translate one key event in live-send mode and hand the result to
+    /// the background worker. The worker owns the tmux Session and runs
+    /// `send-keys` off the UI thread so a slow fork+exec never blocks
+    /// the redraw loop; literal-key runs coalesce into a single tmux
+    /// call so fast typing isn't N forks. Ctrl+q clears `live_send`
+    /// and drops the worker (which closes its channel, exiting the
+    /// thread cleanly on the next iteration).
+    fn handle_live_send_key(&mut self, key: KeyEvent) {
+        let Some(state) = self.live_send.clone() else {
+            return;
+        };
+        match live_send::translate(key) {
+            live_send::LiveDispatch::Exit => {
+                self.live_send = None;
+                self.live_send_worker = None;
+                self.live_send_last_resize = None;
+            }
+            live_send::LiveDispatch::Ignore => {}
+            live_send::LiveDispatch::Send(tmux_key) => {
+                if let Some(worker) = &self.live_send_worker {
+                    worker.send(tmux_key);
+                }
+                self.stamp_last_accessed(&state.session_id);
+            }
+        }
     }
 
     /// Open the send-message dialog for the currently-selected running session.

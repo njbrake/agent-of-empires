@@ -401,6 +401,69 @@ impl Session {
         Ok(())
     }
 
+    /// Resize the session's window to `cols x rows`. Used on live-send
+    /// entry so the agent renders into the preview pane's actual
+    /// dimensions instead of whatever size it started at: without this
+    /// the captured output wraps oddly or hides UI the user can't see.
+    /// Sends SIGWINCH to the pane process, so well-behaved TUI agents
+    /// (claude-code, codex, vim, ...) repaint automatically.
+    pub fn resize(&self, cols: u16, rows: u16) -> Result<()> {
+        if !self.exists() {
+            bail!("Session does not exist: {}", self.name);
+        }
+        let cols = cols.max(1);
+        let rows = rows.max(1);
+        let target = self.name.clone();
+        let output = Command::new("tmux")
+            .args([
+                "resize-window",
+                "-t",
+                &target,
+                "-x",
+                &cols.to_string(),
+                "-y",
+                &rows.to_string(),
+            ])
+            .output()?;
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            bail!("tmux resize-window failed: {}", stderr);
+        }
+        Ok(())
+    }
+
+    /// Send literal text to the pane via `tmux send-keys -l --` with no
+    /// trailing Enter. Used by live-send mode so a single typed character
+    /// streams through to the agent immediately rather than being treated
+    /// as a "submit message" payload. `--` ends option parsing so lines
+    /// starting with `-` are passed through verbatim.
+    pub fn send_literal_no_enter(&self, text: &str) -> Result<()> {
+        if !self.exists() {
+            bail!("Session does not exist: {}", self.name);
+        }
+        let target = format!("{}:^.0", self.name);
+        Self::tmux_send(&target, &["-l", "--", text])
+    }
+
+    /// Send a single tmux-named key (e.g. `Escape`, `Up`, `Tab`, `C-c`,
+    /// `Enter`) to the pane without appending Enter afterwards. Used by
+    /// live-send mode to deliver navigation input that the agent must
+    /// receive verbatim, not as literal text plus submit.
+    ///
+    /// `key_name` is passed through to `tmux send-keys` as a key name; tmux
+    /// recognizes the names documented in its KEY BINDINGS section (cursor
+    /// keys, `BSpace`, `BTab`, `DC`, `End`, `Enter`, `Escape`, `F1`..`F12`,
+    /// `Home`, `IC`, `NPage`, `PPage`, `Space`, `Tab`) plus the `C-` / `S-` /
+    /// `M-` modifier prefixes. Anything tmux does not recognize comes back
+    /// as an error.
+    pub fn send_named_key(&self, key_name: &str) -> Result<()> {
+        if !self.exists() {
+            bail!("Session does not exist: {}", self.name);
+        }
+        let target = format!("{}:^.0", self.name);
+        Self::tmux_send(&target, &[key_name])
+    }
+
     /// Deliver `text` to `target` via tmux's load-buffer + paste-buffer.
     /// Buffer names are scoped by pid + a per-call counter so concurrent
     /// senders (and retries) cannot clobber each other. `-p` enables
