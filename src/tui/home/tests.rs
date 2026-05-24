@@ -5230,25 +5230,54 @@ mod live_send_mode {
     //! Live-send wiring at the home view level. Translation correctness
     //! is covered by unit tests in src/tui/home/live_send.rs. Here we
     //! verify the integration points: keys are captured while live mode
-    //! is active, Ctrl+] clears the state, and the predicate plumbing
-    //! treats live mode like a modal capture so the rest of the TUI
-    //! suspends underneath it.
+    //! is active, Ctrl+q clears the state, the per-keystroke liveness
+    //! check auto-exits on drift, and the predicate plumbing treats
+    //! live mode like a modal capture so the rest of the TUI suspends
+    //! underneath it.
 
+    use super::super::live_send::LiveSendState;
     use super::*;
-    use crate::tui::home::LiveSendState;
 
-    fn install_live(env: &mut TestEnv) {
+    /// Seed live-send state pointing at the first instance in the test
+    /// env, with a matching tmux_name so the drift check passes. Tests
+    /// that want to trigger drift either install pointing at a missing
+    /// id or mutate the instance's title after installing.
+    fn install_live_for_first_session(env: &mut TestEnv) -> String {
+        let id = env
+            .view
+            .flat_items
+            .iter()
+            .find_map(|item| match item {
+                crate::session::Item::Session { id, .. } => Some(id.clone()),
+                _ => None,
+            })
+            .expect("test env has no sessions; use install_live_orphan instead");
+        let inst = env.view.get_instance(&id).unwrap().clone();
+        let tmux_name = crate::tmux::Session::generate_name(&inst.id, &inst.title);
         env.view.live_send = Some(LiveSendState {
-            session_id: "fake-id".to_string(),
-            title: "fake-title".to_string(),
+            session_id: inst.id.clone(),
+            title: inst.title,
+            tmux_name,
+        });
+        id
+    }
+
+    /// Install live-send state pointing at a session id the env does
+    /// NOT contain — used to verify the drift check fires (auto-exit
+    /// + info dialog) when the underlying instance has vanished.
+    fn install_live_orphan(env: &mut TestEnv) {
+        env.view.live_send = Some(LiveSendState {
+            session_id: "missing-id".to_string(),
+            title: "missing-title".to_string(),
+            tmux_name: "missing-tmux".to_string(),
         });
     }
 
     #[test]
     #[serial]
     fn ctrl_q_exits_live_mode() {
-        let mut env = create_test_env_empty();
-        install_live(&mut env);
+        let mut env = create_test_env_with_sessions(1);
+        install_live_for_first_session(&mut env);
         assert!(env.view.live_send.is_some());
 
         env.view.handle_key(
@@ -5261,19 +5290,69 @@ mod live_send_mode {
 
     #[test]
     #[serial]
+    fn ctrl_q_exits_even_when_session_has_drifted() {
+        // Ctrl+q is the safety chord: it must always exit cleanly,
+        // even if the underlying session went away (so the user can
+        // recover from a stuck live mode without an extra dialog).
+        let mut env = create_test_env_empty();
+        install_live_orphan(&mut env);
+        env.view.handle_key(
+            KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL),
+            None,
+        );
+        assert!(env.view.live_send.is_none());
+        assert!(env.view.info_dialog.is_none());
+    }
+
+    #[test]
+    #[serial]
     fn arbitrary_key_in_live_mode_does_not_emit_action() {
         // Live-send swallows the key (forwards it to tmux). The tmux
-        // call will quietly fail because the fake session does not
-        // exist, but the home view must NOT bubble an Action::* out
-        // (otherwise the action would race with the live state).
-        let mut env = create_test_env_empty();
-        install_live(&mut env);
+        // call will quietly fail because the test env doesn't have a
+        // real tmux pane, but the home view must NOT bubble an
+        // Action::* out (otherwise the action would race with the
+        // live state).
+        let mut env = create_test_env_with_sessions(1);
+        install_live_for_first_session(&mut env);
         let action = env
             .view
             .handle_key(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE), None);
         assert!(action.is_none());
-        // Still in live mode; only Ctrl+] exits.
+        // Still in live mode; only Ctrl+q exits.
         assert!(env.view.live_send.is_some());
+    }
+
+    #[test]
+    #[serial]
+    fn drift_check_auto_exits_when_instance_missing() {
+        // If the session is deleted while live mode is active, the
+        // very next keystroke should auto-exit and surface an info
+        // dialog explaining why (so the user isn't typing into the
+        // void with no feedback).
+        let mut env = create_test_env_empty();
+        install_live_orphan(&mut env);
+        env.view
+            .handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE), None);
+        assert!(env.view.live_send.is_none());
+        assert!(env.view.info_dialog.is_some());
+    }
+
+    #[test]
+    #[serial]
+    fn drift_check_auto_exits_when_session_renamed() {
+        // Title changes the generated tmux name. After a rename the
+        // worker is targeting a stale name, so the next keystroke
+        // should auto-exit. Simulate the rename by mutating the
+        // instance title after installing live state.
+        let mut env = create_test_env_with_sessions(1);
+        let id = install_live_for_first_session(&mut env);
+        env.view.mutate_instance(&id, |inst| {
+            inst.title = "renamed-after-entry".to_string();
+        });
+        env.view
+            .handle_key(KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE), None);
+        assert!(env.view.live_send.is_none());
+        assert!(env.view.info_dialog.is_some());
     }
 
     #[test]
@@ -5284,7 +5363,7 @@ mod live_send_mode {
         // mode for free via this single addition.
         let mut env = create_test_env_empty();
         assert!(!env.view.has_dialog());
-        install_live(&mut env);
+        install_live_orphan(&mut env);
         assert!(env.view.has_dialog());
     }
 
@@ -5296,7 +5375,7 @@ mod live_send_mode {
         // markers are missing (mosh, some SSH wrappers). Live mode wants
         // batching so a paste streams as one tmux call.
         let mut env = create_test_env_empty();
-        install_live(&mut env);
+        install_live_orphan(&mut env);
         assert!(env.view.wants_paste_burst());
     }
 

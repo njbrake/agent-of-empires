@@ -2747,15 +2747,39 @@ impl HomeView {
     /// call so fast typing isn't N forks. Ctrl+q clears `live_send`
     /// and drops the worker (which closes its channel, exiting the
     /// thread cleanly on the next iteration).
+    ///
+    /// Before dispatching we re-verify that the target session still
+    /// exists at the same tmux name as it had at entry time. If a peer
+    /// process deleted the session or a rename diverged the name from
+    /// what the worker is targeting, the user would otherwise type
+    /// into the void with only a `tracing::warn!` for company. Auto-
+    /// exit + info dialog instead.
     fn handle_live_send_key(&mut self, key: KeyEvent) {
         let Some(state) = self.live_send.clone() else {
             return;
         };
-        match live_send::translate(key) {
+        let dispatch = live_send::translate(key);
+        // Honor the exit chord before the drift check: exiting is
+        // always safe and the user pressing Ctrl+q to escape a
+        // drifted-and-stuck live mode should not hit a "session
+        // ended" dialog on the way out.
+        if matches!(dispatch, live_send::LiveDispatch::Exit) {
+            self.live_send = None;
+            self.live_send_worker = None;
+            self.live_send_last_resize = None;
+            return;
+        }
+        if let Some(reason) = self.live_send_drift_reason(&state) {
+            self.live_send = None;
+            self.live_send_worker = None;
+            self.live_send_last_resize = None;
+            self.info_dialog = Some(InfoDialog::new("Live send ended", reason));
+            return;
+        }
+        match dispatch {
             live_send::LiveDispatch::Exit => {
-                self.live_send = None;
-                self.live_send_worker = None;
-                self.live_send_last_resize = None;
+                // Handled by the matches! above; this arm only exists
+                // so the match remains exhaustive.
             }
             live_send::LiveDispatch::Ignore => {}
             live_send::LiveDispatch::Send(tmux_key) => {
@@ -2765,6 +2789,23 @@ impl HomeView {
                 self.stamp_last_accessed(&state.session_id);
             }
         }
+    }
+
+    /// Returns `Some(reason)` if the live-send target has drifted out
+    /// from under us between entry and now: instance deleted, instance
+    /// title renamed (which changes the tmux session name), or the
+    /// generated name no longer matches what the worker was spawned
+    /// with. The caller uses the message verbatim in the info dialog,
+    /// so phrase it as a user-facing sentence.
+    fn live_send_drift_reason(&self, state: &live_send::LiveSendState) -> Option<&'static str> {
+        let Some(inst) = self.get_instance(&state.session_id) else {
+            return Some("Session was deleted while live mode was active.");
+        };
+        let current_name = crate::tmux::Session::generate_name(&inst.id, &inst.title);
+        if current_name != state.tmux_name {
+            return Some("Session was renamed while live mode was active.");
+        }
+        None
     }
 
     /// Open the send-message dialog for the currently-selected running session.

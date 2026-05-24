@@ -8,7 +8,9 @@ mod render;
 #[cfg(test)]
 mod tests;
 
-pub use live_send::LiveSendState;
+// LiveSendState is intentionally NOT re-exported: it's an internal
+// detail of the home module. Tests that need to install it directly
+// go through the `super::live_send::LiveSendState` path.
 
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
@@ -238,7 +240,7 @@ pub struct HomeView {
     /// until the user presses the exit chord (Ctrl+q). Set by `Tab` (in
     /// both modes) and by the palette entry; cleared by the exit chord
     /// inside the live handler.
-    pub(super) live_send: Option<LiveSendState>,
+    pub(super) live_send: Option<live_send::LiveSendState>,
     /// Background dispatcher created alongside `live_send`. Owns the
     /// tmux Session and a worker thread that drains a channel of
     /// translated keystrokes, coalescing runs of literals into single
@@ -2234,13 +2236,13 @@ impl HomeView {
                 return Err(());
             }
         };
-        self.live_send = Some(LiveSendState {
+        let tmux_name = tmux_session.name().to_string();
+        self.live_send = Some(live_send::LiveSendState {
             session_id: inst.id.clone(),
             title: inst.title.clone(),
+            tmux_name: tmux_name.clone(),
         });
-        self.live_send_worker = Some(live_send::LiveSendWorker::spawn(
-            tmux_session.name().to_string(),
-        ));
+        self.live_send_worker = Some(live_send::LiveSendWorker::spawn(tmux_name));
         // Force the preview-refresh path to issue a resize on the
         // first draw inside live mode (it dedups against
         // live_send_last_resize), so the agent's render matches the

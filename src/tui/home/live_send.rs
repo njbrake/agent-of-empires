@@ -26,13 +26,23 @@ use std::sync::mpsc::{channel, Sender};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-/// Lives on `HomeView::live_send` while the mode is active. Carries just
-/// enough state for the banner to render and for the exit handler to
-/// confirm the right pane was targeted.
+/// Lives on `HomeView::live_send` while the mode is active. Carries
+/// just enough state for the banner to render, for the exit handler
+/// to confirm the right pane was targeted, and for the per-keystroke
+/// liveness check to detect that the session has been deleted or
+/// renamed out from under us (the stored `tmux_name` is the entry-time
+/// value; if the instance's current `generate_name(id, title)` diverges
+/// we auto-exit rather than silently sending into the void).
+// Visibility note: `pub(in crate::tui)` rather than `pub(super)` so the
+// scope matches HomeView's field (whose `pub(super)` resolves to
+// `pub(in crate::tui)` from mod.rs). Anything tighter triggers
+// `private_interfaces`; anything looser leaks the type to the rest of
+// the crate.
 #[derive(Debug, Clone)]
-pub struct LiveSendState {
+pub(in crate::tui) struct LiveSendState {
     pub session_id: String,
     pub title: String,
+    pub tmux_name: String,
 }
 
 /// One coalesced unit of work the worker hands to tmux. `Literal` runs
@@ -42,7 +52,7 @@ pub struct LiveSendState {
 /// keystrokes makes the agent render those keystrokes at the new
 /// geometry).
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TmuxAction {
+pub(super) enum TmuxAction {
     Literal(String),
     Named(String),
     Resize { cols: u16, rows: u16 },
@@ -54,7 +64,7 @@ pub enum TmuxAction {
 /// `tmux send-keys` call); a `Send(Named)` or `Resize` flushes the
 /// current literal run and goes out on its own. Pure function so tests
 /// can verify ordering without spawning a worker thread.
-pub fn coalesce(batch: Vec<WorkerMsg>) -> Vec<TmuxAction> {
+pub(super) fn coalesce(batch: Vec<WorkerMsg>) -> Vec<TmuxAction> {
     let mut out: Vec<TmuxAction> = Vec::new();
     let mut run = String::new();
     let flush = |out: &mut Vec<TmuxAction>, run: &mut String| {
@@ -84,7 +94,7 @@ pub fn coalesce(batch: Vec<WorkerMsg>) -> Vec<TmuxAction> {
 /// burst of keystrokes that brackets a resize must arrive on either
 /// side of the geometry change, not be reordered after it.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum WorkerMsg {
+pub(super) enum WorkerMsg {
     Send(TmuxKey),
     Resize { cols: u16, rows: u16 },
 }
@@ -98,12 +108,12 @@ pub enum WorkerMsg {
 /// `join` because the worker is idempotent and harmless if it survives
 /// a brief moment past the UI thread that owned it (e.g., the user
 /// toggles live mode rapidly).
-pub struct LiveSendWorker {
+pub(in crate::tui) struct LiveSendWorker {
     tx: Sender<WorkerMsg>,
 }
 
 impl LiveSendWorker {
-    pub fn spawn(session_name: String) -> Self {
+    pub(super) fn spawn(session_name: String) -> Self {
         let (tx, rx) = channel::<WorkerMsg>();
         std::thread::spawn(move || {
             let session = crate::tmux::Session::from_name(&session_name);
@@ -126,7 +136,7 @@ impl LiveSendWorker {
     /// Enqueue a translated key for dispatch. Returns immediately; the
     /// fork+exec for `tmux send-keys` happens on the worker thread, so
     /// the UI never blocks on tmux latency.
-    pub fn send(&self, key: TmuxKey) {
+    pub(super) fn send(&self, key: TmuxKey) {
         // Channel send only fails if the worker thread panicked. Drop
         // silently rather than spam logs: the user's next exit attempt
         // (Ctrl+q) will clear the dead worker and we'll spawn a fresh
@@ -138,7 +148,7 @@ impl LiveSendWorker {
     /// with surrounding keystrokes so that keys typed before the
     /// resize arrive in the old size and keys after arrive in the new
     /// size (matters when an agent uses cursor-position escapes).
-    pub fn resize(&self, cols: u16, rows: u16) {
+    pub(super) fn resize(&self, cols: u16, rows: u16) {
         let _ = self.tx.send(WorkerMsg::Resize { cols, rows });
     }
 }
@@ -162,7 +172,7 @@ fn dispatch_batch(session: &crate::tmux::Session, batch: Vec<WorkerMsg>) {
 
 /// What the translator says to do with one incoming key event.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LiveDispatch {
+pub(super) enum LiveDispatch {
     /// User pressed the exit chord; the caller should clear `live_send`.
     Exit,
     /// Forward the keystroke to tmux in the requested form.
@@ -175,7 +185,7 @@ pub enum LiveDispatch {
 /// How the translator wants the keystroke delivered. `Literal` payloads
 /// go through `tmux send-keys -l --`, named keys through `tmux send-keys`.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TmuxKey {
+pub(super) enum TmuxKey {
     Literal(String),
     Named(String),
 }
