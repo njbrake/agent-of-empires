@@ -875,13 +875,15 @@ pub fn detect_hermes_status(raw_content: &str) -> Status {
     }
 
     // Input prompt ❯ (default skin) or ⚡ (cyberpunk skin) on its own means
-    // the agent finished its turn. Placed before scrollback activity words to
-    // avoid false-positive Running from a previous turn.
+    // the agent finished its turn and is ready for the next message — Idle,
+    // not Waiting (which in AoE means "needs user approval for a dangerous
+    // command"). Placed before scrollback activity words to avoid false-positive
+    // Running from a previous turn.
     for line in non_empty_lines.iter().rev().take(5) {
         let clean = strip_ansi(line).trim().to_string();
         if clean == "❯" || clean.starts_with("❯ ") || clean == "⚡" || clean.starts_with("⚡ ")
         {
-            return Status::Waiting;
+            return Status::Idle;
         }
     }
 
@@ -2229,10 +2231,12 @@ run this command? (y/n)
     }
 
     #[test]
-    fn test_detect_hermes_status_waiting_on_input_prompt() {
-        assert_eq!(detect_hermes_status("some output\n❯"), Status::Waiting);
-        assert_eq!(detect_hermes_status("some output\n❯ "), Status::Waiting);
-        assert_eq!(detect_hermes_status("some output\n⚡"), Status::Waiting);
+    fn test_detect_hermes_status_idle_on_input_prompt() {
+        // The bare ❯/⚡ prompt means "ready for next message" — Idle in AoE
+        // semantics. Waiting is reserved for dangerous-command approval gates.
+        assert_eq!(detect_hermes_status("some output\n❯"), Status::Idle);
+        assert_eq!(detect_hermes_status("some output\n❯ "), Status::Idle);
+        assert_eq!(detect_hermes_status("some output\n⚡"), Status::Idle);
     }
 
     #[test]
@@ -2240,7 +2244,7 @@ run this command? (y/n)
         // If the input prompt is visible, don't mis-detect Running from old scrollback.
         assert_eq!(
             detect_hermes_status("pondering the question\ntask complete\n❯"),
-            Status::Waiting
+            Status::Idle
         );
     }
 
