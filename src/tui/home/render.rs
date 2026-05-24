@@ -426,7 +426,7 @@ impl HomeView {
 
         // Layout: optional live-send header at top + main area + status bar
         // + optional update bar at bottom. The live-send header makes the
-        // exit chord (Ctrl+]) unmissable from the top of the screen;
+        // exit chord (Ctrl+q) unmissable from the top of the screen;
         // mirroring it in the status bar covers the bottom-of-screen gaze.
         // The update bar surfaces both persistent update-available banners
         // (update_info) and transient toasts (update_status); we need a row
@@ -1755,7 +1755,7 @@ impl HomeView {
     /// gaze direction.
     ///
     /// On narrow terminals the title is truncated with an ellipsis so
-    /// the `Ctrl+]` hint stays visible. The fixed parts (chip prefix +
+    /// the `Ctrl+Q` hint stays visible. The fixed parts (chip prefix +
     /// exit chord + suffix) are reserved first; whatever's left goes to
     /// the title.
     fn render_live_header(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
@@ -1769,12 +1769,25 @@ impl HomeView {
         };
 
         let chip = " \u{25CF} LIVE SEND \u{2192} ";
-        let chord = "Ctrl+]";
+        let chord = "Ctrl+Q";
         let suffix = " to exit live mode ";
-        let separator = "  "; // between title and chord
+        let separator = "  "; // between title and the trailing block
+
+        // Surface the same scroll indicator the preview pane shows
+        // (top-right of the preview block), but here at the very top
+        // of the screen so the user always knows how far back into
+        // history they're looking. None while live-following.
+        let visible_height = (self.preview_cache.dimensions.1 as usize).saturating_sub(3);
+        let scroll = format_scroll_indicator(
+            self.preview_cache.captured_lines,
+            visible_height,
+            self.preview_scroll_offset,
+        )
+        .unwrap_or_default();
 
         let fixed_width = unicode_width::UnicodeWidthStr::width(chip)
             + unicode_width::UnicodeWidthStr::width(separator)
+            + unicode_width::UnicodeWidthStr::width(scroll.as_str())
             + unicode_width::UnicodeWidthStr::width(chord)
             + unicode_width::UnicodeWidthStr::width(suffix);
         let title_budget = (area.width as usize).saturating_sub(fixed_width);
@@ -1794,9 +1807,12 @@ impl HomeView {
             Span::styled(chip, chip_style),
             Span::styled(title, body_style),
             Span::styled(separator, body_style),
-            Span::styled(chord, chord_style),
-            Span::styled(suffix, body_style),
         ];
+        if !scroll.is_empty() {
+            spans.push(Span::styled(scroll, body_style));
+        }
+        spans.push(Span::styled(chord, chord_style));
+        spans.push(Span::styled(suffix, body_style));
         // Pad the remainder of the row with the same bg color so the
         // banner reads as a continuous strip rather than a floating chip.
         let used: usize = spans
@@ -1826,7 +1842,7 @@ impl HomeView {
                 state.title.as_str()
             };
             let chip = " \u{25CF} LIVE \u{2192} ";
-            let chord = "Ctrl+]";
+            let chord = "Ctrl+Q";
             let suffix = " to exit ";
             // Spaces between chip→title and title→chord. Title gets the
             // budget after the fixed pieces; reserved last so the exit

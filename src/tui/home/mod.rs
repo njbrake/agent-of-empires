@@ -237,7 +237,7 @@ pub struct HomeView {
     pub(super) pending_send_session: Option<String>,
     /// Live-send mode: when `Some`, every key event in the home view is
     /// translated to a tmux send-keys call against this session's pane
-    /// until the user presses the exit chord (Ctrl+]). Set by `Tab` (in
+    /// until the user presses the exit chord (Ctrl+q). Set by `Tab` (in
     /// both modes) and by the palette entry; cleared by the exit chord
     /// inside the live handler.
     pub(super) live_send: Option<live_send::LiveSendState>,

@@ -302,7 +302,7 @@ impl HomeView {
         // Live-send capture wins over every other key handler. While
         // `live_send` is `Some` the home view is acting as a thin relay
         // to the target pane; dialog hotkeys, search, and list navigation
-        // all suspend until the user exits with Ctrl+].
+        // all suspend until the user exits with Ctrl+q.
         if self.live_send.is_some() {
             self.handle_live_send_key(key);
             return None;
@@ -2776,7 +2776,7 @@ impl HomeView {
     /// the background worker. The worker owns the tmux Session and runs
     /// `send-keys` off the UI thread so a slow fork+exec never blocks
     /// the redraw loop; literal-key runs coalesce into a single tmux
-    /// call so fast typing isn't N forks. Ctrl+] clears `live_send`
+    /// call so fast typing isn't N forks. Ctrl+q clears `live_send`
     /// and drops the worker (which closes its channel, exiting the
     /// thread cleanly on the next iteration).
     ///
@@ -2819,7 +2819,7 @@ impl HomeView {
 
         let dispatch = live_send::translate(key);
         // Honor the exit chord before the drift check: exiting is
-        // always safe and the user pressing Ctrl+] to escape a
+        // always safe and the user pressing Ctrl+q to escape a
         // drifted-and-stuck live mode should not hit a "session
         // ended" dialog on the way out.
         if matches!(dispatch, live_send::LiveDispatch::Exit) {

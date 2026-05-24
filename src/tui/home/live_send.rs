@@ -5,16 +5,14 @@
 //! module's translator. Each translation produces a `tmux send-keys` call
 //! against the target pane: plain characters go literally, every other
 //! key (arrows, Esc, Tab, modifier combos) goes by tmux key name with
-//! `C-` / `M-` prefixes. The user exits with `Ctrl+]`.
+//! `C-` / `M-` prefixes. The user exits with `Ctrl+q`.
 //!
-//! Exit chord trade-off: `Ctrl+]` is telnet's classic "escape from
-//! captured session" chord. Power users recognize it from telnet /
-//! screen muscle memory, terminal emulators and Mosh pass it through
-//! reliably, and almost no agent binds it (so users don't lose a
-//! commonly-typed chord to the exit mechanism). The cost is that
-//! `C-]` literally can't be sent through live mode; if a user needs
-//! `C-]` in vim/emacs they should use the compose dialog or attach
-//! directly with `a`.
+//! Exit chord trade-off: `Ctrl+q` is memorable ("Q for quit"), is
+//! reachable on mobile keyboards (Termius and similar SSH clients
+//! don't always pass `Ctrl+]` through), and is what we shipped to
+//! users first. The cost is that vim/emacs `C-q` quoted-insert
+//! can't be sent through live mode; anyone needing that flow should
+//! use the compose dialog or attach directly with `a`.
 //!
 //! Trade-offs vs. a compose dialog:
 //! - No echo, no inline editing, no review step. The preview pane is the
@@ -26,7 +24,7 @@
 //!   in a single call.
 //!
 //! Reserved (non-forwarded) chords:
-//! - `Ctrl+]` — exit live mode (see above).
+//! - `Ctrl+q` — exit live mode (see above).
 //! - `Shift+PageUp` / `Shift+PageDown` — scroll the preview pane back
 //!   through agent history without exiting. Matches the terminal-
 //!   emulator convention. Bare `PageUp` / `PageDown` still passes
@@ -151,7 +149,7 @@ impl LiveSendWorker {
     pub(super) fn send(&self, key: TmuxKey) {
         // Channel send only fails if the worker thread panicked. Drop
         // silently rather than spam logs: the user's next exit attempt
-        // (Ctrl+]) will clear the dead worker and we'll spawn a fresh
+        // (Ctrl+q) will clear the dead worker and we'll spawn a fresh
         // one on the next live-send entry.
         let _ = self.tx.send(WorkerMsg::Send(key));
     }
@@ -205,10 +203,9 @@ pub(super) enum TmuxKey {
 /// Map one crossterm `KeyEvent` onto a `LiveDispatch`.
 ///
 /// Conventions:
-/// - `Ctrl+]` is Exit (telnet's classic escape). Alt is rejected so
-///   `Ctrl+Alt+]` still passes through to the agent as `C-M-]` for
-///   any user who wants it; the bare Ctrl+] chord is the one
-///   sacrifice the live-send mode makes.
+/// - `Ctrl+q` (lowercase, bare) is Exit. Holding Shift or Alt
+///   converts the chord to a passthrough (Ctrl+Shift+q, Ctrl+Alt+q)
+///   so the user can still deliver those combinations to the agent.
 /// - Plain printable chars (`KeyCode::Char` with no Ctrl/Alt) go literal
 ///   so the user's case and punctuation are preserved verbatim. The shift
 ///   modifier is implicit in the char itself, so we don't add `S-`.
@@ -225,12 +222,10 @@ pub fn translate(key: KeyEvent) -> LiveDispatch {
     let alt = key.modifiers.contains(KeyModifiers::ALT);
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
 
-    // Bare Ctrl+] only. Alt held converts the chord to a send-through
-    // (Ctrl+Alt+]) so the user can still deliver C-M-] to the agent.
-    // Shift is ignored here: `]` is symbolic, so terminals don't
-    // consistently set the SHIFT modifier for Ctrl+] and we don't want
-    // the chord to silently stop working depending on the terminal.
-    if ctrl && !alt && matches!(key.code, KeyCode::Char(']')) {
+    // Bare Ctrl+q only. Holding Shift or Alt converts the chord to a
+    // passthrough so the user can still deliver Ctrl+Shift+q (a.k.a.
+    // `C-q` to most agents) or Ctrl+Alt+q to the agent.
+    if ctrl && !shift && !alt && matches!(key.code, KeyCode::Char('q')) {
         return LiveDispatch::Exit;
     }
 
@@ -317,37 +312,35 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_right_bracket_exits() {
+    fn ctrl_q_exits() {
         assert_eq!(
-            translate(k_mod(KeyCode::Char(']'), KeyModifiers::CONTROL)),
+            translate(k_mod(KeyCode::Char('q'), KeyModifiers::CONTROL)),
             LiveDispatch::Exit
         );
     }
 
     #[test]
-    fn ctrl_right_bracket_with_shift_still_exits() {
-        // Some terminals deliver Ctrl+] with SHIFT also set (or strip
-        // it, depending on the keymap). `]` is symbolic so we accept
-        // either; the user's intent is unambiguous.
-        assert_eq!(
-            translate(k_mod(
-                KeyCode::Char(']'),
-                KeyModifiers::CONTROL | KeyModifiers::SHIFT
-            )),
-            LiveDispatch::Exit
-        );
-    }
-
-    #[test]
-    fn ctrl_alt_right_bracket_does_not_exit() {
-        // Adding Alt converts the chord to a passthrough so the user
-        // can still send C-M-] to the agent if they need to.
+    fn ctrl_shift_q_does_not_exit() {
+        // Only bare Ctrl+q exits. Shift held means the user actually
+        // wants to send `C-q` through to the agent (vim quoted-insert,
+        // readline start-output), so this must fall through to a Named
+        // dispatch instead of being eaten as an exit.
         let d = translate(k_mod(
-            KeyCode::Char(']'),
+            KeyCode::Char('Q'),
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        ));
+        assert_ne!(d, LiveDispatch::Exit);
+        assert_named(d, "C-q");
+    }
+
+    #[test]
+    fn ctrl_alt_q_does_not_exit() {
+        let d = translate(k_mod(
+            KeyCode::Char('q'),
             KeyModifiers::CONTROL | KeyModifiers::ALT,
         ));
         assert_ne!(d, LiveDispatch::Exit);
-        assert_named(d, "C-M-]");
+        assert_named(d, "C-M-q");
     }
 
     #[test]
@@ -601,21 +594,20 @@ mod tests {
     }
 
     #[test]
-    fn plain_right_bracket_is_literal_not_exit() {
-        // Without Ctrl, `]` is just a punctuation character the user
-        // wants to send (markdown links, array indexing, etc.).
-        assert_literal(translate(k(KeyCode::Char(']'))), "]");
+    fn plain_q_is_literal_not_exit() {
+        // Without Ctrl, `q` is just a letter the user wants to send.
+        assert_literal(translate(k(KeyCode::Char('q'))), "q");
+        assert_literal(translate(k(KeyCode::Char('Q'))), "Q");
     }
 
     #[test]
-    fn ctrl_q_is_now_a_passthrough() {
-        // The exit chord moved from Ctrl+q to Ctrl+]; that means
-        // Ctrl+q should now pass through to the agent (vim's
-        // quoted-insert / readline's start-output) instead of being
-        // intercepted.
+    fn ctrl_right_bracket_is_now_a_passthrough() {
+        // Ctrl+] used to be the exit chord but it doesn't pass through
+        // some SSH clients (Termius is the reported case). Now it
+        // forwards to the agent like any other modifier chord.
         assert_named(
-            translate(k_mod(KeyCode::Char('q'), KeyModifiers::CONTROL)),
-            "C-q",
+            translate(k_mod(KeyCode::Char(']'), KeyModifiers::CONTROL)),
+            "C-]",
         );
     }
 }
