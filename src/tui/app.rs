@@ -443,11 +443,18 @@ impl App {
         crate::tmux::refresh_session_cache();
 
         // Spawn async update check at startup. The periodic re-check below
-        // covers long-running sessions (#1471).
+        // covers long-running sessions (#1471). `last_update_check` stays
+        // `None` when the startup spawn does not fire (mode=off) so that
+        // toggling the mode on later triggers a check immediately, instead
+        // of waiting up to `check_interval_hours` from process launch.
         let settings = get_update_settings();
-        if settings.update_check_mode.is_enabled() {
-            self.spawn_update_check();
-        }
+        let mut last_update_check: Option<std::time::Instant> =
+            if settings.update_check_mode.is_enabled() {
+                self.spawn_update_check();
+                Some(std::time::Instant::now())
+            } else {
+                None
+            };
 
         // SIGHUP/SIGTERM futures so we exit cleanly when the terminal
         // emulator is force-quit, preventing PTY slot leaks (#541).
@@ -473,17 +480,10 @@ impl App {
         let mut last_disk_refresh = std::time::Instant::now();
         let mut last_spinner_redraw = std::time::Instant::now();
         let mut last_heartbeat = std::time::Instant::now();
-        // Tracks when the most recent update check started, so the periodic
-        // re-check in the loop body honors `check_interval_hours` (#1471).
-        // Initialized to the moment startup spawn fired (or "now" when the
-        // startup check was disabled) so the first periodic tick is one full
-        // interval away rather than firing immediately.
-        let mut last_update_check = std::time::Instant::now();
-        // Separate throttle for how often the periodic block re-reads
-        // settings; without this, `last_update_check.elapsed()` would be
-        // permanently above the throttle gap once the first 60s pass (it
-        // only resets on actual spawn), so the config-file read would still
-        // fire on every loop iteration until the full interval elapses.
+        // Throttle for how often the periodic block re-reads settings;
+        // without this, the inner guards would re-fire on every loop
+        // iteration once any time has passed, hitting the config file at
+        // the 20Hz loop rate.
         let mut last_update_eval = std::time::Instant::now();
         const STATUS_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
         const DISK_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
@@ -824,13 +824,13 @@ impl App {
                 last_update_eval = std::time::Instant::now();
                 let settings = get_update_settings();
                 if should_spawn_periodic_update_check(
-                    last_update_check.elapsed(),
+                    last_update_check.map(|t| t.elapsed()),
                     periodic_recheck_interval(settings.check_interval_hours),
                     self.update_rx.is_some(),
                     settings.update_check_mode.is_enabled(),
                 ) {
                     self.spawn_update_check();
-                    last_update_check = std::time::Instant::now();
+                    last_update_check = Some(std::time::Instant::now());
                 }
             }
 
@@ -1173,15 +1173,24 @@ fn periodic_recheck_interval(check_interval_hours: u64) -> Duration {
 /// Decide whether the main loop should spawn a fresh periodic update check.
 /// Pulled out as a pure function so the throttle/in-flight/mode guards are
 /// testable without driving the tokio runtime, the config file, or the
-/// network. `elapsed` is time since the last check started; `interval` is
-/// the value produced by `periodic_recheck_interval`.
+/// network. `elapsed = None` means no check has run yet this process, which
+/// makes the first tick after the user enables update_check_mode mid-session
+/// fire immediately rather than waiting up to `check_interval_hours` from
+/// process launch. `interval` is the value produced by
+/// `periodic_recheck_interval`.
 fn should_spawn_periodic_update_check(
-    elapsed: Duration,
+    elapsed: Option<Duration>,
     interval: Duration,
     rx_in_flight: bool,
     mode_enabled: bool,
 ) -> bool {
-    !rx_in_flight && mode_enabled && elapsed >= interval
+    if rx_in_flight || !mode_enabled {
+        return false;
+    }
+    match elapsed {
+        None => true,
+        Some(e) => e >= interval,
+    }
 }
 
 /// Polls the update receiver and returns the new state.
@@ -1882,7 +1891,7 @@ mod tests {
         // long-running TUI, the loop must spawn a fresh check.
         let interval = Duration::from_secs(24 * 3600);
         assert!(should_spawn_periodic_update_check(
-            interval + Duration::from_secs(1),
+            Some(interval + Duration::from_secs(1)),
             interval,
             false,
             true,
@@ -1893,7 +1902,7 @@ mod tests {
     fn periodic_recheck_holds_within_interval() {
         let interval = Duration::from_secs(24 * 3600);
         assert!(!should_spawn_periodic_update_check(
-            interval - Duration::from_secs(1),
+            Some(interval - Duration::from_secs(1)),
             interval,
             false,
             true,
@@ -1907,7 +1916,7 @@ mod tests {
         // after that can fire normally.
         let interval = Duration::from_secs(24 * 3600);
         assert!(!should_spawn_periodic_update_check(
-            interval + Duration::from_secs(1),
+            Some(interval + Duration::from_secs(1)),
             interval,
             true,
             true,
@@ -1920,10 +1929,31 @@ mod tests {
         // checks. Mirror the gate at startup.
         let interval = Duration::from_secs(24 * 3600);
         assert!(!should_spawn_periodic_update_check(
-            interval + Duration::from_secs(1),
+            Some(interval + Duration::from_secs(1)),
             interval,
             false,
             false,
+        ));
+    }
+
+    #[test]
+    fn periodic_recheck_fires_immediately_when_never_checked_and_mode_enabled() {
+        // User started with mode=off, toggled to notify/auto mid-session. The
+        // first guard tick after toggle should fire without waiting another
+        // full `check_interval_hours` from process launch.
+        let interval = Duration::from_secs(24 * 3600);
+        assert!(should_spawn_periodic_update_check(
+            None, interval, false, true,
+        ));
+    }
+
+    #[test]
+    fn periodic_recheck_skips_when_never_checked_but_mode_disabled() {
+        // Symmetric: a None elapsed does not override the mode gate. Mode=off
+        // still wins.
+        let interval = Duration::from_secs(24 * 3600);
+        assert!(!should_spawn_periodic_update_check(
+            None, interval, false, false,
         ));
     }
 
@@ -1960,7 +1990,10 @@ mod tests {
         // tick at the 1-hour mark, not 1h + epsilon.
         let interval = Duration::from_secs(3600);
         assert!(should_spawn_periodic_update_check(
-            interval, interval, false, true,
+            Some(interval),
+            interval,
+            false,
+            true,
         ));
     }
 
