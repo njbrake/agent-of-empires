@@ -2400,15 +2400,26 @@ impl HomeView {
             diff.scroll_up(STEP);
             return true;
         }
-        if self.has_dialog() {
-            return false;
-        }
-        if self.hit_list(col, row) {
-            self.move_cursor(-1);
-            return true;
-        }
-        if !self.hit_preview(col, row) {
-            return false;
+        // Live-send mode lets the user scroll the preview to read
+        // agent history without exiting, but list scroll is suppressed
+        // (changing the selection mid-live-send would silently aim the
+        // next keystroke at a different pane than the one the user is
+        // looking at). All other modals swallow scroll entirely.
+        if self.live_send.is_some() {
+            if !self.hit_preview(col, row) {
+                return false;
+            }
+        } else {
+            if self.has_dialog() {
+                return false;
+            }
+            if self.hit_list(col, row) {
+                self.move_cursor(-1);
+                return true;
+            }
+            if !self.hit_preview(col, row) {
+                return false;
+            }
         }
         if self.selected_session.is_none() {
             return false;
@@ -2606,15 +2617,22 @@ impl HomeView {
             diff.scroll_down(STEP);
             return true;
         }
-        if self.has_dialog() {
-            return false;
-        }
-        if self.hit_list(col, row) {
-            self.move_cursor(1);
-            return true;
-        }
-        if !self.hit_preview(col, row) {
-            return false;
+        // See handle_scroll_up for the live-send / has_dialog reasoning.
+        if self.live_send.is_some() {
+            if !self.hit_preview(col, row) {
+                return false;
+            }
+        } else {
+            if self.has_dialog() {
+                return false;
+            }
+            if self.hit_list(col, row) {
+                self.move_cursor(1);
+                return true;
+            }
+            if !self.hit_preview(col, row) {
+                return false;
+            }
         }
         if self.selected_session.is_none() {
             return false;

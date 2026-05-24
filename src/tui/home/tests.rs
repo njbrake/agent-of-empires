@@ -4686,6 +4686,62 @@ mod scroll_pane_isolation {
         assert!(handled);
         assert_eq!(env.view.cursor, 0, "wheel over list should retreat cursor");
     }
+
+    /// Live-send mode is meant to feel like an attach — users still need
+    /// to scroll the preview to read agent history without exiting. The
+    /// has_dialog() gate would otherwise swallow these events because
+    /// live_send.is_some() participates in that predicate.
+    #[test]
+    #[serial]
+    fn wheel_over_preview_in_live_mode_scrolls_preview() {
+        use crate::tui::home::live_send::LiveSendState;
+        let mut env = create_test_env_with_sessions(3);
+        setup_panes(&mut env);
+        env.view.cursor = 1;
+        env.view.update_selected();
+        env.view.preview_cache.dimensions = (80, 24);
+        env.view.preview_cache.captured_lines = 200;
+        env.view.preview_scroll_offset = 10;
+        // Install live state directly so we don't have to stand up a
+        // tmux session; the scroll handler only cares about
+        // live_send.is_some().
+        env.view.live_send = Some(LiveSendState {
+            session_id: "fake".to_string(),
+            title: "fake".to_string(),
+            tmux_name: "fake".to_string(),
+        });
+
+        let up_handled = env.view.handle_scroll_up(50, 10);
+        assert!(up_handled, "preview scroll should work while in live mode");
+        assert!(
+            env.view.preview_scroll_offset > 10,
+            "preview should scroll back into history"
+        );
+        // And we should still be in live mode (scroll doesn't exit).
+        assert!(env.view.live_send.is_some());
+    }
+
+    /// List-pane wheel scroll stays suppressed in live mode: changing
+    /// the selection mid-session would silently aim the next keystroke
+    /// at a different pane than the preview is showing.
+    #[test]
+    #[serial]
+    fn wheel_over_list_in_live_mode_does_not_change_selection() {
+        use crate::tui::home::live_send::LiveSendState;
+        let mut env = create_test_env_with_sessions(3);
+        setup_panes(&mut env);
+        env.view.cursor = 1;
+        env.view.update_selected();
+        env.view.live_send = Some(LiveSendState {
+            session_id: "fake".to_string(),
+            title: "fake".to_string(),
+            tmux_name: "fake".to_string(),
+        });
+
+        let handled = env.view.handle_scroll_down(5, 10);
+        assert!(!handled, "list scroll must be a no-op in live mode");
+        assert_eq!(env.view.cursor, 1, "selection must not change in live mode");
+    }
 }
 
 mod click_to_select {
