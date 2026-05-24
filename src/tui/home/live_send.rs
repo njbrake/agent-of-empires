@@ -203,55 +203,79 @@ pub(super) enum TmuxKey {
 /// - Ctrl/Alt + a char folds the char to lowercase and emits a tmux name
 ///   like `C-a`, `M-x`, `C-M-x`. Lowercase because tmux's chord names
 ///   are case-insensitive for letters and `C-a` is the conventional form.
-/// - All other keys (arrows, function keys, etc.) emit their tmux name
-///   with whatever prefixes apply.
+///   Shift is omitted here too (case already encodes it for letters).
+/// - Named keys (arrows, F-keys, etc.) include `S-` when Shift is held
+///   so editors inside the pane see `S-Up` for shift-arrow text
+///   selection. `BackTab` is the lone exception: the keycode already
+///   means Shift+Tab, so we emit `BTab` rather than `S-BTab`.
 pub fn translate(key: KeyEvent) -> LiveDispatch {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
+    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
 
     // Bare Ctrl+q only. Holding Shift or Alt converts the chord to a
     // send-through (Ctrl+Shift+q, Ctrl+Alt+q) so the user can still
     // deliver those combinations to the agent.
-    let shift = key.modifiers.contains(KeyModifiers::SHIFT);
     if ctrl && !shift && !alt && matches!(key.code, KeyCode::Char('q')) {
         return LiveDispatch::Exit;
     }
 
-    let prefix = match (ctrl, alt) {
-        (true, true) => "C-M-",
-        (true, false) => "C-",
-        (false, true) => "M-",
-        (false, false) => "",
-    };
-    let named = |name: &str| LiveDispatch::Send(TmuxKey::Named(format!("{prefix}{name}")));
-
-    match key.code {
-        KeyCode::Char(c) => {
-            if ctrl || alt {
-                let lower = c.to_ascii_lowercase().to_string();
-                LiveDispatch::Send(TmuxKey::Named(format!("{prefix}{lower}")))
-            } else {
-                LiveDispatch::Send(TmuxKey::Literal(c.to_string()))
-            }
+    // Char path: tmux chord names are case-insensitive for letters and
+    // the case in `Char(c)` already carries Shift, so we drop `S-` here
+    // to avoid double-encoding.
+    if let KeyCode::Char(c) = key.code {
+        if ctrl || alt {
+            let p = mod_prefix(ctrl, alt, false);
+            return LiveDispatch::Send(TmuxKey::Named(format!("{p}{}", c.to_ascii_lowercase())));
         }
-        KeyCode::Up => named("Up"),
-        KeyCode::Down => named("Down"),
-        KeyCode::Left => named("Left"),
-        KeyCode::Right => named("Right"),
-        KeyCode::Enter => named("Enter"),
-        KeyCode::Esc => named("Escape"),
-        KeyCode::Tab => named("Tab"),
-        KeyCode::BackTab => named("BTab"),
-        KeyCode::Backspace => named("BSpace"),
-        KeyCode::Delete => named("DC"),
-        KeyCode::Insert => named("IC"),
-        KeyCode::Home => named("Home"),
-        KeyCode::End => named("End"),
-        KeyCode::PageUp => named("PPage"),
-        KeyCode::PageDown => named("NPage"),
-        KeyCode::F(n) => named(&format!("F{n}")),
-        _ => LiveDispatch::Ignore,
+        return LiveDispatch::Send(TmuxKey::Literal(c.to_string()));
     }
+
+    // Named-key path: Shift IS meaningful (S-Up vs Up for editor text
+    // selection). BackTab is shift+Tab semantically by its own keycode,
+    // so it gets the no-shift prefix.
+    let name = match key.code {
+        KeyCode::Up => "Up",
+        KeyCode::Down => "Down",
+        KeyCode::Left => "Left",
+        KeyCode::Right => "Right",
+        KeyCode::Enter => "Enter",
+        KeyCode::Esc => "Escape",
+        KeyCode::Tab => "Tab",
+        KeyCode::BackTab => {
+            let p = mod_prefix(ctrl, alt, false);
+            return LiveDispatch::Send(TmuxKey::Named(format!("{p}BTab")));
+        }
+        KeyCode::Backspace => "BSpace",
+        KeyCode::Delete => "DC",
+        KeyCode::Insert => "IC",
+        KeyCode::Home => "Home",
+        KeyCode::End => "End",
+        KeyCode::PageUp => "PPage",
+        KeyCode::PageDown => "NPage",
+        KeyCode::F(n) => {
+            let p = mod_prefix(ctrl, alt, shift);
+            return LiveDispatch::Send(TmuxKey::Named(format!("{p}F{n}")));
+        }
+        _ => return LiveDispatch::Ignore,
+    };
+    let p = mod_prefix(ctrl, alt, shift);
+    LiveDispatch::Send(TmuxKey::Named(format!("{p}{name}")))
+}
+
+/// Build a tmux chord prefix (e.g. `"C-S-"`, `"M-"`, `""`).
+fn mod_prefix(ctrl: bool, alt: bool, shift: bool) -> String {
+    let mut p = String::new();
+    if ctrl {
+        p.push_str("C-");
+    }
+    if alt {
+        p.push_str("M-");
+    }
+    if shift {
+        p.push_str("S-");
+    }
+    p
 }
 
 #[cfg(test)]
@@ -353,6 +377,53 @@ mod tests {
     #[test]
     fn ctrl_arrow_chord() {
         assert_named(translate(k_mod(KeyCode::Up, KeyModifiers::CONTROL)), "C-Up");
+    }
+
+    #[test]
+    fn shift_arrow_chord_uses_s_prefix() {
+        // Editors inside the pane rely on `S-Up` / `S-Down` etc. for
+        // text selection. Without the S- prefix Shift+arrow looks the
+        // same as plain arrow and the editor never sees the modifier.
+        assert_named(translate(k_mod(KeyCode::Up, KeyModifiers::SHIFT)), "S-Up");
+        assert_named(
+            translate(k_mod(KeyCode::Home, KeyModifiers::SHIFT)),
+            "S-Home",
+        );
+        assert_named(translate(k_mod(KeyCode::End, KeyModifiers::SHIFT)), "S-End");
+    }
+
+    #[test]
+    fn ctrl_shift_arrow_combines_prefixes() {
+        // Shift+Ctrl+Right is "extend selection by word" in many editors.
+        assert_named(
+            translate(k_mod(
+                KeyCode::Right,
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+            )),
+            "C-S-Right",
+        );
+    }
+
+    #[test]
+    fn shift_letter_stays_literal_uppercase() {
+        // The Char path drops Shift from the prefix because the case
+        // already carries it. Pressing Shift+A sends literal "A", not
+        // "S-a" or "S-A".
+        assert_literal(
+            translate(k_mod(KeyCode::Char('A'), KeyModifiers::SHIFT)),
+            "A",
+        );
+    }
+
+    #[test]
+    fn back_tab_stays_btab_even_with_shift_modifier() {
+        // BackTab IS Shift+Tab by keycode. Some terminals also set the
+        // SHIFT modifier on top; we must NOT emit "S-BTab" (tmux would
+        // reject it) just because both signals arrived.
+        assert_named(
+            translate(k_mod(KeyCode::BackTab, KeyModifiers::SHIFT)),
+            "BTab",
+        );
     }
 
     #[test]

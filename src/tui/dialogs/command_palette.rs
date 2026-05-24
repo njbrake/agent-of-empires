@@ -629,6 +629,25 @@ mod tests {
     }
 
     #[test]
+    fn live_send_entry_is_bound_to_tab_with_dedicated_payload() {
+        // Regression guard: the live-send palette entry must keep its
+        // hotkey label and dedicated payload variant. A future rebinding
+        // (e.g., moving Tab elsewhere) or accidentally regressing the
+        // payload to `Key(Tab)` would break strict-mode users who reach
+        // live-send only through the palette.
+        let cmds = builtin_commands(false, false);
+        let entry = cmds
+            .iter()
+            .find(|c| c.id == "live-send")
+            .expect("builtin commands must include 'live-send'");
+        assert_eq!(entry.hotkey, "Tab");
+        assert!(
+            matches!(entry.payload, PaletteAction::EnterLiveSend),
+            "live-send entry must dispatch PaletteAction::EnterLiveSend"
+        );
+    }
+
+    #[test]
     fn keywords_match_searches() {
         // "Move session to group" complaint from issue #889: searching for
         // "move" should surface the rename entry via its keyword.
