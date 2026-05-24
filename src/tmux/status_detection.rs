@@ -862,9 +862,21 @@ pub fn detect_hermes_status(raw_content: &str) -> Status {
         return Status::Running;
     }
 
-    // Input prompt ❯ (default skin) or ⚡ (cyberpunk skin) in the last few
-    // lines means the agent finished its turn. Check before scrollback
-    // activity words to avoid false-positive Running from a previous turn.
+    // While running, Hermes replaces the input prompt with
+    // "❯ Ctrl+C to interrupt…". Check this before the idle-prompt
+    // detection below so we don't misidentify Running as Waiting.
+    if non_empty_lines
+        .iter()
+        .rev()
+        .take(5)
+        .any(|l| l.contains("ctrl+c to interrupt"))
+    {
+        return Status::Running;
+    }
+
+    // Input prompt ❯ (default skin) or ⚡ (cyberpunk skin) on its own means
+    // the agent finished its turn. Placed before scrollback activity words to
+    // avoid false-positive Running from a previous turn.
     for line in non_empty_lines.iter().rev().take(5) {
         let clean = strip_ansi(line).trim().to_string();
         if clean == "❯" || clean.starts_with("❯ ") || clean == "⚡" || clean.starts_with("⚡ ")
@@ -873,7 +885,7 @@ pub fn detect_hermes_status(raw_content: &str) -> Status {
         }
     }
 
-    // Active tool execution lines are prefixed with ┊; check recent lines only
+    // Active streaming lines are prefixed with ┊; check recent lines only
     // to avoid triggering on scrollback from a completed turn.
     if non_empty_lines
         .iter()
@@ -884,8 +896,9 @@ pub fn detect_hermes_status(raw_content: &str) -> Status {
         return Status::Running;
     }
 
-    // Thinking verbs from built-in and community Hermes skins.
+    // Thinking verbs from the default skin and community Hermes skins.
     let activity_indicators = [
+        "reasoning",
         "pondering",
         "contemplating",
         "forging",
@@ -897,7 +910,6 @@ pub fn detect_hermes_status(raw_content: &str) -> Status {
         "analyzing",
         "computing",
         "evaluating",
-        "ctrl+c to interrupt",
     ];
     for indicator in &activity_indicators {
         if last_lines.contains(indicator) {
@@ -2176,6 +2188,7 @@ run this command? (y/n)
 
     #[test]
     fn test_detect_hermes_status_running_on_thinking_verbs() {
+        assert_eq!(detect_hermes_status("reasoning…"), Status::Running);
         assert_eq!(
             detect_hermes_status("pondering the question"),
             Status::Running
@@ -2185,8 +2198,18 @@ run this command? (y/n)
             Status::Running
         );
         assert_eq!(detect_hermes_status("computing result"), Status::Running);
+    }
+
+    #[test]
+    fn test_detect_hermes_status_running_on_interrupt_hint() {
+        // While running, Hermes shows "❯ Ctrl+C to interrupt…" in the prompt
+        // area. Must detect as Running, not Waiting.
         assert_eq!(
-            detect_hermes_status("processing request\nctrl+c to interrupt"),
+            detect_hermes_status("┊ some response\n❯ Ctrl+C to interrupt…"),
+            Status::Running
+        );
+        assert_eq!(
+            detect_hermes_status("─ (¬‿¬) reasoning…\n❯ Ctrl+C to interrupt…"),
             Status::Running
         );
     }
