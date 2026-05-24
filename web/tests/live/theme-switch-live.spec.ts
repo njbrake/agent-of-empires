@@ -1,107 +1,16 @@
 // Live-backend theme switching coverage. Spins up a real `aoe serve`
-// process against an isolated $HOME and drives the dashboard's theme
-// picker through actual /api/themes/:name + /api/theme/current calls.
-// This is the test that would have caught the OnceLock-via-load_theme
-// deadlock that the mock-API tests in theme-switch.spec.ts couldn't:
-// mocks bypass the resolver entirely.
+// process via the shared aoeServe harness and drives the dashboard's
+// theme picker through actual /api/themes/:name + /api/theme/current
+// calls. This is the test that would have caught the
+// OnceLock-via-load_theme deadlock that the mock-API tests in
+// theme-switch.spec.ts couldn't: mocks bypass the resolver entirely.
 
 import { test, expect, type Page } from "@playwright/test";
-import { spawn, type ChildProcess } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
-
-// Matches liveGlobalSetup's resolution: env override, then release, then
-// debug. Local dev typically only has the debug binary; CI sets
-// AOE_E2E_BINARY to a release build.
-function resolveAoeBinary(): string | null {
-  const fromEnv = process.env.AOE_E2E_BINARY;
-  if (fromEnv && existsSync(fromEnv)) return fromEnv;
-  const release = resolve(process.cwd(), "..", "target", "release", "aoe");
-  if (existsSync(release)) return release;
-  const debug = resolve(process.cwd(), "..", "target", "debug", "aoe");
-  if (existsSync(debug)) return debug;
-  return null;
-}
-
-const AOE_BINARY = resolveAoeBinary();
-const HAS_BINARY = AOE_BINARY !== null;
+import { spawnAoeServe, type ServeHandle } from "../helpers/aoeServe";
 
 // Builtin pinned to a value that visibly differs from Empire so the
 // dashboard repaint is observable.
 const SWITCH_TO = "dracula";
-
-interface Daemon {
-  proc: ChildProcess;
-  home: string;
-  base: string;
-  cleanup: () => void;
-}
-
-async function startServer(port: number): Promise<Daemon> {
-  if (!AOE_BINARY) throw new Error("aoe binary not resolved");
-  const home = mkdtempSync(join(tmpdir(), "aoe-theme-e2e-"));
-  const base = `http://127.0.0.1:${port}`;
-  // Foreground (no daemonize), no auth, no tunnel; keeps Ctrl-C
-  // semantics on Playwright shutdown.
-  const proc = spawn(
-    AOE_BINARY,
-    [
-      "serve",
-      "--no-auth",
-      "--port",
-      String(port),
-      "--host",
-      "127.0.0.1",
-    ],
-    {
-      cwd: process.cwd(),
-      env: {
-        ...process.env,
-        HOME: home,
-        // Suppress the dev-build prefix dance; let `aoe serve`'s
-        // env-driven app-dir routing pick its own dev path.
-        RUST_LOG: "warn",
-      },
-      stdio: ["ignore", "pipe", "pipe"],
-    },
-  );
-
-  // Wait until the server is listening (poll /api/themes which has no
-  // auth and no side effects).
-  const deadline = Date.now() + 20_000;
-  while (Date.now() < deadline) {
-    try {
-      const res = await fetch(`${base}/api/themes`);
-      if (res.ok) break;
-    } catch {
-      // socket not up yet
-    }
-    await new Promise((r) => setTimeout(r, 200));
-  }
-  if (Date.now() >= deadline) {
-    proc.kill("SIGKILL");
-    throw new Error("aoe serve did not start within 20s");
-  }
-
-  return {
-    proc,
-    home,
-    base,
-    cleanup: () => {
-      try {
-        proc.kill("SIGTERM");
-      } catch {
-        // already exited
-      }
-      try {
-        rmSync(home, { recursive: true, force: true });
-      } catch {
-        // best effort
-      }
-    },
-  };
-}
 
 async function readCssVar(page: Page, name: string): Promise<string> {
   return await page.evaluate(
@@ -111,29 +20,18 @@ async function readCssVar(page: Page, name: string): Promise<string> {
 }
 
 test.describe("Live aoe serve theme switching (#1189)", () => {
-  // Skip gracefully if the Rust binary hasn't been built. CI runs
-  // `cargo build --features serve` first; local runs without the
-  // binary skip these instead of failing the rest of the suite.
-  test.skip(
-    !HAS_BINARY,
-    "aoe binary missing; run `cargo build --features serve` first",
-  );
-
-  let daemon: Daemon;
+  let handle: ServeHandle;
 
   test.beforeAll(async ({}, workerInfo) => {
-    // Worker-indexed port so parallel live workers don't collide.
-    // Base 18099 keeps it away from aoeServe.ts's range (which uses
-    // workerIndex around 28000+).
-    const envPort = process.env.AOE_LIVE_TEST_PORT;
-    const port = envPort
-      ? Number(envPort)
-      : 18099 + workerInfo.workerIndex;
-    daemon = await startServer(port);
+    handle = await spawnAoeServe({
+      authMode: "none",
+      workerIndex: workerInfo.workerIndex,
+      parallelIndex: workerInfo.parallelIndex,
+    });
   });
 
-  test.afterAll(() => {
-    daemon?.cleanup();
+  test.afterAll(async () => {
+    await handle?.stop();
   });
 
   test("GET /api/themes/:name returns within 2s and is not stuck in resolve", async () => {
@@ -143,7 +41,7 @@ test.describe("Live aoe serve theme switching (#1189)", () => {
     const ctrl = new AbortController();
     const watchdog = setTimeout(() => ctrl.abort(), 2_000);
     try {
-      const res = await fetch(`${daemon.base}/api/themes/${SWITCH_TO}`, {
+      const res = await fetch(`${handle.baseUrl}/api/themes/${SWITCH_TO}`, {
         signal: ctrl.signal,
       });
       expect(res.ok).toBe(true);
@@ -172,7 +70,7 @@ test.describe("Live aoe serve theme switching (#1189)", () => {
       const ctrl = new AbortController();
       const watchdog = setTimeout(() => ctrl.abort(), 2_000);
       try {
-        const res = await fetch(`${daemon.base}/api/themes/${name}`, {
+        const res = await fetch(`${handle.baseUrl}/api/themes/${name}`, {
           signal: ctrl.signal,
         });
         expect(res.ok, `${name} did not return`).toBe(true);
@@ -188,7 +86,7 @@ test.describe("Live aoe serve theme switching (#1189)", () => {
   test("dashboard chrome repaints when theme switches via API", async ({
     page,
   }) => {
-    await page.goto(`${daemon.base}/`);
+    await page.goto(`${handle.baseUrl}/`);
     // Wait for the React-side fetch of /api/theme/current to land
     // and seed --color-surface-900 with the active palette.
     await expect
@@ -205,7 +103,7 @@ test.describe("Live aoe serve theme switching (#1189)", () => {
     // endpoint the picker uses, then firing the same event the
     // ThemeSettings.tsx save() handler dispatches.
     const patch = await page.request.patch(
-      `${daemon.base}/api/profiles/default/settings`,
+      `${handle.baseUrl}/api/profiles/default/settings`,
       {
         data: { theme: { name: SWITCH_TO } },
       },
