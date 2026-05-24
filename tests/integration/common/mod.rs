@@ -7,7 +7,6 @@ use std::path::{Path, PathBuf};
 use tempfile::TempDir;
 
 /// Path to the Node ACP test shim used by cockpit_* integration tests.
-#[allow(dead_code)]
 pub fn shim_path() -> PathBuf {
     let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap();
     PathBuf::from(manifest)
@@ -21,7 +20,6 @@ pub fn shim_path() -> PathBuf {
 /// that callers print before skipping. CI installs deps via `npm ci` in
 /// `cockpit-worker/test-shim/` before running the integration leg; local
 /// runs need the same one-shot setup, which the message points at.
-#[allow(dead_code)]
 pub fn shim_ready() -> Result<(), String> {
     let node_ok = std::process::Command::new("node")
         .arg("--version")
