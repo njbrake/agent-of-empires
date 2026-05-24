@@ -5381,17 +5381,37 @@ mod live_send_mode {
 
     #[test]
     #[serial]
-    fn tab_does_not_start_live_send_without_runnable_selection() {
-        // resolve_paste_target rejects empty list, group rows, and
-        // non-running sessions, so plain Tab must silently no-op rather
-        // than crashing or trapping the user in a live mode targeting
-        // nothing.
+    fn tab_does_not_start_live_send_without_selection() {
+        // No session selected (empty list, cursor on a group, etc.) →
+        // Tab must silently no-op rather than emitting a deferred
+        // action targeting nothing.
         let mut env = create_test_env_empty();
         let action = env
             .view
             .handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), None);
         assert!(action.is_none());
         assert!(env.view.live_send.is_none());
+    }
+
+    #[test]
+    #[serial]
+    fn tab_emits_enter_live_send_for_stopped_session() {
+        // start_live_send is intentionally permissive: it accepts any
+        // non-Creating instance and defers ensure_pane_ready to
+        // enter_live_send. Without this, Tab would silently no-op on
+        // stopped/dead-but-recoverable rows because the tmux session
+        // doesn't exist yet.
+        let mut env = create_test_env_with_sessions(1);
+        env.view.cursor = 0;
+        env.view.update_selected();
+        let action = env
+            .view
+            .handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), None);
+        assert!(
+            matches!(action, Some(Action::EnterLiveSend(_))),
+            "Tab on a stopped session should emit Action::EnterLiveSend, got {:?}",
+            action
+        );
     }
 }
 

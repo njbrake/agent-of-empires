@@ -64,6 +64,35 @@ const CAPTURE_BUFFER: u16 = 20;
 /// Number of pane lines to capture for the preview, accounting for the user's
 /// scrollback offset. A small buffer is added so moderate scrolls don't force a
 /// fresh capture on every wheel tick.
+/// Trim `text` to fit within `max_width` display cells, appending '…'
+/// if anything was dropped. Used by the live-send banners so a long
+/// session title never pushes the exit-chord hint off-screen on a
+/// narrow terminal. Returns "" when max_width is 0 (the title gets
+/// sacrificed entirely so the fixed chord text wins).
+fn truncate_to_width(text: &str, max_width: usize) -> String {
+    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+    if max_width == 0 {
+        return String::new();
+    }
+    if UnicodeWidthStr::width(text) <= max_width {
+        return text.to_string();
+    }
+    // Reserve one cell for the ellipsis.
+    let budget = max_width.saturating_sub(1);
+    let mut out = String::new();
+    let mut w = 0;
+    for c in text.chars() {
+        let cw = UnicodeWidthChar::width(c).unwrap_or(0);
+        if w + cw > budget {
+            break;
+        }
+        out.push(c);
+        w += cw;
+    }
+    out.push('\u{2026}');
+    out
+}
+
 fn capture_lines_for(height: u16, scroll_offset: u16) -> usize {
     height
         .saturating_add(scroll_offset)
@@ -1724,29 +1753,49 @@ impl HomeView {
     /// than floating chrome. The status bar gets a more compact mirror
     /// of the same content so the exit chord is visible from either
     /// gaze direction.
+    ///
+    /// On narrow terminals the title is truncated with an ellipsis so
+    /// the `Ctrl+Q` hint stays visible. The fixed parts (chip prefix +
+    /// exit chord + suffix) are reserved first; whatever's left goes to
+    /// the title.
     fn render_live_header(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let Some(state) = &self.live_send else {
             return;
         };
-        let title = if state.title.is_empty() {
-            "session".to_string()
+        let raw_title = if state.title.is_empty() {
+            "session"
         } else {
-            state.title.clone()
+            state.title.as_str()
         };
+
+        let chip = " \u{25CF} LIVE SEND \u{2192} ";
+        let chord = "Ctrl+Q";
+        let suffix = " to exit live mode ";
+        let separator = "  "; // between title and chord
+
+        let fixed_width = unicode_width::UnicodeWidthStr::width(chip)
+            + unicode_width::UnicodeWidthStr::width(separator)
+            + unicode_width::UnicodeWidthStr::width(chord)
+            + unicode_width::UnicodeWidthStr::width(suffix);
+        let title_budget = (area.width as usize).saturating_sub(fixed_width);
+        let title = truncate_to_width(raw_title, title_budget);
+
         let chip_style = Style::default()
             .fg(theme.background)
             .bg(theme.running)
             .bold();
-        let title_style = Style::default().fg(theme.background).bg(theme.running);
-        let exit_style = Style::default()
+        let body_style = Style::default().fg(theme.background).bg(theme.running);
+        let chord_style = Style::default()
             .fg(theme.background)
             .bg(theme.running)
             .bold();
+
         let mut spans: Vec<Span<'static>> = vec![
-            Span::styled(" \u{25CF} LIVE SEND \u{2192} ", chip_style),
-            Span::styled(format!("{}  ", title), title_style),
-            Span::styled("Ctrl+Q", exit_style),
-            Span::styled(" to exit live mode ", title_style),
+            Span::styled(chip, chip_style),
+            Span::styled(title, body_style),
+            Span::styled(separator, body_style),
+            Span::styled(chord, chord_style),
+            Span::styled(suffix, body_style),
         ];
         // Pad the remainder of the row with the same bg color so the
         // banner reads as a continuous strip rather than a floating chip.
@@ -1771,14 +1820,27 @@ impl HomeView {
         // confused with the regular footer. The render_live_header
         // counterpart paints the top of the screen with the same intent.
         if let Some(state) = &self.live_send {
-            let title = if state.title.is_empty() {
-                "session".to_string()
+            let raw_title = if state.title.is_empty() {
+                "session"
             } else {
-                state.title.clone()
+                state.title.as_str()
             };
+            let chip = " \u{25CF} LIVE \u{2192} ";
+            let chord = "Ctrl+Q";
+            let suffix = " to exit ";
+            // Spaces between chip→title and title→chord. Title gets the
+            // budget after the fixed pieces; reserved last so the exit
+            // chord never falls off on narrow terminals.
+            let fixed_width = unicode_width::UnicodeWidthStr::width(chip)
+                + 1 // single space after the chip
+                + 2 // double space before the chord
+                + unicode_width::UnicodeWidthStr::width(chord)
+                + unicode_width::UnicodeWidthStr::width(suffix);
+            let title_budget = (area.width as usize).saturating_sub(fixed_width);
+            let title = truncate_to_width(raw_title, title_budget);
             let line = Line::from(vec![
                 Span::styled(
-                    " \u{25CF} LIVE \u{2192} ",
+                    chip,
                     Style::default()
                         .fg(theme.background)
                         .bg(theme.running)
@@ -1787,8 +1849,8 @@ impl HomeView {
                 Span::raw(" "),
                 Span::styled(title, Style::default().fg(theme.text).bold()),
                 Span::raw("  "),
-                Span::styled("Ctrl+Q", Style::default().fg(theme.accent).bold()),
-                Span::styled(" to exit ", Style::default().fg(theme.dimmed)),
+                Span::styled(chord, Style::default().fg(theme.accent).bold()),
+                Span::styled(suffix, Style::default().fg(theme.dimmed)),
             ]);
             frame.render_widget(Paragraph::new(line), area);
             return;
@@ -1999,6 +2061,33 @@ impl HomeView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn truncate_to_width_passthrough_when_fits() {
+        assert_eq!(truncate_to_width("hello", 10), "hello");
+        assert_eq!(truncate_to_width("hello", 5), "hello");
+    }
+
+    #[test]
+    fn truncate_to_width_appends_ellipsis_when_overflow() {
+        // 5-char budget, 7-char input → 4 chars + ellipsis.
+        assert_eq!(truncate_to_width("abcdefg", 5), "abcd\u{2026}");
+    }
+
+    #[test]
+    fn truncate_to_width_zero_returns_empty() {
+        // Zero budget: title is sacrificed entirely so the fixed exit-
+        // chord text has space to render on very narrow terminals.
+        assert_eq!(truncate_to_width("anything", 0), "");
+    }
+
+    #[test]
+    fn truncate_to_width_respects_wide_chars() {
+        // East Asian wide char is 2 cells. Budget 3 should fit one wide
+        // char + ellipsis (2 + 1 = 3) — but we reserve 1 for ellipsis
+        // so budget for content is 2, fitting exactly one wide char.
+        assert_eq!(truncate_to_width("你好世界", 3), "你\u{2026}");
+    }
 
     #[test]
     fn compose_list_title_omits_profile_and_suffix_at_defaults() {

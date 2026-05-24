@@ -2729,14 +2729,21 @@ impl HomeView {
     }
 
     /// Attempt to enter live-send mode against the currently-selected
-    /// running session. Resolves via `resolve_paste_target` so group
-    /// rows, empty lists, and non-running selections silently no-op.
-    /// Returns the deferred `Action::EnterLiveSend` so the app loop can
-    /// render the "Reviving..." toast before `ensure_pane_ready` runs;
-    /// the home view's `live_send` state is set later by
-    /// `enter_live_send` once the pane is confirmed ready.
+    /// session. Unlike `resolve_paste_target`, this does NOT require
+    /// the tmux pane to already exist: `enter_live_send` calls
+    /// `ensure_pane_ready` which revives stopped sessions (Docker
+    /// start, splash wait, resume cascade). Without this relaxation
+    /// Tab would silently no-op on dead-but-recoverable rows and the
+    /// "Reviving..." toast plumbing would never fire.
+    ///
+    /// Still no-ops on group headers, empty lists, and Creating rows
+    /// (no instance yet, nothing to revive).
     pub(super) fn start_live_send(&mut self) -> Option<Action> {
-        let (id, _title) = self.resolve_paste_target()?;
+        let id = self.selected_session.clone()?;
+        let inst = self.get_instance(&id)?;
+        if matches!(inst.status, Status::Creating | Status::Deleting) {
+            return None;
+        }
         Some(Action::EnterLiveSend(id))
     }
 
