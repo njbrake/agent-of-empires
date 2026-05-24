@@ -139,8 +139,8 @@ impl HomeView {
     /// target that hit_list / hit_preview both miss by design). Returns
     /// `false` in stacked mode, in the diff/settings/serve takeover
     /// views (which clear `divider_col`), and while any modal dialog is
-    /// open — a dialog over the divider should swallow stray clicks
-    /// rather than start a hidden drag.
+    /// open, so a dialog over the divider swallows stray clicks rather
+    /// than starting a hidden drag.
     pub fn hit_divider(&self, col: u16, row: u16) -> bool {
         if self.has_dialog() {
             return false;
@@ -181,6 +181,17 @@ impl HomeView {
     /// drag does NOT persist on every tick; `handle_drag_end` saves once
     /// on release.
     pub fn handle_drag_move(&mut self, col: u16) -> bool {
+        // A dialog opened mid-drag (e.g. a hotkey pressed while the
+        // mouse button is still held) shouldn't keep updating the
+        // sidebar invisibly under the modal. End the drag here so the
+        // next `Up(Left)` is a no-op, persisting whatever width the
+        // user dragged to before the dialog covered it (handle_drag_end
+        // is the normal save site, so we mirror its behavior).
+        if self.has_dialog() && self.drag_state.is_some() {
+            self.drag_state = None;
+            self.save_list_width();
+            return false;
+        }
         let Some(DragKind::ListDivider {
             start_col,
             start_width,
@@ -227,11 +238,11 @@ impl HomeView {
     }
 
     /// Route a left-click into whichever modal dialog supports mouse
-    /// input. Returns true when the click was consumed (the dialog
-    /// either acted on it or absorbed it as a no-op inside its bounds),
-    /// in which case the caller must NOT fall through to divider /
-    /// preview / list handlers. The `&` in the return is enough for the
-    /// caller to redraw.
+    /// input. Returns true when the click was consumed, in which case
+    /// the caller must NOT fall through to the divider / preview / list
+    /// handlers. Two cases both count as consumed: the dialog acted on
+    /// the click (Yes/No), and the click landed elsewhere on screen
+    /// while a modal is open (the modal absorbs it).
     ///
     /// Only the destructive delete dialog wires Yes/No clicks today;
     /// the existing modals continue to swallow mouse events implicitly
@@ -259,7 +270,7 @@ impl HomeView {
             // under the modal.
             return true;
         }
-        // Other dialogs also need to swallow clicks while open — the
+        // Other dialogs also need to swallow clicks while open. The
         // existing `has_dialog()` gates inside list / preview / divider
         // handlers already do this, so no extra work here.
         false
@@ -267,12 +278,13 @@ impl HomeView {
 
     /// Route a left-click that landed inside the preview pane. Opens
     /// the Send Message dialog targeting the currently-selected running
-    /// session. No-op (returns false) when there's no valid target —
-    /// `open_send_message_dialog` already gates on `resolve_paste_target`,
-    /// so an empty list, a non-running selection, or a group-row
-    /// selection silently does nothing instead of opening an empty
-    /// dialog. The bool return tells the caller whether dialog state
-    /// changed so it can redraw + re-sync mouse capture.
+    /// session. No-op (returns false) when there's no valid target,
+    /// because `open_send_message_dialog` already gates on
+    /// `resolve_paste_target`, so an empty list, a non-running
+    /// selection, or a group-row selection silently does nothing
+    /// instead of opening an empty dialog. The bool return tells the
+    /// caller whether dialog state changed so it can redraw + re-sync
+    /// mouse capture.
     pub fn handle_preview_click(&mut self) -> bool {
         if self.has_dialog() {
             return false;

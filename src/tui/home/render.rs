@@ -454,7 +454,7 @@ impl HomeView {
                 .split(main_chunks[0]);
 
             // Layout chunks are contiguous, so chunks[1].x is the first
-            // column of the preview block — i.e., the visible left border
+            // column of the preview block, i.e. the visible left border
             // that the user perceives as the divider. Hit-test uses the
             // list's y-range (matches preview's y-range in side-by-side).
             self.divider_col = Some(chunks[1].x);
@@ -488,7 +488,7 @@ impl HomeView {
         // `&mut self.$field` so dialogs whose `render` captures screen
         // rects on the struct (currently `unified_delete_dialog` for
         // clickable Yes/No buttons) can mutate self. Dialogs with
-        // `&self` render methods still work — Rust auto-derefs the
+        // `&self` render methods still work; Rust auto-derefs the
         // mutable borrow.
         macro_rules! render_dialogs {
             ($($field:ident),* $(,)?) => {

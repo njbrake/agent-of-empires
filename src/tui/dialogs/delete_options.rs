@@ -97,7 +97,7 @@ impl UnifiedDeleteDialog {
     /// Route a left-click. Returns `Some(Submit)` when the user clicked
     /// the `[Yes]` button, `Some(Cancel)` for `[No]`, and `None` for
     /// clicks that landed elsewhere inside the dialog (those are
-    /// silently absorbed by the modal — no fall-through to the list).
+    /// silently absorbed by the modal, no fall-through to the list).
     /// Rects are written during `render`; before the first render both
     /// rects are zero-sized so `contains()` returns false.
     pub fn handle_click(&self, col: u16, row: u16) -> Option<DialogResult<DeleteOptions>> {

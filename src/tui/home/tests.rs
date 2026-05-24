@@ -5113,10 +5113,38 @@ mod divider_drag {
         let mut env = create_test_env_empty();
         stage_side_by_side(&mut env);
         env.view.handle_drag_start(35, 5);
-        // Drag far to the left of column 0 — the i32 math must absorb the
-        // negative without wrapping u16.
+        // Drag far to the left of column 0; the i32 math must absorb
+        // the negative without wrapping u16.
         env.view.handle_drag_move(0);
         assert_eq!(env.view.list_width, 10);
+    }
+
+    #[test]
+    #[serial]
+    fn dialog_opening_mid_drag_ends_drag_and_persists() {
+        // If a modal opens while the user is still holding the mouse
+        // (e.g. a hotkey was pressed mid-drag), further Drag events must
+        // not keep updating list_width invisibly under the modal. The
+        // width achieved up to that point is persisted so the user's
+        // work isn't silently lost on Up.
+        let mut env = create_test_env_empty();
+        stage_side_by_side(&mut env);
+        env.view.handle_drag_start(35, 5);
+        env.view.handle_drag_move(50);
+        // Open a modal.
+        env.view.info_dialog = Some(InfoDialog::new("title", "body"));
+        // Next drag event sees the dialog and bails.
+        let changed = env.view.handle_drag_move(60);
+        assert!(!changed);
+        assert!(env.view.drag_state.is_none());
+        assert_eq!(
+            env.view.list_width, 50,
+            "width frozen at last pre-dialog value"
+        );
+        let config = load_config().unwrap().expect("config saved");
+        assert_eq!(config.app_state.home_list_width, Some(50));
+        // Subsequent Up is now a no-op (drag_state was cleared early).
+        assert!(!env.view.handle_drag_end());
     }
 
     #[test]
