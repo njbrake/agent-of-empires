@@ -98,6 +98,13 @@ pub struct App {
     /// the sync `execute_action` can't lend out).
     #[cfg(feature = "serve")]
     pending_cockpit_open: Option<String>,
+    /// Version of the most recent auto-install kicked off in this process.
+    /// The running binary's compile-time `CARGO_PKG_VERSION` stays at the
+    /// old value until restart, so without this guard every periodic
+    /// re-check (#1471) would re-trigger an install for the same release,
+    /// cycling the "auto-updating…" / "update complete" status messages
+    /// and wasting bandwidth.
+    last_auto_installed_version: Option<String>,
 }
 
 /// Check if the app version changed and return the previous version if changelog should be shown.
@@ -214,6 +221,7 @@ impl App {
             mouse_captured: crate::tui::mouse_capture_requested(),
             #[cfg(feature = "serve")]
             pending_cockpit_open: None,
+            last_auto_installed_version: None,
         })
     }
 
@@ -453,6 +461,12 @@ impl App {
         // startup check was disabled) so the first periodic tick is one full
         // interval away rather than firing immediately.
         let mut last_update_check = std::time::Instant::now();
+        // Separate throttle for how often the periodic block re-reads
+        // settings; without this, `last_update_check.elapsed()` would be
+        // permanently above the throttle gap once the first 60s pass (it
+        // only resets on actual spawn), so the config-file read would still
+        // fire on every loop iteration until the full interval elapses.
+        let mut last_update_eval = std::time::Instant::now();
         const STATUS_REFRESH_INTERVAL: Duration = Duration::from_millis(500);
         const DISK_REFRESH_INTERVAL: Duration = Duration::from_secs(5);
         // Fastest spinner (breathe) changes every 180ms; 120ms ensures smooth animation
@@ -788,7 +802,8 @@ impl App {
             // silently miss releases that ship after the user attached. The
             // throttle gap keeps the per-iteration `get_update_settings()`
             // config-file read off the 20Hz hot path.
-            if last_update_check.elapsed() >= UPDATE_CHECK_THROTTLE_GAP {
+            if last_update_eval.elapsed() >= UPDATE_CHECK_THROTTLE_GAP {
+                last_update_eval = std::time::Instant::now();
                 let settings = get_update_settings();
                 let interval =
                     Duration::from_secs(settings.check_interval_hours.saturating_mul(3600));
@@ -955,6 +970,21 @@ impl App {
             return;
         }
 
+        // Periodic re-checks (#1471) keep finding the same "available"
+        // version until the user restarts (the running binary's
+        // compile-time `CARGO_PKG_VERSION` is stale). Without this guard,
+        // each periodic tick would re-install the same release, cycling
+        // status messages and wasting bandwidth. A genuinely newer release
+        // clears the guard automatically because the version string differs.
+        if self.last_auto_installed_version.as_deref() == Some(version.as_str()) {
+            tracing::info!(
+                target: "update.auto",
+                version,
+                "auto mode skipped: already installed this version this session, restart aoe to use it"
+            );
+            return;
+        }
+
         let method = match detect_install_method() {
             Ok(m) => m,
             Err(e) => {
@@ -984,6 +1014,11 @@ impl App {
         self.update_status = Some(UpdateStatus::transient(format!(
             "auto-updating to v{version} in background…"
         )));
+        // Record before spawning: if the install fails we still skip retries
+        // for this same version, since auto-install failures (disk full,
+        // corrupt download) tend to repeat. The user can press `u` from the
+        // banner, run `aoe update`, or restart aoe to retry.
+        self.last_auto_installed_version = Some(version.clone());
         let (tx, rx) = tokio::sync::oneshot::channel();
         self.update_status_rx = Some(rx);
         let handle = tokio::runtime::Handle::current();
