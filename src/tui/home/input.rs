@@ -2790,6 +2790,33 @@ impl HomeView {
         let Some(state) = self.live_send.clone() else {
             return;
         };
+
+        // Shift+PageUp / Shift+PageDown scroll the preview pane
+        // without forwarding to the agent. Matches the terminal-
+        // emulator convention (xterm, gnome-terminal, iTerm, etc.)
+        // where shift+page operates on the outer scrollback, not the
+        // inner program. Bare PageUp/PageDown still goes to the agent
+        // so agents that page their own UI keep working.
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        let alt = key.modifiers.contains(KeyModifiers::ALT);
+        let shift = key.modifiers.contains(KeyModifiers::SHIFT);
+        if shift && !ctrl && !alt {
+            const PAGE_STEP: u16 = 10;
+            match key.code {
+                KeyCode::PageUp => {
+                    self.preview_scroll_offset =
+                        self.preview_scroll_offset.saturating_add(PAGE_STEP);
+                    return;
+                }
+                KeyCode::PageDown => {
+                    self.preview_scroll_offset =
+                        self.preview_scroll_offset.saturating_sub(PAGE_STEP);
+                    return;
+                }
+                _ => {}
+            }
+        }
+
         let dispatch = live_send::translate(key);
         // Honor the exit chord before the drift check: exiting is
         // always safe and the user pressing Ctrl+] to escape a

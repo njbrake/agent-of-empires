@@ -5395,6 +5395,65 @@ mod live_send_mode {
 
     #[test]
     #[serial]
+    fn shift_page_up_scrolls_preview_instead_of_sending_to_agent() {
+        // Terminal-emulator convention: Shift+PageUp scrolls the outer
+        // scrollback, not the inner program. Live mode honors that so
+        // users can read agent history without exiting.
+        let mut env = create_test_env_with_sessions(1);
+        install_live_for_first_session(&mut env);
+        env.view.preview_scroll_offset = 0;
+
+        env.view
+            .handle_key(KeyEvent::new(KeyCode::PageUp, KeyModifiers::SHIFT), None);
+
+        assert!(
+            env.view.preview_scroll_offset > 0,
+            "Shift+PageUp should scroll the preview back into history"
+        );
+        // Still in live mode — the intercept doesn't exit.
+        assert!(env.view.live_send.is_some());
+    }
+
+    #[test]
+    #[serial]
+    fn shift_page_down_scrolls_preview_forward() {
+        let mut env = create_test_env_with_sessions(1);
+        install_live_for_first_session(&mut env);
+        env.view.preview_scroll_offset = 50;
+
+        env.view
+            .handle_key(KeyEvent::new(KeyCode::PageDown, KeyModifiers::SHIFT), None);
+
+        assert!(
+            env.view.preview_scroll_offset < 50,
+            "Shift+PageDown should reduce the offset (scroll toward live)"
+        );
+        assert!(env.view.live_send.is_some());
+    }
+
+    #[test]
+    #[serial]
+    fn bare_page_up_still_passes_through_to_agent() {
+        // Regression guard: only the Shift-modified Page chord is
+        // intercepted. Bare PageUp must keep flowing to the agent so
+        // agents that page their own UI (claude-code transcript, etc.)
+        // keep responding.
+        let mut env = create_test_env_with_sessions(1);
+        install_live_for_first_session(&mut env);
+        env.view.preview_scroll_offset = 25;
+
+        env.view
+            .handle_key(KeyEvent::new(KeyCode::PageUp, KeyModifiers::NONE), None);
+
+        assert_eq!(
+            env.view.preview_scroll_offset, 25,
+            "bare PageUp must NOT change preview scroll offset"
+        );
+        assert!(env.view.live_send.is_some());
+    }
+
+    #[test]
+    #[serial]
     fn drift_check_auto_exits_when_session_renamed() {
         // Title changes the generated tmux name. After a rename the
         // worker is targeting a stale name, so the next keystroke
