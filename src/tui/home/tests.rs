@@ -2293,10 +2293,15 @@ fn test_row_tag_auto_renders_profile_in_all_profiles_view() {
         if let Item::Session { id, .. } = item {
             let profile = view.get_instance(id).unwrap().source_profile.clone();
             let code = super::render::profile_short_code(&profile);
+            let rendered = super::render::RowTag {
+                content: code.clone(),
+                max_width: 4,
+            }
+            .rendered();
             let text = rendered_row_text(&view, item);
             assert!(
-                text.contains(&format!("[{code}]")),
-                "all-view row for profile {profile} missing tag [{code}]: {text:?}"
+                text.contains(&rendered),
+                "all-view row for profile {profile} missing tag {rendered}: {text:?}"
             );
             seen += 1;
         }
@@ -2325,11 +2330,16 @@ fn test_row_tag_auto_omits_tag_in_filtered_view() {
     view.update_selected();
 
     let code = super::render::profile_short_code("alpha");
+    let rendered = super::render::RowTag {
+        content: code,
+        max_width: 4,
+    }
+    .rendered();
     for item in &view.flat_items {
         if let Item::Session { .. } = item {
             let text = rendered_row_text(&view, item);
             assert!(
-                !text.contains(&format!("[{code}]")),
+                !text.contains(&rendered),
                 "Auto in filtered view should omit the tag: {text:?}"
             );
         }
@@ -2357,12 +2367,17 @@ fn test_row_tag_profile_renders_in_filtered_view() {
     view.update_selected();
 
     let code = super::render::profile_short_code("alpha");
+    let rendered = super::render::RowTag {
+        content: code,
+        max_width: 4,
+    }
+    .rendered();
     let mut seen = 0;
     for item in &view.flat_items {
         if let Item::Session { .. } = item {
             let text = rendered_row_text(&view, item);
             assert!(
-                text.contains(&format!("[{code}]")),
+                text.contains(&rendered),
                 "Profile mode should always render the tag: {text:?}"
             );
             seen += 1;
@@ -2453,12 +2468,17 @@ fn test_row_tag_branch_renders_when_title_matches_branch() {
     view.update_selected();
 
     // The tag uses the last `/`-segment of the branch, truncated to 8
-    // chars, so `feature/foo` becomes `[foo]`.
+    // chars, so `feature/foo` becomes `foo` padded to width 8.
+    let rendered = super::render::RowTag {
+        content: "foo".to_string(),
+        max_width: 8,
+    }
+    .rendered();
     for item in &view.flat_items {
         if let Item::Session { .. } = item {
             let text = rendered_row_text(&view, item);
             assert!(
-                text.contains("[foo]"),
+                text.contains(&rendered),
                 "Branch mode must render the tag when divergence display is quiet: {text:?}"
             );
         }
