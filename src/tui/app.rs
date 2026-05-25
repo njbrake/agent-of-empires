@@ -942,16 +942,6 @@ impl App {
                 }
             }
 
-            // Check for update result (non-blocking)
-            if self.poll_update_check() {
-                self.needs_redraw = true;
-            }
-
-            // Check for in-progress update completion
-            if self.poll_update_status() {
-                self.needs_redraw = true;
-            }
-
             // Periodic refreshes (only when no input pending).
             //
             // `needs_full_refresh` separately tracks whether anything
@@ -962,6 +952,26 @@ impl App {
             // `woke_via_live_send_wake && !needs_full_refresh`.
             let mut refresh_needed = false;
             let mut needs_full_refresh = false;
+
+            // Update-check / install-status polls can flip the
+            // bottom-of-screen update bar (banner or transient toast)
+            // on or off, which shifts the home view's layout. If a
+            // live-send wake fires on the same iteration, the
+            // preview-only fast path would paint a stale snapshot
+            // whose preview rect no longer lines up with the new
+            // layout. Treat any banner state change as full-refresh
+            // work so the slow path rebuilds the layout AND the
+            // snapshot.
+            if self.poll_update_check() {
+                self.needs_redraw = true;
+                refresh_needed = true;
+                needs_full_refresh = true;
+            }
+            if self.poll_update_status() {
+                self.needs_redraw = true;
+                refresh_needed = true;
+                needs_full_refresh = true;
+            }
 
             if last_status_refresh.elapsed() >= STATUS_REFRESH_INTERVAL {
                 self.home.request_status_refresh();
