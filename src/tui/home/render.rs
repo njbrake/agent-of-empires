@@ -1221,21 +1221,28 @@ impl HomeView {
         if needs_refresh {
             if let Some(id) = self.selected_session.clone() {
                 let capture_lines = capture_lines_for(height, scroll_offset);
-                // While live-send mode is active, route the capture
-                // through the long-lived `tmux -C` client so we don't
-                // fork once per refresh. Any control-mode failure
-                // tears the client down and falls back to the
-                // historical fork-based path for the rest of this
-                // live-send session. See #1485.
-                let content = self
-                    .capture_via_control_mode(capture_lines)
-                    .or_else(|| {
-                        self.get_instance(&id).and_then(|inst| {
+                // While live-send is active the capture rides the
+                // long-lived `tmux -C` client (same socket the worker
+                // uses for keystrokes). Outside live-send we use the
+                // historical fork-per-refresh path, which only runs
+                // at the 250ms idle cadence so the fork cost is
+                // immaterial. If control-mode capture fails mid-live,
+                // the client is torn down and the preview stops
+                // updating until the user exits and re-enters live
+                // mode; that's intentional, the no-update signal
+                // matches what the user sees for typing on the same
+                // dead connection. See #1485.
+                let content = if self.live_send.is_some() {
+                    self.capture_via_control_mode(capture_lines)
+                        .unwrap_or_default()
+                } else {
+                    self.get_instance(&id)
+                        .and_then(|inst| {
                             inst.capture_output_with_size(capture_lines, width, height)
                                 .ok()
                         })
-                    })
-                    .unwrap_or_default();
+                        .unwrap_or_default()
+                };
                 self.preview_cache.captured_lines = content.lines().count();
                 self.preview_cache.content = content;
                 self.preview_cache.session_id = Some(id);
@@ -1250,21 +1257,19 @@ impl HomeView {
         }
     }
 
-    /// If a control-mode client is up and we're in live-send mode,
-    /// capture the preview through it and return the rendered ANSI
-    /// text. Returns `None` when:
+    /// Capture the preview through the live-send `tmux -C` client.
+    /// Called only while live-send is active; outside live-send the
+    /// caller uses the historical fork path directly.
     ///
-    /// - live-send is inactive (the client only exists while live),
-    /// - no client was spawned (env opt-out, or spawn failed silently),
-    /// - the client returned an error: that drops the client so the
-    ///   caller falls back to the fork path for this frame onwards.
-    ///
-    /// Any output here is byte-identical to what the fork path's
-    /// `capture-pane -e -p -S -<n>` produces against the same target,
-    /// so the preview renderer needs no special-casing for the new
-    /// source.
+    /// Returns `None` when:
+    /// - no client is up (spawn failed earlier; live-send entry
+    ///   should have aborted, so this means we're in a transient
+    ///   teardown state).
+    /// - the client returned an error: drops the client so the next
+    ///   call short-circuits to `None` and the preview stops
+    ///   updating, matching what the user sees for typing on the
+    ///   same dead connection.
     fn capture_via_control_mode(&mut self, capture_lines: usize) -> Option<String> {
-        self.live_send.as_ref()?;
         let client = self.control_mode_client.as_ref()?;
         match client.capture_pane(
             capture_lines,
@@ -1276,7 +1281,7 @@ impl HomeView {
                 tracing::warn!(
                     target: "tmux.control_mode",
                     error = %err,
-                    "control-mode capture failed; falling back to fork-based capture for the rest of this live-send session",
+                    "control-mode capture failed; preview will stop updating until live-send is re-entered",
                 );
                 self.control_mode_client = None;
                 None

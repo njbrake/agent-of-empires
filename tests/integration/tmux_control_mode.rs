@@ -1,8 +1,8 @@
 //! Live-fire test for the tmux `-C` control-mode client.
 //!
 //! Verifies the wire format end-to-end: spawn a real tmux session, attach
-//! a `ControlModeClient`, run `capture-pane` over the long-lived socket,
-//! and confirm the returned bytes contain content we put into the pane.
+//! a `ControlModeClient`, run `capture-pane` and `send-keys` over the
+//! long-lived socket, and confirm the bytes round-trip.
 //!
 //! Skipped automatically when tmux is missing (CI runners and dev boxes
 //! that don't ship tmux). Uses unique `aoe_test_cm_*` session names so
@@ -59,6 +59,18 @@ fn create_session_with_content(name: &str, content: &str) {
     std::thread::sleep(Duration::from_millis(250));
 }
 
+fn create_empty_session(name: &str) {
+    let _ = Command::new("tmux")
+        .args(["kill-session", "-t", name])
+        .output();
+    let status = Command::new("tmux")
+        .args(["new-session", "-d", "-s", name, "-x", "80", "-y", "24"])
+        .status()
+        .expect("spawn tmux new-session");
+    assert!(status.success(), "tmux new-session failed for {name}");
+    std::thread::sleep(Duration::from_millis(100));
+}
+
 #[test]
 #[serial]
 fn control_mode_capture_returns_pane_content() {
@@ -71,16 +83,7 @@ fn control_mode_capture_returns_pane_content() {
     let _cleanup = TmuxCleanup { name: name.clone() };
     create_session_with_content(&name, "hello-from-control-mode");
 
-    let client = match ControlModeClient::spawn(&name) {
-        Ok(c) => c,
-        Err(e) => {
-            // Spawn failure is the same path the production caller
-            // handles silently. We assert non-failure here because
-            // this test exists specifically to exercise the success
-            // path against a known-good session.
-            panic!("ControlModeClient::spawn failed: {e}");
-        }
-    };
+    let client = ControlModeClient::spawn(&name).expect("ControlModeClient::spawn");
 
     let output = client
         .capture_pane(50, 80, 24)
@@ -91,29 +94,92 @@ fn control_mode_capture_returns_pane_content() {
     );
 }
 
+/// End-to-end proof that the new send-keys path delivers bytes to the
+/// pane: spawn a session, send a literal via the control-mode socket
+/// (no fork), then capture-pane and assert the literal landed in the
+/// pane. Regression guard for typing-latency improvements.
 #[test]
 #[serial]
-fn control_mode_env_opt_out_blocks_spawn() {
+fn control_mode_send_literal_round_trips_through_pane() {
     if !tmux_available() {
         eprintln!("Skipping: tmux not available");
         return;
     }
 
-    let name = unique_session_name("env_opt_out");
+    let name = unique_session_name("send_literal");
     let _cleanup = TmuxCleanup { name: name.clone() };
-    create_session_with_content(&name, "noop");
+    create_empty_session(&name);
 
-    let prior = std::env::var(agent_of_empires::tmux::CONTROL_MODE_DISABLE_ENV_VAR).ok();
-    std::env::set_var(agent_of_empires::tmux::CONTROL_MODE_DISABLE_ENV_VAR, "1");
-    let result = ControlModeClient::spawn(&name);
-    match prior {
-        Some(v) => std::env::set_var(agent_of_empires::tmux::CONTROL_MODE_DISABLE_ENV_VAR, v),
-        None => std::env::remove_var(agent_of_empires::tmux::CONTROL_MODE_DISABLE_ENV_VAR),
-    }
+    let client = ControlModeClient::spawn(&name).expect("ControlModeClient::spawn");
+    client
+        .send_literal_no_enter("echo control-mode-typed-this")
+        .expect("send_literal_no_enter");
+    client
+        .send_named_key("Enter")
+        .expect("send_named_key Enter");
+    // Let the shell process the command line.
+    std::thread::sleep(Duration::from_millis(250));
+
+    let output = client.capture_pane(50, 80, 24).expect("capture_pane");
     assert!(
-        result.is_err(),
-        "expected env opt-out to block spawn, got Ok"
+        output.contains("control-mode-typed-this"),
+        "expected typed literal in pane capture, got: {output:?}"
     );
+}
+
+#[test]
+#[serial]
+fn control_mode_send_literal_rejects_control_bytes() {
+    // Pure unit-style assertion against the new method's gating, even
+    // though the client lifecycle uses tmux. Spawning is cheap here.
+    if !tmux_available() {
+        eprintln!("Skipping: tmux not available");
+        return;
+    }
+
+    let name = unique_session_name("ctrl_bytes");
+    let _cleanup = TmuxCleanup { name: name.clone() };
+    create_empty_session(&name);
+
+    let client = ControlModeClient::spawn(&name).expect("ControlModeClient::spawn");
+    // Newline (0x0A) is a control byte. The fork path handled these
+    // via paste-buffer; control mode rejects so the caller can decide.
+    let err = client.send_literal_no_enter("line1\nline2").unwrap_err();
+    assert!(
+        format!("{err:#}").contains("control bytes"),
+        "expected control-bytes rejection, got: {err}"
+    );
+}
+
+#[test]
+#[serial]
+fn control_mode_resize_round_trips() {
+    if !tmux_available() {
+        eprintln!("Skipping: tmux not available");
+        return;
+    }
+
+    let name = unique_session_name("resize");
+    let _cleanup = TmuxCleanup { name: name.clone() };
+    create_empty_session(&name);
+
+    let client = ControlModeClient::spawn(&name).expect("ControlModeClient::spawn");
+    client.resize(120, 30).expect("resize 120x30");
+
+    // Confirm tmux applied the resize via a fresh subprocess so the
+    // assertion doesn't depend on the same connection that issued it.
+    let output = Command::new("tmux")
+        .args([
+            "display-message",
+            "-t",
+            &name,
+            "-p",
+            "#{window_width}x#{window_height}",
+        ])
+        .output()
+        .expect("tmux display-message");
+    let dims = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    assert_eq!(dims, "120x30", "expected 120x30 after resize, got {dims:?}");
 }
 
 #[test]

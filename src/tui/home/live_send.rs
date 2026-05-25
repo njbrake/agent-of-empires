@@ -21,10 +21,12 @@
 //! - No echo, no inline editing, no review step. The preview pane is the
 //!   only feedback channel; users who need multi-line composition or want
 //!   to proofread voice/dictation should use the compose dialog on `M`.
-//! - One tmux process per keystroke. Acceptable on local machines; visibly
-//!   laggy over Docker / mosh on slow links. Bracketed paste shortcuts the
-//!   per-char cost by routing the whole chunk through `send_literal_no_enter`
-//!   in a single call.
+//! - Keystrokes ride a long-lived `tmux -C` control-mode connection
+//!   (`crate::tmux::ControlModeClient`), not one fork per send-keys
+//!   call. The connection is shared with the preview-refresh path so
+//!   captures and keystrokes contend for the same socket; in practice
+//!   both round-trips are sub-millisecond on a fast host, well below
+//!   what the user can see.
 //!
 //! Reserved (non-forwarded) chords:
 //! - The configured exit chord list — exits live mode (see above).
@@ -36,6 +38,7 @@
 //!   handled by `handle_scroll_up` / `handle_scroll_down`.
 
 use std::sync::mpsc::{channel, Sender};
+use std::sync::Arc;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
@@ -322,24 +325,29 @@ pub(super) enum WorkerMsg {
     Resize { cols: u16, rows: u16 },
 }
 
-/// Background dispatcher: owns a tmux `Session` and drains a channel of
-/// `WorkerMsg`s, calling `coalesce_batch` to compress runs of literal
-/// keys into single `send-keys` invocations. Spawned on
-/// `enter_live_send` and dropped when the user exits live mode;
-/// dropping closes the channel, which makes the worker thread's `recv`
-/// return `Err` and exit on the next iteration. We deliberately do not
-/// `join` because the worker is idempotent and harmless if it survives
-/// a brief moment past the UI thread that owned it (e.g., the user
-/// toggles live mode rapidly).
+/// Background dispatcher: shares a `tmux -C` control-mode connection
+/// with the preview-refresh path and drains a channel of `WorkerMsg`s,
+/// calling `coalesce_batch` to compress runs of literal keys into single
+/// `send-keys` invocations. Spawned on `enter_live_send` and dropped
+/// when the user exits live mode; dropping closes the channel, which
+/// makes the worker thread's `recv` return `Err` and exit on the next
+/// iteration. We deliberately do not `join` because the worker is
+/// idempotent and harmless if it survives a brief moment past the UI
+/// thread that owned it (e.g., the user toggles live mode rapidly).
+///
+/// All dispatch goes through the control-mode socket: there is no
+/// fork-based fallback. If the socket dies mid-session, errors are
+/// logged and the work is dropped; the user notices typing stop and
+/// exits live mode, which tears the client down and lets the next
+/// `enter_live_send` spawn a fresh one.
 pub(in crate::tui) struct LiveSendWorker {
     tx: Sender<WorkerMsg>,
 }
 
 impl LiveSendWorker {
-    pub(super) fn spawn(session_name: String) -> Self {
+    pub(super) fn spawn(client: Arc<crate::tmux::ControlModeClient>) -> Self {
         let (tx, rx) = channel::<WorkerMsg>();
         std::thread::spawn(move || {
-            let session = crate::tmux::Session::from_name(&session_name);
             // Block until the first message, then drain anything else
             // that piled up during the previous flush. This is enough
             // to coalesce paste-bursts and held-key autorepeat without
@@ -350,15 +358,15 @@ impl LiveSendWorker {
                 while let Ok(msg) = rx.try_recv() {
                     batch.push(msg);
                 }
-                dispatch_batch(&session, batch);
+                dispatch_batch(&client, batch);
             }
         });
         Self { tx }
     }
 
     /// Enqueue a translated key for dispatch. Returns immediately; the
-    /// fork+exec for `tmux send-keys` happens on the worker thread, so
-    /// the UI never blocks on tmux latency.
+    /// `tmux send-keys` round-trip over the control-mode socket happens
+    /// on the worker thread, so the UI never blocks on tmux latency.
     pub(super) fn send(&self, key: TmuxKey) {
         // Channel send only fails if the worker thread panicked. Drop
         // silently rather than spam logs: the user's next exit attempt
@@ -376,19 +384,19 @@ impl LiveSendWorker {
     }
 }
 
-/// Walk one drained batch and execute it against `session`. Uses
+/// Walk one drained batch and execute it against `client`. Uses
 /// `coalesce` so literal-key runs collapse into a single `send-keys`
 /// call; named keys and resizes dispatch individually. Tests verify
 /// the ordering via `coalesce` directly without needing a real session.
-fn dispatch_batch(session: &crate::tmux::Session, batch: Vec<WorkerMsg>) {
+fn dispatch_batch(client: &crate::tmux::ControlModeClient, batch: Vec<WorkerMsg>) {
     for action in coalesce(batch) {
         let result = match action {
-            TmuxAction::Literal(s) => session.send_literal_no_enter(&s),
-            TmuxAction::Named(name) => session.send_named_key(&name),
-            TmuxAction::Resize { cols, rows } => session.resize(cols, rows),
+            TmuxAction::Literal(s) => client.send_literal_no_enter(&s),
+            TmuxAction::Named(name) => client.send_named_key(&name),
+            TmuxAction::Resize { cols, rows } => client.resize(cols, rows),
         };
         if let Err(e) = result {
-            tracing::warn!("live-send worker: tmux op failed: {}", e);
+            tracing::warn!("live-send worker: control-mode op failed: {}", e);
         }
     }
 }

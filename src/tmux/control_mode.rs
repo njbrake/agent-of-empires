@@ -2,32 +2,31 @@
 //!
 //! Background and contract live in
 //! [issue #1485](https://github.com/njbrake/agent-of-empires/issues/1485).
-//! Short version: while the user is in live-send mode the home view polls
-//! `tmux capture-pane` at ~60Hz to keep the preview pane in sync with their
-//! keystrokes. The historical implementation forks a fresh `tmux` process
-//! per refresh, which is fine on a laptop and visible on phones / over
-//! mosh / on battery.
+//! Short version: live-send mode polls `tmux capture-pane` at ~60Hz and
+//! issues a `tmux send-keys` per coalesced keystroke batch. The
+//! historical implementation forked a fresh `tmux` process for every
+//! one of those calls. Visible cost on phones over mosh / on battery.
 //!
 //! This module keeps one tmux process alive in control mode for the
-//! duration of live-send and sends `capture-pane` commands over its
-//! stdin instead of forking. The output is returned via the same
-//! pipe, framed by `%begin` / `%end` lines. The capture command itself
-//! is unchanged (`capture-pane -t <session>:^.0 -p -e -S -<lines>`),
-//! so the response is byte-identical to what the fork path produces
-//! and the existing rendering pipeline doesn't need to change.
+//! duration of live-send and pipes every command (`capture-pane`,
+//! `send-keys`, `resize-window`) over its stdin. Responses come back
+//! via the same socket, framed by `%begin` / `%end` lines.
+//!
+//! The connection is the *sole* transport for live-send. There is no
+//! fork-based fallback: callers that can't get a control-mode client
+//! up don't enter live mode at all (`enter_live_send` returns Err and
+//! the user sees a "Live send failed" dialog).
 //!
 //! Failure modes:
 //! - Spawn failure (tmux missing, server unreachable, target session
-//!   gone): `spawn` returns Err and the caller falls back to the fork
-//!   path with no user-visible change.
+//!   gone): `spawn` returns Err; the home view surfaces the error and
+//!   live-send entry is aborted.
 //! - Mid-session failure (timeout reading a response, EOF, malformed
-//!   frame): the in-flight `capture_pane` call returns Err and the
-//!   caller is expected to drop the client and continue on the fork
-//!   path until live-send is exited and re-entered.
-//!
-//! Opt-out: set `AOE_DISABLE_TMUX_CONTROL_MODE=1` to skip control mode
-//! entirely and use the fork path. Provided as a safety valve while
-//! the feature is new.
+//!   frame): the in-flight call returns Err. The render path drops
+//!   the client (the worker's `Arc` clone keeps the underlying alive
+//!   until the worker also drops, which happens when the user exits
+//!   live-send). Typing visibly stops until the user exits and
+//!   re-enters; that's the signal that something went wrong.
 
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
@@ -37,12 +36,6 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
-
-/// Env var users can set to force the fork-based capture path even when
-/// control mode would otherwise be available. Any non-empty value
-/// disables; matches the conventions of the project's other debug
-/// switches (`AGENT_OF_EMPIRES_DEBUG`, etc.).
-pub const DISABLE_ENV_VAR: &str = "AOE_DISABLE_TMUX_CONTROL_MODE";
 
 /// Default timeout waiting for a single command response. Generous
 /// because the worker thread is shared with notification draining and
@@ -99,22 +92,11 @@ struct Inner {
 }
 
 impl ControlModeClient {
-    /// Returns true when the env-var opt-out is set.
-    pub fn disabled_via_env() -> bool {
-        std::env::var(DISABLE_ENV_VAR)
-            .map(|v| !v.is_empty())
-            .unwrap_or(false)
-    }
-
     /// Spawn `tmux -C attach-session -t <session_name>` and start the
-    /// reader thread. Returns Err if the env-var opt-out is set, if
-    /// tmux can't be launched, or if the spawned process exits before
-    /// we manage to take its stdin/stdout handles.
+    /// reader thread. Returns Err if tmux can't be launched or if the
+    /// spawned process exits before we manage to take its stdin/stdout
+    /// handles.
     pub fn spawn(session_name: &str) -> Result<Self> {
-        if Self::disabled_via_env() {
-            bail!("control mode disabled via {}", DISABLE_ENV_VAR);
-        }
-
         let mut child = Command::new("tmux")
             .args(["-C", "attach-session", "-t", session_name])
             .stdin(Stdio::piped())
@@ -188,6 +170,70 @@ impl ControlModeClient {
         let target = format!("{}:^.0", self.session_name);
         let command = format!("capture-pane -t {} -p -e -S -{}", target, lines);
         self.send_command(&command)
+    }
+
+    /// Deliver literal text to the pane via `send-keys -l --`. Runs
+    /// over the persistent connection so the caller doesn't pay one
+    /// fork per keystroke.
+    ///
+    /// Returns `Err` when the text contains a control byte (anything
+    /// below `0x20` or `DEL`); tmux's command parser splits commands
+    /// on newlines and we don't have a safe encoding for arbitrary
+    /// raw bytes inside a single command line. live-send never
+    /// produces such payloads (`translate` emits `Char(c)` for
+    /// printable chars and named keys for everything else), so the
+    /// rejection is a guard against future callers, not a hot path.
+    pub fn send_literal_no_enter(&self, text: &str) -> Result<()> {
+        if text.bytes().any(|b| b < 0x20 || b == 0x7F) {
+            bail!("control-mode send_literal rejects control bytes; caller should use fork path");
+        }
+        let target = format!("{}:^.0", self.session_name);
+        // tmux's command parser treats single-quoted strings as
+        // literal bytes. The only character that needs escaping is the
+        // single quote itself, handled via the standard shell-style
+        // close-quote / escaped-quote / reopen trick (`'` → `'\''`).
+        let escaped = text.replace('\'', "'\\''");
+        let command = format!("send-keys -t {} -l -- '{}'", target, escaped);
+        self.send_command(&command).map(|_| ())
+    }
+
+    /// Send a single tmux-named key (e.g. `Escape`, `Up`, `C-c`) via
+    /// the persistent connection.
+    ///
+    /// Returns `Err` for any key name containing characters outside
+    /// the safe set (`A-Za-z0-9-+_`). The live-send translator never
+    /// produces names outside this set, so the rejection is defense
+    /// in depth against a future caller introducing an injection
+    /// risk.
+    pub fn send_named_key(&self, key_name: &str) -> Result<()> {
+        if key_name.is_empty()
+            || !key_name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '+' || c == '_')
+        {
+            bail!(
+                "control-mode send_named_key rejects unsafe key name {:?}",
+                key_name
+            );
+        }
+        let target = format!("{}:^.0", self.session_name);
+        let command = format!("send-keys -t {} {}", target, key_name);
+        self.send_command(&command).map(|_| ())
+    }
+
+    /// Resize the session's window via the persistent connection.
+    /// Mirrors `Session::resize`; same `-x` / `-y` semantics, same
+    /// side-effect of flipping `window-size` to `manual` (callers
+    /// still need to call `Session::reset_size_to_latest_client` on
+    /// exit).
+    pub fn resize(&self, cols: u16, rows: u16) -> Result<()> {
+        let cols = cols.max(1);
+        let rows = rows.max(1);
+        let command = format!(
+            "resize-window -t {} -x {} -y {}",
+            self.session_name, cols, rows
+        );
+        self.send_command(&command).map(|_| ())
     }
 
     fn send_command(&self, command: &str) -> Result<String> {
@@ -419,24 +465,5 @@ mod tests {
         // don't deadlock waiting for an `%end ...` that never arrives.
         assert!(matches!(parse_line("%begin".to_string()), Line::Begin));
         assert!(matches!(parse_line("%end".to_string()), Line::End));
-    }
-
-    #[test]
-    fn disabled_via_env_respects_env_var() {
-        // Snapshot+restore so we don't pollute the global env for
-        // sibling tests. We can't assume the var is unset on the host
-        // (CI may set it), so we capture the prior value and replay.
-        let prior = std::env::var(DISABLE_ENV_VAR).ok();
-        // SAFETY: tests in this file are single-threaded by default
-        // (no `#[test]` parallelism between cases in the same module
-        // unless they share state, which we deliberately avoid).
-        std::env::set_var(DISABLE_ENV_VAR, "1");
-        assert!(ControlModeClient::disabled_via_env());
-        std::env::set_var(DISABLE_ENV_VAR, "");
-        assert!(!ControlModeClient::disabled_via_env());
-        match prior {
-            Some(v) => std::env::set_var(DISABLE_ENV_VAR, v),
-            None => std::env::remove_var(DISABLE_ENV_VAR),
-        }
     }
 }

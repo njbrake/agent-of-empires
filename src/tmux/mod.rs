@@ -11,7 +11,7 @@ mod test_helpers;
 mod tool_session;
 pub(crate) mod utils;
 
-pub use control_mode::{ControlModeClient, DISABLE_ENV_VAR as CONTROL_MODE_DISABLE_ENV_VAR};
+pub use control_mode::ControlModeClient;
 pub use session::Session;
 pub use status_bar::{get_session_info_for_current, get_status_for_current_session};
 pub use status_detection::detect_status_from_content;
