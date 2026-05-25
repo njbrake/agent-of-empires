@@ -12,7 +12,7 @@ import {
   listSessions,
   seedSessionViaAoeAdd,
 } from "../helpers/aoeServe";
-import { waitForCockpitReady } from "../helpers/cockpit";
+import { waitForCockpitReady, waitForReplayContains } from "../helpers/cockpit";
 
 base("cockpit spawn + prompt round-trip emits an agent_message_chunk", async ({}, testInfo) => {
   const serve = await spawnAoeServe({
@@ -55,30 +55,13 @@ base("cockpit spawn + prompt round-trip emits an agent_message_chunk", async ({}
     expect(promptRes.status).toBeGreaterThanOrEqual(200);
     expect(promptRes.status).toBeLessThan(300);
 
-    let sawChunk = false;
-    for (let attempt = 0; attempt < 30; attempt++) {
-      const replay = await fetch(
-        `${serve.baseUrl}/api/sessions/${sessionId}/cockpit/replay?since=0`,
-      ).then((r) => r.json());
-      // GET /cockpit/replay returns { frames, lost, highest_seq, lowest_seq }
-      // (src/server/api/cockpit.rs::cockpit_replay). Each frame's serialized
-      // `event` is an externally-tagged enum, so the chunk is keyed
-      // `AgentMessageChunk`. Match either casing to stay robust if the
-      // wire format ever moves to snake_case.
-      const frames: unknown[] = Array.isArray(replay)
-        ? replay
-        : replay.frames ?? [];
-      const json = JSON.stringify(frames);
-      if (
-        json.includes("agent_message_chunk") ||
-        json.includes("AgentMessageChunk")
-      ) {
-        sawChunk = true;
-        break;
-      }
-      await new Promise((r) => setTimeout(r, 200));
-    }
-    expect(sawChunk).toBe(true);
+    // Match either casing in case the wire format moves to snake_case
+    // (frames currently serialize `event` as an externally-tagged enum,
+    // keyed `AgentMessageChunk`; src/server/api/cockpit.rs::cockpit_replay).
+    await waitForReplayContains(serve.baseUrl, sessionId, [
+      "agent_message_chunk",
+      "AgentMessageChunk",
+    ]);
   } finally {
     await serve.stop();
   }

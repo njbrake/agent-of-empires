@@ -10,6 +10,7 @@ import {
   listSessions,
   seedSessionViaAoeAdd,
 } from "../helpers/aoeServe";
+import { waitForReplayContains } from "../helpers/cockpit";
 
 base("session/mode round-trips through the fake ACP agent", async ({}, testInfo) => {
   const serve = await spawnAoeServe({
@@ -57,23 +58,11 @@ base("session/mode round-trips through the fake ACP agent", async ({}, testInfo)
     expect(modeRes.status).toBeGreaterThanOrEqual(200);
     expect(modeRes.status).toBeLessThan(300);
 
-    let sawModeChange = false;
-    for (let attempt = 0; attempt < 30; attempt++) {
-      const replay = await fetch(
-        `${serve.baseUrl}/api/sessions/${sessionId}/cockpit/replay?since=0`,
-      ).then((r) => r.json());
-      const json = JSON.stringify(replay);
-      if (
-        json.includes("current_mode_changed") ||
-        json.includes("CurrentModeChanged") ||
-        json.includes("\"plan\"")
-      ) {
-        sawModeChange = true;
-        break;
-      }
-      await new Promise((r) => setTimeout(r, 200));
-    }
-    expect(sawModeChange).toBe(true);
+    await waitForReplayContains(serve.baseUrl, sessionId, [
+      "current_mode_changed",
+      "CurrentModeChanged",
+      '"plan"',
+    ]);
   } finally {
     await serve.stop();
   }

@@ -89,25 +89,29 @@ base("permission_request flows through to the server", async ({}, testInfo) => {
     // build_approval), so the spec must read it back instead of
     // hard-coding a value.
     let nonce: string | undefined;
-    for (let attempt = 0; attempt < 30; attempt++) {
-      const replay = await fetch(
-        `${serve.baseUrl}/api/sessions/${sessionId}/cockpit/replay?since=0`,
-      ).then((r) => r.json());
-      const frames: Array<{ event?: ApprovalRequestedEvent }> = Array.isArray(
-        replay,
+    await expect
+      .poll(
+        async () => {
+          const replay = await fetch(
+            `${serve.baseUrl}/api/sessions/${sessionId}/cockpit/replay?since=0`,
+          ).then((r) => r.json());
+          const frames: Array<{ event?: ApprovalRequestedEvent }> = Array.isArray(
+            replay,
+          )
+            ? replay
+            : replay.frames ?? [];
+          for (const frame of frames) {
+            const candidate = frame.event?.ApprovalRequested?.approval?.nonce;
+            if (candidate) {
+              nonce = candidate;
+              return true;
+            }
+          }
+          return false;
+        },
+        { timeout: 15_000, intervals: [100, 200, 500, 1000] },
       )
-        ? replay
-        : replay.frames ?? [];
-      for (const frame of frames) {
-        const candidate = frame.event?.ApprovalRequested?.approval?.nonce;
-        if (candidate) {
-          nonce = candidate;
-          break;
-        }
-      }
-      if (nonce) break;
-      await new Promise((r) => setTimeout(r, 200));
-    }
+      .toBe(true);
     expect(nonce).toBeDefined();
 
     // Resolve via the explicit endpoint (UI click path is covered by a

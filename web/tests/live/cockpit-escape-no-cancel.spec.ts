@@ -20,6 +20,7 @@ import {
   listSessions,
   seedSessionViaAoeAdd,
 } from "../helpers/aoeServe";
+import { enableCockpitAndWait } from "../helpers/cockpit";
 
 base.skip("Escape inside the cockpit composer does not POST /cockpit/cancel", async ({
   page,
@@ -36,13 +37,7 @@ base.skip("Escape inside the cockpit composer does not POST /cockpit/cancel", as
     const sessions = await listSessions(serve.baseUrl);
     const sessionId: string = sessions[0]!.id;
 
-    const enableRes = await fetch(
-      `${serve.baseUrl}/api/sessions/${sessionId}/cockpit/enable`,
-      { method: "POST" },
-    );
-    expect(enableRes.ok).toBeTruthy();
-    // Allow the supervisor to come up.
-    await new Promise((r) => setTimeout(r, 2_000));
+    await enableCockpitAndWait(serve.baseUrl, sessionId);
 
     // Send a prompt so the agent enters turn-active.
     const promptRes = await fetch(

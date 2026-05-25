@@ -24,6 +24,7 @@ import {
   listSessions,
   seedSessionViaAoeAdd,
 } from "../helpers/aoeServe";
+import { enableCockpitAndWait } from "../helpers/cockpit";
 
 const FLOOD_UPDATES = Array.from({ length: 300 }, (_, i) => ({
   sessionUpdate: "agent_message_chunk",
@@ -57,11 +58,7 @@ base.skip("lagged WS receiver gets a kind:lagged frame from the server", async (
     const sessions = await listSessions(serve.baseUrl);
     const sessionId = sessions[0]!.id;
 
-    await fetch(
-      `${serve.baseUrl}/api/sessions/${sessionId}/cockpit/enable`,
-      { method: "POST" },
-    );
-    await new Promise((r) => setTimeout(r, 2_000));
+    await enableCockpitAndWait(serve.baseUrl, sessionId);
 
     // Sketch only. The full version would: (1) open a WebSocket to
     // /sessions/:id/cockpit/ws and stop reading its frames so the
