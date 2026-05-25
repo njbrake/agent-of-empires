@@ -9,6 +9,28 @@ use ratatui::widgets::*;
 use crate::session::Instance;
 use crate::tui::styles::Theme;
 
+/// Light value type the renderers consume in place of a raw `&str`.
+/// The caller is expected to hand over the cached parse from
+/// `PreviewCache::ensure_parsed`; we then read it directly for the
+/// actual render.
+///
+/// Passing a pre-parsed `Text` is the whole point of the
+/// optimisation: it lets the cache update once per content change
+/// rather than re-running the full `ansi-to-tui` pipeline on every
+/// frame. See `PreviewCache::ensure_parsed` for the parse-and-cache
+/// contract.
+pub struct CachedPreview<'a> {
+    /// `None` means the source `content` was empty (no pane bytes
+    /// yet, or just cleared); callers render their own placeholder.
+    pub text: Option<&'a Text<'static>>,
+}
+
+impl<'a> CachedPreview<'a> {
+    pub fn from_text(text: Option<&'a Text<'static>>) -> Self {
+        Self { text }
+    }
+}
+
 pub struct Preview;
 
 impl Preview {
@@ -18,7 +40,7 @@ impl Preview {
         area: Rect,
         instance: &Instance,
         terminal_running: bool,
-        cached_output: &str,
+        cached_output: CachedPreview<'_>,
         scroll_offset: u16,
         theme: &Theme,
         compact: bool,
@@ -86,12 +108,15 @@ impl Preview {
 
         // Output section
         let visible_height = output_area.height.saturating_sub(1) as usize;
-        let parsed_output = if terminal_running && !cached_output.is_empty() {
-            Some(parse_output_text(cached_output))
+        // Use the pre-parsed cache when the terminal is up; suppress
+        // it otherwise so the "press Enter to start terminal" hint
+        // can take the inner area instead of a stale capture.
+        let parsed_output = if terminal_running {
+            cached_output.text
         } else {
             None
         };
-        let line_count = parsed_output.as_ref().map_or(0, |t| t.lines.len());
+        let line_count = parsed_output.map_or(0, |t| t.lines.len());
 
         // Compact mode: no inner separator/title; the outer block already
         // names the session. Scroll indicator is dropped to save a row.
@@ -125,7 +150,13 @@ impl Preview {
         } else if let Some(output_text) = parsed_output {
             let paragraph_scroll = compute_scroll(line_count, visible_height, scroll_offset);
 
-            let paragraph = Paragraph::new(output_text)
+            // ratatui's `Paragraph::new` takes ownership of the
+            // `Text`, so we clone the cached parse here. The clone
+            // walks the parsed `Vec<Line<'static>>` (one allocation
+            // per Span's `Cow`) but is still much cheaper than
+            // re-running `ansi-to-tui` on the raw pane bytes, which
+            // is what this whole caching dance avoids.
+            let paragraph = Paragraph::new(output_text.clone())
                 .style(Style::default().fg(theme.text))
                 .scroll((paragraph_scroll, 0));
 
@@ -143,7 +174,7 @@ impl Preview {
         frame: &mut Frame,
         area: Rect,
         instance: &Instance,
-        cached_output: &str,
+        cached_output: CachedPreview<'_>,
         scroll_offset: u16,
         theme: &Theme,
         idle_decay_window: Duration,
@@ -297,18 +328,18 @@ impl Preview {
         frame: &mut Frame,
         area: Rect,
         instance: &Instance,
-        cached_output: &str,
+        cached_output: CachedPreview<'_>,
         scroll_offset: u16,
         theme: &Theme,
         compact: bool,
     ) {
         let visible_height = area.height.saturating_sub(1) as usize;
-        let parsed_output = if instance.last_error.is_none() && !cached_output.is_empty() {
-            Some(parse_output_text(cached_output))
-        } else {
-            None
-        };
-        let line_count = parsed_output.as_ref().map_or(0, |t| t.lines.len());
+        // The error path below returns early, so by the time we use
+        // `parsed_output` for the output Paragraph the error case has
+        // been handled. Until then `parsed_output` is just the cached
+        // parse passed in by the caller (renamed for readability).
+        let parsed_output = cached_output.text;
+        let line_count = parsed_output.map_or(0, |t| t.lines.len());
 
         // Compact mode skips the inner separator/title; the outer block
         // already names the session and scroll indicator is omitted to
@@ -357,7 +388,16 @@ impl Preview {
         if let Some(output_text) = parsed_output {
             let paragraph_scroll = compute_scroll(line_count, visible_height, scroll_offset);
 
-            let paragraph = Paragraph::new(output_text)
+            // ratatui's `Paragraph::new` takes ownership of the
+            // `Text`, so we clone the cached parse here. The clone
+            // walks the parsed `Vec<Line<'static>>` (one allocation
+            // per Span's Cow), which is a few-millisecond operation
+            // but well under the cost of re-running `ansi-to-tui` on
+            // the raw bytes; the latter is what this whole caching
+            // dance avoids. If a cheaper "render Paragraph by
+            // reference" path appears in a future ratatui release,
+            // we can revisit.
+            let paragraph = Paragraph::new(output_text.clone())
                 .style(Style::default().fg(theme.text))
                 .scroll((paragraph_scroll, 0));
 
@@ -397,7 +437,11 @@ pub fn format_scroll_indicator(
     Some(format!(" [{}/{}] ", clamped, max_offset))
 }
 
-fn parse_output_text(content: &str) -> Text<'static> {
+/// Parse a captured ANSI string into a ratatui `Text`.
+///
+/// Visible at the module level so `PreviewCache::ensure_parsed` can
+/// call it from `src/tui/home/mod.rs` to drive the cache.
+pub fn parse_output_text(content: &str) -> Text<'static> {
     let cleaned = crate::tmux::utils::strip_osc_st(content);
     cleaned.into_text().unwrap_or_else(|_| Text::from(cleaned))
 }

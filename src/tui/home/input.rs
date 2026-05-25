@@ -2901,6 +2901,9 @@ impl HomeView {
         session.reset_size_to_latest_client();
         self.live_send = None;
         self.live_send_worker = None;
+        // Dropping the control-mode client closes stdin, which makes
+        // tmux detach the long-lived `-C` client cleanly.
+        self.control_mode_client = None;
         self.live_send_last_resize = None;
     }
 

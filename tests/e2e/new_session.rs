@@ -292,3 +292,18 @@ fn test_new_session_enters_live_mode_when_configured() {
     // the dispatch didn't flip into the tmux attach view.
     h.assert_screen_contains(" aoe ");
 }
+
+// NOTE: a previous version of this file added
+// `test_live_send_repeated_entry_exit_remains_responsive`, which
+// drove the TUI through two Tab → C-q cycles to validate the
+// `ControlModeClient` spawn/drop lifecycle. The test was reliable on
+// macOS but flaked on ubuntu-latest because the pane process (a
+// short-lived shell, picked by the wizard when no agent is
+// installed) exited cleanly within ~2s of session creation: by the
+// time the second `Tab` fired, `ensure_pane_ready` saw a dead pane
+// and surfaced the "Live send failed" dialog instead of LIVE. The
+// e2e test conflated two concerns ("the client lifecycle is clean"
+// vs. "the pane survives across cycles"), so the lifecycle
+// assertion now lives in `tests/integration/tmux_control_mode.rs`
+// (`control_mode_spawn_drop_respawn_against_same_session`), which
+// spawns against a raw tmux session that doesn't go anywhere.

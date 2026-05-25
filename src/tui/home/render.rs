@@ -13,6 +13,7 @@ use super::{
 };
 use crate::session::config::{GroupByMode, SortOrder};
 use crate::session::{Item, Status};
+use crate::tui::components::preview::CachedPreview;
 use crate::tui::components::{
     format_scroll_indicator, set_prefixed_input_cursor_position, HelpOverlay, Preview,
 };
@@ -1166,24 +1167,19 @@ impl HomeView {
 
     /// Refresh preview cache if needed (session changed, dimensions changed, or timer expired)
     fn refresh_preview_cache_if_needed(&mut self, width: u16, height: u16) {
-        // 250ms (4 Hz) is the steady-state cadence, enough to surface
-        // status changes without forking tmux on every loop tick. While
-        // the user is in live-send mode they're watching the preview
-        // for feedback on each keystroke, so drop to 16ms (~60 Hz,
-        // matching the app loop's redraw ceiling) so typed input
-        // appears in the preview as close to instantly as the
-        // fork-per-capture model allows. Cost: ~60 `tmux capture-pane`
-        // forks/sec while live, typically <5% of one core on a modern
-        // laptop. See #1485 for the longer-term fix (one long-lived
-        // tmux control-mode socket instead of per-refresh forks).
+        // Outside live-send, captures fork a fresh `tmux capture-pane`
+        // so we throttle to 250ms (4 Hz). Inside live-send, captures
+        // ride the long-lived `tmux -C` control-mode socket and cost
+        // a single round-trip (~1-2ms), so there's no upside to
+        // throttling: every render refreshes the preview, the agent's
+        // output appears as soon as the main loop wakes (key event,
+        // tokio ticker, or the %output wake-up the reader thread
+        // pushes when tmux notifies us of new pane bytes). The result
+        // is roughly attach-quality latency in the common case; the
+        // residual gap is the cost of capture-pane + ratatui re-render
+        // vs. tmux writing bytes straight into your terminal.
         const PREVIEW_REFRESH_MS_IDLE: u128 = 250;
-        const PREVIEW_REFRESH_MS_LIVE: u128 = 16;
         let in_live = self.live_send.is_some();
-        let refresh_ms = if in_live {
-            PREVIEW_REFRESH_MS_LIVE
-        } else {
-            PREVIEW_REFRESH_MS_IDLE
-        };
 
         // While in live-send mode, keep the tmux pane geometry in sync
         // with the preview's actual cell dimensions so the agent
@@ -1207,7 +1203,10 @@ impl HomeView {
             None => false,
         };
         let dims_changed = self.preview_cache.dimensions != (width, height);
-        let timer_expired = self.preview_cache.last_refresh.elapsed().as_millis() > refresh_ms;
+        // Live-send: no throttle. Idle: 250ms throttle to keep the
+        // fork rate sane. See the constant comment above for why.
+        let timer_expired = in_live
+            || self.preview_cache.last_refresh.elapsed().as_millis() > PREVIEW_REFRESH_MS_IDLE;
         // Only re-capture for scroll when the cached window can no longer
         // cover the requested offset. Wheel ticks inside the BUFFER headroom
         // re-render from the existing content without forking tmux.
@@ -1218,23 +1217,75 @@ impl HomeView {
             && (session_changed || dims_changed || timer_expired || scroll_exceeds);
 
         if needs_refresh {
-            if let Some(id) = &self.selected_session {
-                if let Some(inst) = self.get_instance(id) {
-                    let capture_lines = capture_lines_for(height, scroll_offset);
-                    let content = inst
-                        .capture_output_with_size(capture_lines, width, height)
-                        .unwrap_or_default();
-                    self.preview_cache.captured_lines = content.lines().count();
-                    self.preview_cache.content = content;
-                    self.preview_cache.session_id = Some(id.clone());
-                    self.preview_cache.dimensions = (width, height);
-                    self.preview_cache.last_refresh = Instant::now();
-                    self.preview_scroll_offset = clamp_scroll_to_capture(
-                        self.preview_scroll_offset,
-                        self.preview_cache.captured_lines,
-                        height,
-                    );
-                }
+            if let Some(id) = self.selected_session.clone() {
+                let capture_lines = capture_lines_for(height, scroll_offset);
+                // While live-send is active the capture rides the
+                // long-lived `tmux -C` client (same socket the worker
+                // uses for keystrokes). Outside live-send we use the
+                // historical fork-per-refresh path, which only runs
+                // at the 250ms idle cadence so the fork cost is
+                // immaterial. If control-mode capture fails mid-live,
+                // the client is torn down and the preview stops
+                // updating until the user exits and re-enters live
+                // mode; that's intentional, the no-update signal
+                // matches what the user sees for typing on the same
+                // dead connection. See #1485.
+                let content = if self.live_send.is_some() {
+                    self.capture_via_control_mode(capture_lines)
+                        .unwrap_or_default()
+                } else {
+                    self.get_instance(&id)
+                        .and_then(|inst| {
+                            inst.capture_output_with_size(capture_lines, width, height)
+                                .ok()
+                        })
+                        .unwrap_or_default()
+                };
+                self.preview_cache.captured_lines = content.lines().count();
+                self.preview_cache.content = content;
+                // Invalidate the cached parse; the next render that
+                // needs `ensure_parsed` will re-run `ansi-to-tui`.
+                self.preview_cache.parsed_text = None;
+                self.preview_cache.session_id = Some(id);
+                self.preview_cache.dimensions = (width, height);
+                self.preview_cache.last_refresh = Instant::now();
+                self.preview_scroll_offset = clamp_scroll_to_capture(
+                    self.preview_scroll_offset,
+                    self.preview_cache.captured_lines,
+                    height,
+                );
+            }
+        }
+    }
+
+    /// Capture the preview through the live-send `tmux -C` client.
+    /// Called only while live-send is active; outside live-send the
+    /// caller uses the historical fork path directly.
+    ///
+    /// Returns `None` when:
+    /// - no client is up (spawn failed earlier; live-send entry
+    ///   should have aborted, so this means we're in a transient
+    ///   teardown state).
+    /// - the client returned an error: drops the client so the next
+    ///   call short-circuits to `None` and the preview stops
+    ///   updating, matching what the user sees for typing on the
+    ///   same dead connection.
+    fn capture_via_control_mode(&mut self, capture_lines: usize) -> Option<String> {
+        let client = self.control_mode_client.as_ref()?;
+        match client.capture_pane(
+            capture_lines,
+            self.preview_cache.dimensions.0,
+            self.preview_cache.dimensions.1,
+        ) {
+            Ok(content) => Some(content),
+            Err(err) => {
+                tracing::warn!(
+                    target: "tmux.control_mode",
+                    error = %err,
+                    "control-mode capture failed; preview will stop updating until live-send is re-entered",
+                );
+                self.control_mode_client = None;
+                None
             }
         }
     }
@@ -1273,6 +1324,7 @@ impl HomeView {
                         .unwrap_or_default();
                     self.terminal_preview_cache.captured_lines = content.lines().count();
                     self.terminal_preview_cache.content = content;
+                    self.terminal_preview_cache.parsed_text = None;
                     self.terminal_preview_cache.session_id = Some(id.clone());
                     self.terminal_preview_cache.dimensions = (width, height);
                     self.terminal_preview_cache.last_refresh = Instant::now();
@@ -1320,6 +1372,7 @@ impl HomeView {
                         .unwrap_or_default();
                     self.container_terminal_preview_cache.captured_lines = content.lines().count();
                     self.container_terminal_preview_cache.content = content;
+                    self.container_terminal_preview_cache.parsed_text = None;
                     self.container_terminal_preview_cache.session_id = Some(id.clone());
                     self.container_terminal_preview_cache.dimensions = (width, height);
                     self.container_terminal_preview_cache.last_refresh = Instant::now();
@@ -1361,6 +1414,7 @@ impl HomeView {
                     let content = tool_session.capture_pane(capture_lines).unwrap_or_default();
                     self.tool_preview_cache.captured_lines = content.lines().count();
                     self.tool_preview_cache.content = content;
+                    self.tool_preview_cache.parsed_text = None;
                     self.tool_preview_cache.session_id = Some(id.clone());
                     self.tool_preview_cache.dimensions = (width, height);
                     self.tool_preview_cache.last_refresh = Instant::now();
@@ -1512,8 +1566,14 @@ impl HomeView {
                 if is_creating {
                     self.render_creating_preview(frame, inner, theme);
                 } else {
-                    // Refresh cache before borrowing from instance_map to avoid borrow conflicts
+                    // Refresh the raw `content` cache, then ensure the
+                    // parsed `Text<'static>` cache reflects it. Doing
+                    // the parse here (under `&mut self.preview_cache`)
+                    // means subsequent shared borrows on
+                    // `parsed_text` and on `self.get_instance` can
+                    // coexist in the actual render call.
                     self.refresh_preview_cache_if_needed(inner.width, inner.height);
+                    self.preview_cache.ensure_parsed();
 
                     if let Some(id) = &self.selected_session {
                         if let Some(inst) = self.get_instance(id) {
@@ -1521,7 +1581,7 @@ impl HomeView {
                                 frame,
                                 inner,
                                 inst,
-                                &self.preview_cache.content,
+                                CachedPreview::from_text(self.preview_cache.parsed_text.as_ref()),
                                 self.preview_scroll_offset,
                                 theme,
                                 self.idle_decay_window,
@@ -1553,38 +1613,46 @@ impl HomeView {
                         TerminalMode::Host
                     };
 
-                    // Refresh the appropriate cache before borrowing instance
+                    // Refresh the appropriate cache, then warm the
+                    // matching `parsed_text` so the render call below
+                    // can read it via a shared borrow alongside
+                    // `get_instance`.
                     match terminal_mode {
                         TerminalMode::Container => {
                             self.refresh_container_terminal_preview_cache_if_needed(
                                 inner.width,
                                 inner.height,
                             );
+                            self.container_terminal_preview_cache.ensure_parsed();
                         }
                         TerminalMode::Host => {
                             self.refresh_terminal_preview_cache_if_needed(
                                 inner.width,
                                 inner.height,
                             );
+                            self.terminal_preview_cache.ensure_parsed();
                         }
                     }
 
                     // Now borrow instance for rendering
                     if let Some(inst) = self.get_instance(&id) {
-                        let (terminal_running, preview_content) = match terminal_mode {
+                        let (terminal_running, preview_text) = match terminal_mode {
                             TerminalMode::Container => {
                                 let running = inst
                                     .container_terminal_tmux_session()
                                     .map(|s| s.exists())
                                     .unwrap_or(false);
-                                (running, &self.container_terminal_preview_cache.content)
+                                (
+                                    running,
+                                    self.container_terminal_preview_cache.parsed_text.as_ref(),
+                                )
                             }
                             TerminalMode::Host => {
                                 let running = inst
                                     .terminal_tmux_session()
                                     .map(|s| s.exists())
                                     .unwrap_or(false);
-                                (running, &self.terminal_preview_cache.content)
+                                (running, self.terminal_preview_cache.parsed_text.as_ref())
                             }
                         };
 
@@ -1593,7 +1661,7 @@ impl HomeView {
                             inner,
                             inst,
                             terminal_running,
-                            preview_content,
+                            CachedPreview::from_text(preview_text),
                             self.preview_scroll_offset,
                             theme,
                             compact,
@@ -1616,6 +1684,7 @@ impl HomeView {
                         inner.height,
                         &tool_name,
                     );
+                    self.tool_preview_cache.ensure_parsed();
 
                     if let Some(inst) = self.get_instance(&id) {
                         let tool_session =
@@ -1627,7 +1696,7 @@ impl HomeView {
                             inner,
                             inst,
                             tool_running,
-                            &self.tool_preview_cache.content,
+                            CachedPreview::from_text(self.tool_preview_cache.parsed_text.as_ref()),
                             self.preview_scroll_offset,
                             theme,
                             compact,
