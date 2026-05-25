@@ -1258,13 +1258,6 @@ impl HomeView {
     /// Called only while live-send is active; outside live-send the
     /// caller uses the historical fork path directly.
     ///
-    /// Tries the vt100 fast path first (`screen_dump`): when the user
-    /// has opted into `AOE_LIVE_VT100`, the reader thread has already
-    /// fed the parser the bytes from the latest `%output`, and we
-    /// just hand the caller the parser's screen state - zero socket
-    /// round-trips for this render. Falls back to `capture_pane`
-    /// when the vt100 mode isn't enabled.
-    ///
     /// Returns `None` when:
     /// - no client is up (spawn failed earlier; live-send entry
     ///   should have aborted, so this means we're in a transient
@@ -1275,10 +1268,6 @@ impl HomeView {
     ///   same dead connection.
     fn capture_via_control_mode(&mut self, capture_lines: usize) -> Option<String> {
         let client = self.control_mode_client.as_ref()?;
-        // vt100 fast path: read the in-process screen with no I/O.
-        if let Some(dump) = client.screen_dump() {
-            return Some(dump);
-        }
         match client.capture_pane(
             capture_lines,
             self.preview_cache.dimensions.0,

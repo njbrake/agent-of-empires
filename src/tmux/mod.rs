@@ -2,7 +2,6 @@
 
 pub(crate) mod control_mode;
 pub(crate) mod env;
-pub(crate) mod output_decoder;
 mod session;
 pub mod status_bar;
 pub(crate) mod status_detection;
