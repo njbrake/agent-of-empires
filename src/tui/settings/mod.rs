@@ -51,6 +51,25 @@ pub(super) struct SearchHit {
     pub category_label: &'static str,
 }
 
+/// One row in the left-hand categories panel. Sections are
+/// non-interactive dividers that group related categories visually
+/// (Sessions, Hooks, Environment, etc.); navigation skips past them
+/// and `selected_category` is always the index of a `Tab` row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CategoryRow {
+    Section(&'static str),
+    Tab(SettingsCategory),
+}
+
+impl CategoryRow {
+    fn as_tab(self) -> Option<SettingsCategory> {
+        match self {
+            CategoryRow::Tab(c) => Some(c),
+            CategoryRow::Section(_) => None,
+        }
+    }
+}
+
 /// The settings view state
 pub struct SettingsView {
     /// Current profile name being edited
@@ -77,10 +96,13 @@ pub struct SettingsView {
     /// Which panel has focus
     pub(super) focus: SettingsFocus,
 
-    /// Available categories
-    pub(super) categories: Vec<SettingsCategory>,
+    /// Rows in the left-hand categories panel: a mix of non-interactive
+    /// section dividers and selectable category tabs. `selected_category`
+    /// is always the index of a `CategoryRow::Tab` entry.
+    pub(super) categories: Vec<CategoryRow>,
 
-    /// Currently selected category index
+    /// Currently selected category-row index. Points at a `Tab`
+    /// row; navigation helpers maintain this invariant.
     pub(super) selected_category: usize,
 
     /// Fields for the current category
@@ -180,6 +202,8 @@ impl SettingsView {
             scope: SettingsScope::Global,
             focus: SettingsFocus::Categories,
             categories,
+            // 0 is the leading section divider; seek to the first
+            // Tab below so the user lands on a real category.
             selected_category: 0,
             fields: Vec::new(),
             selected_field: 0,
@@ -199,45 +223,101 @@ impl SettingsView {
             search_selected: 0,
         };
 
+        // The constructor parks `selected_category` at 0, which is the
+        // first section divider in the layout. Snap to the first real
+        // Tab before the first render so the cursor lands on Theme.
+        view.selected_category = view.first_tab_index();
         view.rebuild_fields();
         Ok(view)
     }
 
-    fn categories_for_scope(scope: SettingsScope) -> Vec<SettingsCategory> {
-        let mut categories = vec![
-            SettingsCategory::Theme,
-            SettingsCategory::Session,
-            SettingsCategory::Agents,
-            SettingsCategory::Interaction,
-            SettingsCategory::Hooks,
-        ];
+    /// Build the categories-panel layout. Categories are grouped under
+    /// section dividers (Appearance / Sessions / Hooks / Environment /
+    /// Notifications / System) so the list isn't 14 unrelated tabs in
+    /// arbitrary order. Status Hooks is dropped in Repo scope (the only
+    /// scope-conditional category today).
+    fn categories_for_scope(scope: SettingsScope) -> Vec<CategoryRow> {
+        let mut rows: Vec<CategoryRow> = Vec::new();
+        let push_section = |rows: &mut Vec<CategoryRow>, label: &'static str| {
+            rows.push(CategoryRow::Section(label));
+        };
+        let push_tab = |rows: &mut Vec<CategoryRow>, cat: SettingsCategory| {
+            rows.push(CategoryRow::Tab(cat));
+        };
+
+        push_section(&mut rows, "Appearance");
+        push_tab(&mut rows, SettingsCategory::Theme);
+
+        push_section(&mut rows, "Sessions");
+        push_tab(&mut rows, SettingsCategory::Session);
+        push_tab(&mut rows, SettingsCategory::Agents);
+        push_tab(&mut rows, SettingsCategory::Interaction);
+        push_tab(&mut rows, SettingsCategory::Cockpit);
+
+        push_section(&mut rows, "Hooks");
+        push_tab(&mut rows, SettingsCategory::Hooks);
         if scope != SettingsScope::Repo {
-            categories.push(SettingsCategory::StatusHooks);
+            push_tab(&mut rows, SettingsCategory::StatusHooks);
         }
-        categories.extend([
-            SettingsCategory::Sandbox,
-            SettingsCategory::Worktree,
-            SettingsCategory::Updates,
-            SettingsCategory::Tmux,
-            SettingsCategory::Sound,
-            SettingsCategory::Web,
-            SettingsCategory::Cockpit,
-            SettingsCategory::Logging,
-        ]);
-        categories
+
+        push_section(&mut rows, "Environment");
+        push_tab(&mut rows, SettingsCategory::Sandbox);
+        push_tab(&mut rows, SettingsCategory::Worktree);
+        push_tab(&mut rows, SettingsCategory::Tmux);
+
+        push_section(&mut rows, "Notifications");
+        push_tab(&mut rows, SettingsCategory::Sound);
+        push_tab(&mut rows, SettingsCategory::Web);
+
+        push_section(&mut rows, "System");
+        push_tab(&mut rows, SettingsCategory::Updates);
+        push_tab(&mut rows, SettingsCategory::Logging);
+
+        rows
+    }
+
+    /// The category at `selected_category`, by invariant always a
+    /// `Tab` row. Falls back to the first tab in the list if the
+    /// invariant is violated (e.g., an empty layout), so callers can
+    /// dereference without panicking.
+    pub(super) fn current_category(&self) -> SettingsCategory {
+        self.categories
+            .get(self.selected_category)
+            .and_then(|row| row.as_tab())
+            .or_else(|| self.categories.iter().find_map(|r| r.as_tab()))
+            .expect("layout has at least one Tab row")
     }
 
     pub(super) fn rebuild_categories_for_scope(&mut self) {
-        let current = self.categories.get(self.selected_category).copied();
+        let current = self
+            .categories
+            .get(self.selected_category)
+            .and_then(|row| row.as_tab());
         self.categories = Self::categories_for_scope(self.scope);
         self.selected_category = current
-            .and_then(|category| self.categories.iter().position(|c| *c == category))
-            .unwrap_or(0);
+            .and_then(|category| {
+                self.categories
+                    .iter()
+                    .position(|r| *r == CategoryRow::Tab(category))
+            })
+            .unwrap_or_else(|| self.first_tab_index());
+    }
+
+    /// First selectable row in `self.categories`. Section dividers are
+    /// not selectable, so the initial cursor and post-rebuild fallback
+    /// must land on a `Tab`. Layout always starts with a section
+    /// header so the answer is typically `1`, but this is computed
+    /// rather than hard-coded.
+    pub(super) fn first_tab_index(&self) -> usize {
+        self.categories
+            .iter()
+            .position(|r| matches!(r, CategoryRow::Tab(_)))
+            .unwrap_or(0)
     }
 
     /// Rebuild the fields list based on current category and scope
     pub(super) fn rebuild_fields(&mut self) {
-        let category = self.categories[self.selected_category];
+        let category = self.current_category();
         let (scope_for_fields, global_ref, profile_ref) = match self.scope {
             SettingsScope::Global => (
                 SettingsScope::Global,
@@ -469,7 +549,7 @@ impl SettingsView {
         };
 
         let mut hits: Vec<SearchHit> = Vec::new();
-        for &category in &self.categories {
+        for category in self.categories.iter().filter_map(|r| r.as_tab()) {
             let fields = fields::build_fields_for_category(
                 category,
                 scope_for_fields,
@@ -512,7 +592,11 @@ impl SettingsView {
         let Some(hit) = self.search_hits.get(self.search_selected).cloned() else {
             return;
         };
-        if let Some(idx) = self.categories.iter().position(|c| *c == hit.category) {
+        if let Some(idx) = self
+            .categories
+            .iter()
+            .position(|r| *r == CategoryRow::Tab(hit.category))
+        {
             self.selected_category = idx;
         }
         self.rebuild_fields();

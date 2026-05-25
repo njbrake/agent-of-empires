@@ -194,10 +194,17 @@ impl SettingsView {
             (KeyCode::Up, _) | (KeyCode::Char('k'), _) => {
                 match self.focus {
                     SettingsFocus::Categories => {
-                        if self.selected_category > 0 {
-                            self.selected_category -= 1;
-                            self.rebuild_fields();
-                            self.snap_to_interactive_field_forward();
+                        // Skip non-selectable section dividers so the
+                        // cursor jumps category-to-category.
+                        let mut idx = self.selected_category;
+                        while idx > 0 {
+                            idx -= 1;
+                            if matches!(self.categories[idx], super::CategoryRow::Tab(_)) {
+                                self.selected_category = idx;
+                                self.rebuild_fields();
+                                self.snap_to_interactive_field_forward();
+                                break;
+                            }
                         }
                     }
                     SettingsFocus::Fields => {
@@ -217,10 +224,15 @@ impl SettingsView {
             (KeyCode::Down, _) | (KeyCode::Char('j'), _) => {
                 match self.focus {
                     SettingsFocus::Categories => {
-                        if self.selected_category < self.categories.len().saturating_sub(1) {
-                            self.selected_category += 1;
-                            self.rebuild_fields();
-                            self.snap_to_interactive_field_forward();
+                        let mut idx = self.selected_category + 1;
+                        while idx < self.categories.len() {
+                            if matches!(self.categories[idx], super::CategoryRow::Tab(_)) {
+                                self.selected_category = idx;
+                                self.rebuild_fields();
+                                self.snap_to_interactive_field_forward();
+                                break;
+                            }
+                            idx += 1;
                         }
                     }
                     SettingsFocus::Fields => {
@@ -1368,7 +1380,7 @@ mod tests {
                 "Enter on a hit must close the search overlay"
             );
             assert_eq!(
-                view.categories[view.selected_category],
+                view.current_category(),
                 crate::tui::settings::SettingsCategory::Agents,
                 "must jump to the Agents tab (where Default Tool lives now)"
             );
@@ -1376,6 +1388,45 @@ mod tests {
                 view.fields[view.selected_field].key,
                 FieldKey::DefaultTool,
                 "must position the field cursor on Default Tool"
+            );
+        }
+
+        /// `j`/`k` (and Down/Up) in the categories panel must skip
+        /// non-selectable section dividers so the cursor jumps
+        /// category-to-category. Without this, hitting `j` on the last
+        /// tab of a section would land on the next section header and
+        /// the user would have to press it twice to get to the next
+        /// tab.
+        #[test]
+        #[serial]
+        fn category_nav_skips_section_dividers() {
+            use crate::tui::settings::CategoryRow;
+            let (_t, mut view) = fresh_view();
+            // Constructor lands on the first Tab (Theme, the only tab
+            // in Appearance). One Down should jump over the next
+            // section header ("Sessions") and onto Session.
+            let start = view.selected_category;
+            assert!(
+                matches!(view.categories[start], CategoryRow::Tab(_)),
+                "initial selected_category must be a Tab"
+            );
+            press(&mut view, KeyCode::Down);
+            assert!(
+                matches!(view.categories[view.selected_category], CategoryRow::Tab(_)),
+                "after Down, selected_category must still point at a Tab"
+            );
+            assert_eq!(
+                view.current_category(),
+                crate::tui::settings::SettingsCategory::Session,
+                "Down from Theme should land on Session, skipping the Sessions section header"
+            );
+            // Going back up should return to Theme, skipping the
+            // Appearance section header.
+            press(&mut view, KeyCode::Up);
+            assert_eq!(
+                view.current_category(),
+                crate::tui::settings::SettingsCategory::Theme,
+                "Up from Session should return to Theme, skipping the Sessions/Appearance headers"
             );
         }
 

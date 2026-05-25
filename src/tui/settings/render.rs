@@ -13,7 +13,9 @@ use ratatui::{
 use tui_input::Input;
 use unicode_width::UnicodeWidthStr;
 
-use super::{FieldValue, SettingsCategory, SettingsFocus, SettingsScope, SettingsView};
+use super::{
+    CategoryRow, FieldValue, SettingsCategory, SettingsFocus, SettingsScope, SettingsView,
+};
 use crate::tui::components::set_input_cursor_position;
 use crate::tui::styles::Theme;
 
@@ -148,30 +150,42 @@ impl SettingsView {
         let inner = block.inner(area);
         frame.render_widget(block, area);
 
+        // Categories panel: sections render as dimmed, non-selectable
+        // dividers; tabs render with the existing "> "/"  " prefix and
+        // selection highlight. The first tab in each section is
+        // visually indented by the prefix already; sections take the
+        // same horizontal slot so the eye reads the group label as a
+        // heading above the tabs that follow.
         let items: Vec<ListItem> = self
             .categories
             .iter()
             .enumerate()
-            .map(|(i, cat)| {
-                let style = if i == self.selected_category {
-                    if is_focused {
-                        Style::default()
-                            .fg(theme.accent)
-                            .add_modifier(Modifier::BOLD)
+            .map(|(i, row)| match row {
+                CategoryRow::Section(label) => {
+                    let style = Style::default()
+                        .fg(theme.dimmed)
+                        .add_modifier(Modifier::BOLD);
+                    ListItem::new(*label).style(style)
+                }
+                CategoryRow::Tab(cat) => {
+                    let style = if i == self.selected_category {
+                        if is_focused {
+                            Style::default()
+                                .fg(theme.accent)
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default().fg(theme.text)
+                        }
                     } else {
-                        Style::default().fg(theme.text)
-                    }
-                } else {
-                    Style::default().fg(theme.dimmed)
-                };
-
-                let prefix = if i == self.selected_category {
-                    "> "
-                } else {
-                    "  "
-                };
-
-                ListItem::new(format!("{}{}", prefix, cat.label())).style(style)
+                        Style::default().fg(theme.dimmed)
+                    };
+                    let prefix = if i == self.selected_category {
+                        "> "
+                    } else {
+                        "  "
+                    };
+                    ListItem::new(format!("{}{}", prefix, cat.label())).style(style)
+                }
             })
             .collect();
 
@@ -209,7 +223,7 @@ impl SettingsView {
         }
 
         // Show SSH warning for Sound category
-        let current_category = self.categories[self.selected_category];
+        let current_category = self.current_category();
         let warning_offset = if current_category == SettingsCategory::Sound && is_ssh_session() {
             let warning = vec![
                 Line::from(vec![
