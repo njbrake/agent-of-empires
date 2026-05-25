@@ -409,6 +409,14 @@ fn detect_codex_hook_gap_status(raw_content: &str) -> Option<Status> {
         return Some(Status::Waiting);
     }
 
+    if codex_has_completed_turn_prompt(&non_empty_lines) {
+        return Some(Status::Idle);
+    }
+
+    if codex_has_completed_review_prompt(&non_empty_lines) {
+        return Some(Status::Idle);
+    }
+
     None
 }
 
@@ -471,17 +479,41 @@ fn codex_has_recent_numbered_choice_prompt(non_empty_lines: &[&str]) -> bool {
 }
 
 fn codex_has_non_numbered_cursor_prompt(non_empty_lines: &[&str]) -> bool {
-    non_empty_lines.iter().any(|line| {
-        let trimmed = line.trim();
-        let Some(rest) = trimmed
-            .strip_prefix("❯")
-            .or_else(|| trimmed.strip_prefix("›"))
-        else {
-            return false;
-        };
+    non_empty_lines
+        .iter()
+        .any(|line| codex_is_non_numbered_cursor_prompt(line.trim()))
+}
 
-        !rest.trim_start().is_empty() && !codex_line_has_numbered_choice_cursor(trimmed)
-    })
+fn codex_has_tail_non_numbered_cursor_prompt(non_empty_lines: &[&str]) -> bool {
+    let Some(prompt_index) = non_empty_lines
+        .iter()
+        .rposition(|line| codex_is_non_numbered_cursor_prompt(line.trim()))
+    else {
+        return false;
+    };
+
+    non_empty_lines[prompt_index + 1..]
+        .iter()
+        .all(|line| codex_is_terminal_footer_line(line.trim()))
+}
+
+fn codex_is_non_numbered_cursor_prompt(line: &str) -> bool {
+    let Some(rest) = line.strip_prefix("❯").or_else(|| line.strip_prefix("›")) else {
+        return false;
+    };
+
+    !rest.trim_start().is_empty() && !codex_line_has_numbered_choice_cursor(line)
+}
+
+// The footer Codex prints under its input prompt looks like
+// `gpt-5.5 xhigh fast · ~/project`. The model-prefix list is intentionally
+// narrow so unrelated lines (e.g. assistant prose containing ` · `) don't
+// accidentally satisfy the tail check. If Codex ships a new model family
+// prefix this list needs to grow; the safe failure mode is that the hook
+// keeps reporting Running until it catches up on its own.
+fn codex_is_terminal_footer_line(line: &str) -> bool {
+    line.contains(" · ")
+        && (line.starts_with("gpt-") || line.starts_with("o3") || line.starts_with("o4"))
 }
 
 fn codex_has_interrupted_turn_without_new_activity(non_empty_lines: &[&str]) -> bool {
@@ -500,6 +532,34 @@ fn codex_has_interrupted_turn_without_new_activity(non_empty_lines: &[&str]) -> 
     }
 
     true
+}
+
+fn codex_has_completed_turn_prompt(non_empty_lines: &[&str]) -> bool {
+    codex_has_idle_prompt_after_marker(non_empty_lines, |line| {
+        codex_is_completed_work_divider(line.trim())
+    })
+}
+
+fn codex_has_completed_review_prompt(non_empty_lines: &[&str]) -> bool {
+    codex_has_idle_prompt_after_marker(non_empty_lines, |line| {
+        line.trim().contains("<< code review finished >>")
+    })
+}
+
+fn codex_has_idle_prompt_after_marker(
+    non_empty_lines: &[&str],
+    is_marker: impl Fn(&str) -> bool,
+) -> bool {
+    let Some(marker_index) = non_empty_lines.iter().rposition(|line| is_marker(line)) else {
+        return false;
+    };
+
+    let lines_after_marker = &non_empty_lines[marker_index + 1..];
+    !codex_has_running_signal(lines_after_marker)
+        && !codex_has_plan_radio_prompt(lines_after_marker)
+        && !codex_has_recent_numbered_choice_prompt(lines_after_marker)
+        && !codex_has_approval_prompt(lines_after_marker)
+        && codex_has_tail_non_numbered_cursor_prompt(lines_after_marker)
 }
 
 fn codex_interruption_marker_end_index(non_empty_lines: &[&str]) -> Option<usize> {
@@ -1954,6 +2014,118 @@ report the issue.
         assert_eq!(
             reconcile_codex_hook_status(Status::Running, pane),
             Status::Idle
+        );
+    }
+
+    #[test]
+    fn test_reconcile_codex_hook_status_idle_after_completed_review() {
+        let pane = r#"
+>> Code review started: staged changes <<
+
+• Ran git diff --stat
+  └ 1 file changed, 3 insertions(+)
+
+• Explored
+  └ Read src/main.rs
+
+<< Code review finished >>
+
+──────────────────────────────────────────────────────────────
+
+• No discrete correctness issues were found in the provided command changes.
+
+─ Worked for 7m 40s ──────────────────────────────────────────
+
+› Implement the fix
+
+  gpt-5.5 xhigh fast · ~/project
+"#;
+
+        assert_eq!(
+            reconcile_codex_hook_status(Status::Running, pane),
+            Status::Idle
+        );
+    }
+
+    #[test]
+    fn test_reconcile_codex_hook_status_idle_after_completed_review_without_worked_divider() {
+        let pane = r#"
+╭────────────────────────────────────────────────────╮
+│ >_ OpenAI Codex (v0.133.0)                         │
+│                                                    │
+│ model:     gpt-5.5 xhigh   fast   /model to change │
+│ directory: ~/project                               │
+╰────────────────────────────────────────────────────╯
+
+  Tip: Use /rename to rename your threads for easier thread resuming.
+
+>> Code review started: src/main.rs <<
+
+<< Code review finished >>
+
+• No discrete correctness issues were found in the provided command changes.
+
+› Improve documentation in @filename
+
+  gpt-5.5 xhigh fast · ~/project
+"#;
+
+        assert_eq!(
+            reconcile_codex_hook_status(Status::Running, pane),
+            Status::Idle
+        );
+    }
+
+    #[test]
+    fn test_reconcile_codex_hook_status_keeps_running_after_completed_turn_with_new_activity() {
+        let pane = r#"
+<< Code review finished >>
+
+─ Worked for 7m 40s ──────────────────────────────────────────
+
+› Implement the fix
+
+• Working (4s • esc to interrupt)
+"#;
+
+        assert_eq!(
+            reconcile_codex_hook_status(Status::Running, pane),
+            Status::Running
+        );
+    }
+
+    #[test]
+    fn test_reconcile_codex_hook_status_keeps_running_after_completed_turn_with_plain_new_output() {
+        let pane = r#"
+─ Worked for 7m 40s ──────────────────────────────────────────
+
+› Implement the fix
+
+I’ll inspect the status detection path first and then adjust the idle override.
+"#;
+
+        assert_eq!(
+            reconcile_codex_hook_status(Status::Running, pane),
+            Status::Running
+        );
+    }
+
+    #[test]
+    fn test_reconcile_codex_hook_status_keeps_running_after_completed_review_with_plain_new_output()
+    {
+        let pane = r#"
+>> Code review started: staged changes <<
+
+<< Code review finished >>
+
+› Implement the review comment
+
+I’ll inspect the status detection path first and then adjust the idle override.
+"#;
+
+        assert_eq!(
+            reconcile_codex_hook_status(Status::Running, pane),
+            Status::Running
         );
     }
 
