@@ -666,6 +666,11 @@ pub enum RowTagMode {
     /// Render the worktree branch name (last segment if `/`-namespaced,
     /// truncated to 8 chars).
     Branch,
+    /// Render the project (main-repo) name. Helpful in fleets where many
+    /// sessions point at the same repo and the title is the random civ
+    /// name (`Sumer`, `Aztec`, ...). Last path segment of the worktree's
+    /// main-repo path, truncated to 12 chars.
+    Project,
 }
 
 impl Default for SessionConfig {

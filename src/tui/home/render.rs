@@ -231,6 +231,25 @@ pub(crate) fn compute_row_tag(
                 None
             }
         }
+        RowTagMode::Project => inst.worktree_info.as_ref().and_then(|w| {
+            // Show the project (main-repo) name. Helpful when many
+            // sessions point at the same repo and the title is a random
+            // civ name from `src/cli/add.rs` — `🔵 Sumer  [agent-of-empires]`
+            // tells the user which repo the empire is attached to without
+            // displacing the civ name. Last path segment, truncated to 12
+            // chars so the tag stays narrow. Workspace sessions have no
+            // single `worktree_info` and fall through to `None`.
+            let last = std::path::Path::new(&w.main_repo_path)
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("");
+            let trimmed: String = last.chars().take(12).collect();
+            if trimmed.is_empty() {
+                Option::<String>::None
+            } else {
+                Some(trimmed)
+            }
+        }),
         RowTagMode::Branch => inst.worktree_info.as_ref().and_then(|w| {
             // Complement the existing branch-on-divergence display
             // (rendered in `theme.branch` color earlier in the row) rather

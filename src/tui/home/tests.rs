@@ -2579,6 +2579,93 @@ fn test_row_tag_branch_renders_when_title_matches_branch() {
     }
 }
 
+/// `RowTagMode::Project` renders the main-repo basename so users with
+/// many sessions on the same repo can see which project each civ name
+/// belongs to without losing the civ name.
+#[test]
+#[serial]
+fn test_row_tag_project_renders_repo_basename() {
+    let temp = TempDir::new().unwrap();
+    setup_test_home(&temp);
+
+    let storage = Storage::new("alpha").unwrap();
+    let mut inst = Instance::new("Sumer", "/tmp/wt/sumer");
+    inst.worktree_info = Some(crate::session::WorktreeInfo {
+        branch: "main".to_string(),
+        main_repo_path: "/home/user/agent-of-empires".to_string(),
+        managed_by_aoe: true,
+        created_at: chrono::Utc::now(),
+        base_branch: None,
+    });
+    let instances = vec![inst];
+    let group_tree = GroupTree::new_with_groups(&instances, &[]);
+    storage
+        .update(|i, g| {
+            *i = instances.to_vec();
+            *g = group_tree.get_all_groups();
+            Ok(())
+        })
+        .unwrap();
+
+    let tools = AvailableTools::with_tools(&["claude"]);
+    let mut view = HomeView::new(None, tools).unwrap();
+    view.group_by = crate::session::config::GroupByMode::Manual;
+    view.row_tag_mode = crate::session::config::RowTagMode::Project;
+    view.flat_items = view.build_flat_items();
+    view.update_selected();
+
+    for item in &view.flat_items {
+        if let Item::Session { .. } = item {
+            let text = rendered_row_text(&view, item);
+            assert!(
+                text.contains("[agent-of-em"),
+                "Project mode must render the repo basename truncated to 12: {text:?}"
+            );
+            assert!(
+                text.contains("Sumer"),
+                "Project mode must NOT displace the civ-name title: {text:?}"
+            );
+        }
+    }
+}
+
+/// `RowTagMode::Project` renders nothing when the session has no
+/// worktree_info (workspace sessions or pre-worktree sessions).
+#[test]
+#[serial]
+fn test_row_tag_project_skips_without_worktree() {
+    let temp = TempDir::new().unwrap();
+    setup_test_home(&temp);
+
+    let storage = Storage::new("alpha").unwrap();
+    let instances = vec![Instance::new("Sumer", "/tmp/sumer")];
+    let group_tree = GroupTree::new_with_groups(&instances, &[]);
+    storage
+        .update(|i, g| {
+            *i = instances.to_vec();
+            *g = group_tree.get_all_groups();
+            Ok(())
+        })
+        .unwrap();
+
+    let tools = AvailableTools::with_tools(&["claude"]);
+    let mut view = HomeView::new(None, tools).unwrap();
+    view.group_by = crate::session::config::GroupByMode::Manual;
+    view.row_tag_mode = crate::session::config::RowTagMode::Project;
+    view.flat_items = view.build_flat_items();
+    view.update_selected();
+
+    for item in &view.flat_items {
+        if let Item::Session { .. } = item {
+            let text = rendered_row_text(&view, item);
+            assert!(
+                !text.contains('['),
+                "Project mode must skip the tag when worktree_info is missing: {text:?}"
+            );
+        }
+    }
+}
+
 /// Legacy `Instance::new` left `source_profile` empty before the per-profile
 /// plumbing landed. The render branch must skip the tag entirely in that
 /// case rather than emit a literal `  []`.

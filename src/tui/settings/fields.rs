@@ -387,7 +387,7 @@ const ROTATION_OPTIONS: &[&str] = &["size", "never"];
 /// Display labels for `RowTagMode` in the Settings picker. Order must match
 /// `row_tag_to_index` / `index_to_row_tag` so the index round-trips. `None`
 /// is first because it is the default; existing users see no tag.
-const ROW_TAG_OPTIONS: &[&str] = &["None", "Auto", "Profile", "Sandbox", "Branch"];
+const ROW_TAG_OPTIONS: &[&str] = &["None", "Auto", "Profile", "Sandbox", "Branch", "Project"];
 
 fn row_tag_to_index(mode: crate::session::config::RowTagMode) -> usize {
     use crate::session::config::RowTagMode::*;
@@ -397,6 +397,7 @@ fn row_tag_to_index(mode: crate::session::config::RowTagMode) -> usize {
         Profile => 2,
         Sandbox => 3,
         Branch => 4,
+        Project => 5,
     }
 }
 
@@ -407,6 +408,7 @@ fn index_to_row_tag(idx: usize) -> crate::session::config::RowTagMode {
         2 => Profile,
         3 => Sandbox,
         4 => Branch,
+        5 => Project,
         _ => None,
     }
 }
