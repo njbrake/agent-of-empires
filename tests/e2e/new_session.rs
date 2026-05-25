@@ -235,3 +235,60 @@ fn test_quit_during_creation_shows_confirm() {
     h.send_keys("C-c");
     h.wait_for_absent("Creating...", Duration::from_secs(5));
 }
+
+/// Write a global config that opts into `new_session_attach_mode = "live_send"`
+/// so creation routes into live-send mode instead of the historical tmux
+/// attach. No hooks; the sync create path applies (this is the path that
+/// originally bypassed the setting).
+fn write_config_attach_mode_live_send(h: &TuiTestHarness) {
+    let config_dir = crate::harness::app_dir_in(h.home_path());
+    let config_content = format!(
+        r#"[updates]
+update_check_mode = "off"
+
+[app_state]
+has_seen_welcome = true
+last_seen_version = "{version}"
+has_acknowledged_agent_hooks = true
+
+[session]
+new_session_attach_mode = "live_send"
+"#,
+        version = env!("CARGO_PKG_VERSION"),
+    );
+    std::fs::write(config_dir.join("config.toml"), config_content)
+        .expect("write config with attach mode");
+}
+
+/// Regression guard for the original "new sessions still attach to tmux even
+/// though I picked live mode" bug. Both creation paths (sync and async) must
+/// route through `dispatch_new_session_attach` and honor the setting; the
+/// sync path was the one that bypassed it (the symptom that made this PR
+/// happen in the first place).
+#[test]
+#[serial]
+fn test_new_session_enters_live_mode_when_configured() {
+    require_tmux!();
+
+    let mut h = TuiTestHarness::new("attach_live_send");
+    write_config_attach_mode_live_send(&h);
+    let project = h.project_path();
+    h.spawn_tui();
+
+    h.wait_for(" aoe ");
+
+    h.send_keys("n");
+    h.wait_for("Title");
+    h.send_keys("Tab");
+    h.type_text(project.to_str().unwrap());
+    submit_new_session_dialog(&h);
+
+    // After creation, the home view stays mounted with the LIVE banner in
+    // the footer. A tmux-attach dispatch would replace the entire TUI
+    // screen with whatever the agent is rendering, so the banner is the
+    // load-bearing tell that the setting was respected.
+    h.wait_for_timeout("LIVE", Duration::from_secs(10));
+    // Sanity: the home view's title chrome is still on screen, meaning
+    // the dispatch didn't flip into the tmux attach view.
+    h.assert_screen_contains(" aoe ");
+}

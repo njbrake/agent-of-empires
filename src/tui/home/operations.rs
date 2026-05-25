@@ -84,6 +84,14 @@ impl HomeView {
         self.save()?;
 
         self.reload()?;
+        // Same rationale as the async branch in apply_creation_results:
+        // reload()'s restore-previous-selection fallback lands the cursor
+        // on whichever flat_items index is closest to the previously-
+        // selected row, which in project-grouped layouts is often the
+        // new session's group folder. Pin selection here so the caller
+        // (Action::AttachAfterCreate) sees the new session as the
+        // visible row and the user's not staring at the wrong preview.
+        self.select_and_reveal_session(&session_id);
         Ok(session_id)
     }
 

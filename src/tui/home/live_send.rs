@@ -6,7 +6,7 @@
 //! against the target pane: plain characters go literally, every other
 //! key (arrows, Esc, Tab, modifier combos) goes by tmux key name with
 //! `C-` / `M-` prefixes. The user exits with one of the configured
-//! exit chords (default: `Ctrl+q` or `Ctrl+]`).
+//! exit chords (default: `Ctrl+q`).
 //!
 //! Exit chord configuration: the user picks a comma-separated list
 //! of chord specs (`C-q`, `M-x`, `F12`, …) via settings. Default is
