@@ -122,7 +122,7 @@ pub struct SettingsView {
     /// Success message to display
     pub(super) success_message: Option<String>,
 
-    /// Active search input — `Some` while the user is typing in the
+    /// Active search input. `Some` while the user is typing in the
     /// settings-wide `/` search overlay. The settings view freezes
     /// the categories/fields panels behind the overlay and routes
     /// keys to the input + hit list until the user picks a hit or
@@ -130,12 +130,13 @@ pub struct SettingsView {
     pub(super) search_input: Option<Input>,
 
     /// Hits that match the current `search_input` query, recomputed
-    /// each time the query changes. Empty query → all interactive
-    /// fields across every category (lets the user browse the full
-    /// catalog as a flat list, sorted by category then field order).
+    /// each time the query changes. Empty query lists every
+    /// interactive field across every category, so the user can
+    /// browse the full catalog as a flat list sorted by category
+    /// then by field order.
     pub(super) search_hits: Vec<SearchHit>,
 
-    /// Cursor inside `search_hits` — bounded by `search_hits.len()`
+    /// Cursor inside `search_hits`, bounded by `search_hits.len()`
     /// so it stays valid as the query narrows.
     pub(super) search_selected: usize,
 }

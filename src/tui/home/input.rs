@@ -2274,11 +2274,21 @@ impl HomeView {
                 // Cockpit was already handled above (the resolver also
                 // returns None for cockpit, so the match is double-safe);
                 // Terminal/Tool views keep their existing paths regardless.
+                //
+                // Route through `start_live_send` so the same-target
+                // guard (already-live on this session) is honored: a
+                // double-click on the live row would otherwise re-run
+                // ensure_pane_ready and respawn the worker for no
+                // reason. `start_live_send` returns `None` for that
+                // and for cockpit/creating rows; in either of those
+                // cases we leave activation alone (cockpit was already
+                // dispatched to OpenCockpit above; same-target re-click
+                // is intentionally a no-op).
                 if matches!(
                     self.default_attach_mode(&id),
                     Some(crate::session::NewSessionAttachMode::LiveSend)
                 ) {
-                    Some(Action::EnterLiveSend(id))
+                    self.start_live_send()
                 } else {
                     Some(Action::AttachSession(id))
                 }

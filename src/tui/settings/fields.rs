@@ -696,7 +696,7 @@ fn build_cockpit_fields(
         SettingField {
             key: FieldKey::SectionMarker,
             label: "Advanced",
-            description: "Operational tuning — rarely needed after first setup. Adjust only if you've read the description and know what you're changing.",
+            description: "Operational tuning, rarely needed after first setup. Adjust only if you've read the description and know what you're changing.",
             value: FieldValue::SectionHeader,
             category: SettingsCategory::Cockpit,
             has_override: false,

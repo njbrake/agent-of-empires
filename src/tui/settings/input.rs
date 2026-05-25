@@ -1082,6 +1082,20 @@ impl SettingsView {
             dialog.handle_paste(text);
             return;
         }
+        // The search overlay is a full editing mode (gated on
+        // `search_input.is_some()` in `handle_key`), so bracketed
+        // pastes need a path into it. Without this, terminals that
+        // emit `Paste` events for clipboard input would silently
+        // drop pasted search queries.
+        if let Some(ref mut input) = self.search_input {
+            let sanitized: String = text.chars().filter(|c| *c != '\n' && *c != '\r').collect();
+            for ch in sanitized.chars() {
+                input.handle(tui_input::InputRequest::InsertChar(ch));
+            }
+            self.search_selected = 0;
+            self.recompute_search_hits();
+            return;
+        }
         if let Some(ref mut input) = self.editing_input {
             let sanitized: String = text.chars().filter(|c| *c != '\n' && *c != '\r').collect();
             for ch in sanitized.chars() {
@@ -1301,7 +1315,8 @@ mod tests {
             press(&mut view, KeyCode::Char('/'));
             assert!(view.search_input.is_some(), "/ must enter search mode");
             // Empty query lists every interactive field across all
-            // visible categories — nonzero hits, so Enter has a target.
+            // visible categories, so the hit list is nonzero and
+            // Enter has a target.
             assert!(
                 !view.search_hits.is_empty(),
                 "empty-query search should list every interactive field"
@@ -1329,8 +1344,8 @@ mod tests {
         }
 
         /// Enter on a hit jumps to that hit's category + field and
-        /// closes the overlay. We pick "default tool" — moved to the
-        /// Agents tab in the Session split — to also verify the jump
+        /// closes the overlay. We pick "default tool" (moved to the
+        /// Agents tab in the Session split) to also verify the jump
         /// crosses categories cleanly.
         #[test]
         #[serial]
