@@ -25,6 +25,13 @@ ansi-to-tui = "8.0"
 ratatui-textarea = "0.9"
 tui-input = "0.15"
 
+# vt100 terminal emulator: optional, used by the live-send `%output`
+# fast-path to maintain a virtual screen in-process and render it
+# without a `capture-pane` round-trip. Gated behind the
+# `AOE_LIVE_VT100=1` env var while the path settles. See
+# `src/tmux/control_mode.rs` and #1485.
+vt100 = "0.16"
+
 # Async runtime
 tokio = { version = "1.52", features = ["full"] }
 

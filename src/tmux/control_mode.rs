@@ -31,17 +31,45 @@
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{channel, Receiver, RecvTimeoutError};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
+
+use crate::tmux::output_decoder::{decode_output_payload, extract_output_data};
 
 /// Default timeout waiting for a single command response. Generous
 /// because the worker thread is shared with notification draining and
 /// a busy tmux server can take a tick to respond; tight enough that a
 /// stuck client gives up before the user notices.
 const RESPONSE_TIMEOUT: Duration = Duration::from_millis(750);
+
+/// Env var that opts into the in-process vt100 emulator path.
+///
+/// When set (any non-empty value), the control-mode reader thread
+/// decodes every `%output` payload and feeds the raw bytes into a
+/// `vt100::Parser`. The preview-refresh path then reads the parser's
+/// screen state instead of running `capture-pane`, eliminating one
+/// socket round-trip per preview update. This is experimental: the
+/// parser maintains a virtual terminal independently of tmux's own
+/// rendering, and any divergence in vt sequence support shows up as
+/// visual artifacts in the preview. With the env var unset the
+/// historical `capture-pane` path is used.
+pub const VT100_ENV_VAR: &str = "AOE_LIVE_VT100";
+
+/// Initial geometry for a freshly spawned vt100 parser. The first
+/// preview-pane resize replaces these before any real rendering
+/// happens, but the parser needs to be sized before it can accept
+/// the seed capture, so we start at a conservative 80x24.
+const VT100_INITIAL_ROWS: u16 = 24;
+const VT100_INITIAL_COLS: u16 = 80;
+
+/// vt100 scrollback budget. Enough lines that brief Shift+PageUp
+/// scrolling has something to show without bloating memory for what
+/// is, after all, the live preview pane. Long-term scrollback still
+/// flows through `capture-pane -S -N` against the non-vt100 path.
+const VT100_SCROLLBACK_LEN: usize = 500;
 
 /// A line received from tmux's stdout, post-tagging by the reader
 /// thread. The reader does the minimal parsing required to separate
@@ -86,6 +114,13 @@ pub struct ControlModeClient {
     /// single tmux connection. Holders write to stdin, then drain the
     /// reader-thread channel until they see `%end` / `%error`.
     inner: Mutex<Inner>,
+    /// In-process vt100 emulator that mirrors the live pane. `Some`
+    /// when the user opted into the vt100 path via
+    /// [`VT100_ENV_VAR`]; the reader thread feeds it decoded
+    /// `%output` bytes and the preview-refresh path reads its screen
+    /// state via [`Self::screen_dump`]. `None` means the historical
+    /// `capture-pane`-per-refresh path is in effect.
+    vt100_parser: Option<Arc<Mutex<vt100::Parser>>>,
 }
 
 struct Inner {
@@ -137,6 +172,22 @@ impl ControlModeClient {
             .take()
             .context("control-mode child has no stdout")?;
 
+        // Optional vt100 parser, gated by the env var. Sized at
+        // 80x24 here; the first preview-pane resize will replace
+        // these dimensions via `Self::resize`. The reader thread
+        // captures a clone of the Arc so it can write bytes; the
+        // render path reads via the same Arc.
+        let vt100_parser: Option<Arc<Mutex<vt100::Parser>>> = if vt100_enabled() {
+            Some(Arc::new(Mutex::new(vt100::Parser::new(
+                VT100_INITIAL_ROWS,
+                VT100_INITIAL_COLS,
+                VT100_SCROLLBACK_LEN,
+            ))))
+        } else {
+            None
+        };
+        let vt100_for_reader = vt100_parser.clone();
+
         let (tx, rx) = channel::<Line>();
         thread::Builder::new()
             .name(format!("aoe-tmux-cm-{}", session_name))
@@ -150,18 +201,31 @@ impl ControlModeClient {
                             return;
                         }
                     };
-                    let parsed = parse_line(line);
-                    // Fire the wake callback BEFORE handing the
-                    // parsed line off to the channel so a slow
-                    // consumer doesn't add to wake-up latency. The
-                    // callback signal is independent of whether
-                    // anything cares about the Notification on the
-                    // channel side.
-                    if matches!(parsed, Line::Output) {
+                    // Fast path for `%output`: pull out the payload,
+                    // decode the octal escapes, feed the bytes to the
+                    // vt100 parser (if enabled), then fire the wake
+                    // callback. The decode is cheap and runs once per
+                    // `%output` line regardless of the parser state,
+                    // so the wake fires the same way in either mode.
+                    let is_output = line.starts_with("%output ");
+                    if is_output {
+                        if let Some(parser_arc) = &vt100_for_reader {
+                            if let Some(data) = extract_output_data(&line["%output ".len()..]) {
+                                let bytes = decode_output_payload(data);
+                                if let Ok(mut p) = parser_arc.lock() {
+                                    p.process(&bytes);
+                                }
+                            }
+                        }
                         if let Some(cb) = &on_output {
                             cb();
                         }
+                        if tx.send(Line::Output).is_err() {
+                            return;
+                        }
+                        continue;
                     }
+                    let parsed = parse_line(line);
                     if tx.send(parsed).is_err() {
                         // Receiver dropped: client is going away.
                         return;
@@ -178,6 +242,7 @@ impl ControlModeClient {
                 rx,
                 child: Some(child),
             }),
+            vt100_parser,
         };
 
         // Drain the initial handshake. tmux emits a burst of
@@ -187,6 +252,21 @@ impl ControlModeClient {
         // very first `capture-pane` doesn't fight with a half-arrived
         // handshake. Best-effort: any drain timeout is benign.
         client.drain_initial_notifications(Duration::from_millis(100));
+
+        // Seed the vt100 parser with the current pane contents so
+        // the user doesn't see an empty preview while waiting for
+        // the agent's next repaint. Best-effort: failure logs at
+        // debug and leaves the parser empty (the agent's next
+        // SIGWINCH or render will fill it in).
+        if client.vt100_parser.is_some() {
+            if let Err(err) = client.seed_vt100_from_capture() {
+                tracing::debug!(
+                    target: "tmux.control_mode",
+                    error = %err,
+                    "vt100 seed-capture failed; parser starts empty",
+                );
+            }
+        }
 
         Ok(client)
     }
@@ -201,6 +281,52 @@ impl ControlModeClient {
         let target = format!("{}:^.0", self.session_name);
         let command = format!("capture-pane -t {} -p -e -S -{}", target, lines);
         self.send_command(&command)
+    }
+
+    /// Render the vt100 parser's current screen as ANSI bytes (with
+    /// embedded styles and cursor positioning), or `None` when the
+    /// vt100 path is disabled. The returned string is a drop-in
+    /// replacement for the `capture_pane` output and can be plugged
+    /// into the same preview cache.
+    ///
+    /// This is the lever that closes most of the typing-latency gap
+    /// to a raw tmux attach: instead of paying a socket round-trip to
+    /// `capture-pane` for every render, we hand the caller the
+    /// in-process parser's state, which the reader thread updated
+    /// from the latest `%output` notification with no extra I/O.
+    pub fn screen_dump(&self) -> Option<String> {
+        let parser_arc = self.vt100_parser.as_ref()?;
+        let parser = parser_arc.lock().ok()?;
+        let bytes = parser.screen().contents_formatted();
+        Some(String::from_utf8_lossy(&bytes).into_owned())
+    }
+
+    /// Best-effort seed of the vt100 parser from `capture-pane`. Runs
+    /// the same `capture-pane -e -p` we use elsewhere, then feeds the
+    /// resulting ANSI byte stream into the parser so the screen
+    /// reflects the current pane content. Returns `Ok(())` even when
+    /// the parser is None; the caller is expected to only invoke this
+    /// when vt100 mode is on.
+    fn seed_vt100_from_capture(&self) -> Result<()> {
+        let Some(parser_arc) = self.vt100_parser.as_ref() else {
+            return Ok(());
+        };
+        // Capture only the current viewport (no scrollback) so the
+        // parser receives a self-consistent screen rather than a
+        // history dump that would scroll past its visible area.
+        let target = format!("{}:^.0", self.session_name);
+        let command = format!("capture-pane -t {} -p -e", target);
+        let payload = self.send_command(&command)?;
+        // Move cursor home before replaying so the captured rows
+        // land in the expected positions; capture-pane output is
+        // just per-row ANSI, no cursor-position escapes.
+        let mut seed = Vec::with_capacity(payload.len() + 8);
+        seed.extend_from_slice(b"\x1b[H");
+        seed.extend_from_slice(payload.as_bytes());
+        if let Ok(mut parser) = parser_arc.lock() {
+            parser.process(&seed);
+        }
+        Ok(())
     }
 
     /// Deliver literal text to the pane via `send-keys -l --`. Runs
@@ -260,6 +386,15 @@ impl ControlModeClient {
     pub fn resize(&self, cols: u16, rows: u16) -> Result<()> {
         let cols = cols.max(1);
         let rows = rows.max(1);
+        // Resize the parser FIRST so it accepts subsequent `%output`
+        // bytes at the new geometry; without this, tmux's repaint
+        // after the resize would land inside an undersized screen and
+        // render at the wrong offsets until the parser caught up.
+        if let Some(parser_arc) = &self.vt100_parser {
+            if let Ok(mut parser) = parser_arc.lock() {
+                parser.screen_mut().set_size(rows, cols);
+            }
+        }
         let command = format!(
             "resize-window -t {} -x {} -y {}",
             self.session_name, cols, rows
@@ -358,6 +493,16 @@ impl ControlModeClient {
             }
         }
     }
+}
+
+/// Returns `true` when the user has opted into the in-process vt100
+/// emulator path via the [`VT100_ENV_VAR`] environment variable.
+/// Empty values are treated as "unset" so the user can clear the env
+/// var inside a shell without re-launching `aoe`.
+fn vt100_enabled() -> bool {
+    std::env::var(VT100_ENV_VAR)
+        .map(|v| !v.is_empty())
+        .unwrap_or(false)
 }
 
 impl Drop for ControlModeClient {
