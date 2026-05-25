@@ -4709,6 +4709,9 @@ mod scroll_pane_isolation {
             session_id: "fake".to_string(),
             title: "fake".to_string(),
             tmux_name: "fake".to_string(),
+            exit_chords: crate::tui::home::live_send::parse_chord_list(
+                crate::tui::home::live_send::DEFAULT_EXIT_CHORD,
+            ),
         });
 
         let up_handled = env.view.handle_scroll_up(50, 10);
@@ -4736,6 +4739,9 @@ mod scroll_pane_isolation {
             session_id: "fake".to_string(),
             title: "fake".to_string(),
             tmux_name: "fake".to_string(),
+            exit_chords: crate::tui::home::live_send::parse_chord_list(
+                crate::tui::home::live_send::DEFAULT_EXIT_CHORD,
+            ),
         });
 
         let handled = env.view.handle_scroll_down(5, 10);
@@ -5314,6 +5320,9 @@ mod live_send_mode {
             session_id: inst.id.clone(),
             title: inst.title,
             tmux_name,
+            exit_chords: crate::tui::home::live_send::parse_chord_list(
+                crate::tui::home::live_send::DEFAULT_EXIT_CHORD,
+            ),
         });
         id
     }
@@ -5326,6 +5335,9 @@ mod live_send_mode {
             session_id: "missing-id".to_string(),
             title: "missing-title".to_string(),
             tmux_name: "missing-tmux".to_string(),
+            exit_chords: crate::tui::home::live_send::parse_chord_list(
+                crate::tui::home::live_send::DEFAULT_EXIT_CHORD,
+            ),
         });
     }
 

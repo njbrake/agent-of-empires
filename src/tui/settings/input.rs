@@ -683,6 +683,11 @@ impl SettingsView {
                     s.restart_wake_message = None;
                 }
             }
+            FieldKey::LiveSendExitChord => {
+                if let Some(ref mut s) = config.session {
+                    s.live_send_exit_chord = None;
+                }
+            }
             FieldKey::RowTag => {
                 if let Some(ref mut s) = config.session {
                     s.row_tag = None;

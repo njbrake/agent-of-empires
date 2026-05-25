@@ -5,14 +5,16 @@
 //! module's translator. Each translation produces a `tmux send-keys` call
 //! against the target pane: plain characters go literally, every other
 //! key (arrows, Esc, Tab, modifier combos) goes by tmux key name with
-//! `C-` / `M-` prefixes. The user exits with `Ctrl+q`.
+//! `C-` / `M-` prefixes. The user exits with one of the configured
+//! exit chords (default: `Ctrl+q` or `Ctrl+]`).
 //!
-//! Exit chord trade-off: `Ctrl+q` is memorable ("Q for quit"), is
-//! reachable on mobile keyboards (Termius and similar SSH clients
-//! don't always pass `Ctrl+]` through), and is what we shipped to
-//! users first. The cost is that vim/emacs `C-q` quoted-insert
-//! can't be sent through live mode; anyone needing that flow should
-//! use the compose dialog or attach directly with `a`.
+//! Exit chord configuration: the user picks a comma-separated list
+//! of chord specs (`C-q`, `Ctrl+]`, `M-x`, `F12`, …) via settings.
+//! Default includes both `C-q` (mobile/Termius friendly) and `C-]`
+//! (telnet convention). Whichever chord fires first ends live mode.
+//! The cost of binding a chord is that it can't be sent through to
+//! the agent; users who need a particular chord to reach the agent
+//! configure the others.
 //!
 //! Trade-offs vs. a compose dialog:
 //! - No echo, no inline editing, no review step. The preview pane is the
@@ -24,7 +26,7 @@
 //!   in a single call.
 //!
 //! Reserved (non-forwarded) chords:
-//! - `Ctrl+q` — exit live mode (see above).
+//! - The configured exit chord list — exits live mode (see above).
 //! - `Shift+PageUp` / `Shift+PageDown` — scroll the preview pane back
 //!   through agent history without exiting. Matches the terminal-
 //!   emulator convention. Bare `PageUp` / `PageDown` still passes
@@ -35,6 +37,203 @@
 use std::sync::mpsc::{channel, Sender};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+/// Default exit chord set when the user hasn't configured one. Both
+/// `Ctrl+q` (works in mobile / restrictive SSH clients like Termius)
+/// and `Ctrl+]` (telnet convention; preserves `C-q` for vim quoted-
+/// insert when it does pass through) fire exit. Users can override
+/// to whatever single chord they prefer (or any other comma-separated
+/// list) via settings.
+pub(super) const DEFAULT_EXIT_CHORD: &str = "C-q,C-]";
+
+/// Parse a tmux-style chord spec into a `(KeyCode, KeyModifiers)`
+/// pair. Accepts `C-` / `Ctrl-`, `M-` / `Alt-`, `S-` / `Shift-`
+/// prefixes (any order, separated by `-` or `+`) followed by a key
+/// name. Key names: single ASCII chars (`q`, `]`, `1`), or one of the
+/// tmux-named keys (`Escape`, `Tab`, `BTab`, `Up`, `Down`, `Left`,
+/// `Right`, `Enter`, `BSpace` / `Backspace`, `DC` / `Delete`, `IC` /
+/// `Insert`, `Home`, `End`, `PPage` / `PageUp`, `NPage` / `PageDown`,
+/// `Space`, `F1`..`F12`).
+///
+/// Returns `None` on parse failure so the caller can fall back to the
+/// default chord and warn the user. Chord case is normalized: char
+/// keys lowercase under any modifier so `C-q` and `C-Q` parse to the
+/// same canonical form.
+pub(super) fn parse_chord(spec: &str) -> Option<(KeyCode, KeyModifiers)> {
+    let trimmed = spec.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    // Split on `-` or `+`; both are common in user-facing key specs.
+    let parts: Vec<&str> = trimmed.split(['-', '+']).collect();
+    if parts.is_empty() {
+        return None;
+    }
+    let mut modifiers = KeyModifiers::NONE;
+    for piece in &parts[..parts.len().saturating_sub(1)] {
+        match piece.to_ascii_lowercase().as_str() {
+            "c" | "ctrl" | "control" => modifiers |= KeyModifiers::CONTROL,
+            "m" | "alt" | "meta" => modifiers |= KeyModifiers::ALT,
+            "s" | "shift" => modifiers |= KeyModifiers::SHIFT,
+            _ => return None,
+        }
+    }
+    let key = *parts.last()?;
+    let code = parse_key_name(key, modifiers.contains(KeyModifiers::CONTROL))?;
+    Some((code, modifiers))
+}
+
+fn parse_key_name(name: &str, has_ctrl: bool) -> Option<KeyCode> {
+    if name.is_empty() {
+        return None;
+    }
+    // Function keys: "F1".."F12".
+    if let Some(rest) = name.strip_prefix(['F', 'f']) {
+        if let Ok(n) = rest.parse::<u8>() {
+            if (1..=24).contains(&n) {
+                return Some(KeyCode::F(n));
+            }
+        }
+    }
+    let lower = name.to_ascii_lowercase();
+    let code = match lower.as_str() {
+        "escape" | "esc" => KeyCode::Esc,
+        "tab" => KeyCode::Tab,
+        "btab" | "backtab" => KeyCode::BackTab,
+        "enter" | "return" => KeyCode::Enter,
+        "bspace" | "backspace" => KeyCode::Backspace,
+        "dc" | "delete" | "del" => KeyCode::Delete,
+        "ic" | "insert" | "ins" => KeyCode::Insert,
+        "home" => KeyCode::Home,
+        "end" => KeyCode::End,
+        "ppage" | "pageup" | "pgup" => KeyCode::PageUp,
+        "npage" | "pagedown" | "pgdn" => KeyCode::PageDown,
+        "up" => KeyCode::Up,
+        "down" => KeyCode::Down,
+        "left" => KeyCode::Left,
+        "right" => KeyCode::Right,
+        "space" => KeyCode::Char(' '),
+        _ => {
+            // Single-char key: drop case sensitivity when a modifier
+            // is held (tmux conventionally treats Ctrl+a and Ctrl+A
+            // as the same chord). Without modifiers, preserve case so
+            // a config of "Q" really means uppercase Q.
+            let mut chars = name.chars();
+            let first = chars.next()?;
+            if chars.next().is_some() {
+                return None;
+            }
+            if has_ctrl {
+                return Some(KeyCode::Char(first.to_ascii_lowercase()));
+            }
+            return Some(KeyCode::Char(first));
+        }
+    };
+    Some(code)
+}
+
+/// True when `event` is the configured exit chord. Char codes
+/// normalize under Ctrl (matches the canonical form `parse_chord`
+/// produces). Strict modifier match otherwise: a chord configured as
+/// `C-q` does not fire on `Ctrl+Shift+q` so the user can still
+/// deliver `C-q` to the agent via Shift.
+pub(super) fn chord_matches(spec: (KeyCode, KeyModifiers), event: KeyEvent) -> bool {
+    let mut event_code = event.code;
+    if event.modifiers.contains(KeyModifiers::CONTROL) {
+        if let KeyCode::Char(c) = event_code {
+            event_code = KeyCode::Char(c.to_ascii_lowercase());
+        }
+    }
+    spec.0 == event_code && spec.1 == event.modifiers
+}
+
+/// Parse a comma-separated list of chord specs (e.g. "C-q,C-]")
+/// into the list of `(code, modifiers)` pairs the exit check
+/// compares against. Invalid pieces are dropped with a warning so a
+/// typo in one entry doesn't disable the whole list; an entirely
+/// unparseable string falls back to the default chord set so the
+/// user is never trapped in live mode without a working exit.
+pub(super) fn parse_chord_list(spec: &str) -> Vec<(KeyCode, KeyModifiers)> {
+    let mut out = Vec::new();
+    for piece in spec.split(',') {
+        let trimmed = piece.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        match parse_chord(trimmed) {
+            Some(chord) => out.push(chord),
+            None => tracing::warn!(
+                "live-send: ignoring unparseable exit chord '{}' in '{}'",
+                trimmed,
+                spec
+            ),
+        }
+    }
+    if out.is_empty() && spec != DEFAULT_EXIT_CHORD {
+        tracing::warn!(
+            "live-send: exit chord '{}' parsed to nothing; falling back to default '{}'",
+            spec,
+            DEFAULT_EXIT_CHORD
+        );
+        return parse_chord_list(DEFAULT_EXIT_CHORD);
+    }
+    out
+}
+
+/// True when `event` matches any chord in the configured list.
+pub(super) fn chord_list_matches(chords: &[(KeyCode, KeyModifiers)], event: KeyEvent) -> bool {
+    chords.iter().any(|c| chord_matches(*c, event))
+}
+
+/// Render the configured chord list as a banner-friendly string,
+/// e.g. `"Ctrl+Q / Ctrl+]"`. Used for the status-bar live banner so
+/// the user sees every chord they can press to exit.
+pub(super) fn display_chord_list(chords: &[(KeyCode, KeyModifiers)]) -> String {
+    chords
+        .iter()
+        .map(|c| display_chord(*c))
+        .collect::<Vec<_>>()
+        .join(" / ")
+}
+
+/// Render a parsed chord back as a human-readable string for the
+/// banner: e.g. `(KeyCode::Char('q'), CONTROL)` → "Ctrl+Q". Uses
+/// uppercase for letters so the banner reads like the rest of the
+/// chord hints in the TUI (Ctrl+T, Ctrl+K, etc.).
+pub(super) fn display_chord(spec: (KeyCode, KeyModifiers)) -> String {
+    let (code, mods) = spec;
+    let mut out = String::new();
+    if mods.contains(KeyModifiers::CONTROL) {
+        out.push_str("Ctrl+");
+    }
+    if mods.contains(KeyModifiers::ALT) {
+        out.push_str("Alt+");
+    }
+    if mods.contains(KeyModifiers::SHIFT) {
+        out.push_str("Shift+");
+    }
+    match code {
+        KeyCode::Char(c) => out.push(c.to_ascii_uppercase()),
+        KeyCode::Esc => out.push_str("Esc"),
+        KeyCode::Tab => out.push_str("Tab"),
+        KeyCode::BackTab => out.push_str("Shift+Tab"),
+        KeyCode::Enter => out.push_str("Enter"),
+        KeyCode::Backspace => out.push_str("Backspace"),
+        KeyCode::Delete => out.push_str("Delete"),
+        KeyCode::Insert => out.push_str("Insert"),
+        KeyCode::Home => out.push_str("Home"),
+        KeyCode::End => out.push_str("End"),
+        KeyCode::PageUp => out.push_str("PageUp"),
+        KeyCode::PageDown => out.push_str("PageDown"),
+        KeyCode::Up => out.push_str("Up"),
+        KeyCode::Down => out.push_str("Down"),
+        KeyCode::Left => out.push_str("Left"),
+        KeyCode::Right => out.push_str("Right"),
+        KeyCode::F(n) => out.push_str(&format!("F{n}")),
+        _ => out.push('?'),
+    }
+    out
+}
 
 /// Lives on `HomeView::live_send` while the mode is active. Carries
 /// just enough state for the banner to render, for the exit handler
@@ -53,6 +252,10 @@ pub(in crate::tui) struct LiveSendState {
     pub session_id: String,
     pub title: String,
     pub tmux_name: String,
+    /// Chord list parsed from the user's configured exit-chord
+    /// setting at entry time. Captured per-entry so config edits
+    /// don't change behavior mid-session.
+    pub exit_chords: Vec<(KeyCode, KeyModifiers)>,
 }
 
 /// One coalesced unit of work the worker hands to tmux. `Literal` runs
@@ -181,10 +384,12 @@ fn dispatch_batch(session: &crate::tmux::Session, batch: Vec<WorkerMsg>) {
 }
 
 /// What the translator says to do with one incoming key event.
+///
+/// Note: the exit-chord check lives in `handle_live_send_key` (it
+/// consults the user's configured chord list, which translate has no
+/// access to). translate is purely the key-to-tmux mapping.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum LiveDispatch {
-    /// User pressed the exit chord; the caller should clear `live_send`.
-    Exit,
     /// Forward the keystroke to tmux in the requested form.
     Send(TmuxKey),
     /// Key has no meaningful tmux mapping (Null, CapsLock, media keys, …).
@@ -202,10 +407,11 @@ pub(super) enum TmuxKey {
 
 /// Map one crossterm `KeyEvent` onto a `LiveDispatch`.
 ///
+/// Exit-chord detection is NOT done here. `handle_live_send_key`
+/// checks the user's configured chord list before calling translate,
+/// so this function is pure key→tmux mapping.
+///
 /// Conventions:
-/// - `Ctrl+q` (lowercase, bare) is Exit. Holding Shift or Alt
-///   converts the chord to a passthrough (Ctrl+Shift+q, Ctrl+Alt+q)
-///   so the user can still deliver those combinations to the agent.
 /// - Plain printable chars (`KeyCode::Char` with no Ctrl/Alt) go literal
 ///   so the user's case and punctuation are preserved verbatim. The shift
 ///   modifier is implicit in the char itself, so we don't add `S-`.
@@ -221,13 +427,6 @@ pub fn translate(key: KeyEvent) -> LiveDispatch {
     let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
     let alt = key.modifiers.contains(KeyModifiers::ALT);
     let shift = key.modifiers.contains(KeyModifiers::SHIFT);
-
-    // Bare Ctrl+q only. Holding Shift or Alt converts the chord to a
-    // passthrough so the user can still deliver Ctrl+Shift+q (a.k.a.
-    // `C-q` to most agents) or Ctrl+Alt+q to the agent.
-    if ctrl && !shift && !alt && matches!(key.code, KeyCode::Char('q')) {
-        return LiveDispatch::Exit;
-    }
 
     // Char path: tmux chord names are case-insensitive for letters and
     // the case in `Char(c)` already carries Shift, so we drop `S-` here
@@ -311,36 +510,160 @@ mod tests {
         }
     }
 
+    // Exit-chord detection moved out of translate() into
+    // handle_live_send_key. Translate now never emits Exit; the
+    // chord-list tests below cover the configurable exit path.
+
     #[test]
-    fn ctrl_q_exits() {
-        assert_eq!(
+    fn translate_never_emits_exit_for_ctrl_q() {
+        // translate is pure key→tmux. Ctrl+q now passes through; the
+        // exit decision belongs to the chord-list matcher.
+        assert_named(
             translate(k_mod(KeyCode::Char('q'), KeyModifiers::CONTROL)),
-            LiveDispatch::Exit
+            "C-q",
         );
     }
 
     #[test]
-    fn ctrl_shift_q_does_not_exit() {
-        // Only bare Ctrl+q exits. Shift held means the user actually
-        // wants to send `C-q` through to the agent (vim quoted-insert,
-        // readline start-output), so this must fall through to a Named
-        // dispatch instead of being eaten as an exit.
-        let d = translate(k_mod(
-            KeyCode::Char('Q'),
-            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
-        ));
-        assert_ne!(d, LiveDispatch::Exit);
-        assert_named(d, "C-q");
+    fn parse_chord_basics() {
+        assert_eq!(
+            parse_chord("C-q"),
+            Some((KeyCode::Char('q'), KeyModifiers::CONTROL))
+        );
+        // Uppercase letter folds to lowercase under Ctrl (tmux
+        // convention: C-a and C-A are the same chord).
+        assert_eq!(
+            parse_chord("C-Q"),
+            Some((KeyCode::Char('q'), KeyModifiers::CONTROL))
+        );
+        // Punctuation as the key.
+        assert_eq!(
+            parse_chord("C-]"),
+            Some((KeyCode::Char(']'), KeyModifiers::CONTROL))
+        );
+        // Long modifier names.
+        assert_eq!(
+            parse_chord("Ctrl+Alt+x"),
+            Some((
+                KeyCode::Char('x'),
+                KeyModifiers::CONTROL | KeyModifiers::ALT
+            ))
+        );
+        // Named keys.
+        assert_eq!(
+            parse_chord("F12"),
+            Some((KeyCode::F(12), KeyModifiers::NONE))
+        );
+        assert_eq!(
+            parse_chord("S-Up"),
+            Some((KeyCode::Up, KeyModifiers::SHIFT))
+        );
+        assert_eq!(
+            parse_chord("Escape"),
+            Some((KeyCode::Esc, KeyModifiers::NONE))
+        );
+        assert_eq!(
+            parse_chord("PageUp"),
+            Some((KeyCode::PageUp, KeyModifiers::NONE))
+        );
     }
 
     #[test]
-    fn ctrl_alt_q_does_not_exit() {
-        let d = translate(k_mod(
-            KeyCode::Char('q'),
-            KeyModifiers::CONTROL | KeyModifiers::ALT,
+    fn parse_chord_rejects_garbage() {
+        assert_eq!(parse_chord(""), None);
+        assert_eq!(parse_chord("X-q"), None); // unknown modifier
+        assert_eq!(parse_chord("C-qq"), None); // multi-char key without F-prefix
+        assert_eq!(parse_chord("C-"), None); // missing key
+    }
+
+    #[test]
+    fn chord_matches_handles_ctrl_case_folding() {
+        let spec = parse_chord("C-q").unwrap();
+        // Crossterm may deliver Ctrl+Q as either Char('q') or
+        // Char('Q')+SHIFT depending on terminal; the match should
+        // recognize the lowercase form but NOT the shift form
+        // (shift means the user wants to send Ctrl+Shift+q to the
+        // agent, not exit).
+        assert!(chord_matches(
+            spec,
+            KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL)
         ));
-        assert_ne!(d, LiveDispatch::Exit);
-        assert_named(d, "C-M-q");
+        assert!(!chord_matches(
+            spec,
+            KeyEvent::new(
+                KeyCode::Char('Q'),
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT
+            )
+        ));
+        assert!(!chord_matches(
+            spec,
+            KeyEvent::new(
+                KeyCode::Char('q'),
+                KeyModifiers::CONTROL | KeyModifiers::ALT
+            )
+        ));
+    }
+
+    #[test]
+    fn parse_chord_list_filters_invalid_pieces() {
+        let chords = parse_chord_list("C-q, garbage, C-]");
+        assert_eq!(
+            chords,
+            vec![
+                (KeyCode::Char('q'), KeyModifiers::CONTROL),
+                (KeyCode::Char(']'), KeyModifiers::CONTROL),
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_chord_list_falls_back_to_default_on_all_invalid() {
+        // Misconfigured chord lists shouldn't trap the user in live
+        // mode with no exit; we drop back to the default set.
+        let chords = parse_chord_list("not-a-chord, also-bad");
+        let defaults = parse_chord_list(DEFAULT_EXIT_CHORD);
+        assert_eq!(chords, defaults);
+        assert!(!chords.is_empty());
+    }
+
+    #[test]
+    fn default_chord_set_includes_both_ctrl_q_and_ctrl_right_bracket() {
+        let chords = parse_chord_list(DEFAULT_EXIT_CHORD);
+        assert!(chords.contains(&(KeyCode::Char('q'), KeyModifiers::CONTROL)));
+        assert!(chords.contains(&(KeyCode::Char(']'), KeyModifiers::CONTROL)));
+    }
+
+    #[test]
+    fn chord_list_matches_any() {
+        let chords = parse_chord_list("C-q, C-]");
+        assert!(chord_list_matches(
+            &chords,
+            KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL)
+        ));
+        assert!(chord_list_matches(
+            &chords,
+            KeyEvent::new(KeyCode::Char(']'), KeyModifiers::CONTROL)
+        ));
+        assert!(!chord_list_matches(
+            &chords,
+            KeyEvent::new(KeyCode::Char('x'), KeyModifiers::CONTROL)
+        ));
+    }
+
+    #[test]
+    fn display_chord_list_joins_with_slash() {
+        let chords = parse_chord_list("C-q, C-]");
+        assert_eq!(display_chord_list(&chords), "Ctrl+Q / Ctrl+]");
+    }
+
+    #[test]
+    fn display_chord_single() {
+        let chord = parse_chord("C-]").unwrap();
+        assert_eq!(display_chord(chord), "Ctrl+]");
+        let chord = parse_chord("F12").unwrap();
+        assert_eq!(display_chord(chord), "F12");
+        let chord = parse_chord("Ctrl+Alt+Shift+x").unwrap();
+        assert_eq!(display_chord(chord), "Ctrl+Alt+Shift+X");
     }
 
     #[test]
@@ -596,18 +919,9 @@ mod tests {
     #[test]
     fn plain_q_is_literal_not_exit() {
         // Without Ctrl, `q` is just a letter the user wants to send.
+        // translate doesn't decide exit any more, but this still
+        // verifies the passthrough.
         assert_literal(translate(k(KeyCode::Char('q'))), "q");
         assert_literal(translate(k(KeyCode::Char('Q'))), "Q");
-    }
-
-    #[test]
-    fn ctrl_right_bracket_is_now_a_passthrough() {
-        // Ctrl+] used to be the exit chord but it doesn't pass through
-        // some SSH clients (Termius is the reported case). Now it
-        // forwards to the agent like any other modifier chord.
-        assert_named(
-            translate(k_mod(KeyCode::Char(']'), KeyModifiers::CONTROL)),
-            "C-]",
-        );
     }
 }

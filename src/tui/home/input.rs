@@ -2817,12 +2817,11 @@ impl HomeView {
             }
         }
 
-        let dispatch = live_send::translate(key);
-        // Honor the exit chord before the drift check: exiting is
-        // always safe and the user pressing Ctrl+q to escape a
-        // drifted-and-stuck live mode should not hit a "session
-        // ended" dialog on the way out.
-        if matches!(dispatch, live_send::LiveDispatch::Exit) {
+        // Exit-chord check runs before the drift check: exiting is
+        // always safe, and the user pressing the chord to escape a
+        // drifted/stuck live mode shouldn't hit a "session ended"
+        // dialog on the way out.
+        if live_send::chord_list_matches(&state.exit_chords, key) {
             self.live_send = None;
             self.live_send_worker = None;
             self.live_send_last_resize = None;
@@ -2835,11 +2834,7 @@ impl HomeView {
             self.info_dialog = Some(InfoDialog::new("Live send ended", reason));
             return;
         }
-        match dispatch {
-            live_send::LiveDispatch::Exit => {
-                // Handled by the matches! above; this arm only exists
-                // so the match remains exhaustive.
-            }
+        match live_send::translate(key) {
             live_send::LiveDispatch::Ignore => {}
             live_send::LiveDispatch::Send(tmux_key) => {
                 if let Some(worker) = &self.live_send_worker {

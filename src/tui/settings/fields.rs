@@ -101,6 +101,7 @@ pub enum FieldKey {
     AgentDetectAs,
     HostEnvironment,
     SessionIdPollerMaxThreads,
+    LiveSendExitChord,
     // Sound
     SoundEnabled,
     SoundMode,
@@ -1515,6 +1516,12 @@ fn build_session_fields(
         session.and_then(|s| s.restart_wake_message.clone()),
     );
 
+    let (live_send_exit_chord, live_send_exit_chord_override) = resolve_value(
+        scope,
+        global.session.live_send_exit_chord.clone(),
+        session.and_then(|s| s.live_send_exit_chord.clone()),
+    );
+
     let (row_tag, row_tag_override) = resolve_value(
         scope,
         global.session.row_tag,
@@ -1703,6 +1710,21 @@ fn build_session_fields(
             inherited_display: inherited_if(
                 restart_wake_message_override,
                 FieldValue::Text(global.session.restart_wake_message.clone()),
+            ),
+        },
+        SettingField {
+            key: FieldKey::LiveSendExitChord,
+            label: "Live-Send Exit Chord",
+            description:
+                "Comma-separated chord specs that exit live-send mode. \
+                 Tmux-style: C-q, Ctrl+], M-x, F12. Default `C-q,C-]` covers \
+                 mobile keyboards and telnet-style terminals.",
+            value: FieldValue::Text(live_send_exit_chord),
+            category: SettingsCategory::Session,
+            has_override: live_send_exit_chord_override,
+            inherited_display: inherited_if(
+                live_send_exit_chord_override,
+                FieldValue::Text(global.session.live_send_exit_chord.clone()),
             ),
         },
         SettingField {
@@ -2293,6 +2315,9 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
         (FieldKey::RestartWakeMessage, FieldValue::Text(v)) => {
             config.session.restart_wake_message = v.clone();
         }
+        (FieldKey::LiveSendExitChord, FieldValue::Text(v)) => {
+            config.session.live_send_exit_chord = v.clone();
+        }
         (FieldKey::RowTag, FieldValue::Select { selected, .. }) => {
             config.session.row_tag = index_to_row_tag(*selected);
         }
@@ -2761,6 +2786,11 @@ fn apply_field_to_profile(field: &SettingField, _global: &Config, config: &mut P
         (FieldKey::RestartWakeMessage, FieldValue::Text(v)) => {
             set_profile_override(v.clone(), &mut config.session, |s, val| {
                 s.restart_wake_message = val
+            });
+        }
+        (FieldKey::LiveSendExitChord, FieldValue::Text(v)) => {
+            set_profile_override(v.clone(), &mut config.session, |s, val| {
+                s.live_send_exit_chord = val
             });
         }
         (FieldKey::RowTag, FieldValue::Select { selected, .. }) => {

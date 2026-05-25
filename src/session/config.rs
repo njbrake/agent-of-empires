@@ -592,6 +592,16 @@ pub struct SessionConfig {
     /// to pick up immediately.
     #[serde(default = "default_session_id_poller_max_threads")]
     pub session_id_poller_max_threads: u32,
+
+    /// Comma-separated list of chord specs that exit live-send mode.
+    /// Each chord is a tmux-style spec like `C-q`, `Ctrl+]`, `M-x`,
+    /// `F12`; the first chord in the list that matches an event ends
+    /// live mode. Multiple chords let users pick whatever works in
+    /// their terminal: `C-q` is friendlier on mobile keyboards and
+    /// in Termius; `C-]` is the telnet convention and preserves
+    /// `C-q` as a passthrough for vim quoted-insert.
+    #[serde(default = "default_live_send_exit_chord")]
+    pub live_send_exit_chord: String,
 }
 
 /// What to render in the per-row tag slot next to the session title.
@@ -634,6 +644,7 @@ impl Default for SessionConfig {
             restart_wake_message: default_restart_wake_message(),
             row_tag: RowTagMode::default(),
             session_id_poller_max_threads: default_session_id_poller_max_threads(),
+            live_send_exit_chord: default_live_send_exit_chord(),
         }
     }
 }
@@ -644,6 +655,13 @@ fn default_snooze_duration_minutes() -> u32 {
 
 fn default_restart_wake_message() -> String {
     "wake up: pick up what you were doing".to_string()
+}
+
+fn default_live_send_exit_chord() -> String {
+    // Both Ctrl+q (mobile-friendly, passes Termius) and Ctrl+] (telnet
+    // convention, preserves C-q as passthrough). Kept in sync with
+    // live_send::DEFAULT_EXIT_CHORD.
+    "C-q,C-]".to_string()
 }
 
 /// Upper bound on snooze duration: 30 days (43,200 minutes). Originally

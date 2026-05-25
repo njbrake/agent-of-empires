@@ -2237,10 +2237,20 @@ impl HomeView {
             }
         };
         let tmux_name = tmux_session.name().to_string();
+        // Parse the configured exit-chord list now so the per-keystroke
+        // dispatch path doesn't re-parse on every event. Config edits
+        // during live mode aren't possible (settings_view participates
+        // in has_dialog and lives in its own takeover), so a snapshot
+        // at entry time is sufficient.
+        let exit_chord_spec = resolve_config_or_warn(&self.config_profile())
+            .session
+            .live_send_exit_chord;
+        let exit_chords = live_send::parse_chord_list(&exit_chord_spec);
         self.live_send = Some(live_send::LiveSendState {
             session_id: inst.id.clone(),
             title: inst.title.clone(),
             tmux_name: tmux_name.clone(),
+            exit_chords,
         });
         self.live_send_worker = Some(live_send::LiveSendWorker::spawn(tmux_name));
         // Force the preview-refresh path to issue a resize on the

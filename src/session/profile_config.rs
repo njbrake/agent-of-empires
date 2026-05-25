@@ -254,6 +254,9 @@ pub struct SessionConfigOverride {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub row_tag: Option<super::config::RowTagMode>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub live_send_exit_chord: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -483,6 +486,9 @@ pub fn apply_session_overrides(
     }
     if let Some(row_tag) = source.row_tag {
         target.row_tag = row_tag;
+    }
+    if let Some(ref live_send_exit_chord) = source.live_send_exit_chord {
+        target.live_send_exit_chord = live_send_exit_chord.clone();
     }
 }
 

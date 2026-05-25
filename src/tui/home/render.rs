@@ -8,8 +8,8 @@ use std::time::{Duration, Instant};
 use rattles::presets::prelude as spinners;
 
 use super::{
-    get_indent, HomeView, TerminalMode, ViewMode, ICON_COLLAPSED, ICON_DELETING, ICON_ERROR,
-    ICON_EXPANDED, ICON_IDLE, ICON_STOPPED, ICON_UNKNOWN,
+    get_indent, live_send, HomeView, TerminalMode, ViewMode, ICON_COLLAPSED, ICON_DELETING,
+    ICON_ERROR, ICON_EXPANDED, ICON_IDLE, ICON_STOPPED, ICON_UNKNOWN,
 };
 use crate::session::config::{GroupByMode, SortOrder};
 use crate::session::{Item, Status};
@@ -424,51 +424,34 @@ impl HomeView {
             return;
         }
 
-        // Layout: optional live-send header at top + main area + status bar
-        // + optional update bar at bottom. The live-send header makes the
-        // exit chord (Ctrl+q) unmissable from the top of the screen;
-        // mirroring it in the status bar covers the bottom-of-screen gaze.
+        // Layout: main area + status bar + optional update bar at bottom.
         // The update bar surfaces both persistent update-available banners
         // (update_info) and transient toasts (update_status); we need a row
         // for it whenever either is present, otherwise toasts fired without
         // a pending update would never reach the screen.
         let has_update_bar = update_info.is_some() || update_status.is_some();
-        let has_live_header = self.live_send.is_some();
-        let mut constraints: Vec<Constraint> = Vec::with_capacity(4);
-        if has_live_header {
-            constraints.push(Constraint::Length(1));
-        }
-        constraints.push(Constraint::Min(0));
-        constraints.push(Constraint::Length(1));
-        if has_update_bar {
-            constraints.push(Constraint::Length(1));
-        }
+        let constraints = if has_update_bar {
+            vec![
+                Constraint::Min(0),
+                Constraint::Length(1),
+                Constraint::Length(1),
+            ]
+        } else {
+            vec![Constraint::Min(0), Constraint::Length(1)]
+        };
         let main_chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints(constraints)
             .split(area);
-        // Slice indices shift when the live header is present. Resolve
-        // them once so the rest of this function reads naturally.
-        let header_idx = if has_live_header { Some(0) } else { None };
-        let body_idx = if has_live_header { 1 } else { 0 };
-        let status_idx = body_idx + 1;
-        let update_idx = if has_update_bar {
-            Some(status_idx + 1)
-        } else {
-            None
-        };
-        if let Some(idx) = header_idx {
-            self.render_live_header(frame, main_chunks[idx], theme);
-        }
 
         // Below STACKED_BREAKPOINT (80 cols), put the list above the preview
         // instead of side-by-side. At 80 cols a side-by-side preview is only
         // ~45 cols (with default list_width 35), too cramped for output;
         // stacking gives the preview the full width.
-        let available_width = main_chunks[body_idx].width;
+        let available_width = main_chunks[0].width;
         self.main_area_width = available_width;
         if available_width < responsive::STACKED_BREAKPOINT {
-            let main_height = main_chunks[body_idx].height;
+            let main_height = main_chunks[0].height;
             let list_height = responsive::stacked_list_height(main_height);
             let chunks = Layout::default()
                 .direction(Direction::Vertical)
@@ -476,7 +459,7 @@ impl HomeView {
                     Constraint::Length(list_height),
                     Constraint::Min(responsive::STACKED_PREVIEW_MIN),
                 ])
-                .split(main_chunks[body_idx]);
+                .split(main_chunks[0]);
 
             // Stacked layout has no vertical divider; only the side-by-side
             // path exposes the resize-by-drag affordance.
@@ -497,7 +480,7 @@ impl HomeView {
                     Constraint::Length(effective_list_width),
                     Constraint::Min(responsive::PREVIEW_MIN_WIDTH),
                 ])
-                .split(main_chunks[body_idx]);
+                .split(main_chunks[0]);
 
             // Layout chunks are contiguous, so chunks[1].x is the first
             // column of the preview block, i.e. the visible left border
@@ -508,10 +491,10 @@ impl HomeView {
             self.render_list(frame, chunks[0], theme);
             self.render_preview(frame, chunks[1], theme);
         }
-        self.render_status_bar(frame, main_chunks[status_idx], theme);
+        self.render_status_bar(frame, main_chunks[1], theme);
 
-        if let Some(idx) = update_idx {
-            self.render_update_bar(frame, main_chunks[idx], theme, update_info, update_status);
+        if has_update_bar {
+            self.render_update_bar(frame, main_chunks[2], theme, update_info, update_status);
         }
 
         // Render dialogs on top
@@ -1748,93 +1731,14 @@ impl HomeView {
         }
     }
 
-    /// Top-of-screen live-send banner. Painted as a reversed-color chip
-    /// that fills the row width so it reads as a mode indicator rather
-    /// than floating chrome. The status bar gets a more compact mirror
-    /// of the same content so the exit chord is visible from either
-    /// gaze direction.
-    ///
-    /// On narrow terminals the title is truncated with an ellipsis so
-    /// the `Ctrl+Q` hint stays visible. The fixed parts (chip prefix +
-    /// exit chord + suffix) are reserved first; whatever's left goes to
-    /// the title.
-    fn render_live_header(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
-        let Some(state) = &self.live_send else {
-            return;
-        };
-        let raw_title = if state.title.is_empty() {
-            "session"
-        } else {
-            state.title.as_str()
-        };
-
-        let chip = " \u{25CF} LIVE SEND \u{2192} ";
-        let chord = "Ctrl+Q";
-        let suffix = " to exit live mode ";
-        let separator = "  "; // between title and the trailing block
-
-        // Surface the same scroll indicator the preview pane shows
-        // (top-right of the preview block), but here at the very top
-        // of the screen so the user always knows how far back into
-        // history they're looking. None while live-following.
-        let visible_height = (self.preview_cache.dimensions.1 as usize).saturating_sub(3);
-        let scroll = format_scroll_indicator(
-            self.preview_cache.captured_lines,
-            visible_height,
-            self.preview_scroll_offset,
-        )
-        .unwrap_or_default();
-
-        let fixed_width = unicode_width::UnicodeWidthStr::width(chip)
-            + unicode_width::UnicodeWidthStr::width(separator)
-            + unicode_width::UnicodeWidthStr::width(scroll.as_str())
-            + unicode_width::UnicodeWidthStr::width(chord)
-            + unicode_width::UnicodeWidthStr::width(suffix);
-        let title_budget = (area.width as usize).saturating_sub(fixed_width);
-        let title = truncate_to_width(raw_title, title_budget);
-
-        let chip_style = Style::default()
-            .fg(theme.background)
-            .bg(theme.running)
-            .bold();
-        let body_style = Style::default().fg(theme.background).bg(theme.running);
-        let chord_style = Style::default()
-            .fg(theme.background)
-            .bg(theme.running)
-            .bold();
-
-        let mut spans: Vec<Span<'static>> = vec![
-            Span::styled(chip, chip_style),
-            Span::styled(title, body_style),
-            Span::styled(separator, body_style),
-        ];
-        if !scroll.is_empty() {
-            spans.push(Span::styled(scroll, body_style));
-        }
-        spans.push(Span::styled(chord, chord_style));
-        spans.push(Span::styled(suffix, body_style));
-        // Pad the remainder of the row with the same bg color so the
-        // banner reads as a continuous strip rather than a floating chip.
-        let used: usize = spans
-            .iter()
-            .map(|s| unicode_width::UnicodeWidthStr::width(s.content.as_ref()))
-            .sum();
-        let pad = (area.width as usize).saturating_sub(used);
-        if pad > 0 {
-            spans.push(Span::styled(
-                " ".repeat(pad),
-                Style::default().bg(theme.running),
-            ));
-        }
-        frame.render_widget(Paragraph::new(Line::from(spans)), area);
-    }
-
     fn render_status_bar(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
         // Live-send banner takes over the status bar so the user has an
-        // always-visible reminder that keystrokes are being relayed to the
-        // pane (and how to get out). Distinct color + bold so it can't be
-        // confused with the regular footer. The render_live_header
-        // counterpart paints the top of the screen with the same intent.
+        // always-visible reminder that keystrokes are being relayed to
+        // the pane (and how to get out). Distinct color + bold so it
+        // can't be confused with the regular footer. The scroll
+        // indicator (only present when the user has scrolled back from
+        // the live edge) sits between the title and the exit chord
+        // hint so it gets noticed when there's something to notice.
         if let Some(state) = &self.live_send {
             let raw_title = if state.title.is_empty() {
                 "session"
@@ -1842,19 +1746,42 @@ impl HomeView {
                 state.title.as_str()
             };
             let chip = " \u{25CF} LIVE \u{2192} ";
-            let chord = "Ctrl+Q";
+            // The chord display is built from the user's configured
+            // exit-chord list so the hint always shows what actually
+            // exits live mode for this user. Empty list (impossible
+            // under normal config — parse_chord_list falls back to
+            // the default set) renders as "?" so the user notices
+            // something's wrong rather than thinking the mode is
+            // unescapable.
+            let chord = if state.exit_chords.is_empty() {
+                "?".to_string()
+            } else {
+                live_send::display_chord_list(&state.exit_chords)
+            };
             let suffix = " to exit ";
+            // Match the preview pane's visible_height calculation
+            // (`area.height - 2` for borders, then `- 1` for the
+            // compact branch in render_output_cached) so the indicator
+            // count stays consistent as the user scrolls.
+            let visible_height = (self.preview_cache.dimensions.1 as usize).saturating_sub(3);
+            let scroll = format_scroll_indicator(
+                self.preview_cache.captured_lines,
+                visible_height,
+                self.preview_scroll_offset,
+            )
+            .unwrap_or_default();
             // Spaces between chip→title and title→chord. Title gets the
             // budget after the fixed pieces; reserved last so the exit
             // chord never falls off on narrow terminals.
             let fixed_width = unicode_width::UnicodeWidthStr::width(chip)
                 + 1 // single space after the chip
                 + 2 // double space before the chord
-                + unicode_width::UnicodeWidthStr::width(chord)
-                + unicode_width::UnicodeWidthStr::width(suffix);
+                + unicode_width::UnicodeWidthStr::width(chord.as_str())
+                + unicode_width::UnicodeWidthStr::width(suffix)
+                + unicode_width::UnicodeWidthStr::width(scroll.as_str());
             let title_budget = (area.width as usize).saturating_sub(fixed_width);
             let title = truncate_to_width(raw_title, title_budget);
-            let line = Line::from(vec![
+            let mut spans: Vec<Span<'static>> = vec![
                 Span::styled(
                     chip,
                     Style::default()
@@ -1864,11 +1791,20 @@ impl HomeView {
                 ),
                 Span::raw(" "),
                 Span::styled(title, Style::default().fg(theme.text).bold()),
-                Span::raw("  "),
-                Span::styled(chord, Style::default().fg(theme.accent).bold()),
-                Span::styled(suffix, Style::default().fg(theme.dimmed)),
-            ]);
-            frame.render_widget(Paragraph::new(line), area);
+            ];
+            if !scroll.is_empty() {
+                spans.push(Span::styled(
+                    scroll,
+                    Style::default().fg(theme.dimmed).italic(),
+                ));
+            }
+            spans.push(Span::raw("  "));
+            spans.push(Span::styled(
+                chord,
+                Style::default().fg(theme.accent).bold(),
+            ));
+            spans.push(Span::styled(suffix, Style::default().fg(theme.dimmed)));
+            frame.render_widget(Paragraph::new(Line::from(spans)), area);
             return;
         }
 
