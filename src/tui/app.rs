@@ -339,9 +339,9 @@ impl App {
             // (see `draw_preview_only`). Only stash when live-send is
             // active and dialogs aren't covering the home view; the
             // snapshot is useless in any other state and the clone
-            // cost (12-cell-sized allocation per cell, ~12K cells on
-            // a typical pane) is real per draw, so we skip it when no
-            // fast-path render can consume it.
+            // cost (one `Vec<Cell>` walk plus a `Cell::clone` per
+            // cell, ~12K cells on a 200x60 pane) is real per draw, so
+            // we skip it when no fast-path render can consume it.
             if self.home.live_send.is_some() && !self.home.has_dialog() {
                 self.last_full_frame = Some(completed.buffer.clone());
                 self.last_full_frame_preview_area = self.home.preview_area;
