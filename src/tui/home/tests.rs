@@ -5316,6 +5316,14 @@ mod live_send_mode {
             .expect("test env has no sessions; use install_live_orphan instead");
         let inst = env.view.get_instance(&id).unwrap().clone();
         let tmux_name = crate::tmux::Session::generate_name(&inst.id, &inst.title);
+        // CI runs the e2e suite in the same `cargo test` invocation,
+        // which populates the global tmux session cache. The drift
+        // check then sees our fake test session name as "not in tmux"
+        // (Some(false)) and clears live_send mid-test. Pre-inject the
+        // name so the cache reports Some(true) for it; orphan tests
+        // (install_live_orphan) deliberately skip this and let the
+        // instance-missing branch fire instead.
+        crate::tmux::test_inject_session_into_cache(&tmux_name);
         env.view.live_send = Some(LiveSendState {
             session_id: inst.id.clone(),
             title: inst.title,
