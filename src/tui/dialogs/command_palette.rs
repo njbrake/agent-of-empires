@@ -642,7 +642,7 @@ mod tests {
             .expect("builtin commands must include 'live-send'");
         assert_eq!(entry.hotkey, "Tab");
         assert!(
-            matches!(entry.payload, PaletteAction::EnterLiveSend),
+            matches!(&entry.payload, PaletteAction::EnterLiveSend),
             "live-send entry must dispatch PaletteAction::EnterLiveSend"
         );
     }
