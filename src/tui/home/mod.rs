@@ -108,6 +108,19 @@ pub(super) struct PreviewCache {
     /// `tmux capture-pane` subprocess while the cached window still covers
     /// the requested scroll.
     pub(super) captured_lines: usize,
+    /// Lazily parsed ratatui `Text` view of `content`. Populated on the
+    /// first render after a refresh that wasn't a no-op; reused as-is
+    /// on every subsequent render until `content` is replaced. The
+    /// invalidation point is `refresh_*_preview_cache_if_needed` which
+    /// sets this to `None` whenever it writes a fresh `content`. See
+    /// `PreviewCache::ensure_parsed` for the lazy-parse contract.
+    ///
+    /// Without this cache, `ansi-to-tui` re-parses the full pane
+    /// payload (~12 KB of ANSI text for a typical agent) on every
+    /// render iteration, including the many that fire on ticker
+    /// wake-ups or unrelated key events. With it, the parse happens
+    /// at most once per actual content change.
+    pub(super) parsed_text: Option<ratatui::text::Text<'static>>,
 }
 
 impl Default for PreviewCache {
@@ -118,6 +131,29 @@ impl Default for PreviewCache {
             last_refresh: Instant::now(),
             dimensions: (0, 0),
             captured_lines: 0,
+            parsed_text: None,
+        }
+    }
+}
+
+impl PreviewCache {
+    /// Ensure `parsed_text` is populated, parsing `content` if it is
+    /// not already cached. Side-effect only: returns nothing so the
+    /// caller can drop the `&mut` borrow before reading
+    /// `parsed_text` (which lets shared borrows on sibling fields of
+    /// the parent struct coexist with the read).
+    ///
+    /// Cheap on cache-hit (single `is_none` check). Cache-miss runs
+    /// `parse_output_text` once and stashes the result.
+    pub(super) fn ensure_parsed(&mut self) {
+        if self.content.is_empty() {
+            self.parsed_text = None;
+            return;
+        }
+        if self.parsed_text.is_none() {
+            self.parsed_text = Some(crate::tui::components::preview::parse_output_text(
+                &self.content,
+            ));
         }
     }
 }

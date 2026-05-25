@@ -13,6 +13,7 @@ use super::{
 };
 use crate::session::config::{GroupByMode, SortOrder};
 use crate::session::{Item, Status};
+use crate::tui::components::preview::CachedPreview;
 use crate::tui::components::{
     format_scroll_indicator, set_prefixed_input_cursor_position, HelpOverlay, Preview,
 };
@@ -1242,6 +1243,9 @@ impl HomeView {
                 };
                 self.preview_cache.captured_lines = content.lines().count();
                 self.preview_cache.content = content;
+                // Invalidate the cached parse; the next render that
+                // needs `ensure_parsed` will re-run `ansi-to-tui`.
+                self.preview_cache.parsed_text = None;
                 self.preview_cache.session_id = Some(id);
                 self.preview_cache.dimensions = (width, height);
                 self.preview_cache.last_refresh = Instant::now();
@@ -1320,6 +1324,7 @@ impl HomeView {
                         .unwrap_or_default();
                     self.terminal_preview_cache.captured_lines = content.lines().count();
                     self.terminal_preview_cache.content = content;
+                    self.terminal_preview_cache.parsed_text = None;
                     self.terminal_preview_cache.session_id = Some(id.clone());
                     self.terminal_preview_cache.dimensions = (width, height);
                     self.terminal_preview_cache.last_refresh = Instant::now();
@@ -1367,6 +1372,7 @@ impl HomeView {
                         .unwrap_or_default();
                     self.container_terminal_preview_cache.captured_lines = content.lines().count();
                     self.container_terminal_preview_cache.content = content;
+                    self.container_terminal_preview_cache.parsed_text = None;
                     self.container_terminal_preview_cache.session_id = Some(id.clone());
                     self.container_terminal_preview_cache.dimensions = (width, height);
                     self.container_terminal_preview_cache.last_refresh = Instant::now();
@@ -1408,6 +1414,7 @@ impl HomeView {
                     let content = tool_session.capture_pane(capture_lines).unwrap_or_default();
                     self.tool_preview_cache.captured_lines = content.lines().count();
                     self.tool_preview_cache.content = content;
+                    self.tool_preview_cache.parsed_text = None;
                     self.tool_preview_cache.session_id = Some(id.clone());
                     self.tool_preview_cache.dimensions = (width, height);
                     self.tool_preview_cache.last_refresh = Instant::now();
@@ -1559,8 +1566,14 @@ impl HomeView {
                 if is_creating {
                     self.render_creating_preview(frame, inner, theme);
                 } else {
-                    // Refresh cache before borrowing from instance_map to avoid borrow conflicts
+                    // Refresh the raw `content` cache, then ensure the
+                    // parsed `Text<'static>` cache reflects it. Doing
+                    // the parse here (under `&mut self.preview_cache`)
+                    // means subsequent shared borrows on
+                    // `parsed_text` and on `self.get_instance` can
+                    // coexist in the actual render call.
                     self.refresh_preview_cache_if_needed(inner.width, inner.height);
+                    self.preview_cache.ensure_parsed();
 
                     if let Some(id) = &self.selected_session {
                         if let Some(inst) = self.get_instance(id) {
@@ -1568,7 +1581,7 @@ impl HomeView {
                                 frame,
                                 inner,
                                 inst,
-                                &self.preview_cache.content,
+                                CachedPreview::from_text(self.preview_cache.parsed_text.as_ref()),
                                 self.preview_scroll_offset,
                                 theme,
                                 self.idle_decay_window,
@@ -1600,38 +1613,46 @@ impl HomeView {
                         TerminalMode::Host
                     };
 
-                    // Refresh the appropriate cache before borrowing instance
+                    // Refresh the appropriate cache, then warm the
+                    // matching `parsed_text` so the render call below
+                    // can read it via a shared borrow alongside
+                    // `get_instance`.
                     match terminal_mode {
                         TerminalMode::Container => {
                             self.refresh_container_terminal_preview_cache_if_needed(
                                 inner.width,
                                 inner.height,
                             );
+                            self.container_terminal_preview_cache.ensure_parsed();
                         }
                         TerminalMode::Host => {
                             self.refresh_terminal_preview_cache_if_needed(
                                 inner.width,
                                 inner.height,
                             );
+                            self.terminal_preview_cache.ensure_parsed();
                         }
                     }
 
                     // Now borrow instance for rendering
                     if let Some(inst) = self.get_instance(&id) {
-                        let (terminal_running, preview_content) = match terminal_mode {
+                        let (terminal_running, preview_text) = match terminal_mode {
                             TerminalMode::Container => {
                                 let running = inst
                                     .container_terminal_tmux_session()
                                     .map(|s| s.exists())
                                     .unwrap_or(false);
-                                (running, &self.container_terminal_preview_cache.content)
+                                (
+                                    running,
+                                    self.container_terminal_preview_cache.parsed_text.as_ref(),
+                                )
                             }
                             TerminalMode::Host => {
                                 let running = inst
                                     .terminal_tmux_session()
                                     .map(|s| s.exists())
                                     .unwrap_or(false);
-                                (running, &self.terminal_preview_cache.content)
+                                (running, self.terminal_preview_cache.parsed_text.as_ref())
                             }
                         };
 
@@ -1640,7 +1661,7 @@ impl HomeView {
                             inner,
                             inst,
                             terminal_running,
-                            preview_content,
+                            CachedPreview::from_text(preview_text),
                             self.preview_scroll_offset,
                             theme,
                             compact,
@@ -1663,6 +1684,7 @@ impl HomeView {
                         inner.height,
                         &tool_name,
                     );
+                    self.tool_preview_cache.ensure_parsed();
 
                     if let Some(inst) = self.get_instance(&id) {
                         let tool_session =
@@ -1674,7 +1696,7 @@ impl HomeView {
                             inner,
                             inst,
                             tool_running,
-                            &self.tool_preview_cache.content,
+                            CachedPreview::from_text(self.tool_preview_cache.parsed_text.as_ref()),
                             self.preview_scroll_offset,
                             theme,
                             compact,
