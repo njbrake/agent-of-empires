@@ -1382,16 +1382,19 @@ impl HomeView {
                 (theme.terminal_border, theme.terminal_border)
             }
         };
-        // Live-send mode swaps the preview border to `accent` so the
-        // pane visually matches the M-compose modal's border color.
-        // Without this affordance the only on-screen tell that
+        // Live-send mode swaps the preview border and title to `accent`
+        // so the pane visually matches the M-compose modal's border
+        // color. Without this affordance the only on-screen tell that
         // keystrokes are being routed to the agent is the status
         // banner; users have reported losing track when the banner
-        // scrolls off in compact layouts.
-        let border_color = if self.live_send.is_some() {
-            theme.accent
+        // scrolls off in compact layouts. Title is overridden too so
+        // the border and title color stay consistent when live mode is
+        // entered from Terminal/Tool views (where the underlying
+        // `title_color` is `terminal_border`, not `title`).
+        let (border_color, title_color) = if self.live_send.is_some() {
+            (theme.accent, theme.accent)
         } else {
-            border_color
+            (border_color, title_color)
         };
 
         let mut block = Block::default()

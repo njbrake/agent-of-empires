@@ -3116,7 +3116,7 @@ impl HomeView {
     /// `CreationPoller` when hooks are present, when the session is sandboxed,
     /// or when a worktree branch is requested (to avoid freezing the TUI on
     /// slow git hooks like `post-checkout`).
-    fn create_session_with_hooks(
+    pub(super) fn create_session_with_hooks(
         &mut self,
         data: NewSessionData,
         hooks: Option<crate::session::HooksConfig>,
