@@ -292,3 +292,51 @@ fn test_new_session_enters_live_mode_when_configured() {
     // the dispatch didn't flip into the tmux attach view.
     h.assert_screen_contains(" aoe ");
 }
+
+/// Regression guard for the `tmux -C` control-mode client lifecycle
+/// (#1485). `enter_live_send` spawns one `ControlModeClient`, the
+/// preview-refresh path borrows it, and `exit_live_send_and_restore_sizing`
+/// drops it. Repeated entry/exit must not deadlock, leak file descriptors,
+/// or wedge the TUI. We can't see the client from inside the test, but
+/// the user-visible failure mode of a wedged client is the LIVE banner
+/// either not appearing on entry or not disappearing on exit, so we
+/// assert both directions across two cycles.
+#[test]
+#[serial]
+fn test_live_send_repeated_entry_exit_remains_responsive() {
+    require_tmux!();
+
+    let mut h = TuiTestHarness::new("live_send_cycle");
+    write_config_attach_mode_live_send(&h);
+    let project = h.project_path();
+    h.spawn_tui();
+
+    h.wait_for(" aoe ");
+
+    h.send_keys("n");
+    h.wait_for("Title");
+    h.send_keys("Tab");
+    h.type_text(project.to_str().unwrap());
+    submit_new_session_dialog(&h);
+
+    h.wait_for_timeout("LIVE", Duration::from_secs(10));
+
+    // First exit. Ctrl+Q is the only chord in the default exit list;
+    // banner must clear so the TUI is back to its normal state.
+    h.send_keys("C-q");
+    h.wait_for_absent("LIVE", Duration::from_secs(5));
+
+    // Re-enter via Tab on the now-selected row. The session row is
+    // selected because creation auto-selected it via
+    // `select_and_reveal_session`.
+    h.send_keys("Tab");
+    h.wait_for_timeout("LIVE", Duration::from_secs(5));
+
+    // Second exit. If the prior control-mode client wedged stdin or
+    // left a half-detached tmux client around, the second entry would
+    // either fail to bring the banner up or fail to clear it here.
+    h.send_keys("C-q");
+    h.wait_for_absent("LIVE", Duration::from_secs(5));
+    // Final sanity: home chrome still rendering.
+    h.assert_screen_contains(" aoe ");
+}
