@@ -70,8 +70,9 @@ enum Line {
     /// `send_command` consumer ignores it (same as any other
     /// notification).
     Output,
-    /// `%window-pane-changed`, `%layout-change`, etc. — anything
-    /// `%`-prefixed that isn't framing or output. Currently ignored.
+    /// `%window-pane-changed`, `%layout-change`, etc. Any
+    /// `%`-prefixed line that isn't framing or output. Currently
+    /// ignored on the channel side.
     Notification,
     /// stdout closed: tmux exited, server died, or the session was
     /// killed. Any in-flight request fails; subsequent requests fail
@@ -111,8 +112,9 @@ impl ControlModeClient {
     /// so the preview re-captures without waiting for the next timer
     /// tick. The callback must be cheap and non-blocking; the reader
     /// thread is back to consuming stdout the instant it returns. A
-    /// good shape is `Box::new(move || { let _ = tx.send(()); })`
-    /// wrapping an `UnboundedSender<()>`.
+    /// good shape is `Box::new(move || { let _ = tx.try_send(()); })`
+    /// wrapping a bounded `tokio::sync::mpsc::Sender<()>` of
+    /// capacity 1, so multiple wakes coalesce.
     pub fn spawn(
         session_name: &str,
         on_output: Option<Box<dyn Fn() + Send + 'static>>,
@@ -138,7 +140,7 @@ impl ControlModeClient {
             .context("control-mode child has no stdout")?;
 
         let (tx, rx) = channel::<Line>();
-        thread::Builder::new()
+        let reader_spawn = thread::Builder::new()
             .name(format!("aoe-tmux-cm-{}", session_name))
             .spawn(move || {
                 let reader = BufReader::new(stdout);
@@ -150,14 +152,19 @@ impl ControlModeClient {
                             return;
                         }
                     };
-                    let parsed = parse_line(line);
                     // Fire the wake callback BEFORE handing the
                     // parsed line off to the channel so a slow
                     // consumer doesn't add to wake-up latency. The
                     // callback signal is independent of whether
                     // anything cares about the Notification on the
                     // channel side.
-                    if matches!(parsed, Line::Output) {
+                    //
+                    // `parse_line` recognizes both `%output` and the
+                    // bare `%output` form; we mirror that here so the
+                    // wake fires consistently for either.
+                    let is_output = line == "%output" || line.starts_with("%output ");
+                    let parsed = parse_line(line);
+                    if is_output {
                         if let Some(cb) = &on_output {
                             cb();
                         }
@@ -168,8 +175,18 @@ impl ControlModeClient {
                     }
                 }
                 let _ = tx.send(Line::Eof);
-            })
-            .context("spawn control-mode reader thread")?;
+            });
+        if let Err(err) = reader_spawn {
+            // The Child is still running but the reader thread that
+            // would have driven it to completion never started.
+            // `std::process::Child` does NOT reap on Drop, so without
+            // this explicit cleanup we'd leak a zombie/orphan tmux
+            // process. Best-effort: any error during cleanup is
+            // swallowed (we're already on the error path).
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(anyhow::Error::from(err)).context("spawn control-mode reader thread");
+        }
 
         let client = Self {
             session_name: session_name.to_string(),

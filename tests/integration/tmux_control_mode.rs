@@ -11,10 +11,41 @@
 use agent_of_empires::tmux::ControlModeClient;
 use serial_test::serial;
 use std::process::Command;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 fn tmux_available() -> bool {
-    Command::new("tmux").arg("-V").output().is_ok()
+    // Check the exit status, not just that the process spawned.
+    // A tmux that exists on PATH but exits non-zero (e.g. a broken
+    // install) shouldn't pretend to be available.
+    Command::new("tmux")
+        .arg("-V")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Poll `tmux capture-pane` against `name` until `needle` appears in
+/// the pane buffer, or the deadline elapses. Used in place of a
+/// fixed sleep after `send-keys`, which races on slower CI runners.
+fn wait_for_pane_contains(name: &str, needle: &str, timeout: Duration) {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let out = Command::new("tmux")
+            .args(["capture-pane", "-pt", name])
+            .output()
+            .expect("tmux capture-pane");
+        let pane = String::from_utf8_lossy(&out.stdout);
+        if pane.contains(needle) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for pane content {:?} in session {:?}",
+            needle,
+            name
+        );
+        std::thread::sleep(Duration::from_millis(25));
+    }
 }
 
 struct TmuxCleanup {
@@ -53,10 +84,10 @@ fn create_session_with_content(name: &str, content: &str) {
         .status()
         .expect("tmux send-keys");
     assert!(status.success(), "tmux send-keys failed");
-    // Give the shell a tick to flush the printf into the pane buffer
-    // before we read it back. 250ms is plenty in practice and far
-    // shorter than the test's own startup overhead.
-    std::thread::sleep(Duration::from_millis(250));
+    // Poll for the content to land in the pane instead of a fixed
+    // sleep; slow CI runners (especially ubuntu-latest under load)
+    // can take longer than the previous 250ms budget.
+    wait_for_pane_contains(name, content, Duration::from_secs(2));
 }
 
 fn create_empty_session(name: &str) {
@@ -231,6 +262,56 @@ fn control_mode_output_wake_fires_on_pane_output() {
         observed > baseline,
         "expected %output wake callback to fire (baseline={baseline}, observed={observed})"
     );
+}
+
+/// Regression guard for the `ControlModeClient` spawn/drop/respawn
+/// lifecycle. The user-visible scenario is "enter live mode, exit,
+/// enter again" — if Drop left the tmux server in a state that
+/// blocks a fresh attach, the second `enter_live_send` would fail
+/// with the "Live send failed" dialog. This test exercises the same
+/// lifecycle directly against a raw tmux session that doesn't carry
+/// the agent-pane-death risk of an e2e variant (see the deletion
+/// note in `tests/e2e/new_session.rs`).
+#[test]
+#[serial]
+fn control_mode_spawn_drop_respawn_against_same_session() {
+    if !tmux_available() {
+        eprintln!("Skipping: tmux not available");
+        return;
+    }
+
+    let name = unique_session_name("respawn");
+    let _cleanup = TmuxCleanup { name: name.clone() };
+    create_empty_session(&name);
+
+    // Cycle 1: spawn, capture, drop at scope exit.
+    {
+        let client =
+            ControlModeClient::spawn(&name, None).expect("first spawn against fresh session");
+        client
+            .capture_pane(50, 80, 24)
+            .expect("first capture should succeed");
+    }
+
+    // Give tmux a tick to process the client detach. Without this the
+    // next spawn might race with the prior client's exit, which tmux
+    // can briefly surface as a transient attach error.
+    std::thread::sleep(Duration::from_millis(100));
+
+    // Cycle 2: spawn against the same session must work. If Drop on
+    // the first client wedged stdin or otherwise left the server in
+    // a half-attached state, this is where the bug would show.
+    {
+        let client =
+            ControlModeClient::spawn(&name, None).expect("respawn against same session after drop");
+        let out = client
+            .capture_pane(50, 80, 24)
+            .expect("second capture should succeed");
+        assert!(
+            !out.is_empty(),
+            "second capture returned empty payload; expected the seeded shell prompt"
+        );
+    }
 }
 
 #[test]

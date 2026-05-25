@@ -104,8 +104,15 @@ pub struct App {
     /// updates land within the round-trip rather than up to one tick
     /// later. The sender is cloned into a callback and handed to
     /// `ControlModeClient::spawn` via `HomeView::enter_live_send`.
-    live_send_wake_tx: tokio::sync::mpsc::UnboundedSender<()>,
-    live_send_wake_rx: tokio::sync::mpsc::UnboundedReceiver<()>,
+    ///
+    /// Capacity 1 + `try_send` is the canonical pattern for
+    /// coalescing wake notifications: when the buffer already holds
+    /// a pending wake, additional `%output` lines drop the send
+    /// silently (the main loop will see the queued wake on its next
+    /// iteration). An unbounded channel would let wakes pile up
+    /// without backpressure if the main loop ever stalls.
+    live_send_wake_tx: tokio::sync::mpsc::Sender<()>,
+    live_send_wake_rx: tokio::sync::mpsc::Receiver<()>,
     /// Tracks whether we currently have xterm mouse-tracking enabled. The TUI
     /// turns it off while a copy-friendly surface is open (`HomeView::
     /// wants_text_selection`) so users can drag-select natively, then turns
@@ -235,8 +242,10 @@ impl App {
         // control-mode reader-thread callback on each
         // `enter_live_send`; the receiver is consumed by the main
         // loop's `tokio::select!` branch so agent output wakes the
-        // loop without waiting for the next ticker.
-        let (live_send_wake_tx, live_send_wake_rx) = tokio::sync::mpsc::unbounded_channel::<()>();
+        // loop without waiting for the next ticker. Capacity 1 so
+        // additional wakes coalesce while the main loop is between
+        // iterations; see the field docs above.
+        let (live_send_wake_tx, live_send_wake_rx) = tokio::sync::mpsc::channel::<()>(1);
 
         Ok(Self {
             home,
@@ -1477,12 +1486,14 @@ impl App {
                 self.draw(terminal)?;
                 // Hand the wake-channel sender to ControlModeClient so
                 // the reader thread can break the main loop's idle
-                // sleep on `%output`. The Box::new(...) closure
-                // captures one tx clone per live-send session and
-                // drops when the client drops.
+                // sleep on `%output`. `try_send` is the right call
+                // here: the channel is capacity 1, so a pending wake
+                // makes additional `%output` lines drop the send
+                // silently. That's the coalescing we want, the main
+                // loop will see the queued wake on its next iteration.
                 let wake_tx = self.live_send_wake_tx.clone();
                 let on_output_wake: Box<dyn Fn() + Send + 'static> = Box::new(move || {
-                    let _ = wake_tx.send(());
+                    let _ = wake_tx.try_send(());
                 });
                 let outcome = self.home.enter_live_send(&id, Some(on_output_wake));
                 match outcome {
