@@ -57,15 +57,15 @@ const RESPONSE_TIMEOUT: Duration = Duration::from_millis(750);
 /// without re-scanning every line.
 #[derive(Debug, Clone)]
 enum Line {
-    /// `%begin <timestamp> <num> <flags>` — the next zero or more
+    /// `%begin <timestamp> <num> <flags>`. The next zero or more
     /// `Payload` lines are the response body for command number `num`.
     Begin,
-    /// `%end <timestamp> <num> <flags>` — terminates a successful
-    /// response. Payload between matching Begin/End is the command's
+    /// `%end <timestamp> <num> <flags>`. Terminates a successful
+    /// response; payload between matching Begin/End is the command's
     /// stdout.
     End,
-    /// `%error <timestamp> <num> <flags>` — terminates a failed
-    /// response. The accumulated payload is the error message.
+    /// `%error <timestamp> <num> <flags>`. Terminates a failed
+    /// response; the accumulated payload is the error message.
     Error,
     /// Anything else inside a Begin/End block. We don't try to parse
     /// the contents; capture-pane responses are raw ANSI text and the
@@ -191,7 +191,15 @@ impl ControlModeClient {
     }
 
     fn send_command(&self, command: &str) -> Result<String> {
-        let mut inner = self.inner.lock().expect("control-mode mutex poisoned");
+        // Recover from poisoning rather than panic. A poisoned mutex
+        // means an earlier holder panicked mid-send; the client is in
+        // an indeterminate state and we want the caller to drop it
+        // and fall back to the fork path, which a returned Err
+        // triggers.
+        let mut inner = match self.inner.lock() {
+            Ok(g) => g,
+            Err(_) => bail!("control-mode mutex poisoned; client is unusable"),
+        };
         let stdin = inner
             .stdin
             .as_mut()
@@ -235,10 +243,16 @@ impl ControlModeClient {
                 }
                 Line::Payload(s) => {
                     if matches!(state, ResponseState::Collecting) {
-                        if !payload.is_empty() {
-                            payload.push('\n');
-                        }
+                        // Always emit `<line>\n` to match the fork
+                        // path: `capture-pane -p` writes each pane row
+                        // followed by a newline, and `String::from_utf8_lossy`
+                        // on that stdout preserves the trailing one.
+                        // Joining with `\n` between lines (only) would
+                        // drop the final newline and produce a
+                        // one-byte-shorter result than the fork path,
+                        // which preview consumers expect.
                         payload.push_str(&s);
+                        payload.push('\n');
                     }
                     // Payload outside Collecting is stray output from
                     // tmux startup; drop it.
