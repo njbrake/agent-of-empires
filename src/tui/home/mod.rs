@@ -2213,7 +2213,17 @@ impl HomeView {
     /// fired during respawn, `Ok(None)` on a clean ready, and `Err(())`
     /// if the pane could not be readied (`info_dialog` is set with the
     /// underlying error so the caller only has to clear its toast).
-    pub fn enter_live_send(&mut self, session_id: &str) -> Result<Option<String>, ()> {
+    ///
+    /// `on_output_wake`, when `Some`, is invoked from the control-mode
+    /// reader thread whenever tmux emits `%output`. The expected
+    /// caller (App's main loop) wires this through to a tokio mpsc so
+    /// it can wake out of `select!` on agent output and re-capture
+    /// the preview without waiting for the next timer tick.
+    pub fn enter_live_send(
+        &mut self,
+        session_id: &str,
+        on_output_wake: Option<Box<dyn Fn() + Send + 'static>>,
+    ) -> Result<Option<String>, ()> {
         let outcome = self.try_mutate_instance_writeback_on_err(session_id, |inst| {
             inst.ensure_pane_ready().map_err(Into::into)
         });
@@ -2282,7 +2292,8 @@ impl HomeView {
         // captures. Spawning it has to succeed; the fork-based path
         // is gone. If spawn fails the user gets a dialog and stays on
         // the home view.
-        let control_client = match crate::tmux::ControlModeClient::spawn(&tmux_name) {
+        let control_client = match crate::tmux::ControlModeClient::spawn(&tmux_name, on_output_wake)
+        {
             Ok(client) => std::sync::Arc::new(client),
             Err(err) => {
                 tracing::warn!(

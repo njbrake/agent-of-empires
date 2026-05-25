@@ -64,7 +64,14 @@ enum Line {
     /// the contents; capture-pane responses are raw ANSI text and the
     /// receiver wants them concatenated with newlines.
     Payload(String),
-    /// `%output`, `%window-pane-changed`, etc. Ignored for v1.
+    /// `%output %<paneid> <data>`. The agent rendered new bytes to a
+    /// pane. The reader thread uses this to signal the main loop that
+    /// the preview cache is stale and a re-capture is warranted; the
+    /// `send_command` consumer ignores it (same as any other
+    /// notification).
+    Output,
+    /// `%window-pane-changed`, `%layout-change`, etc. — anything
+    /// `%`-prefixed that isn't framing or output. Currently ignored.
     Notification,
     /// stdout closed: tmux exited, server died, or the session was
     /// killed. Any in-flight request fails; subsequent requests fail
@@ -96,7 +103,20 @@ impl ControlModeClient {
     /// reader thread. Returns Err if tmux can't be launched or if the
     /// spawned process exits before we manage to take its stdin/stdout
     /// handles.
-    pub fn spawn(session_name: &str) -> Result<Self> {
+    ///
+    /// `on_output`, when provided, is invoked from the reader thread
+    /// every time tmux emits a `%output` notification (the agent
+    /// rendered bytes into the pane). The intended caller is the TUI
+    /// main loop, which uses it to wake out of an idle `tokio::select!`
+    /// so the preview re-captures without waiting for the next timer
+    /// tick. The callback must be cheap and non-blocking; the reader
+    /// thread is back to consuming stdout the instant it returns. A
+    /// good shape is `Box::new(move || { let _ = tx.send(()); })`
+    /// wrapping an `UnboundedSender<()>`.
+    pub fn spawn(
+        session_name: &str,
+        on_output: Option<Box<dyn Fn() + Send + 'static>>,
+    ) -> Result<Self> {
         let mut child = Command::new("tmux")
             .args(["-C", "attach-session", "-t", session_name])
             .stdin(Stdio::piped())
@@ -131,6 +151,17 @@ impl ControlModeClient {
                         }
                     };
                     let parsed = parse_line(line);
+                    // Fire the wake callback BEFORE handing the
+                    // parsed line off to the channel so a slow
+                    // consumer doesn't add to wake-up latency. The
+                    // callback signal is independent of whether
+                    // anything cares about the Notification on the
+                    // channel side.
+                    if matches!(parsed, Line::Output) {
+                        if let Some(cb) = &on_output {
+                            cb();
+                        }
+                    }
                     if tx.send(parsed).is_err() {
                         // Receiver dropped: client is going away.
                         return;
@@ -272,7 +303,7 @@ impl ControlModeClient {
             };
             match line {
                 Line::Eof => bail!("control-mode connection EOF"),
-                Line::Notification => continue,
+                Line::Notification | Line::Output => continue,
                 Line::Begin => {
                     state = ResponseState::Collecting;
                     payload.clear();
@@ -319,7 +350,7 @@ impl ControlModeClient {
                 None => return,
             };
             match inner.rx.recv_timeout(remaining) {
-                Ok(Line::Notification) => continue,
+                Ok(Line::Notification) | Ok(Line::Output) => continue,
                 // Anything else: stop draining. If it was useful, the
                 // next send_command will pick it up; if it was an EOF
                 // we'll see it again on the first real request.
@@ -365,9 +396,10 @@ enum ResponseState {
 /// Visible for testing; the reader thread is the only non-test caller.
 fn parse_line(line: String) -> Line {
     // tmux uses `%begin <ts> <num> <flags>` with single spaces; we
-    // match the literal prefix and ignore the body. `%output`,
-    // `%window-pane-changed`, etc. all start with `%` followed by a
-    // non-`begin`/`end`/`error` keyword.
+    // match the literal prefix and ignore the body. `%output` is
+    // singled out so the reader thread can signal a preview wake on
+    // it; the rest (`%window-pane-changed`, `%layout-change`, etc.)
+    // collapse into `Notification`.
     if let Some(rest) = line.strip_prefix('%') {
         if rest.starts_with("begin ") || rest == "begin" {
             return Line::Begin;
@@ -378,7 +410,9 @@ fn parse_line(line: String) -> Line {
         if rest.starts_with("error ") || rest == "error" {
             return Line::Error;
         }
-        // Any other `%`-prefixed line is an async notification.
+        if rest.starts_with("output ") || rest == "output" {
+            return Line::Output;
+        }
         return Line::Notification;
     }
     Line::Payload(line)
@@ -409,7 +443,6 @@ mod tests {
     #[test]
     fn parse_line_treats_other_percent_lines_as_notifications() {
         for input in [
-            "%output %1 some bytes",
             "%window-pane-changed @1 %1",
             "%layout-change @1 abcd 1 0",
             "%session-changed $0 main",
@@ -426,6 +459,18 @@ mod tests {
                 l
             );
         }
+    }
+
+    #[test]
+    fn parse_line_recognizes_output_separately_from_notifications() {
+        // %output triggers the preview-wake callback, so it needs its
+        // own variant. Regression guard: if someone collapses
+        // Output back into Notification, the wake stops firing and
+        // typing latency reverts.
+        let l = parse_line("%output %1 hello".to_string());
+        assert!(matches!(l, Line::Output));
+        let l = parse_line("%output".to_string());
+        assert!(matches!(l, Line::Output));
     }
 
     #[test]

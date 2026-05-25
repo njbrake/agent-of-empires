@@ -1166,25 +1166,19 @@ impl HomeView {
 
     /// Refresh preview cache if needed (session changed, dimensions changed, or timer expired)
     fn refresh_preview_cache_if_needed(&mut self, width: u16, height: u16) {
-        // 250ms (4 Hz) is the steady-state cadence, enough to surface
-        // status changes without forking tmux on every loop tick. While
-        // the user is in live-send mode they're watching the preview
-        // for feedback on each keystroke, so drop to 16ms (~60 Hz,
-        // matching the app loop's redraw ceiling) so typed input
-        // appears in the preview as close to instantly as the rendering
-        // pipeline allows. The capture itself is routed through the
-        // long-lived `tmux -C` control-mode client during live mode
-        // (see `capture_via_control_mode` and src/tmux/control_mode.rs),
-        // so the steady-state cost is one tmux process per session, not
-        // one fork per refresh.
+        // Outside live-send, captures fork a fresh `tmux capture-pane`
+        // so we throttle to 250ms (4 Hz). Inside live-send, captures
+        // ride the long-lived `tmux -C` control-mode socket and cost
+        // a single round-trip (~1-2ms), so there's no upside to
+        // throttling: every render refreshes the preview, the agent's
+        // output appears as soon as the main loop wakes (key event,
+        // tokio ticker, or the %output wake-up the reader thread
+        // pushes when tmux notifies us of new pane bytes). The result
+        // is roughly attach-quality latency in the common case; the
+        // residual gap is the cost of capture-pane + ratatui re-render
+        // vs. tmux writing bytes straight into your terminal.
         const PREVIEW_REFRESH_MS_IDLE: u128 = 250;
-        const PREVIEW_REFRESH_MS_LIVE: u128 = 16;
         let in_live = self.live_send.is_some();
-        let refresh_ms = if in_live {
-            PREVIEW_REFRESH_MS_LIVE
-        } else {
-            PREVIEW_REFRESH_MS_IDLE
-        };
 
         // While in live-send mode, keep the tmux pane geometry in sync
         // with the preview's actual cell dimensions so the agent
@@ -1208,7 +1202,10 @@ impl HomeView {
             None => false,
         };
         let dims_changed = self.preview_cache.dimensions != (width, height);
-        let timer_expired = self.preview_cache.last_refresh.elapsed().as_millis() > refresh_ms;
+        // Live-send: no throttle. Idle: 250ms throttle to keep the
+        // fork rate sane. See the constant comment above for why.
+        let timer_expired = in_live
+            || self.preview_cache.last_refresh.elapsed().as_millis() > PREVIEW_REFRESH_MS_IDLE;
         // Only re-capture for scroll when the cached window can no longer
         // cover the requested offset. Wheel ticks inside the BUFFER headroom
         // re-render from the existing content without forking tmux.

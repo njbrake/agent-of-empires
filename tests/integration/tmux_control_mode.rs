@@ -83,7 +83,7 @@ fn control_mode_capture_returns_pane_content() {
     let _cleanup = TmuxCleanup { name: name.clone() };
     create_session_with_content(&name, "hello-from-control-mode");
 
-    let client = ControlModeClient::spawn(&name).expect("ControlModeClient::spawn");
+    let client = ControlModeClient::spawn(&name, None).expect("ControlModeClient::spawn");
 
     let output = client
         .capture_pane(50, 80, 24)
@@ -110,7 +110,7 @@ fn control_mode_send_literal_round_trips_through_pane() {
     let _cleanup = TmuxCleanup { name: name.clone() };
     create_empty_session(&name);
 
-    let client = ControlModeClient::spawn(&name).expect("ControlModeClient::spawn");
+    let client = ControlModeClient::spawn(&name, None).expect("ControlModeClient::spawn");
     client
         .send_literal_no_enter("echo control-mode-typed-this")
         .expect("send_literal_no_enter");
@@ -141,7 +141,7 @@ fn control_mode_send_literal_rejects_control_bytes() {
     let _cleanup = TmuxCleanup { name: name.clone() };
     create_empty_session(&name);
 
-    let client = ControlModeClient::spawn(&name).expect("ControlModeClient::spawn");
+    let client = ControlModeClient::spawn(&name, None).expect("ControlModeClient::spawn");
     // Newline (0x0A) is a control byte. The fork path handled these
     // via paste-buffer; control mode rejects so the caller can decide.
     let err = client.send_literal_no_enter("line1\nline2").unwrap_err();
@@ -163,7 +163,7 @@ fn control_mode_resize_round_trips() {
     let _cleanup = TmuxCleanup { name: name.clone() };
     create_empty_session(&name);
 
-    let client = ControlModeClient::spawn(&name).expect("ControlModeClient::spawn");
+    let client = ControlModeClient::spawn(&name, None).expect("ControlModeClient::spawn");
     client.resize(120, 30).expect("resize 120x30");
 
     // Confirm tmux applied the resize via a fresh subprocess so the
@@ -182,6 +182,57 @@ fn control_mode_resize_round_trips() {
     assert_eq!(dims, "120x30", "expected 120x30 after resize, got {dims:?}");
 }
 
+/// Regression guard for the `%output` wake callback: send a literal,
+/// wait for tmux to emit `%output` (the pane echoed), and assert that
+/// the callback ran at least once. The callback is what wakes the
+/// main TUI loop on agent output, so if this stops firing, typing
+/// latency reverts to whatever the next tokio ticker gives us.
+#[test]
+#[serial]
+fn control_mode_output_wake_fires_on_pane_output() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    if !tmux_available() {
+        eprintln!("Skipping: tmux not available");
+        return;
+    }
+
+    let name = unique_session_name("output_wake");
+    let _cleanup = TmuxCleanup { name: name.clone() };
+    create_empty_session(&name);
+
+    let counter = Arc::new(AtomicUsize::new(0));
+    let counter_for_cb = counter.clone();
+    let on_output: Box<dyn Fn() + Send + 'static> = Box::new(move || {
+        counter_for_cb.fetch_add(1, Ordering::SeqCst);
+    });
+
+    let client =
+        ControlModeClient::spawn(&name, Some(on_output)).expect("ControlModeClient::spawn");
+    // The session was empty when we attached; the shell prompt
+    // counts as %output too. Snapshot the baseline after a short
+    // settle so we count only the bytes we induce.
+    std::thread::sleep(Duration::from_millis(200));
+    let baseline = counter.load(Ordering::SeqCst);
+
+    client
+        .send_literal_no_enter("echo wake-up")
+        .expect("send_literal_no_enter");
+    client
+        .send_named_key("Enter")
+        .expect("send_named_key Enter");
+    // The shell emits its prompt + echo + result; tmux fires
+    // `%output` for each. 250ms is plenty for at least one wake.
+    std::thread::sleep(Duration::from_millis(250));
+
+    let observed = counter.load(Ordering::SeqCst);
+    assert!(
+        observed > baseline,
+        "expected %output wake callback to fire (baseline={baseline}, observed={observed})"
+    );
+}
+
 #[test]
 #[serial]
 fn control_mode_spawn_fails_for_nonexistent_session() {
@@ -193,7 +244,7 @@ fn control_mode_spawn_fails_for_nonexistent_session() {
     // exits. We just need to confirm that either spawn returns Err
     // OR the first capture returns Err so the caller falls back.
     let name = unique_session_name("missing");
-    let result = ControlModeClient::spawn(&name);
+    let result = ControlModeClient::spawn(&name, None);
     if let Ok(client) = result {
         assert!(
             client.capture_pane(10, 80, 24).is_err(),
