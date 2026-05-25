@@ -12,7 +12,15 @@ import {
   seedSessionViaAoeAdd,
 } from "../../helpers/aoeServe";
 
-base("D key toggles the diff panel", async ({ page }, testInfo) => {
+// FIXME: this spec is intermittently flaky on CI — both the
+// `toBeHidden` and `toBeVisible` assertions on the resize handle
+// have failed on otherwise-unrelated PRs, including on `main`.
+// #1494 already tried to de-flake the cockpit live specs with
+// `expect.poll` backoffs; this one needs a separate look (likely
+// focus / re-layout timing after the Shift+D toggle). Keeping it
+// in the suite via `fixme` so it stays visible but does not block
+// merges.
+base.fixme("D key toggles the diff panel", async ({ page }, testInfo) => {
   const serve = await spawnAoeServe({
     authMode: "none",
     workerIndex: testInfo.workerIndex,
