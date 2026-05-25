@@ -375,6 +375,36 @@ fn activity_column_padding(
 }
 
 impl HomeView {
+    /// Re-render only the preview pane at `preview_area`, leaving
+    /// every other region of the back buffer untouched. Called from
+    /// `App::draw_preview_only` on the live-send `%output` fast path:
+    /// the caller has already painted the previous full frame's
+    /// cells into the back buffer, so anything outside `preview_area`
+    /// matches the prior frame and ratatui's diff produces an empty
+    /// write for that region. Inside `preview_area` we re-run the
+    /// usual capture + Paragraph pipeline so the user's typed input
+    /// (echoed by the agent via `%output`) lands as fast as ratatui
+    /// can diff and write it.
+    ///
+    /// This deliberately mirrors only the Agent ViewMode branch of
+    /// `render_preview`. The fast path is gated by the caller to
+    /// require live-send active, which itself requires
+    /// `ViewMode::Agent`; the Terminal / Tool view modes shouldn't
+    /// reach this code, and live-send doesn't apply to them anyway.
+    pub fn render_preview_pane_only(
+        &mut self,
+        frame: &mut Frame,
+        preview_area: Rect,
+        theme: &Theme,
+    ) {
+        // `render_preview` mutates a bunch of HomeView state
+        // (preview_area, preview_cache, scroll offset clamps). We
+        // want the same mutations on the fast path so the next full
+        // draw sees consistent state; calling render_preview
+        // directly is the simplest way to keep them in sync.
+        self.render_preview(frame, preview_area, theme);
+    }
+
     pub fn render(
         &mut self,
         frame: &mut Frame,
