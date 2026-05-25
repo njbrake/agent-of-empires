@@ -162,9 +162,12 @@ impl SettingsView {
             .enumerate()
             .map(|(i, row)| match row {
                 CategoryRow::Section(label) => {
-                    let style = Style::default()
-                        .fg(theme.dimmed)
-                        .add_modifier(Modifier::BOLD);
+                    // Bumped from `theme.dimmed` to `theme.text` so the
+                    // section dividers read as headings rather than as
+                    // faded background. Bold helps them anchor the
+                    // group visually without competing with the accent
+                    // color used for the active tab.
+                    let style = Style::default().fg(theme.text).add_modifier(Modifier::BOLD);
                     ListItem::new(*label).style(style)
                 }
                 CategoryRow::Tab(cat) => {
@@ -376,15 +379,16 @@ impl SettingsView {
         // Section headers are non-interactive group dividers (e.g.
         // "Advanced" inside Cockpit). Render as a styled heading with
         // a dimmed subtitle. They never appear "selected" because the
-        // input handler skips navigation past them.
+        // input handler skips navigation past them. Label uses
+        // `theme.text` (not dimmed) so it matches the categories-panel
+        // section dividers and reads as a heading rather than fading
+        // into the background.
         if matches!(field.value, FieldValue::SectionHeader) {
             let heading = Line::from(vec![
                 Span::styled("── ", Style::default().fg(theme.border)),
                 Span::styled(
                     field.label,
-                    Style::default()
-                        .fg(theme.dimmed)
-                        .add_modifier(Modifier::BOLD),
+                    Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
                 ),
                 Span::styled(" ──", Style::default().fg(theme.border)),
             ]);
