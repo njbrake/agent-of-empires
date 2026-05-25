@@ -688,6 +688,11 @@ impl SettingsView {
                     s.live_send_exit_chord = None;
                 }
             }
+            FieldKey::NewSessionAttachMode => {
+                if let Some(ref mut s) = config.session {
+                    s.new_session_attach_mode = None;
+                }
+            }
             FieldKey::RowTag => {
                 if let Some(ref mut s) = config.session {
                     s.row_tag = None;

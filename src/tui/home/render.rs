@@ -1169,12 +1169,15 @@ impl HomeView {
         // 250ms (4 Hz) is the steady-state cadence, enough to surface
         // status changes without forking tmux on every loop tick. While
         // the user is in live-send mode they're watching the preview
-        // for feedback on each keystroke, so drop to 50ms (20 Hz,
-        // matching the app loop's refresh_interval) so typed input
-        // shows up the next time the loop ticks rather than a beat
-        // later.
+        // for feedback on each keystroke, so drop to 16ms (~60 Hz,
+        // matching the app loop's redraw ceiling) so typed input
+        // appears in the preview as close to instantly as the
+        // fork-per-capture model allows. Cost: ~60 `tmux capture-pane`
+        // forks/sec while live, typically <5% of one core on a modern
+        // laptop. See #1485 for the longer-term fix (one long-lived
+        // tmux control-mode socket instead of per-refresh forks).
         const PREVIEW_REFRESH_MS_IDLE: u128 = 250;
-        const PREVIEW_REFRESH_MS_LIVE: u128 = 50;
+        const PREVIEW_REFRESH_MS_LIVE: u128 = 16;
         let in_live = self.live_send.is_some();
         let refresh_ms = if in_live {
             PREVIEW_REFRESH_MS_LIVE
@@ -1378,6 +1381,17 @@ impl HomeView {
             ViewMode::Terminal | ViewMode::Tool(_) => {
                 (theme.terminal_border, theme.terminal_border)
             }
+        };
+        // Live-send mode swaps the preview border to `accent` so the
+        // pane visually matches the M-compose modal's border color.
+        // Without this affordance the only on-screen tell that
+        // keystrokes are being routed to the agent is the status
+        // banner; users have reported losing track when the banner
+        // scrolls off in compact layouts.
+        let border_color = if self.live_send.is_some() {
+            theme.accent
+        } else {
+            border_color
         };
 
         let mut block = Block::default()

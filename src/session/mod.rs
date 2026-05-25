@@ -22,9 +22,9 @@ pub use crate::status_hooks::{StatusHookConfig, StatusHookConfigOverride};
 pub(crate) use capture::is_valid_session_id;
 pub use config::{
     get_update_settings, load_config, save_config, validate_snooze_duration, Config,
-    ContainerRuntimeName, DefaultTerminalMode, GroupByMode, RowTagMode, SandboxConfig,
-    SessionConfig, ThemeConfig, TmuxClipboardMode, TmuxMouseMode, TmuxStatusBarMode, UpdatesConfig,
-    WorktreeConfig,
+    ContainerRuntimeName, DefaultTerminalMode, GroupByMode, NewSessionAttachMode, RowTagMode,
+    SandboxConfig, SessionConfig, ThemeConfig, TmuxClipboardMode, TmuxMouseMode, TmuxStatusBarMode,
+    UpdatesConfig, WorktreeConfig,
 };
 pub(crate) use environment::user_shell;
 pub use environment::{validate_env_entries, validate_env_entry};

@@ -9,12 +9,13 @@
 //! exit chords (default: `Ctrl+q` or `Ctrl+]`).
 //!
 //! Exit chord configuration: the user picks a comma-separated list
-//! of chord specs (`C-q`, `Ctrl+]`, `M-x`, `F12`, …) via settings.
-//! Default includes both `C-q` (mobile/Termius friendly) and `C-]`
-//! (telnet convention). Whichever chord fires first ends live mode.
-//! The cost of binding a chord is that it can't be sent through to
-//! the agent; users who need a particular chord to reach the agent
-//! configure the others.
+//! of chord specs (`C-q`, `M-x`, `F12`, …) via settings. Default is
+//! `C-q` alone: mobile-friendly, passes through Termius and other
+//! restrictive SSH clients, and leaves every other chord available
+//! to pass through to the agent. Whichever chord in the configured
+//! list fires first ends live mode. The cost of binding a chord is
+//! that it can't be sent through to the agent; users who need `C-q`
+//! itself to reach the agent configure a different exit.
 //!
 //! Trade-offs vs. a compose dialog:
 //! - No echo, no inline editing, no review step. The preview pane is the
@@ -38,13 +39,22 @@ use std::sync::mpsc::{channel, Sender};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-/// Default exit chord set when the user hasn't configured one. Both
-/// `Ctrl+q` (works in mobile / restrictive SSH clients like Termius)
-/// and `Ctrl+]` (telnet convention; preserves `C-q` for vim quoted-
-/// insert when it does pass through) fire exit. Users can override
-/// to whatever single chord they prefer (or any other comma-separated
-/// list) via settings.
-pub(super) const DEFAULT_EXIT_CHORD: &str = "C-q,C-]";
+/// Default exit chord set when the user hasn't configured one.
+/// `Ctrl+q` is the sole default: works on mobile / restrictive SSH
+/// clients (Termius), reachable on every keyboard layout we ship to,
+/// and well-known as a "quit" chord. Users who need `C-q` to reach
+/// the agent (vim quoted-insert, etc.) can configure a different
+/// exit chord, or any comma-separated list, via settings.
+///
+/// `Ctrl+]` (briefly shipped in 1.9.0) and `Ctrl+\` (tried during
+/// development) each silently failed on at least one common
+/// terminal/keyboard combination on macOS. Rather than trap users
+/// with a chord that looks like it should work and doesn't, the
+/// default is one chord; users who want a two-hand exit configure
+/// one. 1.9.0 users who saved settings while that release's default
+/// was in effect have `"C-q,C-]"` baked into config.toml; re-saving
+/// settings (or hand-editing the line out) restores the new default.
+pub(super) const DEFAULT_EXIT_CHORD: &str = "C-q";
 
 /// Parse a tmux-style chord spec into a `(KeyCode, KeyModifiers)`
 /// pair. Accepts `C-` / `Ctrl-`, `M-` / `Alt-`, `S-` / `Shift-`
@@ -147,7 +157,7 @@ pub(super) fn chord_matches(spec: (KeyCode, KeyModifiers), event: KeyEvent) -> b
     spec.0 == event_code && spec.1 == event.modifiers
 }
 
-/// Parse a comma-separated list of chord specs (e.g. "C-q,C-]")
+/// Parse a comma-separated list of chord specs (e.g. `"C-q,F12"`)
 /// into the list of `(code, modifiers)` pairs the exit check
 /// compares against. Invalid pieces are dropped with a warning so a
 /// typo in one entry doesn't disable the whole list; an entirely
@@ -186,8 +196,8 @@ pub(super) fn chord_list_matches(chords: &[(KeyCode, KeyModifiers)], event: KeyE
 }
 
 /// Render the configured chord list as a banner-friendly string,
-/// e.g. `"Ctrl+Q / Ctrl+]"`. Used for the status-bar live banner so
-/// the user sees every chord they can press to exit.
+/// e.g. `"Ctrl+Q"` or `"Ctrl+Q / F12"`. Used for the status-bar live
+/// banner so the user sees every chord they can press to exit.
 pub(super) fn display_chord_list(chords: &[(KeyCode, KeyModifiers)]) -> String {
     chords
         .iter()
@@ -627,10 +637,15 @@ mod tests {
     }
 
     #[test]
-    fn default_chord_set_includes_both_ctrl_q_and_ctrl_right_bracket() {
+    fn default_chord_set_is_only_ctrl_q() {
         let chords = parse_chord_list(DEFAULT_EXIT_CHORD);
-        assert!(chords.contains(&(KeyCode::Char('q'), KeyModifiers::CONTROL)));
-        assert!(chords.contains(&(KeyCode::Char(']'), KeyModifiers::CONTROL)));
+        assert_eq!(chords, vec![(KeyCode::Char('q'), KeyModifiers::CONTROL)]);
+        // `Ctrl+]` (1.9.0 default) and `Ctrl+\` (in-development try)
+        // were both pulled because each failed on at least one common
+        // macOS terminal/keyboard combination. Users who want a two-
+        // hand exit configure one explicitly.
+        assert!(!chords.contains(&(KeyCode::Char(']'), KeyModifiers::CONTROL)));
+        assert!(!chords.contains(&(KeyCode::Char('\\'), KeyModifiers::CONTROL)));
     }
 
     #[test]

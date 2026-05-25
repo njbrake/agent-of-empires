@@ -5601,6 +5601,97 @@ mod live_send_mode {
     }
 }
 
+/// Tests for the `new_session_attach_mode` setting that drives whether
+/// a freshly-created session enters tmux or live-send mode. The unit
+/// under test is `HomeView::new_session_attach_mode`, plus the
+/// invariant that the sync create path emits the routed action variant
+/// (so it doesn't bypass the setting the way `Action::AttachSession`
+/// would).
+mod new_session_attach_mode {
+    use super::*;
+    use crate::session::config::{save_config, Config, NewSessionAttachMode};
+
+    /// Add a session to the home view, return its id. The instance's
+    /// `source_profile` is set to "test" so the resolver reads the
+    /// test profile's config.
+    fn add_session(view: &mut HomeView, title: &str) -> String {
+        let mut inst = Instance::new(title, "/tmp/test");
+        inst.source_profile = "test".to_string();
+        let id = inst.id.clone();
+        view.add_instance(inst);
+        id
+    }
+
+    /// Write a global config.toml with the given attach mode so the
+    /// resolver under test reads the user-configured value. Other
+    /// fields stay at default.
+    fn write_global_attach_mode(mode: NewSessionAttachMode) {
+        let mut config = Config::default();
+        config.session.new_session_attach_mode = mode;
+        save_config(&config).unwrap();
+    }
+
+    #[test]
+    #[serial]
+    fn defaults_to_tmux_when_no_config_present() {
+        // Fresh install: no config.toml exists, no profile override.
+        // The setting must resolve to Tmux (historical behavior); a
+        // None or LiveSend default would silently change every existing
+        // user's UX on upgrade.
+        let mut env = create_test_env_empty();
+        let id = add_session(&mut env.view, "session-one");
+        let mode = env.view.new_session_attach_mode(&id);
+        assert_eq!(
+            mode,
+            Some(NewSessionAttachMode::Tmux),
+            "default must be Tmux to preserve existing UX"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn returns_live_send_when_globally_configured() {
+        // User saved `new_session_attach_mode = "live_send"` in their
+        // global config. The resolver must pick it up so the dispatch
+        // path in app.rs routes to live mode instead of tmux attach.
+        let mut env = create_test_env_empty();
+        write_global_attach_mode(NewSessionAttachMode::LiveSend);
+        let id = add_session(&mut env.view, "session-one");
+        let mode = env.view.new_session_attach_mode(&id);
+        assert_eq!(mode, Some(NewSessionAttachMode::LiveSend));
+    }
+
+    #[test]
+    #[serial]
+    fn returns_none_for_missing_instance() {
+        // Race: the apply_creation_results return reaches the dispatch
+        // and the instance has been deleted in the meantime. `None`
+        // signals the caller to fall back to the cockpit-aware
+        // attach_session path rather than try to attach to a ghost.
+        let env = create_test_env_empty();
+        let mode = env.view.new_session_attach_mode("nonexistent-id");
+        assert!(mode.is_none());
+    }
+
+    #[cfg(feature = "serve")]
+    #[test]
+    #[serial]
+    fn returns_none_for_cockpit_session() {
+        // Cockpit sessions aren't tmux-backed; live mode has no target
+        // and tmux attach is a no-op. The resolver returns None so the
+        // dispatch picks the (no-op) fallback explicitly, regardless of
+        // what the user configured globally.
+        let mut env = create_test_env_empty();
+        write_global_attach_mode(NewSessionAttachMode::LiveSend);
+        let id = add_session(&mut env.view, "cockpit-one");
+        env.view.mutate_instance(&id, |inst| {
+            inst.cockpit_mode = true;
+        });
+        let mode = env.view.new_session_attach_mode(&id);
+        assert!(mode.is_none(), "cockpit sessions must return None");
+    }
+}
+
 mod save_field_merge {
     use super::*;
     use chrono::Utc;

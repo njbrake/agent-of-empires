@@ -2822,15 +2822,11 @@ impl HomeView {
         // drifted/stuck live mode shouldn't hit a "session ended"
         // dialog on the way out.
         if live_send::chord_list_matches(&state.exit_chords, key) {
-            self.live_send = None;
-            self.live_send_worker = None;
-            self.live_send_last_resize = None;
+            self.exit_live_send_and_restore_sizing(&state);
             return;
         }
         if let Some(reason) = self.live_send_drift_reason(&state) {
-            self.live_send = None;
-            self.live_send_worker = None;
-            self.live_send_last_resize = None;
+            self.exit_live_send_and_restore_sizing(&state);
             self.info_dialog = Some(InfoDialog::new("Live send ended", reason));
             return;
         }
@@ -2843,6 +2839,21 @@ impl HomeView {
                 self.stamp_last_accessed(&state.session_id);
             }
         }
+    }
+
+    /// Tear down live-send state and restore the tmux window's
+    /// automatic sizing policy. live-send's per-keystroke resize loop
+    /// forces tmux into manual sizing; if we leave it that way, the
+    /// next tmux attach from a full-size terminal stays cramped at
+    /// the preview-pane dimensions live-send left behind. Re-setting
+    /// `window-size latest` is best-effort: failures are swallowed so
+    /// a stuck pane never blocks the user's exit.
+    fn exit_live_send_and_restore_sizing(&mut self, state: &live_send::LiveSendState) {
+        let session = crate::tmux::Session::from_name(&state.tmux_name);
+        session.reset_size_to_latest_client();
+        self.live_send = None;
+        self.live_send_worker = None;
+        self.live_send_last_resize = None;
     }
 
     /// Returns `Some(reason)` if the live-send target has drifted out
@@ -3123,7 +3134,7 @@ impl HomeView {
         match self.create_session(data) {
             Ok(session_id) => {
                 self.new_dialog = None;
-                Some(Action::AttachSession(session_id))
+                Some(Action::AttachAfterCreate(session_id))
             }
             Err(e) => {
                 tracing::error!(target: "tui.input", "Failed to create session: {}", e);

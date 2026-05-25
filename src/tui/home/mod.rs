@@ -1620,6 +1620,14 @@ impl HomeView {
                 if let Err(e) = self.reload() {
                     tracing::warn!(target: "tui.home", "Failed to reload session state: {e}");
                 }
+                // reload()'s restore-previous-selection fallback lands
+                // the cursor on whichever flat_items index is closest
+                // to the now-removed stub, which in project-grouped
+                // layouts is often the new session's group folder.
+                // Pin selection onto the new session directly so the
+                // preview pane and dispatch in app.rs see the right
+                // row.
+                self.select_and_reveal_session(&session_id);
                 self.new_dialog = None;
 
                 if !warnings.is_empty() {
@@ -2795,6 +2803,85 @@ impl HomeView {
         self.active_profile
             .clone()
             .unwrap_or_else(crate::session::config::resolve_default_profile)
+    }
+
+    /// Resolve `new_session_attach_mode` for a freshly-created session.
+    /// Reads the instance's `source_profile` so the picked mode matches
+    /// whatever profile the session was filed under (the home view's
+    /// active profile may already have moved on). Returns `None` for
+    /// cockpit-mode sessions because neither attach option applies to
+    /// them; callers should fall through to the cockpit-aware path.
+    pub fn new_session_attach_mode(
+        &self,
+        session_id: &str,
+    ) -> Option<crate::session::NewSessionAttachMode> {
+        let inst = self.get_instance(session_id)?;
+        if inst.is_cockpit_mode() {
+            return None;
+        }
+        let profile = if inst.source_profile.is_empty() {
+            self.config_profile()
+        } else {
+            inst.source_profile.clone()
+        };
+        Some(
+            crate::session::resolve_config_or_warn(&profile)
+                .session
+                .new_session_attach_mode,
+        )
+    }
+
+    /// Pin selection to `session_id` and place the cursor on its row.
+    /// If the containing group is collapsed (manual grouping or
+    /// project grouping), it's force-expanded and `flat_items` is
+    /// rebuilt so the row is actually present before the cursor
+    /// search. No-op when the session can't be resolved at all
+    /// (deleted between caller and us): leaves the prior selection
+    /// untouched so the user doesn't see the cursor leap to nowhere.
+    ///
+    /// Used by `apply_creation_results` so a freshly-created session
+    /// becomes the visible cursor row; also a natural fit for any
+    /// future "jump to session" path (command palette deep link,
+    /// API-driven focus change) that wants the same reveal behavior.
+    pub fn select_and_reveal_session(&mut self, session_id: &str) {
+        let Some(inst) = self.get_instance(session_id) else {
+            return;
+        };
+        let group_path = match self.group_by {
+            GroupByMode::Project => Some(project_group_name(inst)),
+            GroupByMode::Manual => {
+                let p = inst.group_path.clone();
+                if p.is_empty() {
+                    None
+                } else {
+                    Some(p)
+                }
+            }
+        };
+        let target_profile = inst.source_profile.clone();
+        self.selected_session = Some(session_id.to_string());
+        self.selected_group = None;
+        self.selected_group_profile = None;
+        if let Some(gpath) = group_path {
+            match self.group_by {
+                GroupByMode::Project => {
+                    self.project_group_collapsed.insert(gpath, false);
+                }
+                GroupByMode::Manual => {
+                    if let Some(tree) = self.group_trees.get_mut(&target_profile) {
+                        tree.set_collapsed(&gpath, false);
+                    }
+                }
+            }
+            self.flat_items = self.build_flat_items();
+        }
+        if let Some(pos) = self
+            .flat_items
+            .iter()
+            .position(|item| matches!(item, Item::Session { id, .. } if id == session_id))
+        {
+            self.cursor = pos;
+        }
     }
 
     /// Refresh all config-dependent state from the current profile's config.

@@ -257,6 +257,9 @@ pub struct SessionConfigOverride {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub live_send_exit_chord: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_session_attach_mode: Option<super::config::NewSessionAttachMode>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -489,6 +492,9 @@ pub fn apply_session_overrides(
     }
     if let Some(ref live_send_exit_chord) = source.live_send_exit_chord {
         target.live_send_exit_chord = live_send_exit_chord.clone();
+    }
+    if let Some(new_session_attach_mode) = source.new_session_attach_mode {
+        target.new_session_attach_mode = new_session_attach_mode;
     }
 }
 

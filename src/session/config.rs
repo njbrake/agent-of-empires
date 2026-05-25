@@ -594,14 +594,43 @@ pub struct SessionConfig {
     pub session_id_poller_max_threads: u32,
 
     /// Comma-separated list of chord specs that exit live-send mode.
-    /// Each chord is a tmux-style spec like `C-q`, `Ctrl+]`, `M-x`,
-    /// `F12`; the first chord in the list that matches an event ends
-    /// live mode. Multiple chords let users pick whatever works in
-    /// their terminal: `C-q` is friendlier on mobile keyboards and
-    /// in Termius; `C-]` is the telnet convention and preserves
-    /// `C-q` as a passthrough for vim quoted-insert.
+    /// Each chord is a tmux-style spec like `C-q`, `M-x`, `F12`; the
+    /// first chord in the list that matches an event ends live mode.
+    /// Default is `C-q` alone: mobile-friendly, passes through Termius,
+    /// well-known as a quit chord, and verified to survive every common
+    /// macOS terminal config (unlike `C-]` and `C-\`, both of which
+    /// fail silently on at least one combination). Customize when the
+    /// default conflicts with a workflow (vim quoted-insert needs `C-q`
+    /// passthrough, so swap to `F12,M-q` or any chord that's free).
     #[serde(default = "default_live_send_exit_chord")]
     pub live_send_exit_chord: String,
+
+    /// What the TUI does immediately after a new session finishes
+    /// creating. `Tmux` (default) drops into the tmux attach view, the
+    /// historical behavior. `LiveSend` enters live-send mode against
+    /// the new session's pane instead, so users who never want to be
+    /// inside tmux directly can create-and-type without an extra
+    /// keystroke. Cockpit-mode sessions ignore this setting because
+    /// neither tmux nor live-send applies to them.
+    #[serde(default)]
+    pub new_session_attach_mode: NewSessionAttachMode,
+}
+
+/// What the TUI does after a new session is created. See
+/// `SessionConfig::new_session_attach_mode`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NewSessionAttachMode {
+    /// Attach to the new session's tmux pane (the historical
+    /// behavior; the user lands inside tmux with the agent running).
+    #[default]
+    Tmux,
+    /// Enter live-send mode against the new session's pane: the agent
+    /// runs in the background, the TUI stays on the home view, and
+    /// keystrokes pipe straight to the agent. Users who never want to
+    /// see a raw tmux session pick this so creating a session never
+    /// detaches them from the home list.
+    LiveSend,
 }
 
 /// What to render in the per-row tag slot next to the session title.
@@ -645,6 +674,7 @@ impl Default for SessionConfig {
             row_tag: RowTagMode::default(),
             session_id_poller_max_threads: default_session_id_poller_max_threads(),
             live_send_exit_chord: default_live_send_exit_chord(),
+            new_session_attach_mode: NewSessionAttachMode::default(),
         }
     }
 }
@@ -658,10 +688,9 @@ fn default_restart_wake_message() -> String {
 }
 
 fn default_live_send_exit_chord() -> String {
-    // Both Ctrl+q (mobile-friendly, passes Termius) and Ctrl+] (telnet
-    // convention, preserves C-q as passthrough). Kept in sync with
-    // live_send::DEFAULT_EXIT_CHORD.
-    "C-q,C-]".to_string()
+    // Ctrl+q: mobile-friendly, passes Termius, well-known quit chord.
+    // Kept in sync with live_send::DEFAULT_EXIT_CHORD.
+    "C-q".to_string()
 }
 
 /// Upper bound on snooze duration: 30 days (43,200 minutes). Originally

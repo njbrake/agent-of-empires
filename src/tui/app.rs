@@ -834,7 +834,7 @@ impl App {
             }
 
             if let Some(session_id) = self.home.apply_creation_results() {
-                self.attach_session(&session_id, terminal)?;
+                self.dispatch_new_session_attach(&session_id, terminal)?;
                 refresh_needed = true;
             }
 
@@ -1364,6 +1364,9 @@ impl App {
             Action::AttachSession(id) => {
                 self.attach_session(&id, terminal)?;
             }
+            Action::AttachAfterCreate(id) => {
+                self.dispatch_new_session_attach(&id, terminal)?;
+            }
             Action::AttachTerminal(id, mode) => {
                 self.attach_terminal(&id, mode, terminal)?;
             }
@@ -1473,6 +1476,37 @@ impl App {
             }
         }
         Ok(())
+    }
+
+    /// Route a freshly-created session through the user's
+    /// `new_session_attach_mode` setting. Shared by both creation paths
+    /// (synchronous `Action::AttachAfterCreate` and the async branch in
+    /// the main loop's `apply_creation_results` handler) so the setting
+    /// applies regardless of which one fired.
+    ///
+    /// Cockpit sessions return `None` from the resolver and fall through
+    /// to `attach_session`, which already no-ops for cockpit. Same for
+    /// missing-instance race conditions: better to do the tmux-attach
+    /// fallback than silently swallow the new session.
+    fn dispatch_new_session_attach(
+        &mut self,
+        session_id: &str,
+        terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+    ) -> Result<()> {
+        let mode = self.home.new_session_attach_mode(session_id);
+        tracing::debug!(target: "tui.input",
+            session_id = %session_id,
+            mode = ?mode,
+            "new session created; dispatching attach mode"
+        );
+        match mode {
+            Some(crate::session::NewSessionAttachMode::LiveSend) => {
+                self.execute_action(Action::EnterLiveSend(session_id.to_string()), terminal)
+            }
+            Some(crate::session::NewSessionAttachMode::Tmux) | None => {
+                self.attach_session(session_id, terminal)
+            }
+        }
     }
 
     fn attach_session(
@@ -1865,6 +1899,14 @@ pub enum Action {
     /// "Reviving..." toast before `ensure_pane_ready` runs, then the home
     /// view flips into the live-send capture state for subsequent keys.
     EnterLiveSend(String),
+    /// Attach to a session that was just created via the synchronous
+    /// create path (no sandbox, no hooks, no worktree). Routes through
+    /// the same `new_session_attach_mode` dispatch as the async path's
+    /// `apply_creation_results` so the user's "live mode by default"
+    /// setting applies in both cases. `AttachSession` deliberately
+    /// bypasses the setting because pressing Enter on a session row is
+    /// the user's explicit ask for a tmux attach.
+    AttachAfterCreate(String),
     /// Attach to a tool session (lazygit, yazi, etc.) for the given agent
     /// session. The tool_name indexes into Config.tools.
     AttachToolSession(String, String),
