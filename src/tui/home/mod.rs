@@ -248,6 +248,15 @@ pub struct HomeView {
     /// latency. Dropping (set to None when live mode exits) closes the
     /// channel and the worker thread exits cleanly on its own.
     pub(super) live_send_worker: Option<live_send::LiveSendWorker>,
+    /// Long-lived `tmux -C` connection used to capture the preview
+    /// pane while live-send is active. Replaces the per-frame
+    /// `tmux capture-pane` fork that runs at ~60Hz during live mode,
+    /// cutting CPU/battery cost on phones and mosh links. Set on
+    /// `enter_live_send` (best-effort: failure is silent and the
+    /// fork path keeps working); cleared on exit and on any mid-
+    /// session capture failure so the next frame transparently falls
+    /// back to forking. See `src/tmux/control_mode.rs` and #1485.
+    pub(super) control_mode_client: Option<crate::tmux::ControlModeClient>,
     /// Last (cols, rows) we asked the worker to resize the pane to in
     /// the current live-send session. Used to dedup the resize messages
     /// fired from the preview refresh path; cleared on live-send exit.
@@ -537,6 +546,7 @@ impl HomeView {
             pending_send_session: None,
             live_send: None,
             live_send_worker: None,
+            control_mode_client: None,
             live_send_last_resize: None,
             pending_paste: None,
             pending_attach_after_warning: None,
@@ -2260,7 +2270,25 @@ impl HomeView {
             tmux_name: tmux_name.clone(),
             exit_chords,
         });
-        self.live_send_worker = Some(live_send::LiveSendWorker::spawn(tmux_name));
+        self.live_send_worker = Some(live_send::LiveSendWorker::spawn(tmux_name.clone()));
+        // Try to bring up a `tmux -C` control-mode connection so the
+        // preview cache can ask for `capture-pane` over a long-lived
+        // socket instead of forking ~60 times/sec while the user is
+        // typing. Failure is silent (the fork path still works) so
+        // missing tmux features, a wedged server, or the user setting
+        // AOE_DISABLE_TMUX_CONTROL_MODE all degrade gracefully into
+        // the historical behavior.
+        self.control_mode_client = match crate::tmux::ControlModeClient::spawn(&tmux_name) {
+            Ok(client) => Some(client),
+            Err(err) => {
+                tracing::debug!(
+                    target: "tmux.control_mode",
+                    error = %err,
+                    "control-mode spawn failed; live-send will use the fork-based capture path",
+                );
+                None
+            }
+        };
         // Force the preview-refresh path to issue a resize on the
         // first draw inside live mode (it dedups against
         // live_send_last_resize), so the agent's render matches the

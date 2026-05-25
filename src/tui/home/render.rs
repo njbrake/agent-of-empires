@@ -1171,11 +1171,12 @@ impl HomeView {
         // the user is in live-send mode they're watching the preview
         // for feedback on each keystroke, so drop to 16ms (~60 Hz,
         // matching the app loop's redraw ceiling) so typed input
-        // appears in the preview as close to instantly as the
-        // fork-per-capture model allows. Cost: ~60 `tmux capture-pane`
-        // forks/sec while live, typically <5% of one core on a modern
-        // laptop. See #1485 for the longer-term fix (one long-lived
-        // tmux control-mode socket instead of per-refresh forks).
+        // appears in the preview as close to instantly as the rendering
+        // pipeline allows. The capture itself is routed through the
+        // long-lived `tmux -C` control-mode client during live mode
+        // (see `capture_via_control_mode` and src/tmux/control_mode.rs),
+        // so the steady-state cost is one tmux process per session, not
+        // one fork per refresh.
         const PREVIEW_REFRESH_MS_IDLE: u128 = 250;
         const PREVIEW_REFRESH_MS_LIVE: u128 = 16;
         let in_live = self.live_send.is_some();
@@ -1218,23 +1219,67 @@ impl HomeView {
             && (session_changed || dims_changed || timer_expired || scroll_exceeds);
 
         if needs_refresh {
-            if let Some(id) = &self.selected_session {
-                if let Some(inst) = self.get_instance(id) {
-                    let capture_lines = capture_lines_for(height, scroll_offset);
-                    let content = inst
-                        .capture_output_with_size(capture_lines, width, height)
-                        .unwrap_or_default();
-                    self.preview_cache.captured_lines = content.lines().count();
-                    self.preview_cache.content = content;
-                    self.preview_cache.session_id = Some(id.clone());
-                    self.preview_cache.dimensions = (width, height);
-                    self.preview_cache.last_refresh = Instant::now();
-                    self.preview_scroll_offset = clamp_scroll_to_capture(
-                        self.preview_scroll_offset,
-                        self.preview_cache.captured_lines,
-                        height,
-                    );
-                }
+            if let Some(id) = self.selected_session.clone() {
+                let capture_lines = capture_lines_for(height, scroll_offset);
+                // While live-send mode is active, route the capture
+                // through the long-lived `tmux -C` client so we don't
+                // fork once per refresh. Any control-mode failure
+                // tears the client down and falls back to the
+                // historical fork-based path for the rest of this
+                // live-send session. See #1485.
+                let content = self
+                    .capture_via_control_mode(capture_lines)
+                    .or_else(|| {
+                        self.get_instance(&id).and_then(|inst| {
+                            inst.capture_output_with_size(capture_lines, width, height)
+                                .ok()
+                        })
+                    })
+                    .unwrap_or_default();
+                self.preview_cache.captured_lines = content.lines().count();
+                self.preview_cache.content = content;
+                self.preview_cache.session_id = Some(id);
+                self.preview_cache.dimensions = (width, height);
+                self.preview_cache.last_refresh = Instant::now();
+                self.preview_scroll_offset = clamp_scroll_to_capture(
+                    self.preview_scroll_offset,
+                    self.preview_cache.captured_lines,
+                    height,
+                );
+            }
+        }
+    }
+
+    /// If a control-mode client is up and we're in live-send mode,
+    /// capture the preview through it and return the rendered ANSI
+    /// text. Returns `None` when:
+    ///
+    /// - live-send is inactive (the client only exists while live),
+    /// - no client was spawned (env opt-out, or spawn failed silently),
+    /// - the client returned an error: that drops the client so the
+    ///   caller falls back to the fork path for this frame onwards.
+    ///
+    /// Any output here is byte-identical to what the fork path's
+    /// `capture-pane -e -p -S -<n>` produces against the same target,
+    /// so the preview renderer needs no special-casing for the new
+    /// source.
+    fn capture_via_control_mode(&mut self, capture_lines: usize) -> Option<String> {
+        self.live_send.as_ref()?;
+        let client = self.control_mode_client.as_ref()?;
+        match client.capture_pane(
+            capture_lines,
+            self.preview_cache.dimensions.0,
+            self.preview_cache.dimensions.1,
+        ) {
+            Ok(content) => Some(content),
+            Err(err) => {
+                tracing::warn!(
+                    target: "tmux.control_mode",
+                    error = %err,
+                    "control-mode capture failed; falling back to fork-based capture for the rest of this live-send session",
+                );
+                self.control_mode_client = None;
+                None
             }
         }
     }
