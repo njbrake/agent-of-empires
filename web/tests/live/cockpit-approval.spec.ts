@@ -13,7 +13,7 @@ import {
   listSessions,
   seedSessionViaAoeAdd,
 } from "../helpers/aoeServe";
-import { waitForCockpitReady } from "../helpers/cockpit";
+import { enableCockpitAndWait } from "../helpers/cockpit";
 
 const APPROVAL_SCRIPT = {
   turns: [
@@ -69,14 +69,10 @@ base("permission_request flows through to the server", async ({}, testInfo) => {
     const sessions = await listSessions(serve.baseUrl);
     const sessionId = sessions[0]!.id;
 
-    // `cockpit/enable` implicitly spawns the cockpit supervisor.
-    await fetch(`${serve.baseUrl}/api/sessions/${sessionId}/cockpit/enable`, {
-      method: "POST",
-    });
-    // Wait for the supervisor to finish its ACP handshake before prompting,
-    // by polling replay for any frame. The previous `setTimeout(2_000)` race
-    // proved tight under CI load.
-    await waitForCockpitReady(serve.baseUrl, sessionId);
+    // `cockpit/enable` implicitly spawns the cockpit supervisor;
+    // `enableCockpitAndWait` POSTs it and blocks until the ACP
+    // handshake (initialize + session/new) completes.
+    await enableCockpitAndWait(serve.baseUrl, sessionId);
     await fetch(`${serve.baseUrl}/api/sessions/${sessionId}/cockpit/prompt`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },

@@ -58,10 +58,15 @@ base("session/mode round-trips through the fake ACP agent", async ({}, testInfo)
     expect(modeRes.status).toBeGreaterThanOrEqual(200);
     expect(modeRes.status).toBeLessThan(300);
 
+    // The casing-OR survives a future wire-format flip from PascalCase
+    // to snake_case (or vice versa). The previous version of this
+    // assertion also OR'd in '"plan"' as a sanity check on the target
+    // mode, but that's a generic enough substring to false-positive on
+    // any frame whose payload happens to contain it (tool args, chat
+    // text, etc.), so just match the event name.
     await waitForReplayContains(serve.baseUrl, sessionId, [
       "current_mode_changed",
       "CurrentModeChanged",
-      '"plan"',
     ]);
   } finally {
     await serve.stop();

@@ -12,7 +12,7 @@ import {
   listSessions,
   seedSessionViaAoeAdd,
 } from "../helpers/aoeServe";
-import { waitForCockpitReady, waitForReplayContains } from "../helpers/cockpit";
+import { enableCockpitAndWait, waitForReplayContains } from "../helpers/cockpit";
 
 base("cockpit spawn + prompt round-trip emits an agent_message_chunk", async ({}, testInfo) => {
   const serve = await spawnAoeServe({
@@ -32,17 +32,10 @@ base("cockpit spawn + prompt round-trip emits an agent_message_chunk", async ({}
     // implicitly spawns the cockpit supervisor via tokio::spawn. A
     // follow-up explicit POST to /cockpit/spawn would 409 with
     // "already running", so we only call enable and let it own the
-    // spawn lifecycle.
-    const enableRes = await fetch(
-      `${serve.baseUrl}/api/sessions/${sessionId}/cockpit/enable`,
-      { method: "POST" },
-    );
-    expect(enableRes.ok).toBeTruthy();
-    // Wait for the tokio::spawn'd supervisor to finish its ACP handshake
-    // (initialize + session/new) before prompting, by polling replay for
-    // any frame. The previous `setTimeout(2_000)` race proved tight under
-    // CI load.
-    await waitForCockpitReady(serve.baseUrl, sessionId);
+    // spawn lifecycle. `enableCockpitAndWait` POSTs enable, asserts a
+    // 2xx, then waits for the ACP handshake (initialize + session/new)
+    // to finish before returning.
+    await enableCockpitAndWait(serve.baseUrl, sessionId);
 
     const promptRes = await fetch(
       `${serve.baseUrl}/api/sessions/${sessionId}/cockpit/prompt`,
