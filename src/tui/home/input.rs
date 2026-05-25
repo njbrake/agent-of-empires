@@ -1926,6 +1926,7 @@ impl HomeView {
             }
             KeyCode::Home => {
                 self.cursor = 0;
+                self.mouse_pos = None;
                 self.update_selected();
             }
             KeyCode::Char('g')
@@ -1938,6 +1939,7 @@ impl HomeView {
             }
             KeyCode::End | KeyCode::Char('G') if !self.flat_items.is_empty() => {
                 self.cursor = self.flat_items.len() - 1;
+                self.mouse_pos = None;
                 self.update_selected();
             }
             KeyCode::Enter => {
@@ -2239,6 +2241,14 @@ impl HomeView {
         };
 
         self.cursor = new_cursor;
+        // Keyboard nav overrides any prior hover. Without this, when mosh
+        // (or any prediction layer) eats the `Moved` event that fires as
+        // the cursor leaves the list, the hover background stays painted
+        // on the row the mouse was last on while the keyboard-selected
+        // row also paints — two highlighted rows at once. handle_hover
+        // only clears `mouse_pos` when it RECEIVES an off-list Moved, so
+        // any keyboard transition has to clear it directly.
+        self.mouse_pos = None;
         self.update_selected();
     }
 

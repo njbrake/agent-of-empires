@@ -5240,6 +5240,27 @@ mod click_to_select {
 
     #[test]
     #[serial]
+    fn move_cursor_clears_hover() {
+        // Repro for the keyboard-after-hover stuck-highlight bug: when
+        // mosh (or any prediction layer) eats the off-list `Moved` event,
+        // `mouse_pos` stays stuck on the row the mouse last touched while
+        // the keyboard moves to a new row, painting two rows at once.
+        let mut env = create_test_env_with_sessions(3);
+        setup_inner(&mut env);
+
+        env.view.handle_hover(5, 2);
+        assert_eq!(env.view.hovered_index(), Some(1));
+
+        env.view.move_cursor(1);
+        assert_eq!(
+            env.view.hovered_index(),
+            None,
+            "keyboard nav must clear hover so only the selected row paints"
+        );
+    }
+
+    #[test]
+    #[serial]
     fn hover_below_last_item_resolves_to_none() {
         let mut env = create_test_env_with_sessions(3);
         setup_inner(&mut env);
