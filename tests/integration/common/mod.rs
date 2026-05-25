@@ -34,9 +34,9 @@ pub fn shim_ready() -> Result<(), String> {
     }
     let node_modules = shim.parent().unwrap().join("node_modules");
     if !node_modules.exists() {
-        return Err(format!(
-            "shim deps not installed; run `cd cockpit-worker/test-shim && npm ci` first"
-        ));
+        return Err(
+            "shim deps not installed; run `cd cockpit-worker/test-shim && npm ci` first".into(),
+        );
     }
     Ok(())
 }
