@@ -614,6 +614,16 @@ pub struct SessionConfig {
     /// neither tmux nor live-send applies to them.
     #[serde(default)]
     pub new_session_attach_mode: NewSessionAttachMode,
+
+    /// What `Enter` (and double-click) does on an existing session
+    /// row in the Agent view. `Tmux` (default) attaches to the tmux
+    /// pane, the historical behavior. `LiveSend` enters live-send
+    /// mode instead so the TUI keeps the home list visible and pipes
+    /// keystrokes through to the agent. Terminal/Tool views and
+    /// cockpit-mode sessions ignore this setting; they keep their
+    /// existing activation paths (terminal attach, cockpit open).
+    #[serde(default)]
+    pub default_attach_mode: NewSessionAttachMode,
 }
 
 /// What the TUI does after a new session is created. See
@@ -675,6 +685,7 @@ impl Default for SessionConfig {
             session_id_poller_max_threads: default_session_id_poller_max_threads(),
             live_send_exit_chord: default_live_send_exit_chord(),
             new_session_attach_mode: NewSessionAttachMode::default(),
+            default_attach_mode: NewSessionAttachMode::default(),
         }
     }
 }

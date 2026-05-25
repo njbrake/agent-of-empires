@@ -2268,7 +2268,21 @@ impl HomeView {
             }
         }
         match self.view_mode {
-            ViewMode::Agent => Some(Action::AttachSession(id)),
+            ViewMode::Agent => {
+                // `default_attach_mode = LiveSend` swaps the historical
+                // tmux attach for live-send mode on Enter / double-click.
+                // Cockpit was already handled above (the resolver also
+                // returns None for cockpit, so the match is double-safe);
+                // Terminal/Tool views keep their existing paths regardless.
+                if matches!(
+                    self.default_attach_mode(&id),
+                    Some(crate::session::NewSessionAttachMode::LiveSend)
+                ) {
+                    Some(Action::EnterLiveSend(id))
+                } else {
+                    Some(Action::AttachSession(id))
+                }
+            }
             ViewMode::Terminal => {
                 let terminal_mode = if let Some(inst) = self.get_instance(&id) {
                     if inst.is_sandboxed() {
@@ -2466,8 +2480,15 @@ impl HomeView {
     /// outside the inner rect, dialog open, diff view active). Shared by
     /// `handle_click` and `hovered_index` so selection and hover use the
     /// exact same math.
+    ///
+    /// Live-send is intentionally NOT treated as a blocking dialog here.
+    /// `has_dialog()` returns true while live mode is active so other
+    /// surfaces (key shortcuts, preview-click, scroll wheel) stay
+    /// frozen, but clicks on list rows are how the user switches the
+    /// live target session: blocking them would make the feature
+    /// unreachable via mouse.
     pub(super) fn resolve_row_to_index(&self, col: u16, row: u16) -> Option<usize> {
-        if self.diff_view.is_some() || self.has_dialog() {
+        if self.diff_view.is_some() || self.has_blocking_dialog_for_list_click() {
             return None;
         }
         let inner = self.list_inner_area;
@@ -2519,17 +2540,21 @@ impl HomeView {
             .and_then(|(c, r)| self.resolve_row_to_index(c, r))
     }
 
-    /// Route a left-click at (col, row) inside the session list. A single
-    /// click on a session row selects it (same effect as arrow-key
-    /// navigation); a single click on a group row toggles its collapsed
-    /// state; a second click on the same row within
+    /// Route a left-click at (col, row) inside the session list. A
+    /// single click on a session row selects it AND requests live-send
+    /// mode for that row (same `Action::EnterLiveSend` that Tab would
+    /// emit); a single click on a group row toggles its collapsed
+    /// state; a second click on the same session row within
     /// `DOUBLE_CLICK_THRESHOLD` activates the session (the same Action
-    /// the `Enter` keybind would have produced). Returns the activation
-    /// `Action` for the caller to dispatch, or `None` for selection-only /
-    /// no-op clicks. The caller redraws unconditionally so the moved
-    /// cursor / toggled group always paints before the action executes.
-    /// Gated by `has_dialog()` (via `resolve_row_to_index`) so clicks
-    /// don't shift selection out from under an open modal.
+    /// the `Enter` keybind would have produced) so users can still
+    /// drop into a full tmux attach without going through live mode.
+    /// Returns the action for the caller to dispatch, or `None` for
+    /// no-op clicks (group toggle, cockpit/creating rows, same-session
+    /// re-clicks while already live). The caller redraws unconditionally
+    /// so the moved cursor / toggled group always paints before the
+    /// action executes. Gated by `has_dialog()` (via
+    /// `resolve_row_to_index`) so clicks don't shift selection out
+    /// from under an open modal.
     pub fn handle_click(&mut self, col: u16, row: u16) -> Option<Action> {
         self.handle_click_at(std::time::Instant::now(), col, row)
     }
@@ -2582,15 +2607,22 @@ impl HomeView {
         match item {
             Item::Group { path, .. } => {
                 self.toggle_group_collapsed(&path);
+                None
             }
             Item::Session { .. } => {
                 if self.cursor != abs_idx {
                     self.cursor = abs_idx;
                     self.update_selected();
                 }
+                // Single-click on a session row enters live-send for
+                // that row, or switches the live target when already in
+                // live mode. `start_live_send` returns None for rows
+                // that can't host live mode (cockpit, creating/deleting)
+                // and for re-clicks on the already-live session, so the
+                // click is just a selection in those cases.
+                self.start_live_send()
             }
         }
-        None
     }
 
     /// Record the mouse position from a `MouseEventKind::Moved` event so
@@ -2755,9 +2787,15 @@ impl HomeView {
     /// "Reviving..." toast plumbing would never fire.
     ///
     /// Still no-ops on group headers, empty lists, and Creating rows
-    /// (no instance yet, nothing to revive).
+    /// (no instance yet, nothing to revive). Also no-ops when the
+    /// selected session is already the live-send target so click-to-
+    /// enter doesn't re-run ensure_pane_ready / drop the live worker
+    /// when the user clicks the same row twice.
     pub(super) fn start_live_send(&mut self) -> Option<Action> {
         let id = self.selected_session.clone()?;
+        if self.live_send.as_ref().is_some_and(|s| s.session_id == id) {
+            return None;
+        }
         let inst = self.get_instance(&id)?;
         if matches!(inst.status, Status::Creating | Status::Deleting) {
             return None;

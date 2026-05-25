@@ -41,6 +41,16 @@ pub struct ListEditState {
     pub adding_new: bool,
 }
 
+/// One result of the settings-wide search overlay: a field that
+/// matched the user's query along with where it lives.
+#[derive(Debug, Clone)]
+pub(super) struct SearchHit {
+    pub category: SettingsCategory,
+    pub field_key: FieldKey,
+    pub field_label: &'static str,
+    pub category_label: &'static str,
+}
+
 /// The settings view state
 pub struct SettingsView {
     /// Current profile name being edited
@@ -111,6 +121,23 @@ pub struct SettingsView {
 
     /// Success message to display
     pub(super) success_message: Option<String>,
+
+    /// Active search input — `Some` while the user is typing in the
+    /// settings-wide `/` search overlay. The settings view freezes
+    /// the categories/fields panels behind the overlay and routes
+    /// keys to the input + hit list until the user picks a hit or
+    /// hits Esc.
+    pub(super) search_input: Option<Input>,
+
+    /// Hits that match the current `search_input` query, recomputed
+    /// each time the query changes. Empty query → all interactive
+    /// fields across every category (lets the user browse the full
+    /// catalog as a flat list, sorted by category then field order).
+    pub(super) search_hits: Vec<SearchHit>,
+
+    /// Cursor inside `search_hits` — bounded by `search_hits.len()`
+    /// so it stays valid as the query narrows.
+    pub(super) search_selected: usize,
 }
 
 impl SettingsView {
@@ -166,6 +193,9 @@ impl SettingsView {
             show_help: false,
             error_message: None,
             success_message: None,
+            search_input: None,
+            search_hits: Vec::new(),
+            search_selected: 0,
         };
 
         view.rebuild_fields();
@@ -176,6 +206,8 @@ impl SettingsView {
         let mut categories = vec![
             SettingsCategory::Theme,
             SettingsCategory::Session,
+            SettingsCategory::Agents,
+            SettingsCategory::Interaction,
             SettingsCategory::Hooks,
         ];
         if scope != SettingsScope::Repo {
@@ -228,6 +260,24 @@ impl SettingsView {
             self.selected_field = 0;
         }
         self.fields_scroll_offset = 0;
+        // If the (clamped) selected_field landed on a non-interactive
+        // section divider, advance to the next real field so the user
+        // never sees the cursor parked on a heading.
+        self.snap_to_interactive_field_forward();
+    }
+
+    /// Advance `selected_field` to the first interactive field
+    /// (`!is_section_header`) at or after the current index. Used
+    /// after a category change so we don't land on a non-editable
+    /// section divider when the new tab happens to begin with one.
+    pub(super) fn snap_to_interactive_field_forward(&mut self) {
+        let mut idx = self.selected_field;
+        while idx < self.fields.len() && self.fields[idx].is_section_header() {
+            idx += 1;
+        }
+        if idx < self.fields.len() {
+            self.selected_field = idx;
+        }
     }
 
     /// Switch to a different profile, reloading its config from disk
@@ -362,5 +412,114 @@ impl SettingsView {
         self.editing_input.is_some()
             || self.list_edit_state.is_some()
             || self.custom_instruction_dialog.is_some()
+            || self.search_input.is_some()
+    }
+
+    /// Open the settings-wide search overlay. Builds the initial hit
+    /// list (empty query → all interactive fields across every
+    /// visible category) and parks the cursor at the top so Enter on
+    /// an empty search picks the first hit instead of doing nothing.
+    pub(super) fn open_search(&mut self) {
+        self.search_input = Some(Input::default());
+        self.search_selected = 0;
+        self.recompute_search_hits();
+    }
+
+    /// Close the search overlay without changing the selected
+    /// category/field. Keeps the caller's edit context (focus, scope,
+    /// scroll) intact.
+    pub(super) fn close_search(&mut self) {
+        self.search_input = None;
+        self.search_hits.clear();
+        self.search_selected = 0;
+    }
+
+    /// Rebuild `search_hits` from the current `search_input` query.
+    /// Iterates every visible category for the current scope, calls
+    /// the same `build_fields_for_category` the main panel uses, and
+    /// keeps fields whose label or description contains every
+    /// whitespace-separated query token (case-insensitive). Empty
+    /// query keeps every interactive field; section-header rows are
+    /// always skipped because the user can't jump to them.
+    pub(super) fn recompute_search_hits(&mut self) {
+        let query = self
+            .search_input
+            .as_ref()
+            .map(|i| i.value().to_string())
+            .unwrap_or_default();
+        let tokens: Vec<String> = query.split_whitespace().map(|t| t.to_lowercase()).collect();
+
+        let (scope_for_fields, global_ref, profile_ref) = match self.scope {
+            SettingsScope::Global => (
+                SettingsScope::Global,
+                &self.global_config,
+                &self.profile_config,
+            ),
+            SettingsScope::Profile => (
+                SettingsScope::Profile,
+                &self.global_config,
+                &self.profile_config,
+            ),
+            SettingsScope::Repo => (
+                SettingsScope::Profile,
+                &self.resolved_base,
+                &self.repo_as_profile,
+            ),
+        };
+
+        let mut hits: Vec<SearchHit> = Vec::new();
+        for &category in &self.categories {
+            let fields = fields::build_fields_for_category(
+                category,
+                scope_for_fields,
+                global_ref,
+                profile_ref,
+            );
+            for field in fields {
+                if field.is_section_header() {
+                    continue;
+                }
+                let label_lower = field.label.to_lowercase();
+                let desc_lower = field.description.to_lowercase();
+                let matches_all = tokens
+                    .iter()
+                    .all(|t| label_lower.contains(t) || desc_lower.contains(t));
+                if !matches_all {
+                    continue;
+                }
+                hits.push(SearchHit {
+                    category,
+                    field_key: field.key,
+                    field_label: field.label,
+                    category_label: category.label(),
+                });
+            }
+        }
+
+        self.search_hits = hits;
+        if self.search_selected >= self.search_hits.len() {
+            self.search_selected = self.search_hits.len().saturating_sub(1);
+        }
+    }
+
+    /// Jump to the currently-selected search hit: switch to its
+    /// category, rebuild fields for the new category, position the
+    /// field cursor on the matching key, and close the overlay.
+    /// No-op when the hit list is empty (Enter on a query with no
+    /// matches stays in search so the user can correct the query).
+    pub(super) fn jump_to_selected_search_hit(&mut self) {
+        let Some(hit) = self.search_hits.get(self.search_selected).cloned() else {
+            return;
+        };
+        if let Some(idx) = self.categories.iter().position(|c| *c == hit.category) {
+            self.selected_category = idx;
+        }
+        self.rebuild_fields();
+        if let Some(idx) = self.fields.iter().position(|f| f.key == hit.field_key) {
+            self.selected_field = idx;
+            self.ensure_field_visible(self.fields_viewport_height);
+        }
+        self.focus = SettingsFocus::Fields;
+        self.close_search();
     }
 }

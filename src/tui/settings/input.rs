@@ -68,6 +68,15 @@ impl SettingsView {
             return self.handle_list_edit_key(key);
         }
 
+        // Handle settings-wide search overlay. While the overlay is
+        // open every other dispatch (scope cycle, save, navigation in
+        // the main panels) is suppressed: the user is typing into the
+        // search input and picking a hit, not driving the underlying
+        // settings view.
+        if self.search_input.is_some() {
+            return self.handle_search_key(key);
+        }
+
         // Normal mode
         match (key.code, key.modifiers) {
             // Save
@@ -178,19 +187,28 @@ impl SettingsView {
                 SettingsAction::Continue
             }
 
-            // Navigate up/down
+            // Navigate up/down. Inside the field list, navigation skips
+            // past non-interactive section dividers
+            // (`FieldValue::SectionHeader`) so the cursor never lands on
+            // a row the user can't edit.
             (KeyCode::Up, _) | (KeyCode::Char('k'), _) => {
                 match self.focus {
                     SettingsFocus::Categories => {
                         if self.selected_category > 0 {
                             self.selected_category -= 1;
                             self.rebuild_fields();
+                            self.snap_to_interactive_field_forward();
                         }
                     }
                     SettingsFocus::Fields => {
-                        if self.selected_field > 0 {
-                            self.selected_field -= 1;
-                            self.ensure_field_visible(self.fields_viewport_height);
+                        let mut idx = self.selected_field;
+                        while idx > 0 {
+                            idx -= 1;
+                            if !self.fields[idx].is_section_header() {
+                                self.selected_field = idx;
+                                self.ensure_field_visible(self.fields_viewport_height);
+                                break;
+                            }
                         }
                     }
                 }
@@ -202,12 +220,18 @@ impl SettingsView {
                         if self.selected_category < self.categories.len().saturating_sub(1) {
                             self.selected_category += 1;
                             self.rebuild_fields();
+                            self.snap_to_interactive_field_forward();
                         }
                     }
                     SettingsFocus::Fields => {
-                        if self.selected_field < self.fields.len().saturating_sub(1) {
-                            self.selected_field += 1;
-                            self.ensure_field_visible(self.fields_viewport_height);
+                        let mut idx = self.selected_field + 1;
+                        while idx < self.fields.len() {
+                            if !self.fields[idx].is_section_header() {
+                                self.selected_field = idx;
+                                self.ensure_field_visible(self.fields_viewport_height);
+                                break;
+                            }
+                            idx += 1;
                         }
                     }
                 }
@@ -274,6 +298,12 @@ impl SettingsView {
                             // Expand list for editing
                             self.list_edit_state = Some(ListEditState::default());
                         }
+                        FieldValue::SectionHeader => {
+                            // Non-interactive divider. Navigation should
+                            // never land the cursor here in the first
+                            // place; this arm just makes the match
+                            // exhaustive.
+                        }
                     }
                 } else if self.focus == SettingsFocus::Categories {
                     // Move to fields when pressing Enter on a category
@@ -285,6 +315,14 @@ impl SettingsView {
             // Toggle help overlay
             (KeyCode::Char('?'), _) => {
                 self.show_help = true;
+                SettingsAction::Continue
+            }
+
+            // Open the settings-wide search overlay. Any field with a
+            // matching label or description (across every category) is
+            // a hit; Enter jumps to that field.
+            (KeyCode::Char('/'), _) => {
+                self.open_search();
                 SettingsAction::Continue
             }
 
@@ -325,6 +363,40 @@ impl SettingsView {
 
             _ => SettingsAction::Continue,
         }
+    }
+
+    /// Drive the settings-wide search overlay. Esc closes without
+    /// changing selection; Enter jumps to the highlighted hit; up/down
+    /// navigates the hit list; every other key feeds `search_input`
+    /// and re-runs the filter so the list narrows as the user types.
+    fn handle_search_key(&mut self, key: KeyEvent) -> SettingsAction {
+        match key.code {
+            KeyCode::Esc => {
+                self.close_search();
+            }
+            KeyCode::Enter => {
+                self.jump_to_selected_search_hit();
+            }
+            KeyCode::Up => {
+                if self.search_selected > 0 {
+                    self.search_selected -= 1;
+                }
+            }
+            KeyCode::Down => {
+                if self.search_selected + 1 < self.search_hits.len() {
+                    self.search_selected += 1;
+                }
+            }
+            _ => {
+                // Edit the search query and refresh hits.
+                if let Some(ref mut input) = self.search_input {
+                    input.handle_event(&crossterm::event::Event::Key(key));
+                }
+                self.search_selected = 0;
+                self.recompute_search_hits();
+            }
+        }
+        SettingsAction::Continue
     }
 
     fn handle_text_edit_key(&mut self, key: KeyEvent) -> SettingsAction {
@@ -693,6 +765,11 @@ impl SettingsView {
                     s.new_session_attach_mode = None;
                 }
             }
+            FieldKey::DefaultAttachMode => {
+                if let Some(ref mut s) = config.session {
+                    s.default_attach_mode = None;
+                }
+            }
             FieldKey::RowTag => {
                 if let Some(ref mut s) = config.session {
                     s.row_tag = None;
@@ -958,6 +1035,10 @@ impl SettingsView {
             FieldKey::HostEnvironment => {
                 config.environment = None;
             }
+            // Section markers are non-interactive dividers; navigation
+            // and the reset gesture never land here, but the match
+            // arm must exist for exhaustiveness.
+            FieldKey::SectionMarker => {}
         }
 
         // Sync repo_config when in Repo scope
@@ -1177,5 +1258,126 @@ mod tests {
         let err = validate_detect_as_entry("my-agent=nonexistent").unwrap_err();
         assert!(err.contains("not a known built-in agent"));
         assert!(err.contains("Known agents:"));
+    }
+
+    mod search_overlay {
+        use super::*;
+        use crate::session::Storage;
+        use crate::tui::settings::SettingsView;
+        use serial_test::serial;
+        use tempfile::TempDir;
+
+        fn setup_test_home(temp: &TempDir) {
+            std::env::set_var("HOME", temp.path());
+            #[cfg(target_os = "linux")]
+            std::env::set_var("XDG_CONFIG_HOME", temp.path().join(".config"));
+        }
+
+        fn fresh_view() -> (TempDir, SettingsView) {
+            let temp = TempDir::new().unwrap();
+            setup_test_home(&temp);
+            let _ = Storage::new("test").unwrap();
+            let view = SettingsView::new("test", None).unwrap();
+            (temp, view)
+        }
+
+        fn press(view: &mut SettingsView, code: KeyCode) {
+            let _ = view.handle_key(KeyEvent::new(code, KeyModifiers::NONE));
+        }
+
+        fn type_text(view: &mut SettingsView, text: &str) {
+            for c in text.chars() {
+                press(view, KeyCode::Char(c));
+            }
+        }
+
+        /// `/` opens the search overlay; the overlay is then routed to
+        /// for every subsequent key (gated by `search_input.is_some()`).
+        #[test]
+        #[serial]
+        fn slash_opens_search_overlay() {
+            let (_t, mut view) = fresh_view();
+            assert!(view.search_input.is_none());
+            press(&mut view, KeyCode::Char('/'));
+            assert!(view.search_input.is_some(), "/ must enter search mode");
+            // Empty query lists every interactive field across all
+            // visible categories — nonzero hits, so Enter has a target.
+            assert!(
+                !view.search_hits.is_empty(),
+                "empty-query search should list every interactive field"
+            );
+        }
+
+        /// Typing a query narrows the hit list to matching fields.
+        /// "live" should match the Live-Send Exit Chord row, which now
+        /// lives under the Interaction tab.
+        #[test]
+        #[serial]
+        fn typing_filters_hits_and_finds_moved_field() {
+            let (_t, mut view) = fresh_view();
+            press(&mut view, KeyCode::Char('/'));
+            type_text(&mut view, "live");
+            let labels: Vec<&'static str> =
+                view.search_hits.iter().map(|h| h.field_label).collect();
+            assert!(
+                labels
+                    .iter()
+                    .any(|l| l.to_lowercase().contains("live-send exit chord")),
+                "search 'live' should surface the Live-Send Exit Chord field; got {:?}",
+                labels
+            );
+        }
+
+        /// Enter on a hit jumps to that hit's category + field and
+        /// closes the overlay. We pick "default tool" — moved to the
+        /// Agents tab in the Session split — to also verify the jump
+        /// crosses categories cleanly.
+        #[test]
+        #[serial]
+        fn enter_jumps_to_hit_category_and_field() {
+            let (_t, mut view) = fresh_view();
+            press(&mut view, KeyCode::Char('/'));
+            type_text(&mut view, "default tool");
+            assert!(!view.search_hits.is_empty(), "no hits for 'default tool'");
+            // Position cursor on a hit whose label exactly matches.
+            let target_idx = view
+                .search_hits
+                .iter()
+                .position(|h| h.field_label == "Default Tool")
+                .expect("Default Tool should appear in hits");
+            view.search_selected = target_idx;
+            press(&mut view, KeyCode::Enter);
+
+            assert!(
+                view.search_input.is_none(),
+                "Enter on a hit must close the search overlay"
+            );
+            assert_eq!(
+                view.categories[view.selected_category],
+                crate::tui::settings::SettingsCategory::Agents,
+                "must jump to the Agents tab (where Default Tool lives now)"
+            );
+            assert_eq!(
+                view.fields[view.selected_field].key,
+                FieldKey::DefaultTool,
+                "must position the field cursor on Default Tool"
+            );
+        }
+
+        /// Esc closes the overlay without changing the selected
+        /// category/field; the caller's edit context is preserved.
+        #[test]
+        #[serial]
+        fn esc_closes_search_without_changing_selection() {
+            let (_t, mut view) = fresh_view();
+            let cat_before = view.selected_category;
+            let field_before = view.selected_field;
+            press(&mut view, KeyCode::Char('/'));
+            type_text(&mut view, "tmux");
+            press(&mut view, KeyCode::Esc);
+            assert!(view.search_input.is_none());
+            assert_eq!(view.selected_category, cat_before);
+            assert_eq!(view.selected_field, field_before);
+        }
     }
 }

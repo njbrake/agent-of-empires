@@ -1816,6 +1816,42 @@ impl HomeView {
         serve_open || self.info_dialog.is_some() || self.changelog_dialog.is_some()
     }
 
+    /// Same membership as `has_dialog()` minus live-send: list-row
+    /// clicks must keep working in live mode (that's how the user
+    /// switches the live target by clicking another row), but every
+    /// other modal surface should still freeze the list.
+    pub(super) fn has_blocking_dialog_for_list_click(&self) -> bool {
+        #[cfg(feature = "serve")]
+        let serve_open = self.serve_view.is_some();
+        #[cfg(not(feature = "serve"))]
+        let serve_open = false;
+
+        self.show_help
+            || self.search_active
+            || self.new_dialog.is_some()
+            || self.confirm_dialog.is_some()
+            || self.unified_delete_dialog.is_some()
+            || self.group_delete_options_dialog.is_some()
+            || self.rename_dialog.is_some()
+            || self.restart_dialog.is_some()
+            || self.hook_trust_dialog.is_some()
+            || self.hooks_install_dialog.is_some()
+            || self.welcome_dialog.is_some()
+            || self.no_agents_dialog.is_some()
+            || self.changelog_dialog.is_some()
+            || self.info_dialog.is_some()
+            || self.snooze_duration_dialog.is_some()
+            || self.profile_picker_dialog.is_some()
+            || self.projects_dialog.is_some()
+            || self.command_palette.is_some()
+            || self.tool_picker_dialog.is_some()
+            || self.send_message_dialog.is_some()
+            || self.update_confirm_dialog.is_some()
+            || serve_open
+            || self.settings_view.is_some()
+            || self.diff_view.is_some()
+    }
+
     pub fn has_dialog(&self) -> bool {
         #[cfg(feature = "serve")]
         let serve_open = self.serve_view.is_some();
@@ -2245,6 +2281,17 @@ impl HomeView {
             }
         };
         let tmux_name = tmux_session.name().to_string();
+        // Switching live mode from session A to session B (click on a
+        // different row while already live) overwrites `live_send` and
+        // drops the old worker, but the previous tmux session is still
+        // pinned to manual sizing from live-send's per-keystroke resize
+        // loop. Reset it now so leaving A in the background doesn't
+        // strand it at the preview-pane dimensions.
+        if let Some(prev) = self.live_send.as_ref() {
+            if prev.tmux_name != tmux_name {
+                crate::tmux::Session::from_name(&prev.tmux_name).reset_size_to_latest_client();
+            }
+        }
         // Parse the configured exit-chord list now so the per-keystroke
         // dispatch path doesn't re-parse on every event. Config edits
         // during live mode aren't possible (settings_view participates
@@ -2828,6 +2875,33 @@ impl HomeView {
             crate::session::resolve_config_or_warn(&profile)
                 .session
                 .new_session_attach_mode,
+        )
+    }
+
+    /// Resolve `default_attach_mode` for an existing session row when
+    /// the user activates it (Enter / double-click) in the Agent view.
+    /// Reads the instance's `source_profile` so the picked mode matches
+    /// whatever profile the session was filed under. Returns `None`
+    /// for cockpit-mode sessions because cockpit has its own activation
+    /// path that bypasses both tmux attach and live-send; callers should
+    /// short-circuit to that path before consulting this setting.
+    pub(super) fn default_attach_mode(
+        &self,
+        session_id: &str,
+    ) -> Option<crate::session::NewSessionAttachMode> {
+        let inst = self.get_instance(session_id)?;
+        if inst.is_cockpit_mode() {
+            return None;
+        }
+        let profile = if inst.source_profile.is_empty() {
+            self.config_profile()
+        } else {
+            inst.source_profile.clone()
+        };
+        Some(
+            crate::session::resolve_config_or_warn(&profile)
+                .session
+                .default_attach_mode,
         )
     }
 
