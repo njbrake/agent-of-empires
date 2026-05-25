@@ -505,6 +505,12 @@ fn codex_is_non_numbered_cursor_prompt(line: &str) -> bool {
     !rest.trim_start().is_empty() && !codex_line_has_numbered_choice_cursor(line)
 }
 
+// The footer Codex prints under its input prompt looks like
+// `gpt-5.5 xhigh fast · ~/project`. The model-prefix list is intentionally
+// narrow so unrelated lines (e.g. assistant prose containing ` · `) don't
+// accidentally satisfy the tail check. If Codex ships a new model family
+// prefix this list needs to grow; the safe failure mode is that the hook
+// keeps reporting Running until it catches up on its own.
 fn codex_is_terminal_footer_line(line: &str) -> bool {
     line.contains(" · ")
         && (line.starts_with("gpt-") || line.starts_with("o3") || line.starts_with("o4"))
@@ -529,26 +535,22 @@ fn codex_has_interrupted_turn_without_new_activity(non_empty_lines: &[&str]) -> 
 }
 
 fn codex_has_completed_turn_prompt(non_empty_lines: &[&str]) -> bool {
-    let Some(divider_index) = non_empty_lines
-        .iter()
-        .rposition(|line| codex_is_completed_work_divider(line.trim()))
-    else {
-        return false;
-    };
-
-    let lines_after_divider = &non_empty_lines[divider_index + 1..];
-    !codex_has_running_signal(lines_after_divider)
-        && !codex_has_plan_radio_prompt(lines_after_divider)
-        && !codex_has_recent_numbered_choice_prompt(lines_after_divider)
-        && !codex_has_approval_prompt(lines_after_divider)
-        && codex_has_tail_non_numbered_cursor_prompt(lines_after_divider)
+    codex_has_idle_prompt_after_marker(non_empty_lines, |line| {
+        codex_is_completed_work_divider(line.trim())
+    })
 }
 
 fn codex_has_completed_review_prompt(non_empty_lines: &[&str]) -> bool {
-    let Some(marker_index) = non_empty_lines
-        .iter()
-        .rposition(|line| line.trim().contains("<< code review finished >>"))
-    else {
+    codex_has_idle_prompt_after_marker(non_empty_lines, |line| {
+        line.trim().contains("<< code review finished >>")
+    })
+}
+
+fn codex_has_idle_prompt_after_marker(
+    non_empty_lines: &[&str],
+    is_marker: impl Fn(&str) -> bool,
+) -> bool {
+    let Some(marker_index) = non_empty_lines.iter().rposition(|line| is_marker(line)) else {
         return false;
     };
 
@@ -2034,7 +2036,7 @@ report the issue.
 
 ─ Worked for 7m 40s ──────────────────────────────────────────
 
-› Implement {feature}
+› Implement the fix
 
   gpt-5.5 xhigh fast · ~/project
 "#;
