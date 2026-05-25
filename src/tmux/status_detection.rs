@@ -703,6 +703,11 @@ fn codex_is_completed_work_divider(line: &str) -> bool {
         .starts_with("worked for")
 }
 
+/// Shared with Codex (`codex_line_starts_with_activity`,
+/// `codex_line_starts_with_live_interrupt_activity`) as well as the Cursor and
+/// Antigravity fallbacks, so the completion-marker suppression applies to every
+/// caller. The completion list is kept small and explicit to avoid swallowing
+/// legitimate activity descriptions that happen to contain past-tense words.
 fn status_line_starts_with_phrase(line: &str, phrase: &str) -> bool {
     let Some(rest) = line.strip_prefix(phrase) else {
         return false;
@@ -725,10 +730,7 @@ fn activity_tail_has_completion_marker(rest: &str) -> bool {
         .filter(|word| !word.is_empty())
         .take(5)
         .map(str::to_lowercase)
-        .any(|word| {
-            COMPLETED_ACTIVITY_MARKERS.contains(&word.as_str())
-                || (word.len() > 3 && word.ends_with("ed"))
-        })
+        .any(|word| COMPLETED_ACTIVITY_MARKERS.contains(&word.as_str()))
 }
 
 /// Cursor agent status is detected via hooks first, but pane parsing is still
@@ -736,20 +738,10 @@ fn activity_tail_has_completion_marker(rest: &str) -> bool {
 /// turn between hook writes.
 pub fn detect_cursor_status(raw_content: &str) -> Status {
     let content = raw_content.to_lowercase();
-    let lines: Vec<&str> = content.lines().collect();
-    let non_empty_lines: Vec<&str> = lines
-        .iter()
-        .filter(|l| !l.trim().is_empty())
-        .copied()
-        .collect();
-
-    let recent: Vec<&str> = non_empty_lines
-        .iter()
-        .rev()
-        .take(30)
-        .rev()
-        .copied()
-        .collect();
+    let recent: Vec<&str> = {
+        let non_empty: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
+        non_empty.iter().rev().take(30).rev().copied().collect()
+    };
     let recent_lower = recent.join("\n");
 
     if contains_approval_prompt(
@@ -768,19 +760,29 @@ pub fn detect_cursor_status(raw_content: &str) -> Status {
         return Status::Waiting;
     }
 
-    if recent_lower.contains("ctrl+c to stop")
-        || recent_lower.contains("ctrl+c to interrupt")
-        || recent_lower.contains("esc to interrupt")
+    // The interrupt hint, spinner, and verb-prefixed activity line all live on
+    // or below Cursor's bottom status bar while a turn is running. Restricting
+    // the check to the last follow-up prompt and the lines below it mirrors the
+    // boundary already used elsewhere and keeps stale scrollback (e.g. a
+    // `ctrl+c to stop` from the previous turn) from re-triggering Running.
+    let active_region = cursor_active_region(&recent);
+    let active_joined = active_region.join("\n");
+
+    if active_joined.contains("ctrl+c to stop")
+        || active_joined.contains("ctrl+c to interrupt")
+        || active_joined.contains("esc to interrupt")
     {
         return Status::Running;
     }
 
-    let active_lines = cursor_lines_after_last_prompt(&recent);
-    if has_spinner_activity_line(active_lines) {
+    if has_spinner_activity_line(active_region) {
         return Status::Running;
     }
 
-    if active_lines.iter().any(|line| has_live_activity_word(line)) {
+    if active_region
+        .iter()
+        .any(|line| has_live_activity_word(line))
+    {
         return Status::Running;
     }
 
@@ -803,9 +805,13 @@ fn cursor_has_follow_up_prompt(lines: &[&str]) -> bool {
     cursor_last_follow_up_prompt_index(lines).is_some()
 }
 
-fn cursor_lines_after_last_prompt<'a>(lines: &'a [&'a str]) -> &'a [&'a str] {
+/// The active region is the last follow-up prompt plus the lines below it.
+/// Cursor renders its live status bar (interrupt hint, spinner, verb-prefixed
+/// activity) on this prompt line or just below; anything above belongs to the
+/// previous turn's scrollback and must not be treated as a live signal.
+fn cursor_active_region<'a>(lines: &'a [&'a str]) -> &'a [&'a str] {
     match cursor_last_follow_up_prompt_index(lines) {
-        Some(index) => &lines[index + 1..],
+        Some(index) => &lines[index..],
         None => lines,
     }
 }
@@ -817,7 +823,7 @@ fn cursor_last_follow_up_prompt_index(lines: &[&str]) -> Option<usize> {
 }
 
 fn cursor_is_follow_up_prompt(line: &str) -> bool {
-    let clean_line = strip_ansi(line).trim().to_lowercase();
+    let clean_line = line.trim();
     clean_line == "→" || clean_line.starts_with("→ add a follow-up")
 }
 
@@ -1287,6 +1293,21 @@ enter to select · esc to cancel";
             "Reading config.toml finished.\n\n→ Add a follow-up",
             "Editing src/app.rs done.\n\n→ Add a follow-up",
             "Testing finished with success.\n\n→ Add a follow-up",
+        ] {
+            assert_eq!(detect_cursor_status(content), Status::Idle);
+        }
+    }
+
+    #[test]
+    fn test_detect_cursor_status_idle_on_completed_activity_without_prompt() {
+        // Exercises activity_tail_has_completion_marker directly: no follow-up
+        // prompt line is present, so the result depends on the verb-prefixed
+        // line being suppressed because of the completion marker that follows.
+        for content in [
+            "Running tests completed successfully.\n  Composer 2.5",
+            "Reading config.toml finished.\n  Composer 2.5",
+            "Editing src/app.rs done.\n  Composer 2.5",
+            "Testing finished with success.\n  Composer 2.5",
         ] {
             assert_eq!(detect_cursor_status(content), Status::Idle);
         }
