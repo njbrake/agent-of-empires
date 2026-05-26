@@ -2498,7 +2498,7 @@ impl HomeView {
     /// live target session: blocking them would make the feature
     /// unreachable via mouse.
     pub(super) fn resolve_row_to_index(&self, col: u16, row: u16) -> Option<usize> {
-        if self.diff_view.is_some() || self.has_blocking_dialog_for_list_click() {
+        if self.diff_view.is_some() || self.has_non_live_send_overlay() {
             return None;
         }
         let inner = self.list_inner_area;

@@ -62,6 +62,18 @@ fn compose_list_title(
 /// requested scroll.
 const CAPTURE_BUFFER: u16 = 20;
 
+/// How many consecutive `capture_via_control_mode` errors we tolerate
+/// before tearing down the live-send `ControlModeClient` and forcing
+/// the user to exit+re-enter live mode to recover.
+///
+/// Sized to absorb a worker/main mutex-contention storm (fast typing
+/// while the agent is also emitting `%output`) without blanking the
+/// preview, while still bounding how long the user sees stale content
+/// before we give up on a genuinely-dead socket. With the per-command
+/// `RESPONSE_TIMEOUT` set to a few seconds, this works out to roughly
+/// ~10-15 seconds of stale preview on a wedged connection.
+const MAX_LIVE_CAPTURE_FAILURES: u32 = 5;
+
 /// Trim `text` to fit within `max_width` display cells, appending '…'
 /// if anything was dropped. Used by the live-send banners so a long
 /// session title never pushes the exit-chord hint off-screen on a
@@ -430,6 +442,7 @@ impl HomeView {
         // Diff view takes over the whole screen
         if self.diff_view.is_some() {
             self.preview_area = Rect::default();
+            self.preview_outer_area = Rect::default();
             self.diff_area = self.active_diff_area(area);
         }
         if let Some(ref mut diff) = self.diff_view {
@@ -1196,7 +1209,10 @@ impl HomeView {
     }
 
     /// Refresh preview cache if needed (session changed, dimensions changed, or timer expired)
-    fn refresh_preview_cache_if_needed(&mut self, width: u16, height: u16) {
+    // pub(super) so unit tests in `super::tests` can exercise the
+    // cache-preservation behavior added with the kill-switch fix
+    // without standing up a full render pipeline.
+    pub(super) fn refresh_preview_cache_if_needed(&mut self, width: u16, height: u16) {
         // Outside live-send, captures fork a fresh `tmux capture-pane`
         // so we throttle to 250ms (4 Hz). Inside live-send, captures
         // ride the long-lived `tmux -C` control-mode socket and cost
@@ -1254,36 +1270,50 @@ impl HomeView {
                 // uses for keystrokes). Outside live-send we use the
                 // historical fork-per-refresh path, which only runs
                 // at the 250ms idle cadence so the fork cost is
-                // immaterial. If control-mode capture fails mid-live,
-                // the client is torn down and the preview stops
-                // updating until the user exits and re-enters live
-                // mode; that's intentional, the no-update signal
-                // matches what the user sees for typing on the same
-                // dead connection. See #1485.
-                let content = if self.live_send.is_some() {
+                // immaterial.
+                //
+                // `captured` is `Option<String>`. `Some` means we have
+                // fresh bytes; `None` means a transient failure that the
+                // next refresh will retry — leave the cache alone so the
+                // preview keeps showing the last-known-good content
+                // instead of flashing blank. See `capture_via_control_mode`
+                // for the retry budget that bounds how long we serve
+                // stale content before tearing down a truly-dead client.
+                let captured: Option<String> = if self.live_send.is_some() {
                     self.capture_via_control_mode(capture_lines)
-                        .unwrap_or_default()
                 } else {
-                    self.get_instance(&id)
-                        .and_then(|inst| {
-                            inst.capture_output_with_size(capture_lines, width, height)
-                                .ok()
-                        })
-                        .unwrap_or_default()
+                    // Non-live path: treat a missing instance or capture
+                    // error the same as before — empty content is the
+                    // intended signal that the underlying session is gone.
+                    Some(
+                        self.get_instance(&id)
+                            .and_then(|inst| {
+                                inst.capture_output_with_size(capture_lines, width, height)
+                                    .ok()
+                            })
+                            .unwrap_or_default(),
+                    )
                 };
-                self.preview_cache.captured_lines = content.lines().count();
-                self.preview_cache.content = content;
-                // Invalidate the cached parse; the next render that
-                // needs `ensure_parsed` will re-run `ansi-to-tui`.
-                self.preview_cache.parsed_text = None;
+                // Bump `last_refresh` and `dimensions` unconditionally so
+                // a failed live-mode capture still throttles its retry
+                // cadence (the in_live path bypasses the 250ms gate, so
+                // without this we'd spin on a dead socket). Content and
+                // parse cache only update on success.
                 self.preview_cache.session_id = Some(id);
                 self.preview_cache.dimensions = (width, height);
                 self.preview_cache.last_refresh = Instant::now();
-                self.preview_scroll_offset = clamp_scroll_to_capture(
-                    self.preview_scroll_offset,
-                    self.preview_cache.captured_lines,
-                    height,
-                );
+                if let Some(content) = captured {
+                    self.preview_cache.captured_lines = content.lines().count();
+                    self.preview_cache.content = content;
+                    // Invalidate the cached parse; the next render that
+                    // needs `ensure_parsed` will re-run `ansi-to-tui`.
+                    self.preview_cache.parsed_text = None;
+                    self.preview_scroll_offset = clamp_scroll_to_capture(
+                        self.preview_scroll_offset,
+                        self.preview_cache.captured_lines,
+                        height,
+                    );
+                }
             }
         }
     }
@@ -1296,10 +1326,21 @@ impl HomeView {
     /// - no client is up (spawn failed earlier; live-send entry
     ///   should have aborted, so this means we're in a transient
     ///   teardown state).
-    /// - the client returned an error: drops the client so the next
-    ///   call short-circuits to `None` and the preview stops
-    ///   updating, matching what the user sees for typing on the
-    ///   same dead connection.
+    /// - the client returned an error this call. The caller (see
+    ///   `refresh_preview_cache_if_needed`) reads `None` as "keep
+    ///   the previous cache" so the user sees the last-known-good
+    ///   preview instead of "No output available" on a single
+    ///   transient timeout.
+    ///
+    /// Consecutive failures are counted in
+    /// `live_send_capture_failures`. Once that hits
+    /// `MAX_LIVE_CAPTURE_FAILURES` the client is torn down and
+    /// subsequent calls fall through to the first short-circuit;
+    /// the user then has to exit and re-enter live mode to
+    /// recover, which spawns a fresh `ControlModeClient`. The
+    /// budget is sized so worker/main socket contention plus a
+    /// stray timeout doesn't trip the teardown, but a genuinely
+    /// dead connection still tears down within a few seconds.
     fn capture_via_control_mode(&mut self, capture_lines: usize) -> Option<String> {
         let client = self.control_mode_client.as_ref()?;
         match client.capture_pane(
@@ -1307,14 +1348,33 @@ impl HomeView {
             self.preview_cache.dimensions.0,
             self.preview_cache.dimensions.1,
         ) {
-            Ok(content) => Some(content),
+            Ok(content) => {
+                // Any success resets the budget. A burst of timeouts
+                // followed by a recovery shouldn't carry the failure
+                // count forward into the next quiet stretch.
+                self.live_send_capture_failures = 0;
+                Some(content)
+            }
             Err(err) => {
-                tracing::warn!(
-                    target: "tmux.control_mode",
-                    error = %err,
-                    "control-mode capture failed; preview will stop updating until live-send is re-entered",
-                );
-                self.control_mode_client = None;
+                self.live_send_capture_failures = self.live_send_capture_failures.saturating_add(1);
+                if self.live_send_capture_failures >= MAX_LIVE_CAPTURE_FAILURES {
+                    tracing::warn!(
+                        target: "tmux.control_mode",
+                        error = %err,
+                        failures = self.live_send_capture_failures,
+                        "control-mode capture failed too many times; tearing down client. \
+                        Exit and re-enter live mode to recover.",
+                    );
+                    self.control_mode_client = None;
+                    self.live_send_capture_failures = 0;
+                } else {
+                    tracing::debug!(
+                        target: "tmux.control_mode",
+                        error = %err,
+                        failures = self.live_send_capture_failures,
+                        "control-mode capture failed; will retry on next refresh",
+                    );
+                }
                 None
             }
         }
@@ -1581,6 +1641,11 @@ impl HomeView {
 
         let inner = block.inner(area);
         self.preview_area = inner;
+        // `area` is the OUTER preview rect (the block + borders + content).
+        // Stash it so `App::draw_preview_only` can call back into
+        // `render_preview` with the right rect on `%output` wakes; passing
+        // the inner there draws a nested block.
+        self.preview_outer_area = area;
         self.diff_area = Rect::default();
         frame.render_widget(block, area);
 

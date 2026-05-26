@@ -123,10 +123,12 @@ pub struct App {
     /// plus refresh the preview cache + paragraph." See
     /// `Self::draw_preview_only`.
     last_full_frame: Option<ratatui::buffer::Buffer>,
-    /// Area of the preview pane in `last_full_frame`. Captured from
-    /// `HomeView::preview_area` immediately after the full draw that
-    /// produced the snapshot. The fast path only overdraws this rect;
-    /// everything outside it is whatever the snapshot held.
+    /// OUTER rect of the preview pane in `last_full_frame` (block +
+    /// borders + content). Captured from `HomeView::preview_outer_area`
+    /// immediately after the full draw that produced the snapshot.
+    /// The fast path re-renders the preview pane at this rect by
+    /// calling back into `render_preview`, which expects the OUTER
+    /// rect and computes its own inner.
     last_full_frame_preview_area: ratatui::layout::Rect,
     /// Tracks whether we currently have xterm mouse-tracking enabled. The TUI
     /// turns it off while a copy-friendly surface is open (`HomeView::
@@ -337,14 +339,25 @@ impl App {
             // Snapshot the freshly drawn frame so a subsequent
             // `%output` wake can take the preview-only fast path
             // (see `draw_preview_only`). Only stash when live-send is
-            // active and dialogs aren't covering the home view; the
-            // snapshot is useless in any other state and the clone
+            // active and no OTHER overlay is covering the home view;
+            // the snapshot is useless in any other state and the clone
             // cost (one `Vec<Cell>` walk plus a `Cell::clone` per
             // cell, ~12K cells on a 200x60 pane) is real per draw, so
             // we skip it when no fast-path render can consume it.
-            if self.home.live_send.is_some() && !self.home.has_dialog() {
+            //
+            // `has_dialog()` includes `live_send.is_some()`, which would
+            // gate off the very mode this fast path exists for — use
+            // `has_non_live_send_overlay()` so live-send itself counts
+            // as "no overlay" but settings / diff / dialogs still do.
+            //
+            // The saved rect is the OUTER preview area (block + borders +
+            // content). The fast path re-renders the preview by passing
+            // this rect back through `render_preview`, which expects the
+            // OUTER rect and computes its own inner; passing the inner
+            // here would make `render_preview` draw a nested block.
+            if self.home.live_send.is_some() && !self.home.has_non_live_send_overlay() {
                 self.last_full_frame = Some(completed.buffer.clone());
-                self.last_full_frame_preview_area = self.home.preview_area;
+                self.last_full_frame_preview_area = self.home.preview_outer_area;
             } else {
                 self.last_full_frame = None;
             }
@@ -1060,10 +1073,15 @@ impl App {
             }
 
             if refresh_needed {
+                // `has_dialog()` is true whenever live-send is active, so
+                // using it here would defeat the very fast path it gates.
+                // `has_non_live_send_overlay()` returns true only for
+                // OTHER overlays (settings, diff, dialogs) — those still
+                // need a full draw, but bare live-send doesn't.
                 let prefer_preview_only = woke_via_live_send_wake
                     && !needs_full_refresh
                     && self.home.live_send.is_some()
-                    && !self.home.has_dialog()
+                    && !self.home.has_non_live_send_overlay()
                     && self.last_full_frame.is_some();
                 let mut took_fast_path = false;
                 if prefer_preview_only {

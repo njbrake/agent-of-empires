@@ -303,6 +303,16 @@ pub struct HomeView {
     /// the current live-send session. Used to dedup the resize messages
     /// fired from the preview refresh path; cleared on live-send exit.
     pub(super) live_send_last_resize: Option<(u16, u16)>,
+    /// Count of consecutive `capture_via_control_mode` failures in the
+    /// current live-send session. Reset to 0 on every successful capture
+    /// and on `enter_live_send`. The capture path tears down the
+    /// control-mode client only once this count reaches
+    /// `MAX_LIVE_CAPTURE_FAILURES`, so transient timeouts (the worker
+    /// and main thread contending on the socket while %output piles up)
+    /// don't permanently blank the preview. The client tear-down still
+    /// happens when the connection is genuinely dead, just after a few
+    /// retries instead of one.
+    pub(super) live_send_capture_failures: u32,
     /// Pasted text captured at the home view that we couldn't immediately
     /// route (no session selected, cursor on a group header, etc.). Drained
     /// into the next compose dialog the user opens, so voice/dictation never
@@ -352,6 +362,13 @@ pub struct HomeView {
     /// Reset to 0 whenever the selected session changes.
     pub(super) preview_scroll_offset: u16,
     pub(super) preview_area: Rect,
+    /// Outer rect of the preview pane (block + borders + content), captured
+    /// during `render_preview`. The live-send preview-only fast path uses
+    /// this to call back into `render_preview` with the correct OUTER area,
+    /// since `preview_area` itself is the INNER rect (used for hit-tests
+    /// on the content). Passing the inner as if it were the outer would
+    /// make `render_preview` draw a nested block.
+    pub(in crate::tui) preview_outer_area: Rect,
     pub(super) diff_area: Rect,
     pub(super) list_area: Rect,
     /// Inner content rect of the session list (borders/padding stripped).
@@ -590,6 +607,7 @@ impl HomeView {
             live_send_worker: None,
             control_mode_client: None,
             live_send_last_resize: None,
+            live_send_capture_failures: 0,
             pending_paste: None,
             pending_attach_after_warning: None,
             pending_stop_session: None,
@@ -613,6 +631,7 @@ impl HomeView {
             tool_preview_cache: PreviewCache::default(),
             preview_scroll_offset: 0,
             preview_area: Rect::default(),
+            preview_outer_area: Rect::default(),
             diff_area: Rect::default(),
             list_area: Rect::default(),
             list_inner_area: Rect::default(),
@@ -1868,11 +1887,20 @@ impl HomeView {
         serve_open || self.info_dialog.is_some() || self.changelog_dialog.is_some()
     }
 
-    /// Same membership as `has_dialog()` minus live-send: list-row
-    /// clicks must keep working in live mode (that's how the user
-    /// switches the live target by clicking another row), but every
-    /// other modal surface should still freeze the list.
-    pub(super) fn has_blocking_dialog_for_list_click(&self) -> bool {
+    /// Same membership as `has_dialog()` minus live-send. Two callers:
+    ///
+    /// - List-row click routing: clicks must keep working in live mode
+    ///   (that's how the user switches the live target by clicking another
+    ///   row), but every other modal surface should still freeze the list.
+    /// - Preview-only fast path gate (`App::draw_preview_only`): the fast
+    ///   path is exactly what live-send wants, so live-send itself can't
+    ///   gate it off; any OTHER overlay does, since the fast path repaints
+    ///   the snapshot underneath and only re-renders the preview pane.
+    ///
+    /// `has_dialog()` ORs `live_send.is_some()` on top, so it would also
+    /// gate off the fast path it's supposed to enable — that's why the
+    /// fast path needs this method instead.
+    pub(in crate::tui) fn has_non_live_send_overlay(&self) -> bool {
         #[cfg(feature = "serve")]
         let serve_open = self.serve_view.is_some();
         #[cfg(not(feature = "serve"))]
@@ -2403,6 +2431,9 @@ impl HomeView {
         // preview pane's actual dimensions instead of whatever the
         // session was last sized to.
         self.live_send_last_resize = None;
+        // Fresh client, fresh budget: any failure count carried over from
+        // a previous live-send session is irrelevant to this one.
+        self.live_send_capture_failures = 0;
         self.stamp_last_accessed(session_id);
         Ok(stale_sid)
     }
