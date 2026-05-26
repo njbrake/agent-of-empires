@@ -422,29 +422,72 @@ enum ResponseState {
     Collecting,
 }
 
+/// Known tmux control-mode protocol notifications. Any `%`-prefixed
+/// line that DOESN'T match one of these is treated as raw `Payload`,
+/// not a notification. Reason: tmux does NOT escape leading `%` in
+/// `capture-pane -p` output, so a pane row like "%test line" arrives
+/// here verbatim. Pre-fix, the catch-all `%...` → Notification rule
+/// silently dropped any such pane row from the captured payload.
+///
+/// The list reflects every notification the tmux 3.x sources emit
+/// (see `tools/notify.c` in tmux). Forward-compat trade-off: a new
+/// tmux release that adds a notification we don't know about will
+/// have that line surface as a single line of "garbage" in the
+/// captured pane content. We accept that over the alternative of
+/// dropping real pane rows.
+const KNOWN_TMUX_NOTIFICATIONS: &[&str] = &[
+    "%client-detached",
+    "%client-session-changed",
+    "%config-error",
+    "%continue",
+    "%exit",
+    "%exit-error",
+    "%extended-output",
+    "%layout-change",
+    "%message",
+    "%pane-mode-changed",
+    "%paste-buffer-changed",
+    "%paste-buffer-deleted",
+    "%pause",
+    "%session-changed",
+    "%session-renamed",
+    "%session-window-changed",
+    "%sessions-changed",
+    "%subscription-changed",
+    "%unlinked-window-add",
+    "%unlinked-window-close",
+    "%unlinked-window-renamed",
+    "%window-add",
+    "%window-close",
+    "%window-pane-changed",
+    "%window-renamed",
+];
+
 /// Parse one line of tmux control-mode output into a `Line` tag.
 ///
 /// Visible for testing; the reader thread is the only non-test caller.
 fn parse_line(line: String) -> Line {
-    // tmux uses `%begin <ts> <num> <flags>` with single spaces; we
-    // match the literal prefix and ignore the body. `%output` is
-    // singled out so the reader thread can signal a preview wake on
-    // it; the rest (`%window-pane-changed`, `%layout-change`, etc.)
-    // collapse into `Notification`.
-    if let Some(rest) = line.strip_prefix('%') {
-        if rest.starts_with("begin ") || rest == "begin" {
-            return Line::Begin;
+    // Framing first; these are the four we act on.
+    if line == "%begin" || line.starts_with("%begin ") {
+        return Line::Begin;
+    }
+    if line == "%end" || line.starts_with("%end ") {
+        return Line::End;
+    }
+    if line == "%error" || line.starts_with("%error ") {
+        return Line::Error;
+    }
+    if line == "%output" || line.starts_with("%output ") {
+        return Line::Output;
+    }
+    // Other async notifications we know about: tag as Notification so
+    // the consumer can drop them. Anything else (including %-prefixed
+    // pane rows like "%test line" inside a capture-pane response)
+    // falls through to Payload.
+    for name in KNOWN_TMUX_NOTIFICATIONS {
+        if &line == name || line.starts_with(&format!("{} ", name)) {
+            return Line::Notification;
         }
-        if rest.starts_with("end ") || rest == "end" {
-            return Line::End;
-        }
-        if rest.starts_with("error ") || rest == "error" {
-            return Line::Error;
-        }
-        if rest.starts_with("output ") || rest == "output" {
-            return Line::Output;
-        }
-        return Line::Notification;
     }
     Line::Payload(line)
 }
@@ -469,6 +512,35 @@ mod tests {
     fn parse_line_recognizes_error() {
         let l = parse_line("%error 1700000000 1 0".to_string());
         assert!(matches!(l, Line::Error));
+    }
+
+    #[test]
+    fn parse_line_treats_unknown_percent_prefixed_lines_as_payload() {
+        // tmux does NOT escape leading `%` in `capture-pane -p` output.
+        // Before this fix, any pane row whose first character was `%`
+        // (e.g. a zsh prompt segment, a literal percentage, a row that
+        // happened to start with `%`) was silently dropped as
+        // `Notification` instead of preserved as `Payload`. The
+        // capture's payload was missing those lines.
+        //
+        // Probe with a representative set: `%` followed by space, by
+        // a digit, by a non-alpha punctuation, and a doubled `%`.
+        for input in [
+            "%test line",
+            "%50 percent done",
+            "% leading space",
+            "%-flag pane content",
+            "%%doubled percent",
+            "%1 not a real notification name with-args",
+        ] {
+            let l = parse_line(input.to_string());
+            assert!(
+                matches!(l, Line::Payload(_)),
+                "expected Payload for unknown %-prefixed line {:?}, got {:?}",
+                input,
+                l
+            );
+        }
     }
 
     #[test]

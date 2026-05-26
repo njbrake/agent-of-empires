@@ -6264,35 +6264,48 @@ mod live_send_mode {
 
     #[test]
     #[serial]
-    fn refresh_preserves_cache_when_live_capture_fails() {
-        // The original bug: a single failed `capture_via_control_mode`
-        // wiped `preview_cache.content` to "" via `.unwrap_or_default()`,
-        // which made the preview render "No output available" (what the
-        // user perceives as "blank") until they exited and re-entered
-        // live mode. This test pins the fixed behavior: when the
-        // control-mode client is unreachable, the previous capture's
-        // content stays in the cache so the user keeps seeing the
-        // last-known-good preview while the next refresh retries.
+    fn refresh_falls_back_to_fork_when_capture_client_torn_down() {
+        // Pin the resilience fix for the "Enter freezes preview until
+        // exit" bug. Pre-fix, once `capture_via_control_mode` tripped
+        // its consecutive-failure budget the capture client was set
+        // to None and EVERY subsequent refresh short-circuited to
+        // None at the `?` in `capture_via_control_mode`. The cache
+        // stayed stuck on stale content until the user exited and
+        // re-entered live mode.
+        //
+        // The new behavior: when `capture_client` is None but
+        // `live_send` is still active, the refresh routes through
+        // the fork-based `inst.capture_output_with_size` path. The
+        // preview keeps updating with fresh bytes; only the cheaper
+        // control-mode fast path is gone for the rest of the session.
+        //
+        // In this unit fixture the tmux session backing the instance
+        // doesn't actually exist (`install_live_for_first_session`
+        // installs the `live_send` state without spawning tmux), so
+        // the fork capture fails and we expect the cache to be
+        // overwritten with an empty string. The assertion that
+        // matters is "content changed away from the stale seed",
+        // confirming the fork path RAN.
         let mut env = create_test_env_with_sessions(1);
         let id = install_live_for_first_session(&mut env);
         env.view.selected_session = Some(id.clone());
-        // Seed the cache as if a prior capture had succeeded.
-        env.view.preview_cache.content = "hello from a successful capture".to_string();
+        env.view.preview_cache.content = "stale cache from a prior capture".to_string();
         env.view.preview_cache.captured_lines = 1;
         env.view.preview_cache.dimensions = (80, 24);
         env.view.preview_cache.session_id = Some(id);
-        // Simulate the kill-switch torn-down state: no client at all.
-        // `capture_via_control_mode` short-circuits to `None`, and the
-        // refresh path must NOT overwrite content with "".
+        // Simulate the post-teardown state: no capture client. The
+        // keystroke `control_mode_client` is irrelevant to the
+        // capture path now, so leaving it None as well still
+        // exercises the fork fallback.
+        env.view.capture_client = None;
         env.view.control_mode_client = None;
 
         env.view.refresh_preview_cache_if_needed(80, 24);
 
-        assert_eq!(
-            env.view.preview_cache.content, "hello from a successful capture",
-            "cache content must be preserved when live-mode capture returns None"
+        assert_ne!(
+            env.view.preview_cache.content, "stale cache from a prior capture",
+            "fork fallback must run a fresh capture instead of leaving the stale cache in place"
         );
-        assert_eq!(env.view.preview_cache.captured_lines, 1);
     }
 
     mod paste_splitting {

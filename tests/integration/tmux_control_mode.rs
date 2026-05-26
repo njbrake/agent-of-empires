@@ -102,6 +102,32 @@ fn create_empty_session(name: &str) {
     std::thread::sleep(Duration::from_millis(100));
 }
 
+/// Regression guard for the `parse_line` fix: tmux does not escape
+/// leading `%` in `capture-pane -p` output, so a pane row whose
+/// first character is `%` arrives at the reader thread verbatim. Pre-
+/// fix, those rows were classified as Notification and silently
+/// dropped from the captured payload. This test seeds a pane with a
+/// `%`-leading row and asserts the row survives the round trip.
+#[test]
+#[serial]
+fn control_mode_capture_preserves_pane_rows_starting_with_percent() {
+    if !tmux_available() {
+        eprintln!("Skipping: tmux not available");
+        return;
+    }
+
+    let name = unique_session_name("pct_row");
+    let _cleanup = TmuxCleanup { name: name.clone() };
+    create_session_with_content(&name, "%percent-leading-pane-row");
+
+    let client = ControlModeClient::spawn(&name, None).expect("ControlModeClient::spawn");
+    let output = client.capture_pane(50, 80, 24).expect("capture_pane");
+    assert!(
+        output.contains("%percent-leading-pane-row"),
+        "pane row starting with '%' must survive control-mode capture, got: {output:?}"
+    );
+}
+
 #[test]
 #[serial]
 fn control_mode_capture_returns_pane_content() {

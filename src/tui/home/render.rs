@@ -1265,12 +1265,16 @@ impl HomeView {
         if needs_refresh {
             if let Some(id) = self.selected_session.clone() {
                 let capture_lines = capture_lines_for(height, scroll_offset);
-                // While live-send is active the capture rides the
-                // long-lived `tmux -C` client (same socket the worker
-                // uses for keystrokes). Outside live-send we use the
-                // historical fork-per-refresh path, which only runs
-                // at the 250ms idle cadence so the fork cost is
-                // immaterial.
+                // While live-send is active the capture rides a dedicated
+                // `tmux -C` `capture_client` (separate from the
+                // keystroke `control_mode_client` the worker holds, so
+                // captures don't queue behind send-keys on a shared
+                // mutex). If that client is missing — spawn failed at
+                // entry, or the capture-failure budget tripped a
+                // teardown — we fall back to the fork-based capture
+                // path. The fork path is slower per call but keeps the
+                // preview updating; this is what makes "hit Enter,
+                // preview freezes until I exit live mode" go away.
                 //
                 // `captured` is `Option<String>`. `Some` means we have
                 // fresh bytes; `None` means a transient failure that the
@@ -1279,12 +1283,19 @@ impl HomeView {
                 // instead of flashing blank. See `capture_via_control_mode`
                 // for the retry budget that bounds how long we serve
                 // stale content before tearing down a truly-dead client.
-                let captured: Option<String> = if self.live_send.is_some() {
+                let in_live = self.live_send.is_some();
+                let captured: Option<String> = if in_live && self.capture_client.is_some() {
                     self.capture_via_control_mode(capture_lines)
                 } else {
-                    // Non-live path: treat a missing instance or capture
-                    // error the same as before — empty content is the
-                    // intended signal that the underlying session is gone.
+                    // Out of live mode, OR in live mode with the
+                    // capture client torn down. Both go through the
+                    // fork-based capture path. `None` here means the
+                    // underlying instance/session is gone, which the
+                    // non-live behavior treats as an empty pane; we
+                    // mirror that by feeding an empty string into the
+                    // cache (so "No output available" renders) rather
+                    // than freezing on stale content the way a
+                    // control-mode failure does.
                     Some(
                         self.get_instance(&id)
                             .and_then(|inst| {
@@ -1322,31 +1333,28 @@ impl HomeView {
         }
     }
 
-    /// Capture the preview through the live-send `tmux -C` client.
-    /// Called only while live-send is active; outside live-send the
-    /// caller uses the historical fork path directly.
+    /// Capture the preview through the dedicated live-send
+    /// `capture_client`. Caller (`refresh_preview_cache_if_needed`)
+    /// only routes here when `capture_client` is `Some`; on `None` it
+    /// falls back to the fork-based path so the preview keeps
+    /// updating.
     ///
-    /// Returns `None` when:
-    /// - no client is up (spawn failed earlier; live-send entry
-    ///   should have aborted, so this means we're in a transient
-    ///   teardown state).
-    /// - the client returned an error this call. The caller (see
-    ///   `refresh_preview_cache_if_needed`) reads `None` as "keep
-    ///   the previous cache" so the user sees the last-known-good
-    ///   preview instead of "No output available" on a single
-    ///   transient timeout.
+    /// Returns `None` on a transient per-call error. The caller reads
+    /// `None` as "keep the previous cache" so a single timeout
+    /// doesn't flash "No output available".
     ///
     /// Consecutive failures are counted in
     /// `live_send_capture_failures`. Once that hits
-    /// `MAX_LIVE_CAPTURE_FAILURES` the client is torn down and
-    /// subsequent calls fall through to the first short-circuit;
-    /// the user then has to exit and re-enter live mode to
-    /// recover, which spawns a fresh `ControlModeClient`. The
-    /// budget is sized so worker/main socket contention plus a
-    /// stray timeout doesn't trip the teardown, but a genuinely
-    /// dead connection still tears down within a few seconds.
+    /// `MAX_LIVE_CAPTURE_FAILURES` the capture client is torn down;
+    /// subsequent refreshes route through the fork fallback for the
+    /// rest of this live-send session. The keystroke client is
+    /// untouched, so the user can keep typing — only the (cheaper)
+    /// fast capture path is degraded. The budget is sized so
+    /// worker/main socket contention plus a stray timeout doesn't
+    /// trip the teardown, but a genuinely dead connection still
+    /// tears down within a few seconds.
     fn capture_via_control_mode(&mut self, capture_lines: usize) -> Option<String> {
-        let client = self.control_mode_client.as_ref()?;
+        let client = self.capture_client.as_ref()?;
         match client.capture_pane(
             capture_lines,
             self.preview_cache.dimensions.0,
@@ -1366,17 +1374,17 @@ impl HomeView {
                         target: "tmux.control_mode",
                         error = %err,
                         failures = self.live_send_capture_failures,
-                        "control-mode capture failed too many times; tearing down client. \
-                        Exit and re-enter live mode to recover.",
+                        "capture-only control-mode client failed too many times; tearing down. \
+                        Preview will continue via the fork-based capture path for this session.",
                     );
-                    self.control_mode_client = None;
+                    self.capture_client = None;
                     self.live_send_capture_failures = 0;
                 } else {
                     tracing::debug!(
                         target: "tmux.control_mode",
                         error = %err,
                         failures = self.live_send_capture_failures,
-                        "control-mode capture failed; will retry on next refresh",
+                        "capture-only control-mode capture failed; will retry on next refresh",
                     );
                 }
                 None
