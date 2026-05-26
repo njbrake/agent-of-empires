@@ -30,7 +30,9 @@ const { captured } = vi.hoisted(() => ({
       | ((s: { cols: number; rows: number }) => void)
       | undefined,
     onData: undefined as ((data: string) => void) | undefined,
+    customKey: undefined as ((e: KeyboardEvent) => boolean) | undefined,
     customWheel: undefined as ((e: WheelEvent) => boolean) | undefined,
+    selection: "",
   },
 }));
 
@@ -70,6 +72,15 @@ vi.mock("@xterm/xterm", () => {
     onData(cb: (data: string) => void): { dispose: () => void } {
       captured.onData = cb;
       return { dispose: () => {} };
+    }
+    attachCustomKeyEventHandler(fn: (e: KeyboardEvent) => boolean): void {
+      captured.customKey = fn;
+    }
+    hasSelection(): boolean {
+      return captured.selection.length > 0;
+    }
+    getSelection(): string {
+      return captured.selection;
     }
     attachCustomWheelEventHandler(fn: (e: WheelEvent) => boolean): void {
       captured.customWheel = fn;
@@ -180,7 +191,9 @@ beforeEach(() => {
   captured.writes = [];
   captured.onResize = undefined;
   captured.onData = undefined;
+  captured.customKey = undefined;
   captured.customWheel = undefined;
+  captured.selection = "";
   originalWebSocket = global.WebSocket;
   global.WebSocket = FakeWebSocket as unknown as typeof WebSocket;
   originalResizeObserver = global.ResizeObserver;
@@ -1264,6 +1277,187 @@ describe("useTerminal lifecycle", () => {
       expect(ctrlA).toBeDefined();
       // The ref should also be cleared after consumption.
       expect(result.current.ctrlActiveRef.current).toBe(false);
+    } finally {
+      div.remove();
+    }
+  });
+
+  it("terminal copy events write the selected terminal text to clipboardData", async () => {
+    const div = document.createElement("div");
+    document.body.appendChild(div);
+    try {
+      renderHook(() => {
+        const term = useTerminal("s-copy-event", "ws", false, false);
+        if (term.containerRef && !term.containerRef.current) {
+          (
+            term.containerRef as unknown as { current: HTMLDivElement | null }
+          ).current = div;
+        }
+        return term;
+      });
+      await flushAsync();
+
+      captured.selection = "selected terminal text";
+      const clipboardData = {
+        setData: vi.fn(),
+      };
+      const event = new Event("copy", {
+        bubbles: true,
+        cancelable: true,
+      });
+      Object.defineProperty(event, "clipboardData", {
+        value: clipboardData,
+      });
+      const xtermEl = div.querySelector(".xterm") as HTMLDivElement;
+      expect(xtermEl.dispatchEvent(event)).toBe(false);
+
+      expect(clipboardData.setData).toHaveBeenCalledWith(
+        "text/plain",
+        "selected terminal text",
+      );
+    } finally {
+      div.remove();
+    }
+  });
+
+  it("terminal copy events fall back to browser selection text", async () => {
+    const div = document.createElement("div");
+    document.body.appendChild(div);
+    const originalGetSelection = window.getSelection;
+    Object.defineProperty(window, "getSelection", {
+      configurable: true,
+      value: vi.fn(() => ({ toString: () => "browser selected text" })),
+    });
+    try {
+      renderHook(() => {
+        const term = useTerminal("s-copy-browser-selection", "ws", false, false);
+        if (term.containerRef && !term.containerRef.current) {
+          (
+            term.containerRef as unknown as { current: HTMLDivElement | null }
+          ).current = div;
+        }
+        return term;
+      });
+      await flushAsync();
+
+      captured.selection = "";
+      const clipboardData = {
+        setData: vi.fn(),
+      };
+      const event = new Event("copy", {
+        bubbles: true,
+        cancelable: true,
+      });
+      Object.defineProperty(event, "clipboardData", {
+        value: clipboardData,
+      });
+      const xtermEl = div.querySelector(".xterm") as HTMLDivElement;
+      expect(xtermEl.dispatchEvent(event)).toBe(false);
+
+      expect(clipboardData.setData).toHaveBeenCalledWith(
+        "text/plain",
+        "browser selected text",
+      );
+    } finally {
+      Object.defineProperty(window, "getSelection", {
+        configurable: true,
+        value: originalGetSelection,
+      });
+      div.remove();
+    }
+  });
+
+  it("Ctrl+C copies selected terminal text instead of sending an interrupt", async () => {
+    const originalExecCommand = document.execCommand;
+    const execCommand = vi.fn(() => true);
+    Object.defineProperty(document, "execCommand", {
+      configurable: true,
+      value: execCommand,
+    });
+    const div = document.createElement("div");
+    document.body.appendChild(div);
+    try {
+      renderHook(() => {
+        const term = useTerminal("s-copy-selection", "ws", false, false);
+        if (term.containerRef && !term.containerRef.current) {
+          (
+            term.containerRef as unknown as { current: HTMLDivElement | null }
+          ).current = div;
+        }
+        return term;
+      });
+      await flushAsync();
+      const ws = sockets[0]!;
+      act(() => {
+        ws.readyState = FakeWebSocket.OPEN;
+        ws.onopen?.(new Event("open"));
+      });
+      await flushAsync();
+
+      captured.selection = "selected terminal text";
+      const before = ws.sent.length;
+      const event = new KeyboardEvent("keydown", {
+        bubbles: true,
+        cancelable: true,
+        code: "KeyC",
+        ctrlKey: true,
+      });
+      const handled = captured.customKey?.(event);
+
+      expect(handled).toBe(false);
+      expect(execCommand).toHaveBeenCalledWith("copy");
+      const ctrlC = ws.sent.slice(before).find((m) => {
+        if (typeof m === "string") return false;
+        return m.length === 1 && m[0] === 0x03;
+      });
+      expect(ctrlC).toBeUndefined();
+    } finally {
+      Object.defineProperty(document, "execCommand", {
+        configurable: true,
+        value: originalExecCommand,
+      });
+      div.remove();
+    }
+  });
+
+  it("Ctrl+C remains available as interrupt when no terminal text is selected", async () => {
+    const div = document.createElement("div");
+    document.body.appendChild(div);
+    try {
+      renderHook(() => {
+        const term = useTerminal("s-copy-empty", "ws", false, false);
+        if (term.containerRef && !term.containerRef.current) {
+          (
+            term.containerRef as unknown as { current: HTMLDivElement | null }
+          ).current = div;
+        }
+        return term;
+      });
+      await flushAsync();
+      const ws = sockets[0]!;
+      act(() => {
+        ws.readyState = FakeWebSocket.OPEN;
+        ws.onopen?.(new Event("open"));
+      });
+      await flushAsync();
+
+      const event = new KeyboardEvent("keydown", {
+        bubbles: true,
+        cancelable: true,
+        code: "KeyC",
+        ctrlKey: true,
+      });
+      expect(captured.customKey?.(event)).toBe(true);
+
+      const before = ws.sent.length;
+      act(() => {
+        captured.onData?.("\x03");
+      });
+      const ctrlC = ws.sent.slice(before).find((m) => {
+        if (typeof m === "string") return false;
+        return m.length === 1 && m[0] === 0x03;
+      });
+      expect(ctrlC).toBeDefined();
     } finally {
       div.remove();
     }
