@@ -1891,7 +1891,7 @@ impl HomeView {
                     if self.group_by == GroupByMode::Project {
                         self.info_dialog = Some(InfoDialog::new(
                             "Cannot Modify Project Groups",
-                            "Project groups are automatic. Press 'g' to switch to manual grouping to manage groups.",
+                            "Project groups are automatic. Press 'g' and pick Manual to manage groups.",
                         ));
                         return None;
                     }
@@ -1980,7 +1980,7 @@ impl HomeView {
                     if self.group_by == GroupByMode::Project {
                         self.info_dialog = Some(InfoDialog::new(
                             "Cannot Modify Project Groups",
-                            "Project groups are automatic. Press Shift+G to switch to manual grouping to manage groups.",
+                            "Project groups are automatic. Press Ctrl+G and pick Manual to manage groups.",
                         ));
                         return None;
                     }
@@ -2038,7 +2038,7 @@ impl HomeView {
                     if self.group_by == GroupByMode::Project {
                         self.info_dialog = Some(InfoDialog::new(
                             "Cannot Modify Project Groups",
-                            "Project groups are automatic. Press 'g' to switch to manual grouping to manage groups.",
+                            "Project groups are automatic. Press 'g' and pick Manual to manage groups.",
                         ));
                         return None;
                     }
@@ -2088,7 +2088,7 @@ impl HomeView {
                     if self.group_by == GroupByMode::Project {
                         self.info_dialog = Some(InfoDialog::new(
                             "Cannot Modify Project Groups",
-                            "Project groups are automatic. Press Shift+G to switch to manual grouping to manage groups.",
+                            "Project groups are automatic. Press Ctrl+G and pick Manual to manage groups.",
                         ));
                         return None;
                     }
@@ -2406,6 +2406,14 @@ impl HomeView {
                 None
             }
             PaletteAction::EnterLiveSend => self.start_live_send(),
+            PaletteAction::OpenSortPicker => {
+                self.show_sort_picker();
+                None
+            }
+            PaletteAction::OpenGroupPicker => {
+                self.show_group_picker();
+                None
+            }
         }
     }
 
