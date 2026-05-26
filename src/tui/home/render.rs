@@ -203,8 +203,24 @@ pub(crate) fn agent_row_icon(inst: &crate::session::Instance) -> &'static str {
 /// The mapping is per-name and deterministic, so two profiles that collapse to
 /// the same code render identically; the full name still shows in a filtered
 /// view's list title and in the New/Restart dialogs.
-/// Compute the per-row tag string for a given instance + mode, or `None`
-/// when the row should not render a tag in this context.
+/// Per-row tag content plus the mode's max content width. The renderer
+/// right-pads `content` to `max_width` so the bracket span is fixed-width
+/// across rows (`[fb  ]` vs `[def ]`), keeping the activity column from
+/// reflowing as tag widths vary. `compute_row_tag` truncates each variant
+/// to the same cap it carries here, so `rendered()` never truncates.
+pub(crate) struct RowTag {
+    pub content: String,
+    pub max_width: usize,
+}
+
+impl RowTag {
+    pub fn rendered(&self) -> String {
+        format!("[{:<width$}]", self.content, width = self.max_width)
+    }
+}
+
+/// Compute the per-row tag for a given instance + mode, or `None` when the
+/// row should not render a tag in this context.
 ///
 /// `Auto` only renders in all-profiles view (no `active_profile`). Other
 /// modes always render when their content is available (e.g. `Branch`
@@ -213,7 +229,7 @@ pub(crate) fn compute_row_tag(
     inst: &crate::session::Instance,
     mode: crate::session::config::RowTagMode,
     in_all_profiles_view: bool,
-) -> Option<String> {
+) -> Option<RowTag> {
     use crate::session::config::RowTagMode;
     match mode {
         RowTagMode::None => None,
@@ -225,7 +241,10 @@ pub(crate) fn compute_row_tag(
             if code.is_empty() {
                 None
             } else {
-                Some(code)
+                Some(RowTag {
+                    content: code,
+                    max_width: 4,
+                })
             }
         }
         RowTagMode::Profile => {
@@ -233,12 +252,18 @@ pub(crate) fn compute_row_tag(
             if code.is_empty() {
                 None
             } else {
-                Some(code)
+                Some(RowTag {
+                    content: code,
+                    max_width: 4,
+                })
             }
         }
         RowTagMode::Sandbox => {
             if inst.is_sandboxed() {
-                Some("sb".to_string())
+                Some(RowTag {
+                    content: "sb".to_string(),
+                    max_width: 2,
+                })
             } else {
                 None
             }
@@ -256,7 +281,7 @@ pub(crate) fn compute_row_tag(
             // path and have no `worktree_info`, so they fall through to
             // `None` here naturally.
             if w.branch != inst.title {
-                return Option::<String>::None;
+                return None;
             }
             // Show the last `/`-segment of the branch (most informative
             // for `feature/foo` style names), truncated to 8 chars so the
@@ -264,9 +289,12 @@ pub(crate) fn compute_row_tag(
             let last = w.branch.rsplit('/').next().unwrap_or("");
             let trimmed: String = last.chars().take(8).collect();
             if trimmed.is_empty() {
-                Option::<String>::None
+                None
             } else {
-                Some(trimmed)
+                Some(RowTag {
+                    content: trimmed,
+                    max_width: 8,
+                })
             }
         }),
     }
@@ -588,6 +616,8 @@ impl HomeView {
             info_dialog,
             snooze_duration_dialog,
             profile_picker_dialog,
+            group_picker_dialog,
+            sort_picker_dialog,
             projects_dialog,
             command_palette,
             tool_picker_dialog,
@@ -812,6 +842,8 @@ impl HomeView {
             || self.changelog_dialog.is_some()
             || self.info_dialog.is_some()
             || self.profile_picker_dialog.is_some()
+            || self.group_picker_dialog.is_some()
+            || self.sort_picker_dialog.is_some()
             || self.projects_dialog.is_some()
             || self.command_palette.is_some()
             || self.send_message_dialog.is_some()
@@ -1120,7 +1152,7 @@ impl HomeView {
                     compute_row_tag(inst, self.row_tag_mode, self.active_profile.is_none())
                 {
                     line_spans.push(Span::styled(
-                        format!("  [{}]", tag),
+                        format!("  {}", tag.rendered()),
                         Style::default().fg(theme.dimmed),
                     ));
                 }
@@ -2568,6 +2600,34 @@ mod tests {
         // unconditional render path.
         // prefix(20) + slot(6) + badge(12) + margin(1) = 39 > 35.
         assert_eq!(activity_column_padding(20, 35, 12), None);
+    }
+
+    #[test]
+    fn row_tag_content_fits_within_max_width() {
+        // RowTag.rendered() right-pads to max_width via `{:<width$}` —
+        // if content ever exceeds max_width the format width is ignored
+        // and the bracket span jitters. profile_short_code's documented
+        // cap of 4 is the tightest case to spot-check.
+        assert!(profile_short_code("forit-backup-extra").len() <= 4);
+    }
+
+    #[test]
+    fn row_tag_rendered_pads_to_max_width() {
+        let short = RowTag {
+            content: "fb".to_string(),
+            max_width: 4,
+        };
+        assert_eq!(short.rendered(), "[fb  ]");
+        let exact = RowTag {
+            content: "forb".to_string(),
+            max_width: 4,
+        };
+        assert_eq!(exact.rendered(), "[forb]");
+        let sb = RowTag {
+            content: "sb".to_string(),
+            max_width: 2,
+        };
+        assert_eq!(sb.rendered(), "[sb]");
     }
 
     #[test]

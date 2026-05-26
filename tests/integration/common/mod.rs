@@ -3,8 +3,43 @@
 //! Declared once from `tests/integration/main.rs`; consumers import via
 //! `use crate::common::...`.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use tempfile::TempDir;
+
+/// Path to the Node ACP test shim used by cockpit_* integration tests.
+pub fn shim_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("cockpit-worker")
+        .join("test-shim")
+        .join("shim.mjs")
+}
+
+/// Returns `Ok(())` if the cockpit shim can be spawned (node on PATH, shim
+/// file present, shim deps installed). Otherwise returns a short reason
+/// that callers print before skipping. CI installs deps via `npm ci` in
+/// `cockpit-worker/test-shim/` before running the integration leg; local
+/// runs need the same one-shot setup, which the message points at.
+pub fn shim_ready() -> Result<(), String> {
+    let node_ok = std::process::Command::new("node")
+        .arg("--version")
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false);
+    if !node_ok {
+        return Err("node not on PATH".into());
+    }
+    let shim = shim_path();
+    if !shim.exists() {
+        return Err(format!("shim missing at {}", shim.display()));
+    }
+    let node_modules = shim.parent().unwrap().join("node_modules");
+    if !node_modules.exists() {
+        return Err(
+            "shim deps not installed; run `cd cockpit-worker/test-shim && npm ci` first".into(),
+        );
+    }
+    Ok(())
+}
 
 /// Set `HOME` (and `XDG_CONFIG_HOME` on Linux) to a fresh temp dir so tests
 /// read and write to isolated state. Returns the guard; drop it to clean up.

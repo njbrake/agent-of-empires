@@ -16,33 +16,15 @@ use agent_of_empires::cockpit::agent_registry::AgentSpec;
 use agent_of_empires::cockpit::approvals::ApprovalDecision;
 use agent_of_empires::cockpit::state::{CockpitSessionId, Event};
 
-fn node_available() -> bool {
-    std::process::Command::new("node")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
-
-fn shim_path() -> std::path::PathBuf {
-    let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap();
-    std::path::PathBuf::from(manifest)
-        .join("cockpit-worker")
-        .join("test-shim")
-        .join("shim.mjs")
-}
+use crate::common::{shim_path, shim_ready};
 
 #[tokio::test]
 async fn shim_agent_round_trips_prompt() {
-    if !node_available() {
-        eprintln!("skipping: node not on PATH");
+    if let Err(reason) = shim_ready() {
+        eprintln!("skipping: {reason}");
         return;
     }
     let shim = shim_path();
-    if !shim.exists() {
-        eprintln!("skipping: shim missing at {}", shim.display());
-        return;
-    }
 
     let cwd = std::env::temp_dir();
     let config = SpawnConfig {
@@ -158,15 +140,11 @@ async fn shim_agent_round_trips_prompt() {
 /// allow, agent observes the selected option_id and reports back.
 #[tokio::test]
 async fn shim_agent_round_trips_approval_allow() {
-    if !node_available() {
-        eprintln!("skipping: node not on PATH");
+    if let Err(reason) = shim_ready() {
+        eprintln!("skipping: {reason}");
         return;
     }
     let shim = shim_path();
-    if !shim.exists() {
-        eprintln!("skipping: shim missing at {}", shim.display());
-        return;
-    }
 
     let cwd = std::env::temp_dir();
     let config = SpawnConfig {
@@ -258,14 +236,11 @@ async fn shim_agent_round_trips_approval_allow() {
 /// shim echoes the read content back so we can assert the wire works.
 #[tokio::test]
 async fn shim_agent_round_trips_fs() {
-    if !node_available() {
-        eprintln!("skipping: node not on PATH");
+    if let Err(reason) = shim_ready() {
+        eprintln!("skipping: {reason}");
         return;
     }
     let shim = shim_path();
-    if !shim.exists() {
-        return;
-    }
     let temp = tempfile::tempdir().expect("tempdir");
     let cwd = temp.path().to_path_buf();
     let config = SpawnConfig {
@@ -331,14 +306,11 @@ async fn shim_agent_round_trips_fs() {
 /// + TerminalManager wiring end-to-end.
 #[tokio::test]
 async fn shim_agent_round_trips_terminal() {
-    if !node_available() {
-        eprintln!("skipping: node not on PATH");
+    if let Err(reason) = shim_ready() {
+        eprintln!("skipping: {reason}");
         return;
     }
     let shim = shim_path();
-    if !shim.exists() {
-        return;
-    }
     let temp = tempfile::tempdir().expect("tempdir");
     let cwd = temp.path().to_path_buf();
     let config = SpawnConfig {
@@ -416,15 +388,11 @@ async fn shim_agent_round_trips_terminal() {
 /// in `Supervisor::spawn` depend on.
 #[tokio::test]
 async fn shim_agent_set_mode_emits_current_mode_changed() {
-    if !node_available() {
-        eprintln!("skipping: node not on PATH");
+    if let Err(reason) = shim_ready() {
+        eprintln!("skipping: {reason}");
         return;
     }
     let shim = shim_path();
-    if !shim.exists() {
-        eprintln!("skipping: shim missing at {}", shim.display());
-        return;
-    }
 
     let cwd = std::env::temp_dir();
     let config = SpawnConfig {
@@ -486,14 +454,11 @@ async fn shim_agent_set_mode_emits_current_mode_changed() {
 #[tokio::test]
 async fn shim_agent_emits_rate_limit_event() {
     use agent_of_empires::cockpit::state::Event;
-    if !node_available() {
-        eprintln!("skipping: node not on PATH");
+    if let Err(reason) = shim_ready() {
+        eprintln!("skipping: {reason}");
         return;
     }
     let shim = shim_path();
-    if !shim.exists() {
-        return;
-    }
 
     let cwd = std::env::temp_dir();
     let config = SpawnConfig {
