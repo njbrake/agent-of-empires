@@ -1249,12 +1249,12 @@ impl HomeView {
             KeyCode::Char('q') => return Some(Action::Quit),
             // `w` / `W` (snooze), `h` / `H` (snooze alias), and `f` / `F`
             // (favorite) are gated to Attention sort. Snooze and favorite
-            // are triage primitives — they only have a visible effect
+            // are triage primitives; they only have a visible effect
             // (and a sort impact) in Attention mode. Outside Attention,
             // mutating these flags would silently change persisted state
             // with no on-screen feedback, so we ignore the press
             // entirely. Other sort modes fall through to the existing
-            // fallback bindings (`h` → collapse, `w` → jump-to-next-
+            // fallback bindings (`h` collapses; `w` is jump-to-next-
             // waiting in non-strict mode).
             KeyCode::Char('w')
                 if !self.strict_hotkeys && self.sort_order == SortOrder::Attention =>
@@ -2327,6 +2327,14 @@ impl HomeView {
                     });
                 }
                 Item::Group { name, path, .. } => {
+                    // The synthetic Archived section header is not a real
+                    // group; skip it so the palette doesn't surface the
+                    // sentinel path or invite Jump-to-group navigation
+                    // that the rest of the codebase intentionally
+                    // disarms.
+                    if crate::session::is_archived_section_path(path) {
+                        continue;
+                    }
                     let label = if name == path {
                         format!("Jump to group: {}", name)
                     } else {
