@@ -345,15 +345,29 @@ fn test_end_key() {
 
 #[test]
 #[serial]
-fn test_g_key_cycles_group_by() {
+fn test_g_key_opens_group_picker() {
     use crate::session::config::GroupByMode;
 
     let mut env = create_test_env_with_sessions(3);
     env.view.group_by = GroupByMode::Manual;
+
+    // 'g' opens the picker without changing the current mode.
     env.view.handle_key(key(KeyCode::Char('g')), None);
-    assert_eq!(env.view.group_by, GroupByMode::Project);
-    env.view.handle_key(key(KeyCode::Char('g')), None);
+    assert!(env.view.group_picker_dialog.is_some());
     assert_eq!(env.view.group_by, GroupByMode::Manual);
+
+    // Down + Enter selects the next option (Project).
+    env.view.handle_key(key(KeyCode::Down), None);
+    env.view.handle_key(key(KeyCode::Enter), None);
+    assert!(env.view.group_picker_dialog.is_none());
+    assert_eq!(env.view.group_by, GroupByMode::Project);
+
+    // 'g' again, Esc cancels without changing mode.
+    env.view.handle_key(key(KeyCode::Char('g')), None);
+    assert!(env.view.group_picker_dialog.is_some());
+    env.view.handle_key(key(KeyCode::Esc), None);
+    assert!(env.view.group_picker_dialog.is_none());
+    assert_eq!(env.view.group_by, GroupByMode::Project);
 }
 
 #[test]
@@ -1705,63 +1719,64 @@ fn test_sort_order_defaults_to_newest() {
 
 #[test]
 #[serial]
-fn test_o_key_cycles_sort_order_forward() {
+fn test_o_key_opens_sort_picker() {
     use crate::session::config::SortOrder;
 
     let mut env = create_test_env_with_mixed_sessions();
     assert_eq!(env.view.sort_order, SortOrder::Newest);
 
+    // 'o' opens the picker; the current sort is unchanged until the user
+    // confirms a selection.
     env.view.handle_key(key(KeyCode::Char('o')), None);
-    assert_eq!(env.view.sort_order, SortOrder::Attention);
-
-    env.view.handle_key(key(KeyCode::Char('o')), None);
-    assert_eq!(env.view.sort_order, SortOrder::LastActivity);
-
-    env.view.handle_key(key(KeyCode::Char('o')), None);
-    assert_eq!(env.view.sort_order, SortOrder::Oldest);
-
-    env.view.handle_key(key(KeyCode::Char('o')), None);
-    assert_eq!(env.view.sort_order, SortOrder::AZ);
-
-    env.view.handle_key(key(KeyCode::Char('o')), None);
-    assert_eq!(env.view.sort_order, SortOrder::ZA);
-
-    env.view.handle_key(key(KeyCode::Char('o')), None);
+    assert!(env.view.sort_picker_dialog.is_some());
     assert_eq!(env.view.sort_order, SortOrder::Newest);
+
+    // Walk to AZ (Newest -> Attention -> LastActivity -> Oldest -> AZ) and
+    // confirm.
+    for _ in 0..4 {
+        env.view.handle_key(key(KeyCode::Down), None);
+    }
+    env.view.handle_key(key(KeyCode::Enter), None);
+    assert!(env.view.sort_picker_dialog.is_none());
+    assert_eq!(env.view.sort_order, SortOrder::AZ);
 }
 
 #[test]
 #[serial]
-fn test_shift_o_cycles_sort_in_strict_mode() {
+fn test_shift_o_opens_sort_picker_in_strict_mode() {
     // Regression guard: normalize_strict_key maps Shift+O → bare 'o'. The main
     // match must handle 'o' without an `if !self.strict_hotkeys` guard,
     // otherwise the key falls through to capture_letter_to_compose and opens
-    // the message dialog instead of cycling sort.
+    // the message dialog instead of the sort picker.
     use crate::session::config::SortOrder;
 
     let mut env = create_test_env_with_mixed_sessions();
     env.view.strict_hotkeys = true;
     assert_eq!(env.view.sort_order, SortOrder::Newest);
 
-    // Shift+O: Char('O') with SHIFT modifier. Normalizer lowercases to 'o',
-    // main match cycles forward.
+    // Shift+O: opens the sort picker.
     env.view
         .handle_key(KeyEvent::new(KeyCode::Char('O'), KeyModifiers::SHIFT), None);
-    assert_eq!(env.view.sort_order, SortOrder::Attention);
+    assert!(env.view.sort_picker_dialog.is_some());
+    env.view.handle_key(key(KeyCode::Esc), None);
 
     // Some terminals drop the SHIFT modifier and send bare uppercase. Cover
     // that too.
     env.view
         .handle_key(KeyEvent::new(KeyCode::Char('O'), KeyModifiers::NONE), None);
-    assert_eq!(env.view.sort_order, SortOrder::LastActivity);
+    assert!(env.view.sort_picker_dialog.is_some());
+    env.view.handle_key(key(KeyCode::Esc), None);
 
-    // Ctrl+o must still cycle backward in strict mode.
+    // Ctrl+o also opens the picker in strict mode.
     env.view.handle_key(
         KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL),
         None,
     );
-    assert_eq!(env.view.sort_order, SortOrder::Attention);
+    assert!(env.view.sort_picker_dialog.is_some());
+    env.view.handle_key(key(KeyCode::Esc), None);
 
+    // Sort order is unchanged because no selection was confirmed.
+    assert_eq!(env.view.sort_order, SortOrder::Newest);
     // Sanity: message dialog must NOT have been opened as a side effect.
     assert!(env.view.send_message_dialog.is_none());
 }
@@ -1864,13 +1879,13 @@ fn test_strict_mode_h_still_snoozes_in_non_strict() {
 
 #[test]
 #[serial]
-fn test_strict_mode_ctrl_g_toggles_group_by() {
-    // Regression guard: the help overlay lists "Ctrl+G" for Toggle group by
-    // project in strict mode. Previously normalize_strict_key stripped CTRL
-    // and routed the result into the typing-guard catch-all, so the
-    // advertised hotkey was a no-op (the bare 'g' landed in pending_paste).
-    // Ctrl+G must now keep its modifier and toggle group-by, while bare 'g'
-    // continues to fall into the typing-guard catch-all.
+fn test_strict_mode_ctrl_g_opens_group_picker() {
+    // Regression guard: the help overlay lists "Ctrl+G" for Group by in
+    // strict mode. Previously normalize_strict_key stripped CTRL and routed
+    // the result into the typing-guard catch-all, so the advertised hotkey
+    // was a no-op (the bare 'g' landed in pending_paste). Ctrl+G must now
+    // keep its modifier and open the group picker, while bare 'g' continues
+    // to fall into the typing-guard catch-all.
     use crate::session::config::GroupByMode;
 
     let mut env = create_test_env_with_sessions(3);
@@ -1881,21 +1896,28 @@ fn test_strict_mode_ctrl_g_toggles_group_by() {
         KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL),
         None,
     );
-    assert_eq!(
-        env.view.group_by,
-        GroupByMode::Project,
-        "Ctrl+G in strict mode should toggle group-by"
+    assert!(
+        env.view.group_picker_dialog.is_some(),
+        "Ctrl+G in strict mode should open the group picker"
     );
     assert!(
         env.view.pending_paste.is_none(),
         "Ctrl+G must not leak into the typing-guard catch-all"
     );
+    // Down + Enter switches to Project.
+    env.view.handle_key(key(KeyCode::Down), None);
+    env.view.handle_key(key(KeyCode::Enter), None);
+    assert_eq!(env.view.group_by, GroupByMode::Project);
 
     env.view.handle_key(key(KeyCode::Char('g')), None);
+    assert!(
+        env.view.group_picker_dialog.is_none(),
+        "bare 'g' in strict mode must NOT open the group picker (typing-guard contract)"
+    );
     assert_eq!(
         env.view.group_by,
         GroupByMode::Project,
-        "bare 'g' in strict mode must NOT toggle group-by (typing-guard contract)"
+        "bare 'g' in strict mode must NOT change group-by (typing-guard contract)"
     );
     assert_eq!(
         env.view.pending_paste.as_deref(),
@@ -1938,48 +1960,23 @@ fn test_f5_and_e_both_open_restart_dialog() {
 
 #[test]
 #[serial]
-fn test_ctrl_o_key_cycles_sort_order_backward() {
+fn test_ctrl_o_key_opens_sort_picker() {
     use crate::session::config::SortOrder;
 
     let mut env = create_test_env_with_mixed_sessions();
     assert_eq!(env.view.sort_order, SortOrder::Newest);
 
-    // Ctrl+o cycles backward:
-    // Newest -> ZA -> AZ -> Oldest -> LastActivity -> Newest
+    // Ctrl+O opens the same modal picker. Pressing it on its own does not
+    // change the current sort.
     env.view.handle_key(
         KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL),
         None,
     );
-    assert_eq!(env.view.sort_order, SortOrder::ZA);
+    assert!(env.view.sort_picker_dialog.is_some());
+    assert_eq!(env.view.sort_order, SortOrder::Newest);
 
-    env.view.handle_key(
-        KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL),
-        None,
-    );
-    assert_eq!(env.view.sort_order, SortOrder::AZ);
-
-    env.view.handle_key(
-        KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL),
-        None,
-    );
-    assert_eq!(env.view.sort_order, SortOrder::Oldest);
-
-    env.view.handle_key(
-        KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL),
-        None,
-    );
-    assert_eq!(env.view.sort_order, SortOrder::LastActivity);
-
-    env.view.handle_key(
-        KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL),
-        None,
-    );
-    assert_eq!(env.view.sort_order, SortOrder::Attention);
-
-    env.view.handle_key(
-        KeyEvent::new(KeyCode::Char('o'), KeyModifiers::CONTROL),
-        None,
-    );
+    env.view.handle_key(key(KeyCode::Esc), None);
+    assert!(env.view.sort_picker_dialog.is_none());
     assert_eq!(env.view.sort_order, SortOrder::Newest);
 }
 
@@ -1991,11 +1988,12 @@ fn test_o_key_flat_items_sorted_az() {
     let mut env = create_test_env_with_mixed_sessions();
     assert_eq!(env.view.sort_order, SortOrder::Newest);
 
-    // Press 'o' four times to get to AZ (Newest -> Attention -> LastActivity -> Oldest -> AZ)
+    // Open the sort picker and pick AZ.
     env.view.handle_key(key(KeyCode::Char('o')), None);
-    env.view.handle_key(key(KeyCode::Char('o')), None);
-    env.view.handle_key(key(KeyCode::Char('o')), None);
-    env.view.handle_key(key(KeyCode::Char('o')), None);
+    for _ in 0..4 {
+        env.view.handle_key(key(KeyCode::Down), None);
+    }
+    env.view.handle_key(key(KeyCode::Enter), None);
     assert_eq!(env.view.sort_order, SortOrder::AZ);
 
     let mut session_titles: Vec<_> = Vec::new();
@@ -2025,13 +2023,12 @@ fn test_o_key_flat_items_sorted_za() {
 
     let mut env = create_test_env_with_mixed_sessions();
 
-    // Press 'o' five times to get to ZA
-    // (Newest -> Attention -> LastActivity -> Oldest -> AZ -> ZA)
+    // Open the sort picker and pick ZA (5 entries down from Newest).
     env.view.handle_key(key(KeyCode::Char('o')), None);
-    env.view.handle_key(key(KeyCode::Char('o')), None);
-    env.view.handle_key(key(KeyCode::Char('o')), None);
-    env.view.handle_key(key(KeyCode::Char('o')), None);
-    env.view.handle_key(key(KeyCode::Char('o')), None);
+    for _ in 0..5 {
+        env.view.handle_key(key(KeyCode::Down), None);
+    }
+    env.view.handle_key(key(KeyCode::Enter), None);
     assert_eq!(env.view.sort_order, SortOrder::ZA);
 
     let mut session_titles: Vec<_> = Vec::new();
@@ -2110,7 +2107,10 @@ fn test_o_key_clamps_cursor_when_list_shrinks() {
     let filtered_count = env.view.search_matches.len();
     assert!(filtered_count < initial_items);
 
+    // Open the sort picker and pick Attention (one entry down from Newest).
     env.view.handle_key(key(KeyCode::Char('o')), None);
+    env.view.handle_key(key(KeyCode::Down), None);
+    env.view.handle_key(key(KeyCode::Enter), None);
     assert_eq!(env.view.sort_order, SortOrder::Attention);
 
     let valid_max = env.view.flat_items.len().saturating_sub(1);
@@ -4454,6 +4454,9 @@ fn group_by_toggle_preserves_selected_session() {
     );
 
     env.view.handle_key(key(KeyCode::Char('g')), None);
+    // 'g' opens the picker; pick Project to apply the flip.
+    env.view.handle_key(key(KeyCode::Down), None);
+    env.view.handle_key(key(KeyCode::Enter), None);
     assert_eq!(env.view.group_by, GroupByMode::Project);
     assert_eq!(
         env.view.selected_session.as_deref(),
@@ -4501,7 +4504,10 @@ fn sort_order_toggle_preserves_selected_session() {
         Some(target_id.as_str())
     );
 
+    // Open the sort picker and pick Attention (one down from Newest).
     env.view.handle_key(key(KeyCode::Char('o')), None);
+    env.view.handle_key(key(KeyCode::Down), None);
+    env.view.handle_key(key(KeyCode::Enter), None);
     assert_eq!(env.view.sort_order, SortOrder::Attention);
     assert_eq!(
         env.view.selected_session.as_deref(),

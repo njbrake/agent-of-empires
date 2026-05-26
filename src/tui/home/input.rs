@@ -1028,6 +1028,38 @@ impl HomeView {
             return None;
         }
 
+        if let Some(dialog) = &mut self.group_picker_dialog {
+            match dialog.handle_key(key) {
+                DialogResult::Continue => {}
+                DialogResult::Cancel => {
+                    self.group_picker_dialog = None;
+                }
+                DialogResult::Submit(mode) => {
+                    self.group_picker_dialog = None;
+                    if mode != self.group_by {
+                        self.apply_group_by(mode);
+                    }
+                }
+            }
+            return None;
+        }
+
+        if let Some(dialog) = &mut self.sort_picker_dialog {
+            match dialog.handle_key(key) {
+                DialogResult::Continue => {}
+                DialogResult::Cancel => {
+                    self.sort_picker_dialog = None;
+                }
+                DialogResult::Submit(order) => {
+                    self.sort_picker_dialog = None;
+                    if order != self.sort_order {
+                        self.apply_sort_order(order);
+                    }
+                }
+            }
+            return None;
+        }
+
         if let Some(dialog) = &mut self.profile_picker_dialog {
             match dialog.handle_key(key) {
                 DialogResult::Continue => {}
@@ -2100,19 +2132,19 @@ impl HomeView {
                 }
             }
             KeyCode::Char('o') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.apply_sort_order(self.sort_order.cycle_reverse());
+                self.show_sort_picker();
             }
-            // Plain lowercase 'o' cycles sort only OUTSIDE strict mode. In strict
-            // mode, bare 'o' falls through to the typing-guard catch-all (compose
-            // dialog), per the no-destructive-lowercase contract.
+            // Plain lowercase 'o' opens the sort picker only OUTSIDE strict mode.
+            // In strict mode, bare 'o' falls through to the typing-guard catch-all
+            // (compose dialog), per the no-destructive-lowercase contract.
             KeyCode::Char('o') if !self.strict_hotkeys => {
-                self.apply_sort_order(self.sort_order.cycle());
+                self.show_sort_picker();
             }
             // Shift+O in strict mode arrives here as Char('O') (normalize_strict_key
-            // no longer lowercases 'O') so it's the one key that cycles sort in
+            // no longer lowercases 'O') so it's the one bare-letter sort hotkey in
             // strict mode. Also matches Shift+O in non-strict mode.
             KeyCode::Char('O') => {
-                self.apply_sort_order(self.sort_order.cycle());
+                self.show_sort_picker();
             }
             // ±10 navigation: Shift+Up/Down, PageUp/PageDown, OR { / }.
             // iPad-friendly ±10 aliases for PageUp/PageDown. iPads have no
@@ -2154,10 +2186,10 @@ impl HomeView {
             KeyCode::Char('g')
                 if self.strict_hotkeys && key.modifiers.contains(KeyModifiers::CONTROL) =>
             {
-                self.apply_group_by(self.group_by.cycle());
+                self.show_group_picker();
             }
             KeyCode::Char('g') if !self.strict_hotkeys => {
-                self.apply_group_by(self.group_by.cycle());
+                self.show_group_picker();
             }
             KeyCode::End | KeyCode::Char('G') if !self.flat_items.is_empty() => {
                 self.cursor = self.flat_items.len() - 1;

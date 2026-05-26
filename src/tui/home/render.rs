@@ -588,6 +588,8 @@ impl HomeView {
             info_dialog,
             snooze_duration_dialog,
             profile_picker_dialog,
+            group_picker_dialog,
+            sort_picker_dialog,
             projects_dialog,
             command_palette,
             tool_picker_dialog,
@@ -812,6 +814,8 @@ impl HomeView {
             || self.changelog_dialog.is_some()
             || self.info_dialog.is_some()
             || self.profile_picker_dialog.is_some()
+            || self.group_picker_dialog.is_some()
+            || self.sort_picker_dialog.is_some()
             || self.projects_dialog.is_some()
             || self.command_palette.is_some()
             || self.send_message_dialog.is_some()
