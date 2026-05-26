@@ -345,7 +345,15 @@ pub(in crate::tui) struct LiveSendWorker {
 }
 
 impl LiveSendWorker {
-    pub(super) fn spawn(client: Arc<crate::tmux::ControlModeClient>) -> Self {
+    /// `tmux_name` is the live-send target session; it's used by the
+    /// fork-based fallback path in `dispatch_batch` when the long-lived
+    /// control-mode client returns an error (typically because the
+    /// connection EOF'd). The fallback re-issues the same operation as
+    /// a one-shot `tmux send-keys` / `tmux resize-window` subprocess,
+    /// so keystrokes keep landing in the pane even when control-mode
+    /// is dead. Without it, a wedged client silently drops every
+    /// subsequent keystroke until the user exits live mode.
+    pub(super) fn spawn(client: Arc<crate::tmux::ControlModeClient>, tmux_name: String) -> Self {
         let (tx, rx) = channel::<WorkerMsg>();
         std::thread::spawn(move || {
             // Block until the first message, then drain anything else
@@ -358,7 +366,7 @@ impl LiveSendWorker {
                 while let Ok(msg) = rx.try_recv() {
                     batch.push(msg);
                 }
-                dispatch_batch(&client, batch);
+                dispatch_batch(&client, &tmux_name, batch);
             }
         });
         Self { tx }
@@ -388,17 +396,81 @@ impl LiveSendWorker {
 /// `coalesce` so literal-key runs collapse into a single `send-keys`
 /// call; named keys and resizes dispatch individually. Tests verify
 /// the ordering via `coalesce` directly without needing a real session.
-fn dispatch_batch(client: &crate::tmux::ControlModeClient, batch: Vec<WorkerMsg>) {
+///
+/// On control-mode error (typically EOF on the long-lived `tmux -C`
+/// connection) we fall through to `dispatch_via_fork`, which spawns a
+/// one-shot `tmux send-keys` / `resize-window` subprocess for the same
+/// op. Keystrokes keep landing in the pane even when control-mode is
+/// dead — the user pays a fork per keystroke (the pre-#1485 cost) but
+/// nothing visibly stops working.
+fn dispatch_batch(client: &crate::tmux::ControlModeClient, tmux_name: &str, batch: Vec<WorkerMsg>) {
     for action in coalesce(batch) {
-        let result = match action {
-            TmuxAction::Literal(s) => client.send_literal_no_enter(&s),
-            TmuxAction::Named(name) => client.send_named_key(&name),
-            TmuxAction::Resize { cols, rows } => client.resize(cols, rows),
+        let result = match &action {
+            TmuxAction::Literal(s) => client.send_literal_no_enter(s),
+            TmuxAction::Named(name) => client.send_named_key(name),
+            TmuxAction::Resize { cols, rows } => client.resize(*cols, *rows),
         };
-        if let Err(e) = result {
-            tracing::warn!("live-send worker: control-mode op failed: {}", e);
+        if let Err(cm_err) = result {
+            match dispatch_via_fork(tmux_name, &action) {
+                Ok(()) => {
+                    tracing::debug!(
+                        target: "tui.live_send",
+                        error = %cm_err,
+                        "control-mode op failed; recovered via fork-based tmux subprocess",
+                    );
+                }
+                Err(fork_err) => {
+                    tracing::warn!(
+                        target: "tui.live_send",
+                        cm_error = %cm_err,
+                        fork_error = %fork_err,
+                        "control-mode op failed AND fork fallback failed; keystroke dropped",
+                    );
+                }
+            }
         }
     }
+}
+
+/// Fallback dispatch path: re-issue a `TmuxAction` as a one-shot
+/// `tmux` subprocess. Mirrors what live-send did before #1485
+/// introduced the long-lived `tmux -C` client. Visible at module level
+/// so tests in `super::tests` can exercise the command construction
+/// without standing up a real tmux session.
+fn dispatch_via_fork(tmux_name: &str, action: &TmuxAction) -> anyhow::Result<()> {
+    use std::process::{Command, Stdio};
+    let target = format!("{}:^.0", tmux_name);
+    let mut cmd = Command::new("tmux");
+    cmd.stderr(Stdio::null());
+    match action {
+        TmuxAction::Literal(s) => {
+            // `-l --` mirrors `send_literal_no_enter`: literal-mode
+            // send, followed by the end-of-options marker so a payload
+            // starting with `-` isn't reparsed as a flag.
+            cmd.args(["send-keys", "-t", &target, "-l", "--", s.as_str()]);
+        }
+        TmuxAction::Named(name) => {
+            cmd.args(["send-keys", "-t", &target, name.as_str()]);
+        }
+        TmuxAction::Resize { cols, rows } => {
+            cmd.args([
+                "resize-window",
+                "-t",
+                tmux_name,
+                "-x",
+                &cols.to_string(),
+                "-y",
+                &rows.to_string(),
+            ]);
+        }
+    }
+    let status = cmd
+        .status()
+        .map_err(|e| anyhow::anyhow!("spawn tmux fork fallback: {}", e))?;
+    if !status.success() {
+        anyhow::bail!("tmux fork fallback exited non-zero for {:?}", action);
+    }
+    Ok(())
 }
 
 /// What the translator says to do with one incoming key event.

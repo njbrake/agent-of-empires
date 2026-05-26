@@ -392,47 +392,25 @@ pub struct HomeView {
     /// Long-lived `tmux -C` connection shared between the preview-
     /// refresh path and the live-send worker thread. The connection
     /// is the sole transport for keystrokes, resizes, and pane
-    /// captures while live-send is active. `enter_live_send` requires
-    /// it: if `ControlModeClient::spawn` fails, live mode is not
-    /// entered and the user sees a "Live send failed" dialog.
+    /// keystroke dispatch while live-send is active. `enter_live_send`
+    /// best-effort spawns it: if `ControlModeClient::spawn` fails or
+    /// the connection EOFs mid-session, the worker thread falls back
+    /// to one-shot `tmux send-keys` subprocesses (see
+    /// `dispatch_via_fork`). The render path's preview refresh does
+    /// NOT use this client; it always uses the fork-based capture path
+    /// because some tmux builds (observed on macOS 3.x against
+    /// long-running sessions) drop the control-mode connection
+    /// unpredictably and the recovery cost is paid by the user as a
+    /// frozen preview.
     ///
-    /// Wrapped in `Arc` so the worker thread can hold one clone. The
-    /// render path's preview refresh uses `capture_client` instead so
-    /// `send-keys` and `capture-pane` don't serialize through the
-    /// same `Mutex<Inner>` (see below).
+    /// Wrapped in `Arc` so the worker thread can hold one clone.
     ///
     /// See `src/tmux/control_mode.rs` and #1485.
     pub(super) control_mode_client: Option<std::sync::Arc<crate::tmux::ControlModeClient>>,
-    /// Dedicated `tmux -C` client used exclusively for `capture-pane`
-    /// preview refreshes. The `control_mode_client` above carries
-    /// `send-keys` from the worker thread; serving captures from the
-    /// SAME client serializes them through a single `Mutex<Inner>` and
-    /// piles their drain loops on top of each other under heavy
-    /// `%output` load. Splitting them gives the capture path its own
-    /// reader/`rx`/socket so a busy keystroke client can't queue
-    /// captures behind it.
-    ///
-    /// Spawned alongside `control_mode_client` in `enter_live_send`;
-    /// torn down independently in `exit_live_send_and_restore_sizing`
-    /// and in `capture_via_control_mode` on the failure budget. After
-    /// teardown the render path falls back to the fork-based
-    /// `Session::capture_pane_with_size`, so the preview keeps
-    /// updating even when the capture client is dead.
-    pub(super) capture_client: Option<std::sync::Arc<crate::tmux::ControlModeClient>>,
     /// Last (cols, rows) we asked the worker to resize the pane to in
     /// the current live-send session. Used to dedup the resize messages
     /// fired from the preview refresh path; cleared on live-send exit.
     pub(super) live_send_last_resize: Option<(u16, u16)>,
-    /// Count of consecutive `capture_via_control_mode` failures in the
-    /// current live-send session. Reset to 0 on every successful capture
-    /// and on `enter_live_send`. The capture path tears down the
-    /// control-mode client only once this count reaches
-    /// `MAX_LIVE_CAPTURE_FAILURES`, so transient timeouts (the worker
-    /// and main thread contending on the socket while %output piles up)
-    /// don't permanently blank the preview. The client tear-down still
-    /// happens when the connection is genuinely dead, just after a few
-    /// retries instead of one.
-    pub(super) live_send_capture_failures: u32,
     /// Pasted text captured at the home view that we couldn't immediately
     /// route (no session selected, cursor on a group header, etc.). Drained
     /// into the next compose dialog the user opens, so voice/dictation never
@@ -748,9 +726,7 @@ impl HomeView {
             live_send: None,
             live_send_worker: None,
             control_mode_client: None,
-            capture_client: None,
             live_send_last_resize: None,
-            live_send_capture_failures: 0,
             pending_paste: None,
             pending_attach_after_warning: None,
             pending_stop_session: None,
@@ -2569,35 +2545,22 @@ impl HomeView {
                 return Err(());
             }
         };
-        self.live_send_worker = Some(live_send::LiveSendWorker::spawn(control_client.clone()));
+        // Worker owns one Arc<ControlModeClient>; we keep another so
+        // the home view can drop the connection on exit. The worker
+        // also needs the tmux session name so it can fall back to a
+        // fork-based `tmux send-keys` subprocess if the control-mode
+        // connection EOFs mid-session — see `dispatch_via_fork`.
+        self.live_send_worker = Some(live_send::LiveSendWorker::spawn(
+            control_client.clone(),
+            tmux_name.clone(),
+        ));
         self.control_mode_client = Some(control_client);
-        // Capture path gets its own `tmux -C` connection so a busy
-        // worker can never queue capture-pane behind a stack of
-        // send-keys on a shared Mutex. The capture client doesn't
-        // need a wake callback (the keystroke client's reader already
-        // drives the wake channel), and a spawn failure here is
-        // non-fatal: capture_via_control_mode falls through to the
-        // fork-based path when capture_client is None.
-        self.capture_client = match crate::tmux::ControlModeClient::spawn(&tmux_name, None) {
-            Ok(client) => Some(std::sync::Arc::new(client)),
-            Err(err) => {
-                tracing::warn!(
-                    target: "tmux.control_mode",
-                    error = %err,
-                    "capture-only control-mode client spawn failed; capture path will use the fork fallback for this live-send session",
-                );
-                None
-            }
-        };
         // Force the preview-refresh path to issue a resize on the
         // first draw inside live mode (it dedups against
         // live_send_last_resize), so the agent's render matches the
         // preview pane's actual dimensions instead of whatever the
         // session was last sized to.
         self.live_send_last_resize = None;
-        // Fresh client, fresh budget: any failure count carried over from
-        // a previous live-send session is irrelevant to this one.
-        self.live_send_capture_failures = 0;
         self.stamp_last_accessed(session_id);
         Ok(stale_sid)
     }

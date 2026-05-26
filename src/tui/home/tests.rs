@@ -6254,58 +6254,35 @@ mod live_send_mode {
 
     #[test]
     #[serial]
-    fn capture_failures_counter_starts_at_zero() {
-        // Sanity guard on the field that bounds the kill-switch budget
-        // in `capture_via_control_mode`. If this is mis-initialized, the
-        // first capture failure could trip an immediate teardown.
-        let env = create_test_env_empty();
-        assert_eq!(env.view.live_send_capture_failures, 0);
-    }
-
-    #[test]
-    #[serial]
-    fn refresh_falls_back_to_fork_when_capture_client_torn_down() {
-        // Pin the resilience fix for the "Enter freezes preview until
-        // exit" bug. Pre-fix, once `capture_via_control_mode` tripped
-        // its consecutive-failure budget the capture client was set
-        // to None and EVERY subsequent refresh short-circuited to
-        // None at the `?` in `capture_via_control_mode`. The cache
-        // stayed stuck on stale content until the user exited and
-        // re-entered live mode.
-        //
-        // The new behavior: when `capture_client` is None but
-        // `live_send` is still active, the refresh routes through
-        // the fork-based `inst.capture_output_with_size` path. The
-        // preview keeps updating with fresh bytes; only the cheaper
-        // control-mode fast path is gone for the rest of the session.
-        //
-        // In this unit fixture the tmux session backing the instance
-        // doesn't actually exist (`install_live_for_first_session`
-        // installs the `live_send` state without spawning tmux), so
-        // the fork capture fails and we expect the cache to be
-        // overwritten with an empty string. The assertion that
-        // matters is "content changed away from the stale seed",
-        // confirming the fork path RAN.
+    fn refresh_preserves_cache_when_live_capture_fails() {
+        // Pin the kill-switch behavior (originally introduced in #1501,
+        // re-implemented here against the fork-only capture path):
+        // when live-send is active and the capture call fails (in this
+        // unit fixture the backing tmux session doesn't exist, so the
+        // fork returns Err), the previous capture's content must stay
+        // in the cache. Pre-#1501 a single failed capture wiped
+        // `preview_cache.content` to "" and the preview rendered
+        // "No output available" until the user exited and re-entered
+        // live mode.
         let mut env = create_test_env_with_sessions(1);
         let id = install_live_for_first_session(&mut env);
         env.view.selected_session = Some(id.clone());
-        env.view.preview_cache.content = "stale cache from a prior capture".to_string();
+        env.view.preview_cache.content = "hello from a successful capture".to_string();
         env.view.preview_cache.captured_lines = 1;
         env.view.preview_cache.dimensions = (80, 24);
         env.view.preview_cache.session_id = Some(id);
-        // Simulate the post-teardown state: no capture client. The
-        // keystroke `control_mode_client` is irrelevant to the
-        // capture path now, so leaving it None as well still
-        // exercises the fork fallback.
-        env.view.capture_client = None;
+        // No control-mode client is needed for captures any more; the
+        // capture path is always fork-based. Leave it None so the
+        // fixture matches a post-teardown state too.
         env.view.control_mode_client = None;
 
         env.view.refresh_preview_cache_if_needed(80, 24);
 
-        assert_ne!(
-            env.view.preview_cache.content, "stale cache from a prior capture",
-            "fork fallback must run a fresh capture instead of leaving the stale cache in place"
+        assert_eq!(
+            env.view.preview_cache.content, "hello from a successful capture",
+            "cache must be preserved when the fork capture fails inside live mode"
         );
+        assert_eq!(env.view.preview_cache.captured_lines, 1);
     }
 
     mod paste_splitting {
