@@ -486,8 +486,8 @@ impl App {
         let mut refresh_interval = tokio::time::interval(Duration::from_millis(33));
         refresh_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         // After any keystroke routed to live-send, schedule one extra
-        // refresh ~15ms later — roughly the `tmux send-keys` fork +
-        // agent-echo time, so the resulting capture catches the echo
+        // refresh ~15ms later (roughly the `tmux send-keys` fork plus
+        // agent-echo time) so the resulting capture catches the echo
         // deterministically instead of waiting up to one full ticker
         // interval. Cleared when the wake fires; re-armed by each
         // subsequent key.
@@ -497,7 +497,7 @@ impl App {
         // back off if a post-key wake just ran. Without this, a key
         // pressed ~10ms before a ticker tick produces two refreshes
         // back-to-back (post-key wake at +15ms, ticker at +16ms),
-        // which on a non-sync-update terminal looks like tearing —
+        // which on a non-sync-update terminal looks like tearing:
         // the first frame's per-cell writes are still landing when
         // the second frame starts overwriting them.
         let mut last_refresh_at: Option<std::time::Instant> = None;
@@ -661,15 +661,31 @@ impl App {
                             // that EXITS live-send won't arm a wake,
                             // and keys outside live-send leave it None
                             // anyway since we never set it.
-                            if self.home.live_send.is_some() {
+                            let live_after = self.home.live_send.is_some();
+                            if live_after {
                                 last_live_key_at = Some(std::time::Instant::now());
                             }
 
-                            // Skip the draw when returning from tmux attach.
-                            // needs_redraw triggers a clear + stale event drain
-                            // on the next iteration; drawing before that drain
-                            // wastes a frame and can flicker.
-                            if !self.needs_redraw {
+                            // Skip the immediate draw when:
+                            //   - We're returning from tmux attach
+                            //     (`needs_redraw` triggers a clear +
+                            //     stale event drain on the next
+                            //     iteration; drawing before the drain
+                            //     wastes a frame and can flicker), OR
+                            //   - We're inside live-send. The key was
+                            //     queued to the worker but has NOT been
+                            //     dispatched to tmux yet, so the home
+                            //     view's preview cache is still stale.
+                            //     Drawing now produces a frame
+                            //     identical to the previous one
+                            //     (ratatui's diff is empty) and then
+                            //     the post-key wake fires ~15ms later
+                            //     with fresh post-echo content.
+                            //     Skipping the immediate draw avoids a
+                            //     no-op paint that on non-sync-update
+                            //     terminals can still emit cursor-move
+                            //     bytes mid-frame.
+                            if !self.needs_redraw && !live_after {
                                 self.draw(terminal)?;
                             }
 
@@ -988,8 +1004,8 @@ impl App {
             // rebuilds. Skip in live-send: the spinner lives in the
             // sidebar (which the user isn't looking at) and forcing a
             // full HomeView render every 120ms inside live mode is the
-            // single biggest contributor to perceived preview lag — it
-            // bypasses the cheap `draw_preview_only` fast path eight
+            // single biggest contributor to perceived preview lag, since
+            // it bypasses the cheap `draw_preview_only` fast path eight
             // times a second.
             if last_spinner_redraw.elapsed() >= SPINNER_REDRAW_INTERVAL
                 && self.home.has_animated_sessions()
@@ -1000,7 +1016,7 @@ impl App {
                 needs_full_refresh = true;
             }
 
-            // In live-send, the 16ms ticker is the steady-state
+            // In live-send, the 33ms ticker is the steady-state
             // refresh source; treat every tick as a refresh. The
             // post-key wake (`woke_via_post_key`) is the same signal
             // but on a deterministic ~15ms delay after each keystroke
@@ -1040,9 +1056,9 @@ impl App {
                 // is gone), and (b) on terminals that don't support
                 // synchronized-update escapes (Apple Terminal.app,
                 // Mosh-with-prediction), the snapshot-then-overlay
-                // pattern produced visible "drag" — the previous
+                // pattern produced visible "drag" (the previous
                 // frame's preview cells stayed on screen for a beat
-                // while ratatui's diff caught up. Always-full-draw is
+                // while ratatui's diff caught up). Always-full-draw is
                 // ~2-3ms more CPU per frame (rebuilding the sidebar
                 // widget tree) but is uniformly clean across
                 // terminals. Outside live-send the same path runs

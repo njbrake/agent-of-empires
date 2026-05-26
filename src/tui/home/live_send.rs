@@ -24,7 +24,7 @@
 //! - Each coalesced keystroke run becomes one `tmux send-keys`
 //!   subprocess. A long-lived `tmux -C` control-mode connection was
 //!   tried (#1485) to avoid that fork cost on mobile, but the
-//!   connection turned out to be unreliable on macOS tmux 3.x — it
+//!   connection turned out to be unreliable on macOS tmux 3.x: it
 //!   EOF'd within milliseconds of spawn, leaving us paying the spawn
 //!   cost while never benefiting from the connection. Forking per
 //!   batch is the simpler, more portable model; the per-batch fork
@@ -339,8 +339,8 @@ pub(super) enum WorkerMsg {
 /// Previously (#1485) this dispatched through a long-lived
 /// `tmux -C attach-session` connection to avoid one fork per
 /// keystroke. The connection turned out to be unstable on at least
-/// some macOS tmux 3.x builds — it would EOF within milliseconds of
-/// spawn — and the resulting fork-fallback path was hit ~100% of the
+/// some macOS tmux 3.x builds (it would EOF within milliseconds of
+/// spawn), and the resulting fork-fallback path was hit ~100% of the
 /// time on those setups while still paying the spawn cost upfront.
 /// Ripping out control-mode entirely keeps the dispatch path simple
 /// (one fork per coalesced batch) and consistent across setups; the
@@ -410,9 +410,9 @@ fn dispatch_batch(tmux_name: &str, batch: Vec<WorkerMsg>) {
     }
 }
 
-/// Execute one `TmuxAction` as a one-shot `tmux` subprocess. Visible
-/// at module level so tests in `super::tests` can exercise the command
-/// construction without standing up a real tmux session.
+/// Execute one `TmuxAction` as a one-shot `tmux` subprocess. Module-
+/// level fn (rather than a method on the worker) so it stays callable
+/// from the spawned thread without holding a worker reference.
 fn dispatch_via_fork(tmux_name: &str, action: &TmuxAction) -> anyhow::Result<()> {
     use std::process::{Command, Stdio};
     let target = format!("{}:^.0", tmux_name);
@@ -442,9 +442,9 @@ fn dispatch_via_fork(tmux_name: &str, action: &TmuxAction) -> anyhow::Result<()>
     }
     let status = cmd
         .status()
-        .map_err(|e| anyhow::anyhow!("spawn tmux fork fallback: {}", e))?;
+        .map_err(|e| anyhow::anyhow!("spawn live-send tmux subprocess: {}", e))?;
     if !status.success() {
-        anyhow::bail!("tmux fork fallback exited non-zero for {:?}", action);
+        anyhow::bail!("live-send tmux subprocess exited non-zero for {:?}", action);
     }
     Ok(())
 }

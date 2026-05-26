@@ -2501,7 +2501,7 @@ impl HomeView {
         // will ask for, so the first frame already shows the agent
         // re-laid-out at the new size. Without this the first frame
         // captures the OLD pane and frame 2 (after the async worker
-        // resize completes) jumps to the new size — the visible
+        // resize completes) jumps to the new size: the visible
         // "shift" the user perceives on entering live mode.
         //
         // Use `self.preview_area` (the cached INNER rect) directly.
@@ -2515,7 +2515,7 @@ impl HomeView {
         self.live_send_last_resize = None;
         let inner = self.preview_area;
         if inner.width > 0 && inner.height > 0 {
-            let _ = std::process::Command::new("tmux")
+            let resize_status = std::process::Command::new("tmux")
                 .args([
                     "resize-window",
                     "-t",
@@ -2527,14 +2527,32 @@ impl HomeView {
                 ])
                 .stderr(std::process::Stdio::null())
                 .status();
-            self.live_send_last_resize = Some((inner.width, inner.height));
+            // Only register the dedup if the resize subprocess
+            // actually succeeded. If tmux failed (session died
+            // between our state install and now, tmux binary
+            // missing, etc.), leaving `live_send_last_resize` as
+            // None lets the next `refresh_preview_cache_if_needed`
+            // try the resize again through the worker.
+            if matches!(&resize_status, Ok(s) if s.success()) {
+                self.live_send_last_resize = Some((inner.width, inner.height));
+            }
             // Give the agent ~50ms to handle SIGWINCH and re-lay out
             // before we capture the first frame. Some agents (claude-
             // code in particular) do a full clear-screen + redraw on
             // resize; capturing during that produces a partial frame.
             // 50ms is the smallest delay that empirically lets the
             // most-common agents settle.
-            std::thread::sleep(std::time::Duration::from_millis(50));
+            //
+            // Wrap the sleep in `block_in_place` so the tokio
+            // multi-threaded runtime can reschedule any other tasks
+            // off this worker for the duration. Without it, the 50ms
+            // would block every other tokio task (status pollers,
+            // update checks, etc.) from running on this thread. The
+            // call is a no-op on a current-thread runtime; aoe
+            // always uses multi-threaded (`#[tokio::main]`).
+            tokio::task::block_in_place(|| {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            });
         }
         self.stamp_last_accessed(session_id);
         Ok(stale_sid)

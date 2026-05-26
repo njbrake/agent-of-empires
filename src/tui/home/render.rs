@@ -1241,8 +1241,8 @@ impl HomeView {
                 // `Session::capture_pane_with_size` returns when the
                 // session is gone OR tmux had a transient hiccup)
                 // preserves the last-known-good capture so the preview
-                // doesn't flash blank — the kill-switch behavior
-                // introduced in #1501. Outside live mode the empty
+                // doesn't flash blank (the kill-switch behavior
+                // introduced in #1501). Outside live mode the empty
                 // content surfaces as "No output available", which is
                 // the intended signal that the underlying session is
                 // gone.
