@@ -1629,21 +1629,27 @@ impl App {
                     .set_instance_status(&id, crate::session::Status::Starting);
                 self.update_status = Some(UpdateStatus::transient("Reviving session...".into()));
                 self.draw(terminal)?;
-                let outcome = self.home.enter_live_send(&id);
-                match outcome {
-                    Ok(Some(sid)) => {
-                        self.update_status = Some(UpdateStatus::transient(format!(
-                            "Resume failed for sid {sid}; live-send sent to a fresh pane (history not loaded)"
-                        )));
-                    }
-                    Ok(None) => {
-                        self.update_status = None;
-                    }
-                    Err(()) => {
-                        // enter_live_send already surfaced the failure via
-                        // info_dialog; just clear the transient toast.
-                        self.update_status = None;
-                    }
+                let outcome = self.home.prepare_live_send(&id);
+                // Settle the toast to its final state BEFORE the sync resize
+                // and redraw, so HomeView's cached `preview_pane_area`
+                // matches the geometry the user will see for the next
+                // several frames. Otherwise the toast row that was on screen
+                // during `prepare_live_send` would make the preview pane one
+                // row shorter than post-toast, the sync resize would target
+                // the smaller pane, and the first capture would render
+                // shifted up.
+                self.update_status = match &outcome {
+                    Ok(Some(sid)) => Some(UpdateStatus::transient(format!(
+                        "Resume failed for sid {sid}; live-send sent to a fresh pane (history not loaded)"
+                    ))),
+                    // On clean ready, drop the toast entirely. On Err the
+                    // info_dialog already carries the failure detail, so the
+                    // transient toast just gets in the way.
+                    Ok(None) | Err(()) => None,
+                };
+                if outcome.is_ok() {
+                    self.draw(terminal)?;
+                    self.home.finalize_live_send_resize();
                 }
             }
             Action::AttachToolSession(id, tool_name) => {

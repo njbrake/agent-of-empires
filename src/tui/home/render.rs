@@ -13,7 +13,7 @@ use super::{
 };
 use crate::session::config::{GroupByMode, SortOrder};
 use crate::session::{Item, Status};
-use crate::tui::components::preview::CachedPreview;
+use crate::tui::components::preview::{self, CachedPreview};
 use crate::tui::components::{
     format_scroll_indicator, set_prefixed_input_cursor_position, HelpOverlay, Preview,
 };
@@ -428,6 +428,7 @@ impl HomeView {
         // Diff view takes over the whole screen
         if self.diff_view.is_some() {
             self.preview_area = Rect::default();
+            self.preview_pane_area = Rect::default();
             self.preview_outer_area = Rect::default();
             self.diff_area = self.active_diff_area(area);
         }
@@ -1597,6 +1598,14 @@ impl HomeView {
         // the inner there draws a nested block.
         self.preview_outer_area = area;
         self.diff_area = Rect::default();
+        // The agent-pane sub-rect of `inner`: full inner when the info
+        // header is hidden or the layout is compact, otherwise inner
+        // shifted down past the info section. `Preview::render_with_cache`
+        // splits the same way internally, so this mirrors what the user
+        // actually sees and is what we size the tmux pane to in live mode.
+        // Default to `inner`; the Agent branch below refines it if it can
+        // resolve the selected instance.
+        self.preview_pane_area = inner;
         frame.render_widget(block, area);
 
         match self.view_mode {
@@ -1611,13 +1620,38 @@ impl HomeView {
                 if is_creating {
                     self.render_creating_preview(frame, inner, theme);
                 } else {
+                    // Mirror the info-vs-output split in
+                    // `Preview::render_with_cache` so the cache + tmux pane
+                    // match the visible output area. Sizing to the full
+                    // `inner` while the user has the info header expanded
+                    // leaves the top `info_height` rows of the agent's
+                    // pane outside the displayed window, where they get
+                    // tail-clipped on every frame.
+                    let pane_area = if compact || !self.show_preview_info {
+                        inner
+                    } else {
+                        self.selected_session
+                            .as_ref()
+                            .and_then(|id| self.get_instance(id))
+                            .map(|inst| {
+                                let info_h = preview::agent_info_height(inst).min(inner.height);
+                                Rect {
+                                    x: inner.x,
+                                    y: inner.y + info_h,
+                                    width: inner.width,
+                                    height: inner.height - info_h,
+                                }
+                            })
+                            .unwrap_or(inner)
+                    };
+                    self.preview_pane_area = pane_area;
                     // Refresh the raw `content` cache, then ensure the
                     // parsed `Text<'static>` cache reflects it. Doing
                     // the parse here (under `&mut self.preview_cache`)
                     // means subsequent shared borrows on
                     // `parsed_text` and on `self.get_instance` can
                     // coexist in the actual render call.
-                    self.refresh_preview_cache_if_needed(inner.width, inner.height);
+                    self.refresh_preview_cache_if_needed(pane_area.width, pane_area.height);
                     self.preview_cache.ensure_parsed();
 
                     if let Some(id) = &self.selected_session {

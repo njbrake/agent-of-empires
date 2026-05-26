@@ -445,6 +445,19 @@ pub struct HomeView {
     /// Reset to 0 whenever the selected session changes.
     pub(super) preview_scroll_offset: u16,
     pub(super) preview_area: Rect,
+    /// Sub-rect of `preview_area` where the agent's captured pane content
+    /// is actually painted — i.e. `preview_area` minus the info header
+    /// when the user has it expanded (Agent view, non-compact). When the
+    /// info header is hidden or the layout is compact, this matches
+    /// `preview_area` exactly.
+    ///
+    /// `refresh_preview_cache_if_needed` and the live-send sync resize
+    /// both read this so the tmux pane is sized to the visible output
+    /// portion, not the full inner. Sizing to the full inner caused the
+    /// agent to render `info_height` extra rows that the user couldn't
+    /// see; tail-anchored display clipped those rows off the top, so
+    /// every frame in info-expanded mode looked shifted up.
+    pub(super) preview_pane_area: Rect,
     /// Outer rect of the preview pane (block + borders + content), captured
     /// during `render_preview`. The live-send preview-only fast path uses
     /// this to call back into `render_preview` with the correct OUTER area,
@@ -736,6 +749,7 @@ impl HomeView {
             tool_preview_cache: PreviewCache::default(),
             preview_scroll_offset: 0,
             preview_area: Rect::default(),
+            preview_pane_area: Rect::default(),
             preview_outer_area: Rect::default(),
             diff_area: Rect::default(),
             list_area: Rect::default(),
@@ -2427,11 +2441,22 @@ impl HomeView {
     /// then installs `live_send` state so subsequent keystrokes are
     /// captured by `handle_live_send_key`.
     ///
+    /// Geometry-sensitive work is intentionally split out into
+    /// `finalize_live_send_resize`: the caller is expected to settle
+    /// any toast/banner state (which can shift `preview_pane_area` by a
+    /// row) and redraw between `prepare_live_send` and
+    /// `finalize_live_send_resize`, so the sync resize targets the
+    /// geometry the user will actually see for the next several frames.
+    /// Without that split, the "Reviving session..." toast shown during
+    /// this slow phase made `preview_pane_area` one row shorter than
+    /// the post-toast frame, and the agent's first capture rendered
+    /// shifted up.
+    ///
     /// Returns `Ok(Some(stale_sid))` when the resume-fallback cascade
     /// fired during respawn, `Ok(None)` on a clean ready, and `Err(())`
     /// if the pane could not be readied (`info_dialog` is set with the
     /// underlying error so the caller only has to clear its toast).
-    pub fn enter_live_send(&mut self, session_id: &str) -> Result<Option<String>, ()> {
+    pub fn prepare_live_send(&mut self, session_id: &str) -> Result<Option<String>, ()> {
         let outcome = self.try_mutate_instance_writeback_on_err(session_id, |inst| {
             inst.ensure_pane_ready().map_err(Into::into)
         });
@@ -2522,66 +2547,78 @@ impl HomeView {
         // pre-#1485 path; control-mode was tried as an optimization
         // but turned out to be unreliable on real-world tmux setups
         // and was removed in favor of this simpler model).
-        self.live_send_worker = Some(live_send::LiveSendWorker::spawn(tmux_name.clone()));
-        // Synchronously resize the pane to match what the next refresh
-        // will ask for, so the first frame already shows the agent
-        // re-laid-out at the new size. Without this the first frame
-        // captures the OLD pane and frame 2 (after the async worker
-        // resize completes) jumps to the new size: the visible
-        // "shift" the user perceives on entering live mode.
-        //
-        // Use `self.preview_area` (the cached INNER rect) directly.
-        // The preview pane uses `Borders::ALL` + `Padding::horizontal(1)`,
-        // so `inner.width = outer.width - 4` and `inner.height =
-        // outer.height - 2`. Earlier versions of this code subtracted
-        // 2 from both dimensions of `preview_outer_area`, which was off
-        // by 2 columns and caused the very thing it was meant to
-        // prevent: the next refresh saw a different inner.width,
-        // detected the dedup miss, and queued ANOTHER async resize.
+        self.live_send_worker = Some(live_send::LiveSendWorker::spawn(tmux_name));
+        // Clear the resize dedup so `finalize_live_send_resize` always
+        // issues its sync resize, even if the cached geometry from a
+        // prior session happens to match the current preview_pane_area.
         self.live_send_last_resize = None;
-        let inner = self.preview_area;
-        if inner.width > 0 && inner.height > 0 {
-            let resize_status = std::process::Command::new("tmux")
-                .args([
-                    "resize-window",
-                    "-t",
-                    &tmux_name,
-                    "-x",
-                    &inner.width.to_string(),
-                    "-y",
-                    &inner.height.to_string(),
-                ])
-                .stderr(std::process::Stdio::null())
-                .status();
-            // Only register the dedup if the resize subprocess
-            // actually succeeded. If tmux failed (session died
-            // between our state install and now, tmux binary
-            // missing, etc.), leaving `live_send_last_resize` as
-            // None lets the next `refresh_preview_cache_if_needed`
-            // try the resize again through the worker.
-            if matches!(&resize_status, Ok(s) if s.success()) {
-                self.live_send_last_resize = Some((inner.width, inner.height));
-            }
-            // Give the agent ~50ms to handle SIGWINCH and re-lay out
-            // before we capture the first frame. Some agents (claude-
-            // code in particular) do a full clear-screen + redraw on
-            // resize; capturing during that produces a partial frame.
-            // 50ms is the smallest delay that empirically lets the
-            // most-common agents settle.
-            //
-            // Wrap the sleep in `block_in_place` so the tokio
-            // multi-threaded runtime can reschedule any other tasks
-            // off this worker for the duration. Without it, the 50ms
-            // would block every other tokio task (status pollers,
-            // update checks, etc.) from running on this thread. The
-            // call is a no-op on a current-thread runtime; aoe
-            // always uses multi-threaded (`#[tokio::main]`).
-            tokio::task::block_in_place(|| {
-                std::thread::sleep(std::time::Duration::from_millis(50));
-            });
-        }
         self.stamp_last_accessed(session_id);
         Ok(stale_sid)
+    }
+
+    /// Synchronously resize the live-send pane to match `self.preview_pane_area`,
+    /// then block for ~50 ms so the agent has time to handle SIGWINCH and
+    /// re-lay out before the next preview capture.
+    ///
+    /// Must be called after `prepare_live_send` returns `Ok(_)` and after
+    /// the caller has redrawn the frame in the post-toast geometry the
+    /// user will see for the next several frames. See `prepare_live_send`
+    /// for why the two are split.
+    ///
+    /// `preview_pane_area` is the cached OUTPUT sub-rect: the full inner
+    /// (after border + padding) minus the Agent-view info header when the
+    /// user has it expanded. Sizing to the full inner instead would leave
+    /// the top `info_height` rows of the agent's output outside the
+    /// visible window; tail-clip semantics in the preview's `Paragraph`
+    /// render then drop those rows on every frame, which the user
+    /// perceives as content shifted up.
+    pub fn finalize_live_send_resize(&mut self) {
+        let Some(state) = self.live_send.as_ref() else {
+            return;
+        };
+        let tmux_name = state.tmux_name.clone();
+        let pane = self.preview_pane_area;
+        if pane.width == 0 || pane.height == 0 {
+            return;
+        }
+        let resize_status = std::process::Command::new("tmux")
+            .args([
+                "resize-window",
+                "-t",
+                &tmux_name,
+                "-x",
+                &pane.width.to_string(),
+                "-y",
+                &pane.height.to_string(),
+            ])
+            .stderr(std::process::Stdio::null())
+            .status();
+        // Only register the dedup if the resize subprocess actually
+        // succeeded. If tmux failed (session died between our state
+        // install and now, tmux binary missing, etc.), leaving
+        // `live_send_last_resize` as None lets the next
+        // `refresh_preview_cache_if_needed` try the resize again
+        // through the worker.
+        if matches!(&resize_status, Ok(s) if s.success()) {
+            self.live_send_last_resize = Some((pane.width, pane.height));
+        }
+        // Give the agent ~50ms to handle SIGWINCH and re-lay out
+        // before we capture the first frame. Some agents (claude-
+        // code in particular) do a full clear-screen + redraw on
+        // resize; capturing during that produces a partial frame.
+        // 50ms is the smallest delay that empirically lets the
+        // most-common agents settle.
+        //
+        // Wrap the sleep in `block_in_place` so the tokio
+        // multi-threaded runtime can reschedule any other tasks
+        // off this worker for the duration. Without it, the 50ms
+        // would block every other tokio task (status pollers,
+        // update checks, etc.) from running on this thread. The
+        // call is a no-op on a current-thread runtime; aoe
+        // always uses multi-threaded (`#[tokio::main]`).
+        tokio::task::block_in_place(|| {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        });
     }
 
     pub fn save(&mut self) -> anyhow::Result<()> {

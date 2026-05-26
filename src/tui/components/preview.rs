@@ -31,6 +31,28 @@ impl<'a> CachedPreview<'a> {
     }
 }
 
+/// Row count of the Agent-view info header (profile/tool, path, status,
+/// optional sandbox line, optional worktree block) for `instance`.
+///
+/// Exposed at the module level so callers outside `Preview::render_with_cache`
+/// can compute the same split — in particular, the live-send sync resize
+/// in `HomeView::finalize_live_send_resize` needs to size the tmux pane
+/// to the OUTPUT portion (inner minus this header), not the full inner.
+/// If the agent renders into the full inner while the output portion is
+/// shorter by `agent_info_height` rows, the top of the agent's output
+/// gets clipped on every frame and the user sees content shifted up.
+pub fn agent_info_height(instance: &Instance) -> u16 {
+    let base: u16 = 3; // profile+tool / path / status
+    let sandbox_lines: u16 = if instance.is_sandboxed() { 1 } else { 0 };
+    if let Some(wt) = instance.worktree_info.as_ref() {
+        // blank + header + branch + main (+ optional base)
+        let base_branch_line: u16 = if wt.base_branch.is_some() { 1 } else { 0 };
+        base + sandbox_lines + 4 + base_branch_line
+    } else {
+        base + sandbox_lines
+    }
+}
+
 pub struct Preview;
 
 impl Preview {
@@ -198,15 +220,7 @@ impl Preview {
             return;
         }
 
-        // 3 base lines (profile+tool / path / status) + optional sandbox + optional worktree block
-        let base = 3;
-        let sandbox_lines = if instance.is_sandboxed() { 1 } else { 0 };
-        let info_height = if let Some(wt) = instance.worktree_info.as_ref() {
-            let base_branch_line = if wt.base_branch.is_some() { 1 } else { 0 };
-            base + sandbox_lines + 4 + base_branch_line // blank + header + branch + main (+ optional base)
-        } else {
-            base + sandbox_lines
-        };
+        let info_height = agent_info_height(instance);
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)
