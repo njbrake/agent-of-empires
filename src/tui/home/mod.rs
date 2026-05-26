@@ -31,9 +31,10 @@ use super::deletion_poller::DeletionPoller;
 use super::dialogs::ServeView;
 use super::dialogs::{
     ChangelogDialog, CommandPaletteDialog, ConfirmDialog, GroupDeleteOptionsDialog,
-    HookTrustDialog, HooksInstallDialog, InfoDialog, NewSessionData, NewSessionDialog,
-    NoAgentsDialog, ProfilePickerDialog, ProjectsDialog, RenameDialog, RestartDialog,
-    SnoozeDurationDialog, UnifiedDeleteDialog, UpdateConfirmDialog, WelcomeDialog,
+    GroupPickerDialog, HookTrustDialog, HooksInstallDialog, InfoDialog, NewSessionData,
+    NewSessionDialog, NoAgentsDialog, ProfilePickerDialog, ProjectsDialog, RenameDialog,
+    RestartDialog, SnoozeDurationDialog, SortPickerDialog, UnifiedDeleteDialog,
+    UpdateConfirmDialog, WelcomeDialog,
 };
 use super::diff::DiffView;
 use super::settings::SettingsView;
@@ -368,6 +369,8 @@ pub struct HomeView {
     /// opens, consumed on submit.
     pub(super) pending_snooze_session: Option<String>,
     pub(super) profile_picker_dialog: Option<ProfilePickerDialog>,
+    pub(super) group_picker_dialog: Option<GroupPickerDialog>,
+    pub(super) sort_picker_dialog: Option<SortPickerDialog>,
     pub(super) projects_dialog: Option<ProjectsDialog>,
     pub(super) command_palette: Option<CommandPaletteDialog>,
     #[cfg(feature = "serve")]
@@ -698,6 +701,8 @@ impl HomeView {
             snooze_duration_dialog: None,
             pending_snooze_session: None,
             profile_picker_dialog: None,
+            group_picker_dialog: None,
+            sort_picker_dialog: None,
             projects_dialog: None,
             command_palette: None,
             #[cfg(feature = "serve")]
@@ -2329,6 +2334,16 @@ impl HomeView {
         }
 
         self.profile_picker_dialog = Some(ProfilePickerDialog::new(entries, &current_profile));
+    }
+
+    /// Show the group-by picker dialog seeded with the current mode.
+    pub(super) fn show_group_picker(&mut self) {
+        self.group_picker_dialog = Some(GroupPickerDialog::new(self.group_by));
+    }
+
+    /// Show the sort-order picker dialog seeded with the current order.
+    pub(super) fn show_sort_picker(&mut self) {
+        self.sort_picker_dialog = Some(SortPickerDialog::new(self.sort_order));
     }
 
     pub fn set_instance_status(&mut self, id: &str, status: crate::session::Status) {

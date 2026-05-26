@@ -64,6 +64,15 @@ pub enum PaletteAction {
     /// correctly in strict mode, where the `m` binding is intentionally
     /// defanged for the typing-guard.
     EnterLiveSend,
+    /// Open the sort-order picker. Dedicated variant for the same reason as
+    /// `EnterLiveSend`: in strict mode, bare lowercase `o` is defanged for
+    /// the typing-guard, so a synthesized `Char('o')` would not fire.
+    OpenSortPicker,
+    /// Open the group-by picker. Dedicated variant because bare `g` is
+    /// defanged in strict mode (typing-guard) and `Char('G')` is bound to
+    /// End, so no single synthesized key reaches the show helper in both
+    /// modes.
+    OpenGroupPicker,
 }
 
 /// One entry in the palette. `payload` is what gets returned when the user picks it.
@@ -230,20 +239,20 @@ pub fn builtin_commands(serve_enabled: bool, strict_hotkeys: bool) -> Vec<Palett
             payload: PaletteAction::Key(key('t')),
         },
         PaletteCommand {
-            id: "cycle-sort",
-            title: "Cycle sort order".to_string(),
+            id: "pick-sort",
+            title: "Sort order".to_string(),
             group: PaletteGroup::Views,
-            keywords: vec!["order", "sort"],
+            keywords: vec!["order", "sort", "pick"],
             hotkey: hotkey_label("o", "O", strict_hotkeys),
-            payload: PaletteAction::Key(key('o')),
+            payload: PaletteAction::OpenSortPicker,
         },
         PaletteCommand {
-            id: "cycle-group-by",
-            title: "Cycle group by".to_string(),
+            id: "pick-group-by",
+            title: "Group by".to_string(),
             group: PaletteGroup::Views,
-            keywords: vec!["group", "project"],
+            keywords: vec!["group", "project", "pick"],
             hotkey: hotkey_label("g", "Ctrl+G", strict_hotkeys),
-            payload: PaletteAction::Key(key('g')),
+            payload: PaletteAction::OpenGroupPicker,
         },
         PaletteCommand {
             id: "next-waiting",
@@ -648,6 +657,33 @@ mod tests {
     }
 
     #[test]
+    fn picker_entries_use_dedicated_payload_variants() {
+        // Regression guard: the sort and group picker palette entries must
+        // route through the dedicated `OpenSortPicker` / `OpenGroupPicker`
+        // payloads rather than synthesizing `Key('o')` / `Key('g')`. The
+        // synthesized lowercase keys are gated by `if !strict_hotkeys` in
+        // `dispatch_action_key`, so a palette pick in strict mode would
+        // silently no-op without the dedicated routing.
+        let cmds = builtin_commands(false, true);
+        let sort = cmds
+            .iter()
+            .find(|c| c.id == "pick-sort")
+            .expect("builtin commands must include 'pick-sort'");
+        assert!(
+            matches!(&sort.payload, PaletteAction::OpenSortPicker),
+            "sort-picker entry must dispatch PaletteAction::OpenSortPicker"
+        );
+        let group = cmds
+            .iter()
+            .find(|c| c.id == "pick-group-by")
+            .expect("builtin commands must include 'pick-group-by'");
+        assert!(
+            matches!(&group.payload, PaletteAction::OpenGroupPicker),
+            "group-picker entry must dispatch PaletteAction::OpenGroupPicker"
+        );
+    }
+
+    #[test]
     fn keywords_match_searches() {
         // "Move session to group" complaint from issue #889: searching for
         // "move" should surface the rename entry via its keyword.
@@ -841,13 +877,28 @@ mod tests {
         let bound = home_input_bound_chars();
 
         // Build palette char set with serve toggled on so serve-only commands
-        // still count as covered.
+        // still count as covered. `OpenSortPicker` / `OpenGroupPicker` are
+        // dedicated payload variants that exist precisely to route around
+        // strict-mode key gating; they count as covering their canonical
+        // hotkey ('o' and 'g' respectively). `EnterLiveSend` is bound to Tab,
+        // so it does not cover any letter char.
         let mut palette_chars: HashSet<char> = HashSet::new();
         for cmd in builtin_commands(true, false) {
-            if let PaletteAction::Key(ke) = cmd.payload {
-                if let KeyCode::Char(c) = ke.code {
-                    palette_chars.insert(c.to_ascii_lowercase());
+            match cmd.payload {
+                PaletteAction::Key(ke) => {
+                    if let KeyCode::Char(c) = ke.code {
+                        palette_chars.insert(c.to_ascii_lowercase());
+                    }
                 }
+                PaletteAction::OpenSortPicker => {
+                    palette_chars.insert('o');
+                }
+                PaletteAction::OpenGroupPicker => {
+                    palette_chars.insert('g');
+                }
+                PaletteAction::EnterLiveSend
+                | PaletteAction::JumpToCursor(_)
+                | PaletteAction::ToolSession(_) => {}
             }
         }
 

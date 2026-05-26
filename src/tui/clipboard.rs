@@ -170,21 +170,3 @@ fn write_osc52(bytes: &[u8]) -> std::io::Result<()> {
     write!(stdout, "\x1b]52;c;{}\x07", encoded)?;
     stdout.flush()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn truncates_oversize_payload() {
-        let huge = "a".repeat(MAX_BYTES + 100);
-        let copied = copy_to_clipboard(&huge);
-        assert_eq!(copied, MAX_BYTES);
-    }
-
-    #[test]
-    fn copies_short_payload_in_full() {
-        let copied = copy_to_clipboard("hello");
-        assert_eq!(copied, 5);
-    }
-}

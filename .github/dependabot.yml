@@ -89,6 +89,11 @@ updates:
       semver-minor-days: 14
       semver-major-days: 28
     groups:
+      tailwind:
+        patterns:
+          - "tailwindcss"
+          - "@tailwindcss/*"
+        update-types: ["minor", "patch"]
       web-minor-patch:
         patterns: ["*"]
         exclude-patterns:
@@ -146,7 +151,8 @@ updates:
   - package-ecosystem: "npm"
     directory: "/cockpit-worker/test-shim"
     schedule:
-      interval: "monthly"
+      interval: "weekly"
+      day: "monday"
       time: "06:00"
       timezone: "Etc/UTC"
     open-pull-requests-limit: 3
@@ -161,6 +167,10 @@ updates:
       default-days: 7
       semver-minor-days: 14
       semver-major-days: 28
+    groups:
+      acp:
+        patterns: ["@agentclientprotocol/*"]
+        update-types: ["minor", "patch"]
 
   # npm: website
   - package-ecosystem: "npm"
@@ -181,6 +191,11 @@ updates:
       semver-minor-days: 14
       semver-major-days: 28
     groups:
+      tailwind:
+        patterns:
+          - "tailwindcss"
+          - "@tailwindcss/*"
+        update-types: ["minor", "patch"]
       website-minor-patch:
         patterns: ["*"]
         exclude-patterns:

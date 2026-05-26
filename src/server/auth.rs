@@ -234,15 +234,22 @@ fn normalize_path(path: &str) -> &str {
 
 /// Whether a request path is exempt from the passphrase session +
 /// device-binding check. These are the login bootstrap surfaces and
-/// static assets that pre-load the SPA shell. Shared by the
+/// static assets that pre-load the SPA shell. Browser document
+/// navigations to the SPA (for example `/session/<id>`) cannot attach
+/// the device-binding header; the API and websocket routes stay
+/// non-exempt so the device-bound session still protects data and
+/// terminal attachment. Shared by the
 /// token-with-passphrase branch of `auth_middleware` and by
 /// `run_passphrase_wall` so a new bootstrap path only needs to be
 /// added once.
 fn is_login_session_exempt(path: &str) -> bool {
-    path == "/login"
+    path == "/"
+        || path == "/login"
+        || path.starts_with("/session/")
         || path == "/api/login"
         || path == "/api/login/status"
         || path == "/api/logout"
+        || path == "/theme-bootstrap.js"
         || path.starts_with("/assets/")
         || path == "/manifest.json"
         || path == "/sw.js"
@@ -1167,14 +1174,16 @@ mod tests {
         // Login-exempt: must not refresh.
         assert!(!should_refresh_session_cookie("/api/logout"));
         assert!(!should_refresh_session_cookie("/api/login"));
+        assert!(!should_refresh_session_cookie("/"));
         assert!(!should_refresh_session_cookie("/login"));
+        assert!(!should_refresh_session_cookie("/session/abc"));
         assert!(!should_refresh_session_cookie("/api/login/status"));
+        assert!(!should_refresh_session_cookie("/theme-bootstrap.js"));
         assert!(!should_refresh_session_cookie("/assets/index.js"));
         assert!(!should_refresh_session_cookie("/manifest.json"));
         assert!(!should_refresh_session_cookie("/sw.js"));
 
         // Non-exempt: must refresh (sliding window).
-        assert!(should_refresh_session_cookie("/"));
         assert!(should_refresh_session_cookie("/api/sessions"));
         assert!(should_refresh_session_cookie(
             "/api/sessions/abc/cockpit/ws"
@@ -1190,12 +1199,16 @@ mod tests {
         // Bootstrap + status endpoints: the user might hit these
         // before a session exists (or after it expired) and the
         // middleware must let them through so the SPA can recover.
+        assert!(is_login_session_exempt("/"));
         assert!(is_login_session_exempt("/login"));
+        assert!(is_login_session_exempt("/session/abc"));
+        assert!(is_login_session_exempt("/session/2626c6af68754732"));
         assert!(is_login_session_exempt("/api/login"));
         assert!(is_login_session_exempt("/api/login/status"));
         assert!(is_login_session_exempt("/api/logout"));
 
         // Static assets: pre-load the SPA shell before any auth.
+        assert!(is_login_session_exempt("/theme-bootstrap.js"));
         assert!(is_login_session_exempt("/assets/index.css"));
         assert!(is_login_session_exempt("/assets/index-abc123.js"));
         assert!(is_login_session_exempt("/manifest.json"));
@@ -1203,11 +1216,12 @@ mod tests {
         assert!(is_login_session_exempt("/icon-192.png"));
         assert!(is_login_session_exempt("/fonts/inter.woff2"));
 
-        // Everything else stays gated.
-        assert!(!is_login_session_exempt("/"));
+        // Everything else stays gated, including real data/API and
+        // websocket attach routes that can send a device binding.
         assert!(!is_login_session_exempt("/api/sessions"));
         assert!(!is_login_session_exempt("/api/login/elevate"));
         assert!(!is_login_session_exempt("/api/settings"));
+        assert!(!is_login_session_exempt("/sessions/abc/ws"));
         assert!(!is_login_session_exempt("/api/sessions/abc/ws"));
         // /api/login/foo is not the same as /api/login exactly.
         assert!(!is_login_session_exempt("/api/login/foo"));
