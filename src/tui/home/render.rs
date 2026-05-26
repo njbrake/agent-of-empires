@@ -1294,20 +1294,24 @@ impl HomeView {
                             .unwrap_or_default(),
                     )
                 };
-                // Bump `last_refresh` and `dimensions` unconditionally so
-                // a failed live-mode capture still throttles its retry
-                // cadence (the in_live path bypasses the 250ms gate, so
-                // without this we'd spin on a dead socket). Content and
-                // parse cache only update on success.
-                self.preview_cache.session_id = Some(id);
-                self.preview_cache.dimensions = (width, height);
-                self.preview_cache.last_refresh = Instant::now();
+                // Only mutate cache when we actually got bytes. On a
+                // live-mode transient failure (`None`) we leave every
+                // cache field alone — including `session_id` and
+                // `dimensions`, which document "what's in `content`"
+                // and would lie if updated past a stale snapshot. The
+                // retry cadence is already bounded by the loop's tick
+                // / wake / key sources, so we don't need to write a
+                // `last_refresh` here to throttle (in live mode
+                // `in_live` forces `timer_expired` regardless).
                 if let Some(content) = captured {
                     self.preview_cache.captured_lines = content.lines().count();
                     self.preview_cache.content = content;
                     // Invalidate the cached parse; the next render that
                     // needs `ensure_parsed` will re-run `ansi-to-tui`.
                     self.preview_cache.parsed_text = None;
+                    self.preview_cache.session_id = Some(id);
+                    self.preview_cache.dimensions = (width, height);
+                    self.preview_cache.last_refresh = Instant::now();
                     self.preview_scroll_offset = clamp_scroll_to_capture(
                         self.preview_scroll_offset,
                         self.preview_cache.captured_lines,
