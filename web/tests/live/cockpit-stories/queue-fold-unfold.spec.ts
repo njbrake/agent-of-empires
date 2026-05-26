@@ -84,6 +84,11 @@ base("queued long prompt fold and unfold toggle", async ({ page }, testInfo) => 
       name: "Collapse queued prompt",
     });
     await expect(collapseButton).toBeVisible({ timeout: 5_000 });
+    // Complete the fold → unfold → fold cycle so the inverse path is
+    // exercised. Clicking Collapse should hide the queued-prompt
+    // body and bring back the expand button.
+    await collapseButton.click();
+    await expect(expandButton).toBeVisible({ timeout: 5_000 });
   } finally {
     try {
       if (serveHandle) await attachServeDiagnostics(testInfo, serveHandle);

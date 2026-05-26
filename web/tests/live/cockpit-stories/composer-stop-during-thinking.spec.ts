@@ -25,7 +25,7 @@ const SCRIPT = {
           sessionUpdate: "agent_thought_chunk",
           content: { type: "text", text: "Reasoning about the problem..." },
         },
-        { sessionUpdate: "wait_ms", ms: 5_000 },
+        { sessionUpdate: "wait_ms", ms: 30_000 },
       ],
       stopReason: "end_turn",
     },

@@ -35,7 +35,7 @@ const SCRIPT = {
           status: "pending",
           _meta: { claudeCode: { parentToolUseId: "parent-task" } },
         },
-        { sessionUpdate: "wait_ms", ms: 5_000 },
+        { sessionUpdate: "wait_ms", ms: 30_000 },
       ],
       stopReason: "end_turn",
     },
