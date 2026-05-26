@@ -268,7 +268,7 @@ export function SettingsView({
               label="Default container image"
               value={(sandbox.default_image as string) ?? ""}
               onChange={(v) => saveField("sandbox", sandbox, "default_image", v)}
-              placeholder="ghcr.io/njbrake/aoe-sandbox:latest"
+              placeholder="ghcr.io/agent-of-empires/aoe-sandbox:latest"
               mono
             />
             <SelectField

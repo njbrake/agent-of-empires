@@ -50,7 +50,7 @@ aoe remove <session> --keep-container
 ```toml
 [sandbox]
 enabled_by_default = false
-default_image = "ghcr.io/njbrake/aoe-sandbox:latest"
+default_image = "ghcr.io/agent-of-empires/aoe-sandbox:latest"
 auto_cleanup = true
 cpu_limit = "4"
 memory_limit = "8g"
@@ -64,7 +64,7 @@ environment = ["ANTHROPIC_API_KEY"]
 | Option | Default | Description |
 |--------|---------|-------------|
 | `enabled_by_default` | `false` | Auto-enable sandbox for new sessions |
-| `default_image` | `ghcr.io/njbrake/aoe-sandbox:latest` | Docker image to use |
+| `default_image` | `ghcr.io/agent-of-empires/aoe-sandbox:latest` | Docker image to use |
 | `auto_cleanup` | `true` | Remove containers when sessions are deleted |
 | `cpu_limit` | (none) | CPU limit (e.g., "4") |
 | `memory_limit` | (none) | Memory limit (e.g., "8g") |
@@ -202,8 +202,8 @@ AOE provides two official sandbox images:
 
 | Image | Description |
 |-------|-------------|
-| `ghcr.io/njbrake/aoe-sandbox:latest` | Base image with Claude Code, OpenCode, Mistral Vibe, Hermes, Codex CLI, Gemini CLI, Cursor CLI, Copilot CLI, Pi, Kiro CLI, Qwen Code, git, ripgrep, fzf |
-| `ghcr.io/njbrake/aoe-dev-sandbox:latest` | Extended image with additional dev tools |
+| `ghcr.io/agent-of-empires/aoe-sandbox:latest` | Base image with Claude Code, OpenCode, Mistral Vibe, Hermes, Codex CLI, Gemini CLI, Cursor CLI, Copilot CLI, Pi, Kiro CLI, Qwen Code, git, ripgrep, fzf |
+| `ghcr.io/agent-of-empires/aoe-dev-sandbox:latest` | Extended image with additional dev tools |
 
 ### Dev Sandbox Tools
 
@@ -218,11 +218,11 @@ To use the dev sandbox:
 
 ```bash
 # Per-session
-aoe add --sandbox-image ghcr.io/njbrake/aoe-dev-sandbox:latest .
+aoe add --sandbox-image ghcr.io/agent-of-empires/aoe-dev-sandbox:latest .
 
 # Or set as default in ~/.agent-of-empires/config.toml
 [sandbox]
-default_image = "ghcr.io/njbrake/aoe-dev-sandbox:latest"
+default_image = "ghcr.io/agent-of-empires/aoe-dev-sandbox:latest"
 ```
 
 ## Custom Docker Images
@@ -234,7 +234,7 @@ The default sandbox image includes all supported agents, git, and basic developm
 Create a `Dockerfile` in your project (or a shared location):
 
 ```dockerfile
-FROM ghcr.io/njbrake/aoe-sandbox:latest
+FROM ghcr.io/agent-of-empires/aoe-sandbox:latest
 
 # Example: Add Python for a data science project
 RUN apt-get update && apt-get install -y \
