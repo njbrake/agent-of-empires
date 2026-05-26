@@ -5632,6 +5632,32 @@ mod preview_drag_select {
 
     #[test]
     #[serial]
+    fn real_modal_during_preview_drag_cancels_selection() {
+        // Live-send counts as a dialog under has_dialog() and is what
+        // makes drag-select run in the first place; it must not
+        // cancel the drag. But a real modal (info / confirm / etc.)
+        // popping up mid-drag must drop the selection and stop
+        // mutating state behind the overlay.
+        let mut env = create_test_env_empty();
+        stage_live_send(&mut env);
+        assert!(env.view.handle_drag_start(50, 10));
+        assert!(env.view.handle_drag_move(55, 10));
+        assert!(env.view.preview_selection.is_some());
+
+        // Open a real modal mid-drag (info dialog as a stand-in for
+        // any of the non-live-send modals that has_dialog covers).
+        env.view.info_dialog = Some(super::super::super::dialogs::InfoDialog::new(
+            "title", "body",
+        ));
+        // Next drag-move should detect the modal and cancel.
+        assert!(!env.view.handle_drag_move(60, 10));
+        assert!(env.view.preview_selection.is_none());
+        assert!(env.view.drag_state.is_none());
+        assert!(!env.view.preview_copy_pending);
+    }
+
+    #[test]
+    #[serial]
     fn clear_preview_selection_drops_pending_copy() {
         // Dismissing the highlight before the render fires (e.g. a
         // keystroke between Up(Left) and the next draw) must drop the

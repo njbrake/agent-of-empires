@@ -252,15 +252,27 @@ impl HomeView {
         // is the normal save site, so we mirror its behavior).
         //
         // `has_dialog()` returns true while live-send is active, which
-        // is exactly when preview drag-select is meant to work — so we
-        // exempt PreviewSelect here. A dialog (other than live-send)
-        // opening mid-select drops the selection along with everything
-        // else routed through the modal layer; that's fine, the user
-        // can re-drag once the dialog closes.
+        // is exactly when preview drag-select is meant to work. Live
+        // mode is therefore exempt — but a real modal (info / confirm
+        // / palette / picker) opening mid-select must also kill the
+        // drag and drop the selection so it can't keep mutating under
+        // the modal or finalize on mouse-up behind the overlay.
         let drag_is_preview = matches!(self.drag_state, Some(DragKind::PreviewSelect));
-        if self.has_dialog() && self.drag_state.is_some() && !drag_is_preview {
+        let blocking_modal = self.has_blocking_dialog_for_list_click();
+        let cancel_drag = if drag_is_preview {
+            blocking_modal
+        } else {
+            self.has_dialog()
+        };
+        if cancel_drag && self.drag_state.is_some() {
             self.drag_state = None;
-            self.save_list_width();
+            if drag_is_preview {
+                self.preview_selection = None;
+                self.preview_copy_pending = false;
+                self.preview_copy_text = None;
+            } else {
+                self.save_list_width();
+            }
             return false;
         }
         match self.drag_state {
@@ -2916,6 +2928,10 @@ impl HomeView {
     /// which would destroy multi-line dictation if we checked it first.
     pub fn handle_paste(&mut self, text: &str) {
         if let Some(state) = self.live_send.clone() {
+            // Mirror the live-send key path: any interaction dismisses
+            // the finalized highlight so it doesn't follow agent output
+            // through subsequent renders.
+            self.clear_preview_selection();
             if let Some(worker) = &self.live_send_worker {
                 for key in split_paste_for_live_send(text) {
                     worker.send(key);

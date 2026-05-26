@@ -96,6 +96,15 @@ fn try_subprocess(_text: &str) -> Result<&'static str, String> {
     Err("no subprocess clipboard for this platform".to_string())
 }
 
+/// Upper bound on how long we wait for a clipboard subprocess to
+/// finish. `pbcopy` / `wl-copy` / `xclip` normally exit in low
+/// milliseconds; anything slower is a sign that the helper is hung
+/// (no display server, X selection contention, etc.), and the
+/// drag-select UX is much better off killing the helper and falling
+/// through to `arboard` / OSC 52 than freezing the TUI on
+/// `child.wait()`.
+const SUBPROCESS_WAIT: std::time::Duration = std::time::Duration::from_millis(500);
+
 fn run_subprocess(cmd: &'static str, args: &[&str], text: &str) -> Result<&'static str, String> {
     let mut child = match Command::new(cmd)
         .args(args)
@@ -109,13 +118,33 @@ fn run_subprocess(cmd: &'static str, args: &[&str], text: &str) -> Result<&'stat
     };
     if let Some(mut stdin) = child.stdin.take() {
         if let Err(e) = stdin.write_all(text.as_bytes()) {
+            let _ = child.kill();
+            let _ = child.wait();
             return Err(format!("{cmd} stdin write: {e}"));
         }
+        // Drop closes stdin, signalling EOF to the helper so it
+        // exits its read loop instead of waiting for more bytes.
     }
-    match child.wait() {
-        Ok(status) if status.success() => Ok(cmd),
-        Ok(status) => Err(format!("{cmd} exit {status}")),
-        Err(e) => Err(format!("{cmd} wait: {e}")),
+    let deadline = std::time::Instant::now() + SUBPROCESS_WAIT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                return if status.success() {
+                    Ok(cmd)
+                } else {
+                    Err(format!("{cmd} exit {status}"))
+                };
+            }
+            Ok(None) => {
+                if std::time::Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(format!("{cmd} timed out after {:?}", SUBPROCESS_WAIT));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+            }
+            Err(e) => return Err(format!("{cmd} wait: {e}")),
+        }
     }
 }
 
