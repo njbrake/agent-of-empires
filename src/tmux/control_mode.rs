@@ -37,6 +37,25 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 
+/// How long after the last `%output` notification we wait before firing
+/// the wake callback to the main loop. tmux emits one `%output` per
+/// line the agent prints, so a multi-line burst (a token-stream chunk,
+/// a full-screen TUI repaint) generates dozens of `%output` lines
+/// across a few milliseconds. Firing the wake on the FIRST output
+/// makes the consumer capture-pane mid-burst, drawing a partial
+/// frame; a later wake then redraws the settled state. The user sees
+/// "smooth, then sudden jump after a brief lag".
+///
+/// Debouncing collapses the burst to one wake at the trailing edge,
+/// so the very first frame the consumer paints is already complete.
+/// 8ms was picked empirically (see PR description): smaller values
+/// (4ms) start letting partial frames through on dense bursts; larger
+/// values (16ms+) start adding visible latency to single-character
+/// echoes. The 50ms tokio ticker still bounds worst-case latency
+/// under continuous sustained output (>1 output per 8ms) where the
+/// debounce keeps extending.
+const OUTPUT_WAKE_DEBOUNCE: Duration = Duration::from_millis(8);
+
 /// Default timeout waiting for a single command response.
 ///
 /// The previous value (750ms) was too tight in practice: under fast
@@ -119,16 +138,21 @@ impl ControlModeClient {
     /// spawned process exits before we manage to take its stdin/stdout
     /// handles.
     ///
-    /// `on_output`, when provided, is invoked from the reader thread
-    /// every time tmux emits a `%output` notification (the agent
-    /// rendered bytes into the pane). The intended caller is the TUI
-    /// main loop, which uses it to wake out of an idle `tokio::select!`
-    /// so the preview re-captures without waiting for the next timer
-    /// tick. The callback must be cheap and non-blocking; the reader
-    /// thread is back to consuming stdout the instant it returns. A
-    /// good shape is `Box::new(move || { let _ = tx.try_send(()); })`
-    /// wrapping a bounded `tokio::sync::mpsc::Sender<()>` of
-    /// capacity 1, so multiple wakes coalesce.
+    /// `on_output`, when provided, is invoked from a dedicated
+    /// debouncer thread `OUTPUT_WAKE_DEBOUNCE` after the **last**
+    /// `%output` notification of a burst, not on every line. The
+    /// intended caller is the TUI main loop, which uses it to wake
+    /// out of an idle `tokio::select!` so the preview re-captures
+    /// without waiting for the next timer tick. Debouncing the
+    /// trailing edge ensures the consumer's first capture after a
+    /// multi-line burst sees the settled state in one frame, instead
+    /// of painting a partial frame and then catching up. The
+    /// callback must be cheap and non-blocking; a slow callback
+    /// blocks the debouncer thread, not the reader. A good shape is
+    /// `Box::new(move || { let _ = tx.try_send(()); })` wrapping a
+    /// bounded `tokio::sync::mpsc::Sender<()>` of capacity 1, so any
+    /// subsequent bursts that arrive while the consumer is still
+    /// drawing coalesce into one pending wake.
     pub fn spawn(
         session_name: &str,
         on_output: Option<Box<dyn Fn() + Send + 'static>>,
@@ -153,6 +177,31 @@ impl ControlModeClient {
             .take()
             .context("control-mode child has no stdout")?;
 
+        // The trailing-edge `%output` wake is debounced on a dedicated
+        // thread so the reader stays a tight stdout->channel loop. The
+        // reader sends `()` into `trail_tx` on every `%output` line;
+        // the debouncer extends its timer on each tick and fires the
+        // user-supplied callback `OUTPUT_WAKE_DEBOUNCE` after the
+        // last one. Only spawned when a callback is supplied — if the
+        // caller didn't ask for wakes (most non-live-send paths) we
+        // skip the second thread entirely. The reader holds the only
+        // sender; when the reader exits, the debouncer sees
+        // `Disconnected` and shuts itself down.
+        let trail_tx = if let Some(cb) = on_output {
+            let (tx, rx) = channel::<()>();
+            let debouncer = thread::Builder::new()
+                .name(format!("aoe-tmux-cm-trail-{}", session_name))
+                .spawn(move || debouncer_loop(rx, cb))
+                .context("spawn control-mode output-wake debouncer thread")?;
+            // The handle is dropped (detached) immediately: the
+            // debouncer exits on its own when its sender drops, the
+            // same way the reader does on EOF.
+            let _ = debouncer;
+            Some(tx)
+        } else {
+            None
+        };
+
         let (tx, rx) = channel::<Line>();
         let reader_spawn = thread::Builder::new()
             .name(format!("aoe-tmux-cm-{}", session_name))
@@ -166,12 +215,9 @@ impl ControlModeClient {
                             return;
                         }
                     };
-                    // Fire the wake callback BEFORE handing the
-                    // parsed line off to the channel so a slow
-                    // consumer doesn't add to wake-up latency. The
-                    // callback signal is independent of whether
-                    // anything cares about the Notification on the
-                    // channel side.
+                    // Signal the debouncer BEFORE handing the parsed
+                    // line off to the channel: a slow `send_command`
+                    // consumer must not add to wake-up latency.
                     //
                     // `parse_line` recognizes both `%output` and the
                     // bare `%output` form; we mirror that here so the
@@ -179,8 +225,12 @@ impl ControlModeClient {
                     let is_output = line == "%output" || line.starts_with("%output ");
                     let parsed = parse_line(line);
                     if is_output {
-                        if let Some(cb) = &on_output {
-                            cb();
+                        if let Some(ref t) = trail_tx {
+                            // `send` errors only if the debouncer
+                            // thread has exited (impossible while we
+                            // still hold the only sender). Discard
+                            // defensively.
+                            let _ = t.send(());
                         }
                     }
                     if tx.send(parsed).is_err() {
@@ -422,6 +472,32 @@ enum ResponseState {
     Collecting,
 }
 
+/// Trailing-edge debouncer for `%output` wakes. Blocks on the channel
+/// for the first tick, then extends with `recv_timeout`: each new tick
+/// resets the debounce window, a timeout fires the callback, a
+/// disconnect (reader thread gone) exits cleanly. Lives on its own
+/// thread so a slow callback never blocks the reader.
+///
+/// Visible at module level for the unit test below.
+fn debouncer_loop(rx: Receiver<()>, cb: Box<dyn Fn() + Send + 'static>) {
+    loop {
+        // Block on the first event of a quiet period.
+        if rx.recv().is_err() {
+            return;
+        }
+        // Extend the debounce on each subsequent tick; fire when the
+        // window expires; exit when the sender drops.
+        loop {
+            match rx.recv_timeout(OUTPUT_WAKE_DEBOUNCE) {
+                Ok(()) => continue,
+                Err(RecvTimeoutError::Timeout) => break,
+                Err(RecvTimeoutError::Disconnected) => return,
+            }
+        }
+        cb();
+    }
+}
+
 /// Parse one line of tmux control-mode output into a `Line` tag.
 ///
 /// Visible for testing; the reader thread is the only non-test caller.
@@ -532,6 +608,114 @@ mod tests {
             Line::Payload(_) => {}
             other => panic!("expected Payload for leading-space line, got {:?}", other),
         }
+    }
+
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    /// Send N `()` ticks back to back over `tx` to mimic a tmux burst:
+    /// the reader thread would send one per `%output` line in tight
+    /// succession.
+    fn fire_burst(tx: &std::sync::mpsc::Sender<()>, count: usize) {
+        for _ in 0..count {
+            tx.send(()).unwrap();
+        }
+    }
+
+    #[test]
+    fn debouncer_fires_once_per_burst() {
+        // A tight burst (20 ticks back-to-back with no inter-tick
+        // sleep) should result in exactly one trailing-edge callback,
+        // not 20 leading-edge callbacks. Regression guard for the
+        // partial-frame artifact this commit fixes.
+        let (tx, rx) = channel::<()>();
+        let count = Arc::new(AtomicUsize::new(0));
+        let count_clone = count.clone();
+        let handle = thread::spawn(move || {
+            debouncer_loop(
+                rx,
+                Box::new(move || {
+                    count_clone.fetch_add(1, Ordering::SeqCst);
+                }),
+            );
+        });
+
+        fire_burst(&tx, 20);
+        // Wait well past the debounce window so the trailing edge has
+        // had time to fire. 5x the debounce is generous.
+        thread::sleep(OUTPUT_WAKE_DEBOUNCE * 5);
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            1,
+            "tight 20-tick burst should produce one trailing wake, not many leading wakes"
+        );
+
+        drop(tx);
+        handle.join().expect("debouncer thread join");
+    }
+
+    #[test]
+    fn debouncer_handles_quiet_periods_between_bursts() {
+        // Two bursts separated by more than the debounce window. Each
+        // burst should produce its own trailing-edge wake (2 total).
+        let (tx, rx) = channel::<()>();
+        let count = Arc::new(AtomicUsize::new(0));
+        let count_clone = count.clone();
+        let handle = thread::spawn(move || {
+            debouncer_loop(
+                rx,
+                Box::new(move || {
+                    count_clone.fetch_add(1, Ordering::SeqCst);
+                }),
+            );
+        });
+
+        fire_burst(&tx, 5);
+        // First burst's trailing edge must fire before we start the
+        // next burst, otherwise the second burst just extends the
+        // first window. 3x debounce is more than enough.
+        thread::sleep(OUTPUT_WAKE_DEBOUNCE * 3);
+        fire_burst(&tx, 5);
+        thread::sleep(OUTPUT_WAKE_DEBOUNCE * 3);
+
+        assert_eq!(
+            count.load(Ordering::SeqCst),
+            2,
+            "two bursts separated by a quiet period should produce two wakes"
+        );
+
+        drop(tx);
+        handle.join().expect("debouncer thread join");
+    }
+
+    #[test]
+    fn debouncer_exits_on_sender_disconnect() {
+        // When the reader thread drops its sender (process EOF or
+        // explicit shutdown), the debouncer must exit on its own so
+        // its thread doesn't leak. Without this, every spawn would
+        // eventually accumulate stuck debouncer threads.
+        let (tx, rx) = channel::<()>();
+        let handle = thread::spawn(move || {
+            debouncer_loop(rx, Box::new(|| {}));
+        });
+        // Fire one tick and then drop tx so the debouncer is mid-burst
+        // when the sender disappears.
+        tx.send(()).unwrap();
+        drop(tx);
+
+        // Join with a timeout via `thread::JoinHandle::join`, which
+        // blocks indefinitely. To bound the test, race it against a
+        // sleep on a dedicated thread; if join takes longer than
+        // a generous 1s, panic with a clear message.
+        let (done_tx, done_rx) = channel();
+        thread::spawn(move || {
+            let _ = handle.join();
+            let _ = done_tx.send(());
+        });
+        assert!(
+            done_rx.recv_timeout(Duration::from_secs(1)).is_ok(),
+            "debouncer thread did not exit after sender drop"
+        );
     }
 
     #[test]

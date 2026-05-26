@@ -264,6 +264,72 @@ fn control_mode_output_wake_fires_on_pane_output() {
     );
 }
 
+/// Regression guard for the trailing-edge debounce on `%output`
+/// wakes. The shell prompt + `echo` + result emits multiple
+/// `%output` lines in tight succession (one per line printed). Pre-
+/// debounce, that would have fired the callback once per `%output`
+/// line, ~3+ times for this scenario. The debouncer collapses the
+/// burst to a single trailing-edge wake. If a future change reverts
+/// to leading-edge or per-line firing, this assertion catches it
+/// before the partial-frame artifact returns.
+#[test]
+#[serial]
+fn control_mode_output_wake_debounces_bursts() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    if !tmux_available() {
+        eprintln!("Skipping: tmux not available");
+        return;
+    }
+
+    let name = unique_session_name("debounce");
+    let _cleanup = TmuxCleanup { name: name.clone() };
+    create_empty_session(&name);
+
+    let counter = Arc::new(AtomicUsize::new(0));
+    let counter_for_cb = counter.clone();
+    let on_output: Box<dyn Fn() + Send + 'static> = Box::new(move || {
+        counter_for_cb.fetch_add(1, Ordering::SeqCst);
+    });
+
+    let client =
+        ControlModeClient::spawn(&name, Some(on_output)).expect("ControlModeClient::spawn");
+    // Wait past the attach-time prompt burst to let its trailing
+    // wake fire and not contaminate the test count.
+    std::thread::sleep(Duration::from_millis(60));
+    counter.store(0, Ordering::SeqCst);
+
+    // A 10-line printf loop emits ten `%output` notifications back
+    // to back when the shell runs the command. Pre-debounce that
+    // would have fired the callback >= 10 times (typically more
+    // once the input-echo phase is counted too). Post-debounce we
+    // expect a small constant — one per distinct logical burst.
+    // The shell's input-echo phase and command-output phase can
+    // legitimately split across the debounce window if the user's
+    // keystroke timing leaves a >8ms gap, so we allow up to 3
+    // bursts and assert against the pathological pre-debounce
+    // count.
+    client
+        .send_literal_no_enter("for i in 1 2 3 4 5 6 7 8 9 10; do printf 'x'; done; echo")
+        .expect("send_literal_no_enter");
+    client
+        .send_named_key("Enter")
+        .expect("send_named_key Enter");
+
+    // Wait well past the debounce window (8ms) but well under any
+    // reasonable ticker fallback, so we measure the debouncer's
+    // output specifically.
+    std::thread::sleep(Duration::from_millis(80));
+
+    let observed = counter.load(Ordering::SeqCst);
+    assert!(
+        (1..=3).contains(&observed),
+        "expected 1-3 trailing-edge wakes after debouncing the burst, got {observed}. \
+         More than 3 means the debouncer is bypassed or per-line firing returned."
+    );
+}
+
 /// Regression guard for the `ControlModeClient` spawn/drop/respawn
 /// lifecycle. The user-visible scenario is "enter live mode, exit,
 /// enter again" — if Drop left the tmux server in a state that
