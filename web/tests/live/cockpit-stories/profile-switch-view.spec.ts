@@ -28,12 +28,25 @@ base("ProfileSelector switches the selected profile", async ({ page }, testInfo)
     // later selectOption(initialProfile) hangs 60s on "did not find
     // some options". Wait for the select to settle on a real option
     // before capturing the baseline.
+    // Poll until the select's value is BOTH non-empty AND present in
+    // the rendered option list. Checking length > 0 alone can capture
+    // a value the option list hasn't received yet, making
+    // selectOption(initialProfile) below hang on "did not find some
+    // options" until the 60s default timeout.
     await expect
-      .poll(async () => (await select.inputValue()).length, {
-        timeout: 10_000,
-      })
-      .toBeGreaterThan(0);
-    await expect(select.locator("option")).not.toHaveCount(0);
+      .poll(
+        async () => {
+          const value = await select.inputValue();
+          const optionValues = await select
+            .locator("option")
+            .evaluateAll((opts) =>
+              opts.map((o) => (o as HTMLOptionElement).value),
+            );
+          return value.length > 0 && optionValues.includes(value);
+        },
+        { timeout: 10_000 },
+      )
+      .toBe(true);
     const initialProfile = await select.inputValue();
 
     await page.getByRole("button", { name: "+ New" }).click();
