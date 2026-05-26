@@ -4846,6 +4846,76 @@ mod click_to_select {
 
     #[test]
     #[serial]
+    fn select_only_click_honors_per_profile_override() {
+        // Global stays LiveSend (default) but the test profile pins
+        // SelectOnly via SessionConfigOverride. The resolver must
+        // pick the profile override, not the global default, so a
+        // single click returns None and the cursor still moves.
+        use crate::session::config::ClickAction;
+        use crate::session::profile_config::{
+            save_profile_config, ProfileConfig, SessionConfigOverride,
+        };
+        let mut env = create_test_env_with_sessions(3);
+        setup_inner(&mut env);
+        env.view.cursor = 0;
+        env.view.update_selected();
+
+        let profile_config = ProfileConfig {
+            session: Some(SessionConfigOverride {
+                click_action: Some(ClickAction::SelectOnly),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        save_profile_config("test", &profile_config).unwrap();
+
+        let action = env.view.handle_click(5, 3);
+        assert_eq!(
+            action, None,
+            "per-profile SelectOnly must override the LiveSend global default"
+        );
+        assert_eq!(env.view.cursor, 2);
+    }
+
+    #[test]
+    #[serial]
+    fn double_click_still_attaches_under_select_only() {
+        // Defensive: `SelectOnly` only changes single-click; double-click
+        // must still activate the row via `default_attach_mode` (Tmux by
+        // default, so we expect AttachSession). Locks down the
+        // separation between the two settings so a future refactor
+        // can't accidentally route double-click through `click_action`.
+        use crate::session::config::{save_config, ClickAction, Config};
+        let mut env = create_test_env_with_sessions(3);
+        setup_inner(&mut env);
+        env.view.cursor = 0;
+        env.view.update_selected();
+
+        let mut config = Config::default();
+        config.session.click_action = ClickAction::SelectOnly;
+        save_config(&config).unwrap();
+
+        let t0 = std::time::Instant::now();
+        let first = env.view.handle_click_at(t0, 5, 3);
+        assert_eq!(
+            first, None,
+            "first click under SelectOnly must not emit an action"
+        );
+        let t1 = t0 + std::time::Duration::from_millis(100);
+        let second = env.view.handle_click_at(t1, 5, 3);
+        let expected_id = match &env.view.flat_items[2] {
+            crate::session::Item::Session { id, .. } => id.clone(),
+            _ => panic!("flat_items[2] should be a session"),
+        };
+        assert_eq!(
+            second,
+            Some(crate::tui::app::Action::AttachSession(expected_id)),
+            "double-click must still activate via default_attach_mode (Tmux)"
+        );
+    }
+
+    #[test]
+    #[serial]
     fn click_on_already_selected_row_does_not_move_cursor() {
         let mut env = create_test_env_with_sessions(3);
         setup_inner(&mut env);

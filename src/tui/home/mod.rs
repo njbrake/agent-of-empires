@@ -3117,81 +3117,65 @@ impl HomeView {
             .unwrap_or_else(crate::session::config::resolve_default_profile)
     }
 
+    /// Resolve the effective `SessionConfig` for an existing session
+    /// row, honoring per-profile overrides. Reads the instance's
+    /// `source_profile` so the picked config matches whatever profile
+    /// the session was filed under (the home view's active profile may
+    /// already have moved on); falls back to `config_profile()` when
+    /// the instance has no recorded profile. Returns `None` for
+    /// cockpit-mode sessions because the attach-mode / click-action
+    /// settings all have cockpit-specific bypass paths upstream;
+    /// callers treat `None` as "skip this setting, the cockpit path
+    /// handles activation."
+    fn resolve_session_config_for(
+        &self,
+        session_id: &str,
+    ) -> Option<crate::session::SessionConfig> {
+        let inst = self.get_instance(session_id)?;
+        if inst.is_cockpit_mode() {
+            return None;
+        }
+        let profile = if inst.source_profile.is_empty() {
+            self.config_profile()
+        } else {
+            inst.source_profile.clone()
+        };
+        Some(crate::session::resolve_config_or_warn(&profile).session)
+    }
+
     /// Resolve `new_session_attach_mode` for a freshly-created session.
-    /// Reads the instance's `source_profile` so the picked mode matches
-    /// whatever profile the session was filed under (the home view's
-    /// active profile may already have moved on). Returns `None` for
-    /// cockpit-mode sessions because neither attach option applies to
-    /// them; callers should fall through to the cockpit-aware path.
+    /// See `resolve_session_config_for` for the profile-resolution and
+    /// cockpit-bypass rules.
     pub fn new_session_attach_mode(
         &self,
         session_id: &str,
     ) -> Option<crate::session::NewSessionAttachMode> {
-        let inst = self.get_instance(session_id)?;
-        if inst.is_cockpit_mode() {
-            return None;
-        }
-        let profile = if inst.source_profile.is_empty() {
-            self.config_profile()
-        } else {
-            inst.source_profile.clone()
-        };
-        Some(
-            crate::session::resolve_config_or_warn(&profile)
-                .session
-                .new_session_attach_mode,
-        )
+        self.resolve_session_config_for(session_id)
+            .map(|s| s.new_session_attach_mode)
     }
 
     /// Resolve `click_action` for an existing session row when the
-    /// user single-clicks it in the Agent view. Reads the instance's
-    /// `source_profile` so the picked mode matches whatever profile
-    /// the session was filed under. Returns `None` for cockpit-mode
-    /// sessions because `start_live_send` already short-circuits on
-    /// them; callers can treat `None` as "fall through to the
-    /// historical live-send path."
+    /// user single-clicks it in the Agent view. See
+    /// `resolve_session_config_for` for resolution rules; `None`
+    /// (cockpit) is treated by the caller as "fall through to the
+    /// historical live-send path," which `start_live_send` itself
+    /// short-circuits for cockpit anyway.
     pub(super) fn click_action(&self, session_id: &str) -> Option<crate::session::ClickAction> {
-        let inst = self.get_instance(session_id)?;
-        if inst.is_cockpit_mode() {
-            return None;
-        }
-        let profile = if inst.source_profile.is_empty() {
-            self.config_profile()
-        } else {
-            inst.source_profile.clone()
-        };
-        Some(
-            crate::session::resolve_config_or_warn(&profile)
-                .session
-                .click_action,
-        )
+        self.resolve_session_config_for(session_id)
+            .map(|s| s.click_action)
     }
 
     /// Resolve `default_attach_mode` for an existing session row when
     /// the user activates it (Enter / double-click) in the Agent view.
-    /// Reads the instance's `source_profile` so the picked mode matches
-    /// whatever profile the session was filed under. Returns `None`
-    /// for cockpit-mode sessions because cockpit has its own activation
-    /// path that bypasses both tmux attach and live-send; callers should
-    /// short-circuit to that path before consulting this setting.
+    /// See `resolve_session_config_for` for resolution rules; callers
+    /// short-circuit to the cockpit-specific activation path before
+    /// consulting this setting.
     pub(super) fn default_attach_mode(
         &self,
         session_id: &str,
     ) -> Option<crate::session::NewSessionAttachMode> {
-        let inst = self.get_instance(session_id)?;
-        if inst.is_cockpit_mode() {
-            return None;
-        }
-        let profile = if inst.source_profile.is_empty() {
-            self.config_profile()
-        } else {
-            inst.source_profile.clone()
-        };
-        Some(
-            crate::session::resolve_config_or_warn(&profile)
-                .session
-                .default_attach_mode,
-        )
+        self.resolve_session_config_for(session_id)
+            .map(|s| s.default_attach_mode)
     }
 
     /// Pin selection to `session_id` and place the cursor on its row.
