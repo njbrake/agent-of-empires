@@ -329,7 +329,7 @@ pub(super) enum WorkerMsg {
 
 /// Background dispatcher: drains a channel of `WorkerMsg`s and runs
 /// each via a one-shot `tmux send-keys` / `resize-window` subprocess
-/// after coalescing with `coalesce`. Spawned on `enter_live_send` and
+/// after coalescing with `coalesce`. Spawned by `prepare_live_send` and
 /// dropped when the user exits live mode; dropping closes the channel,
 /// which makes the worker thread's `recv` return `Err` and exit on the
 /// next iteration. We deliberately do not `join` because the worker is

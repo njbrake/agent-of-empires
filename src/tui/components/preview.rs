@@ -35,7 +35,7 @@ impl<'a> CachedPreview<'a> {
 /// optional sandbox line, optional worktree block) for `instance`.
 ///
 /// Exposed at the module level so callers outside `Preview::render_with_cache`
-/// can compute the same split — in particular, the live-send sync resize
+/// can compute the same split. In particular, the live-send sync resize
 /// in `HomeView::finalize_live_send_resize` needs to size the tmux pane
 /// to the OUTPUT portion (inner minus this header), not the full inner.
 /// If the agent renders into the full inner while the output portion is

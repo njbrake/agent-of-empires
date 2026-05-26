@@ -446,8 +446,8 @@ pub struct HomeView {
     pub(super) preview_scroll_offset: u16,
     pub(super) preview_area: Rect,
     /// Sub-rect of `preview_area` where the agent's captured pane content
-    /// is actually painted — i.e. `preview_area` minus the info header
-    /// when the user has it expanded (Agent view, non-compact). When the
+    /// is actually painted: `preview_area` minus the info header when
+    /// the user has it expanded (Agent view, non-compact). When the
     /// info header is hidden or the layout is compact, this matches
     /// `preview_area` exactly.
     ///

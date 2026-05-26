@@ -5211,7 +5211,7 @@ mod click_to_select {
     }
 
     /// Clicking the row that is already the live-send target is a
-    /// no-op: re-running `enter_live_send` would drop the worker and
+    /// no-op: re-running `prepare_live_send` would drop the worker and
     /// re-do ensure_pane_ready for no reason.
     #[test]
     #[serial]
@@ -6281,7 +6281,7 @@ mod live_send_mode {
     fn tab_emits_enter_live_send_for_stopped_session() {
         // start_live_send is intentionally permissive: it accepts any
         // non-Creating instance and defers ensure_pane_ready to
-        // enter_live_send. Without this, Tab would silently no-op on
+        // prepare_live_send. Without this, Tab would silently no-op on
         // stopped/dead-but-recoverable rows because the tmux session
         // doesn't exist yet.
         let mut env = create_test_env_with_sessions(1);

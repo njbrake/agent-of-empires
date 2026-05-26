@@ -3083,7 +3083,7 @@ impl HomeView {
 
     /// Attempt to enter live-send mode against the currently-selected
     /// session. Unlike `resolve_paste_target`, this does NOT require
-    /// the tmux pane to already exist: `enter_live_send` calls
+    /// the tmux pane to already exist: `prepare_live_send` calls
     /// `ensure_pane_ready` which revives stopped sessions (Docker
     /// start, splash wait, resume cascade). Without this relaxation
     /// Tab would silently no-op on dead-but-recoverable rows and the
