@@ -677,18 +677,22 @@ impl App {
                             //
                             // Priority order for `Down(Left)`:
                             //   1. modal dialog click (e.g. delete Yes/No)
-                            //   2. divider drag-start (between list/preview)
-                            //   3. preview-pane click (open Send Message)
-                            //   4. list row click (existing select/activate)
-                            // Earlier branches short-circuit so a click on
-                            // the divider never opens a dialog, and a
-                            // click on the preview never selects a row.
+                            //   2. drag-start (divider, or live-mode preview
+                            //      text selection)
+                            //   3. list row click (existing select/activate)
+                            // A bare click on the preview pane outside live
+                            // mode falls through to the final branch and is
+                            // a no-op aside from clearing any stale highlight.
                             let click_action = if matches!(
                                 mouse.kind,
                                 MouseEventKind::Down(MouseButton::Left)
                             ) {
                                 if self.home.handle_dialog_click(mouse.column, mouse.row)
                                 {
+                                    // A modal swallowed the click — drop any
+                                    // leftover preview highlight so it doesn't
+                                    // linger behind / through the dialog.
+                                    let _ = self.home.clear_preview_selection();
                                     self.sync_mouse_capture(terminal)?;
                                     self.draw(terminal)?;
                                     None
@@ -696,20 +700,23 @@ impl App {
                                     .home
                                     .handle_drag_start(mouse.column, mouse.row)
                                 {
-                                    None
-                                } else if hit_preview {
-                                    if self.home.handle_preview_click() {
-                                        self.sync_mouse_capture(terminal)?;
-                                        self.draw(terminal)?;
+                                    // handle_drag_start already overwrote the
+                                    // selection if it started a PreviewSelect;
+                                    // a fresh ListDivider drag is unrelated to
+                                    // the highlight and should drop it.
+                                    if !self.home.is_preview_select_dragging() {
+                                        let _ = self.home.clear_preview_selection();
                                     }
                                     None
                                 } else if hit_list {
+                                    let _ = self.home.clear_preview_selection();
                                     let action = self
                                         .home
                                         .handle_click(mouse.column, mouse.row);
                                     self.draw(terminal)?;
                                     action
                                 } else {
+                                    let _ = self.home.clear_preview_selection();
                                     None
                                 }
                             } else {
@@ -726,9 +733,16 @@ impl App {
                                 // is a no-op inside the handler; we don't
                                 // need a separate guard here.
                                 MouseEventKind::Drag(MouseButton::Left) => {
-                                    self.home.handle_drag_move(mouse.column)
+                                    self.home.handle_drag_move(mouse.column, mouse.row)
                                 }
                                 MouseEventKind::Up(MouseButton::Left) => {
+                                    // Finalize the drag here, but defer the
+                                    // clipboard write until after the next
+                                    // draw: the renderer captures cell text
+                                    // while the buffer is still populated
+                                    // (ratatui resets the back buffer on
+                                    // every frame, so reading post-draw
+                                    // sees empty cells).
                                     self.home.handle_drag_end()
                                 }
                                 // Moved events are dispatched unconditionally
@@ -743,6 +757,13 @@ impl App {
                             };
                             if handled {
                                 self.draw(terminal)?;
+                            }
+                            // After the draw that paints a freshly-finalized
+                            // preview selection, the renderer has captured
+                            // the cell text into `preview_copy_text`. Drain
+                            // it and write to the user's clipboard.
+                            if let Some(text) = self.home.take_preview_copy_text() {
+                                crate::tui::clipboard::copy_to_clipboard(&text);
                             }
                             if let Some(action) = click_action {
                                 self.execute_action(action, terminal)?;

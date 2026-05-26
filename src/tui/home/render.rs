@@ -1710,6 +1710,78 @@ impl HomeView {
                 }
             }
         }
+
+        // Selection highlight goes last so it sits on top of whatever
+        // the active ViewMode painted into the inner area. Only live
+        // mode populates `preview_selection`, so this branch is a
+        // no-op everywhere else.
+        self.paint_preview_selection(frame, inner, theme);
+    }
+
+    /// Apply the drag-select highlight to cells inside the preview
+    /// pane. Style is reversed (bg/fg swap) for AA-friendly contrast
+    /// against arbitrary agent output, mirroring how most terminal
+    /// emulators render their own native selections.
+    ///
+    /// Walks the frame buffer rather than re-rendering, so the
+    /// underlying preview pane keeps its existing styles (colored
+    /// diff text, syntax highlighting from the agent) — only the
+    /// bg/fg pair swaps. Cells outside the buffer area are skipped
+    /// rather than treated as an error: a terminal resize during a
+    /// drag can leave a stale extent off-screen for one frame.
+    fn paint_preview_selection(&mut self, frame: &mut Frame, inner: Rect, theme: &Theme) {
+        let Some(sel) = self.preview_selection else {
+            return;
+        };
+        let segments = sel.flow_rects(inner);
+        if segments.is_empty() {
+            return;
+        }
+        // Capture cells only on the first render that follows a
+        // finalized drag; subsequent renders just keep painting the
+        // highlight. Reading from the buffer here (rather than from
+        // `App` after `terminal.draw` returns) is load-bearing:
+        // ratatui swaps front/back buffers on every frame, so
+        // `terminal.current_buffer_mut()` post-draw points at the
+        // empty next-frame buffer, not the cells we just drew.
+        let capture = self.preview_copy_pending;
+        if capture {
+            self.preview_copy_pending = false;
+        }
+        let buf = frame.buffer_mut();
+        let buf_area = buf.area;
+        // After release the highlight darkens slightly so the user
+        // can tell "selection finalized + copied" apart from "still
+        // dragging". A non-finalized in-progress drag uses the
+        // brighter selection-style swatch.
+        let bg = if sel.finalized {
+            theme.selection
+        } else {
+            theme.session_selection
+        };
+        for segment in segments {
+            let clipped = segment.intersection(inner);
+            if clipped.width == 0 || clipped.height == 0 {
+                continue;
+            }
+            for row in clipped.y..clipped.bottom() {
+                for col in clipped.x..clipped.right() {
+                    if !buf_area.contains(Position::from((col, row))) {
+                        continue;
+                    }
+                    let cell = &mut buf[(col, row)];
+                    cell.set_bg(bg);
+                    // Force the foreground to a high-contrast color so
+                    // ANSI-painted bright/dim agent output stays
+                    // readable on top of the new background.
+                    cell.set_fg(theme.text);
+                }
+            }
+        }
+        if capture {
+            let text = self.extract_preview_selection_text(&*frame.buffer_mut());
+            self.preview_copy_text = text;
+        }
     }
 
     fn render_creating_preview(&self, frame: &mut Frame, area: Rect, theme: &Theme) {

@@ -5,7 +5,7 @@ use ratatui::prelude::Position;
 use tui_input::backend::crossterm::EventHandler;
 use tui_input::Input;
 
-use super::{live_send, DragKind, HomeView, TerminalMode, ViewMode};
+use super::{live_send, DragKind, HomeView, PreviewSelection, TerminalMode, ViewMode};
 use crate::session::config::{load_config, save_config, GroupByMode, SortOrder};
 use crate::session::{list_profiles, repo_config, resolve_config_or_warn, Item, Status};
 use crate::tui::app::Action;
@@ -27,6 +27,50 @@ use crate::tui::settings::{SettingsAction, SettingsView};
 /// environments. Worth tuning if real-world feedback says it's too
 /// fast for trackpads or too slow on remote sessions.
 const DOUBLE_CLICK_THRESHOLD: std::time::Duration = std::time::Duration::from_millis(400);
+
+/// Decompose pasted text into a series of `TmuxKey`s safe for the
+/// live-send worker to dispatch. Control bytes can't ride inside a
+/// `send-keys -l` payload (tmux's command parser splits on newlines
+/// and we have no safe encoding for raw control bytes), so we split
+/// the paste around them: printable runs go through as `Literal`,
+/// known control characters translate to their named equivalents
+/// (`\n` and `\r` → `Enter`, `\t` → `Tab`), and anything else below
+/// 0x20 is dropped rather than mapped to a surprising named key. A
+/// `\r\n` pair coalesces to a single `Enter` so Windows-line-ending
+/// pastes don't fire two newlines in a row.
+pub(super) fn split_paste_for_live_send(text: &str) -> Vec<live_send::TmuxKey> {
+    let mut out = Vec::new();
+    let mut buf = String::new();
+    let mut chars = text.chars().peekable();
+    while let Some(ch) = chars.next() {
+        let is_control = (ch as u32) < 0x20 || ch == '\x7f';
+        if !is_control {
+            buf.push(ch);
+            continue;
+        }
+        if !buf.is_empty() {
+            out.push(live_send::TmuxKey::Literal(std::mem::take(&mut buf)));
+        }
+        match ch {
+            '\n' => out.push(live_send::TmuxKey::Named("Enter".to_string())),
+            '\r' => {
+                if chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+                out.push(live_send::TmuxKey::Named("Enter".to_string()));
+            }
+            '\t' => out.push(live_send::TmuxKey::Named("Tab".to_string())),
+            _ => {
+                // BEL, ESC, etc.: dropping is friendlier than mapping
+                // to a named key that could cancel the agent's input.
+            }
+        }
+    }
+    if !buf.is_empty() {
+        out.push(live_send::TmuxKey::Literal(buf));
+    }
+    out
+}
 
 fn resolve_hook_install_agent(
     tool_name: &str,
@@ -156,75 +200,133 @@ impl HomeView {
         row >= list_y && row < list_bottom
     }
 
-    /// Begin a drag if `(col, row)` is on the divider. Records the start
-    /// column and the current requested `list_width` so subsequent
-    /// `Drag` events can compute deltas without re-reading the divider's
-    /// (possibly clamped) position. Returns true when a drag actually
-    /// started, so the caller can mark the event handled and skip the
-    /// row-click path.
+    /// Begin a drag if `(col, row)` is on the divider, or, while
+    /// live-send is active, inside the preview pane. Returns true when
+    /// a drag actually started, so the caller can mark the event
+    /// handled and skip the row-click path.
+    ///
+    /// Divider drags resize the list/preview split (the only kind we
+    /// had before live-send shipped). Preview-pane drags start an
+    /// in-app text selection: terminal-native drag-select can't reach
+    /// the preview because we capture mouse events to support wheel
+    /// scroll, and we want one mechanism that also works on Mosh and
+    /// mobile clients where Shift-bypass does nothing.
     pub fn handle_drag_start(&mut self, col: u16, row: u16) -> bool {
-        if !self.hit_divider(col, row) {
-            return false;
+        if self.hit_divider(col, row) {
+            self.drag_state = Some(DragKind::ListDivider {
+                start_col: col,
+                start_width: self.list_width,
+            });
+            return true;
         }
-        self.drag_state = Some(DragKind::ListDivider {
-            start_col: col,
-            start_width: self.list_width,
-        });
-        true
+        if self.live_send.is_some() && self.hit_preview(col, row) {
+            self.preview_selection = Some(PreviewSelection {
+                anchor: (col, row),
+                extent: (col, row),
+                finalized: false,
+            });
+            self.drag_state = Some(DragKind::PreviewSelect);
+            return true;
+        }
+        false
     }
 
     /// Apply a drag-in-progress event. For the list divider, recompute
     /// the requested width from `(start_width + delta)` and clamp to
     /// `[10, main_area_width - PREVIEW_MIN_WIDTH]` so the preview keeps
-    /// its usability floor and the value never wraps `u16`. Returns true
-    /// when `list_width` actually changed (so the caller redraws). The
-    /// drag does NOT persist on every tick; `handle_drag_end` saves once
-    /// on release.
-    pub fn handle_drag_move(&mut self, col: u16) -> bool {
+    /// its usability floor and the value never wraps `u16`. For a
+    /// preview-pane text selection, clamp the extent to the preview
+    /// area and stash it on `preview_selection`; the renderer reads it
+    /// each frame to paint the highlight.
+    ///
+    /// Returns true when state actually changed (so the caller
+    /// redraws). The drag does NOT persist on every tick; the divider
+    /// path saves on release, the preview-select path emits OSC 52 on
+    /// release.
+    pub fn handle_drag_move(&mut self, col: u16, row: u16) -> bool {
         // A dialog opened mid-drag (e.g. a hotkey pressed while the
         // mouse button is still held) shouldn't keep updating the
         // sidebar invisibly under the modal. End the drag here so the
         // next `Up(Left)` is a no-op, persisting whatever width the
         // user dragged to before the dialog covered it (handle_drag_end
         // is the normal save site, so we mirror its behavior).
-        if self.has_dialog() && self.drag_state.is_some() {
+        //
+        // `has_dialog()` returns true while live-send is active, which
+        // is exactly when preview drag-select is meant to work — so we
+        // exempt PreviewSelect here. A dialog (other than live-send)
+        // opening mid-select drops the selection along with everything
+        // else routed through the modal layer; that's fine, the user
+        // can re-drag once the dialog closes.
+        let drag_is_preview = matches!(self.drag_state, Some(DragKind::PreviewSelect));
+        if self.has_dialog() && self.drag_state.is_some() && !drag_is_preview {
             self.drag_state = None;
             self.save_list_width();
             return false;
         }
-        let Some(DragKind::ListDivider {
-            start_col,
-            start_width,
-        }) = self.drag_state
-        else {
-            return false;
-        };
-        // i32 arithmetic so a leftward drag past the start column doesn't
-        // underflow u16 before the clamp.
-        let delta = col as i32 - start_col as i32;
-        let proposed = start_width as i32 + delta;
+        match self.drag_state {
+            Some(DragKind::ListDivider {
+                start_col,
+                start_width,
+            }) => {
+                // i32 arithmetic so a leftward drag past the start column doesn't
+                // underflow u16 before the clamp.
+                let delta = col as i32 - start_col as i32;
+                let proposed = start_width as i32 + delta;
 
-        // Clamp ceiling tracks the live viewport width; if the user
-        // resized the terminal mid-drag, the new width is honored. The
-        // floor of 10 matches the keyboard `<` shrink limit.
-        let ceiling = self
-            .main_area_width
-            .saturating_sub(responsive::PREVIEW_MIN_WIDTH);
-        let max_width = ceiling.max(10);
-        let clamped = proposed.clamp(10, max_width as i32) as u16;
+                // Clamp ceiling tracks the live viewport width; if the user
+                // resized the terminal mid-drag, the new width is honored. The
+                // floor of 10 matches the keyboard `<` shrink limit.
+                let ceiling = self
+                    .main_area_width
+                    .saturating_sub(responsive::PREVIEW_MIN_WIDTH);
+                let max_width = ceiling.max(10);
+                let clamped = proposed.clamp(10, max_width as i32) as u16;
 
-        if clamped == self.list_width {
-            return false;
+                if clamped == self.list_width {
+                    return false;
+                }
+                self.list_width = clamped;
+                true
+            }
+            Some(DragKind::PreviewSelect) => {
+                let Some(sel) = self.preview_selection.as_mut() else {
+                    return false;
+                };
+                // Clamp the drag extent to the preview pane so a
+                // mouse-out below the pane (very common: users drag down
+                // through the last visible row, expecting the selection
+                // to stop at the bottom) doesn't try to highlight
+                // chrome rows on neighbouring widgets.
+                let area = self.preview_area;
+                if area.width == 0 || area.height == 0 {
+                    return false;
+                }
+                let max_x = area.right().saturating_sub(1);
+                let max_y = area.bottom().saturating_sub(1);
+                let clamped_x = col.clamp(area.x, max_x);
+                let clamped_y = row.clamp(area.y, max_y);
+                let new_extent = (clamped_x, clamped_y);
+                if sel.extent == new_extent {
+                    return false;
+                }
+                sel.extent = new_extent;
+                true
+            }
+            None => false,
         }
-        self.list_width = clamped;
-        true
     }
 
     /// End any active drag. For the list divider, persist the final
     /// `list_width` to config so the new layout survives a restart.
-    /// Returns true when a drag was actually in progress, so the caller
-    /// can avoid a spurious redraw on every `Up(Left)` that wasn't part
-    /// of a drag.
+    /// For a preview-pane selection, mark it `finalized` so the
+    /// renderer keeps the highlight visible until the user dismisses
+    /// it. The actual clipboard copy is the caller's job (see
+    /// `app.rs`) so we can keep this method side-effect-free besides
+    /// state, which is what the existing divider path does too.
+    ///
+    /// Returns true when a drag was actually in progress, so the
+    /// caller can avoid a spurious redraw on every `Up(Left)` that
+    /// wasn't part of a drag.
     pub fn handle_drag_end(&mut self) -> bool {
         let Some(state) = self.drag_state.take() else {
             return false;
@@ -233,8 +335,135 @@ impl HomeView {
             DragKind::ListDivider { .. } => {
                 self.save_list_width();
             }
+            DragKind::PreviewSelect => {
+                // A bare click (no movement between Down and Up) collapses
+                // anchor == extent. Treat that as "no selection" so a stray
+                // click doesn't paint a 1x1 highlight or copy a single
+                // character to the clipboard. Genuine multi-cell drags
+                // get finalized so the renderer keeps the highlight visible
+                // until dismissed; the next render also captures the
+                // selected cells so the app loop can write them to the
+                // user's clipboard once the buffer is drawn.
+                if let Some(sel) = self.preview_selection {
+                    if sel.anchor == sel.extent {
+                        self.preview_selection = None;
+                    } else if let Some(s) = self.preview_selection.as_mut() {
+                        s.finalized = true;
+                        self.preview_copy_pending = true;
+                    }
+                }
+            }
         }
         true
+    }
+
+    /// Whether `drag_state` is currently a PreviewSelect (vs. a divider
+    /// drag or nothing). Used by the Down(Left) handler in `app.rs` to
+    /// tell whether `handle_drag_start` just installed a fresh selection
+    /// or a divider drag.
+    pub fn is_preview_select_dragging(&self) -> bool {
+        matches!(self.drag_state, Some(DragKind::PreviewSelect))
+    }
+
+    /// Read the characters underneath the current preview selection
+    /// from the rendered frame buffer, joined into a tmux-style flow
+    /// string. Called from `paint_preview_selection` on the render
+    /// that follows `handle_drag_end`, when `preview_copy_pending`
+    /// is set and the buffer still holds the cells the user dragged
+    /// over.
+    ///
+    /// The frame buffer is the authoritative source: it carries exactly
+    /// what the user sees, with ansi-to-tui decoding and scroll already
+    /// applied. Reading the parsed `Text` upstream of the renderer would
+    /// duplicate the wrap math and skew when the preview is mid-scroll.
+    pub(super) fn extract_preview_selection_text(
+        &self,
+        buffer: &ratatui::buffer::Buffer,
+    ) -> Option<String> {
+        let sel = self.preview_selection?;
+        let preview = self.preview_area;
+        let buf_area = buffer.area;
+        let preview = preview.intersection(buf_area);
+        if preview.width == 0 || preview.height == 0 {
+            return None;
+        }
+        let ((start_col, start_row), (end_col, end_row)) = sel.ordered();
+        if start_row == end_row && start_col == end_col {
+            return None;
+        }
+        let preview_right_excl = preview.right();
+        let preview_left = preview.x;
+        let mut out = String::new();
+        for row in start_row..=end_row {
+            if row < preview.y || row >= preview.bottom() {
+                if row < end_row {
+                    out.push('\n');
+                }
+                continue;
+            }
+            let row_start_col = if row == start_row {
+                start_col.max(preview_left)
+            } else {
+                preview_left
+            };
+            let row_end_excl = if row == end_row {
+                end_col.saturating_add(1).min(preview_right_excl)
+            } else {
+                preview_right_excl
+            };
+            if row_end_excl <= row_start_col {
+                if row < end_row {
+                    out.push('\n');
+                }
+                continue;
+            }
+            let mut line = String::new();
+            for col in row_start_col..row_end_excl {
+                line.push_str(buffer[(col, row)].symbol());
+            }
+            // Trim only trailing whitespace per row, not leading: a
+            // selection over indented code keeps the indentation,
+            // while padding at the right edge of the preview (the
+            // common case for unfilled rows) doesn't bloat the paste.
+            out.push_str(line.trim_end());
+            if row < end_row {
+                out.push('\n');
+            }
+        }
+        if out.chars().all(char::is_whitespace) {
+            return None;
+        }
+        Some(out)
+    }
+
+    /// Drain the text captured on the last render that painted a
+    /// finalized preview selection. Returns `Some` exactly once per
+    /// finalized drag — `App` calls this immediately after the draw
+    /// to write the bytes to the clipboard.
+    pub fn take_preview_copy_text(&mut self) -> Option<String> {
+        self.preview_copy_text.take()
+    }
+
+    /// Discard any in-flight preview selection. Called from key/click
+    /// paths so the user dismisses the highlight by interacting with
+    /// the TUI again. Returns true when state actually changed (so the
+    /// caller can redraw).
+    pub fn clear_preview_selection(&mut self) -> bool {
+        if self.preview_selection.take().is_some() {
+            // Cancel any in-progress drag too so the next Up(Left)
+            // doesn't re-finalize a stale selection.
+            if matches!(self.drag_state, Some(DragKind::PreviewSelect)) {
+                self.drag_state = None;
+            }
+            // A pending capture from a previous finalized drag is
+            // moot once the selection is gone; drop it so the next
+            // selection starts clean.
+            self.preview_copy_pending = false;
+            self.preview_copy_text = None;
+            true
+        } else {
+            false
+        }
     }
 
     /// Route a left-click into whichever modal dialog supports mouse
@@ -274,24 +503,6 @@ impl HomeView {
         // existing `has_dialog()` gates inside list / preview / divider
         // handlers already do this, so no extra work here.
         false
-    }
-
-    /// Route a left-click that landed inside the preview pane. Opens
-    /// the Send Message dialog targeting the currently-selected running
-    /// session. No-op (returns false) when there's no valid target,
-    /// because `open_send_message_dialog` already gates on
-    /// `resolve_paste_target`, so an empty list, a non-running
-    /// selection, or a group-row selection silently does nothing
-    /// instead of opening an empty dialog. The bool return tells the
-    /// caller whether dialog state changed so it can redraw + re-sync
-    /// mouse capture.
-    pub fn handle_preview_click(&mut self) -> bool {
-        if self.has_dialog() {
-            return false;
-        }
-        let had_dialog = self.send_message_dialog.is_some();
-        self.open_send_message_dialog();
-        self.send_message_dialog.is_some() != had_dialog
     }
 
     pub fn handle_key(
@@ -2420,6 +2631,11 @@ impl HomeView {
     /// its scroll boundary or has no session selected.
     pub fn handle_scroll_up(&mut self, col: u16, row: u16) -> bool {
         const STEP: u16 = 3;
+        // Any scroll repositions the preview content under the
+        // selection rect, so a leftover highlight from a previous drag
+        // would point at unrelated text. Drop it before changing
+        // offsets so the highlight disappears alongside the scroll.
+        self.clear_preview_selection();
         if let Some(ref mut diff) = self.diff_view {
             diff.scroll_up(STEP);
             return true;
@@ -2655,6 +2871,9 @@ impl HomeView {
     /// Route a mouse-wheel-down at (col, row); see handle_scroll_up.
     pub fn handle_scroll_down(&mut self, col: u16, row: u16) -> bool {
         const STEP: u16 = 3;
+        // Mirror handle_scroll_up: a stale highlight pinned to cells
+        // whose content just moved would mislead, so drop it first.
+        self.clear_preview_selection();
         if let Some(ref mut diff) = self.diff_view {
             diff.scroll_down(STEP);
             return true;
@@ -2698,12 +2917,9 @@ impl HomeView {
     pub fn handle_paste(&mut self, text: &str) {
         if let Some(state) = self.live_send.clone() {
             if let Some(worker) = &self.live_send_worker {
-                // One Literal carries the whole pasted chunk so the worker
-                // dispatches it in a single tmux call. Routing through the
-                // worker (rather than calling tmux inline) keeps the paste
-                // ordered correctly against any in-flight keystrokes
-                // queued from the same event loop tick.
-                worker.send(live_send::TmuxKey::Literal(text.to_string()));
+                for key in split_paste_for_live_send(text) {
+                    worker.send(key);
+                }
             }
             self.stamp_last_accessed(&state.session_id);
             return;
@@ -2839,6 +3055,14 @@ impl HomeView {
             return;
         };
 
+        // Any keystroke in live mode dismisses a finalized preview
+        // selection so the highlight doesn't linger forever once the
+        // user starts typing again. The PageUp/PageDown scroll keys
+        // below also count — scrolling away with a highlight still
+        // visible would point at content that no longer exists at
+        // those cells.
+        self.clear_preview_selection();
+
         // Shift+PageUp / Shift+PageDown scroll the preview pane
         // without forwarding to the agent. Matches the terminal-
         // emulator convention (xterm, gnome-terminal, iTerm, etc.)
@@ -2905,6 +3129,11 @@ impl HomeView {
         // tmux detach the long-lived `-C` client cleanly.
         self.control_mode_client = None;
         self.live_send_last_resize = None;
+        // A preview selection only ever exists in live mode; leaving
+        // live without dropping it would leave a stale highlight on
+        // the regular preview pane. Clear it here so the home view
+        // returns to its pre-live state cleanly.
+        self.clear_preview_selection();
     }
 
     /// Returns `Some(reason)` if the live-send target has drifted out

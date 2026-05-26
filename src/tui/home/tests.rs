@@ -5350,10 +5350,10 @@ mod divider_drag {
             "divider click starts drag"
         );
         // Drag 10 cols right.
-        assert!(env.view.handle_drag_move(45));
+        assert!(env.view.handle_drag_move(45, 5));
         assert_eq!(env.view.list_width, 45);
         // Drag back 5 cols (from start).
-        assert!(env.view.handle_drag_move(40));
+        assert!(env.view.handle_drag_move(40, 5));
         assert_eq!(env.view.list_width, 40);
     }
 
@@ -5364,7 +5364,7 @@ mod divider_drag {
         stage_side_by_side(&mut env);
         // main_area_width=100, PREVIEW_MIN_WIDTH=40 -> ceiling=60.
         env.view.handle_drag_start(35, 5);
-        env.view.handle_drag_move(200);
+        env.view.handle_drag_move(200, 5);
         assert_eq!(env.view.list_width, 60);
     }
 
@@ -5376,7 +5376,7 @@ mod divider_drag {
         env.view.handle_drag_start(35, 5);
         // Drag far to the left of column 0; the i32 math must absorb
         // the negative without wrapping u16.
-        env.view.handle_drag_move(0);
+        env.view.handle_drag_move(0, 5);
         assert_eq!(env.view.list_width, 10);
     }
 
@@ -5391,11 +5391,11 @@ mod divider_drag {
         let mut env = create_test_env_empty();
         stage_side_by_side(&mut env);
         env.view.handle_drag_start(35, 5);
-        env.view.handle_drag_move(50);
+        env.view.handle_drag_move(50, 5);
         // Open a modal.
         env.view.info_dialog = Some(InfoDialog::new("title", "body"));
         // Next drag event sees the dialog and bails.
-        let changed = env.view.handle_drag_move(60);
+        let changed = env.view.handle_drag_move(60, 5);
         assert!(!changed);
         assert!(env.view.drag_state.is_none());
         assert_eq!(
@@ -5414,7 +5414,7 @@ mod divider_drag {
         let mut env = create_test_env_empty();
         stage_side_by_side(&mut env);
         env.view.handle_drag_start(35, 5);
-        env.view.handle_drag_move(50);
+        env.view.handle_drag_move(50, 5);
         assert!(env.view.handle_drag_end());
         let config = load_config().unwrap().expect("config saved");
         assert_eq!(config.app_state.home_list_width, Some(50));
@@ -5427,7 +5427,7 @@ mod divider_drag {
     fn drag_move_without_drag_start_is_noop() {
         let mut env = create_test_env_empty();
         stage_side_by_side(&mut env);
-        assert!(!env.view.handle_drag_move(50));
+        assert!(!env.view.handle_drag_move(50, 5));
         assert_eq!(env.view.list_width, 35);
     }
 
@@ -5441,49 +5441,425 @@ mod divider_drag {
     }
 }
 
-mod preview_click {
-    //! Left-click on the preview pane opens the Send Message dialog
-    //! targeting the currently-selected running session. No-op when no
-    //! valid target exists (group selected, non-running session, empty
-    //! list).
+mod preview_drag_select {
+    //! Click-and-drag on the preview pane while live-send is active
+    //! starts an in-app text selection. The renderer paints a
+    //! reversed-style highlight; release copies the cells through
+    //! OSC 52. Selections only exist in live mode (terminal-native
+    //! drag-select already handles every other surface).
 
     use super::*;
+    use crate::tui::home::{live_send::LiveSendState, DragKind};
+    use ratatui::buffer::Buffer;
+    use ratatui::layout::Rect;
 
-    #[test]
-    #[serial]
-    fn click_with_no_session_does_not_open_dialog() {
-        let mut env = create_test_env_empty();
-        let changed = env.view.handle_preview_click();
-        assert!(!changed);
-        assert!(env.view.send_message_dialog.is_none());
+    fn stage_live_send(env: &mut TestEnv) {
+        env.view.preview_area = Rect::new(40, 0, 60, 20);
+        // Live-send state cares only about session_id + tmux_name for
+        // the parts of the home view this test exercises (drag start
+        // gate, key dismissal). The exit-chord list is unused here.
+        env.view.live_send = Some(LiveSendState {
+            session_id: "test-session".to_string(),
+            title: "test".to_string(),
+            tmux_name: "aoe_test_drag_select".to_string(),
+            exit_chords: Vec::new(),
+        });
     }
 
     #[test]
     #[serial]
-    fn click_with_non_running_session_does_not_open_dialog() {
-        // Created via create_test_env_with_sessions: instances default to
-        // Status::Creating, which resolve_paste_target rejects.
-        let mut env = create_test_env_with_sessions(1);
-        env.view.cursor = 0;
-        env.view.update_selected();
-        let changed = env.view.handle_preview_click();
-        assert!(!changed);
-        assert!(env.view.send_message_dialog.is_none());
+    fn drag_start_outside_live_mode_does_not_start_selection() {
+        let mut env = create_test_env_empty();
+        env.view.preview_area = Rect::new(40, 0, 60, 20);
+        // No live_send -> the preview hit is ignored; no selection
+        // installs.
+        assert!(!env.view.handle_drag_start(50, 10));
+        assert!(env.view.preview_selection.is_none());
+        assert!(env.view.drag_state.is_none());
     }
 
     #[test]
     #[serial]
-    fn click_while_dialog_open_is_swallowed() {
-        // has_dialog() must short-circuit so a stray click on the preview
-        // never opens a second dialog on top of an existing one. Use the
-        // info dialog as a stand-in modal so this test doesn't depend on
-        // tmux state (the actual send-message path needs a live tmux
-        // session, which unit tests can't stage).
+    fn drag_start_inside_live_mode_installs_selection() {
         let mut env = create_test_env_empty();
-        env.view.info_dialog = Some(InfoDialog::new("title", "body"));
-        let changed = env.view.handle_preview_click();
-        assert!(!changed);
-        assert!(env.view.send_message_dialog.is_none());
+        stage_live_send(&mut env);
+        assert!(env.view.handle_drag_start(50, 10));
+        assert!(matches!(env.view.drag_state, Some(DragKind::PreviewSelect)));
+        let sel = env.view.preview_selection.expect("selection installed");
+        assert_eq!(sel.anchor, (50, 10));
+        assert_eq!(sel.extent, (50, 10));
+        assert!(!sel.finalized);
+    }
+
+    #[test]
+    #[serial]
+    fn drag_move_updates_extent_clamped_to_preview_area() {
+        let mut env = create_test_env_empty();
+        stage_live_send(&mut env);
+        env.view.handle_drag_start(50, 10);
+        // Drag far past the preview's right edge (preview spans cols
+        // 40..100, rows 0..20). The clamp should pin the extent at
+        // (99, 19), inclusive of the last visible cell.
+        assert!(env.view.handle_drag_move(500, 500));
+        let sel = env.view.preview_selection.expect("selection still live");
+        assert_eq!(sel.extent, (99, 19));
+    }
+
+    #[test]
+    #[serial]
+    fn bare_click_collapses_to_no_selection() {
+        // Down + Up with no movement should not paint a 1x1 highlight
+        // or copy a single character to the clipboard. Genuine drags
+        // are tested below.
+        let mut env = create_test_env_empty();
+        stage_live_send(&mut env);
+        env.view.handle_drag_start(50, 10);
+        assert!(env.view.handle_drag_end());
+        assert!(env.view.preview_selection.is_none());
+        assert!(!env.view.preview_copy_pending);
+    }
+
+    #[test]
+    #[serial]
+    fn drag_end_finalizes_multi_cell_selection_and_arms_copy() {
+        let mut env = create_test_env_empty();
+        stage_live_send(&mut env);
+        env.view.handle_drag_start(50, 10);
+        env.view.handle_drag_move(55, 10);
+        assert!(env.view.handle_drag_end());
+        let sel = env.view.preview_selection.expect("finalized stays");
+        assert!(sel.finalized);
+        // The render that paints the finalized highlight is what
+        // captures the cells; handle_drag_end just arms the pending
+        // flag.
+        assert!(env.view.preview_copy_pending);
+        assert!(env.view.preview_copy_text.is_none());
+    }
+
+    #[test]
+    #[serial]
+    fn keypress_in_live_mode_dismisses_finalized_selection() {
+        // After release, any keystroke clears the highlight so it
+        // doesn't follow agent output as the live pane refreshes.
+        let mut env = create_test_env_empty();
+        stage_live_send(&mut env);
+        env.view.handle_drag_start(50, 10);
+        env.view.handle_drag_move(55, 10);
+        env.view.handle_drag_end();
+        assert!(env.view.preview_selection.is_some());
+        // Send a stray key through the live-send path. The session
+        // doesn't exist in tmux but the dismissal happens before the
+        // translate step.
+        env.view.handle_key(key(KeyCode::Char('x')), None);
+        assert!(env.view.preview_selection.is_none());
+    }
+
+    #[test]
+    #[serial]
+    fn scroll_clears_pending_selection() {
+        // A leftover highlight pinned to cells whose content just
+        // moved would mislead the user; scrolling must drop it.
+        let mut env = create_test_env_empty();
+        stage_live_send(&mut env);
+        env.view.handle_drag_start(50, 10);
+        env.view.handle_drag_move(55, 10);
+        env.view.handle_drag_end();
+        assert!(env.view.preview_selection.is_some());
+        env.view.handle_scroll_up(50, 10);
+        assert!(env.view.preview_selection.is_none());
+    }
+
+    #[test]
+    #[serial]
+    fn extract_reads_cells_from_buffer_and_trims_trailing_whitespace() {
+        // Stage a 3x10 buffer covering preview_area; write known text
+        // into rows 0..3 with padding on the right. The selection
+        // should pull the trimmed text out cell-for-cell.
+        let mut env = create_test_env_empty();
+        env.view.preview_area = Rect::new(0, 0, 10, 3);
+        let mut buf = Buffer::empty(Rect::new(0, 0, 10, 3));
+        for (y, line) in ["hello     ", "world     ", "          "]
+            .iter()
+            .enumerate()
+        {
+            for (x, ch) in line.chars().enumerate() {
+                buf[(x as u16, y as u16)].set_symbol(&ch.to_string());
+            }
+        }
+        env.view.preview_selection = Some(super::super::PreviewSelection {
+            anchor: (0, 0),
+            extent: (9, 1),
+            finalized: true,
+        });
+        let text = env
+            .view
+            .extract_preview_selection_text(&buf)
+            .expect("non-empty text");
+        assert_eq!(text, "hello\nworld");
+    }
+
+    #[test]
+    #[serial]
+    fn extract_returns_none_for_whitespace_only_selection() {
+        let mut env = create_test_env_empty();
+        env.view.preview_area = Rect::new(0, 0, 5, 2);
+        let buf = Buffer::empty(Rect::new(0, 0, 5, 2));
+        env.view.preview_selection = Some(super::super::PreviewSelection {
+            anchor: (0, 0),
+            extent: (4, 1),
+            finalized: true,
+        });
+        // Empty buffer cells render as a single space symbol, so the
+        // whitespace-only guard fires.
+        assert!(env.view.extract_preview_selection_text(&buf).is_none());
+    }
+
+    #[test]
+    #[serial]
+    fn take_preview_copy_text_drains_once() {
+        // The app loop reads preview_copy_text after the post-drag
+        // draw; the field must yield Some once and None thereafter so
+        // a stable highlight doesn't write to the clipboard on every
+        // subsequent frame.
+        let mut env = create_test_env_empty();
+        env.view.preview_copy_text = Some("clip me".to_string());
+        assert_eq!(
+            env.view.take_preview_copy_text().as_deref(),
+            Some("clip me")
+        );
+        assert!(env.view.take_preview_copy_text().is_none());
+    }
+
+    #[test]
+    #[serial]
+    fn clear_preview_selection_drops_pending_copy() {
+        // Dismissing the highlight before the render fires (e.g. a
+        // keystroke between Up(Left) and the next draw) must drop the
+        // pending capture so it doesn't leak into the next drag.
+        let mut env = create_test_env_empty();
+        stage_live_send(&mut env);
+        env.view.handle_drag_start(50, 10);
+        env.view.handle_drag_move(55, 10);
+        env.view.handle_drag_end();
+        assert!(env.view.preview_copy_pending);
+        env.view.clear_preview_selection();
+        assert!(!env.view.preview_copy_pending);
+        assert!(env.view.preview_copy_text.is_none());
+    }
+
+    #[test]
+    #[serial]
+    fn flow_extract_wraps_lines_with_partial_first_and_last_rows() {
+        // Tmux-style flow: anchor partway into row 0, extent partway
+        // into row 2. The middle row should be pulled in full, the
+        // first row from anchor col onward, and the last row from
+        // preview's left up through extent col.
+        let mut env = create_test_env_empty();
+        env.view.preview_area = Rect::new(0, 0, 10, 3);
+        let mut buf = Buffer::empty(Rect::new(0, 0, 10, 3));
+        for (y, line) in ["abcdefghij", "klmnopqrst", "uvwxyz0123"]
+            .iter()
+            .enumerate()
+        {
+            for (x, ch) in line.chars().enumerate() {
+                buf[(x as u16, y as u16)].set_symbol(&ch.to_string());
+            }
+        }
+        env.view.preview_selection = Some(super::super::PreviewSelection {
+            anchor: (3, 0),
+            extent: (5, 2),
+            finalized: true,
+        });
+        let text = env
+            .view
+            .extract_preview_selection_text(&buf)
+            .expect("non-empty text");
+        assert_eq!(text, "defghij\nklmnopqrst\nuvwxyz");
+    }
+
+    #[test]
+    #[serial]
+    fn flow_extract_handles_reverse_drag() {
+        // Drag from a later row up to an earlier one: anchor and
+        // extent are swapped into reading order before the flow shape
+        // is computed.
+        let mut env = create_test_env_empty();
+        env.view.preview_area = Rect::new(0, 0, 5, 2);
+        let mut buf = Buffer::empty(Rect::new(0, 0, 5, 2));
+        for (y, line) in ["abcde", "fghij"].iter().enumerate() {
+            for (x, ch) in line.chars().enumerate() {
+                buf[(x as u16, y as u16)].set_symbol(&ch.to_string());
+            }
+        }
+        env.view.preview_selection = Some(super::super::PreviewSelection {
+            anchor: (2, 1),
+            extent: (1, 0),
+            finalized: true,
+        });
+        let text = env
+            .view
+            .extract_preview_selection_text(&buf)
+            .expect("non-empty text");
+        assert_eq!(text, "bcde\nfgh");
+    }
+
+    #[test]
+    #[serial]
+    fn flow_rects_single_row_returns_one_segment() {
+        let sel = super::super::PreviewSelection {
+            anchor: (10, 5),
+            extent: (15, 5),
+            finalized: false,
+        };
+        let preview = Rect::new(0, 0, 40, 20);
+        let rects = sel.flow_rects(preview);
+        assert_eq!(rects.len(), 1);
+        assert_eq!(rects[0], Rect::new(10, 5, 6, 1));
+    }
+
+    #[test]
+    #[serial]
+    fn flow_rects_two_rows_returns_two_segments() {
+        let sel = super::super::PreviewSelection {
+            anchor: (10, 5),
+            extent: (3, 6),
+            finalized: false,
+        };
+        let preview = Rect::new(0, 0, 40, 20);
+        let rects = sel.flow_rects(preview);
+        assert_eq!(rects.len(), 2);
+        // First row tail: cols 10..40 on row 5.
+        assert_eq!(rects[0], Rect::new(10, 5, 30, 1));
+        // Last row head: cols 0..=3 on row 6.
+        assert_eq!(rects[1], Rect::new(0, 6, 4, 1));
+    }
+
+    #[test]
+    #[serial]
+    fn full_render_pipeline_captures_copy_text_after_finalize() {
+        // Drives the actual render path: paint_preview_selection
+        // walks the populated buffer, captures text into
+        // `preview_copy_text`, and the app loop's drain reads it.
+        // This guards against the bug where reading the buffer
+        // after `terminal.draw()` returned (and ratatui swapped
+        // front/back buffers) gave us empty cells.
+        use crate::tui::styles::load_theme;
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let mut env = create_test_env_empty();
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let theme = load_theme("empire");
+
+        // Stub the preview cache so render_preview has something to
+        // paint into the inner area. Without this the preview block
+        // shows the empty-state hint, which still populates cells
+        // (the hint text), but we want stable known text to verify.
+        env.view.preview_cache.content = "alpha beta gamma\nsecond line\nthird line\n".to_string();
+        env.view.preview_cache.dimensions = (80, 24);
+        env.view.preview_cache.captured_lines = 3;
+        env.view.preview_cache.last_refresh = std::time::Instant::now();
+        env.view.preview_cache.session_id = Some("fake-id".to_string());
+
+        // First render seeds preview_area + paints content into the
+        // buffer. We need that before the drag handlers can clamp the
+        // extent meaningfully.
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                env.view.render(f, area, &theme, None, None);
+            })
+            .unwrap();
+
+        let preview_area = env.view.preview_area;
+        assert!(preview_area.width > 4, "preview area was not set by render");
+
+        // Install live-send so handle_drag_start claims the preview
+        // click as a selection.
+        env.view.live_send = Some(LiveSendState {
+            session_id: "fake-id".to_string(),
+            title: "fake".to_string(),
+            tmux_name: "aoe_test_full_pipeline".to_string(),
+            exit_chords: Vec::new(),
+        });
+
+        // Find a row in the preview area that actually has text in
+        // the buffer (the hint is centered, so the top row is blank).
+        let initial_buf = terminal.backend().buffer().clone();
+        let mut content_row = None;
+        for r in preview_area.y..preview_area.bottom() {
+            let mut row_text = String::new();
+            for c in preview_area.x..preview_area.right() {
+                row_text.push_str(initial_buf[(c, r)].symbol());
+            }
+            if row_text.trim().chars().any(|ch| ch.is_alphabetic()) {
+                content_row = Some(r);
+                break;
+            }
+        }
+        let row = content_row.expect("preview must paint some text");
+        let start_col = preview_area.x;
+        let end_col = preview_area.right() - 1;
+        assert!(env.view.handle_drag_start(start_col, row));
+        assert!(env.view.handle_drag_move(end_col, row));
+        assert!(env.view.handle_drag_end());
+        assert!(
+            env.view.preview_copy_pending,
+            "drag_end should arm a pending capture"
+        );
+
+        // The render that paints the finalized highlight is where
+        // capture actually happens: it reads the cells in the buffer
+        // (still populated with the agent's text) and stashes the
+        // string for the app loop to drain.
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                env.view.render(f, area, &theme, None, None);
+            })
+            .unwrap();
+
+        assert!(
+            !env.view.preview_copy_pending,
+            "render should consume the pending flag"
+        );
+        let captured = env.view.take_preview_copy_text();
+        // Dump what's actually in those cells so we can see whether
+        // the issue is empty cells or a broken capture path.
+        let buf = terminal.backend().buffer();
+        let mut row_text = String::new();
+        for col in start_col..=end_col {
+            row_text.push_str(buf[(col, row)].symbol());
+        }
+        let copied = captured.unwrap_or_else(|| {
+            panic!(
+                "render should have captured cell text into preview_copy_text. \
+                 preview_area={preview_area:?}, drag row={row}, cols {start_col}..={end_col}, \
+                 buffer cells in that row: {row_text:?}"
+            )
+        });
+        assert!(
+            !copied.trim().is_empty(),
+            "captured text should not be empty; got {copied:?}"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn flow_rects_three_or_more_rows_includes_full_width_middle() {
+        let sel = super::super::PreviewSelection {
+            anchor: (10, 5),
+            extent: (3, 8),
+            finalized: false,
+        };
+        let preview = Rect::new(0, 0, 40, 20);
+        let rects = sel.flow_rects(preview);
+        assert_eq!(rects.len(), 3);
+        assert_eq!(rects[0], Rect::new(10, 5, 30, 1));
+        // Middle: rows 6..=7, full preview width.
+        assert_eq!(rects[1], Rect::new(0, 6, 40, 2));
+        assert_eq!(rects[2], Rect::new(0, 8, 4, 1));
     }
 }
 
@@ -5797,6 +6173,107 @@ mod live_send_mode {
             .handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), None);
         assert!(action.is_none(), "expected no action, got {:?}", action);
         assert!(env.view.live_send.is_none());
+    }
+
+    mod paste_splitting {
+        //! `split_paste_for_live_send` decomposes a pasted string into
+        //! tmux operations the live-send worker can actually deliver.
+        //! `send-keys -l` rejects control bytes, so newlines, tabs, and
+        //! CR/CRLF must come through as Named keys. Everything else
+        //! travels as Literal runs.
+
+        use crate::tui::home::input::split_paste_for_live_send;
+        use crate::tui::home::live_send::TmuxKey;
+
+        fn lit(s: &str) -> TmuxKey {
+            TmuxKey::Literal(s.to_string())
+        }
+        fn named(name: &str) -> TmuxKey {
+            TmuxKey::Named(name.to_string())
+        }
+
+        #[test]
+        fn printable_paste_stays_one_literal() {
+            assert_eq!(
+                split_paste_for_live_send("hello world"),
+                vec![lit("hello world")],
+            );
+        }
+
+        #[test]
+        fn newline_splits_into_literal_enter_literal() {
+            assert_eq!(
+                split_paste_for_live_send("first\nsecond"),
+                vec![lit("first"), named("Enter"), lit("second")],
+            );
+        }
+
+        #[test]
+        fn trailing_newline_emits_enter_with_no_literal_after() {
+            assert_eq!(
+                split_paste_for_live_send("only line\n"),
+                vec![lit("only line"), named("Enter")],
+            );
+        }
+
+        #[test]
+        fn leading_newline_emits_enter_first() {
+            assert_eq!(
+                split_paste_for_live_send("\nbody"),
+                vec![named("Enter"), lit("body")],
+            );
+        }
+
+        #[test]
+        fn crlf_coalesces_to_single_enter() {
+            assert_eq!(
+                split_paste_for_live_send("a\r\nb"),
+                vec![lit("a"), named("Enter"), lit("b")],
+            );
+        }
+
+        #[test]
+        fn bare_cr_emits_enter() {
+            assert_eq!(
+                split_paste_for_live_send("a\rb"),
+                vec![lit("a"), named("Enter"), lit("b")],
+            );
+        }
+
+        #[test]
+        fn tab_emits_named_tab() {
+            assert_eq!(
+                split_paste_for_live_send("a\tb"),
+                vec![lit("a"), named("Tab"), lit("b")],
+            );
+        }
+
+        #[test]
+        fn other_control_bytes_are_dropped() {
+            // BEL (0x07) and ESC (0x1b) have no safe paste mapping;
+            // they're dropped to avoid surprising agent input cancels.
+            assert_eq!(
+                split_paste_for_live_send("a\x07b\x1bc"),
+                vec![lit("a"), lit("b"), lit("c")],
+            );
+        }
+
+        #[test]
+        fn multiline_drag_select_paste_round_trip() {
+            // Exact shape that comes back from drag-select copy: lines
+            // joined with `\n` and no trailing newline. The agent
+            // should see literal text + Enter + literal text.
+            assert_eq!(
+                split_paste_for_live_send("alpha beta\nsecond line\nthird"),
+                vec![
+                    lit("alpha beta"),
+                    named("Enter"),
+                    lit("second line"),
+                    named("Enter"),
+                    lit("third"),
+                ],
+            );
+        }
     }
 }
 

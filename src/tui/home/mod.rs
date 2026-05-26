@@ -72,6 +72,111 @@ pub(super) enum DragKind {
     /// `list_width` at that moment. The new requested width is
     /// `start_width + (current_col - start_col)`, clamped on apply.
     ListDivider { start_col: u16, start_width: u16 },
+    /// Drag-selecting text inside the preview pane while live-send is
+    /// active. The anchor cell is where the user pressed; `preview_selection`
+    /// on `HomeView` carries the live extent and is what the renderer
+    /// reads. We keep the kind here (with no payload beyond a marker) so
+    /// `handle_drag_move` / `handle_drag_end` can dispatch by variant
+    /// without re-checking `live_send`.
+    PreviewSelect,
+}
+
+/// Flow-style text selection in the preview pane, matching tmux's
+/// default mouse selection: from the anchor cell, the selection runs
+/// in reading order (left-to-right, top-to-bottom) wrapping across
+/// every row in between, and ends at the extent cell. Coordinates are
+/// absolute terminal cells (matching the frame buffer's coords) so the
+/// renderer can apply a reversed-style highlight without re-deriving
+/// pane geometry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct PreviewSelection {
+    /// Cell the user pressed Down(Left) on.
+    pub(super) anchor: (u16, u16),
+    /// Current (or final) extent. Equals `anchor` at drag start.
+    pub(super) extent: (u16, u16),
+    /// True once Up(Left) has fired. The renderer keeps the highlight
+    /// visible after release until the user dismisses it (next key,
+    /// click, or scroll), so they can verify what was copied.
+    pub(super) finalized: bool,
+}
+
+impl PreviewSelection {
+    /// Anchor and extent ordered in reading order (row first, then
+    /// column). The first tuple is the cell where the selection starts
+    /// in the flow; the second is where it ends. A drag that runs
+    /// up-and-right still resolves to the higher row as the start.
+    pub(super) fn ordered(self) -> ((u16, u16), (u16, u16)) {
+        let (ac, ar) = self.anchor;
+        let (ec, er) = self.extent;
+        if (ar, ac) <= (er, ec) {
+            ((ac, ar), (ec, er))
+        } else {
+            ((ec, er), (ac, ar))
+        }
+    }
+
+    /// Decompose the selection into one to three flow-shape `Rect`
+    /// segments inside `preview_area`. Returns an empty vec when the
+    /// preview area is zero-sized. The shape is the tmux default:
+    ///
+    /// * single-row selection: one segment between the two columns.
+    /// * multi-row selection: (1) start col to the preview's right
+    ///   edge on the first row, (2) full-width middle rows when any
+    ///   exist, (3) the preview's left edge to the end col on the
+    ///   last row.
+    pub(super) fn flow_rects(
+        self,
+        preview_area: ratatui::layout::Rect,
+    ) -> Vec<ratatui::layout::Rect> {
+        let mut out = Vec::new();
+        if preview_area.width == 0 || preview_area.height == 0 {
+            return out;
+        }
+        let ((start_col, start_row), (end_col, end_row)) = self.ordered();
+        let left = preview_area.x;
+        let right_excl = preview_area.right();
+
+        if start_row == end_row {
+            let lo = start_col.min(end_col);
+            let hi = start_col.max(end_col);
+            let width = hi.saturating_sub(lo).saturating_add(1);
+            out.push(ratatui::layout::Rect {
+                x: lo,
+                y: start_row,
+                width,
+                height: 1,
+            });
+            return out;
+        }
+
+        let first_width = right_excl.saturating_sub(start_col);
+        if first_width > 0 {
+            out.push(ratatui::layout::Rect {
+                x: start_col,
+                y: start_row,
+                width: first_width,
+                height: 1,
+            });
+        }
+        if end_row > start_row + 1 {
+            out.push(ratatui::layout::Rect {
+                x: left,
+                y: start_row + 1,
+                width: preview_area.width,
+                height: end_row - start_row - 1,
+            });
+        }
+        let last_width = end_col.saturating_sub(left).saturating_add(1);
+        if last_width > 0 {
+            out.push(ratatui::layout::Rect {
+                x: left,
+                y: end_row,
+                width: last_width,
+                height: 1,
+            });
+        }
+        out
+    }
 }
 
 pub(super) struct GroupRenameContext {
@@ -417,6 +522,28 @@ pub struct HomeView {
     /// today), updated on each `Drag(Left)`, cleared on `Up(Left)`.
     pub(super) drag_state: Option<DragKind>,
 
+    /// In-app text selection over the preview pane, populated only in
+    /// live-send mode (where terminal-native drag-select doesn't reach
+    /// us because mouse capture is on). The renderer reads this to
+    /// paint a reversed-style highlight. Cleared on the next key
+    /// press / click / mode change.
+    pub(super) preview_selection: Option<PreviewSelection>,
+
+    /// Set by `handle_drag_end` when a non-empty selection finalizes.
+    /// On the next render, the highlight-paint pass reads cell symbols
+    /// from the populated frame buffer, joins them into a string, and
+    /// stashes that in `preview_copy_text` for the app loop to drain
+    /// after the draw returns. Without this hop, reading
+    /// `terminal.current_buffer_mut()` post-draw returns ratatui's
+    /// blank back-buffer (it swaps current ↔ previous after every
+    /// frame) so the extracted text is all empty cells.
+    pub(super) preview_copy_pending: bool,
+
+    /// Captured text from the most recently finalized preview
+    /// selection, awaiting clipboard write. Drained by `App` right
+    /// after the draw that paints the finalized highlight.
+    pub(super) preview_copy_text: Option<String>,
+
     /// Show the info header (profile/tool/path/status/sandbox/worktree) at
     /// the top of the preview pane. Toggled with `i` and persisted to
     /// `app_state.show_preview_info`.
@@ -635,6 +762,9 @@ impl HomeView {
             divider_col: None,
             main_area_width: 0,
             drag_state: None,
+            preview_selection: None,
+            preview_copy_pending: false,
+            preview_copy_text: None,
             show_preview_info: user_config
                 .as_ref()
                 .and_then(|c| c.app_state.show_preview_info)
