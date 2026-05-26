@@ -2497,12 +2497,48 @@ impl HomeView {
         // but turned out to be unreliable on real-world tmux setups
         // and was removed in favor of this simpler model).
         self.live_send_worker = Some(live_send::LiveSendWorker::spawn(tmux_name.clone()));
-        // Force the preview-refresh path to issue a resize on the
-        // first draw inside live mode (it dedups against
-        // live_send_last_resize), so the agent's render matches the
-        // preview pane's actual dimensions instead of whatever the
-        // session was last sized to.
+        // Synchronously resize the pane to the LAST KNOWN preview
+        // area dimensions before returning, so the first frame inside
+        // live mode already sees the agent's content at the new size.
+        // Without this, frame 1 captures the OLD pane size and
+        // frame 2 (one ticker later, once the async worker resize
+        // completes) jumps to the new size — the visible "shift" the
+        // user perceives on entering live mode.
+        //
+        // `preview_outer_area` is populated by the most recent render
+        // (in non-live mode); its dimensions match what live mode is
+        // about to ask for, modulo a row or two for the status bar
+        // changing. The corrective resize from the next
+        // `refresh_preview_cache_if_needed` call will close any small
+        // gap, but the pre-resize done here means the SECOND shift is
+        // tiny instead of the entire pane re-layout.
         self.live_send_last_resize = None;
+        let outer = self.preview_outer_area;
+        if outer.width > 2 && outer.height > 2 {
+            let cols = outer.width.saturating_sub(2);
+            let rows = outer.height.saturating_sub(2);
+            let _ = std::process::Command::new("tmux")
+                .args([
+                    "resize-window",
+                    "-t",
+                    &tmux_name,
+                    "-x",
+                    &cols.to_string(),
+                    "-y",
+                    &rows.to_string(),
+                ])
+                .stderr(std::process::Stdio::null())
+                .status();
+            // Pre-set the dedup so the worker doesn't issue a
+            // redundant resize on the first refresh.
+            self.live_send_last_resize = Some((cols, rows));
+            // Give the agent ~30ms to handle SIGWINCH and re-render
+            // before the caller draws the first frame. 30ms is short
+            // enough to be invisible as "lag entering live mode" but
+            // long enough for most agents (claude-code, codex) to
+            // re-lay out their UI.
+            std::thread::sleep(std::time::Duration::from_millis(30));
+        }
         self.stamp_last_accessed(session_id);
         Ok(stale_sid)
     }

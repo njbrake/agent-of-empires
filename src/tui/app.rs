@@ -585,13 +585,25 @@ impl App {
             (hup.ok(), term.ok())
         };
 
-        // 25ms ticker (40fps). In live-send mode this is the sole refresh
-        // signal (the `%output` wake mechanism was removed when control-mode
-        // was ripped out), so the tick rate caps the preview refresh
-        // frequency. 25ms keeps the worst-case key-to-paint latency under
-        // ~30ms while bounding the per-second fork-capture count to 40.
-        let mut refresh_interval = tokio::time::interval(Duration::from_millis(25));
+        // 16ms ticker (60fps). In live-send the ticker is the steady-state
+        // refresh signal (the `%output` wake mechanism was removed with
+        // control-mode); the `last_live_key_at` post-key wake below
+        // provides extra targeted refreshes ~15ms after each keystroke so
+        // typing-echo latency doesn't have to wait for the next tick.
+        // 60fps is the upper bound on what the user can perceive on a
+        // typical display and bounds the per-second fork-capture count to
+        // ~60 during live-send (~30% of one core on a modern Mac).
+        let mut refresh_interval = tokio::time::interval(Duration::from_millis(16));
         refresh_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        // After any keystroke routed to live-send, schedule one extra
+        // refresh ~15ms later. That's roughly the time it takes for the
+        // `tmux send-keys` worker to fork+deliver the key and the agent
+        // to echo it into the pane, so the resulting capture catches the
+        // echo deterministically instead of waiting up to one full
+        // ticker interval. Cleared when the wake fires; re-armed by
+        // each subsequent key.
+        let mut last_live_key_at: Option<std::time::Instant> = None;
+        const POST_KEY_WAKE_DELAY: Duration = Duration::from_millis(15);
         let mut last_status_refresh = std::time::Instant::now();
         let mut last_disk_refresh = std::time::Instant::now();
         let mut last_spinner_redraw = std::time::Instant::now();
@@ -619,6 +631,12 @@ impl App {
                 terminal.clear()?;
                 self.needs_redraw = false;
             }
+
+            // Compute the post-key wake deadline once per iteration so
+            // the select! arm doesn't have to dance with the Option.
+            // `None` here becomes `pending` inside the arm.
+            let post_key_deadline = last_live_key_at.map(|t| t + POST_KEY_WAKE_DELAY);
+            let mut woke_via_post_key = false;
 
             // All event sources are polled cooperatively via tokio::select!.
             // This ensures signal futures actually get scheduled (fixing #608
@@ -736,6 +754,18 @@ impl App {
 
                             self.handle_key(key, terminal).await?;
                             self.sync_mouse_capture(terminal)?;
+
+                            // Arm the post-key wake when the key was
+                            // routed into live-send. We don't have an
+                            // explicit signal from handle_key for that
+                            // (it returns ()), but `live_send.is_some()`
+                            // after the call is a good proxy: a key
+                            // that EXITS live-send won't arm a wake,
+                            // and keys outside live-send leave it None
+                            // anyway since we never set it.
+                            if self.home.live_send.is_some() {
+                                last_live_key_at = Some(std::time::Instant::now());
+                            }
 
                             // Skip the draw when returning from tmux attach.
                             // needs_redraw triggers a clear + stale event drain
@@ -909,6 +939,17 @@ impl App {
                 }
                 _ = refresh_interval.tick() => {}
                 _ = async {
+                    match post_key_deadline {
+                        Some(at) => tokio::time::sleep_until(at.into()).await,
+                        None => std::future::pending::<()>().await,
+                    }
+                } => {
+                    // Targeted refresh ~15ms after a live-send key,
+                    // catching the agent's echo before the next ticker.
+                    woke_via_post_key = true;
+                    last_live_key_at = None;
+                }
+                _ = async {
                     #[cfg(unix)]
                     match sighup {
                         Some(ref mut s) => { s.recv().await; }
@@ -1061,13 +1102,14 @@ impl App {
                 needs_full_refresh = true;
             }
 
-            // While live-send is active, the 50ms refresh ticker is
-            // the sole refresh signal — we no longer have a `%output`
-            // wake to short-circuit it. Treat the ticker as a refresh
-            // in live mode so the preview repaints at ~20fps. Outside
-            // live-send, the ticker only fires the refresh when one
-            // of the periodic checks above flagged it.
-            if self.home.live_send.is_some() {
+            // In live-send, the 16ms ticker is the steady-state
+            // refresh source; treat every tick as a refresh. The
+            // post-key wake (`woke_via_post_key`) is the same signal
+            // but on a deterministic ~15ms delay after each keystroke
+            // so typing-echo latency doesn't have to wait for ticker
+            // phase. Outside live-send, only the periodic checks
+            // above trigger refresh.
+            if self.home.live_send.is_some() || woke_via_post_key {
                 refresh_needed = true;
             }
 
