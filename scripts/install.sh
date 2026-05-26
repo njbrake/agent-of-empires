@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-REPO="njbrake/agent-of-empires"
+REPO="agent-of-empires/agent-of-empires"
 DEFAULT_INSTALL_DIR="$HOME/.local/bin"
 INSTALL_DIR="${INSTALL_DIR:-$DEFAULT_INSTALL_DIR}"
 BINARY_NAME="aoe"

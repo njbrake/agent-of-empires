@@ -22,14 +22,14 @@ fn github_api_base() -> String {
 
 fn github_api_latest_url() -> String {
     format!(
-        "{}/repos/njbrake/agent-of-empires/releases/latest",
+        "{}/repos/agent-of-empires/agent-of-empires/releases/latest",
         github_api_base()
     )
 }
 
 fn github_api_releases_url() -> String {
     format!(
-        "{}/repos/njbrake/agent-of-empires/releases?per_page=20",
+        "{}/repos/agent-of-empires/agent-of-empires/releases?per_page=20",
         github_api_base()
     )
 }
@@ -44,7 +44,7 @@ pub fn release_page_url(version: &str) -> String {
         format!("v{}", version)
     };
     format!(
-        "https://github.com/njbrake/agent-of-empires/releases/tag/{}",
+        "https://github.com/agent-of-empires/agent-of-empires/releases/tag/{}",
         tag
     )
 }
