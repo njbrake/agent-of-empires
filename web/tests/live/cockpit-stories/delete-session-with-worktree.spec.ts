@@ -90,7 +90,12 @@ base("DeleteSessionDialog can opt into deleting the worktree", async ({ page }, 
     // the branch checkbox to flip it on before submit.
     await expect(worktreeCheckbox).toHaveAttribute("data-checked", "true");
     await expect(branchCheckbox).toHaveAttribute("data-checked", "false");
-    await branchCheckbox.click();
+    // The Checkbox renders as <label> with an inner <span> that owns
+    // the onClick (DeleteSessionDialog.tsx ~line 210). Clicking the
+    // label itself does NOT fire onChange — there is no <input>
+    // associated. Click the first inner span (the colored box) to
+    // flip state.
+    await branchCheckbox.locator("span").first().click();
     await expect(branchCheckbox).toHaveAttribute("data-checked", "true");
 
     const deletePromise = page.waitForResponse(
