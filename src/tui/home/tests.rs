@@ -6271,10 +6271,6 @@ mod live_send_mode {
         env.view.preview_cache.captured_lines = 1;
         env.view.preview_cache.dimensions = (80, 24);
         env.view.preview_cache.session_id = Some(id);
-        // No control-mode client is needed for captures any more; the
-        // capture path is always fork-based. Leave it None so the
-        // fixture matches a post-teardown state too.
-        env.view.control_mode_client = None;
 
         env.view.refresh_preview_cache_if_needed(80, 24);
 

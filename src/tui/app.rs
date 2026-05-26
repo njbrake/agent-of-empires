@@ -97,22 +97,6 @@ pub struct App {
     /// reader thread on stdin; if it's alive when tmux attach-session starts,
     /// the two compete for stdin and tmux fails to initialize its client.
     event_stream: Option<EventStream>,
-    /// Wake channel from the live-send control-mode reader thread:
-    /// fires `()` every time tmux emits `%output` (the agent rendered
-    /// bytes). The main loop selects on the receiver to break out of
-    /// idle without waiting for the next tokio ticker, so preview
-    /// updates land within the round-trip rather than up to one tick
-    /// later. The sender is cloned into a callback and handed to
-    /// `ControlModeClient::spawn` via `HomeView::enter_live_send`.
-    ///
-    /// Capacity 1 + `try_send` is the canonical pattern for
-    /// coalescing wake notifications: when the buffer already holds
-    /// a pending wake, additional `%output` lines drop the send
-    /// silently (the main loop will see the queued wake on its next
-    /// iteration). An unbounded channel would let wakes pile up
-    /// without backpressure if the main loop ever stalls.
-    live_send_wake_tx: tokio::sync::mpsc::Sender<()>,
-    live_send_wake_rx: tokio::sync::mpsc::Receiver<()>,
     /// Snapshot of the most recently completed full-render buffer.
     /// Stashed only while live-send is active (the only consumer of
     /// the preview-only fast path); cleared when the user exits live
@@ -255,15 +239,6 @@ impl App {
 
         let dismissed_update_version = config.app_state.dismissed_update_version.clone();
 
-        // Live-send wake channel: the sender is cloned into the
-        // control-mode reader-thread callback on each
-        // `enter_live_send`; the receiver is consumed by the main
-        // loop's `tokio::select!` branch so agent output wakes the
-        // loop without waiting for the next ticker. Capacity 1 so
-        // additional wakes coalesce while the main loop is between
-        // iterations; see the field docs above.
-        let (live_send_wake_tx, live_send_wake_rx) = tokio::sync::mpsc::channel::<()>(1);
-
         Ok(Self {
             home,
             should_quit: false,
@@ -275,8 +250,6 @@ impl App {
             update_status_rx: None,
             dismissed_update_version,
             event_stream: Some(EventStream::new()),
-            live_send_wake_tx,
-            live_send_wake_rx,
             last_full_frame: None,
             last_full_frame_preview_area: ratatui::layout::Rect::default(),
             // Initial state matches whatever `tui::run` did at startup;
@@ -642,11 +615,6 @@ impl App {
                 self.needs_redraw = false;
             }
 
-            // Reset per-iteration flags. Set inside the select! branches
-            // and consumed after the periodic-refresh block below to
-            // decide between the preview-only fast path and a full draw.
-            let mut woke_via_live_send_wake = false;
-
             // All event sources are polled cooperatively via tokio::select!.
             // This ensures signal futures actually get scheduled (fixing #608
             // defect 1), and that EOF from a dead tty is detected (defect 2).
@@ -935,19 +903,6 @@ impl App {
                     }
                 }
                 _ = refresh_interval.tick() => {}
-                // Wake on every `%output` from a live-send tmux
-                // control-mode connection. The receiver only fires
-                // while live-send is active (the sender lives in the
-                // reader thread owned by `ControlModeClient`, which
-                // exists only between `enter_live_send` and its
-                // drop), so this is effectively a no-op outside live
-                // mode. Setting `woke_via_live_send_wake` flips on
-                // both `refresh_needed` (so the draw at the bottom
-                // of the loop actually fires) and the
-                // preview-only fast path consideration below.
-                Some(_) = self.live_send_wake_rx.recv() => {
-                    woke_via_live_send_wake = true;
-                }
                 _ = async {
                     #[cfg(unix)]
                     match sighup {
@@ -1084,12 +1039,13 @@ impl App {
                 needs_full_refresh = true;
             }
 
-            // A live-send wake on its own is a refresh signal: the
-            // agent rendered new bytes into the pane and the preview
-            // is stale. Without this flag the loop would only redraw
-            // when one of the periodic checks above happened to fire,
-            // which is rare in steady-state typing.
-            if woke_via_live_send_wake {
+            // While live-send is active, the 50ms refresh ticker is
+            // the sole refresh signal — we no longer have a `%output`
+            // wake to short-circuit it. Treat the ticker as a refresh
+            // in live mode so the preview repaints at ~20fps. Outside
+            // live-send, the ticker only fires the refresh when one
+            // of the periodic checks above flagged it.
+            if self.home.live_send.is_some() {
                 refresh_needed = true;
             }
 
@@ -1099,8 +1055,7 @@ impl App {
                 // `has_non_live_send_overlay()` returns true only for
                 // OTHER overlays (settings, diff, dialogs) — those still
                 // need a full draw, but bare live-send doesn't.
-                let prefer_preview_only = woke_via_live_send_wake
-                    && !needs_full_refresh
+                let prefer_preview_only = !needs_full_refresh
                     && self.home.live_send.is_some()
                     && !self.home.has_non_live_send_overlay()
                     && self.last_full_frame.is_some();
@@ -1674,18 +1629,7 @@ impl App {
                     .set_instance_status(&id, crate::session::Status::Starting);
                 self.update_status = Some(UpdateStatus::transient("Reviving session...".into()));
                 self.draw(terminal)?;
-                // Hand the wake-channel sender to ControlModeClient so
-                // the reader thread can break the main loop's idle
-                // sleep on `%output`. `try_send` is the right call
-                // here: the channel is capacity 1, so a pending wake
-                // makes additional `%output` lines drop the send
-                // silently. That's the coalescing we want, the main
-                // loop will see the queued wake on its next iteration.
-                let wake_tx = self.live_send_wake_tx.clone();
-                let on_output_wake: Box<dyn Fn() + Send + 'static> = Box::new(move || {
-                    let _ = wake_tx.try_send(());
-                });
-                let outcome = self.home.enter_live_send(&id, Some(on_output_wake));
+                let outcome = self.home.enter_live_send(&id);
                 match outcome {
                     Ok(Some(sid)) => {
                         self.update_status = Some(UpdateStatus::transient(format!(

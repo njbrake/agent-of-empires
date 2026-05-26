@@ -389,24 +389,6 @@ pub struct HomeView {
     /// latency. Dropping (set to None when live mode exits) closes the
     /// channel and the worker thread exits cleanly on its own.
     pub(super) live_send_worker: Option<live_send::LiveSendWorker>,
-    /// Long-lived `tmux -C` connection shared between the preview-
-    /// refresh path and the live-send worker thread. The connection
-    /// is the sole transport for keystrokes, resizes, and pane
-    /// keystroke dispatch while live-send is active. `enter_live_send`
-    /// best-effort spawns it: if `ControlModeClient::spawn` fails or
-    /// the connection EOFs mid-session, the worker thread falls back
-    /// to one-shot `tmux send-keys` subprocesses (see
-    /// `dispatch_via_fork`). The render path's preview refresh does
-    /// NOT use this client; it always uses the fork-based capture path
-    /// because some tmux builds (observed on macOS 3.x against
-    /// long-running sessions) drop the control-mode connection
-    /// unpredictably and the recovery cost is paid by the user as a
-    /// frozen preview.
-    ///
-    /// Wrapped in `Arc` so the worker thread can hold one clone.
-    ///
-    /// See `src/tmux/control_mode.rs` and #1485.
-    pub(super) control_mode_client: Option<std::sync::Arc<crate::tmux::ControlModeClient>>,
     /// Last (cols, rows) we asked the worker to resize the pane to in
     /// the current live-send session. Used to dedup the resize messages
     /// fired from the preview refresh path; cleared on live-send exit.
@@ -725,7 +707,6 @@ impl HomeView {
             pending_send_session: None,
             live_send: None,
             live_send_worker: None,
-            control_mode_client: None,
             live_send_last_resize: None,
             pending_paste: None,
             pending_attach_after_warning: None,
@@ -2435,17 +2416,7 @@ impl HomeView {
     /// fired during respawn, `Ok(None)` on a clean ready, and `Err(())`
     /// if the pane could not be readied (`info_dialog` is set with the
     /// underlying error so the caller only has to clear its toast).
-    ///
-    /// `on_output_wake`, when `Some`, is invoked from the control-mode
-    /// reader thread whenever tmux emits `%output`. The expected
-    /// caller (App's main loop) wires this through to a tokio mpsc so
-    /// it can wake out of `select!` on agent output and re-capture
-    /// the preview without waiting for the next timer tick.
-    pub fn enter_live_send(
-        &mut self,
-        session_id: &str,
-        on_output_wake: Option<Box<dyn Fn() + Send + 'static>>,
-    ) -> Result<Option<String>, ()> {
+    pub fn enter_live_send(&mut self, session_id: &str) -> Result<Option<String>, ()> {
         let outcome = self.try_mutate_instance_writeback_on_err(session_id, |inst| {
             inst.ensure_pane_ready().map_err(Into::into)
         });
@@ -2520,41 +2491,12 @@ impl HomeView {
             tmux_name: tmux_name.clone(),
             exit_chords,
         });
-        // Live-send is built on a single `tmux -C` control-mode
-        // connection that carries keystrokes, resizes, AND preview
-        // captures. Spawning it has to succeed; the fork-based path
-        // is gone. If spawn fails the user gets a dialog and stays on
-        // the home view.
-        let control_client = match crate::tmux::ControlModeClient::spawn(&tmux_name, on_output_wake)
-        {
-            Ok(client) => std::sync::Arc::new(client),
-            Err(err) => {
-                tracing::warn!(
-                    target: "tmux.control_mode",
-                    error = %err,
-                    "control-mode spawn failed; aborting live-send entry",
-                );
-                self.info_dialog = Some(InfoDialog::new(
-                    "Live send failed",
-                    &format!("Cannot open tmux control-mode connection: {}", err),
-                ));
-                // Roll back the live_send state we just installed so
-                // the home view's banner doesn't show LIVE without a
-                // working transport.
-                self.live_send = None;
-                return Err(());
-            }
-        };
-        // Worker owns one Arc<ControlModeClient>; we keep another so
-        // the home view can drop the connection on exit. The worker
-        // also needs the tmux session name so it can fall back to a
-        // fork-based `tmux send-keys` subprocess if the control-mode
-        // connection EOFs mid-session — see `dispatch_via_fork`.
-        self.live_send_worker = Some(live_send::LiveSendWorker::spawn(
-            control_client.clone(),
-            tmux_name.clone(),
-        ));
-        self.control_mode_client = Some(control_client);
+        // Spawn the background worker that dispatches translated
+        // keystrokes as one-shot `tmux send-keys` subprocesses (the
+        // pre-#1485 path; control-mode was tried as an optimization
+        // but turned out to be unreliable on real-world tmux setups
+        // and was removed in favor of this simpler model).
+        self.live_send_worker = Some(live_send::LiveSendWorker::spawn(tmux_name.clone()));
         // Force the preview-refresh path to issue a resize on the
         // first draw inside live mode (it dedups against
         // live_send_last_resize), so the agent's render matches the

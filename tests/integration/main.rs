@@ -23,7 +23,6 @@ mod sandbox_integration;
 mod session_lifecycle;
 mod status_detection;
 mod storage_concurrency;
-mod tmux_control_mode;
 mod tui_attach_detach;
 mod update_command;
 mod worktree_integration;

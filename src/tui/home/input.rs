@@ -3150,9 +3150,6 @@ impl HomeView {
         session.reset_size_to_latest_client();
         self.live_send = None;
         self.live_send_worker = None;
-        // Dropping the control-mode client closes its stdin, which
-        // makes tmux detach the long-lived `-C` connection cleanly.
-        self.control_mode_client = None;
         self.live_send_last_resize = None;
         // A preview selection only ever exists in live mode; leaving
         // live without dropping it would leave a stale highlight on
