@@ -76,10 +76,14 @@ base("ApprovalCard Deny resolves and the turn ends", async ({ page }, testInfo) 
     await approvalDialog.getByRole("button", { name: "Deny" }).click();
 
     await expect(approvalDialog).toBeHidden({ timeout: 10_000 });
-    // Turn ends; idle composer placeholder reappears, Stop button gone.
-    await expect(
-      page.getByRole("textbox", { name: /Send a message/i }),
-    ).toBeVisible({ timeout: 10_000 });
+    // Turn ends; idle composer reappears, Stop button gone. Asserting
+    // visibility alone is insufficient — the textbox is visible
+    // mid-turn too. Assert enabled (not pending) and cleared (the
+    // post-submit clear ran) so this reliably proves the turn returned
+    // to idle.
+    await expect(composer).toBeVisible({ timeout: 10_000 });
+    await expect(composer).toBeEnabled({ timeout: 10_000 });
+    await expect(composer).toHaveValue("");
     await expect(page.getByRole("button", { name: "Stop" })).toBeHidden({
       timeout: 10_000,
     });

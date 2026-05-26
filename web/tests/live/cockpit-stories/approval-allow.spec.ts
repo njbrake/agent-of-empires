@@ -78,12 +78,18 @@ base("ApprovalCard Allow resolves and the turn continues", async ({ page }, test
     });
     await expect(approvalDialog).toBeVisible({ timeout: 10_000 });
 
+    // The fake script gates the post-approval chunk on the user's
+    // Allow click. Prove the gate works by asserting the
+    // post-approval text is absent BEFORE clicking; otherwise this
+    // spec would pass even if the dialog were a no-op and the chunk
+    // emitted unconditionally.
+    const postApprovalChunk = page.getByText("Write complete.");
+    await expect(postApprovalChunk).toHaveCount(0);
+
     await approvalDialog.getByRole("button", { name: "Allow" }).click();
 
     // Fake awaits the decision; once Allow lands, the next chunk emits.
-    await expect(page.getByText("Write complete.")).toBeVisible({
-      timeout: 10_000,
-    });
+    await expect(postApprovalChunk).toBeVisible({ timeout: 10_000 });
     // Approval card is dismissed after resolution.
     await expect(approvalDialog).toBeHidden({ timeout: 10_000 });
   } finally {
