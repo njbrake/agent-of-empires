@@ -116,10 +116,14 @@ base("queued follow-up fires after navigation away and back", async ({ page }, t
     await waitForCockpitView(page);
 
     // The first turn ends shortly after; the drained follow-up fires
-    // turn 2 and its distinct chunk appears in the transcript.
-    await expect(page.getByText("Second turn after nav.")).toBeVisible({
-      timeout: 20_000,
+    // turn 2 EXACTLY ONCE and its distinct chunk appears in the
+    // transcript. Assert toHaveCount(1) so a regression that double-
+    // fires the queued prompt after remount would fail here instead
+    // of silently passing on the first occurrence.
+    const secondTurn = page.getByText("Second turn after nav.", {
+      exact: true,
     });
+    await expect(secondTurn).toHaveCount(1, { timeout: 20_000 });
   } finally {
     try {
       if (serveHandle) await attachServeDiagnostics(testInfo, serveHandle);

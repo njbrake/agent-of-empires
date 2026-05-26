@@ -40,7 +40,10 @@ base("send message via Enter renders agent response", async ({ page }, testInfo)
     await expect(page.getByText("Hello from fake ACP agent.")).toBeVisible({
       timeout: 10_000,
     });
-    await expect(composer).toHaveValue("");
+    // The composer clear runs after the assistant-ui send path
+    // resolves, which can race the chunk render above. Give it a
+    // bounded window instead of asserting synchronously.
+    await expect(composer).toHaveValue("", { timeout: 5_000 });
   } finally {
     await serve.stop();
   }

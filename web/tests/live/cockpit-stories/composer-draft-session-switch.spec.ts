@@ -84,8 +84,13 @@ base("composer draft survives a session switch", async ({ page }, testInfo) => {
 
   try {
     const sessions = await listSessions(serve.baseUrl);
-    const sessionA = sessions.find((s) => s.title === "story-switch-a")!;
-    const sessionB = sessions.find((s) => s.title === "story-switch-b")!;
+    const sessionA = sessions.find((s) => s.title === "story-switch-a");
+    const sessionB = sessions.find((s) => s.title === "story-switch-b");
+    if (!sessionA || !sessionB) {
+      throw new Error(
+        "seeded sessions 'story-switch-a' and/or 'story-switch-b' missing",
+      );
+    }
 
     for (const id of [sessionA.id, sessionB.id]) {
       await enableCockpitAndWait(serve.baseUrl, id);
