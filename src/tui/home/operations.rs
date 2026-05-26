@@ -164,12 +164,6 @@ impl HomeView {
         if skip {
             return Ok(());
         }
-        // Outside Attention sort, restart on a snoozed row clears the
-        // snooze flag so the persisted state matches what the user sees
-        // after the wake-up (a Running row, no snooze badge).
-        if wake_snooze {
-            self.mutate_instance(&id, |inst| inst.unsnooze());
-        }
 
         // Spam-debounce. Holding `e` or pressing it twice fast otherwise
         // races overlapping restart_with_size calls.
@@ -180,6 +174,15 @@ impl HomeView {
             }
         }
         self.restart_cooldown_at.insert(id.clone(), now);
+
+        // Outside Attention sort, restart on a snoozed row clears the
+        // snooze flag so the persisted state matches what the user sees
+        // after the wake-up (a Running row, no snooze badge). Sequenced
+        // after the debounce so a press dropped by the cooldown doesn't
+        // clear snooze without restarting.
+        if wake_snooze {
+            self.mutate_instance(&id, |inst| inst.unsnooze());
+        }
 
         // Apply tool swap before restart so the new binary starts on the
         // next launch.

@@ -849,13 +849,18 @@ impl HomeView {
                 let mut style = Style::default().fg(theme.group).bold();
                 if crate::session::is_archived_section_path(path) {
                     // Synthetic Archived section header: muted + italic
-                    // so it reads as a divider rather than a user-
-                    // created group. The contained rows aren't decorated
-                    // individually; the section header is the sole
-                    // visual signal that those sessions are shelved.
+                    // + dim so it reads as a divider rather than a
+                    // user-created group. The contained rows aren't
+                    // decorated individually; the section header is the
+                    // sole visual signal that those sessions are
+                    // shelved. Matches the modifier set used for
+                    // archived user groups so terminals with weak
+                    // dimmed-fg rendering still surface the parked
+                    // affordance.
                     style = Style::default()
                         .fg(theme.dimmed)
-                        .add_modifier(ratatui::style::Modifier::ITALIC);
+                        .add_modifier(ratatui::style::Modifier::ITALIC)
+                        .add_modifier(ratatui::style::Modifier::DIM);
                 } else if archived_at.is_some() {
                     // Archived user groups: italic + dim, still visible.
                     style = style

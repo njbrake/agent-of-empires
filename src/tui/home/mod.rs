@@ -2168,6 +2168,17 @@ impl HomeView {
             }
         }
         self.flat_items = self.build_flat_items();
+        // Defensive cursor clamp + selection refresh. Today the only
+        // call site routes through `toggle_group_collapsed` after the
+        // cursor lands on the section header, and the header survives
+        // the rebuild at the same end-of-list index, so the cursor stays
+        // valid. Programmatic callers (palette command, future macros)
+        // wouldn't have that invariant, so clamp here rather than rely
+        // on every caller to know about it.
+        if !self.flat_items.is_empty() && self.cursor >= self.flat_items.len() {
+            self.cursor = self.flat_items.len() - 1;
+        }
+        self.update_selected();
     }
 
     pub fn show_welcome(&mut self) {
