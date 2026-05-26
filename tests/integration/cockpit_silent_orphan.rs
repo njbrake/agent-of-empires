@@ -29,13 +29,7 @@ use serial_test::serial;
 use tokio::net::UnixListener;
 use tokio::process::Command;
 
-fn node_available() -> bool {
-    std::process::Command::new("node")
-        .arg("--version")
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
-}
+use crate::common::{shim_path, shim_ready};
 
 /// RAII helper that snapshots env-var values on construction and
 /// restores them on drop. The watchdog tests are `#[serial]` but the
@@ -68,14 +62,6 @@ impl Drop for EnvGuard {
             }
         }
     }
-}
-
-fn shim_path() -> PathBuf {
-    let manifest = std::env::var("CARGO_MANIFEST_DIR").unwrap();
-    PathBuf::from(manifest)
-        .join("cockpit-worker")
-        .join("test-shim")
-        .join("shim.mjs")
 }
 
 async fn spawn_shim_socket_bridge_with_preseed(
@@ -132,8 +118,8 @@ async fn drain_for_stopped_reason(client: &mut AcpClient, deadline: Instant) -> 
 #[tokio::test]
 #[serial]
 async fn silent_orphan_fires_on_cost_then_silence() {
-    if !node_available() || !shim_path().exists() {
-        eprintln!("skipping: node or shim missing");
+    if let Err(reason) = shim_ready() {
+        eprintln!("skipping: {reason}");
         return;
     }
 
@@ -171,8 +157,16 @@ async fn silent_orphan_fires_on_cost_then_silence() {
         .await
         .expect("send prompt");
 
+    // 15s budget rather than 5s: the watchdog fires at FAST_GRACE (300ms)
+    // after the cost-populated usage_update on the happy path, but
+    // ubuntu-latest under full cargo-test load occasionally schedules the
+    // shim's prompt body or the daemon's lifecycle signal pump late
+    // enough that the cancel + prompt_fut resolve + Stopped emission
+    // chain slips past a tight 5s drain. The watchdog itself is unchanged;
+    // this is a CI-scheduling headroom bump. A regression where the
+    // watchdog never fires would still fail (drain returns None).
     let stopped =
-        drain_for_stopped_reason(&mut client, Instant::now() + Duration::from_secs(5)).await;
+        drain_for_stopped_reason(&mut client, Instant::now() + Duration::from_secs(15)).await;
     let _ = client.shutdown().await;
 
     assert_eq!(
@@ -185,8 +179,8 @@ async fn silent_orphan_fires_on_cost_then_silence() {
 #[tokio::test]
 #[serial]
 async fn silent_orphan_suppressed_during_normal_turn() {
-    if !node_available() || !shim_path().exists() {
-        eprintln!("skipping: node or shim missing");
+    if let Err(reason) = shim_ready() {
+        eprintln!("skipping: {reason}");
         return;
     }
 
@@ -242,8 +236,8 @@ async fn silent_orphan_suppressed_during_normal_turn() {
 #[tokio::test]
 #[serial]
 async fn silent_orphan_disabled_by_zero_grace() {
-    if !node_available() || !shim_path().exists() {
-        eprintln!("skipping: node or shim missing");
+    if let Err(reason) = shim_ready() {
+        eprintln!("skipping: {reason}");
         return;
     }
 
@@ -305,8 +299,8 @@ async fn silent_orphan_disabled_by_zero_grace() {
 #[tokio::test]
 #[serial]
 async fn silent_orphan_suppressed_during_async_agent_wait() {
-    if !node_available() || !shim_path().exists() {
-        eprintln!("skipping: node or shim missing");
+    if let Err(reason) = shim_ready() {
+        eprintln!("skipping: {reason}");
         return;
     }
 
@@ -363,8 +357,8 @@ async fn silent_orphan_suppressed_during_async_agent_wait() {
 #[tokio::test]
 #[serial]
 async fn silent_orphan_suppressed_during_background_bash() {
-    if !node_available() || !shim_path().exists() {
-        eprintln!("skipping: node or shim missing");
+    if let Err(reason) = shim_ready() {
+        eprintln!("skipping: {reason}");
         return;
     }
 
@@ -422,8 +416,8 @@ async fn silent_orphan_suppressed_during_background_bash() {
 #[tokio::test]
 #[serial]
 async fn silent_orphan_suppressed_during_scheduled_wakeup() {
-    if !node_available() || !shim_path().exists() {
-        eprintln!("skipping: node or shim missing");
+    if let Err(reason) = shim_ready() {
+        eprintln!("skipping: {reason}");
         return;
     }
 
