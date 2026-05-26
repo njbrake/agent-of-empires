@@ -585,25 +585,34 @@ impl App {
             (hup.ok(), term.ok())
         };
 
-        // 16ms ticker (60fps). In live-send the ticker is the steady-state
-        // refresh signal (the `%output` wake mechanism was removed with
-        // control-mode); the `last_live_key_at` post-key wake below
-        // provides extra targeted refreshes ~15ms after each keystroke so
-        // typing-echo latency doesn't have to wait for the next tick.
-        // 60fps is the upper bound on what the user can perceive on a
-        // typical display and bounds the per-second fork-capture count to
-        // ~60 during live-send (~30% of one core on a modern Mac).
-        let mut refresh_interval = tokio::time::interval(Duration::from_millis(16));
+        // 33ms ticker (~30fps) is the steady-state refresh in live-send.
+        // 16ms (60fps) was tried but produced visible tearing on
+        // terminals that don't support synchronized-update escapes
+        // (notably macOS Terminal.app); back-to-back ticker + post-key
+        // wakes within ~1ms also doubled-up frame writes. 33ms gives
+        // each frame's writes enough time to land before the next
+        // frame starts, while remaining responsive enough that
+        // animation looks fluid. The post-key wake below covers the
+        // typing-echo case where 33ms would feel laggy.
+        let mut refresh_interval = tokio::time::interval(Duration::from_millis(33));
         refresh_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         // After any keystroke routed to live-send, schedule one extra
-        // refresh ~15ms later. That's roughly the time it takes for the
-        // `tmux send-keys` worker to fork+deliver the key and the agent
-        // to echo it into the pane, so the resulting capture catches the
-        // echo deterministically instead of waiting up to one full
-        // ticker interval. Cleared when the wake fires; re-armed by
-        // each subsequent key.
+        // refresh ~15ms later — roughly the `tmux send-keys` fork +
+        // agent-echo time, so the resulting capture catches the echo
+        // deterministically instead of waiting up to one full ticker
+        // interval. Cleared when the wake fires; re-armed by each
+        // subsequent key.
         let mut last_live_key_at: Option<std::time::Instant> = None;
         const POST_KEY_WAKE_DELAY: Duration = Duration::from_millis(15);
+        // Track when the last refresh fired so the ticker arm can
+        // back off if a post-key wake just ran. Without this, a key
+        // pressed ~10ms before a ticker tick produces two refreshes
+        // back-to-back (post-key wake at +15ms, ticker at +16ms),
+        // which on a non-sync-update terminal looks like tearing —
+        // the first frame's per-cell writes are still landing when
+        // the second frame starts overwriting them.
+        let mut last_refresh_at: Option<std::time::Instant> = None;
+        const REFRESH_COOLDOWN: Duration = Duration::from_millis(15);
         let mut last_status_refresh = std::time::Instant::now();
         let mut last_disk_refresh = std::time::Instant::now();
         let mut last_spinner_redraw = std::time::Instant::now();
@@ -1113,6 +1122,27 @@ impl App {
                 refresh_needed = true;
             }
 
+            // Cool-down guard against double-painting in live-send.
+            // The post-key wake and the ticker can fire within 1ms of
+            // each other (key pressed 14ms before a ticker tick: post-
+            // key wake fires at +15ms, ticker tick fires at +16ms),
+            // which doubles up frame writes and produces visible
+            // tearing on terminals without synchronized-update
+            // support. Skip ticker-driven refreshes inside the
+            // cool-down window unless this refresh was specifically
+            // requested by something else (status update, post-key
+            // wake, etc).
+            if refresh_needed
+                && self.home.live_send.is_some()
+                && !woke_via_post_key
+                && !needs_full_refresh
+                && last_refresh_at
+                    .map(|t| t.elapsed() < REFRESH_COOLDOWN)
+                    .unwrap_or(false)
+            {
+                refresh_needed = false;
+            }
+
             if refresh_needed {
                 // `has_dialog()` is true whenever live-send is active, so
                 // using it here would defeat the very fast path it gates.
@@ -1130,6 +1160,7 @@ impl App {
                 if !took_fast_path {
                     self.draw(terminal)?;
                 }
+                last_refresh_at = Some(std::time::Instant::now());
             }
 
             if self.should_quit {
