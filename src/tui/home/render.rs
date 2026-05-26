@@ -1996,11 +1996,13 @@ impl HomeView {
                 live_send::display_chord_list(&state.exit_chords)
             };
             let suffix = " to exit ";
-            // Match the preview pane's visible_height calculation
-            // (`area.height - 2` for borders, then `- 1` for the
-            // compact branch in render_output_cached) so the indicator
-            // count stays consistent as the user scrolls.
-            let visible_height = (self.preview_cache.dimensions.1 as usize).saturating_sub(3);
+            // `preview_cache.dimensions` is the output pane area passed to
+            // `refresh_preview_cache_if_needed`, and `render_output_cached`
+            // uses `area.height - 1` as its visible height (one row of
+            // headroom for the inner " Output " banner / compact-branch
+            // padding). Match that here so the live `[offset/max]`
+            // indicator agrees with the actual scroll math.
+            let visible_height = (self.preview_cache.dimensions.1 as usize).saturating_sub(1);
             let scroll = format_scroll_indicator(
                 self.preview_cache.captured_lines,
                 visible_height,

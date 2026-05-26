@@ -599,4 +599,80 @@ mod tests {
             Some(" [80/80] ".to_string())
         );
     }
+
+    // `agent_info_height` drives both the preview layout split in
+    // `render_with_cache` and the live-send sync resize in
+    // `HomeView::finalize_live_send_resize`. A one-row drift here brings
+    // the shifted-preview bug right back, so each branch of the formula
+    // gets a dedicated case.
+    mod agent_info_height {
+        use super::super::agent_info_height;
+        use crate::session::{Instance, SandboxInfo, WorktreeInfo};
+        use chrono::Utc;
+
+        fn worktree(base_branch: Option<&str>) -> WorktreeInfo {
+            WorktreeInfo {
+                branch: "feature/x".into(),
+                main_repo_path: "/repo".into(),
+                managed_by_aoe: true,
+                created_at: Utc::now(),
+                base_branch: base_branch.map(str::to_string),
+            }
+        }
+
+        fn enabled_sandbox() -> SandboxInfo {
+            SandboxInfo {
+                enabled: true,
+                container_id: None,
+                image: "img".into(),
+                container_name: "ctr".into(),
+                extra_env: None,
+                custom_instruction: None,
+            }
+        }
+
+        #[test]
+        fn plain_session_is_three_rows() {
+            let inst = Instance::new("plain", "/tmp/plain");
+            assert_eq!(agent_info_height(&inst), 3);
+        }
+
+        #[test]
+        fn sandboxed_adds_one_row() {
+            let mut inst = Instance::new("sandboxed", "/tmp/sandboxed");
+            inst.sandbox_info = Some(enabled_sandbox());
+            assert_eq!(agent_info_height(&inst), 4);
+        }
+
+        #[test]
+        fn worktree_without_base_branch_adds_four_rows() {
+            let mut inst = Instance::new("wt", "/tmp/wt");
+            inst.worktree_info = Some(worktree(None));
+            assert_eq!(agent_info_height(&inst), 3 + 4);
+        }
+
+        #[test]
+        fn worktree_with_base_branch_adds_five_rows() {
+            let mut inst = Instance::new("wt-base", "/tmp/wt-base");
+            inst.worktree_info = Some(worktree(Some("main")));
+            assert_eq!(agent_info_height(&inst), 3 + 4 + 1);
+        }
+
+        #[test]
+        fn sandboxed_plus_worktree_with_base_branch_is_max() {
+            let mut inst = Instance::new("both", "/tmp/both");
+            inst.sandbox_info = Some(enabled_sandbox());
+            inst.worktree_info = Some(worktree(Some("main")));
+            assert_eq!(agent_info_height(&inst), 3 + 1 + 4 + 1);
+        }
+
+        #[test]
+        fn disabled_sandbox_does_not_count() {
+            let mut inst = Instance::new("disabled", "/tmp/disabled");
+            let mut sandbox = enabled_sandbox();
+            sandbox.enabled = false;
+            inst.sandbox_info = Some(sandbox);
+            assert_eq!(agent_info_height(&inst), 3);
+        }
+    }
 }
