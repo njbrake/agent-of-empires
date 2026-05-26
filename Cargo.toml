@@ -129,12 +129,6 @@ subtle = { version = "2", optional = true }
 # for Web Push payload encoding.
 base64 = "0.22"
 
-# Native OS clipboard for preview drag-select. We write via OSC 52
-# too for SSH/Mosh scenarios, but Terminal.app (macOS default) and a
-# few Linux setups don't honor OSC 52, so the native path is the
-# load-bearing one when AoE runs locally.
-arboard = { version = "3", default-features = false }
-
 # Web Push (VAPID + payload encryption), optional behind "serve".
 p256 = { version = "0.13", features = ["pem", "pkcs8", "ecdsa", "ecdh"], optional = true }
 hkdf = { version = "0.13", optional = true }

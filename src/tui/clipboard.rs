@@ -1,24 +1,22 @@
 //! Clipboard write for preview drag-select.
 //!
-//! Three paths fire on every copy, best-to-worst odds of success:
+//! Two paths fire on every copy:
 //!
 //! 1. **Platform subprocess** — `pbcopy` on macOS, `wl-copy` on Wayland,
-//!    `xclip`/`xsel` on X11. This is the load-bearing path: it's how
-//!    every other terminal app copies, it doesn't care whether the
-//!    process owns a GUI handle, and it survives the TUI dropping back
-//!    into raw mode mid-write.
-//! 2. **Native library** via `arboard` — fallback for platforms the
-//!    subprocess branch doesn't cover (e.g. Windows) or where the
-//!    expected binary isn't on `PATH`.
-//! 3. **OSC 52** — `\x1b]52;c;<base64>\x07` written to stdout. This is
-//!    what carries the bytes back through SSH and Mosh, and through
-//!    tmux when `set-clipboard on` is configured.
+//!    `xclip`/`xsel` on X11. This is the load-bearing path when AoE
+//!    runs locally: it's how every other terminal app copies, it
+//!    doesn't care whether the process owns a GUI handle, and it
+//!    survives the TUI dropping back into raw mode mid-write.
+//! 2. **OSC 52** — `\x1b]52;c;<base64>\x07` written to stdout, wrapped
+//!    in tmux's DCS passthrough when `$TMUX` is set. This is what
+//!    carries the bytes back through SSH and Mosh, and through tmux
+//!    when `allow-passthrough on` is configured (default on tmux 3.3+).
 //!
-//! Everything is best-effort: arboard / OSC 52 give us no
-//! acknowledgement, and `pbcopy` may not exist on a stripped-down
-//! system. Each path's outcome is logged at `info` so a user with
-//! debug logging enabled (`AGENT_OF_EMPIRES_DEBUG=1`) can see which
-//! mechanism succeeded.
+//! Both are best-effort: OSC 52 gives us no acknowledgement, and the
+//! subprocess binaries may not exist on a stripped-down system. Each
+//! path's outcome is logged at `tracing::info` so a future "clipboard
+//! didn't update" bug report can be diagnosed with
+//! `AGENT_OF_EMPIRES_DEBUG=1`.
 use std::io::Write;
 use std::process::{Command, Stdio};
 
@@ -33,9 +31,7 @@ const MAX_BYTES: usize = 1024 * 1024;
 
 /// Push `text` to the user's clipboard via every mechanism this
 /// platform supports. Returns the number of bytes (post-truncation)
-/// emitted. Per-path outcomes are logged at `tracing::info` so a
-/// future "clipboard didn't update" bug report can be diagnosed with
-/// `AGENT_OF_EMPIRES_DEBUG=1`.
+/// emitted.
 pub fn copy_to_clipboard(text: &str) -> usize {
     let truncated = if text.len() > MAX_BYTES {
         &text.as_bytes()[..MAX_BYTES]
@@ -48,14 +44,12 @@ pub fn copy_to_clipboard(text: &str) -> usize {
     };
 
     let subprocess = try_subprocess(truncated_str);
-    let arboard_result = try_arboard(truncated_str);
     let osc52 = write_osc52(truncated);
 
     tracing::info!(
         target: "tui.clipboard",
         bytes = truncated.len(),
         subprocess = format!("{:?}", subprocess).as_str(),
-        arboard = format!("{:?}", arboard_result).as_str(),
         osc52_ok = osc52.is_ok(),
         "preview drag-select copy"
     );
@@ -101,8 +95,7 @@ fn try_subprocess(_text: &str) -> Result<&'static str, String> {
 /// milliseconds; anything slower is a sign that the helper is hung
 /// (no display server, X selection contention, etc.), and the
 /// drag-select UX is much better off killing the helper and falling
-/// through to `arboard` / OSC 52 than freezing the TUI on
-/// `child.wait()`.
+/// through to OSC 52 than freezing the TUI on `child.wait()`.
 const SUBPROCESS_WAIT: std::time::Duration = std::time::Duration::from_millis(500);
 
 fn run_subprocess(cmd: &'static str, args: &[&str], text: &str) -> Result<&'static str, String> {
@@ -145,13 +138,6 @@ fn run_subprocess(cmd: &'static str, args: &[&str], text: &str) -> Result<&'stat
             }
             Err(e) => return Err(format!("{cmd} wait: {e}")),
         }
-    }
-}
-
-fn try_arboard(text: &str) -> Result<(), String> {
-    match arboard::Clipboard::new() {
-        Ok(mut cb) => cb.set_text(text).map_err(|e| format!("set_text: {e}")),
-        Err(e) => Err(format!("init: {e}")),
     }
 }
 
