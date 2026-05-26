@@ -212,6 +212,7 @@ fn status_hook_env_prefix(
     agent: Option<&crate::agents::AgentDef>,
 ) -> String {
     let has_hooks = agent.and_then(|a| a.hook_config.as_ref()).is_some()
+        || agent.is_some_and(|a| a.name == "pi")
         || tool == "settl"
         || tool == "hermes"
         || tool == "kiro";
@@ -1427,6 +1428,7 @@ impl Instance {
                 }
             }
 
+            self.append_pi_status_extension(&mut tool_cmd, agent);
             self.apply_session_flags(&mut tool_cmd, "sandboxed");
             apply_agent_launch_env(&mut tool_cmd, agent);
 
@@ -1557,6 +1559,25 @@ impl Instance {
         crate::hooks::codex_config_path_for_host_environment(&self.profile_host_environment())
     }
 
+    fn append_pi_status_extension(
+        &self,
+        cmd: &mut String,
+        agent: Option<&'static crate::agents::AgentDef>,
+    ) {
+        if !matches!(agent.map(|a| a.name), Some("pi")) || self.has_command_override() {
+            return;
+        }
+
+        match crate::hooks::ensure_pi_status_extension(&self.id) {
+            Ok(path) => {
+                *cmd = format!("{} -e {}", cmd, shell_escape(&path.to_string_lossy()));
+            }
+            Err(e) => {
+                tracing::warn!(target: "session.store", "Failed to prepare Pi status extension: {}", e);
+            }
+        }
+    }
+
     /// Build the tmux command for a sandboxed (Docker) session.
     ///
     /// Runs on_launch hooks inside the container, constructs the tool command
@@ -1612,6 +1633,7 @@ impl Instance {
                         apply_yolo_mode(&mut cmd, yolo, false);
                     }
                 }
+                self.append_pi_status_extension(&mut cmd, agent);
                 self.apply_session_flags(&mut cmd, "host agent");
                 apply_agent_launch_env(&mut cmd, agent);
                 wrap_command_ignore_suspend(&format!("{}{}", env_prefix, cmd))
@@ -4211,6 +4233,37 @@ mod tests {
             status_hook_env_prefix("abc123", "kiro", crate::agents::get_agent("kiro")),
             "AOE_INSTANCE_ID=abc123 "
         );
+        assert_eq!(
+            status_hook_env_prefix("abc123", "pi", crate::agents::get_agent("pi")),
+            "AOE_INSTANCE_ID=abc123 "
+        );
+    }
+
+    #[test]
+    fn test_build_host_command_adds_pi_status_extension_for_builtin_pi() {
+        let mut inst = Instance::new("test-pi-extension", "/tmp/test");
+        inst.id = "test-pi-extension".to_string();
+        inst.tool = "pi".to_string();
+        let cmd = inst.build_host_command(crate::agents::get_agent("pi"), &None);
+        let cmd_str = cmd.unwrap();
+
+        assert!(cmd_str.contains("AOE_INSTANCE_ID=test-pi-extension"));
+        assert!(cmd_str.contains("pi"));
+        assert!(cmd_str.contains(" -e "));
+        assert!(cmd_str.contains("/tmp/aoe-hooks/test-pi-extension/aoe-pi-status.ts"));
+    }
+
+    #[test]
+    fn test_build_host_command_skips_pi_status_extension_for_custom_command() {
+        let mut inst = Instance::new("test-pi-custom", "/tmp/test");
+        inst.id = "test-pi-custom".to_string();
+        inst.tool = "pi".to_string();
+        inst.command = "my-pi-wrapper".to_string();
+        let cmd = inst.build_host_command(crate::agents::get_agent("pi"), &None);
+        let cmd_str = cmd.unwrap();
+
+        assert!(cmd_str.contains("AOE_INSTANCE_ID=test-pi-custom"));
+        assert!(!cmd_str.contains("aoe-pi-status.ts"));
     }
 
     #[test]

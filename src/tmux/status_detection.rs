@@ -974,17 +974,8 @@ pub fn detect_pi_status(raw_content: &str) -> Status {
         return Status::Running;
     }
 
-    // Check for input prompt before activity indicators: words like
-    // "reading" or "writing" linger in scrollback after the agent finishes.
     if matches_input_prompt(&non_empty_lines, 5, &["pi>"]) {
         return Status::Waiting;
-    }
-
-    let activity_indicators = ["thinking", "working", "reading", "writing", "executing"];
-    for indicator in &activity_indicators {
-        if last_lines_lower.contains(indicator) {
-            return Status::Running;
-        }
     }
 
     Status::Idle
@@ -2557,8 +2548,6 @@ run this command? (y/n)
             detect_pi_status("processing request\nesc to interrupt"),
             Status::Running
         );
-        assert_eq!(detect_pi_status("thinking about code"), Status::Running);
-        assert_eq!(detect_pi_status("reading file.ts"), Status::Running);
     }
 
     #[test]
@@ -2577,6 +2566,11 @@ run this command? (y/n)
     fn test_detect_pi_status_idle() {
         assert_eq!(detect_pi_status("file saved"), Status::Idle);
         assert_eq!(detect_pi_status("random output text"), Status::Idle);
+        assert_eq!(
+            detect_pi_status("I was thinking through the code"),
+            Status::Idle
+        );
+        assert_eq!(detect_pi_status("reading file.ts\nDone."), Status::Idle);
     }
 
     #[test]

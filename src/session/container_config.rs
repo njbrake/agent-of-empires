@@ -1145,9 +1145,15 @@ pub(crate) fn build_container_config(
             // hook_config path below cannot emit, so they're special-cased here.
             let hermes_hooks = agent.name == "hermes";
             let kiro_hooks = agent.name == "kiro";
-            if hermes_hooks || kiro_hooks || agent.hook_config.is_some() {
+            let pi_hooks = agent.name == "pi";
+            if hermes_hooks || kiro_hooks || pi_hooks || agent.hook_config.is_some() {
                 let hook_dir = crate::hooks::hook_status_dir(instance_id);
-                if let Err(e) = std::fs::create_dir_all(&hook_dir) {
+                let prepare_result = if pi_hooks {
+                    crate::hooks::ensure_pi_status_extension(instance_id).map(|_| ())
+                } else {
+                    std::fs::create_dir_all(&hook_dir).map_err(Into::into)
+                };
+                if let Err(e) = prepare_result {
                     tracing::warn!(target: "session.profile",
                         "Failed to create hook directory {}: {}",
                         hook_dir.display(),
@@ -3448,6 +3454,39 @@ volume_ignores = ["target"]
             "",
         )
         .unwrap()
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn test_pi_sandbox_mounts_status_extension_dir() {
+        let temp_home = TempDir::new().unwrap();
+        std::env::set_var("HOME", temp_home.path());
+        #[cfg(target_os = "linux")]
+        std::env::set_var("XDG_CONFIG_HOME", temp_home.path().join(".config"));
+
+        let project_dir = TempDir::new().unwrap();
+        git2::Repository::init(project_dir.path()).unwrap();
+        let info = build_minimal_sandbox_info();
+        let instance_id = "test-pi-sandbox-extension";
+        let config = build_container_config(
+            project_dir.path().to_str().unwrap(),
+            &info,
+            ContainerAgentSelection::new("pi", None),
+            false,
+            instance_id,
+            None,
+            "",
+        )
+        .unwrap();
+        let hook_dir = crate::hooks::hook_status_dir(instance_id);
+        let hook_dir_str = hook_dir.to_string_lossy().to_string();
+
+        assert!(hook_dir.join("aoe-pi-status.ts").exists());
+        assert!(config.volumes.iter().any(|volume| {
+            volume.host_path == hook_dir_str
+                && volume.container_path == hook_dir_str
+                && !volume.read_only
+        }));
     }
 
     #[test]

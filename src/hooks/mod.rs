@@ -26,6 +26,53 @@ pub(crate) const HOOK_STATUS_BASE: &str = "/tmp/aoe-hooks";
 /// Any hook command containing this string is considered ours.
 const AOE_HOOK_MARKER: &str = "aoe-hooks";
 
+const PI_STATUS_EXTENSION: &str = r#"import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { mkdirSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+
+const BASE = "/tmp/aoe-hooks";
+
+type AoeStatus = "running" | "idle" | "waiting" | "error";
+
+function writeStatus(status: AoeStatus) {
+  const id = process.env.AOE_INSTANCE_ID;
+  if (!id) return;
+
+  try {
+    const dir = join(BASE, id);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "status"), status);
+  } catch {
+    // AoE status reporting must never break Pi.
+  }
+}
+
+export default function aoeStatus(pi: ExtensionAPI) {
+  pi.on("session_start", () => writeStatus("idle"));
+  pi.on("turn_start", () => writeStatus("running"));
+  pi.on("agent_start", () => writeStatus("running"));
+  pi.on("tool_execution_start", () => writeStatus("running"));
+  pi.on("tool_execution_end", () => writeStatus("running"));
+  pi.on("agent_end", () => writeStatus("idle"));
+  pi.on("turn_end", () => writeStatus("idle"));
+  pi.on("session_shutdown", () => writeStatus("idle"));
+}
+"#;
+
+pub(crate) fn ensure_pi_status_extension(instance_id: &str) -> Result<PathBuf> {
+    let dir = hook_status_dir(instance_id);
+    std::fs::create_dir_all(&dir).with_context(|| {
+        format!(
+            "failed to create Pi status extension directory {}",
+            dir.display()
+        )
+    })?;
+    let path = dir.join("aoe-pi-status.ts");
+    std::fs::write(&path, PI_STATUS_EXTENSION)
+        .with_context(|| format!("failed to write Pi status extension {}", path.display()))?;
+    Ok(path)
+}
+
 /// Resolve the host Codex config path.
 ///
 /// Codex treats `CODEX_HOME` as the directory containing `config.toml`, falling
