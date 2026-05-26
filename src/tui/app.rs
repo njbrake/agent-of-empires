@@ -894,11 +894,10 @@ impl App {
             // Periodic refreshes (only when no input pending).
             //
             // `needs_full_refresh` separately tracks whether anything
-            // OTHER than the live-send wake wants a refresh. The
-            // preview-only fast path (see `draw_preview_only`) is
-            // only safe when nothing else needs the sidebar / status
-            // bar / dialogs re-rendered, so we route to it only when
-            // `woke_via_live_send_wake && !needs_full_refresh`.
+            // other than the live-send ticker/post-key wake wants a
+            // refresh; on those flags the cool-down at the bottom of
+            // the loop is bypassed so deterministic signals (status
+            // updates, dialog ticks) get painted right away.
             let mut refresh_needed = false;
             let mut needs_full_refresh = false;
 
@@ -962,17 +961,18 @@ impl App {
             // The reload is on the UI thread and rebuilds the sidebar
             // tree from disk, which causes a visible hitch in the
             // preview. The user can't change session config from inside
-            // live mode anyway, so anything they'd want to pick up will
-            // be reloaded the next time the ticker fires outside live
-            // mode. We DO advance `last_disk_refresh` so we don't run
-            // the reload back-to-back the instant the user exits.
-            if last_disk_refresh.elapsed() >= DISK_REFRESH_INTERVAL {
-                if self.home.live_send.is_none() {
-                    self.home.reload()?;
-                    refresh_needed = true;
-                    needs_full_refresh = true;
-                }
+            // live mode anyway. Leaving `last_disk_refresh` un-advanced
+            // when we skip means the first tick outside live-send
+            // re-checks the interval and reloads immediately if it's
+            // been ≥5s since the last successful reload (so a change
+            // on disk during a long live-send session is picked up on
+            // exit instead of sitting stale for another 5s window).
+            if last_disk_refresh.elapsed() >= DISK_REFRESH_INTERVAL && self.home.live_send.is_none()
+            {
+                self.home.reload()?;
                 last_disk_refresh = std::time::Instant::now();
+                refresh_needed = true;
+                needs_full_refresh = true;
             }
 
             if last_heartbeat.elapsed() >= HEARTBEAT_INTERVAL {
@@ -1003,10 +1003,10 @@ impl App {
             // at the spinner frame rate to avoid unnecessary widget tree
             // rebuilds. Skip in live-send: the spinner lives in the
             // sidebar (which the user isn't looking at) and forcing a
-            // full HomeView render every 120ms inside live mode is the
-            // single biggest contributor to perceived preview lag, since
-            // it bypasses the cheap `draw_preview_only` fast path eight
-            // times a second.
+            // full HomeView render every 120ms inside live mode wakes
+            // the loop eight times a second to repaint a region the
+            // user can't see, which only adds load on top of the
+            // already-busy preview refresh.
             if last_spinner_redraw.elapsed() >= SPINNER_REDRAW_INTERVAL
                 && self.home.has_animated_sessions()
                 && self.home.live_send.is_none()

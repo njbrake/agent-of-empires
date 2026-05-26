@@ -1247,12 +1247,26 @@ impl HomeView {
                 // the intended signal that the underlying session is
                 // gone.
                 let in_live = self.live_send.is_some();
+                // Only treat an empty fork capture as "preserve the
+                // existing cache" when the cache is FOR THIS SAME
+                // SESSION. If the user just switched live-send from
+                // session A to session B and B's first capture comes
+                // back empty, holding the kill-switch would leave A's
+                // content on screen under B's header. Cross-session
+                // we always overwrite, falling back to an empty body
+                // (the same "session looks gone" signal the non-live
+                // path uses).
+                let same_session = self.preview_cache.session_id.as_ref() == Some(&id);
                 let fork_capture = self.get_instance(&id).and_then(|inst| {
                     inst.capture_output_with_size(capture_lines, width, height)
                         .ok()
                 });
                 let captured: Option<String> = if in_live {
-                    fork_capture.filter(|content| !content.is_empty())
+                    match fork_capture {
+                        Some(content) if !content.is_empty() => Some(content),
+                        _ if same_session => None,
+                        _ => Some(String::new()),
+                    }
                 } else {
                     Some(fork_capture.unwrap_or_default())
                 };

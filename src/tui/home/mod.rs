@@ -2466,14 +2466,25 @@ impl HomeView {
         };
         let tmux_name = tmux_session.name().to_string();
         // Switching live mode from session A to session B (click on a
-        // different row while already live) overwrites `live_send` and
-        // drops the old worker, but the previous tmux session is still
-        // pinned to manual sizing from live-send's per-keystroke resize
-        // loop. Reset it now so leaving A in the background doesn't
-        // strand it at the preview-pane dimensions.
-        if let Some(prev) = self.live_send.as_ref() {
-            if prev.tmux_name != tmux_name {
-                crate::tmux::Session::from_name(&prev.tmux_name).reset_size_to_latest_client();
+        // different row while already live): we need to drop the old
+        // worker BEFORE resetting the old session's window-size,
+        // otherwise any `Resize` still queued in the old worker can
+        // fire after the reset and flip the old pane back to manual
+        // sizing. The worker thread is intentionally not joined, so
+        // dropping its `Sender` is the only way to know its dispatch
+        // loop has finished (its `recv` returns Err and the thread
+        // exits on the next iteration).
+        let prev_tmux_name = self
+            .live_send
+            .as_ref()
+            .map(|state| state.tmux_name.clone())
+            .filter(|name| name != &tmux_name);
+        if prev_tmux_name.is_some() {
+            // Drop worker first so its queued resizes (if any) drain
+            // against the old session before we reset its sizing.
+            self.live_send_worker = None;
+            if let Some(name) = &prev_tmux_name {
+                crate::tmux::Session::from_name(name).reset_size_to_latest_client();
             }
         }
         // Parse the configured exit-chord list now so the per-keystroke
