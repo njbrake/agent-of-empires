@@ -585,7 +585,12 @@ impl App {
             (hup.ok(), term.ok())
         };
 
-        let mut refresh_interval = tokio::time::interval(Duration::from_millis(50));
+        // 25ms ticker (40fps). In live-send mode this is the sole refresh
+        // signal (the `%output` wake mechanism was removed when control-mode
+        // was ripped out), so the tick rate caps the preview refresh
+        // frequency. 25ms keeps the worst-case key-to-paint latency under
+        // ~30ms while bounding the per-second fork-capture count to 40.
+        let mut refresh_interval = tokio::time::interval(Duration::from_millis(25));
         refresh_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         let mut last_status_refresh = std::time::Instant::now();
         let mut last_disk_refresh = std::time::Instant::now();
@@ -998,11 +1003,21 @@ impl App {
                 needs_full_refresh = true;
             }
 
+            // Defer the 5s disk reload while the user is in live-send.
+            // The reload is on the UI thread and rebuilds the sidebar
+            // tree from disk, which causes a visible hitch in the
+            // preview. The user can't change session config from inside
+            // live mode anyway, so anything they'd want to pick up will
+            // be reloaded the next time the ticker fires outside live
+            // mode. We DO advance `last_disk_refresh` so we don't run
+            // the reload back-to-back the instant the user exits.
             if last_disk_refresh.elapsed() >= DISK_REFRESH_INTERVAL {
-                self.home.reload()?;
+                if self.home.live_send.is_none() {
+                    self.home.reload()?;
+                    refresh_needed = true;
+                    needs_full_refresh = true;
+                }
                 last_disk_refresh = std::time::Instant::now();
-                refresh_needed = true;
-                needs_full_refresh = true;
             }
 
             if last_heartbeat.elapsed() >= HEARTBEAT_INTERVAL {
@@ -1029,10 +1044,17 @@ impl App {
                 }
             }
 
-            // Animated spinners (rattles) need periodic redraws, but only at
-            // the spinner frame rate to avoid unnecessary widget tree rebuilds
+            // Animated spinners (rattles) need periodic redraws, but only
+            // at the spinner frame rate to avoid unnecessary widget tree
+            // rebuilds. Skip in live-send: the spinner lives in the
+            // sidebar (which the user isn't looking at) and forcing a
+            // full HomeView render every 120ms inside live mode is the
+            // single biggest contributor to perceived preview lag — it
+            // bypasses the cheap `draw_preview_only` fast path eight
+            // times a second.
             if last_spinner_redraw.elapsed() >= SPINNER_REDRAW_INTERVAL
                 && self.home.has_animated_sessions()
+                && self.home.live_send.is_none()
             {
                 last_spinner_redraw = std::time::Instant::now();
                 refresh_needed = true;
