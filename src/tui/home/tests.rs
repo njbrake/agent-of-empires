@@ -1850,29 +1850,59 @@ fn test_strict_mode_h_collapses_group() {
 
 #[test]
 #[serial]
-fn test_strict_mode_h_still_snoozes_in_non_strict() {
-    // Companion guard for the strict-mode `h` collapse fix: making `h` an
-    // unconditional navigation key would steal the lowercase Snooze binding
-    // in default (non-strict) mode. The earlier `Char('h') if !strict` arm
-    // catches first, so the collapse arm only fires in strict mode.
+fn test_non_strict_h_snoozes_only_in_attention_sort() {
+    // Snooze is Attention-mode-only: in Attention sort `h` toggles snooze on
+    // the cursor's session and the group below the cursor stays expanded;
+    // in every other sort mode the snooze arm declines, control falls
+    // through to the unconditional `Left | Char('h')` collapse handler,
+    // and the group collapses. Before the gating, snooze always caught
+    // first in non-strict mode regardless of sort, which silently mutated
+    // persisted state for users who weren't using Attention sort.
+    use crate::session::config::SortOrder;
+
     let mut env = create_test_env_with_groups();
     env.view.strict_hotkeys = false;
 
+    // Attention sort flattens groups out, so seed a cursor-on-session
+    // scenario and assert that `h` opens the snooze duration dialog
+    // (the actual snooze fires when the user picks a duration).
+    env.view.sort_order = SortOrder::Attention;
+    env.view.flat_items = env.view.build_flat_items();
+    let session_idx = env
+        .view
+        .flat_items
+        .iter()
+        .position(|item| matches!(item, Item::Session { .. }))
+        .expect("setup should produce a session in Attention sort");
+    env.view.cursor = session_idx;
+    env.view.update_selected();
+    env.view.handle_key(key(KeyCode::Char('h')), None);
+    assert!(
+        env.view.snooze_duration_dialog.is_some(),
+        "`h` in Attention sort must open the snooze duration dialog"
+    );
+    // Tear the dialog back down before exercising the Newest case so the
+    // next handle_key doesn't get swallowed by dialog input.
+    env.view.snooze_duration_dialog = None;
+    env.view.pending_snooze_session = None;
+
+    // Now flip back to a non-Attention sort and confirm `h` falls
+    // through to the collapse handler instead of snoozing.
+    env.view.sort_order = SortOrder::Newest;
+    env.view.flat_items = env.view.build_flat_items();
     let group_idx = env
         .view
         .flat_items
         .iter()
         .position(|item| matches!(item, Item::Group { .. }))
-        .expect("setup should produce a group");
+        .expect("setup should produce a group in Newest sort");
     env.view.cursor = group_idx;
     env.view.update_selected();
-
     env.view.handle_key(key(KeyCode::Char('h')), None);
-
     if let Item::Group { collapsed, .. } = &env.view.flat_items[group_idx] {
         assert!(
-            !collapsed,
-            "non-strict 'h' must remain bound to snooze, not collapse"
+            *collapsed,
+            "non-strict 'h' outside Attention sort must collapse the group, not snooze"
         );
     }
 }
@@ -4582,6 +4612,175 @@ fn manual_grouping_attention_sort_stays_flat() {
         group_count, 0,
         "Manual + Attention should produce a flat list, no group headers"
     );
+}
+
+/// Favorite, snooze, and urgent decorations only render in Attention sort.
+/// In Newest (or any other sort), the row paints with its plain title and
+/// status-driven color even when the flags are set, so users who don't
+/// triage in Attention don't see decoration for state they didn't opt into
+/// managing.
+#[test]
+#[serial]
+fn favorite_decoration_gated_to_attention_sort() {
+    use crate::session::config::SortOrder;
+
+    let mut env = create_test_env_with_sessions(1);
+    let id = env.view.instances[0].id.clone();
+    let title = env.view.instances[0].title.clone();
+    env.view.mutate_instance(&id, |inst| inst.favorite());
+
+    // In Newest: row should NOT have the `* ` prefix or the bold/
+    // underlined favorite styling.
+    env.view.sort_order = SortOrder::Newest;
+    env.view.flat_items = env.view.build_flat_items();
+    let item = env
+        .view
+        .flat_items
+        .iter()
+        .find(|i| matches!(i, Item::Session { id: sid, .. } if *sid == id))
+        .cloned()
+        .expect("session item present in Newest sort");
+    let text_newest = rendered_row_text(&env.view, &item);
+    assert!(
+        !text_newest.contains("* "),
+        "favorite prefix must be hidden outside Attention sort; got: {:?}",
+        text_newest
+    );
+    assert!(
+        text_newest.contains(&title),
+        "row title must still render; got: {:?}",
+        text_newest
+    );
+
+    // Flip to Attention: the prefix returns.
+    env.view.sort_order = SortOrder::Attention;
+    env.view.flat_items = env.view.build_flat_items();
+    let item_attention = env
+        .view
+        .flat_items
+        .iter()
+        .find(|i| matches!(i, Item::Session { id: sid, .. } if *sid == id))
+        .cloned()
+        .expect("session item present in Attention sort");
+    let text_attention = rendered_row_text(&env.view, &item_attention);
+    assert!(
+        text_attention.contains("* "),
+        "favorite prefix must surface in Attention sort; got: {:?}",
+        text_attention
+    );
+}
+
+/// Snoozed rows: prefix and remaining-time column only appear in Attention
+/// sort. Outside Attention, the snooze flag persists silently and the row
+/// paints with its underlying status.
+#[test]
+#[serial]
+fn snooze_decoration_gated_to_attention_sort() {
+    use crate::session::config::SortOrder;
+
+    let mut env = create_test_env_with_sessions(1);
+    let id = env.view.instances[0].id.clone();
+    env.view.mutate_instance(&id, |inst| inst.snooze(30));
+
+    env.view.sort_order = SortOrder::Newest;
+    env.view.flat_items = env.view.build_flat_items();
+    let item_newest = env
+        .view
+        .flat_items
+        .iter()
+        .find(|i| matches!(i, Item::Session { id: sid, .. } if *sid == id))
+        .cloned()
+        .expect("session item present in Newest sort");
+    let text_newest = rendered_row_text(&env.view, &item_newest);
+    assert!(
+        !text_newest.contains("z "),
+        "snooze prefix must be hidden outside Attention sort; got: {:?}",
+        text_newest
+    );
+
+    env.view.sort_order = SortOrder::Attention;
+    env.view.flat_items = env.view.build_flat_items();
+    let item_attention = env
+        .view
+        .flat_items
+        .iter()
+        .find(|i| matches!(i, Item::Session { id: sid, .. } if *sid == id))
+        .cloned()
+        .expect("session item present in Attention sort");
+    let text_attention = rendered_row_text(&env.view, &item_attention);
+    assert!(
+        text_attention.contains("z "),
+        "snooze prefix must surface in Attention sort; got: {:?}",
+        text_attention
+    );
+}
+
+/// Archived sessions live under the synthetic "Archived" section pinned to
+/// the bottom of the sidebar in every sort mode, not inline at their
+/// natural position. The section header carries the count; when collapsed
+/// the archived rows themselves are hidden but the header still appears.
+#[test]
+#[serial]
+fn archived_section_pinned_to_bottom_in_every_sort() {
+    use crate::session::{config::SortOrder, is_archived_section_path, ARCHIVED_SECTION_NAME};
+
+    let mut env = create_test_env_with_sessions(3);
+    let id = env.view.instances[0].id.clone();
+    env.view.mutate_instance(&id, |inst| inst.archive());
+    env.view.archived_section_collapsed = true;
+
+    for sort in [SortOrder::Newest, SortOrder::Attention, SortOrder::AZ] {
+        env.view.sort_order = sort;
+        env.view.flat_items = env.view.build_flat_items();
+
+        // Archived row must NOT appear inline among the active sessions.
+        let archived_inline = env
+            .view
+            .flat_items
+            .iter()
+            .take_while(|i| {
+                !matches!(
+                    i,
+                    Item::Group { path, .. } if is_archived_section_path(path)
+                )
+            })
+            .any(|i| matches!(i, Item::Session { id: sid, .. } if *sid == id));
+        assert!(
+            !archived_inline,
+            "[{:?}] archived row must not appear before the Archived section",
+            sort
+        );
+
+        // The synthetic section must sit at the bottom of the list.
+        let last = env
+            .view
+            .flat_items
+            .last()
+            .expect("flat_items should be non-empty");
+        match last {
+            Item::Group {
+                path,
+                name,
+                session_count,
+                collapsed,
+                ..
+            } => {
+                assert!(
+                    is_archived_section_path(path),
+                    "[{:?}] last item must be the Archived section header; got path {:?}",
+                    sort,
+                    path
+                );
+                assert_eq!(name, ARCHIVED_SECTION_NAME, "[{:?}] section name", sort);
+                assert_eq!(*session_count, 1, "[{:?}] one archived row", sort);
+                assert!(*collapsed, "[{:?}] section must default collapsed", sort);
+            }
+            other => panic!(
+                "[{:?}] expected Archived section header, got {:?}",
+                sort, other
+            ),
+        }
+    }
 }
 
 mod scroll_pane_isolation {

@@ -60,12 +60,12 @@ fn shortcuts(strict: bool) -> Vec<(&'static str, Vec<(&'static str, &'static str
                 ],
             ),
             (
-                "Attention",
+                "Attention (Attention sort only, except Archive)",
                 vec![
                     ("w", "Jump to next waiting/idle"),
-                    ("F", "Toggle favorite"),
-                    ("H", "Snooze (toggle)"),
-                    ("Z", "Archive (toggle)"),
+                    ("F", "Toggle favorite (Attention sort)"),
+                    ("H", "Snooze (toggle, Attention sort)"),
+                    ("Z", "Archive (toggle, any sort)"),
                 ],
             ),
             (
@@ -128,12 +128,12 @@ fn shortcuts(strict: bool) -> Vec<(&'static str, Vec<(&'static str, &'static str
                 ],
             ),
             (
-                "Attention",
+                "Attention (Attention sort only, except Archive)",
                 vec![
                     ("w", "Jump to next waiting/idle"),
-                    ("f", "Toggle favorite"),
-                    ("h", "Snooze (toggle)"),
-                    ("z", "Archive (toggle)"),
+                    ("f", "Toggle favorite (Attention sort)"),
+                    ("h", "Snooze (toggle, Attention sort)"),
+                    ("z", "Archive (toggle, any sort)"),
                 ],
             ),
             (
@@ -453,7 +453,7 @@ mod tests {
             let all = shortcuts(strict);
             let attention = all
                 .iter()
-                .find(|(name, _)| *name == "Attention")
+                .find(|(name, _)| name.starts_with("Attention"))
                 .expect("Attention section should exist");
             let (_, keys) = attention;
             assert!(
@@ -473,7 +473,7 @@ mod tests {
             let all = shortcuts(strict);
             let attention = all
                 .iter()
-                .find(|(name, _)| *name == "Attention")
+                .find(|(name, _)| name.starts_with("Attention"))
                 .expect("Attention section should exist");
             let (_, keys) = attention;
             for needle in ["favorite", "Snooze", "Archive", "waiting"] {

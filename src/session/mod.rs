@@ -29,7 +29,9 @@ pub use config::{
 pub(crate) use environment::user_shell;
 pub use environment::{validate_env_entries, validate_env_entry};
 pub use groups::{
-    flatten_sessions_by_attention, flatten_tree, flatten_tree_all_profiles, Group, GroupTree, Item,
+    append_archived_section, flatten_sessions_by_attention, flatten_tree,
+    flatten_tree_all_profiles, is_archived_section_path, Group, GroupTree, Item,
+    ARCHIVED_SECTION_NAME, ARCHIVED_SECTION_PATH,
 };
 pub(crate) use instance::persist_session_to_storage;
 pub use instance::{

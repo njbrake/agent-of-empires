@@ -820,10 +820,20 @@ impl HomeView {
     ) -> Line<'static> {
         let indent = get_indent(item.depth());
 
+        // Attention-mode-gated visuals. Favorite, snooze (decoration), and
+        // urgent only render when the user is in Attention sort, so the
+        // sidebar stays clean for users who don't run a high-volume
+        // triage workflow. Archive stays universal because it's a
+        // lifecycle action (the pane is killed), and its rows live in
+        // the dedicated bottom-pinned "Archived" section regardless of
+        // sort mode.
+        let in_attention = self.sort_order == SortOrder::Attention;
+
         use std::borrow::Cow;
 
         let (icon, text, style): (&str, Cow<str>, Style) = match item {
             Item::Group {
+                path,
                 name,
                 collapsed,
                 session_count,
@@ -837,9 +847,17 @@ impl HomeView {
                 };
                 let text = Cow::Owned(format!("{} ({})", name, session_count));
                 let mut style = Style::default().fg(theme.group).bold();
-                if archived_at.is_some() {
-                    // Archived groups: italic + dim, still visible at the
-                    // bottom of the Attention sort.
+                if crate::session::is_archived_section_path(path) {
+                    // Synthetic Archived section header: muted + italic
+                    // so it reads as a divider rather than a user-
+                    // created group. The contained rows aren't decorated
+                    // individually; the section header is the sole
+                    // visual signal that those sessions are shelved.
+                    style = Style::default()
+                        .fg(theme.dimmed)
+                        .add_modifier(ratatui::style::Modifier::ITALIC);
+                } else if archived_at.is_some() {
+                    // Archived user groups: italic + dim, still visible.
                     style = style
                         .add_modifier(ratatui::style::Modifier::ITALIC)
                         .add_modifier(ratatui::style::Modifier::DIM);
@@ -894,65 +912,58 @@ impl HomeView {
                                 Status::Creating => theme.accent,
                             };
                             let mut style = Style::default().fg(color);
-                            if inst.is_archived() || inst.is_snoozed() {
-                                // Archived AND snoozed rows render with one
-                                // uniform muted glyph regardless of underlying
-                                // status. Without this override an archived
-                                // session whose sidecar still says `running`
-                                // would keep animating its spinner (just
-                                // dimmed), visually identical to an active
-                                // session and a recurring source of "why is
-                                // this archived row spinning" confusion. The
-                                // semantic state still lives in the persisted
-                                // `inst.status`; we just stop painting it
-                                // here because archive/snooze are by
-                                // definition "not actively asking for
-                                // attention." Delegates to `agent_row_icon`
-                                // so the override is in one place and the
-                                // unit test covers what render shows.
+                            if inst.is_archived() {
+                                // Archived rows render with one uniform
+                                // muted glyph regardless of underlying
+                                // status. The pane is dead, so painting
+                                // the persisted Running/Waiting status
+                                // would be misleading. The Archived
+                                // section header is the sole textual
+                                // cue, so no italic/dim modifier is
+                                // applied here; just a dim color.
+                                icon = agent_row_icon(inst);
+                                style = Style::default().fg(theme.dimmed);
+                            } else if in_attention && inst.is_snoozed() {
+                                // Snooze decoration is Attention-only.
+                                // Outside Attention the row paints its
+                                // real status (the timer keeps running;
+                                // the visual treatment just doesn't
+                                // surface).
                                 icon = agent_row_icon(inst);
                                 style = Style::default()
                                     .fg(theme.dimmed)
                                     .add_modifier(ratatui::style::Modifier::ITALIC)
                                     .add_modifier(ratatui::style::Modifier::DIM);
-                            } else if inst.is_urgent() {
-                                // Agent flagged this row urgent via the
-                                // `attention-urgent` script. Override fg with
-                                // the error color (red) and add BOLD +
-                                // RAPID_BLINK so the row screams across the
-                                // pane. Urgent wins over favorite styling
-                                // since urgent is a cross-tier promoter and
-                                // the visual must match: a row that sorts to
-                                // top must look the part. Archive/snooze
-                                // still wins over urgent because is_urgent()
-                                // returns false for sunk rows.
+                            } else if in_attention && inst.is_urgent() {
+                                // Urgent decoration is Attention-only.
+                                // The flag still persists in non-
+                                // Attention modes, but the cross-tier
+                                // promoter visual only makes sense when
+                                // tier ordering is in effect.
                                 style = Style::default()
                                     .fg(theme.error)
                                     .add_modifier(ratatui::style::Modifier::BOLD)
                                     .add_modifier(ratatui::style::Modifier::RAPID_BLINK);
-                            } else if inst.is_favorited() {
-                                // Favorited, non-archived: bold + underlined
-                                // + "* " prefix. ASCII-only glyph (previously
-                                // ⭐ but emoji wide-width accounting mis-
-                                // aligned row truncation on iOS Blink /
-                                // Termius, causing stray combining-sequence
-                                // chars to bleed into the title). Archive
-                                // wins over favorite if both are set.
+                            } else if in_attention && inst.is_favorited() {
+                                // Favorite decoration is Attention-only,
+                                // since favorites are within-tier pins.
                                 style = style
                                     .add_modifier(ratatui::style::Modifier::BOLD)
                                     .add_modifier(ratatui::style::Modifier::UNDERLINED);
                             }
-                            // Prefix priority: archive (no prefix) wins over
-                            // snooze (`z `) wins over urgent (`! `) wins over
-                            // favorite (`* `). Matches the sort-tier priority:
-                            // archive > snooze > urgent > favorite.
+                            // Prefix priority: archive (no prefix) wins
+                            // over snooze (`z `) wins over urgent (`! `)
+                            // wins over favorite (`* `). All three
+                            // prefixes are Attention-mode-only so users
+                            // in Newest / AZ / etc. don't see decoration
+                            // for state they didn't opt into managing.
                             let title_text = if inst.is_archived() {
                                 Cow::Owned(inst.title.clone())
-                            } else if inst.is_snoozed() {
+                            } else if in_attention && inst.is_snoozed() {
                                 Cow::Owned(format!("z {}", inst.title))
-                            } else if inst.is_urgent() {
+                            } else if in_attention && inst.is_urgent() {
                                 Cow::Owned(format!("! {}", inst.title))
-                            } else if inst.is_favorited() {
+                            } else if in_attention && inst.is_favorited() {
                                 Cow::Owned(format!("* {}", inst.title))
                             } else {
                                 Cow::Owned(inst.title.clone())
@@ -982,46 +993,36 @@ impl HomeView {
                                 (ICON_IDLE, theme.dimmed)
                             };
                             let mut style = Style::default().fg(color);
-                            if inst.is_archived() || inst.is_snoozed() {
-                                // Mirrors the Agent-view path: archived AND
-                                // snoozed rows render with one uniform muted
-                                // glyph regardless of underlying state. Kills
-                                // the running-spinner-on-archived-row visual
-                                // bug where a stale terminal session would
-                                // animate even after the user parked the row.
+                            if inst.is_archived() {
+                                // Archive lifecycle override mirrors the
+                                // Agent-view path: dim color, stopped
+                                // icon, no italic/dim modifier; the
+                                // Archived section header is the cue.
+                                icon = ICON_STOPPED;
+                                style = Style::default().fg(theme.dimmed);
+                            } else if in_attention && inst.is_snoozed() {
                                 icon = ICON_STOPPED;
                                 style = Style::default()
                                     .fg(theme.dimmed)
                                     .add_modifier(ratatui::style::Modifier::ITALIC)
                                     .add_modifier(ratatui::style::Modifier::DIM);
-                            } else if inst.is_urgent() {
-                                // Mirrors the Agent-view path: agent flagged
-                                // urgent gets red + BOLD + RAPID_BLINK across
-                                // both view modes so the visual is consistent
-                                // when the user toggles agent/terminal view.
+                            } else if in_attention && inst.is_urgent() {
                                 style = Style::default()
                                     .fg(theme.error)
                                     .add_modifier(ratatui::style::Modifier::BOLD)
                                     .add_modifier(ratatui::style::Modifier::RAPID_BLINK);
-                            } else if inst.is_favorited() {
-                                // Favorited, non-archived: bold + underlined
-                                // + "* " prefix. ASCII-only glyph (previously
-                                // ⭐ but emoji wide-width accounting mis-
-                                // aligned row truncation on iOS Blink /
-                                // Termius, causing stray combining-sequence
-                                // chars to bleed into the title). Archive
-                                // wins over favorite if both are set.
+                            } else if in_attention && inst.is_favorited() {
                                 style = style
                                     .add_modifier(ratatui::style::Modifier::BOLD)
                                     .add_modifier(ratatui::style::Modifier::UNDERLINED);
                             }
                             let title_text = if inst.is_archived() {
                                 Cow::Owned(inst.title.clone())
-                            } else if inst.is_snoozed() {
+                            } else if in_attention && inst.is_snoozed() {
                                 Cow::Owned(format!("z {}", inst.title))
-                            } else if inst.is_urgent() {
+                            } else if in_attention && inst.is_urgent() {
                                 Cow::Owned(format!("! {}", inst.title))
-                            } else if inst.is_favorited() {
+                            } else if in_attention && inst.is_favorited() {
                                 Cow::Owned(format!("* {}", inst.title))
                             } else {
                                 Cow::Owned(inst.title.clone())
@@ -1166,12 +1167,21 @@ impl HomeView {
                     if pad_len > 0 {
                         line_spans.push(Span::raw(" ".repeat(pad_len)));
                     }
-                    // Snoozed rows show remaining sleep time ("23m" / "1h").
+                    // In Attention mode, snoozed rows show remaining sleep
+                    // time ("23m" / "1h"). Outside Attention mode, snooze
+                    // is invisible (the timer still ticks; we just don't
+                    // surface it) so the column falls through to the
+                    // normal age path.
                     // Idle rows show time-since-stop (`idle_entered_at`)
                     // since `last_accessed_at` would lie after attach/send.
                     // Fall back to `last_accessed_at` when `idle_entered_at`
                     // is missing.
-                    let age = if let Some(remaining) = inst.snooze_remaining() {
+                    let snooze_remaining = if in_attention {
+                        inst.snooze_remaining()
+                    } else {
+                        None
+                    };
+                    let age = if let Some(remaining) = snooze_remaining {
                         format_snooze_remaining(remaining)
                     } else {
                         let age_ts = if inst.status == Status::Idle {

@@ -509,6 +509,15 @@ pub struct AppStateConfig {
     /// Restored on subsequent opens so users don't re-navigate every time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_browse_dir: Option<PathBuf>,
+
+    /// Collapsed state for the synthetic "Archived" sidebar section.
+    /// Defaults to collapsed when absent. Archived sessions are pulled out
+    /// of the natural sort and grouped under this section at the bottom
+    /// across every sort mode, so they stop interleaving with active rows
+    /// without users in non-Attention modes losing the ability to find a
+    /// shelved session.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived_section_collapsed: Option<bool>,
 }
 
 /// Session-related configuration defaults

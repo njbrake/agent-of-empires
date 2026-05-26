@@ -1247,56 +1247,53 @@ impl HomeView {
                 self.view_mode = ViewMode::Agent;
             }
             KeyCode::Char('q') => return Some(Action::Quit),
-            // `w` / `W`: toggle snooze on the cursor's session. Snooze is
-            // "temporary archive": the row sinks to tier 99 for `config.
-            // session.snooze_duration_minutes` (default 30), renders
-            // italic+dim with a `z ` prefix and remaining-time in the age
-            // column, then rejoins the active Attention sort when the
-            // timer elapses (lazy; `is_snoozed()` just compares against
-            // now). Pressing w/W on a snoozed row wakes it immediately.
-            // Mnemonic: Wait. Separate namespace from archive (`z`/`Z`)
-            // and favorite (`f`/`F`). Session-only for v1.
-            KeyCode::Char('w') if !self.strict_hotkeys => {
+            // `w` / `W` (snooze), `h` / `H` (snooze alias), and `f` / `F`
+            // (favorite) are gated to Attention sort. Snooze and favorite
+            // are triage primitives — they only have a visible effect
+            // (and a sort impact) in Attention mode. Outside Attention,
+            // mutating these flags would silently change persisted state
+            // with no on-screen feedback, so we ignore the press
+            // entirely. Other sort modes fall through to the existing
+            // fallback bindings (`h` → collapse, `w` → jump-to-next-
+            // waiting in non-strict mode).
+            KeyCode::Char('w')
+                if !self.strict_hotkeys && self.sort_order == SortOrder::Attention =>
+            {
                 if let Err(e) = self.toggle_snooze_at_cursor() {
                     tracing::error!("toggle_snooze_at_cursor failed: {}", e);
                 }
             }
-            KeyCode::Char('W') if self.strict_hotkeys => {
+            KeyCode::Char('W')
+                if self.strict_hotkeys && self.sort_order == SortOrder::Attention =>
+            {
                 if let Err(e) = self.toggle_snooze_at_cursor() {
                     tracing::error!("toggle_snooze_at_cursor failed: {}", e);
                 }
             }
-            // `h` / `H`: alias for `w` / `W` (snooze). Mnemonic: Hide,
-            // borrowed from email-app conventions where H snoozes the
-            // focused message off the list for a while. Plain `h` was
-            // previously a vim-style left/collapse alias, but ← already
-            // covers that, and users with email-app muscle memory keep
-            // reaching for H expecting snooze. `w`/`W` stays functional
-            // for backward compat; `h`/`H` is the advertised binding.
-            KeyCode::Char('h') if !self.strict_hotkeys => {
+            KeyCode::Char('h')
+                if !self.strict_hotkeys && self.sort_order == SortOrder::Attention =>
+            {
                 if let Err(e) = self.toggle_snooze_at_cursor() {
                     tracing::error!("toggle_snooze_at_cursor failed: {}", e);
                 }
             }
-            KeyCode::Char('H') if self.strict_hotkeys => {
+            KeyCode::Char('H')
+                if self.strict_hotkeys && self.sort_order == SortOrder::Attention =>
+            {
                 if let Err(e) = self.toggle_snooze_at_cursor() {
                     tracing::error!("toggle_snooze_at_cursor failed: {}", e);
                 }
             }
-            // `f` / `F`: toggle favorite on the cursor's session. Within
-            // the Attention sort, favorited rows pin above non-favorited
-            // peers in the same status tier; a favorited Running stays in
-            // the Running bucket but bubbles above plain Running rows.
-            // Render layer (`render.rs`) adds bold + underline and a
-            // leading `* ` glyph. Favorite survives an unsnooze (positive
-            // care-more signal) but archive clears it (mutex in
-            // `Instance::archive()`).
-            KeyCode::Char('f') if !self.strict_hotkeys => {
+            KeyCode::Char('f')
+                if !self.strict_hotkeys && self.sort_order == SortOrder::Attention =>
+            {
                 if let Err(e) = self.toggle_favorite_at_cursor() {
                     tracing::error!("toggle_favorite_at_cursor failed: {}", e);
                 }
             }
-            KeyCode::Char('F') if self.strict_hotkeys => {
+            KeyCode::Char('F')
+                if self.strict_hotkeys && self.sort_order == SortOrder::Attention =>
+            {
                 if let Err(e) = self.toggle_favorite_at_cursor() {
                     tracing::error!("toggle_favorite_at_cursor failed: {}", e);
                 }
@@ -2592,8 +2589,20 @@ impl HomeView {
                 }
                 Item::Group { path, .. } => {
                     self.selected_session = None;
-                    self.selected_group = Some(path.clone());
-                    self.selected_group_profile = self.profile_for_cursor(self.cursor);
+                    if crate::session::is_archived_section_path(path) {
+                        // The synthetic Archived section is not a real
+                        // group: it can't be renamed, deleted, archived,
+                        // or moved. Leaving `selected_group` unset
+                        // disarms every keybind that branches on
+                        // `selected_group.is_some()` (rename, delete,
+                        // archive group, etc.) without each one having
+                        // to special-case the sentinel.
+                        self.selected_group = None;
+                        self.selected_group_profile = None;
+                    } else {
+                        self.selected_group = Some(path.clone());
+                        self.selected_group_profile = self.profile_for_cursor(self.cursor);
+                    }
                 }
             }
             if self.selected_session != prev_session {
@@ -2660,6 +2669,14 @@ impl HomeView {
     }
 
     fn toggle_group_collapsed(&mut self, path: &str) {
+        // The synthetic Archived section is not a member of any
+        // GroupTree; its collapsed state lives on HomeView and persists
+        // separately. Route here before either branch tries to mutate a
+        // nonexistent group.
+        if crate::session::is_archived_section_path(path) {
+            self.toggle_archived_section();
+            return;
+        }
         if self.group_by == GroupByMode::Project {
             let collapsed = self
                 .project_group_collapsed

@@ -19,6 +19,7 @@ use ratatui::prelude::Rect;
 use tui_input::Input;
 
 use crate::session::{
+    append_archived_section,
     config::{load_config, save_config, GroupByMode, SortOrder},
     flatten_sessions_by_attention, flatten_tree, flatten_tree_all_profiles, resolve_config_or_warn,
     DefaultTerminalMode, EnsureReadyOutcome, Group, GroupTree, Instance, Item, Storage,
@@ -557,6 +558,12 @@ pub struct HomeView {
     /// `app_state.show_preview_info`.
     pub(super) show_preview_info: bool,
 
+    /// Collapsed state of the synthetic "Archived" sidebar section.
+    /// Defaults to `true` (collapsed) so archived rows stay tucked at the
+    /// bottom until the user opts to see them. Persisted to
+    /// `app_state.archived_section_collapsed`.
+    pub(super) archived_section_collapsed: bool,
+
     /// Channel that startup-recovery workers send results back on. `None`
     /// when no recovery was attempted at construction (live tmux, daemon
     /// owns recovery, lock contended, or no candidates). Drained on every
@@ -779,6 +786,10 @@ impl HomeView {
             show_preview_info: user_config
                 .as_ref()
                 .and_then(|c| c.app_state.show_preview_info)
+                .unwrap_or(true),
+            archived_section_collapsed: user_config
+                .as_ref()
+                .and_then(|c| c.app_state.archived_section_collapsed)
                 .unwrap_or(true),
             recovery_rx: None,
             recovery_lock: None,
@@ -2148,6 +2159,17 @@ impl HomeView {
         }
     }
 
+    pub fn toggle_archived_section(&mut self) {
+        self.archived_section_collapsed = !self.archived_section_collapsed;
+        if let Ok(mut config) = load_config().map(|c| c.unwrap_or_default()) {
+            config.app_state.archived_section_collapsed = Some(self.archived_section_collapsed);
+            if let Err(e) = save_config(&config) {
+                tracing::warn!(target: "tui.home", "Failed to save config: {e}");
+            }
+        }
+        self.flat_items = self.build_flat_items();
+    }
+
     pub fn show_welcome(&mut self) {
         tracing::info!(target: "tui.dialog", dialog = "welcome", "opening");
         self.welcome_dialog = Some(WelcomeDialog::new());
@@ -2221,28 +2243,40 @@ impl HomeView {
             } else {
                 self.instances.clone()
             };
-            return flatten_sessions_by_attention(&filtered);
+            let mut items = flatten_sessions_by_attention(&filtered);
+            append_archived_section(&mut items, &filtered, self.archived_section_collapsed);
+            return items;
         }
 
-        if let Some(profile) = &self.active_profile {
+        let (mut items, archive_pool) = if let Some(profile) = &self.active_profile {
             let filtered: Vec<Instance> = self
                 .instances
                 .iter()
                 .filter(|i| i.source_profile == *profile)
                 .cloned()
                 .collect();
-            match self.group_trees.get(profile) {
+            let items = match self.group_trees.get(profile) {
                 Some(tree) => flatten_tree(tree, &filtered, self.sort_order),
                 None => Vec::new(),
-            }
+            };
+            (items, filtered)
         } else if self.storages.len() <= 1 {
-            match self.group_trees.values().next() {
+            let items = match self.group_trees.values().next() {
                 Some(tree) => flatten_tree(tree, &self.instances, self.sort_order),
                 None => Vec::new(),
-            }
+            };
+            (items, self.instances.clone())
         } else {
-            flatten_tree_all_profiles(&self.instances, &self.group_trees, self.sort_order)
-        }
+            let items =
+                flatten_tree_all_profiles(&self.instances, &self.group_trees, self.sort_order);
+            (items, self.instances.clone())
+        };
+
+        // Pin the synthetic Archived section to the bottom regardless of
+        // sort order. Archived rows were filtered out of the natural flow
+        // inside `flatten_tree` / `flatten_tree_all_profiles`.
+        append_archived_section(&mut items, &archive_pool, self.archived_section_collapsed);
+        items
     }
 
     fn build_flat_items_by_project(&self) -> Vec<Item> {
@@ -2272,7 +2306,9 @@ impl HomeView {
                 tree.set_collapsed(path, true);
             }
         }
-        flatten_tree(&tree, &grouped, self.sort_order)
+        let mut items = flatten_tree(&tree, &grouped, self.sort_order);
+        append_archived_section(&mut items, &grouped, self.archived_section_collapsed);
+        items
     }
 
     /// The active profile filter name, or `None` when no filter is applied.
