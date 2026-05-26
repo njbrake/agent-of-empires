@@ -4268,16 +4268,56 @@ fn restart_selected_session_skips_archived_row() {
 
 #[test]
 #[serial]
-fn restart_selected_session_skips_snoozed_row() {
+fn restart_selected_session_skips_snoozed_row_in_attention_sort() {
+    use crate::session::config::SortOrder;
+
     let mut env = create_test_env_with_sessions(1);
     let id = env.view.instances[0].id.clone();
     env.view.selected_session = Some(id.clone());
+    env.view.sort_order = SortOrder::Attention;
     env.view.mutate_instance(&id, |inst| inst.snooze(30));
 
     let result = env.view.restart_selected_session(None, None);
     assert!(result.is_ok());
-    assert!(env.view.instances[0].is_snoozed());
-    assert!(env.view.restart_cooldown_at.is_empty());
+    assert!(
+        env.view.instances[0].is_snoozed(),
+        "Attention sort: snooze is the user's explicit `don't revive`; restart must not clear it"
+    );
+    assert!(
+        env.view.restart_cooldown_at.is_empty(),
+        "Attention sort: skipped restart should not set the cooldown"
+    );
+}
+
+/// Outside Attention sort, the snooze badge / dim styling / `z ` prefix
+/// are all invisible, so silently swallowing a restart press on a snoozed
+/// row would leave the user staring at an apparently-restartable row that
+/// doesn't restart. Wake the snooze and let the restart proceed instead.
+#[test]
+#[serial]
+fn restart_selected_session_wakes_snooze_outside_attention_sort() {
+    use crate::session::config::SortOrder;
+
+    let mut env = create_test_env_with_sessions(1);
+    let id = env.view.instances[0].id.clone();
+    env.view.selected_session = Some(id.clone());
+    env.view.sort_order = SortOrder::Newest;
+    env.view.mutate_instance(&id, |inst| inst.snooze(30));
+    assert!(env.view.instances[0].is_snoozed(), "pre-condition");
+
+    let result = env.view.restart_selected_session(None, None);
+    assert!(result.is_ok());
+    assert!(
+        !env.view.instances[0].is_snoozed(),
+        "Newest sort: restart on a snoozed row must clear the snooze so persisted state matches what's on screen"
+    );
+    // Restart cooldown gets set because the press wasn't dropped. Bare
+    // `restart_selected_session` schedules the actual restart on a
+    // worker; we only assert the synchronous bookkeeping here.
+    assert!(
+        env.view.restart_cooldown_at.contains_key(&id),
+        "Newest sort: restart that proceeded must record the cooldown"
+    );
 }
 
 #[test]
