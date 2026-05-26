@@ -65,8 +65,11 @@ base("DeleteSessionDialog can opt into deleting the worktree", async ({ page }, 
     const sessionId = seeded.id;
 
     await page.goto(serve.baseUrl);
-    const row = page.locator('[data-testid="sidebar-session-row"]');
-    await expect(row).toContainText("story-delete-wt", { timeout: 10_000 });
+    const row = page
+      .locator('[data-testid="sidebar-session-row"]')
+      .filter({ hasText: "story-delete-wt" })
+      .first();
+    await expect(row).toBeVisible({ timeout: 10_000 });
 
     await row.click({ button: "right" });
     await page.locator('[data-testid="sidebar-context-menu-delete"]').click();

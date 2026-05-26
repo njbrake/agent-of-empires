@@ -28,7 +28,10 @@ base("deleting the active session falls back to /", async ({ page }, testInfo) =
       timeout: 10_000,
     });
 
-    const row = page.locator('[data-testid="sidebar-session-row"]');
+    const row = page
+      .locator('[data-testid="sidebar-session-row"]')
+      .filter({ hasText: "story-delete-active" })
+      .first();
     await expect(row).toBeVisible({ timeout: 10_000 });
     await row.click({ button: "right" });
     await page.locator('[data-testid="sidebar-context-menu-delete"]').click();
