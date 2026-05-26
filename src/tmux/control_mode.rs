@@ -37,11 +37,25 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 
-/// Default timeout waiting for a single command response. Generous
-/// because the worker thread is shared with notification draining and
-/// a busy tmux server can take a tick to respond; tight enough that a
-/// stuck client gives up before the user notices.
-const RESPONSE_TIMEOUT: Duration = Duration::from_millis(750);
+/// Default timeout waiting for a single command response.
+///
+/// The previous value (750ms) was too tight in practice: under fast
+/// typing the worker thread holds the socket mutex for each
+/// `send-keys`, the agent echoes each keystroke as a `%output`
+/// notification, and the channel between the reader thread and
+/// `send_command` fills up with notifications that the main thread's
+/// `capture-pane` call has to drain before reaching its own
+/// `%begin`/`%end`. A single response that crossed 750ms tripped the
+/// caller's drop-on-error path and blanked the preview until the
+/// user exited and re-entered live mode (the symptom #1495 was
+/// trying to fix didn't fully clear it).
+///
+/// 3s gives the busy-socket case plenty of headroom while still
+/// bounding the per-call cost on a genuinely-wedged connection. The
+/// caller still gives up after `MAX_LIVE_CAPTURE_FAILURES` consecutive
+/// errors, so a truly hung client won't keep the user staring at
+/// stale content forever.
+const RESPONSE_TIMEOUT: Duration = Duration::from_secs(3);
 
 /// A line received from tmux's stdout, post-tagging by the reader
 /// thread. The reader does the minimal parsing required to separate

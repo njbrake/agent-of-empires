@@ -258,9 +258,8 @@ impl HomeView {
         // drag and drop the selection so it can't keep mutating under
         // the modal or finalize on mouse-up behind the overlay.
         let drag_is_preview = matches!(self.drag_state, Some(DragKind::PreviewSelect));
-        let blocking_modal = self.has_blocking_dialog_for_list_click();
         let cancel_drag = if drag_is_preview {
-            blocking_modal
+            self.has_non_live_send_overlay()
         } else {
             self.has_dialog()
         };
@@ -2149,6 +2148,7 @@ impl HomeView {
             }
             KeyCode::Home => {
                 self.cursor = 0;
+                self.mouse_pos = None;
                 self.update_selected();
             }
             KeyCode::Char('g')
@@ -2161,6 +2161,7 @@ impl HomeView {
             }
             KeyCode::End | KeyCode::Char('G') if !self.flat_items.is_empty() => {
                 self.cursor = self.flat_items.len() - 1;
+                self.mouse_pos = None;
                 self.update_selected();
             }
             KeyCode::Enter => {
@@ -2462,6 +2463,14 @@ impl HomeView {
         };
 
         self.cursor = new_cursor;
+        // Keyboard nav overrides any prior hover. Without this, when mosh
+        // (or any prediction layer) eats the `Moved` event that fires as
+        // the cursor leaves the list, the hover background stays painted
+        // on the row the mouse was last on while the keyboard-selected
+        // row also paints — two highlighted rows at once. handle_hover
+        // only clears `mouse_pos` when it RECEIVES an off-list Moved, so
+        // any keyboard transition has to clear it directly.
+        self.mouse_pos = None;
         self.update_selected();
     }
 
@@ -2726,7 +2735,7 @@ impl HomeView {
     /// live target session: blocking them would make the feature
     /// unreachable via mouse.
     pub(super) fn resolve_row_to_index(&self, col: u16, row: u16) -> Option<usize> {
-        if self.diff_view.is_some() || self.has_blocking_dialog_for_list_click() {
+        if self.diff_view.is_some() || self.has_non_live_send_overlay() {
             return None;
         }
         let inner = self.list_inner_area;

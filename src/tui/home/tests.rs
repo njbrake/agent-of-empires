@@ -5240,6 +5240,27 @@ mod click_to_select {
 
     #[test]
     #[serial]
+    fn move_cursor_clears_hover() {
+        // Repro for the keyboard-after-hover stuck-highlight bug: when
+        // mosh (or any prediction layer) eats the off-list `Moved` event,
+        // `mouse_pos` stays stuck on the row the mouse last touched while
+        // the keyboard moves to a new row, painting two rows at once.
+        let mut env = create_test_env_with_sessions(3);
+        setup_inner(&mut env);
+
+        env.view.handle_hover(5, 2);
+        assert_eq!(env.view.hovered_index(), Some(1));
+
+        env.view.move_cursor(1);
+        assert_eq!(
+            env.view.hovered_index(),
+            None,
+            "keyboard nav must clear hover so only the selected row paints"
+        );
+    }
+
+    #[test]
+    #[serial]
     fn hover_below_last_item_resolves_to_none() {
         let mut env = create_test_env_with_sessions(3);
         setup_inner(&mut env);
@@ -6199,6 +6220,79 @@ mod live_send_mode {
             .handle_key(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE), None);
         assert!(action.is_none(), "expected no action, got {:?}", action);
         assert!(env.view.live_send.is_none());
+    }
+
+    #[test]
+    #[serial]
+    fn has_non_live_send_overlay_false_in_pure_live_mode() {
+        // Regression for the dead-fast-path bug: `has_dialog()` returns
+        // true when live-send is active, which would gate off the
+        // preview-only fast path (added in #1495) — the very thing it
+        // was supposed to enable. `has_non_live_send_overlay()` is the
+        // helper the fast-path gates use; in pure live mode with no
+        // other dialog open, it must be false so the fast path can run.
+        let mut env = create_test_env_with_sessions(1);
+        install_live_for_first_session(&mut env);
+        assert!(env.view.has_dialog(), "has_dialog includes live_send");
+        assert!(
+            !env.view.has_non_live_send_overlay(),
+            "live-send alone must NOT count as an overlay for the fast-path gate"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn has_non_live_send_overlay_true_when_dialog_also_open() {
+        // The fast path still has to bail when any non-live overlay is
+        // on top of the home view (settings, diff, info dialog, etc.),
+        // because the snapshot it repaints doesn't include them.
+        let mut env = create_test_env_with_sessions(1);
+        install_live_for_first_session(&mut env);
+        env.view.info_dialog = Some(InfoDialog::new("title", "body"));
+        assert!(env.view.has_non_live_send_overlay());
+    }
+
+    #[test]
+    #[serial]
+    fn capture_failures_counter_starts_at_zero() {
+        // Sanity guard on the field that bounds the kill-switch budget
+        // in `capture_via_control_mode`. If this is mis-initialized, the
+        // first capture failure could trip an immediate teardown.
+        let env = create_test_env_empty();
+        assert_eq!(env.view.live_send_capture_failures, 0);
+    }
+
+    #[test]
+    #[serial]
+    fn refresh_preserves_cache_when_live_capture_fails() {
+        // The original bug: a single failed `capture_via_control_mode`
+        // wiped `preview_cache.content` to "" via `.unwrap_or_default()`,
+        // which made the preview render "No output available" (what the
+        // user perceives as "blank") until they exited and re-entered
+        // live mode. This test pins the fixed behavior: when the
+        // control-mode client is unreachable, the previous capture's
+        // content stays in the cache so the user keeps seeing the
+        // last-known-good preview while the next refresh retries.
+        let mut env = create_test_env_with_sessions(1);
+        let id = install_live_for_first_session(&mut env);
+        env.view.selected_session = Some(id.clone());
+        // Seed the cache as if a prior capture had succeeded.
+        env.view.preview_cache.content = "hello from a successful capture".to_string();
+        env.view.preview_cache.captured_lines = 1;
+        env.view.preview_cache.dimensions = (80, 24);
+        env.view.preview_cache.session_id = Some(id);
+        // Simulate the kill-switch torn-down state: no client at all.
+        // `capture_via_control_mode` short-circuits to `None`, and the
+        // refresh path must NOT overwrite content with "".
+        env.view.control_mode_client = None;
+
+        env.view.refresh_preview_cache_if_needed(80, 24);
+
+        assert_eq!(
+            env.view.preview_cache.content, "hello from a successful capture",
+            "cache content must be preserved when live-mode capture returns None"
+        );
+        assert_eq!(env.view.preview_cache.captured_lines, 1);
     }
 
     mod paste_splitting {

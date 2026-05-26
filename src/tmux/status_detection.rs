@@ -4,12 +4,57 @@ use crate::session::Status;
 
 use super::utils::strip_ansi;
 
-const SPINNER_CHARS: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const SPINNER_CHARS: &[&str] = &[
+    "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏", "⠘", "⠣", "⠆", "⠳", "⠰", "⠞", "⣻",
+];
+const LIVE_ACTIVITY_WORDS: &[&str] = &[
+    "analyzing",
+    "applying",
+    "building",
+    "editing",
+    "executing",
+    "fetching",
+    "generating",
+    "grepping",
+    "processing",
+    "reading",
+    "running",
+    "searching",
+    "testing",
+    "thinking",
+    "working",
+    "writing",
+];
+const COMPLETED_ACTIVITY_MARKERS: &[&str] = &[
+    "complete",
+    "completed",
+    "done",
+    "finished",
+    "success",
+    "successful",
+    "successfully",
+];
 
 fn has_any_spinner(lines: &[&str]) -> bool {
     lines
         .iter()
         .any(|line| SPINNER_CHARS.iter().any(|s| line.contains(s)))
+}
+
+fn has_live_activity_word(text_lower: &str) -> bool {
+    LIVE_ACTIVITY_WORDS
+        .iter()
+        .any(|word| status_line_starts_with_phrase(text_lower.trim(), word))
+}
+
+fn has_spinner_activity_line(lines: &[&str]) -> bool {
+    lines.iter().any(|line| {
+        let line_lower = line.to_lowercase();
+        has_any_spinner(&[*line])
+            && LIVE_ACTIVITY_WORDS
+                .iter()
+                .any(|word| line_lower.contains(word))
+    })
 }
 
 fn contains_approval_prompt(text_lower: &str, extra: &[&str]) -> bool {
@@ -718,18 +763,128 @@ fn codex_is_completed_work_divider(line: &str) -> bool {
         .starts_with("worked for")
 }
 
+/// Shared with Codex (`codex_line_starts_with_activity`,
+/// `codex_line_starts_with_live_interrupt_activity`) as well as the Cursor and
+/// Antigravity fallbacks, so the completion-marker suppression applies to every
+/// caller. The completion list is kept small and explicit to avoid swallowing
+/// legitimate activity descriptions that happen to contain past-tense words.
 fn status_line_starts_with_phrase(line: &str, phrase: &str) -> bool {
     let Some(rest) = line.strip_prefix(phrase) else {
         return false;
     };
-    rest.chars()
+    let has_valid_boundary = rest
+        .chars()
         .next()
-        .is_none_or(|c| c.is_whitespace() || c == '.' || c == '…' || c == ':')
+        .is_none_or(|c| c.is_whitespace() || c == '.' || c == '…' || c == ':');
+    has_valid_boundary && !activity_tail_has_completion_marker(rest)
 }
 
-/// Cursor agent status is detected via hooks (file-based), same as Claude Code.
-pub fn detect_cursor_status(_content: &str) -> Status {
+fn activity_tail_has_completion_marker(rest: &str) -> bool {
+    let tail =
+        rest.trim_start_matches(|c: char| c.is_whitespace() || c == '.' || c == '…' || c == ':');
+    if tail.is_empty() {
+        return false;
+    }
+
+    tail.split(|c: char| !c.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .take(5)
+        .map(str::to_lowercase)
+        .any(|word| COMPLETED_ACTIVITY_MARKERS.contains(&word.as_str()))
+}
+
+/// Cursor agent status is detected via hooks first, but pane parsing is still
+/// needed when hooks are missing or the Cursor CLI is executing a long-running
+/// turn between hook writes.
+pub fn detect_cursor_status(raw_content: &str) -> Status {
+    let content = raw_content.to_lowercase();
+    let recent: Vec<&str> = {
+        let non_empty: Vec<&str> = content.lines().filter(|l| !l.trim().is_empty()).collect();
+        non_empty.iter().rev().take(30).rev().copied().collect()
+    };
+    let recent_lower = recent.join("\n");
+
+    if contains_approval_prompt(
+        &recent_lower,
+        &[
+            "permission required",
+            "approval required",
+            "allow command",
+            "allow this command",
+            "run this command",
+            "enter to approve",
+            "enter to select",
+            "esc to cancel",
+        ],
+    ) {
+        return Status::Waiting;
+    }
+
+    // The interrupt hint, spinner, and verb-prefixed activity line all live on
+    // or below Cursor's bottom status bar while a turn is running. Restricting
+    // the check to the last follow-up prompt and the lines below it mirrors the
+    // boundary already used elsewhere and keeps stale scrollback (e.g. a
+    // `ctrl+c to stop` from the previous turn) from re-triggering Running.
+    let active_region = cursor_active_region(&recent);
+    let active_joined = active_region.join("\n");
+
+    if active_joined.contains("ctrl+c to stop")
+        || active_joined.contains("ctrl+c to interrupt")
+        || active_joined.contains("esc to interrupt")
+    {
+        return Status::Running;
+    }
+
+    if has_spinner_activity_line(active_region) {
+        return Status::Running;
+    }
+
+    if active_region
+        .iter()
+        .any(|line| has_live_activity_word(line))
+    {
+        return Status::Running;
+    }
+
+    if cursor_has_follow_up_prompt(&recent) {
+        return Status::Idle;
+    }
+
+    if cursor_has_background_task(&recent_lower) {
+        return Status::Running;
+    }
+
     Status::Idle
+}
+
+fn cursor_has_background_task(text_lower: &str) -> bool {
+    text_lower.contains("background task") || text_lower.contains("background tasks")
+}
+
+fn cursor_has_follow_up_prompt(lines: &[&str]) -> bool {
+    cursor_last_follow_up_prompt_index(lines).is_some()
+}
+
+/// The active region is the last follow-up prompt plus the lines below it.
+/// Cursor renders its live status bar (interrupt hint, spinner, verb-prefixed
+/// activity) on this prompt line or just below; anything above belongs to the
+/// previous turn's scrollback and must not be treated as a live signal.
+fn cursor_active_region<'a>(lines: &'a [&'a str]) -> &'a [&'a str] {
+    match cursor_last_follow_up_prompt_index(lines) {
+        Some(index) => &lines[index..],
+        None => lines,
+    }
+}
+
+fn cursor_last_follow_up_prompt_index(lines: &[&str]) -> Option<usize> {
+    lines
+        .iter()
+        .rposition(|line| cursor_is_follow_up_prompt(line))
+}
+
+fn cursor_is_follow_up_prompt(line: &str) -> bool {
+    let clean_line = line.trim();
+    clean_line == "→" || clean_line.starts_with("→ add a follow-up")
 }
 
 /// Copilot CLI status detection via tmux pane parsing.
@@ -1174,11 +1329,21 @@ pub fn detect_antigravity_status(raw_content: &str) -> Status {
 
     if last_lines_lower.contains("esc to interrupt")
         || last_lines_lower.contains("ctrl+c to interrupt")
+        || last_lines_lower.contains("ctrl+c to stop")
     {
         return Status::Running;
     }
 
     if has_any_spinner(&lines) {
+        return Status::Running;
+    }
+
+    if non_empty_lines
+        .iter()
+        .rev()
+        .take(10)
+        .any(|line| has_live_activity_word(line))
+    {
         return Status::Running;
     }
 
@@ -1190,9 +1355,127 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_detect_cursor_status_is_stub() {
-        // Cursor uses hook-based detection; the stub always returns Idle
-        assert_eq!(detect_cursor_status("anything"), Status::Idle);
+    fn test_detect_cursor_status_running_on_live_activity() {
+        let content = "\
+  Grepped \"legacy_engine\" in .
+
+ ⠘⠣ Reading  6.66k tokens
+
+  → Add a follow-up                                      ctrl+c to stop
+
+  Composer 2.5 · 48.2%                                  Auto-run";
+        assert_eq!(detect_cursor_status(content), Status::Running);
+    }
+
+    #[test]
+    fn test_detect_cursor_status_running_on_calling_spinner() {
+        let content = "\
+ ⠀⠞ Calling  23.62k tokens
+
+
+  → Add a follow-up  ctrl+c to stop
+
+
+  Composer 2.5 · 55.7% · 49 files edited  Auto-run
+";
+        assert_eq!(detect_cursor_status(content), Status::Running);
+    }
+
+    #[test]
+    fn test_detect_cursor_status_idle_on_background_task_after_follow_up_prompt() {
+        let content = "\
+  → Add a follow-up
+
+
+  1 background task
+  Composer 2.5 · 39.2% · 20 files edited  Auto-run
+";
+        assert_eq!(detect_cursor_status(content), Status::Idle);
+    }
+
+    #[test]
+    fn test_detect_cursor_status_running_on_background_task_without_prompt() {
+        let content = "\
+  Started processing the request.
+
+  1 background task
+  Composer 2.5 · 39.2% · 20 files edited  Auto-run
+";
+        assert_eq!(detect_cursor_status(content), Status::Running);
+    }
+
+    #[test]
+    fn test_detect_cursor_status_running_on_editing_spinner() {
+        let content = "\
+  ┌──────────────────────────────┐
+  │ Editing src/app/submit/page.tsx
+  └──────────────────────────────┘
+
+ ⠘⠆ Editing  39.76k tokens";
+        assert_eq!(detect_cursor_status(content), Status::Running);
+    }
+
+    #[test]
+    fn test_detect_cursor_status_waiting_for_permission_prompt() {
+        let content = "\
+Run this command?
+
+> Allow this command
+  Deny
+
+enter to select · esc to cancel";
+        assert_eq!(detect_cursor_status(content), Status::Waiting);
+    }
+
+    #[test]
+    fn test_detect_cursor_status_idle_on_completed_output() {
+        let content = "\
+  Finished the requested changes.
+
+  → Add a follow-up
+
+  Composer 2.5 · 60.9% · 4 files edited                 Auto-run";
+        assert_eq!(detect_cursor_status(content), Status::Idle);
+    }
+
+    #[test]
+    fn test_detect_cursor_status_idle_on_completed_activity_phrases() {
+        for content in [
+            "Running tests completed successfully.\n\n→ Add a follow-up",
+            "Reading config.toml finished.\n\n→ Add a follow-up",
+            "Editing src/app.rs done.\n\n→ Add a follow-up",
+            "Testing finished with success.\n\n→ Add a follow-up",
+        ] {
+            assert_eq!(detect_cursor_status(content), Status::Idle);
+        }
+    }
+
+    #[test]
+    fn test_detect_cursor_status_idle_on_completed_activity_without_prompt() {
+        // Exercises activity_tail_has_completion_marker directly: no follow-up
+        // prompt line is present, so the result depends on the verb-prefixed
+        // line being suppressed because of the completion marker that follows.
+        for content in [
+            "Running tests completed successfully.\n  Composer 2.5",
+            "Reading config.toml finished.\n  Composer 2.5",
+            "Editing src/app.rs done.\n  Composer 2.5",
+            "Testing finished with success.\n  Composer 2.5",
+        ] {
+            assert_eq!(detect_cursor_status(content), Status::Idle);
+        }
+    }
+
+    #[test]
+    fn test_detect_cursor_status_idle_on_stale_spinner_before_follow_up_prompt() {
+        let content = "\
+ ⠘⠆ Editing  39.76k tokens
+
+  Updated src/app/submit/page.tsx
+
+  → Add a follow-up
+
+  Composer 2.5 · 56.1% · 26 files edited  Auto-run";
+        assert_eq!(detect_cursor_status(content), Status::Idle);
     }
 
     #[test]
@@ -2526,6 +2809,36 @@ Antigravity CLI requires permission to read, edit, and execute files here.
             detect_antigravity_status("⠋ Thinking about your request"),
             Status::Running
         );
+    }
+
+    #[test]
+    fn test_detect_antigravity_status_running_on_stop_hint() {
+        let content = "\
+  Applying patch to src/session/instance.rs
+
+  → Add a follow-up                                      ctrl+c to stop";
+        assert_eq!(detect_antigravity_status(content), Status::Running);
+    }
+
+    #[test]
+    fn test_detect_antigravity_status_running_on_live_activity_line() {
+        let content = "\
+  Generated summary for the previous step.
+
+  Editing src/session/instance.rs";
+        assert_eq!(detect_antigravity_status(content), Status::Running);
+    }
+
+    #[test]
+    fn test_detect_antigravity_status_idle_on_completed_activity_phrases() {
+        for content in [
+            "Running tests completed successfully.",
+            "Reading config.toml finished.",
+            "Editing src/session/instance.rs done.",
+            "Testing finished with success.",
+        ] {
+            assert_eq!(detect_antigravity_status(content), Status::Idle);
+        }
     }
 
     #[test]

@@ -113,6 +113,23 @@ pub struct App {
     /// without backpressure if the main loop ever stalls.
     live_send_wake_tx: tokio::sync::mpsc::Sender<()>,
     live_send_wake_rx: tokio::sync::mpsc::Receiver<()>,
+    /// Snapshot of the most recently completed full-render buffer.
+    /// Stashed only while live-send is active (the only consumer of
+    /// the preview-only fast path); cleared when the user exits live
+    /// mode or the terminal resizes. The fast path repaints these
+    /// cells into a fresh back buffer and then re-renders only the
+    /// preview pane, so the cost of a `%output` wake drops from
+    /// "rebuild the whole HomeView widget tree" to "memcpy cells
+    /// plus refresh the preview cache + paragraph." See
+    /// `Self::draw_preview_only`.
+    last_full_frame: Option<ratatui::buffer::Buffer>,
+    /// OUTER rect of the preview pane in `last_full_frame` (block +
+    /// borders + content). Captured from `HomeView::preview_outer_area`
+    /// immediately after the full draw that produced the snapshot.
+    /// The fast path re-renders the preview pane at this rect by
+    /// calling back into `render_preview`, which expects the OUTER
+    /// rect and computes its own inner.
+    last_full_frame_preview_area: ratatui::layout::Rect,
     /// Tracks whether we currently have xterm mouse-tracking enabled. The TUI
     /// turns it off while a copy-friendly surface is open (`HomeView::
     /// wants_text_selection`) so users can drag-select natively, then turns
@@ -260,6 +277,8 @@ impl App {
             event_stream: Some(EventStream::new()),
             live_send_wake_tx,
             live_send_wake_rx,
+            last_full_frame: None,
+            last_full_frame_preview_area: ratatui::layout::Rect::default(),
             // Initial state matches whatever `tui::run` did at startup;
             // capture is on by default, off only if AOE_MOUSE_CAPTURE=0.
             mouse_captured: crate::tui::mouse_capture_requested(),
@@ -316,7 +335,32 @@ impl App {
         )?;
         let draw_result = (|| -> Result<()> {
             crossterm::execute!(terminal.backend_mut(), crossterm::cursor::Hide)?;
-            terminal.draw(|f| self.render(f)).map(|_| ())?;
+            let completed = terminal.draw(|f| self.render(f))?;
+            // Snapshot the freshly drawn frame so a subsequent
+            // `%output` wake can take the preview-only fast path
+            // (see `draw_preview_only`). Only stash when live-send is
+            // active and no OTHER overlay is covering the home view;
+            // the snapshot is useless in any other state and the clone
+            // cost (one `Vec<Cell>` walk plus a `Cell::clone` per
+            // cell, ~12K cells on a 200x60 pane) is real per draw, so
+            // we skip it when no fast-path render can consume it.
+            //
+            // `has_dialog()` includes `live_send.is_some()`, which would
+            // gate off the very mode this fast path exists for — use
+            // `has_non_live_send_overlay()` so live-send itself counts
+            // as "no overlay" but settings / diff / dialogs still do.
+            //
+            // The saved rect is the OUTER preview area (block + borders +
+            // content). The fast path re-renders the preview by passing
+            // this rect back through `render_preview`, which expects the
+            // OUTER rect and computes its own inner; passing the inner
+            // here would make `render_preview` draw a nested block.
+            if self.home.live_send.is_some() && !self.home.has_non_live_send_overlay() {
+                self.last_full_frame = Some(completed.buffer.clone());
+                self.last_full_frame_preview_area = self.home.preview_outer_area;
+            } else {
+                self.last_full_frame = None;
+            }
             Ok(())
         })();
         let end_result = crossterm::execute!(
@@ -326,6 +370,73 @@ impl App {
         draw_result?;
         end_result?;
         Ok(())
+    }
+
+    /// Fast-path draw for live-send `%output` wakes: repaint the last
+    /// full frame's cells into the new back buffer, then re-render
+    /// only the preview pane on top. ratatui's per-cell diff sees
+    /// changes only in the preview rect and writes a minimal delta
+    /// to the terminal. Total cost is ~1 buffer-clone + 1 preview
+    /// refresh vs. the full HomeView widget rebuild (sidebar, status
+    /// bar, dialogs, update banner) the slow path runs.
+    ///
+    /// Returns `Ok(false)` when the fast path bailed (no snapshot,
+    /// dimensions don't match, etc.) so the caller can fall back to
+    /// the full draw. Returns `Ok(true)` on success.
+    fn draw_preview_only(
+        &mut self,
+        terminal: &mut Terminal<CrosstermBackend<std::io::Stdout>>,
+    ) -> Result<bool> {
+        let Some(snapshot) = self.last_full_frame.clone() else {
+            return Ok(false);
+        };
+        // Resize between the snapshot and this draw invalidates the
+        // snapshot: a different terminal size means a different layout
+        // and a different preview rect, and the snapshot's cells
+        // wouldn't line up. Bail to the full path so the next draw
+        // rebuilds everything at the new size.
+        let current_area = terminal.size().map(|sz| ratatui::layout::Rect {
+            x: 0,
+            y: 0,
+            width: sz.width,
+            height: sz.height,
+        });
+        if current_area.map(|c| c != snapshot.area).unwrap_or(true) {
+            self.last_full_frame = None;
+            return Ok(false);
+        }
+        let preview_area = self.last_full_frame_preview_area;
+        if preview_area.width == 0 || preview_area.height == 0 {
+            return Ok(false);
+        }
+
+        crossterm::execute!(
+            terminal.backend_mut(),
+            crossterm::terminal::BeginSynchronizedUpdate
+        )?;
+        let draw_result = (|| -> Result<()> {
+            crossterm::execute!(terminal.backend_mut(), crossterm::cursor::Hide)?;
+            terminal.draw(|f| {
+                let area = f.area();
+                // Step 1: paint the snapshot into the back buffer.
+                f.render_widget(SnapshotPainter::new(&snapshot), area);
+                // Step 2: re-render only the preview region. ratatui's
+                // diff will then write just the changed preview cells
+                // (sidebar/status bar already match the previous
+                // frame because we just painted them in step 1, so
+                // their diff is empty).
+                self.home
+                    .render_preview_pane_only(f, preview_area, &self.theme);
+            })?;
+            Ok(())
+        })();
+        let end_result = crossterm::execute!(
+            terminal.backend_mut(),
+            crossterm::terminal::EndSynchronizedUpdate
+        );
+        draw_result?;
+        end_result?;
+        Ok(true)
     }
 
     /// Temporarily leave TUI mode, run a closure, and restore TUI mode.
@@ -530,6 +641,11 @@ impl App {
                 terminal.clear()?;
                 self.needs_redraw = false;
             }
+
+            // Reset per-iteration flags. Set inside the select! branches
+            // and consumed after the periodic-refresh block below to
+            // decide between the preview-only fast path and a full draw.
+            let mut woke_via_live_send_wake = false;
 
             // All event sources are polled cooperatively via tokio::select!.
             // This ensures signal futures actually get scheduled (fixing #608
@@ -825,11 +941,13 @@ impl App {
                 // reader thread owned by `ControlModeClient`, which
                 // exists only between `enter_live_send` and its
                 // drop), so this is effectively a no-op outside live
-                // mode. The branch body is empty: we just want the
-                // outer loop iteration to fall through to `draw`,
-                // which re-runs `refresh_preview_cache_if_needed` and
-                // picks up the new pane bytes.
-                Some(_) = self.live_send_wake_rx.recv() => {}
+                // mode. Setting `woke_via_live_send_wake` flips on
+                // both `refresh_needed` (so the draw at the bottom
+                // of the loop actually fires) and the
+                // preview-only fast path consideration below.
+                Some(_) = self.live_send_wake_rx.recv() => {
+                    woke_via_live_send_wake = true;
+                }
                 _ = async {
                     #[cfg(unix)]
                     match sighup {
@@ -858,18 +976,36 @@ impl App {
                 }
             }
 
-            // Check for update result (non-blocking)
+            // Periodic refreshes (only when no input pending).
+            //
+            // `needs_full_refresh` separately tracks whether anything
+            // OTHER than the live-send wake wants a refresh. The
+            // preview-only fast path (see `draw_preview_only`) is
+            // only safe when nothing else needs the sidebar / status
+            // bar / dialogs re-rendered, so we route to it only when
+            // `woke_via_live_send_wake && !needs_full_refresh`.
+            let mut refresh_needed = false;
+            let mut needs_full_refresh = false;
+
+            // Update-check / install-status polls can flip the
+            // bottom-of-screen update bar (banner or transient toast)
+            // on or off, which shifts the home view's layout. If a
+            // live-send wake fires on the same iteration, the
+            // preview-only fast path would paint a stale snapshot
+            // whose preview rect no longer lines up with the new
+            // layout. Treat any banner state change as full-refresh
+            // work so the slow path rebuilds the layout AND the
+            // snapshot.
             if self.poll_update_check() {
                 self.needs_redraw = true;
+                refresh_needed = true;
+                needs_full_refresh = true;
             }
-
-            // Check for in-progress update completion
             if self.poll_update_status() {
                 self.needs_redraw = true;
+                refresh_needed = true;
+                needs_full_refresh = true;
             }
-
-            // Periodic refreshes (only when no input pending)
-            let mut refresh_needed = false;
 
             if last_status_refresh.elapsed() >= STATUS_REFRESH_INTERVAL {
                 self.home.request_status_refresh();
@@ -878,33 +1014,40 @@ impl App {
 
             if self.home.apply_status_updates() {
                 refresh_needed = true;
+                needs_full_refresh = true;
             }
 
             if self.home.apply_deletion_results() {
                 refresh_needed = true;
+                needs_full_refresh = true;
             }
 
             if self.home.apply_session_id_updates() {
                 refresh_needed = true;
+                needs_full_refresh = true;
             }
 
             if self.home.apply_recovery_updates() {
                 refresh_needed = true;
+                needs_full_refresh = true;
             }
 
             if let Some(session_id) = self.home.apply_creation_results() {
                 self.dispatch_new_session_attach(&session_id, terminal)?;
                 refresh_needed = true;
+                needs_full_refresh = true;
             }
 
             if self.home.tick_dialog() {
                 refresh_needed = true;
+                needs_full_refresh = true;
             }
 
             if last_disk_refresh.elapsed() >= DISK_REFRESH_INTERVAL {
                 self.home.reload()?;
                 last_disk_refresh = std::time::Instant::now();
                 refresh_needed = true;
+                needs_full_refresh = true;
             }
 
             if last_heartbeat.elapsed() >= HEARTBEAT_INTERVAL {
@@ -938,10 +1081,36 @@ impl App {
             {
                 last_spinner_redraw = std::time::Instant::now();
                 refresh_needed = true;
+                needs_full_refresh = true;
+            }
+
+            // A live-send wake on its own is a refresh signal: the
+            // agent rendered new bytes into the pane and the preview
+            // is stale. Without this flag the loop would only redraw
+            // when one of the periodic checks above happened to fire,
+            // which is rare in steady-state typing.
+            if woke_via_live_send_wake {
+                refresh_needed = true;
             }
 
             if refresh_needed {
-                self.draw(terminal)?;
+                // `has_dialog()` is true whenever live-send is active, so
+                // using it here would defeat the very fast path it gates.
+                // `has_non_live_send_overlay()` returns true only for
+                // OTHER overlays (settings, diff, dialogs) — those still
+                // need a full draw, but bare live-send doesn't.
+                let prefer_preview_only = woke_via_live_send_wake
+                    && !needs_full_refresh
+                    && self.home.live_send.is_some()
+                    && !self.home.has_non_live_send_overlay()
+                    && self.last_full_frame.is_some();
+                let mut took_fast_path = false;
+                if prefer_preview_only {
+                    took_fast_path = self.draw_preview_only(terminal)?;
+                }
+                if !took_fast_path {
+                    self.draw(terminal)?;
+                }
             }
 
             if self.should_quit {
@@ -1986,6 +2155,38 @@ pub enum Action {
     /// against the borrowed terminal + event stream.
     #[cfg(feature = "serve")]
     OpenCockpit(String),
+}
+
+/// Widget that paints a previously captured frame into the back
+/// buffer, used by `App::draw_preview_only` to seed the fast-path
+/// frame with the prior full render's cells before re-rendering only
+/// the preview pane. The Widget's `area` argument is intentionally
+/// ignored because we always overwrite the whole back buffer; the
+/// caller is expected to immediately render the preview region on
+/// top to differentiate it from the previous frame's preview cells.
+///
+/// Same-dimension fast path uses `Vec::clone_from_slice` for a
+/// memcpy-shaped copy of all cells. On the off chance dimensions
+/// don't match (snapshot from a different terminal size that wasn't
+/// caught by the caller's resize check), the painter is a no-op and
+/// the fast-path render produces a half-painted frame; the caller's
+/// resize check should make this unreachable in practice.
+struct SnapshotPainter<'a> {
+    snapshot: &'a ratatui::buffer::Buffer,
+}
+
+impl<'a> SnapshotPainter<'a> {
+    fn new(snapshot: &'a ratatui::buffer::Buffer) -> Self {
+        Self { snapshot }
+    }
+}
+
+impl ratatui::widgets::Widget for SnapshotPainter<'_> {
+    fn render(self, _area: ratatui::layout::Rect, buf: &mut ratatui::buffer::Buffer) {
+        if buf.area == self.snapshot.area && buf.content.len() == self.snapshot.content.len() {
+            buf.content.clone_from_slice(&self.snapshot.content);
+        }
+    }
 }
 
 #[cfg(test)]
