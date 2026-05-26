@@ -108,6 +108,7 @@ pub enum FieldKey {
     LiveSendExitChord,
     NewSessionAttachMode,
     DefaultAttachMode,
+    ClickAction,
     // Sound
     SoundEnabled,
     SoundMode,
@@ -429,6 +430,28 @@ fn index_to_new_session_attach_mode(idx: usize) -> crate::session::NewSessionAtt
     match idx {
         1 => LiveSend,
         _ => Tmux,
+    }
+}
+
+/// Display labels for `ClickAction`. Order must match
+/// `click_action_to_index` / `index_to_click_action`. `LiveSend` is
+/// first so it is the default selection (matches the historical
+/// single-click-enters-live behavior).
+const CLICK_ACTION_OPTIONS: &[&str] = &["Live mode", "Select only"];
+
+fn click_action_to_index(mode: crate::session::ClickAction) -> usize {
+    use crate::session::ClickAction::*;
+    match mode {
+        LiveSend => 0,
+        SelectOnly => 1,
+    }
+}
+
+fn index_to_click_action(idx: usize) -> crate::session::ClickAction {
+    use crate::session::ClickAction::*;
+    match idx {
+        1 => SelectOnly,
+        _ => LiveSend,
     }
 }
 
@@ -1918,6 +1941,12 @@ fn build_interaction_fields(
         session.and_then(|s| s.default_attach_mode),
     );
 
+    let (click_action, click_action_override) = resolve_value(
+        scope,
+        global.session.click_action,
+        session.and_then(|s| s.click_action),
+    );
+
     vec![
         SettingField {
             key: FieldKey::DefaultAttachMode,
@@ -1974,6 +2003,29 @@ fn build_interaction_fields(
                         .iter()
                         .map(|s| s.to_string())
                         .collect(),
+                },
+            ),
+        },
+        SettingField {
+            key: FieldKey::ClickAction,
+            label: "Mouse Click Action",
+            description: "What a single mouse click on a session row does in the \
+                 Agent view. `Live mode` (default) enters live-send for the \
+                 clicked row, the historical behavior. `Select only` just \
+                 moves the cursor so you can read the preview without ever \
+                 entering live-send. Double-click still activates via Default \
+                 Attach Mode regardless of this setting.",
+            value: FieldValue::Select {
+                selected: click_action_to_index(click_action),
+                options: CLICK_ACTION_OPTIONS.iter().map(|s| s.to_string()).collect(),
+            },
+            category: SettingsCategory::Interaction,
+            has_override: click_action_override,
+            inherited_display: inherited_if(
+                click_action_override,
+                FieldValue::Select {
+                    selected: click_action_to_index(global.session.click_action),
+                    options: CLICK_ACTION_OPTIONS.iter().map(|s| s.to_string()).collect(),
                 },
             ),
         },
@@ -2478,6 +2530,9 @@ fn apply_field_to_global(field: &SettingField, config: &mut Config) {
         (FieldKey::DefaultAttachMode, FieldValue::Select { selected, .. }) => {
             config.session.default_attach_mode = index_to_new_session_attach_mode(*selected);
         }
+        (FieldKey::ClickAction, FieldValue::Select { selected, .. }) => {
+            config.session.click_action = index_to_click_action(*selected);
+        }
         (FieldKey::RowTag, FieldValue::Select { selected, .. }) => {
             config.session.row_tag = index_to_row_tag(*selected);
         }
@@ -2965,6 +3020,13 @@ fn apply_field_to_profile(field: &SettingField, _global: &Config, config: &mut P
                 index_to_new_session_attach_mode(*selected),
                 &mut config.session,
                 |s, val| s.default_attach_mode = val,
+            );
+        }
+        (FieldKey::ClickAction, FieldValue::Select { selected, .. }) => {
+            set_profile_override(
+                index_to_click_action(*selected),
+                &mut config.session,
+                |s, val| s.click_action = val,
             );
         }
         (FieldKey::RowTag, FieldValue::Select { selected, .. }) => {
@@ -3651,6 +3713,7 @@ mod tests {
         for k in [
             FieldKey::DefaultAttachMode,
             FieldKey::NewSessionAttachMode,
+            FieldKey::ClickAction,
             FieldKey::LiveSendExitChord,
         ] {
             assert!(
@@ -3680,6 +3743,7 @@ mod tests {
             FieldKey::AgentStatusHooks,
             FieldKey::DefaultAttachMode,
             FieldKey::NewSessionAttachMode,
+            FieldKey::ClickAction,
             FieldKey::LiveSendExitChord,
         ] {
             assert!(

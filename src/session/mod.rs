@@ -21,7 +21,7 @@ pub use crate::sound::{SoundConfig, SoundConfigOverride};
 pub use crate::status_hooks::{StatusHookConfig, StatusHookConfigOverride};
 pub(crate) use capture::is_valid_session_id;
 pub use config::{
-    get_update_settings, load_config, save_config, validate_snooze_duration, Config,
+    get_update_settings, load_config, save_config, validate_snooze_duration, ClickAction, Config,
     ContainerRuntimeName, DefaultTerminalMode, GroupByMode, NewSessionAttachMode, RowTagMode,
     SandboxConfig, SessionConfig, ThemeConfig, TmuxClipboardMode, TmuxMouseMode, TmuxStatusBarMode,
     UpdatesConfig, WorktreeConfig,

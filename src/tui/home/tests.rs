@@ -4817,6 +4817,35 @@ mod click_to_select {
 
     #[test]
     #[serial]
+    fn select_only_click_moves_cursor_without_entering_live_mode() {
+        // With `click_action = SelectOnly`, a single click must move the
+        // cursor (so the preview pane updates) but NOT emit
+        // EnterLiveSend. Double-click + Enter still activate the row,
+        // but that path is gated by `default_attach_mode`, not this
+        // setting, so it's exercised elsewhere.
+        use crate::session::config::{save_config, ClickAction, Config};
+        let mut env = create_test_env_with_sessions(3);
+        setup_inner(&mut env);
+        env.view.cursor = 0;
+        env.view.update_selected();
+
+        let mut config = Config::default();
+        config.session.click_action = ClickAction::SelectOnly;
+        save_config(&config).unwrap();
+
+        let action = env.view.handle_click(5, 3);
+        assert_eq!(
+            action, None,
+            "SelectOnly must not emit EnterLiveSend on single click"
+        );
+        assert_eq!(
+            env.view.cursor, 2,
+            "SelectOnly must still move the cursor to the clicked row"
+        );
+    }
+
+    #[test]
+    #[serial]
     fn click_on_already_selected_row_does_not_move_cursor() {
         let mut env = create_test_env_with_sessions(3);
         setup_inner(&mut env);

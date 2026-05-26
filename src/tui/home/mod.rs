@@ -3143,6 +3143,30 @@ impl HomeView {
         )
     }
 
+    /// Resolve `click_action` for an existing session row when the
+    /// user single-clicks it in the Agent view. Reads the instance's
+    /// `source_profile` so the picked mode matches whatever profile
+    /// the session was filed under. Returns `None` for cockpit-mode
+    /// sessions because `start_live_send` already short-circuits on
+    /// them; callers can treat `None` as "fall through to the
+    /// historical live-send path."
+    pub(super) fn click_action(&self, session_id: &str) -> Option<crate::session::ClickAction> {
+        let inst = self.get_instance(session_id)?;
+        if inst.is_cockpit_mode() {
+            return None;
+        }
+        let profile = if inst.source_profile.is_empty() {
+            self.config_profile()
+        } else {
+            inst.source_profile.clone()
+        };
+        Some(
+            crate::session::resolve_config_or_warn(&profile)
+                .session
+                .click_action,
+        )
+    }
+
     /// Resolve `default_attach_mode` for an existing session row when
     /// the user activates it (Enter / double-click) in the Agent view.
     /// Reads the instance's `source_profile` so the picked mode matches

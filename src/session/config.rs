@@ -624,6 +624,31 @@ pub struct SessionConfig {
     /// existing activation paths (terminal attach, cockpit open).
     #[serde(default)]
     pub default_attach_mode: NewSessionAttachMode,
+
+    /// What a single mouse click on a session row does in the Agent
+    /// view. `LiveSend` (default) enters live-send mode for that row,
+    /// the historical behavior. `SelectOnly` just moves the cursor
+    /// to the row so the user can read the preview without ever
+    /// entering live-send. Double-click still activates via
+    /// `default_attach_mode` regardless of this setting.
+    #[serde(default)]
+    pub click_action: ClickAction,
+}
+
+/// What a single mouse click on a session row does in the Agent view.
+/// See `SessionConfig::click_action`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClickAction {
+    /// Single-click enters live-send mode for the clicked session
+    /// (the historical behavior on `main` before this setting landed).
+    #[default]
+    LiveSend,
+    /// Single-click only moves the cursor to the clicked row, so the
+    /// user can browse session previews without entering live-send.
+    /// Double-click still activates the session via the configured
+    /// `default_attach_mode`.
+    SelectOnly,
 }
 
 /// What the TUI does after a new session is created. See
@@ -686,6 +711,7 @@ impl Default for SessionConfig {
             live_send_exit_chord: default_live_send_exit_chord(),
             new_session_attach_mode: NewSessionAttachMode::default(),
             default_attach_mode: NewSessionAttachMode::default(),
+            click_action: ClickAction::default(),
         }
     }
 }

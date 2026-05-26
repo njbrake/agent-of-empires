@@ -782,6 +782,11 @@ impl SettingsView {
                     s.default_attach_mode = None;
                 }
             }
+            FieldKey::ClickAction => {
+                if let Some(ref mut s) = config.session {
+                    s.click_action = None;
+                }
+            }
             FieldKey::RowTag => {
                 if let Some(ref mut s) = config.session {
                     s.row_tag = None;

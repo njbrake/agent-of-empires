@@ -2896,18 +2896,30 @@ impl HomeView {
                 self.toggle_group_collapsed(&path);
                 None
             }
-            Item::Session { .. } => {
+            Item::Session { id, .. } => {
                 if self.cursor != abs_idx {
                     self.cursor = abs_idx;
                     self.update_selected();
                 }
-                // Single-click on a session row enters live-send for
-                // that row, or switches the live target when already in
-                // live mode. `start_live_send` returns None for rows
-                // that can't host live mode (cockpit, creating/deleting)
-                // and for re-clicks on the already-live session, so the
-                // click is just a selection in those cases.
-                self.start_live_send()
+                // Single-click behavior is user-configurable via
+                // `SessionConfig::click_action`. `LiveSend` (default,
+                // historical behavior) enters live-send for the clicked
+                // row, or switches the live target when already in live
+                // mode. `SelectOnly` stops at the cursor update above so
+                // the user can browse preview content without ever
+                // entering live-send; double-click still activates via
+                // `default_attach_mode`. `click_action` returns `None`
+                // for cockpit-mode sessions, where `start_live_send`
+                // already short-circuits, so the historical fall-through
+                // is fine.
+                if matches!(
+                    self.click_action(&id),
+                    Some(crate::session::ClickAction::SelectOnly)
+                ) {
+                    None
+                } else {
+                    self.start_live_send()
+                }
             }
         }
     }
