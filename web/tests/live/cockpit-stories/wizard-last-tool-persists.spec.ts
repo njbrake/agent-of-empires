@@ -26,7 +26,20 @@ base("wizard remembers the last-picked agent after reload", async ({ page }, tes
     await groupHeader.getByRole("button", { name: /New session in /i }).click();
 
     // Group click opens the wizard on Review with `data.tool = claude`
-    // (preselected from prefill / loadLastUsedTool fallback).
+    // (preselected from prefill / loadLastUsedTool fallback). Jump
+    // back to the Agent step and pick a non-default tool so the
+    // persistence test actually proves persistence: if save/restore
+    // is broken, the wizard would fall back to "claude" on reload
+    // and a claude → claude round-trip would pass falsely.
+    await expect(
+      page.getByRole("heading", { name: /Review & Launch/i }),
+    ).toBeVisible({ timeout: 10_000 });
+    await page.getByRole("button", { name: /^Agent / }).first().click();
+    await expect(
+      page.getByRole("heading", { name: /Choose an agent/i }),
+    ).toBeVisible({ timeout: 10_000 });
+    await page.getByRole("button", { name: /^codex/i }).first().click();
+    await page.getByRole("button", { name: /Next/i }).click();
     await expect(
       page.getByRole("heading", { name: /Review & Launch/i }),
     ).toBeVisible({ timeout: 10_000 });
@@ -38,16 +51,16 @@ base("wizard remembers the last-picked agent after reload", async ({ page }, tes
 
     await page.reload();
 
-    // saveLastUsedTool persists `claude` on submit success. The key is
-    // `aoe-cockpit-last-tool` (LAST_USED_TOOL_KEY in SessionWizard.tsx).
-    // localStorage on its own is an implementation detail; the user
-    // story is that reopening the wizard preselects the tool in the
-    // rendered DOM. Reopen the wizard and assert against the Review
-    // step's Agent row.
+    // saveLastUsedTool persists the chosen tool on submit success.
+    // The key is `aoe-cockpit-last-tool` (LAST_USED_TOOL_KEY in
+    // SessionWizard.tsx). localStorage alone is an implementation
+    // detail; the user story is that reopening the wizard preselects
+    // the tool in the rendered DOM. Reopen the wizard and assert
+    // against the Review step's Agent row.
     const stored = await page.evaluate(() =>
       localStorage.getItem("aoe-cockpit-last-tool"),
     );
-    expect(stored).toBe("claude");
+    expect(stored).toBe("codex");
 
     const reopenedHeader = page
       .locator('[data-testid="sidebar-group-header"]')
@@ -59,8 +72,8 @@ base("wizard remembers the last-picked agent after reload", async ({ page }, tes
     await expect(
       page.getByRole("heading", { name: /Review & Launch/i }),
     ).toBeVisible({ timeout: 10_000 });
-    const agentRow = page.locator("button", { hasText: "Agent" }).first();
-    await expect(agentRow).toContainText("claude", { timeout: 5_000 });
+    const agentRow = page.getByRole("button", { name: /^Agent / });
+    await expect(agentRow).toContainText("codex", { timeout: 5_000 });
   } finally {
     await serve.stop();
   }
