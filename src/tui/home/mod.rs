@@ -2497,47 +2497,44 @@ impl HomeView {
         // but turned out to be unreliable on real-world tmux setups
         // and was removed in favor of this simpler model).
         self.live_send_worker = Some(live_send::LiveSendWorker::spawn(tmux_name.clone()));
-        // Synchronously resize the pane to the LAST KNOWN preview
-        // area dimensions before returning, so the first frame inside
-        // live mode already sees the agent's content at the new size.
-        // Without this, frame 1 captures the OLD pane size and
-        // frame 2 (one ticker later, once the async worker resize
-        // completes) jumps to the new size — the visible "shift" the
-        // user perceives on entering live mode.
+        // Synchronously resize the pane to match what the next refresh
+        // will ask for, so the first frame already shows the agent
+        // re-laid-out at the new size. Without this the first frame
+        // captures the OLD pane and frame 2 (after the async worker
+        // resize completes) jumps to the new size — the visible
+        // "shift" the user perceives on entering live mode.
         //
-        // `preview_outer_area` is populated by the most recent render
-        // (in non-live mode); its dimensions match what live mode is
-        // about to ask for, modulo a row or two for the status bar
-        // changing. The corrective resize from the next
-        // `refresh_preview_cache_if_needed` call will close any small
-        // gap, but the pre-resize done here means the SECOND shift is
-        // tiny instead of the entire pane re-layout.
+        // Use `self.preview_area` (the cached INNER rect) directly.
+        // The preview pane uses `Borders::ALL` + `Padding::horizontal(1)`,
+        // so `inner.width = outer.width - 4` and `inner.height =
+        // outer.height - 2`. Earlier versions of this code subtracted
+        // 2 from both dimensions of `preview_outer_area`, which was off
+        // by 2 columns and caused the very thing it was meant to
+        // prevent: the next refresh saw a different inner.width,
+        // detected the dedup miss, and queued ANOTHER async resize.
         self.live_send_last_resize = None;
-        let outer = self.preview_outer_area;
-        if outer.width > 2 && outer.height > 2 {
-            let cols = outer.width.saturating_sub(2);
-            let rows = outer.height.saturating_sub(2);
+        let inner = self.preview_area;
+        if inner.width > 0 && inner.height > 0 {
             let _ = std::process::Command::new("tmux")
                 .args([
                     "resize-window",
                     "-t",
                     &tmux_name,
                     "-x",
-                    &cols.to_string(),
+                    &inner.width.to_string(),
                     "-y",
-                    &rows.to_string(),
+                    &inner.height.to_string(),
                 ])
                 .stderr(std::process::Stdio::null())
                 .status();
-            // Pre-set the dedup so the worker doesn't issue a
-            // redundant resize on the first refresh.
-            self.live_send_last_resize = Some((cols, rows));
-            // Give the agent ~30ms to handle SIGWINCH and re-render
-            // before the caller draws the first frame. 30ms is short
-            // enough to be invisible as "lag entering live mode" but
-            // long enough for most agents (claude-code, codex) to
-            // re-lay out their UI.
-            std::thread::sleep(std::time::Duration::from_millis(30));
+            self.live_send_last_resize = Some((inner.width, inner.height));
+            // Give the agent ~50ms to handle SIGWINCH and re-lay out
+            // before we capture the first frame. Some agents (claude-
+            // code in particular) do a full clear-screen + redraw on
+            // resize; capturing during that produces a partial frame.
+            // 50ms is the smallest delay that empirically lets the
+            // most-common agents settle.
+            std::thread::sleep(std::time::Duration::from_millis(50));
         }
         self.stamp_last_accessed(session_id);
         Ok(stale_sid)
