@@ -2,7 +2,7 @@
 // reloads.
 //
 // SessionWizard persists `data.tool` to localStorage key
-// "aoe-wizard-last-tool" on every submit. Reopen the wizard later and
+// "aoe-cockpit-last-tool" on every submit. Reopen the wizard later and
 // the agent picker pre-selects that tool, so users iterating on a
 // project don't have to repeat the choice.
 
