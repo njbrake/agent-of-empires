@@ -353,6 +353,20 @@
       "components": []
     },
     {
+      "id": "sidebar.sort-hook",
+      "kind": "vitest",
+      "risk": "medium",
+      "specs": ["src/hooks/useSidebarSortMode.test.ts"],
+      "components": []
+    },
+    {
+      "id": "sidebar.repo-groups-hook",
+      "kind": "vitest",
+      "risk": "medium",
+      "specs": ["src/hooks/useRepoGroups.test.ts"],
+      "components": []
+    },
+    {
       "id": "sidebar.sort-toggle-ui",
       "kind": "mocked-playwright",
       "risk": "high",
