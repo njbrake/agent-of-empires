@@ -603,6 +603,25 @@ pub fn cleanup_instance(
     created_worktree: Option<&CreatedWorktree>,
     created_workspace_worktrees: &[CreatedWorktree],
 ) {
+    // Scratch dirs are provisioned eagerly inside `build_instance`
+    // (well before this helper's other cleanup targets exist), so an
+    // abort between provisioning and the caller finishing the session
+    // would otherwise leak the directory on disk. Guard the removal
+    // through `is_scratch_path` so a tampered `project_path` cannot
+    // wipe unrelated app data.
+    if instance.scratch {
+        let scratch_path = PathBuf::from(&instance.project_path);
+        if super::scratch::is_scratch_path(&scratch_path) {
+            if let Err(e) = std::fs::remove_dir_all(&scratch_path) {
+                tracing::warn!(
+                    target: "session.create",
+                    "Failed to clean up scratch dir: {}",
+                    e
+                );
+            }
+        }
+    }
+
     if let Some(wt) = created_worktree {
         if let Ok(git_wt) = GitWorktree::new(wt.main_repo_path.clone()) {
             if let Err(e) = git_wt.remove_worktree(&wt.path, false) {
