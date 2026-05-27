@@ -328,11 +328,17 @@ async function waitForServer(
 function writeFakeClaudeShim(binDir: string): void {
   // Dashboard tracer specs only need the tmux pane to stay open with a
   // long-running process. Cockpit specs swap this for the ACP agent shim
-  // via `writeFakeAcpShim`.
+  // via `writeFakeAcpShim`. Install shims for the built-in agents the
+  // wizard UI surfaces (claude / codex / gemini); the agent picker
+  // filters by `which <binary>` (src/tmux/mod.rs::is_agent_available),
+  // so without these the picker only offers claude and persistence
+  // specs that pick a non-default tool would hang on a missing button.
   const script = "#!/bin/bash\nexec tail -f /dev/null\n";
-  const path = join(binDir, "claude");
-  writeFileSync(path, script);
-  chmodSync(path, 0o755);
+  for (const name of ["claude", "codex", "gemini"]) {
+    const path = join(binDir, name);
+    writeFileSync(path, script);
+    chmodSync(path, 0o755);
+  }
 }
 
 function writeFakeAcpShim(
