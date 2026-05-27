@@ -4,7 +4,7 @@ The web dashboard lets you monitor and interact with agent sessions from any bro
 
 ## Availability
 
-The web dashboard is included in all release binaries: [GitHub Releases](https://github.com/njbrake/agent-of-empires/releases), the [quick install script](../installation.md#quick-install-recommended), and Homebrew (`brew install aoe`). No extra build steps needed, just run `aoe serve`.
+The web dashboard is included in all release binaries: [GitHub Releases](https://github.com/agent-of-empires/agent-of-empires/releases), the [quick install script](../installation.md#quick-install-recommended), and Homebrew (`brew install aoe`). No extra build steps needed, just run `aoe serve`.
 
 ## Building from source
 

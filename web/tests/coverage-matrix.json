@@ -339,7 +339,7 @@
     {
       "id": "sidebar.favorite-indicator",
       "kind": "deferred",
-      "issue": "https://github.com/njbrake/agent-of-empires/issues/986",
+      "issue": "https://github.com/agent-of-empires/agent-of-empires/issues/986",
       "risk": "low",
       "components": [
         "web/src/components/WorkspaceSidebar.tsx"
@@ -731,7 +731,7 @@
     {
       "id": "modals",
       "kind": "deferred",
-      "issue": "https://github.com/njbrake/agent-of-empires/issues/986",
+      "issue": "https://github.com/agent-of-empires/agent-of-empires/issues/986",
       "risk": "low",
       "components": [
         "web/src/components/AboutModal.tsx",
@@ -742,7 +742,7 @@
     {
       "id": "projects-view",
       "kind": "deferred",
-      "issue": "https://github.com/njbrake/agent-of-empires/issues/986",
+      "issue": "https://github.com/agent-of-empires/agent-of-empires/issues/986",
       "risk": "low",
       "components": [
         "web/src/components/ProjectsView.tsx"

@@ -6,7 +6,7 @@
 //!
 //! Directory name is `cockpit_view` (not `cockpit`) to avoid colliding
 //! with `src/cockpit/` per the recipe in
-//! https://github.com/njbrake/agent-of-empires/issues/1018#issuecomment-4444040929.
+//! https://github.com/agent-of-empires/agent-of-empires/issues/1018#issuecomment-4444040929.
 
 pub mod input;
 pub mod reducer;

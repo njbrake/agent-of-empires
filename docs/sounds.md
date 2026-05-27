@@ -61,7 +61,7 @@ This downloads and installs 10 CC0 (public domain) fantasy/RPG sounds from the G
 - macOS: `~/.agent-of-empires/sounds/`
 
 **Note:** Requires an internet connection for the initial download. Sounds are downloaded from:
-`https://github.com/njbrake/agent-of-empires/tree/main/bundled_sounds`
+`https://github.com/agent-of-empires/agent-of-empires/tree/main/bundled_sounds`
 
 ### Useful Commands
 

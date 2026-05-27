@@ -345,7 +345,7 @@ pub struct PushState {
 /// URL but does not require deliverability; major push services do not
 /// validate this for reachability in practice. We use the project's
 /// public URL so providers that do care have somewhere real to reach.
-pub const VAPID_SUBJECT: &str = "https://github.com/njbrake/agent-of-empires";
+pub const VAPID_SUBJECT: &str = "https://github.com/agent-of-empires/agent-of-empires";
 
 impl PushState {
     pub fn init(app_dir: &Path) -> anyhow::Result<Self> {
