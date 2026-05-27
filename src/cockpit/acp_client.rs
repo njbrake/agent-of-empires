@@ -2793,20 +2793,17 @@ fn map_update_to_events(
 /// Map a snapshot of ACP `SessionConfigOption`s (typically pulled
 /// from `NewSessionResponse.config_options` or
 /// `LoadSessionResponse.config_options`) into one
-/// `Event::ConfigOptionsUpdated`. Returns `None` when the snapshot is
-/// absent or empty so callers can skip the emit. See #1403.
+/// `Event::ConfigOptionsUpdated`. Returns `None` only when the
+/// snapshot itself is absent (the adapter did not include the field).
+/// A present-but-empty snapshot is still a real full replacement and
+/// must be propagated, otherwise stale cached selectors never clear
+/// when an adapter intentionally drops them. See #1403.
 fn config_options_event(
     options: Option<Vec<agent_client_protocol::schema::SessionConfigOption>>,
 ) -> Option<Event> {
     let raw = options?;
-    if raw.is_empty() {
-        return None;
-    }
     let mapped: Vec<ConfigOptionDescriptor> =
         raw.into_iter().filter_map(map_acp_config_option).collect();
-    if mapped.is_empty() {
-        return None;
-    }
     Some(Event::ConfigOptionsUpdated { options: mapped })
 }
 
@@ -6414,6 +6411,25 @@ mod tests {
             }
             other => panic!("expected ConfigOptionsUpdated, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn config_options_event_propagates_empty_snapshot() {
+        // A present-but-empty snapshot from the adapter is a real
+        // full replacement and must clear stale cached selectors, so
+        // `config_options_event(Some(vec![]))` returns
+        // `Some(ConfigOptionsUpdated { options: [] })` (not `None`).
+        let event =
+            config_options_event(Some(Vec::new())).expect("Some(vec![]) should produce an event");
+        match event {
+            Event::ConfigOptionsUpdated { options } => {
+                assert!(options.is_empty());
+            }
+            other => panic!("expected empty ConfigOptionsUpdated, got {other:?}"),
+        }
+        // Absent snapshot (the adapter omitted the field) still
+        // returns None so callers skip the emit.
+        assert!(config_options_event(None).is_none());
     }
 
     #[test]
