@@ -165,7 +165,7 @@ export function DeleteSessionDialog({
                   checked={keepScratch}
                   onChange={setKeepScratch}
                   label="Keep scratch directory"
-                  detail="Leaves the files under ~/.agent-of-empires/scratch/ on disk; session record is still removed"
+                  detail="Leaves the scratch directory on disk; session record is still removed"
                   testId="delete-session-checkbox-keep-scratch"
                 />
               )}
@@ -221,9 +221,24 @@ function Checkbox({
       data-testid={testId}
       data-checked={checked ? "true" : "false"}
     >
+      {/*
+        Native checkbox input drives state so the control is reachable
+        by Tab and toggles with Space, matching the platform contract
+        for "Keep scratch directory" and the other checkboxes here.
+        The visible square below is a styled affordance that mirrors
+        the input's checked state via Tailwind's `peer` selector; the
+        input itself is visually hidden but not aria-hidden.
+      */}
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(e) => onChange(e.target.checked)}
+        aria-label={label}
+        className="peer sr-only"
+      />
       <span
-        onClick={() => onChange(!checked)}
-        className={`mt-0.5 w-4 h-4 rounded border flex items-center justify-center shrink-0 transition-colors ${
+        aria-hidden="true"
+        className={`mt-0.5 w-4 h-4 rounded border flex items-center justify-center shrink-0 transition-colors peer-focus-visible:outline peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-status-error ${
           checked
             ? "bg-status-error border-status-error"
             : "border-surface-600 group-hover:border-surface-500"
