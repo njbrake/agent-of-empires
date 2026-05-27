@@ -186,7 +186,17 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
     all_extra_repos.extend(args.extra_repos.iter().cloned());
     all_extra_repos.extend(resolved_project_paths);
 
-    let config = repo_config::resolve_config_with_repo_or_warn(profile, &path);
+    // Scratch sessions have no project repo, so repo-scoped config
+    // overrides have nothing to anchor on. Resolving the repo-aware
+    // variant against the launch directory would silently pick up
+    // `.agent-of-empires/config.toml` from whatever folder the user
+    // happened to run `aoe add --scratch` in, which breaks the
+    // project-less contract. Fall back to the profile-only resolver.
+    let config = if args.scratch {
+        crate::session::profile_config::resolve_config_or_warn(profile)
+    } else {
+        repo_config::resolve_config_with_repo_or_warn(profile, &path)
+    };
 
     // Preserve the original project path for hook trust checking.
     // `path` gets reassigned to the worktree/workspace directory below,
@@ -600,7 +610,14 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
     // Use the original project path for trust checking (not the worktree/workspace
     // path, which won't contain `.agent-of-empires/config.toml`).
     let hook_result: Result<()> = (|| {
-        let resolved_hooks: Option<crate::session::HooksConfig> =
+        let resolved_hooks: Option<crate::session::HooksConfig> = if args.scratch {
+            // Scratch sessions never have a `.agent-of-empires/config.toml`
+            // anchored on `original_project_path` (the path is either
+            // empty or the scratch dir itself). Skip the repo hook
+            // trust prompt entirely and fall back to profile-level
+            // hooks so the project-less contract stays intact.
+            repo_config::resolve_global_profile_hooks(profile)
+        } else {
             match repo_config::check_hook_trust(&original_project_path) {
                 Ok(repo_config::HookTrustStatus::NeedsTrust { hooks, hooks_hash }) => {
                     let should_trust = if args.trust_hooks {
@@ -646,7 +663,8 @@ pub async fn run(profile: &str, args: AddArgs) -> Result<()> {
                     tracing::warn!(target: "cli.add", "Failed to check repo hooks: {}", e);
                     repo_config::resolve_global_profile_hooks(profile)
                 }
-            };
+            }
+        };
 
         if let Some(hooks) = resolved_hooks {
             if !hooks.on_create.is_empty() {
