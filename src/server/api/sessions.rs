@@ -878,6 +878,11 @@ pub struct DeleteSessionBody {
     pub delete_sandbox: bool,
     #[serde(default)]
     pub force_delete: bool,
+    /// For scratch sessions, keep the scratch directory on disk instead of
+    /// removing it. The session record is still deleted. No effect on
+    /// non-scratch sessions.
+    #[serde(default)]
+    pub keep_scratch: bool,
 }
 
 pub async fn delete_session(
@@ -962,6 +967,7 @@ pub async fn delete_session(
             delete_sandbox: body.delete_sandbox,
             force_delete: body.force_delete,
             detach_hooks: true,
+            keep_scratch: body.keep_scratch,
         })
     })
     .await;

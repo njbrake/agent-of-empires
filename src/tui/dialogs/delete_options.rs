@@ -16,6 +16,9 @@ pub struct DeleteOptions {
     pub force_delete: bool,
     pub delete_branch: bool,
     pub delete_sandbox: bool,
+    /// For scratch sessions: keep the scratch directory on disk instead of
+    /// removing it. No effect when `DeleteDialogConfig.is_scratch` is false.
+    pub keep_scratch: bool,
 }
 
 /// Configuration for what cleanup options to show in the dialog
@@ -25,6 +28,10 @@ pub struct DeleteDialogConfig {
     pub has_sandbox: bool,
     /// Project path used to load repo-level config overrides.
     pub project_path: Option<String>,
+    /// True iff the session being deleted is a scratch session. Surfaces a
+    /// "Keep scratch directory" opt-in checkbox so users can rescue files
+    /// mid-delete; defaults off so the normal flow stays one-keystroke.
+    pub is_scratch: bool,
 }
 
 /// Focus states for navigation
@@ -34,6 +41,7 @@ enum FocusElement {
     ForceCheckbox,
     BranchCheckbox,
     SandboxCheckbox,
+    KeepScratchCheckbox,
     YesButton,
     NoButton,
 }
@@ -71,12 +79,17 @@ impl UnifiedDeleteDialog {
             delete_branch: config.worktree_branch.is_some()
                 && user_config.worktree.delete_branch_on_cleanup,
             delete_sandbox: config.has_sandbox && user_config.sandbox.auto_cleanup,
+            // Scratch sessions default to remove. The user has to explicitly
+            // opt in to keep the directory.
+            keep_scratch: false,
         };
 
         let initial_focus = if config.worktree_branch.is_some() {
             FocusElement::WorktreeCheckbox
         } else if config.has_sandbox {
             FocusElement::SandboxCheckbox
+        } else if config.is_scratch {
+            FocusElement::KeepScratchCheckbox
         } else {
             FocusElement::NoButton
         };
@@ -125,6 +138,9 @@ impl UnifiedDeleteDialog {
         }
         if config.has_sandbox {
             elements.push(FocusElement::SandboxCheckbox);
+        }
+        if config.is_scratch {
+            elements.push(FocusElement::KeepScratchCheckbox);
         }
         elements.push(FocusElement::YesButton);
         elements.push(FocusElement::NoButton);
@@ -196,6 +212,10 @@ impl UnifiedDeleteDialog {
                     self.options.delete_sandbox = !self.options.delete_sandbox;
                     DialogResult::Continue
                 }
+                FocusElement::KeepScratchCheckbox => {
+                    self.options.keep_scratch = !self.options.keep_scratch;
+                    DialogResult::Continue
+                }
             },
 
             KeyCode::Char(' ') => {
@@ -215,6 +235,9 @@ impl UnifiedDeleteDialog {
                     }
                     FocusElement::SandboxCheckbox => {
                         self.options.delete_sandbox = !self.options.delete_sandbox;
+                    }
+                    FocusElement::KeepScratchCheckbox => {
+                        self.options.keep_scratch = !self.options.keep_scratch;
                     }
                     FocusElement::YesButton | FocusElement::NoButton => {}
                 }
@@ -258,10 +281,14 @@ impl UnifiedDeleteDialog {
     pub fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) {
         let has_worktree = self.config.worktree_branch.is_some();
         let has_sandbox = self.config.has_sandbox;
+        let is_scratch = self.config.is_scratch;
         let show_force = has_worktree && self.options.delete_worktree;
-        // Count checkbox rows: worktree + force (if worktree checked) + branch (if worktree exists) + sandbox
-        let checkbox_count =
-            if has_worktree { 2 } else { 0 } + (show_force as u16) + (has_sandbox as u16);
+        // Count checkbox rows: worktree + force (if worktree checked) +
+        // branch (if worktree exists) + sandbox + keep-scratch (if scratch).
+        let checkbox_count = if has_worktree { 2 } else { 0 }
+            + (show_force as u16)
+            + (has_sandbox as u16)
+            + (is_scratch as u16);
 
         let dialog_width = 55;
         let dialog_height = if checkbox_count > 0 {
@@ -366,6 +393,20 @@ impl UnifiedDeleteDialog {
                     "Delete container",
                     None,
                     self.options.delete_sandbox,
+                    focused,
+                );
+                chunk_idx += 1;
+            }
+
+            if is_scratch {
+                let focused = self.focus == FocusElement::KeepScratchCheckbox;
+                self.render_checkbox(
+                    frame,
+                    chunks[chunk_idx],
+                    theme,
+                    "Keep scratch directory",
+                    None,
+                    self.options.keep_scratch,
                     focused,
                 );
                 chunk_idx += 1;
@@ -479,6 +520,20 @@ mod tests {
                 worktree_branch: Some("feature-branch".to_string()),
                 has_sandbox: true,
                 project_path: None,
+                is_scratch: false,
+            },
+            "default",
+        )
+    }
+
+    fn scratch_dialog() -> UnifiedDeleteDialog {
+        UnifiedDeleteDialog::new(
+            "Scratch Session".to_string(),
+            DeleteDialogConfig {
+                worktree_branch: None,
+                has_sandbox: false,
+                project_path: None,
+                is_scratch: true,
             },
             "default",
         )
@@ -660,6 +715,22 @@ mod tests {
         dialog.no_button_area = Rect::new(19, 8, 4, 1);
         // The four-space gap between "[Yes]" and "[No]" is dead space.
         assert!(dialog.handle_click(16, 8).is_none());
+    }
+
+    #[test]
+    fn test_scratch_dialog_focuses_keep_scratch_checkbox() {
+        let dialog = scratch_dialog();
+        assert_eq!(dialog.focus, FocusElement::KeepScratchCheckbox);
+        assert!(!dialog.options.keep_scratch, "default must be off");
+    }
+
+    #[test]
+    fn test_scratch_dialog_toggles_keep_scratch_on_space() {
+        let mut dialog = scratch_dialog();
+        dialog.handle_key(key(KeyCode::Char(' ')));
+        assert!(dialog.options.keep_scratch);
+        dialog.handle_key(key(KeyCode::Char(' ')));
+        assert!(!dialog.options.keep_scratch);
     }
 
     #[test]

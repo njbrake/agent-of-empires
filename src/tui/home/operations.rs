@@ -324,6 +324,7 @@ impl HomeView {
                     delete_sandbox: options.delete_sandbox,
                     force_delete: options.force_delete,
                     detach_hooks: true,
+                    keep_scratch: options.keep_scratch,
                 };
                 self.deletion_poller.request_deletion(request);
             }
@@ -421,6 +422,10 @@ impl HomeView {
                         delete_sandbox,
                         force_delete: options.force_delete_worktrees,
                         detach_hooks: true,
+                        // Group-delete UX doesn't have a per-session
+                        // keep-scratch toggle; scratch dirs in a group
+                        // delete are removed unconditionally.
+                        keep_scratch: false,
                     };
                     self.deletion_poller.request_deletion(request);
                 }

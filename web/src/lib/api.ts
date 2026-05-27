@@ -888,6 +888,10 @@ export interface DeleteSessionOptions {
   delete_branch?: boolean;
   delete_sandbox?: boolean;
   force_delete?: boolean;
+  /** For scratch sessions, keep the scratch directory on disk instead of
+   *  removing it. The session record is still deleted. No effect on
+   *  non-scratch sessions. */
+  keep_scratch?: boolean;
 }
 
 export interface DeleteSessionResult {

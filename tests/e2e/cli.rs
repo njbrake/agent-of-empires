@@ -1149,6 +1149,57 @@ fn test_cli_add_scratch_rejects_explicit_path() {
 
 #[test]
 #[serial]
+fn test_cli_rm_keep_scratch_leaves_dir_on_disk() {
+    let h = TuiTestHarness::new("cli_rm_keep_scratch");
+
+    let add_output = h.run_cli(&["add", "--scratch", "-t", "KeepMe"]);
+    assert!(add_output.status.success(), "aoe add --scratch failed");
+
+    let json = read_sessions_json(&h);
+    let session = json
+        .as_array()
+        .and_then(|sessions| {
+            sessions
+                .iter()
+                .find(|s| s["title"].as_str() == Some("KeepMe"))
+        })
+        .expect("KeepMe session must exist");
+    let project_path = session["project_path"].as_str().expect("project_path");
+    let path = Path::new(project_path).to_path_buf();
+    assert!(path.exists(), "scratch dir must exist before rm");
+
+    let rm_output = h.run_cli(&["rm", "KeepMe", "--keep-scratch"]);
+    assert!(
+        rm_output.status.success(),
+        "aoe rm --keep-scratch failed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&rm_output.stdout),
+        String::from_utf8_lossy(&rm_output.stderr),
+    );
+    assert!(
+        path.exists(),
+        "scratch dir must survive when --keep-scratch is passed: {}",
+        path.display(),
+    );
+
+    // The session record itself is gone.
+    let json_after = read_sessions_json(&h);
+    let still_there = json_after.as_array().and_then(|sessions| {
+        sessions
+            .iter()
+            .find(|s| s["title"].as_str() == Some("KeepMe"))
+    });
+    assert!(
+        still_there.is_none(),
+        "session record must be removed even with --keep-scratch"
+    );
+
+    // Clean up the leftover dir so re-runs of this test don't accumulate
+    // entries under the user's scratch root.
+    let _ = std::fs::remove_dir_all(&path);
+}
+
+#[test]
+#[serial]
 fn test_cli_add_scratch_conflicts_with_worktree_flag() {
     let h = TuiTestHarness::new("cli_add_scratch_worktree");
 

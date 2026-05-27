@@ -7,6 +7,7 @@ interface Props {
   branchName: string | null;
   hasManagedWorktree: boolean;
   isSandboxed: boolean;
+  isScratch: boolean;
   cleanupDefaults: CleanupDefaults;
   onConfirm: (options: DeleteSessionOptions) => Promise<void>;
   onCancel: () => void;
@@ -17,6 +18,7 @@ export function DeleteSessionDialog({
   branchName,
   hasManagedWorktree,
   isSandboxed,
+  isScratch,
   cleanupDefaults,
   onConfirm,
   onCancel,
@@ -25,11 +27,14 @@ export function DeleteSessionDialog({
   const [forceDelete, setForceDelete] = useState(false);
   const [deleteBranch, setDeleteBranch] = useState(hasManagedWorktree && cleanupDefaults.delete_branch);
   const [deleteSandbox, setDeleteSandbox] = useState(isSandboxed && cleanupDefaults.delete_sandbox);
+  // Scratch sessions default to remove. The user opts in to keep when they
+  // realize mid-delete they want to rescue the files.
+  const [keepScratch, setKeepScratch] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const confirmButtonRef = useRef<HTMLButtonElement | null>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
 
-  const hasOptions = hasManagedWorktree || isSandboxed;
+  const hasOptions = hasManagedWorktree || isSandboxed || isScratch;
 
   const handleConfirm = useCallback(async () => {
     setDeleting(true);
@@ -39,11 +44,12 @@ export function DeleteSessionDialog({
         delete_branch: deleteBranch,
         delete_sandbox: deleteSandbox,
         force_delete: forceDelete,
+        keep_scratch: isScratch ? keepScratch : undefined,
       });
     } catch {
       setDeleting(false);
     }
-  }, [onConfirm, deleteWorktree, deleteBranch, deleteSandbox, forceDelete]);
+  }, [onConfirm, deleteWorktree, deleteBranch, deleteSandbox, forceDelete, isScratch, keepScratch]);
 
   // Capture the previously focused element on mount and restore focus on
   // unmount so keyboard users return to the trigger (the sidebar row /
@@ -152,6 +158,15 @@ export function DeleteSessionDialog({
                   label="Delete container"
                   detail="Removes the Docker sandbox container"
                   testId="delete-session-checkbox-sandbox"
+                />
+              )}
+              {isScratch && (
+                <Checkbox
+                  checked={keepScratch}
+                  onChange={setKeepScratch}
+                  label="Keep scratch directory"
+                  detail="Leaves the files under ~/.agent-of-empires/scratch/ on disk; session record is still removed"
+                  testId="delete-session-checkbox-keep-scratch"
                 />
               )}
             </div>

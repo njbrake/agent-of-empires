@@ -19,6 +19,11 @@ pub struct DeletionRequest {
     /// terminal (TUI/web). When `false`, hooks inherit stdin/stdout so
     /// interactive prompts work (CLI).
     pub detach_hooks: bool,
+    /// When `true` AND `instance.scratch` is `true`, the scratch directory
+    /// is left on disk instead of being removed. The kept path is logged at
+    /// info level and surfaced in the deletion result's messages. Has no
+    /// effect on non-scratch sessions.
+    pub keep_scratch: bool,
 }
 
 #[derive(Debug)]
@@ -313,13 +318,22 @@ pub fn perform_deletion(request: &DeletionRequest) -> DeletionResult {
 
     // Scratch directory cleanup. Runs unconditionally for scratch sessions
     // regardless of `request.delete_worktree`, since the scratch directory
-    // is the entire reason the session has any on-disk state.
+    // is the entire reason the session has any on-disk state. Skipped when
+    // the user opted in to keeping the directory via `request.keep_scratch`.
     // Guarded by `is_scratch_path` to refuse to follow a tampered or
     // corrupted `project_path` (e.g. JSON edited by hand to claim
     // `scratch: true` while pointing at `/etc`).
     if request.instance.scratch {
         let path = PathBuf::from(&request.instance.project_path);
-        if super::scratch::is_scratch_path(&path) {
+        if request.keep_scratch {
+            tracing::info!(
+                target: "session.delete",
+                session_id = %request.session_id,
+                path = %path.display(),
+                "keep-scratch opted in; leaving scratch directory on disk"
+            );
+            messages.push(format!("Scratch directory kept at: {}", path.display()));
+        } else if super::scratch::is_scratch_path(&path) {
             tracing::debug!(target: "session.delete", session_id = %request.session_id, stage = "scratch_remove", "perform_deletion: stage");
             match std::fs::remove_dir_all(&path) {
                 Ok(()) => messages.push("Scratch directory removed".to_string()),
@@ -459,6 +473,7 @@ mod tests {
             delete_sandbox: false,
             force_delete: false,
             detach_hooks: true,
+            keep_scratch: false,
         };
 
         let result = perform_deletion(&request);
@@ -479,6 +494,7 @@ mod tests {
             delete_sandbox: false,
             force_delete: false,
             detach_hooks: true,
+            keep_scratch: false,
         };
 
         let result = perform_deletion(&request);
@@ -500,6 +516,7 @@ mod tests {
             delete_sandbox: false,
             force_delete: false,
             detach_hooks: true,
+            keep_scratch: false,
         };
 
         let result = perform_deletion(&request);
@@ -646,6 +663,7 @@ mod tests {
                 delete_sandbox: true,
                 force_delete: false,
                 detach_hooks: true,
+                keep_scratch: false,
             };
 
             let stages = run_with_capture(|| {
@@ -753,6 +771,7 @@ mod tests {
                 delete_sandbox: false,
                 force_delete: false,
                 detach_hooks: true,
+                keep_scratch: false,
             };
 
             let result = perform_deletion(&request);
@@ -847,6 +866,7 @@ mod tests {
                 delete_sandbox: false,
                 force_delete: false,
                 detach_hooks: true,
+                keep_scratch: false,
             };
             let result = perform_deletion(&req_no_force);
             assert!(
@@ -867,6 +887,7 @@ mod tests {
                 delete_sandbox: false,
                 force_delete: true,
                 detach_hooks: true,
+                keep_scratch: false,
             };
             let result = perform_deletion(&req_force);
             assert!(
@@ -964,6 +985,7 @@ mod tests {
                 delete_sandbox: true,
                 force_delete: false,
                 detach_hooks: true,
+                keep_scratch: false,
             };
 
             // Stage assertions: preclean must not run when dirty.
@@ -1034,6 +1056,7 @@ mod tests {
                 delete_sandbox: false,
                 force_delete: true,
                 detach_hooks: true,
+                keep_scratch: false,
             };
 
             let stages = run_with_capture(|| {
@@ -1071,6 +1094,7 @@ mod tests {
                 delete_sandbox: false,
                 force_delete: false,
                 detach_hooks: true,
+                keep_scratch: false,
             };
 
             let stages = run_with_capture(|| {
@@ -1125,6 +1149,7 @@ mod tests {
                 delete_sandbox: false,
                 force_delete: false,
                 detach_hooks: true,
+                keep_scratch: false,
             };
 
             let result = perform_deletion(&request);
@@ -1160,6 +1185,7 @@ mod tests {
                 delete_sandbox: false,
                 force_delete: false,
                 detach_hooks: true,
+                keep_scratch: false,
             };
             let result = perform_deletion(&request);
             assert!(
@@ -1192,6 +1218,7 @@ mod tests {
                 delete_sandbox: false,
                 force_delete: false,
                 detach_hooks: true,
+                keep_scratch: false,
             };
             let _ = perform_deletion(&request);
 
@@ -1204,6 +1231,53 @@ mod tests {
                 "bystander contents must survive"
             );
             let _ = fs::remove_dir_all(&bystander);
+        }
+
+        #[test]
+        #[serial]
+        fn keep_scratch_leaves_dir_on_disk_and_reports_path() {
+            // The --keep-scratch escape hatch. Session record still gets
+            // removed (caller's responsibility), but the scratch directory
+            // stays put and the deletion result calls out the kept path.
+            let _tmp = isolate_app_dir();
+            let (instance, dir) = scratch_instance();
+            let request = DeletionRequest {
+                session_id: instance.id.clone(),
+                instance,
+                delete_worktree: false,
+                delete_branch: false,
+                delete_sandbox: false,
+                force_delete: false,
+                detach_hooks: true,
+                keep_scratch: true,
+            };
+
+            let result = perform_deletion(&request);
+            assert!(
+                result.success,
+                "keep-scratch deletion errors: {:?}",
+                result.errors
+            );
+            assert!(
+                dir.exists(),
+                "keep-scratch must leave the directory on disk"
+            );
+            let kept_msg = result
+                .messages
+                .iter()
+                .find(|m| m.contains("Scratch directory kept at:"));
+            assert!(
+                kept_msg.is_some(),
+                "expected kept-path message, got {:?}",
+                result.messages
+            );
+            assert!(
+                kept_msg.unwrap().contains(dir.to_str().unwrap()),
+                "kept-path message must include the actual path; got: {}",
+                kept_msg.unwrap()
+            );
+            // Clean up the leftover dir so the next test starts clean.
+            let _ = fs::remove_dir_all(&dir);
         }
 
         #[test]
@@ -1228,6 +1302,7 @@ mod tests {
                 delete_sandbox: false,
                 force_delete: false,
                 detach_hooks: true,
+                keep_scratch: false,
             };
             let _ = perform_deletion(&request);
 
