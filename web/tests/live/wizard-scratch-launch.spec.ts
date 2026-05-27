@@ -2,6 +2,7 @@
 // real session on the server with `scratch: true` and a `project_path`
 // under the app data dir's scratch root. Closes #1324.
 
+import { basename, dirname } from "node:path";
 import { test as base, expect } from "@playwright/test";
 import { listSessions, spawnAoeServe } from "../helpers/aoeServe";
 
@@ -59,9 +60,11 @@ base("scratch happy path: launch creates a scratch-dir session", async ({ page }
     expect(sessions).toHaveLength(1);
     const session = sessions[0]!;
     expect(session.scratch).toBe(true);
+    // Walk the path with the node:path helpers so this works on
+    // Windows (`C:\foo\scratch\<id>`) as well as POSIX. The assertion
+    // is "the parent dir is named scratch", expressed cross-platform.
     const projectPath = session.project_path as string;
-    const parts = projectPath.split("/");
-    expect(parts[parts.length - 2]).toBe("scratch");
+    expect(basename(dirname(projectPath))).toBe("scratch");
   } finally {
     await serve.stop();
   }

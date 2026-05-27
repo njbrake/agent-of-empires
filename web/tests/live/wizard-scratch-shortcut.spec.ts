@@ -3,6 +3,7 @@
 // step, so a follow-up Cmd+Enter / Ctrl+Enter creates the session in
 // two keystrokes total. Closes #1324.
 
+import { basename, dirname } from "node:path";
 import { test as base, expect } from "@playwright/test";
 import { listSessions, spawnAoeServe } from "../helpers/aoeServe";
 
@@ -63,9 +64,10 @@ base(
       expect(sessions).toHaveLength(1);
       const session = sessions[0]!;
       expect(session.scratch).toBe(true);
+      // node:path helpers handle Windows `\` separators as well as
+      // POSIX `/`, so the assertion stays correct cross-platform.
       const projectPath = session.project_path as string;
-      const parts = projectPath.split("/");
-      expect(parts[parts.length - 2]).toBe("scratch");
+      expect(basename(dirname(projectPath))).toBe("scratch");
     } finally {
       await serve.stop();
     }
