@@ -4831,12 +4831,17 @@ fn archived_section_pinned_to_bottom_in_every_sort() {
 #[serial]
 fn archived_section_nests_by_project_in_project_mode() {
     use crate::session::{
-        archived_project_sub_path, config::GroupByMode, is_archived_section_path,
-        ARCHIVED_SECTION_NAME,
+        archived_project_sub_path,
+        config::{GroupByMode, SortOrder},
+        is_archived_section_path, ARCHIVED_SECTION_NAME,
     };
 
     let mut env = create_test_env_two_projects_mixed_attention();
     env.view.group_by = GroupByMode::Project;
+    // Pin to AZ so this test asserts only the depth-0/1/2 layout shape,
+    // not the sort-order behavior. Sort_order coverage lives in
+    // `archived_sub_folders_honor_sort_order` below.
+    env.view.sort_order = SortOrder::AZ;
     // Archive one session from each project so we expect two sub-folders.
     let alpha_id = env
         .view
@@ -4892,7 +4897,7 @@ fn archived_section_nests_by_project_in_project_mode() {
     let sub_alpha_path = archived_project_sub_path("alpha");
     let sub_beta_path = archived_project_sub_path("beta");
 
-    // First sub-header must be alpha (BTreeMap orders by name).
+    // First sub-header must be alpha (AZ sort orders by name).
     match &tail[0] {
         Item::Group {
             path,
@@ -5048,6 +5053,88 @@ fn archived_project_sub_folder_collapse_hides_only_its_sessions() {
             |it| matches!(it, Item::Group { path, collapsed, .. } if path == &alpha_sub_path && *collapsed)
         ),
         "alpha sub-folder header must remain visible with collapsed=true"
+    );
+}
+
+/// Archived project sub-folders honor `sort_order`, mirroring how active
+/// project headers order in `flatten_tree`. AZ/ZA sort by project name;
+/// recency sorts (Newest, LastActivity, Attention) bring the most-
+/// recently-archived project to the top; Oldest does the inverse. Probes
+/// AZ, ZA, and Newest as representatives; the Oldest/LastActivity/Attention
+/// branches share the same `sort_archived_project_buckets` machinery.
+#[test]
+#[serial]
+fn archived_sub_folders_honor_sort_order() {
+    use crate::session::{
+        archived_project_sub_path,
+        config::{GroupByMode, SortOrder},
+        is_archived_section_path,
+    };
+
+    let mut env = create_test_env_two_projects_mixed_attention();
+    env.view.group_by = GroupByMode::Project;
+    let alpha_id = env
+        .view
+        .instances
+        .iter()
+        .find(|i| i.title == "alpha-running")
+        .map(|i| i.id.clone())
+        .unwrap();
+    let beta_id = env
+        .view
+        .instances
+        .iter()
+        .find(|i| i.title == "beta-error")
+        .map(|i| i.id.clone())
+        .unwrap();
+    // Archive alpha first, then beta. archived_at is `Utc::now()` at the
+    // moment of `archive()`, so beta is strictly more recent than alpha.
+    env.view
+        .apply_user_action(&alpha_id, |inst| inst.archive())
+        .unwrap();
+    env.view
+        .apply_user_action(&beta_id, |inst| inst.archive())
+        .unwrap();
+    env.view.archived_section_collapsed = false;
+
+    let first_sub_folder = |env: &TestEnv| -> Option<String> {
+        let arch_idx = env.view.flat_items.iter().position(
+            |it| matches!(it, Item::Group { path, .. } if is_archived_section_path(path)),
+        )?;
+        env.view
+            .flat_items
+            .get(arch_idx + 1)
+            .and_then(|it| match it {
+                Item::Group { path, .. } => Some(path.clone()),
+                _ => None,
+            })
+    };
+
+    let alpha_sub = archived_project_sub_path("alpha");
+    let beta_sub = archived_project_sub_path("beta");
+
+    env.view.sort_order = SortOrder::AZ;
+    env.view.flat_items = env.view.build_flat_items();
+    assert_eq!(
+        first_sub_folder(&env).as_deref(),
+        Some(alpha_sub.as_str()),
+        "AZ: alphabetical, alpha first"
+    );
+
+    env.view.sort_order = SortOrder::ZA;
+    env.view.flat_items = env.view.build_flat_items();
+    assert_eq!(
+        first_sub_folder(&env).as_deref(),
+        Some(beta_sub.as_str()),
+        "ZA: reverse alphabetical, beta first"
+    );
+
+    env.view.sort_order = SortOrder::Newest;
+    env.view.flat_items = env.view.build_flat_items();
+    assert_eq!(
+        first_sub_folder(&env).as_deref(),
+        Some(beta_sub.as_str()),
+        "Newest: most-recently-archived project first (beta archived after alpha)"
     );
 }
 
@@ -7757,6 +7844,41 @@ mod save_field_merge {
         assert!(
             !archived_section_present(&view.flat_items),
             "Archived section must disappear once the only archived row is unsunk"
+        );
+    }
+
+    /// Snoozed siblings of the archive case: `snoozed_until` is also cleared
+    /// by `touch_last_accessed` and is also excluded from `merge_from_tui`,
+    /// so the same persistence bug applied to snoozed rows. Same fix path
+    /// (apply_user_action), same disk-versus-memory contract.
+    #[test]
+    #[serial]
+    fn stamp_last_accessed_on_snoozed_row_persistently_clears_snooze() {
+        let (_temp, mut view, id) = boot_view_with_one_session("session", "/tmp/grp");
+
+        view.apply_user_action(&id, |inst| inst.snooze(30))
+            .expect("seed snooze must persist");
+        assert!(
+            view.get_instance(&id).unwrap().is_snoozed(),
+            "precondition: row snoozed in memory"
+        );
+
+        view.stamp_last_accessed(&id);
+
+        assert!(
+            !view.get_instance(&id).unwrap().is_snoozed(),
+            "stamp_last_accessed must clear snoozed_until in memory"
+        );
+        let disk_row = Storage::new("test")
+            .unwrap()
+            .load()
+            .unwrap()
+            .into_iter()
+            .find(|i| i.id == id)
+            .expect("disk row present");
+        assert!(
+            disk_row.snoozed_until.is_none(),
+            "stamp_last_accessed must persist the auto-unsnooze (merge_from_tui drops snoozed_until)"
         );
     }
 }

@@ -2323,6 +2323,7 @@ impl HomeView {
             &grouped,
             self.archived_section_collapsed,
             &self.project_group_collapsed,
+            self.sort_order,
         );
         items
     }

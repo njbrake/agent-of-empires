@@ -3,7 +3,7 @@
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::cmp::Reverse;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 
 use super::config::SortOrder;
 use super::Instance;
@@ -931,8 +931,11 @@ pub fn append_archived_section(items: &mut Vec<Item>, instances: &[Instance], co
 /// `section_collapsed` hides everything below the top header; per-project
 /// `sub_collapsed` (read from `project_collapsed` keyed by the synthetic
 /// `archived_project_sub_path`) hides only that sub-folder's session rows.
-/// Sub-headers are sorted by project name for stable ordering; within a
-/// sub-folder, sessions still surface most-recently-archived first.
+/// Sub-headers honor the user's `sort_order`, mirroring how
+/// `flatten_tree` orders active project headers; within a sub-folder,
+/// sessions still surface most-recently-archived first regardless of
+/// sort_order (archived rows are a "park this" affordance and the
+/// archive timestamp is the natural recency signal once the row is sunk).
 ///
 /// Returns without pushing anything when no archived sessions exist, so
 /// users who never archive don't see a phantom "Archived" header in the
@@ -942,6 +945,7 @@ pub fn append_archived_section_by_project(
     instances: &[Instance],
     section_collapsed: bool,
     project_collapsed: &HashMap<String, bool>,
+    sort_order: SortOrder,
 ) {
     let archived: Vec<&Instance> = instances.iter().filter(|i| i.is_archived()).collect();
     if archived.is_empty() {
@@ -962,7 +966,7 @@ pub fn append_archived_section_by_project(
         return;
     }
 
-    let mut by_project: BTreeMap<String, Vec<&Instance>> = BTreeMap::new();
+    let mut by_project: HashMap<String, Vec<&Instance>> = HashMap::new();
     for inst in archived {
         by_project
             .entry(inst.group_path.clone())
@@ -970,7 +974,10 @@ pub fn append_archived_section_by_project(
             .push(inst);
     }
 
-    for (project_name, mut sessions) in by_project {
+    let mut buckets: Vec<(String, Vec<&Instance>)> = by_project.into_iter().collect();
+    sort_archived_project_buckets(&mut buckets, sort_order);
+
+    for (project_name, mut sessions) in buckets {
         sessions.sort_by_key(|i| Reverse(i.archived_at));
         let sub_path = archived_project_sub_path(&project_name);
         let sub_collapsed = project_collapsed.get(&sub_path).copied().unwrap_or(false);
@@ -990,6 +997,52 @@ pub fn append_archived_section_by_project(
             items.push(Item::Session {
                 id: inst.id.clone(),
                 depth: 2,
+            });
+        }
+    }
+}
+
+/// Ordering helper for archived project sub-folders. Mirrors the spirit
+/// of `sort_groups` but operates on a `(project_name, sessions)` pair
+/// since the archive sub-folders are synthetic and not in any
+/// `GroupTree`. AZ/ZA sort by project name; recency sorts (Newest,
+/// LastActivity) use the max `archived_at` within the group; Oldest
+/// uses the min `archived_at` ascending. Attention falls back to
+/// most-recently-archived because archived rows are all tier 99 in the
+/// attention bucket and the tier offers no discriminator inside the shelf.
+fn sort_archived_project_buckets(buckets: &mut [(String, Vec<&Instance>)], sort_order: SortOrder) {
+    match sort_order {
+        SortOrder::AZ => buckets.sort_by_key(|b| b.0.to_lowercase()),
+        SortOrder::ZA => buckets.sort_by_key(|b| Reverse(b.0.to_lowercase())),
+        SortOrder::Oldest => {
+            buckets.sort_by_key(|(_, sessions)| {
+                sessions
+                    .iter()
+                    .filter_map(|i| i.archived_at)
+                    .min()
+                    .unwrap_or(DateTime::<Utc>::MAX_UTC)
+            });
+        }
+        SortOrder::Newest | SortOrder::Attention => {
+            buckets.sort_by_key(|(_, sessions)| {
+                Reverse(
+                    sessions
+                        .iter()
+                        .filter_map(|i| i.archived_at)
+                        .max()
+                        .unwrap_or(DateTime::<Utc>::MIN_UTC),
+                )
+            });
+        }
+        SortOrder::LastActivity => {
+            buckets.sort_by_key(|(_, sessions)| {
+                Reverse(
+                    sessions
+                        .iter()
+                        .filter_map(|i| i.last_accessed_at)
+                        .max()
+                        .unwrap_or(DateTime::<Utc>::MIN_UTC),
+                )
             });
         }
     }
