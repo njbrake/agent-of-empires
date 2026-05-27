@@ -65,7 +65,7 @@ test.describe("Cmd/Ctrl+` desktop", () => {
 
   test("toggles between agent and paired with the right panel open", async ({
     page,
-  }, testInfo) => {
+  }, _testInfo) => {
     await mockTerminalApis(page);
     await page.goto("/");
     await openSession(page);
@@ -101,7 +101,7 @@ test.describe("Cmd/Ctrl+` desktop", () => {
 
   test("expands collapsed right panel and focuses paired (latch)", async ({
     page,
-  }, testInfo) => {
+  }, _testInfo) => {
     await mockTerminalApis(page);
     await page.goto("/");
     await openSession(page);
@@ -175,7 +175,7 @@ test.describe("Cmd/Ctrl+` desktop", () => {
 
   test("with diff viewer open, Cmd+` to agent closes the diff", async ({
     page,
-  }, testInfo) => {
+  }, _testInfo) => {
     await mockTerminalApis(page);
     // Provide one file in the diff list. Don't mock the file content
     // endpoint — DiffFileViewer can render an error state and the test

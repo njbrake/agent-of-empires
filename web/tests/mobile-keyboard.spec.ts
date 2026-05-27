@@ -218,9 +218,9 @@ test.describe("Mobile keyboard detection and layout", () => {
   test("scrollToBottom fires when keyboard opens", async ({ page }) => {
     await setupAndOpen(page);
 
-    const scrolledToBottom = await page.evaluate(() => {
+    const _scrolledToBottom = await page.evaluate(() => {
       return new Promise<boolean>((resolve) => {
-        const orig = (
+        const _orig = (
           window as unknown as {
             __termScrollBottom?: boolean;
           }

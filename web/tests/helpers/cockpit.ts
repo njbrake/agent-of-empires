@@ -128,6 +128,7 @@ export async function waitForCockpitReady(
         `which means the supervisor.spawn task is wedged.\n` +
         `Original: ${err instanceof Error ? err.message : String(err)}\n` +
         `--- debug.log tail ---\n${log}\n--- end debug.log ---`,
+      { cause: err },
     );
   }
   // Phase 2: wait for the supervisor to reach "running". On failure
@@ -184,6 +185,7 @@ export async function waitForCockpitReady(
       `waitForCockpitReady phase 2 failed: ${err instanceof Error ? err.message : String(err)}\n` +
         `Diagnostic snapshot:\n${summary}\n` +
         `--- debug.log tail ---\n${log}\n--- end debug.log ---`,
+      { cause: err },
     );
   }
 }
