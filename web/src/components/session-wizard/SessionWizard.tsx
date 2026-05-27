@@ -61,6 +61,11 @@ export interface WizardPrefill {
   skipToReview?: boolean;
   /** Which tab to show initially on the project step */
   initialTab?: "recent" | "browse" | "clone";
+  /** Open the wizard pre-configured for a scratch session: the
+   *  `scratch` flag is on, no path is required, worktree controls are
+   *  hidden. Pairs with `skipToReview` for the Cmd+Shift+N then
+   *  Cmd+Enter fast-create flow. */
+  scratch?: boolean;
 }
 
 interface Props {
@@ -78,17 +83,28 @@ export function SessionWizard({ onClose, onCreated, prefill, cockpitMasterEnable
   const prefillData: WizardData = prefill
     ? {
         ...baseInitial,
-        path: prefill.path || "",
+        path: prefill.scratch ? "" : (prefill.path || ""),
         tool: prefill.tool || baseInitial.tool,
         yoloMode: prefill.yoloMode ?? false,
         sandboxEnabled: prefill.sandboxEnabled ?? false,
         profile: prefill.profile || "",
         group: prefill.group || "",
+        scratch: prefill.scratch ?? false,
+        // Scratch mode clears worktree/extra-repos so the submit
+        // payload mirrors what the reducer's SET_FIELD arm would emit
+        // for a user-triggered scratch toggle. See wizardReducer.ts.
+        useWorktree: prefill.scratch ? false : baseInitial.useWorktree,
+        extraRepoPaths: prefill.scratch ? [] : baseInitial.extraRepoPaths,
       }
     : baseInitial;
 
   const [state, dispatch] = useReducer(reducer, {
-    currentStep: prefill?.skipToReview ? 3 : (prefill?.path ? 1 : 0),
+    // Scratch prefill jumps directly to Review so Cmd+Shift+N then
+    // Cmd+Enter creates a session in two keystrokes.
+    currentStep:
+      prefill?.skipToReview || prefill?.scratch
+        ? 3
+        : (prefill?.path ? 1 : 0),
     data: prefillData, isSubmitting: false, error: null,
     agents: [], groups: [], profiles: [], dockerAvailable: false,
   });

@@ -331,6 +331,17 @@
       ]
     },
     {
+      "id": "wizard.scratch-shortcut",
+      "kind": "live-playwright",
+      "risk": "medium",
+      "specs": ["tests/live/wizard-scratch-shortcut.spec.ts"],
+      "components": [
+        "web/src/App.tsx",
+        "web/src/hooks/useKeyboardShortcuts.ts",
+        "web/src/components/session-wizard/SessionWizard.tsx"
+      ]
+    },
+    {
       "id": "directory-browser",
       "kind": "live-playwright",
       "risk": "medium",

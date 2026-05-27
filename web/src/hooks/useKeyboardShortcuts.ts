@@ -6,6 +6,9 @@ const IS_MAC =
 
 interface ShortcutActions {
   onNew: () => void;
+  /** Fast-path: opens the wizard pre-configured for a scratch session
+   *  and jumped to the Review step so Cmd+Enter immediately creates it. */
+  onNewScratch: () => void;
   onDiff: () => void;
   onEscape: () => void;
   onHelp: () => void;
@@ -69,6 +72,18 @@ export function useKeyboardShortcuts(getActions: () => ShortcutActions) {
         e.preventDefault();
         e.stopPropagation();
         actions.onToggleSidebar();
+        return;
+      }
+
+      // New scratch session: Cmd+Shift+N (Mac) / Ctrl+Shift+N (other).
+      // Use e.code so Shift+layout punctuation doesn't break match (Shift+N
+      // is still "N" by e.key but `code === "KeyN"` is layout-stable).
+      // Works regardless of focus so the user can fire it from anywhere
+      // including the terminal pane.
+      if (mod && e.shiftKey && !e.altKey && e.code === "KeyN") {
+        e.preventDefault();
+        e.stopPropagation();
+        actions.onNewScratch();
         return;
       }
 

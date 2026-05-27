@@ -56,6 +56,12 @@ Selecting a real project (Recent / Browse / Clone) turns the toggle
 back off, so the wizard never submits a request with both a real path
 and the scratch flag set.
 
+**Fast-create shortcut.** From anywhere in the dashboard, press
+`Cmd+Shift+N` (Mac) or `Ctrl+Shift+N` (Linux / Windows) to open the
+wizard with scratch already enabled and jumped to the Review step.
+A follow-up `Cmd+Enter` / `Ctrl+Enter` launches the session, so two
+keystrokes is enough to spin up a fresh scratch session.
+
 ### TUI new-session dialog
 
 Press `Ctrl+T` from any field in the new-session dialog. The Path
