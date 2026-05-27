@@ -193,7 +193,7 @@ struct AgentDoctorEntry {
 const NPM_INSTALLABLE_ACP: &[(&str, &str)] = &[
     (
         "claude-agent-acp",
-        "@agentclientprotocol/claude-agent-acp@0.37.0",
+        "@agentclientprotocol/claude-agent-acp@latest",
     ),
     ("codex-acp", "@zed-industries/codex-acp"),
     ("pi-acp", "pi-acp"),
