@@ -30,7 +30,15 @@ const SMALL_VIEWPORT_WIDTH: u16 = 40;
 /// Same idea for height: drop top/bottom margin below this.
 const SMALL_VIEWPORT_HEIGHT: u16 = 16;
 
-fn shortcuts(strict: bool) -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
+fn shortcuts(
+    strict: bool,
+    live_on_enter: bool,
+) -> Vec<(&'static str, Vec<(&'static str, &'static str)>)> {
+    let (enter_desc, tab_desc) = if live_on_enter {
+        ("Live mode (send keys to agent)", "Attach to tmux session")
+    } else {
+        ("Attach to tmux session", "Live mode (send keys to agent)")
+    };
     if strict {
         vec![
             (
@@ -47,7 +55,8 @@ fn shortcuts(strict: bool) -> Vec<(&'static str, Vec<(&'static str, &'static str
             (
                 "Actions (strict mode)",
                 vec![
-                    ("Enter", "Attach to session"),
+                    ("Enter", enter_desc),
+                    ("Tab", tab_desc),
                     ("Ctrl+T", "Attach to terminal"),
                     (";", "Open tool session"),
                     ("N", "New session"),
@@ -115,7 +124,8 @@ fn shortcuts(strict: bool) -> Vec<(&'static str, Vec<(&'static str, &'static str
             (
                 "Actions",
                 vec![
-                    ("Enter", "Attach to session"),
+                    ("Enter", enter_desc),
+                    ("Tab", tab_desc),
                     ("T", "Attach to terminal"),
                     (";", "Open tool session"),
                     ("n", "New session"),
@@ -176,8 +186,8 @@ struct HelpSection {
     rows: Vec<(String, String)>,
 }
 
-fn build_sections(strict: bool, sort_order: SortOrder) -> Vec<HelpSection> {
-    let raw = shortcuts(strict);
+fn build_sections(strict: bool, sort_order: SortOrder, live_on_enter: bool) -> Vec<HelpSection> {
+    let raw = shortcuts(strict, live_on_enter);
     let sort_label = format!("(current sort: {})", sort_order.label());
     raw.into_iter()
         .map(|(title, keys)| {
@@ -339,6 +349,7 @@ impl HelpOverlay {
         theme: &Theme,
         sort_order: SortOrder,
         strict_hotkeys: bool,
+        live_on_enter: bool,
         scroll: &mut u16,
     ) {
         if area.width == 0 || area.height == 0 {
@@ -347,7 +358,7 @@ impl HelpOverlay {
         let dialog_area = compute_dialog_area(area);
         frame.render_widget(Clear, dialog_area);
 
-        let sections = build_sections(strict_hotkeys, sort_order);
+        let sections = build_sections(strict_hotkeys, sort_order, live_on_enter);
 
         let version = format!(" Agent of Empires v{} ", env!("CARGO_PKG_VERSION"));
         let block = Block::default()
@@ -433,7 +444,7 @@ mod tests {
     #[test]
     fn help_contains_resize_shortcut() {
         for strict in [false, true] {
-            let all = shortcuts(strict);
+            let all = shortcuts(strict, false);
             let views_section = all.iter().find(|(name, _)| *name == "Views");
             assert!(views_section.is_some(), "Views section should exist");
             let (_, keys) = views_section.unwrap();
@@ -450,7 +461,7 @@ mod tests {
         // non-strict) but did not advertise it in the help overlay. Lock the
         // listing in so a future binding rename keeps the docs honest.
         for (strict, expected_key) in [(false, "h"), (true, "H")] {
-            let all = shortcuts(strict);
+            let all = shortcuts(strict, false);
             let attention = all
                 .iter()
                 .find(|(name, _)| name.starts_with("Attention"))
@@ -470,7 +481,7 @@ mod tests {
         // so users see them together instead of scattered across Navigation
         // and Actions.
         for strict in [false, true] {
-            let all = shortcuts(strict);
+            let all = shortcuts(strict, false);
             let attention = all
                 .iter()
                 .find(|(name, _)| name.starts_with("Attention"))
@@ -502,7 +513,7 @@ mod tests {
         // Asserts both keymaps surface the Ctrl+K command palette entry in
         // their "Other" section so users can discover the palette from `?`.
         for strict in [false, true] {
-            let all = shortcuts(strict);
+            let all = shortcuts(strict, false);
             let other = all
                 .iter()
                 .find(|(name, _)| *name == "Other")
@@ -513,6 +524,55 @@ mod tests {
                     .any(|(k, desc)| *k == "Ctrl+K" && desc.contains("Command palette")),
                 "Other section should contain Ctrl+K Command palette (strict={strict})"
             );
+        }
+    }
+
+    #[test]
+    fn enter_and_tab_swap_descriptions_with_default_attach_mode() {
+        // Enter and Tab are complements: whichever Enter doesn't do,
+        // Tab does. The help overlay has to reflect the user's current
+        // `default_attach_mode` so the two rows aren't lying.
+        for strict in [false, true] {
+            for live_on_enter in [false, true] {
+                let all = shortcuts(strict, live_on_enter);
+                let actions_name = if strict {
+                    "Actions (strict mode)"
+                } else {
+                    "Actions"
+                };
+                let (_, keys) = all
+                    .iter()
+                    .find(|(n, _)| *n == actions_name)
+                    .expect("Actions section should exist");
+                let enter = keys
+                    .iter()
+                    .find(|(k, _)| *k == "Enter")
+                    .expect("Enter entry");
+                let tab = keys.iter().find(|(k, _)| *k == "Tab").expect("Tab entry");
+                if live_on_enter {
+                    assert!(
+                        enter.1.contains("Live mode"),
+                        "live_on_enter=true → Enter should say Live mode, got {:?}",
+                        enter.1
+                    );
+                    assert!(
+                        tab.1.contains("tmux"),
+                        "live_on_enter=true → Tab should say tmux, got {:?}",
+                        tab.1
+                    );
+                } else {
+                    assert!(
+                        enter.1.contains("tmux"),
+                        "live_on_enter=false → Enter should say tmux, got {:?}",
+                        enter.1
+                    );
+                    assert!(
+                        tab.1.contains("Live mode"),
+                        "live_on_enter=false → Tab should say Live mode, got {:?}",
+                        tab.1
+                    );
+                }
+            }
         }
     }
 
@@ -572,7 +632,7 @@ mod tests {
         // Sanity check: the chosen 4 → 3 split keeps max column height
         // below the naive [1, 3, 0] alternative that would happen if we
         // pushed all extras to one column.
-        let sections = build_sections(false, SortOrder::Newest);
+        let sections = build_sections(false, SortOrder::Newest, false);
         let heights: Vec<usize> = sections.iter().map(section_height).collect();
         let cols = distribute_sections(sections.len(), 3);
         let max_h = cols
@@ -600,7 +660,7 @@ mod tests {
         terminal
             .draw(|frame| {
                 let area = frame.area();
-                HelpOverlay::render(frame, area, &theme, SortOrder::Newest, false, scroll);
+                HelpOverlay::render(frame, area, &theme, SortOrder::Newest, false, false, scroll);
             })
             .unwrap();
         terminal.backend().buffer().clone()

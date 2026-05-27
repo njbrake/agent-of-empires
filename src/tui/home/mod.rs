@@ -3482,6 +3482,25 @@ impl HomeView {
             .map(|s| s.default_attach_mode)
     }
 
+    /// True when Enter on the current row would enter live-send mode
+    /// (and Tab would swap to a tmux attach). Prefers the selected
+    /// session's resolved config so per-profile overrides are honored;
+    /// otherwise falls back to the active profile's config so an empty
+    /// list still describes what would happen on the next create. Drives
+    /// the Enter/Tab labels in the help overlay.
+    pub(super) fn help_live_on_enter(&self) -> bool {
+        if let Some(id) = self.selected_session.as_deref() {
+            if let Some(mode) = self.default_attach_mode(id) {
+                return matches!(mode, crate::session::NewSessionAttachMode::LiveSend);
+            }
+        }
+        let cfg = crate::session::resolve_config_or_warn(&self.config_profile());
+        matches!(
+            cfg.session.default_attach_mode,
+            crate::session::NewSessionAttachMode::LiveSend
+        )
+    }
+
     /// Pin selection to `session_id` and place the cursor on its row.
     /// If the containing group is collapsed (manual grouping or
     /// project grouping), it's force-expanded and `flat_items` is
