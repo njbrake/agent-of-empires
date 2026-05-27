@@ -139,8 +139,9 @@ If `aoe serve` (or your shell session) dies before you delete a
 scratch session, the directory is left on disk. There is no automatic
 retention policy yet; you can clean up manually by deleting the
 session record (which removes the directory) or by removing entries
-under `~/.agent-of-empires/scratch/` directly. A daemon-side orphan
-sweep on `aoe serve` startup is tracked as a follow-up.
+under the scratch root for your platform (see the table above)
+directly. A daemon-side orphan sweep on `aoe serve` startup is
+tracked as a follow-up.
 
 If you need the session to outlive its scratch directory (rename,
 move, keep the files), use `aoe rm --keep-scratch` and copy the files
