@@ -81,9 +81,12 @@ base("wizard remembers the last-picked agent after reload", async ({ page }, tes
     await expect(
       page.getByRole("heading", { name: /Project folder/i }),
     ).toBeVisible({ timeout: 10_000 });
+    // Recent tile text concatenates path + timeAgo + session count, so
+    // the regex must not anchor to end of string. Look for the path
+    // segment followed by the session-count suffix.
     const recentProjectTile = page
       .locator("button")
-      .filter({ hasText: /\/project$/ })
+      .filter({ hasText: /\/project.*session/ })
       .first();
     await expect(recentProjectTile).toBeVisible({ timeout: 5_000 });
     await recentProjectTile.click();
