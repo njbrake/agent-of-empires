@@ -2385,12 +2385,13 @@ impl HomeView {
                     });
                 }
                 Item::Group { name, path, .. } => {
-                    // The synthetic Archived section header is not a real
-                    // group; skip it so the palette doesn't surface the
-                    // sentinel path or invite Jump-to-group navigation
-                    // that the rest of the codebase intentionally
-                    // disarms.
-                    if crate::session::is_archived_section_path(path) {
+                    // The synthetic Archived section header (and any
+                    // sub-folder rendered under it in Project mode) is
+                    // not a real group; skip it so the palette doesn't
+                    // surface the sentinel path or invite Jump-to-group
+                    // navigation that the rest of the codebase
+                    // intentionally disarms.
+                    if crate::session::is_within_archived_section(path) {
                         continue;
                     }
                     let label = if name == path {
@@ -2655,11 +2656,13 @@ impl HomeView {
                 }
                 Item::Group { path, .. } => {
                     self.selected_session = None;
-                    if crate::session::is_archived_section_path(path) {
-                        // The synthetic Archived section is not a real
-                        // group: it can't be renamed, deleted, archived,
-                        // or moved. Leaving `selected_group` unset
-                        // disarms every keybind that branches on
+                    if crate::session::is_within_archived_section(path) {
+                        // The synthetic Archived section (and any
+                        // project sub-folder rendered under it in
+                        // Project mode) is not a real group: it can't
+                        // be renamed, deleted, archived, or moved.
+                        // Leaving `selected_group` unset disarms every
+                        // keybind that branches on
                         // `selected_group.is_some()` (rename, delete,
                         // archive group, etc.) without each one having
                         // to special-case the sentinel.

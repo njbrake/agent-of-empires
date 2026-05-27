@@ -4823,6 +4823,234 @@ fn archived_section_pinned_to_bottom_in_every_sort() {
     }
 }
 
+/// In Project grouping mode, archived sessions must nest under per-project
+/// sub-headers inside the Archived section instead of forming one flat list.
+/// Layout: Archived (depth 0) > <project> (depth 1) > sessions (depth 2).
+/// Sessions inside a sub-folder still sort most-recently-archived first.
+#[test]
+#[serial]
+fn archived_section_nests_by_project_in_project_mode() {
+    use crate::session::{
+        archived_project_sub_path, config::GroupByMode, is_archived_section_path,
+        ARCHIVED_SECTION_NAME,
+    };
+
+    let mut env = create_test_env_two_projects_mixed_attention();
+    env.view.group_by = GroupByMode::Project;
+    // Archive one session from each project so we expect two sub-folders.
+    let alpha_id = env
+        .view
+        .instances
+        .iter()
+        .find(|i| i.title == "alpha-running")
+        .map(|i| i.id.clone())
+        .unwrap();
+    let beta_id = env
+        .view
+        .instances
+        .iter()
+        .find(|i| i.title == "beta-error")
+        .map(|i| i.id.clone())
+        .unwrap();
+    env.view
+        .apply_user_action(&alpha_id, |inst| inst.archive())
+        .unwrap();
+    env.view
+        .apply_user_action(&beta_id, |inst| inst.archive())
+        .unwrap();
+    env.view.archived_section_collapsed = false;
+    env.view.flat_items = env.view.build_flat_items();
+
+    // Find the Archived section header and walk forward.
+    let arch_idx = env
+        .view
+        .flat_items
+        .iter()
+        .position(|it| matches!(it, Item::Group { path, .. } if is_archived_section_path(path)))
+        .expect("Archived section header must be present");
+
+    // Header sanity: depth 0, count = 2, name = Archived.
+    match &env.view.flat_items[arch_idx] {
+        Item::Group {
+            depth,
+            session_count,
+            name,
+            ..
+        } => {
+            assert_eq!(*depth, 0, "Archived header depth");
+            assert_eq!(*session_count, 2, "two archived sessions across projects");
+            assert_eq!(name, ARCHIVED_SECTION_NAME);
+        }
+        _ => unreachable!(),
+    }
+
+    // The next two non-session items should be sub-folder headers at depth 1,
+    // one for "alpha" and one for "beta", in alphabetical order. Between them
+    // and after the second, the sessions at depth 2 belong to that sub-folder.
+    let tail = &env.view.flat_items[arch_idx + 1..];
+
+    let sub_alpha_path = archived_project_sub_path("alpha");
+    let sub_beta_path = archived_project_sub_path("beta");
+
+    // First sub-header must be alpha (BTreeMap orders by name).
+    match &tail[0] {
+        Item::Group {
+            path,
+            name,
+            depth,
+            session_count,
+            ..
+        } => {
+            assert_eq!(path, &sub_alpha_path);
+            assert_eq!(name, "alpha");
+            assert_eq!(*depth, 1);
+            assert_eq!(*session_count, 1);
+        }
+        other => panic!("expected alpha sub-header at depth 1, got {:?}", other),
+    }
+    // Then alpha's archived session at depth 2.
+    match &tail[1] {
+        Item::Session { id, depth } => {
+            assert_eq!(
+                id, &alpha_id,
+                "alpha sub-folder should contain alpha-running"
+            );
+            assert_eq!(*depth, 2);
+        }
+        other => panic!("expected alpha-running session row, got {:?}", other),
+    }
+    // Then the beta sub-header at depth 1.
+    match &tail[2] {
+        Item::Group {
+            path,
+            name,
+            depth,
+            session_count,
+            ..
+        } => {
+            assert_eq!(path, &sub_beta_path);
+            assert_eq!(name, "beta");
+            assert_eq!(*depth, 1);
+            assert_eq!(*session_count, 1);
+        }
+        other => panic!("expected beta sub-header at depth 1, got {:?}", other),
+    }
+    // Then beta's archived session at depth 2.
+    match &tail[3] {
+        Item::Session { id, depth } => {
+            assert_eq!(id, &beta_id, "beta sub-folder should contain beta-error");
+            assert_eq!(*depth, 2);
+        }
+        other => panic!("expected beta-error session row, got {:?}", other),
+    }
+}
+
+/// Collapsing the Archived umbrella in Project mode hides both sub-folder
+/// headers and their session rows.
+#[test]
+#[serial]
+fn archived_section_collapsed_hides_project_sub_folders() {
+    use crate::session::{config::GroupByMode, is_within_archived_section};
+
+    let mut env = create_test_env_two_projects_mixed_attention();
+    env.view.group_by = GroupByMode::Project;
+    let alpha_id = env
+        .view
+        .instances
+        .iter()
+        .find(|i| i.title == "alpha-running")
+        .map(|i| i.id.clone())
+        .unwrap();
+    env.view
+        .apply_user_action(&alpha_id, |inst| inst.archive())
+        .unwrap();
+    env.view.archived_section_collapsed = true;
+    env.view.flat_items = env.view.build_flat_items();
+
+    let within_archive_items: Vec<&Item> = env
+        .view
+        .flat_items
+        .iter()
+        .filter(|it| match it {
+            Item::Group { path, .. } => is_within_archived_section(path),
+            Item::Session { .. } => false,
+        })
+        .collect();
+    assert_eq!(
+        within_archive_items.len(),
+        1,
+        "collapsed Archived must render only its top-level header, got {:?}",
+        within_archive_items
+    );
+}
+
+/// Collapsing a single project sub-folder under Archived hides its session
+/// rows but leaves the sub-header (and any other sub-folders) intact. Uses
+/// the same `project_group_collapsed` map that drives regular project mode
+/// collapse, keyed by the synthetic `archived_project_sub_path`.
+#[test]
+#[serial]
+fn archived_project_sub_folder_collapse_hides_only_its_sessions() {
+    use crate::session::{archived_project_sub_path, config::GroupByMode};
+
+    let mut env = create_test_env_two_projects_mixed_attention();
+    env.view.group_by = GroupByMode::Project;
+    let alpha_id = env
+        .view
+        .instances
+        .iter()
+        .find(|i| i.title == "alpha-running")
+        .map(|i| i.id.clone())
+        .unwrap();
+    let beta_id = env
+        .view
+        .instances
+        .iter()
+        .find(|i| i.title == "beta-error")
+        .map(|i| i.id.clone())
+        .unwrap();
+    env.view
+        .apply_user_action(&alpha_id, |inst| inst.archive())
+        .unwrap();
+    env.view
+        .apply_user_action(&beta_id, |inst| inst.archive())
+        .unwrap();
+    env.view.archived_section_collapsed = false;
+    // Collapse only alpha's archived sub-folder.
+    env.view
+        .project_group_collapsed
+        .insert(archived_project_sub_path("alpha"), true);
+    env.view.flat_items = env.view.build_flat_items();
+
+    // alpha sub-folder must still appear as a header but with no session row
+    // following it; beta sub-folder must still emit its session row.
+    let has_alpha_session = env
+        .view
+        .flat_items
+        .iter()
+        .any(|it| matches!(it, Item::Session { id, .. } if id == &alpha_id));
+    let has_beta_session = env
+        .view
+        .flat_items
+        .iter()
+        .any(|it| matches!(it, Item::Session { id, .. } if id == &beta_id));
+    assert!(
+        !has_alpha_session,
+        "collapsed alpha sub-folder must hide its archived session"
+    );
+    assert!(
+        has_beta_session,
+        "expanded beta sub-folder must still surface its archived session"
+    );
+    let alpha_sub_path = archived_project_sub_path("alpha");
+    assert!(
+        env.view.flat_items.iter().any(
+            |it| matches!(it, Item::Group { path, collapsed, .. } if path == &alpha_sub_path && *collapsed)
+        ),
+        "alpha sub-folder header must remain visible with collapsed=true"
+    );
+}
+
 mod scroll_pane_isolation {
     //! Wheel events are confined to whichever pane the mouse is over.
     //! In particular, a wheel over the preview pane never moves the list
@@ -7474,6 +7702,61 @@ mod save_field_merge {
                 .and_then(|i| i.agent_session_id.clone())
                 .is_none(),
             "reload must honor peer-cleared sid; carrying memory would re-pass --resume <stale>"
+        );
+    }
+
+    /// `stamp_last_accessed` on a sunk row must auto-clear archived_at on
+    /// BOTH memory and disk, and rebuild flat_items so the row leaves the
+    /// synthetic Archived section on the same frame. Regression guard for
+    /// the "re-entering an archived session left it stuck in the Archived
+    /// section until the user pressed `z`" bug: the old implementation used
+    /// mutate_instance + save, but merge_from_tui doesn't carry archived_at
+    /// so the next reload resurrected the sink from disk.
+    #[test]
+    #[serial]
+    fn stamp_last_accessed_on_archived_row_unsinks_persistently() {
+        use crate::session::{is_archived_section_path, Item};
+
+        let (_temp, mut view, id) = boot_view_with_one_session("session", "/tmp/grp");
+
+        view.apply_user_action(&id, |inst| inst.archive())
+            .expect("seed archive must persist");
+        view.flat_items = view.build_flat_items();
+        assert!(
+            view.get_instance(&id).unwrap().is_archived(),
+            "precondition: row archived in memory"
+        );
+        let archived_section_present = |items: &[Item]| {
+            items.iter().any(|it| match it {
+                Item::Group { path, .. } => is_archived_section_path(path),
+                _ => false,
+            })
+        };
+        assert!(
+            archived_section_present(&view.flat_items),
+            "precondition: Archived section header rendered"
+        );
+
+        view.stamp_last_accessed(&id);
+
+        assert!(
+            !view.get_instance(&id).unwrap().is_archived(),
+            "stamp_last_accessed must clear archived_at in memory"
+        );
+        let disk_row = Storage::new("test")
+            .unwrap()
+            .load()
+            .unwrap()
+            .into_iter()
+            .find(|i| i.id == id)
+            .expect("disk row present");
+        assert!(
+            disk_row.archived_at.is_none(),
+            "stamp_last_accessed must persist the auto-unarchive (merge_from_tui drops archived_at)"
+        );
+        assert!(
+            !archived_section_present(&view.flat_items),
+            "Archived section must disappear once the only archived row is unsunk"
         );
     }
 }

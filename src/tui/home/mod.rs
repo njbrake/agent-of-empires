@@ -19,7 +19,7 @@ use ratatui::prelude::Rect;
 use tui_input::Input;
 
 use crate::session::{
-    append_archived_section,
+    append_archived_section, append_archived_section_by_project,
     config::{load_config, save_config, GroupByMode, SortOrder},
     flatten_sessions_by_attention, flatten_tree, flatten_tree_all_profiles, resolve_config_or_warn,
     DefaultTerminalMode, EnsureReadyOutcome, Group, GroupTree, Instance, Item, Storage,
@@ -2318,7 +2318,12 @@ impl HomeView {
             }
         }
         let mut items = flatten_tree(&tree, &grouped, self.sort_order);
-        append_archived_section(&mut items, &grouped, self.archived_section_collapsed);
+        append_archived_section_by_project(
+            &mut items,
+            &grouped,
+            self.archived_section_collapsed,
+            &self.project_group_collapsed,
+        );
         items
     }
 
@@ -2420,8 +2425,33 @@ impl HomeView {
     }
 
     /// Stamp `last_accessed_at` on a session (user-initiated interaction).
+    ///
+    /// Sunk rows (archived or snoozed) take the heavier `apply_user_action`
+    /// path so the auto-unarchive/unsnooze side effect in `touch_last_accessed`
+    /// is persisted (merge_from_tui doesn't carry those fields; without this,
+    /// reload would resurrect the sink from disk) and the row leaves the
+    /// Archived section visually on the same frame. Non-sunk rows stay on
+    /// the cheap mutate_instance path; their only mutation is the timestamp,
+    /// which save() already mirrors via merge_from_tui.
     pub fn stamp_last_accessed(&mut self, id: &str) {
-        self.mutate_instance(id, |inst| inst.touch_last_accessed());
+        let was_sunk = self
+            .instance_map
+            .get(id)
+            .map(|i| i.is_archived() || i.snoozed_until.is_some())
+            .unwrap_or(false);
+        if was_sunk {
+            if let Err(e) = self.apply_user_action(id, |inst| inst.touch_last_accessed()) {
+                tracing::warn!(
+                    target: "tui.home",
+                    session_id = %id,
+                    error = %e,
+                    "stamp_last_accessed: failed to persist auto-unsink"
+                );
+            }
+            self.flat_items = self.build_flat_items();
+        } else {
+            self.mutate_instance(id, |inst| inst.touch_last_accessed());
+        }
     }
 
     /// Run the send-message work after the dialog has been dismissed: call
