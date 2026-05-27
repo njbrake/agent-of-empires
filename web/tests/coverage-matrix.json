@@ -322,7 +322,7 @@
       ]
     },
     {
-      "id": "wizard.scratch-delete-cleans-dir",
+      "id": "wizard.scratch-delete-cleans-tempdir",
       "kind": "live-playwright",
       "risk": "high",
       "specs": ["tests/live/wizard-scratch-delete-cleans-tempdir.spec.ts"],
