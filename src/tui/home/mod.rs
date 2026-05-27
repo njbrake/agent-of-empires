@@ -388,10 +388,11 @@ pub struct HomeView {
     /// path (paste/dictation capture, palette compose).
     pub(super) pending_send_target: live_send::LiveSendTarget,
     /// Which pane the next `Action::EnterLiveSend` should target.
-    /// Set by `start_live_send` before returning the action, read by
-    /// `prepare_live_send` to pick the right tmux pane (agent vs
-    /// host terminal vs container terminal). Defaults to Agent for
-    /// the historical path.
+    /// Set by `start_live_send` whenever it returns an action; read
+    /// (and reset to Agent) by `prepare_live_send` so each action
+    /// carries its own target without a stale value leaking into a
+    /// later live-send call. Defaults to Agent for the historical
+    /// path (Tab in Agent view).
     pub(super) pending_live_send_target: live_send::LiveSendTarget,
     /// Live-send mode: when `Some`, every key event in the home view is
     /// translated to a tmux send-keys call against this session's pane
