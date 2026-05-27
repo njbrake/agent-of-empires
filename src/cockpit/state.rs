@@ -1013,6 +1013,31 @@ mod tests {
     }
 
     #[test]
+    fn config_option_category_unknown_value_round_trips_as_other() {
+        // Variant-level `#[serde(untagged)]` on `Other(String)` is the
+        // canonical pattern (matches upstream `SessionConfigOptionCategory`
+        // in agent-client-protocol-schema 0.12). Known snake_case values
+        // map to their unit variants; unknown ones fall through into
+        // `Other(String)`. Lock both behaviors so a future refactor
+        // doesn't silently break forward-compat with new adapter
+        // categories.
+        let model: ConfigOptionCategory = serde_json::from_str("\"model\"").unwrap();
+        assert_eq!(model, ConfigOptionCategory::Model);
+        let thought: ConfigOptionCategory = serde_json::from_str("\"thought_level\"").unwrap();
+        assert_eq!(thought, ConfigOptionCategory::ThoughtLevel);
+        let unknown: ConfigOptionCategory = serde_json::from_str("\"future_category\"").unwrap();
+        assert_eq!(
+            unknown,
+            ConfigOptionCategory::Other("future_category".to_string())
+        );
+        // Serializing the Other variant preserves the underlying
+        // string so the broadcast frame stays stable for clients
+        // that don't yet recognize the new category.
+        let back = serde_json::to_string(&ConfigOptionCategory::Other("x".into())).unwrap();
+        assert_eq!(back, "\"x\"");
+    }
+
+    #[test]
     fn config_options_updated_replaces_previous_list() {
         let mut s = fresh_state();
         assert!(s.config_options.is_empty());
