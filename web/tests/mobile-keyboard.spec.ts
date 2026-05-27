@@ -1,6 +1,6 @@
 import { test, expect } from "./helpers/mockedTest";
 import { devices, type Page } from "@playwright/test";
-import { clickSidebarSession } from "./helpers/sidebar";
+import { clickSidebarSession, openMobileSidebar } from "./helpers/sidebar";
 import { mockTerminalApis, seedSettings } from "./helpers/terminal-mocks";
 
 // Use iPhone 13 profile: pointer:coarse, hasTouch, correct viewport, WebKit UA.
@@ -71,12 +71,7 @@ async function simulateKeyboardClose(page: Page) {
 }
 
 async function openSession(page: Page) {
-  // On mobile the sidebar is collapsed; open it first.
-  const sidebarToggle = page.getByRole("button", { name: "Toggle sidebar" });
-  if (await sidebarToggle.isVisible()) {
-    await sidebarToggle.click();
-    await page.waitForTimeout(300);
-  }
+  await openMobileSidebar(page);
   await clickSidebarSession(page, "pinch-test");
   await page.locator(".xterm").waitFor({ state: "visible", timeout: 10_000 });
 }
