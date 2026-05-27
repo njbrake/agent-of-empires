@@ -1786,7 +1786,10 @@ impl Instance {
                         self.container_workdir(),
                     ))
                 } else {
-                    Box::new(claude_poll_fn(self.project_path.clone()))
+                    Box::new(claude_poll_fn(
+                        self.project_path.clone(),
+                        initial_known.clone(),
+                    ))
                 }
             }
             "opencode" => {
