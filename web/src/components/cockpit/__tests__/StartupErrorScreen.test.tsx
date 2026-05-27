@@ -24,7 +24,7 @@ describe("StartupErrorScreen", () => {
           installed: "0.32.0",
           required: "0.37.0",
           install_command:
-            "npm install -g @agentclientprotocol/claude-agent-acp@0.37.0",
+            "npm install -g @agentclientprotocol/claude-agent-acp@latest",
         }}
       />,
     );
@@ -35,7 +35,7 @@ describe("StartupErrorScreen", () => {
     );
     const cmd = getByTestId("startup-error-install-command");
     expect(cmd.textContent).toContain(
-      "npm install -g @agentclientprotocol/claude-agent-acp@0.37.0",
+      "npm install -g @agentclientprotocol/claude-agent-acp@latest",
     );
   });
 
@@ -46,7 +46,7 @@ describe("StartupErrorScreen", () => {
           kind: "missing_agent_info",
           expected_package: "@agentclientprotocol/claude-agent-acp",
           install_command:
-            "npm install -g @agentclientprotocol/claude-agent-acp@0.37.0",
+            "npm install -g @agentclientprotocol/claude-agent-acp@latest",
         }}
       />,
     );
@@ -64,7 +64,7 @@ describe("StartupErrorScreen", () => {
           expected: "@agentclientprotocol/claude-agent-acp",
           received: "some-wrapper-script",
           install_command:
-            "npm install -g @agentclientprotocol/claude-agent-acp@0.37.0",
+            "npm install -g @agentclientprotocol/claude-agent-acp@latest",
         }}
       />,
     );
@@ -83,7 +83,7 @@ describe("StartupErrorScreen", () => {
           raw_version: "not-semver",
           required: "0.37.0",
           install_command:
-            "npm install -g @agentclientprotocol/claude-agent-acp@0.37.0",
+            "npm install -g @agentclientprotocol/claude-agent-acp@latest",
         }}
       />,
     );

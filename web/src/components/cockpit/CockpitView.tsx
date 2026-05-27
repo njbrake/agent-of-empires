@@ -1568,7 +1568,7 @@ function StartupErrorBanner({
             Run <code className="rounded bg-rose-900/60 px-1">aoe cockpit doctor --fix</code>{" "}
             from a terminal, or install the adapter manually:
             <pre className="mt-1 whitespace-pre-wrap rounded bg-rose-900/40 p-2 text-xs">
-              npm install -g @agentclientprotocol/claude-agent-acp@0.37.0
+              npm install -g @agentclientprotocol/claude-agent-acp@latest
             </pre>
           </>
         )}
