@@ -76,7 +76,19 @@ export function SessionStep({ data, onChange }: Props) {
       ) : (
         <label
           className="flex items-center justify-between gap-3 p-3 bg-surface-900 border border-surface-700 rounded-lg cursor-pointer mb-3"
-          onClick={() => onChange("useWorktree", !data.useWorktree)}
+          onClick={(e) => {
+            // Clicks that land on the Toggle button already drive
+            // `onChange("useWorktree", v)`. Letting the label's own
+            // handler also fire would flip the value a second time
+            // and land back on the original. Skip the label handler
+            // for clicks originating inside the Toggle.
+            if (
+              (e.target as HTMLElement).closest('button[role="switch"]')
+            ) {
+              return;
+            }
+            onChange("useWorktree", !data.useWorktree);
+          }}
         >
           <div className="flex-1">
             <div className="text-sm font-medium text-text-primary">Create a worktree</div>
