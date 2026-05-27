@@ -28,6 +28,7 @@ function dispatch(target: EventTarget, init: KeyboardEventInit) {
 function makeActions() {
   return {
     onNew: vi.fn(),
+    onNewScratch: vi.fn(),
     onDiff: vi.fn(),
     onEscape: vi.fn(),
     onHelp: vi.fn(),
@@ -81,6 +82,43 @@ describe("useKeyboardShortcuts", () => {
 
     expect(actions.onToggleRightPanel).toHaveBeenCalledTimes(1);
     expect(actions.onToggleSidebar).not.toHaveBeenCalled();
+  });
+
+  it("routes Cmd/Ctrl+Shift+N to onNewScratch (fast-create shortcut)", () => {
+    // Cmd+Shift+N (Mac) / Ctrl+Shift+N (other) is the
+    // wizard-pre-configured-for-scratch + skip-to-Review shortcut.
+    // Uses `e.code === "KeyN"` so Shift+layout-specific punctuation
+    // does not break the match.
+    const actions = makeActions();
+    renderHook(() => useKeyboardShortcuts(() => actions));
+
+    dispatch(document.body, {
+      key: "N",
+      code: "KeyN",
+      ctrlKey: true,
+      shiftKey: true,
+    });
+
+    expect(actions.onNewScratch).toHaveBeenCalledTimes(1);
+    expect(actions.onNew).not.toHaveBeenCalled();
+  });
+
+  it("does NOT fire onNewScratch for plain Shift+N (no modifier)", () => {
+    // Single-key shortcuts only fire when no input/textarea is
+    // focused AND no modifier is held; "n" with no modifier maps to
+    // `onNew`, but the Shift+N path needs both the meta/ctrl
+    // modifier AND Shift. Guard against a regression that drops the
+    // modifier check.
+    const actions = makeActions();
+    renderHook(() => useKeyboardShortcuts(() => actions));
+
+    dispatch(document.body, {
+      key: "N",
+      code: "KeyN",
+      shiftKey: true,
+    });
+
+    expect(actions.onNewScratch).not.toHaveBeenCalled();
   });
 
   it("detaches the listener on unmount", () => {

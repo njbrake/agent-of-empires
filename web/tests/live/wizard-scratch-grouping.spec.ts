@@ -88,14 +88,17 @@ base("scratch sessions render in a single synthetic Scratch group", async ({ pag
     const groupHeaders = page.locator("[data-testid='sidebar-group-header']");
     await expect(groupHeaders).toHaveCount(2, { timeout: 10_000 });
 
-    // Both real and synthetic group labels are visible. "Scratch" is
-    // the default displayName for the synthetic group (`useRepoGroups`).
+    // Both real and synthetic group labels are visible. The synthetic
+    // bucket is identified by its stable group id (`__scratch__`)
+    // rather than by a text match, because the header's accessible
+    // text node sits inside nested elements and a substring/regex
+    // text filter is brittle under truncation / layout reflow.
     await expect(page.getByText("repo-alpha")).toBeVisible();
-    await expect(
-      page.locator("[data-testid='sidebar-group-header']", {
-        hasText: /^Scratch$/,
-      }),
-    ).toBeVisible();
+    const scratchHeader = page.locator(
+      "[data-testid='sidebar-group-header'][data-group-id='__scratch__']",
+    );
+    await expect(scratchHeader).toBeVisible();
+    await expect(scratchHeader).toContainText("Scratch");
 
     // All three session rows are visible: alpha on top, both scratch
     // sessions under the synthetic group. Row count proves no rows
