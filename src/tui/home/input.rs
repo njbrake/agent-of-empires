@@ -1197,6 +1197,7 @@ impl HomeView {
                 DialogResult::Cancel => {
                     self.send_message_dialog = None;
                     self.pending_send_session = None;
+                    self.pending_send_target = live_send::LiveSendTarget::Agent;
                 }
                 DialogResult::Submit(message) => {
                     self.send_message_dialog = None;
@@ -2191,7 +2192,14 @@ impl HomeView {
             KeyCode::Char('M') if self.strict_hotkeys => {
                 self.open_send_message_dialog();
             }
-            // Tab enters live-send mode on the selected running session.
+            // Tab is the activation key's complement: it does whichever
+            // of (live-send, tmux attach) `Enter` doesn't. When
+            // `default_attach_mode = LiveSend`, Enter activates live
+            // mode, so Tab swaps to a full tmux attach (the escape
+            // hatch). When `default_attach_mode = Tmux` (the default),
+            // Enter still attaches and Tab keeps its historical
+            // live-send role.
+            //
             // Free at the home-view top level (settings/cockpit/dialogs
             // own their own Tab handlers), and the entry-vs-send
             // distinction is unambiguous: this branch only fires when
@@ -2199,7 +2207,21 @@ impl HomeView {
             // top of `handle_key` short-circuits otherwise. While in
             // live mode Tab is sent verbatim to the agent.
             KeyCode::Tab => {
-                if let Some(action) = self.start_live_send() {
+                let swap_to_attach = self
+                    .selected_session
+                    .as_deref()
+                    .map(|id| {
+                        matches!(
+                            self.default_attach_mode(id),
+                            Some(crate::session::NewSessionAttachMode::LiveSend)
+                        )
+                    })
+                    .unwrap_or(false);
+                if swap_to_attach {
+                    if let Some(action) = self.tab_attach_action() {
+                        return Some(action);
+                    }
+                } else if let Some(action) = self.start_live_send() {
                     return Some(action);
                 }
             }
@@ -2626,7 +2648,9 @@ impl HomeView {
                 // tmux attach for live-send mode on Enter / double-click.
                 // Cockpit was already handled above (the resolver also
                 // returns None for cockpit, so the match is double-safe);
-                // Terminal/Tool views keep their existing paths regardless.
+                // Terminal view honors the same setting (live-send onto
+                // the paired terminal pane); Tool view keeps its
+                // existing AttachToolSession path.
                 //
                 // Route through `start_live_send` so the same-target
                 // guard (already-live on this session) is honored: a
@@ -2646,6 +2670,60 @@ impl HomeView {
                     Some(Action::AttachSession(id))
                 }
             }
+            ViewMode::Terminal => {
+                // Mirror Agent view: when `default_attach_mode = LiveSend`,
+                // Enter on the terminal row enters live-send mode against
+                // the paired terminal pane (host or container, whichever
+                // is currently shown). Otherwise fall back to the
+                // historical tmux attach.
+                if matches!(
+                    self.default_attach_mode(&id),
+                    Some(crate::session::NewSessionAttachMode::LiveSend)
+                ) {
+                    return self.start_live_send();
+                }
+                let terminal_mode = if let Some(inst) = self.get_instance(&id) {
+                    if inst.is_sandboxed() {
+                        self.get_terminal_mode(&id)
+                    } else {
+                        TerminalMode::Host
+                    }
+                } else {
+                    TerminalMode::Host
+                };
+                Some(Action::AttachTerminal(id, terminal_mode))
+            }
+            ViewMode::Tool(ref tool_name) => Some(Action::AttachToolSession(id, tool_name.clone())),
+        }
+    }
+
+    /// Resolve the "Tab swap" action that fires when
+    /// `default_attach_mode = LiveSend`: Enter takes the live-send
+    /// slot, so Tab takes the tmux-attach slot. Mirrors the cockpit
+    /// and in-flight guards from `activate_selected_session`; returns
+    /// the same per-view-mode attach actions Enter produces under the
+    /// historical default.
+    pub(super) fn tab_attach_action(&mut self) -> Option<Action> {
+        let id = self.selected_session.clone()?;
+        if let Some(inst) = self.get_instance(&id) {
+            if matches!(inst.status, Status::Deleting | Status::Creating) {
+                return None;
+            }
+            if inst.is_cockpit_mode() {
+                #[cfg(feature = "serve")]
+                {
+                    return Some(Action::OpenCockpit(id));
+                }
+                #[cfg(not(feature = "serve"))]
+                {
+                    return Some(Action::SetTransientStatus(
+                        "Cockpit session: rebuild with --features serve to attach".to_string(),
+                    ));
+                }
+            }
+        }
+        match self.view_mode {
+            ViewMode::Agent => Some(Action::AttachSession(id)),
             ViewMode::Terminal => {
                 let terminal_mode = if let Some(inst) = self.get_instance(&id) {
                     if inst.is_sandboxed() {
@@ -3126,9 +3204,11 @@ impl HomeView {
         // next dialog open (typically the next `m` press) drains it. Never
         // throw voice text on the floor; losing dictation is worse than
         // silently catching it.
-        if let Some((id, title)) = self.resolve_paste_target() {
+        if let Some((id, title, target)) = self.resolve_send_target() {
+            let label = dialog_label_for_target(&title, target);
             self.pending_send_session = Some(id);
-            let mut dialog = SendMessageDialog::new(&title);
+            self.pending_send_target = target;
+            let mut dialog = SendMessageDialog::new(&label);
             dialog.handle_paste(text);
             self.send_message_dialog = Some(dialog);
             return;
@@ -3185,7 +3265,7 @@ impl HomeView {
     }
 
     /// Attempt to enter live-send mode against the currently-selected
-    /// session. Unlike `resolve_paste_target`, this does NOT require
+    /// session. Unlike `resolve_send_target`, this does NOT require
     /// the tmux pane to already exist: `prepare_live_send` calls
     /// `ensure_pane_ready` which revives stopped sessions (Docker
     /// start, splash wait, resume cascade). Without this relaxation
@@ -3213,6 +3293,24 @@ impl HomeView {
         if inst.is_cockpit_mode() {
             return None;
         }
+        // Pick the live-send target based on which pane the user is
+        // currently previewing. Agent view → agent pane (historical
+        // default). Terminal view → the paired host or container
+        // terminal pane, so 'm'/Tab compose against the same shell
+        // the user sees. Tool view stays out of live-send (no clean
+        // target for lazygit/yazi etc.; let the caller fall back to
+        // AttachToolSession).
+        self.pending_live_send_target = match &self.view_mode {
+            ViewMode::Agent => live_send::LiveSendTarget::Agent,
+            ViewMode::Terminal => {
+                if inst.is_sandboxed() && self.get_terminal_mode(&id) == TerminalMode::Container {
+                    live_send::LiveSendTarget::ContainerTerminal
+                } else {
+                    live_send::LiveSendTarget::Terminal
+                }
+            }
+            ViewMode::Tool(_) => return None,
+        };
         Some(Action::EnterLiveSend(id))
     }
 
@@ -3334,7 +3432,17 @@ impl HomeView {
         let Some(inst) = self.get_instance(&state.session_id) else {
             return Some("Session was deleted while live mode was active.");
         };
-        let current_name = crate::tmux::Session::generate_name(&inst.id, &inst.title);
+        let current_name = match state.target {
+            live_send::LiveSendTarget::Agent => {
+                crate::tmux::Session::generate_name(&inst.id, &inst.title)
+            }
+            live_send::LiveSendTarget::Terminal => {
+                crate::tmux::TerminalSession::generate_name(&inst.id, &inst.title)
+            }
+            live_send::LiveSendTarget::ContainerTerminal => {
+                crate::tmux::ContainerTerminalSession::generate_name(&inst.id, &inst.title)
+            }
+        };
         if current_name != state.tmux_name {
             return Some("Session was renamed while live mode was active.");
         }
@@ -3348,12 +3456,18 @@ impl HomeView {
     /// If pending_paste has accumulated text from earlier untargeted pastes,
     /// drain it into the dialog so voice/dictation captured before a session
     /// was picked still gets used. No-op if no running session is targetable.
+    ///
+    /// Honors `view_mode`: in Terminal view, the dialog targets the paired
+    /// terminal pane (host or container) rather than the agent, so 'm'
+    /// composes a command for the same shell the user is previewing.
     fn open_send_message_dialog(&mut self) {
-        let Some((id, title)) = self.resolve_paste_target() else {
+        let Some((id, title, target)) = self.resolve_send_target() else {
             return;
         };
+        let label = dialog_label_for_target(&title, target);
         self.pending_send_session = Some(id);
-        let mut dialog = SendMessageDialog::new(&title);
+        self.pending_send_target = target;
+        let mut dialog = SendMessageDialog::new(&label);
         if let Some(buf) = self.pending_paste.take() {
             if !buf.is_empty() {
                 dialog.handle_paste(&buf);
@@ -3362,44 +3476,54 @@ impl HomeView {
         self.send_message_dialog = Some(dialog);
     }
 
-    /// Resolve a target session id + title for an untargeted paste/type-burst.
-    /// Only returns Some when an explicit, runnable session is selected.
-    ///
-    /// Cases that return None (caller stashes to `pending_paste`):
-    /// - Cursor on a group header (`selected_session` is None).
-    /// - No selection at all (empty list, no sessions).
-    /// - Selected session is non-running (Stopped, Error, Creating, or tmux
-    ///   pane gone).
-    ///
-    /// Why no first-running fallback: silently dispatching paste/dictation
-    /// to "whichever session sorts first" misroutes voice messages across
-    /// groups. A user with cursor on the "backend" group expanding it to
-    /// browse, dictating, and having the paste land in a "frontend" session
-    /// is exactly the misrouting the archived-selection fix is preventing.
-    /// Stashing to `pending_paste` is strictly better: the status-bar
-    /// indicator surfaces the captured count, and the next `m` against a
-    /// runnable selection drains it into the compose dialog.
-    ///
-    /// Defensive fall-through: when `selected_session` references an id
-    /// that no longer maps to an instance (deleted underneath us between
-    /// select and paste, shouldn't happen in steady state), we also stash
-    /// rather than reroute.
-    fn resolve_paste_target(&self) -> Option<(String, String)> {
-        let pick = |inst: &crate::session::Instance| -> Option<(String, String)> {
-            if inst.status == Status::Creating {
-                return None;
+    /// Compose target for the current view: agent in Agent view, the
+    /// paired host/container terminal in Terminal view. Tool view has
+    /// no clean compose target (the tool owns the pane), so it falls
+    /// through to Agent for the historical paste/letter-capture path.
+    pub(super) fn current_send_target(&self) -> live_send::LiveSendTarget {
+        match &self.view_mode {
+            ViewMode::Agent => live_send::LiveSendTarget::Agent,
+            ViewMode::Terminal => {
+                if let Some(id) = self.selected_session.as_deref() {
+                    if let Some(inst) = self.get_instance(id) {
+                        if inst.is_sandboxed()
+                            && self.get_terminal_mode(id) == TerminalMode::Container
+                        {
+                            return live_send::LiveSendTarget::ContainerTerminal;
+                        }
+                    }
+                }
+                live_send::LiveSendTarget::Terminal
             }
-            let tmux_session = crate::tmux::Session::new(&inst.id, &inst.title).ok();
-            if tmux_session.as_ref().is_some_and(|s| s.exists()) {
-                Some((inst.id.clone(), inst.title.clone()))
-            } else {
-                None
-            }
-        };
+            ViewMode::Tool(_) => live_send::LiveSendTarget::Agent,
+        }
+    }
 
+    /// Resolve `(id, title, target)` for an untargeted paste, 'm', or
+    /// strict-mode letter capture. Agent targets keep the historical
+    /// gate (the agent tmux pane must already exist) so the compose
+    /// dialog can't open against a stopped session; terminal targets
+    /// relax that gate because `execute_send_message` will spawn the
+    /// paired terminal on demand the same way `attach_terminal` does.
+    fn resolve_send_target(&self) -> Option<(String, String, live_send::LiveSendTarget)> {
         let id = self.selected_session.as_ref()?;
         let inst = self.get_instance(id)?;
-        pick(inst)
+        if matches!(inst.status, Status::Creating | Status::Deleting) {
+            return None;
+        }
+        let target = self.current_send_target();
+        let ready = match target {
+            live_send::LiveSendTarget::Agent => crate::tmux::Session::new(&inst.id, &inst.title)
+                .map(|s| s.exists())
+                .unwrap_or(false),
+            live_send::LiveSendTarget::Terminal | live_send::LiveSendTarget::ContainerTerminal => {
+                true
+            }
+        };
+        if !ready {
+            return None;
+        }
+        Some((inst.id.clone(), inst.title.clone(), target))
     }
 
     /// Strict-mode typing guard: a bare lowercase letter was pressed outside
@@ -3421,9 +3545,11 @@ impl HomeView {
             return;
         }
 
-        if let Some((id, title)) = self.resolve_paste_target() {
+        if let Some((id, title, target)) = self.resolve_send_target() {
+            let label = dialog_label_for_target(&title, target);
             self.pending_send_session = Some(id);
-            let mut dialog = SendMessageDialog::new(&title);
+            self.pending_send_target = target;
+            let mut dialog = SendMessageDialog::new(&label);
             dialog.handle_paste(&s);
             self.send_message_dialog = Some(dialog);
             return;
@@ -3655,10 +3781,42 @@ impl HomeView {
     }
 }
 
+/// Render the dialog title suffix for a given live-send target so the
+/// user can tell at a glance which pane the compose dialog will send
+/// to. Agent uses the bare title (historical look); terminal variants
+/// append a short suffix.
+fn dialog_label_for_target(title: &str, target: live_send::LiveSendTarget) -> String {
+    match target {
+        live_send::LiveSendTarget::Agent => title.to_string(),
+        live_send::LiveSendTarget::Terminal => format!("{title} (terminal)"),
+        live_send::LiveSendTarget::ContainerTerminal => format!("{title} (container)"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::session::config::{SessionConfig, ToolSessionConfig};
+
+    #[test]
+    fn dialog_label_for_target_distinguishes_terminal_panes() {
+        // Users firing 'm' from Terminal view should see the dialog
+        // title call out the target pane so they don't accidentally
+        // send agent prompts into a shell (or vice versa).
+        use live_send::LiveSendTarget;
+        assert_eq!(
+            dialog_label_for_target("my-session", LiveSendTarget::Agent),
+            "my-session",
+        );
+        assert_eq!(
+            dialog_label_for_target("my-session", LiveSendTarget::Terminal),
+            "my-session (terminal)",
+        );
+        assert_eq!(
+            dialog_label_for_target("my-session", LiveSendTarget::ContainerTerminal),
+            "my-session (container)",
+        );
+    }
 
     #[test]
     fn hook_install_agent_uses_detect_as_for_custom_codex_wrapper() {

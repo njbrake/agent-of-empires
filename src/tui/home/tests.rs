@@ -3956,7 +3956,7 @@ fn set_instance_status_runs_status_hook_on_transition() {
 /// Earlier behavior fell through to the first-running fallback whenever
 /// `selected_session` was None — silently misrouting voice/dictation
 /// across groups. With cursor on a group, `selected_session` is None and
-/// `resolve_paste_target` must return None unconditionally.
+/// `resolve_send_target` must return None unconditionally.
 #[test]
 #[serial]
 fn paste_on_group_header_stashes_instead_of_misrouting() {
@@ -5289,6 +5289,7 @@ mod scroll_pane_isolation {
             session_id: "fake".to_string(),
             title: "fake".to_string(),
             tmux_name: "fake".to_string(),
+            target: crate::tui::home::live_send::LiveSendTarget::Agent,
             exit_chords: crate::tui::home::live_send::parse_chord_list(
                 crate::tui::home::live_send::DEFAULT_EXIT_CHORD,
             ),
@@ -5319,6 +5320,7 @@ mod scroll_pane_isolation {
             session_id: "fake".to_string(),
             title: "fake".to_string(),
             tmux_name: "fake".to_string(),
+            target: crate::tui::home::live_send::LiveSendTarget::Agent,
             exit_chords: crate::tui::home::live_send::parse_chord_list(
                 crate::tui::home::live_send::DEFAULT_EXIT_CHORD,
             ),
@@ -5752,6 +5754,7 @@ mod click_to_select {
             session_id: id_a.clone(),
             title: "session1".to_string(),
             tmux_name: format!("aoe_test_{}", id_a),
+            target: crate::tui::home::live_send::LiveSendTarget::Agent,
             exit_chords: Vec::new(),
         });
 
@@ -5786,6 +5789,7 @@ mod click_to_select {
             session_id: id_a.clone(),
             title: "session2".to_string(),
             tmux_name: format!("aoe_test_{}", id_a),
+            target: crate::tui::home::live_send::LiveSendTarget::Agent,
             exit_chords: Vec::new(),
         });
 
@@ -6164,6 +6168,7 @@ mod preview_drag_select {
             session_id: "test-session".to_string(),
             title: "test".to_string(),
             tmux_name: "aoe_test_drag_select".to_string(),
+            target: crate::tui::home::live_send::LiveSendTarget::Agent,
             exit_chords: Vec::new(),
         });
     }
@@ -6526,6 +6531,7 @@ mod preview_drag_select {
             session_id: "fake-id".to_string(),
             title: "fake".to_string(),
             tmux_name: "aoe_test_full_pipeline".to_string(),
+            target: crate::tui::home::live_send::LiveSendTarget::Agent,
             exit_chords: Vec::new(),
         });
 
@@ -6648,6 +6654,7 @@ mod live_send_mode {
             session_id: inst.id.clone(),
             title: inst.title,
             tmux_name,
+            target: crate::tui::home::live_send::LiveSendTarget::Agent,
             exit_chords: crate::tui::home::live_send::parse_chord_list(
                 crate::tui::home::live_send::DEFAULT_EXIT_CHORD,
             ),
@@ -6663,6 +6670,7 @@ mod live_send_mode {
             session_id: "missing-id".to_string(),
             title: "missing-title".to_string(),
             tmux_name: "missing-tmux".to_string(),
+            target: crate::tui::home::live_send::LiveSendTarget::Agent,
             exit_chords: crate::tui::home::live_send::parse_chord_list(
                 crate::tui::home::live_send::DEFAULT_EXIT_CHORD,
             ),
@@ -7356,11 +7364,15 @@ mod default_attach_mode {
 
     #[test]
     #[serial]
-    fn terminal_view_ignores_default_attach_mode() {
-        // Terminal view has its own activation path (Container/Host
-        // tmux attach). The setting only applies to Agent view, so
-        // Terminal must keep its existing behavior even when
-        // default_attach_mode = LiveSend.
+    fn terminal_view_honors_default_attach_mode_live_send() {
+        // The `default_attach_mode = LiveSend` setting applies to
+        // Terminal view too: pressing Enter on a terminal-view row
+        // dispatches `Action::EnterLiveSend` against the paired
+        // terminal pane (the live-send target resolution happens in
+        // `start_live_send` based on view_mode). Without this, the
+        // user's "Enter = live mode" preference would silently flip
+        // back to a full tmux attach whenever they were previewing a
+        // terminal.
         let mut env = create_test_env_empty();
         write_global_default_attach_mode(NewSessionAttachMode::LiveSend);
         let id = add_session(&mut env.view, "session-one");
@@ -7369,10 +7381,127 @@ mod default_attach_mode {
         env.view.update_selected();
         env.view.view_mode = crate::tui::home::ViewMode::Terminal;
         let action = env.view.activate_selected_session();
+        assert_eq!(action, Some(Action::EnterLiveSend(id)));
+    }
+
+    #[test]
+    #[serial]
+    fn terminal_view_falls_back_to_attach_when_default_is_tmux() {
+        // Inverse of the LiveSend case: with the historical Tmux
+        // default, Enter on a terminal-view row keeps the historical
+        // `Action::AttachTerminal` so users who haven't opted into
+        // live mode see no change.
+        let mut env = create_test_env_empty();
+        let id = add_session(&mut env.view, "session-one");
+        env.view.flat_items = env.view.build_flat_items();
+        env.view.cursor = 0;
+        env.view.update_selected();
+        env.view.view_mode = crate::tui::home::ViewMode::Terminal;
+        let action = env.view.activate_selected_session();
         assert!(
             matches!(&action, Some(Action::AttachTerminal(returned_id, _)) if returned_id == &id),
-            "Terminal view must emit AttachTerminal regardless of default_attach_mode, got {:?}",
+            "default Tmux mode must keep Terminal view on AttachTerminal, got {:?}",
             action
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn tab_swaps_to_attach_session_when_default_is_live_send() {
+        // When `default_attach_mode = LiveSend`, Enter takes over the
+        // live-send slot, so Tab swaps to a full tmux attach (the
+        // escape hatch). Without this, the user would have no
+        // single-key path to the underlying tmux session.
+        let mut env = create_test_env_empty();
+        write_global_default_attach_mode(NewSessionAttachMode::LiveSend);
+        let id = add_session(&mut env.view, "session-one");
+        env.view.flat_items = env.view.build_flat_items();
+        env.view.cursor = 0;
+        env.view.update_selected();
+        let action = env.view.handle_key(key(KeyCode::Tab), None);
+        assert_eq!(action, Some(Action::AttachSession(id)));
+    }
+
+    #[test]
+    #[serial]
+    fn tab_still_enters_live_send_when_default_is_tmux() {
+        // With the historical Tmux default, Enter still attaches and
+        // Tab keeps its historical live-send role.
+        let mut env = create_test_env_empty();
+        let id = add_session(&mut env.view, "session-one");
+        env.view.flat_items = env.view.build_flat_items();
+        env.view.cursor = 0;
+        env.view.update_selected();
+        let action = env.view.handle_key(key(KeyCode::Tab), None);
+        assert_eq!(action, Some(Action::EnterLiveSend(id)));
+    }
+
+    #[test]
+    #[serial]
+    fn tab_in_terminal_view_swaps_to_attach_terminal_when_default_is_live_send() {
+        // Terminal-view counterpart of the swap: with Enter pinned to
+        // live-send, Tab in Terminal view attaches the paired terminal
+        // pane rather than the agent pane.
+        let mut env = create_test_env_empty();
+        write_global_default_attach_mode(NewSessionAttachMode::LiveSend);
+        let id = add_session(&mut env.view, "session-one");
+        env.view.flat_items = env.view.build_flat_items();
+        env.view.cursor = 0;
+        env.view.update_selected();
+        env.view.view_mode = crate::tui::home::ViewMode::Terminal;
+        let action = env.view.handle_key(key(KeyCode::Tab), None);
+        assert!(
+            matches!(&action, Some(Action::AttachTerminal(returned_id, _)) if returned_id == &id),
+            "Tab in Terminal view with LiveSend default must AttachTerminal, got {:?}",
+            action
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn m_in_terminal_view_targets_terminal_pane() {
+        // The 'm' bug from #1554: pressing 'm' from Terminal view used
+        // to open a compose dialog that targeted the agent pane,
+        // sending commands meant for the shell into the agent's input
+        // box. The fix: `pending_send_target` reflects view_mode at
+        // dialog open time so `execute_send_message` routes to the
+        // paired terminal pane.
+        let mut env = create_test_env_empty();
+        let _id = add_session(&mut env.view, "session-one");
+        env.view.flat_items = env.view.build_flat_items();
+        env.view.cursor = 0;
+        env.view.update_selected();
+        env.view.view_mode = crate::tui::home::ViewMode::Terminal;
+        let _ = env.view.handle_key(key(KeyCode::Char('m')), None);
+        assert!(
+            env.view.send_message_dialog.is_some(),
+            "Terminal view 'm' must open the compose dialog even when \
+             the paired tmux pane hasn't spawned yet"
+        );
+        assert_eq!(
+            env.view.pending_send_target,
+            crate::tui::home::live_send::LiveSendTarget::Terminal,
+            "compose dialog opened from Terminal view must target the terminal pane"
+        );
+    }
+
+    #[test]
+    #[serial]
+    fn start_live_send_in_terminal_view_targets_terminal_pane() {
+        // Direct check on the live-send target resolution: in Terminal
+        // view, `start_live_send` stages the host terminal as the
+        // pending target so `prepare_live_send` will dispatch
+        // keystrokes to the paired terminal tmux pane.
+        let mut env = create_test_env_empty();
+        let _id = add_session(&mut env.view, "session-one");
+        env.view.flat_items = env.view.build_flat_items();
+        env.view.cursor = 0;
+        env.view.update_selected();
+        env.view.view_mode = crate::tui::home::ViewMode::Terminal;
+        let _ = env.view.start_live_send();
+        assert_eq!(
+            env.view.pending_live_send_target,
+            crate::tui::home::live_send::LiveSendTarget::Terminal
         );
     }
 

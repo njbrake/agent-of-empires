@@ -267,10 +267,30 @@ pub(in crate::tui) struct LiveSendState {
     pub session_id: String,
     pub title: String,
     pub tmux_name: String,
+    /// Which paired pane the live-send is targeting. Captured at entry
+    /// time so the drift check, exit-sizing reset, and view-mode flips
+    /// during live-send don't change where keystrokes are dispatched.
+    pub target: LiveSendTarget,
     /// Chord list parsed from the user's configured exit-chord
     /// setting at entry time. Captured per-entry so config edits
     /// don't change behavior mid-session.
     pub exit_chords: Vec<(KeyCode, KeyModifiers)>,
+}
+
+/// Which paired tmux pane a live-send dispatch targets. The agent
+/// pane is the historical default; terminal panes (host and
+/// container) reuse the same live-send dispatch machinery but route
+/// to the paired terminal's tmux session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(in crate::tui) enum LiveSendTarget {
+    /// The agent's tmux pane (default, pre-existing behavior).
+    #[default]
+    Agent,
+    /// The paired host-shell terminal pane.
+    Terminal,
+    /// The paired container-shell terminal pane (sandboxed sessions
+    /// in container terminal mode).
+    ContainerTerminal,
 }
 
 /// One coalesced unit of work the worker hands to tmux. `Literal` runs
